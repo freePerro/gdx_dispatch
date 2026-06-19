@@ -1,6 +1,6 @@
 """SS-29 — shadow_migration_state + shadow_migration_checkpoint + shadow_migration_drift.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss28_audit"``.
+TODO: chained on placeholder ``down_revision = "ss28_audit"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -14,7 +14,7 @@ existing data-plane table; every dual-write target is itself a NEW v2
 table that lives alongside v1 (see ``shadow_maps.json``).
 
 Revision ID: ss29_shadow_migration
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 

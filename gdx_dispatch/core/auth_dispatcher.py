@@ -671,7 +671,7 @@ async def _dispatch_oauth(request: Request, token: str) -> Principal:
     SS-21 currently uses an in-process :class:`_InMemoryTokenStore`
     (see :mod:`gdx_dispatch.routers.auth.oauth2`). We look up the access token there —
     0.9-h / Phase 3 will swap this for the ``ss21_oauth_tokens`` DB row
-    lookup once SS-21's ``INTEGRATION_TODO`` is discharged.
+    lookup once SS-21's ``TODO`` is discharged.
 
     Fallthrough to ``_dispatch_login_jwt`` when the OAuth store misses on
     a JWT-shaped token — login JWTs minted by /auth/login arrive via the

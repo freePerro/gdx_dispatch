@@ -1,10 +1,10 @@
 """SS-28 consumer-audit model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate
+NOTE: TODO — these definitions live on a separate
 declarative Base (``SS28Base``) and are NOT yet mounted on the primary
 platform Base in ``gdx_dispatch/models/platform.py``. The SS-28 Alembic
 migration (``TODO_ss28_audit_XXXX.py``) is on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - platform_consumer_audit   — append-only per-request audit rows

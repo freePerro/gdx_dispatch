@@ -1,10 +1,10 @@
 """SS-33 resource-extensibility model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate
+NOTE: TODO — these definitions live on a separate
 declarative Base (``SS33Base``) and are NOT yet mounted on the primary
 platform Base in ``gdx_dispatch/models/platform.py``. The SS-33 Alembic
 migration (``TODO_ss33_resource_extensibility_XXXX.py``) is on
-placeholder ``down_revision = "INTEGRATION_TODO"``. When SS-33
+placeholder ``down_revision = "TODO"``. When SS-33
 integration lands, merge these onto the canonical Base and wire the
 migration into the main chain.
 

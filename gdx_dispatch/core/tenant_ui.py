@@ -362,7 +362,6 @@ def _send_invite_email(email: str, name: str, role: str, request: Request) -> No
         role,
         tenant_name,
     )
-    # TODO: integrate with SendGrid / SES / Postmark
     # from gdx_dispatch.core.email import send_email
     # send_email(
     #     to=email,

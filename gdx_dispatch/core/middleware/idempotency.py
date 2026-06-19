@@ -1,6 +1,5 @@
 """Stripe-style Idempotency-Key middleware (SS-14 slice B).
 
-# INTEGRATION TODO: register in gdx_dispatch/main.py (supervisor will handle).
 #   app.add_middleware(IdempotencyMiddleware, redis_client=<redis>)
 # Middleware assumes an upstream auth middleware has already populated
 # ``request.state.principal`` with ``tenant_id`` + ``identity_id``

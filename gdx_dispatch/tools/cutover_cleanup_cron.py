@@ -26,7 +26,7 @@ Usage::
 
 Optional filters: ``--tenant``, ``--old-table``, ``--limit``.
 
-INTEGRATION_TODO: at main-chain merge, the ``session_factory`` default
+TODO: at main-chain merge, the ``session_factory`` default
 will be set to the app's real factory. Until then, callers must pass
 one explicitly.
 """
@@ -346,7 +346,7 @@ def main(
 
     if session_factory is None:
         logger.error(
-            "cleanup_cron: no session_factory supplied — INTEGRATION_TODO "
+            "cleanup_cron: no session_factory supplied — TODO "
             "wire app.db.session_factory at main-chain merge"
         )
         return 2

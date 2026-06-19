@@ -1,7 +1,7 @@
 <!--
   SS-31 slice G — tenant-admin FederationProviders.vue.
 
-  INTEGRATION TODO: mount in gdx/frontend/src/router/index.js at
+  TODO: mount in gdx/frontend/src/router/index.js at
     /admin/federation-providers (tenant-admin gate).
 
   Backend contract (see gdx/routers/federation.py):

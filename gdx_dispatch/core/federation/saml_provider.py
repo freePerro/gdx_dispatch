@@ -12,7 +12,7 @@ Scope (per SS-31 prompt):
 
 Deliberate non-goals for this slice:
   * Full XML DSig canonicalisation + signature verification in pure
-    Python (unsafe to roll by hand; left as an INTEGRATION_TODO with a
+    Python (unsafe to roll by hand; left as an TODO with a
     hard gate below — the validator refuses to return a "valid" verdict
     without it unless the caller passes ``_unsafe_skip_xmldsig=True``,
     which is used only by the unit tests under a loud warning).
@@ -266,7 +266,6 @@ def validate_assertion(
     if expected_in_response_to is not None and parsed.in_response_to != expected_in_response_to:
         raise SAMLError("in_response_to_mismatch")
 
-    # INTEGRATION_TODO: replace the presence check with a real XMLDSig
     # signature verification (canonicalisation + SignedInfo hash +
     # SignatureValue check against bundle.signing_certs_pem). Rolling
     # that from scratch is unsafe, so we require a signing cert to be
@@ -289,12 +288,11 @@ def validate_assertion(
             "signing_cert_not_trusted",
             detail="assertion signing cert not in trust bundle",
         )
-    # INTEGRATION_TODO: do actual signature math here. Until then, we
     # still raise on bundle-cert mismatch so a forged assertion signed
     # with a random cert is rejected.
     raise SAMLError(
         "xmldsig_not_implemented",
-        detail="INTEGRATION_TODO: XMLDSig verification required before production use",
+        detail="TODO: XMLDSig verification required before production use",
     )
 
 

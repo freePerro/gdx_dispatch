@@ -190,7 +190,6 @@ def create_po(
     db.add(po)
     db.commit()
     db.refresh(po)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -268,7 +267,6 @@ def update_po(
     _calculate_totals(po)
     db.commit()
     db.refresh(po)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -324,7 +322,6 @@ def receive_po(
     po.received_date = date.today()
     db.commit()
     db.refresh(po)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -363,7 +360,6 @@ def delete_po(
         raise HTTPException(status_code=409, detail="Cannot delete received PO")
     po.deleted_at = utcnow()
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

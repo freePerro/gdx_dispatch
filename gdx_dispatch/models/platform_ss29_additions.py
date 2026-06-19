@@ -1,10 +1,10 @@
 """SS-29 shadow-migration model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate declarative
+NOTE: TODO — these definitions live on a separate declarative
 Base (``SS29Base``) and are NOT yet mounted on the primary platform Base
 in ``gdx_dispatch/models/platform.py``. The SS-29 Alembic migration
 (``TODO_ss29_shadow_migration_XXXX.py``) is on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - shadow_migration_state       — per (tenant, old_table) mode row:

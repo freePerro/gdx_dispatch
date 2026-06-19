@@ -19,7 +19,7 @@ Handlers are thin: they enforce the capability gate via
 payload. Real data-access wiring (DB session, event bus) is injected
 by the caller (SS-19 transport adapter) via keyword args.
 
-INTEGRATION TODO
+TODO
 ----------------
 * ensure this package is imported on app start — add::
 

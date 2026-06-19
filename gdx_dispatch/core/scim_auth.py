@@ -10,7 +10,7 @@ separate enforces that at the import graph level.
 Token storage lookup is abstracted behind ``_load_scim_token_record``:
 the default implementation reads a JSON blob from the ``GDX_SCIM_TOKENS``
 env var so tests and dev can configure tokens without standing up a full
-provisioning pipeline. INTEGRATION TODO: replace with a tenant-scoped
+provisioning pipeline. TODO: replace with a tenant-scoped
 AccessToken row lookup using structured capabilities once SS-14 PAT
 issuance lands (see SS-22 plan v3 patch P38).
 

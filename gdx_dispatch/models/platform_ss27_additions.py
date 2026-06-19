@@ -1,10 +1,10 @@
 """SS-27 cross-tenant sharing model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate declarative
+NOTE: TODO — these definitions live on a separate declarative
 Base (``SS27Base``) and are NOT yet mounted on the primary platform Base
 in ``gdx_dispatch/models/platform.py``. The SS-27 Alembic migration
 (``TODO_ss27_cross_tenant_sharing_XXXX.py``) is on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - cross_tenant_share             — sharer → sharee grant on a resource

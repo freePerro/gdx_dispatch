@@ -1,18 +1,18 @@
 """SS-19 MCP execute/SSE execution log.
 
 Revision ID: ss19_mcp_execute
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
     - set `down_revision` to the actual latest revision in the main
       chain at integration time (at time of writing, the SS-18
-      TODO migration declares its own INTEGRATION_TODO; SS-19 chains
+      TODO migration declares its own TODO; SS-19 chains
       after SS-18).
     - rename this file to the next sequential number (e.g.
       `070_ss19_mcp_execute.py`) when it is merged into the main
       alembic chain.
-    - remove the `INTEGRATION_TODO` placeholder.
+    - remove the `TODO` placeholder.
 
 Creates:
     * ``mcp_execution_log`` — per-invocation execution record (runtime

@@ -1,7 +1,7 @@
 """SS-27 — cross_tenant_share + cross_tenant_share_acceptance tables,
 plus the gdx_cross_tenant_access SECURITY DEFINER helper function.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss24_metering"``.
+TODO: chained on placeholder ``down_revision = "ss24_metering"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -29,7 +29,7 @@ P31 checklist:
        (Python-side parity; a PG smoke test lands at integration time)
 
 Revision ID: ss27_cross_tenant_sharing
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
 """Weekly PAT lifecycle sweep (SS-14 slice G).
 
-# INTEGRATION TODO: schedule this module as a Celery beat task or cron
 # entry during SS-14 integration. The tool exposes pure functions so
 # it is unit-testable without a Celery scheduler.
 

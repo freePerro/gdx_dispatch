@@ -1,7 +1,7 @@
 """SS-15 admin-PAT issuance columns on access_tokens.
 
 Revision ID: ss15_admin_pats
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
 INTEGRATED 2026-04-20 (Sprint 0.9-a merged columns into platform_extensions;

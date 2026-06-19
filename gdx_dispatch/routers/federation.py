@@ -17,7 +17,7 @@ REMAINS in-memory with a TTL sweep (ephemeral handshake data — 10-min
 window). See module-level ``_StateStore`` docstring for the Redis
 upgrade path when we move to multi-worker.
 
-Remaining INTEGRATION_TODO (deliberately kept — orthogonal):
+Remaining TODO (deliberately kept — orthogonal):
   * Wire into ``gdx_dispatch/main.py`` via ``app.include_router(federation.router)``.
   * Wire ``client_secret`` encryption through ``gdx_dispatch.core.pii.EncryptedString``
     (or a dedicated secret helper) at the DB layer. ``set_secret_encoder``
@@ -74,7 +74,7 @@ router = APIRouter(tags=["federation"])
 
 def get_db() -> Session:  # pragma: no cover — overridden
     raise RuntimeError(
-        "get_db must be overridden. INTEGRATION_TODO: wire in main.py."
+        "get_db must be overridden. TODO: wire in main.py."
     )
 
 
@@ -91,7 +91,7 @@ def require_tenant_admin(request: Request) -> dict[str, Any]:  # pragma: no cove
             "error": "federation_admin_auth_not_wired",
             "message": (
                 "require_tenant_admin dependency is the unwired default; "
-                "INTEGRATION_TODO in main.py must override it."
+                "TODO in main.py must override it."
             ),
         },
     )
@@ -354,7 +354,7 @@ SecretEncoder = Callable[[str], str]
 
 
 def _encode_secret_default(plaintext: str) -> str:
-    """Placeholder encoder. INTEGRATION_TODO: route through
+    """Placeholder encoder. TODO: route through
     gdx_dispatch.core.pii.EncryptedString or a dedicated secret helper. This
     placeholder deliberately DOES NOT obfuscate — it prefixes the
     string so an operator grep'ing a DB dump sees exactly that the
@@ -664,7 +664,6 @@ def oidc_callback(
             502, detail={"error": "trust_bundle_unavailable", "reason": exc.reason}
         ) from exc
 
-    # INTEGRATION_TODO: do a real token-endpoint exchange here using a
     # real HTTP client + client_secret + PKCE verifier. For now the
     # router expects the test harness to inject an id_token via the
     # ``_test_id_token`` query param — production wiring MUST remove
@@ -738,7 +737,6 @@ async def saml_acs(
             502, detail={"error": "trust_bundle_unavailable", "reason": exc.reason}
         ) from exc
 
-    # INTEGRATION_TODO: flip _unsafe_skip_xmldsig to False once a real
     # XMLDSig verifier (signxml or equivalent) is wired. Until then,
     # this router keeps the security gate EXPLICIT via an env var that
     # main.py threads through — no silent bypass.

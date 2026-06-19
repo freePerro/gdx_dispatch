@@ -9,11 +9,11 @@ Usage
 -----
 
 Call :func:`register_all` once at app startup (e.g. from ``main.py`` —
-tracked in INTEGRATION_TODO) to populate :mod:`gdx_dispatch.core.pii_registry`.
+tracked in TODO) to populate :mod:`gdx_dispatch.core.pii_registry`.
 In tests, call :func:`register_all` explicitly in fixtures so the
 registry is deterministic.
 
-INTEGRATION_TODO: not yet wired into ``gdx_dispatch/main.py`` app startup.
+TODO: not yet wired into ``gdx_dispatch/main.py`` app startup.
 
 Categories reference
 --------------------

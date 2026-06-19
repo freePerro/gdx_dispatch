@@ -1,6 +1,6 @@
 """SS-34 — dr_snapshot_manifest + dr_drill_run + dr_verification_report.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss33_resource_extensibility"``.
+TODO: chained on placeholder ``down_revision = "ss33_resource_extensibility"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -13,7 +13,7 @@ All tables are NEW and strictly additive — SS-34 does not touch any
 existing data-plane table.
 
 Revision ID: ss34_dr_drill
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 

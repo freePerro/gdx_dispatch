@@ -1,10 +1,10 @@
 """SS-34 model stub additions — DR drill + snapshot manifest + verification.
 
-INTEGRATION_TODO: these definitions live on a separate declarative Base
+TODO: these definitions live on a separate declarative Base
 (``SS34Base``) and are NOT yet mounted on the primary platform Base in
 ``gdx_dispatch/models/platform.py``. The SS-34 Alembic migration
 (``TODO_ss34_dr_XXXX.py``) sits on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - dr_snapshot_manifest    — one row per produced snapshot: id,

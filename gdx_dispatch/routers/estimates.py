@@ -728,7 +728,6 @@ def patch_estimate(
     estimate.updated_at = utcnow()
     db.commit()
     db.refresh(estimate)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -764,7 +763,6 @@ def delete_estimate(
     estimate.deleted_at = utcnow()
     estimate.updated_at = utcnow()
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -882,7 +880,6 @@ def add_line(
     _recalculate_total(estimate, db)
     db.commit()
     db.refresh(line)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -991,7 +988,6 @@ def patch_line(
     _recalculate_total(estimate, db)
     db.commit()
     db.refresh(line)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1037,7 +1033,6 @@ def delete_line(
     db.flush()
     _recalculate_total(estimate, db)
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1763,7 +1758,6 @@ def expire_stale_estimates(
     if expired_ids:
         db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

@@ -98,7 +98,6 @@ def create_vendor(
     db.add(v)
     db.commit()
     db.refresh(v)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -150,7 +149,6 @@ def update_vendor(
         setattr(v, field, value)
     db.commit()
     db.refresh(v)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -187,7 +185,6 @@ def delete_vendor(
         raise HTTPException(status_code=404, detail="Vendor not found")
     v.deleted_at = utcnow()
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

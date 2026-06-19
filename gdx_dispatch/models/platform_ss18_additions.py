@@ -50,7 +50,7 @@ Tables required by SS-18
     * ``completed_at`` — TIMESTAMPTZ NULL
     * ``error_detail`` — TEXT NULL
 
-INTEGRATION TODO
+TODO
   * Translate the specs below into real ``Table(...)`` declarations on
     ``ControlBase.metadata`` via a single edit to
     ``gdx_dispatch/models/platform_extensions.py`` at SS-18 integration time.

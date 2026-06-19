@@ -120,7 +120,6 @@ def create_part(
     db.add(item)
     db.commit()
     db.refresh(item)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -183,7 +182,6 @@ def update_part(
 
     db.commit()
     db.refresh(item)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -220,7 +218,6 @@ def delete_part(
         raise HTTPException(status_code=404, detail="Part not found")
     item.deleted_at = utcnow()
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -280,7 +277,6 @@ def adjust_stock(
     db.add(adjustment)
     db.commit()
     db.refresh(item)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

@@ -1,6 +1,6 @@
 """SS-24 metering + billing model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate declarative
+NOTE: TODO — these definitions live on a separate declarative
 Base (``SS24Base``) and are NOT yet mounted on the primary platform Base
 in ``gdx_dispatch/models/platform.py``. The SS-24 Alembic migration
 (``TODO_ss24_metering_XXXX.py``) uses ``down_revision = "ss23_event_bus"``

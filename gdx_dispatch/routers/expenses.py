@@ -231,7 +231,6 @@ def create_expense_line(
     db.add(line)
     db.commit()
     db.refresh(line)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

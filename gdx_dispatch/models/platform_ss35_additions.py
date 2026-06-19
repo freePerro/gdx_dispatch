@@ -1,10 +1,10 @@
 """SS-35 model stub additions — PII flow / SAR / erasure.
 
-INTEGRATION_TODO: these definitions live on a separate declarative Base
+TODO: these definitions live on a separate declarative Base
 (``SS35Base``) and are NOT yet mounted on the primary platform Base in
 ``gdx_dispatch/models/platform.py``. The SS-35 Alembic migration
 (``TODO_ss35_pii_tracking_XXXX.py``) sits on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - sar_request      — Subject Access Request filings + completed

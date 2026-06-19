@@ -24,7 +24,7 @@ Design rules (per SS-29 plan "Rules" section):
 * **Idempotent.** Re-shadowing a row that already exists in the new
   table with the same content is a no-op (zero drift rows).
 
-INTEGRATION_TODO: at the main-chain merge, ShadowWriter will be wired
+TODO: at the main-chain merge, ShadowWriter will be wired
 into the session-factory middleware so every tenant request auto-wraps
 its session. Until then, callers invoke ``ShadowWriter(db).shadow_write(...)``
 explicitly — used by slices C, D, E for tests and tooling.

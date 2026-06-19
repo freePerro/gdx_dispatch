@@ -19,7 +19,7 @@ Contract:
       success on this pass. Matches the SS-23 P40 guidance that no
       single lifecycle field lies about delivery scope.
 
-INTEGRATION TODO:
+TODO:
     - Wire ``EventDrainCheckpoint`` migration into main alembic chain.
     - Register real sinks (outbound webhook, metering pipe) in SS-24;
       for now ``DEFAULT_SINKS`` ships only no-op audit + webhook stubs

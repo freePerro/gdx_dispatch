@@ -135,7 +135,6 @@ def create_tier(
     db.add(tier)
     db.commit()
     db.refresh(tier)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -198,7 +197,6 @@ def update_tier(
     db.add(row)
     db.commit()
     db.refresh(row)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -254,7 +252,6 @@ def award_points(
     db.commit()
     db.refresh(entry)
     log.info("loyalty_points_awarded", extra={"customer_id": customer_id, "amount": payload.amount})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -330,7 +327,6 @@ def create_referral(
     db.add(ref)
     db.commit()
     db.refresh(ref)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

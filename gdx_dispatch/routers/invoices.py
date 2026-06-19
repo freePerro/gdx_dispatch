@@ -816,7 +816,6 @@ def patch_invoice(
     _recalculate_invoice(invoice, db)
     db.commit()
     db.refresh(invoice)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1165,7 +1164,6 @@ def add_invoice_line(
     _recalculate_invoice(invoice, db)
     db.commit()
     db.refresh(line)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1437,7 +1435,6 @@ def batch_create_invoices(
             errors.append({"job_id": job_id, "error": str(e)})
     if created:
         db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

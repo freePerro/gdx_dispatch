@@ -170,7 +170,6 @@ def create_job_time_entry(
     db.commit()
     db.refresh(row)
     log.info("time_entry_created", extra={"job_id": str(job_id), "tech_id": payload.tech_id.strip()})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -233,7 +232,6 @@ def update_time_entry(
     row.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(row)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -272,7 +270,6 @@ def delete_time_entry(
     row.deleted_at = now
     row.updated_at = now
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

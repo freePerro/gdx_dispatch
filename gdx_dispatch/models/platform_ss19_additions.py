@@ -61,7 +61,7 @@ the integration merge:
   approval stays valid. Today enforcement lives outside the descriptor
   (SS-15 approval flow); documenting here for visibility.
 
-INTEGRATION TODO
+TODO
   * Translate the specs below into real ``Table(...)`` declarations on
     ``ControlBase.metadata`` via a single edit to
     ``gdx_dispatch/models/platform_extensions.py`` at SS-19 integration time.

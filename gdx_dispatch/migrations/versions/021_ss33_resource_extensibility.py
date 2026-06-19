@@ -1,15 +1,15 @@
 """SS-33 resource extensibility tables.
 
 Revision ID: ss33_resource_extensibility
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
     - set ``down_revision`` to the actual latest revision in the main
       chain once SS-33 integration lands and SS33Base is merged onto
       the primary platform Base.
     - rename this file to the next sequential number at that time.
-    - remove the ``INTEGRATION_TODO`` placeholder and mount routers
+    - remove the ``TODO`` placeholder and mount routers
       (``resource_types``, ``resource_instances``) in ``gdx_dispatch/main.py``.
     - wire ``gdx_dispatch.core.resource_type_loader.bootstrap(session)`` into
       the app startup hook after DB init.

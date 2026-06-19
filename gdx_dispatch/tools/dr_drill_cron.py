@@ -22,7 +22,7 @@ Exit codes:
 * 3 — refused (looks like production).
 * 4 — CLI misuse.
 
-INTEGRATION_TODO: wire into systemd-timer. The orchestrator will land
+TODO: wire into systemd-timer. The orchestrator will land
 ``/etc/systemd/system/gdx-dr-drill.timer`` at deploy time; this CLI
 is the ``ExecStart`` target.
 """

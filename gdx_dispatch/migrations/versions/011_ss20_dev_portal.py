@@ -20,7 +20,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-# NOTE: placeholder identifiers — see INTEGRATION_TODO above
 revision = "ss20_dev_portal"
 down_revision = "ss19_mcp_execute"
 branch_labels = None

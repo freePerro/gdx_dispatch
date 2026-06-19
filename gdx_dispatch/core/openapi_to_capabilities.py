@@ -1,6 +1,5 @@
 """Derive capability picker options from a FastAPI OpenAPI spec (SS-14 slice E).
 
-# INTEGRATION TODO: consumed by the SettingsApiKeys.vue capability-picker
 # (frontend calls an endpoint that returns ``derive_capability_options(app.openapi())``).
 # Wire that endpoint in gdx_dispatch/main.py or a dedicated router during integration.
 

@@ -20,7 +20,7 @@ Tables this sprint introduces:
       - metadata_url (string)
       - client_id (string, nullable)
       - client_secret_encrypted (text, nullable)
-          INTEGRATION_TODO: must flow through gdx_dispatch.core.pii.EncryptedString
+          TODO: must flow through gdx_dispatch.core.pii.EncryptedString
           or a dedicated secret helper. See gdx_dispatch/routers/federation.py
           set_secret_encoder().
       - trust_bundle_ref (string, nullable)
@@ -91,10 +91,8 @@ SS31_FEDERATION_TRUST_BUNDLE_CACHE_COLUMNS: list[tuple[str, str]] = [
     ("last_refresh_error", "Text, nullable"),
 ]
 
-# INTEGRATION TODO:
 #   * Merge the three tables above into platform.py as real mappers.
 #   * Promote client_secret_encrypted to EncryptedString.
 #   * Add CASCADE rules on (identity_id, provider_id) consistent with
 #     the existing IdentityProvider pattern.
-#   * Re-chain migration TODO_ss31_federation_XXXX.py after the live
 #     alembic head (currently 068) once SS-30 cutover lands.

@@ -1,10 +1,10 @@
 """SS-32 model stub additions — SPIFFE workload registry + bundle cache.
 
-INTEGRATION_TODO: these definitions live on a separate declarative
+TODO: these definitions live on a separate declarative
 ``SS32Base`` and are NOT mounted on the primary platform ``Base`` in
 ``gdx_dispatch/models/platform.py``. The SS-32 Alembic migration
 (``TODO_ss32_spiffe_XXXX.py``) sits on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
 

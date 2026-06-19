@@ -15,7 +15,7 @@ Signed payload (the canonical string):
 
     f"{timestamp}.{body}"
 
-INTEGRATION_TODO:
+TODO:
     - Envelope encryption of stored secrets via GDX_WEBHOOK_KEK (see SS-21
       plan v3 patch P33 in the spec). Current API takes raw secret bytes;
       wrap at the repo layer.

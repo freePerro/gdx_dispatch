@@ -34,7 +34,7 @@ The mapping schema::
       }
     }
 
-INTEGRATION_TODO: real v2 tables do not yet exist in the main schema —
+TODO: real v2 tables do not yet exist in the main schema —
 the ShadowWriter (slice B) reads the map for table/column names but its
 "write" path is a no-op at the ORM level when the target table is not
 present. That keeps SS-29 mergeable before the v2 model landing.

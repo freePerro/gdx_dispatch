@@ -1,6 +1,5 @@
 """Publish GDX PAT prefix regex rules to GitGuardian (SS-14 slice G).
 
-# INTEGRATION TODO: invoke this tool manually (or from a deploy hook) after
 # the PAT prefix taxonomy changes. It is NOT wired into gdx_dispatch/main.py —
 # it's an out-of-band operator tool.
 

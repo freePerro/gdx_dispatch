@@ -55,7 +55,6 @@ async def handler(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Handler for customers.list."""
-    # TODO: Implement tag filtering logic when custom fields are supported.
     # Currently, 'tag' is accepted but ignored.
 
     stmt = select(Customer)

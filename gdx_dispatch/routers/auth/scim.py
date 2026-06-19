@@ -13,7 +13,7 @@ physically removed, preserving the platform audit chain and allowing
 re-provision to reactivate an existing identity row (see SS-22 plan §
 Soft-delete on deprovision).
 
-INTEGRATION TODO (do not commit from this slice):
+TODO (do not commit from this slice):
   1. Wire this router into ``gdx_dispatch/main.py`` via ``app.include_router(
      scim.router)`` once the tenant-scoped SCIM credential provisioning
      lands (SS-14 / SS-15 PAT issuance).
@@ -83,7 +83,7 @@ router = APIRouter(prefix="/scim/v2", tags=["scim"])
 def register_scim_exception_handlers(app) -> None:
     """Attach the SCIM error-schema handler to a FastAPI app.
 
-    INTEGRATION TODO: call this from ``gdx_dispatch/main.py`` alongside
+    TODO: call this from ``gdx_dispatch/main.py`` alongside
     ``include_router(scim.router)``.
     """
 
@@ -486,7 +486,6 @@ def _ensure_membership(db: Session, identity: Identity, tenant_id: str) -> None:
 
     default_capset = db.scalar(select(CapabilitySet).limit(1))
     if default_capset is None:
-        # Create a minimal placeholder capability set. INTEGRATION TODO:
         # replace with the real "scim_member" role once SS-14 lands.
         default_capset = CapabilitySet(
             id=uuid4(),

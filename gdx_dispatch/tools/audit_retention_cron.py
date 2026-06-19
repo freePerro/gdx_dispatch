@@ -24,7 +24,7 @@ Usage::
 
 The function :func:`prune_audit_rows` is the programmatic entry point;
 the ``__main__`` block parses argv and wires a real DB session.
-INTEGRATION_TODO: wire into Celery-beat schedule alongside other
+TODO: wire into Celery-beat schedule alongside other
 retention jobs at end-of-sprint.
 """
 from __future__ import annotations
@@ -179,7 +179,6 @@ def _main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO)
 
-    # INTEGRATION_TODO: wire to the app's SessionLocal when the main chain
     # integrates this module. Until then, importing the app-wide session
     # factory from gdx_dispatch.core.database here keeps this CLI runnable.
     from gdx_dispatch.core.database import SessionLocal

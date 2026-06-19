@@ -26,7 +26,7 @@ so that error determinism is stable. Changing the order (e.g. cap
 check before input validation) would let a principal probe which
 inputs are valid by observing which error fires — a classic info leak.
 
-INTEGRATION TODO
+TODO
 ----------------
 * Swap the ``_dummy_log_execution`` stub with the real SQLAlchemy
   writer once the SS-19 migration lands. The shape is stable.

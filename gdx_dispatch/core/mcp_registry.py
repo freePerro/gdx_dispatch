@@ -4,7 +4,7 @@ In-process catalog of MCP tools. Separated from transport (D-40): SS-19
 ships HTTP/SSE; here we only care about registration, lookup, and
 capability-gated visibility.
 
-INTEGRATION TODO
+TODO
 ----------------
 * register the router from ``gdx_dispatch/routers/mcp_registry.py`` in
   ``gdx_dispatch/main.py`` at sprint integration time. Until then the router is

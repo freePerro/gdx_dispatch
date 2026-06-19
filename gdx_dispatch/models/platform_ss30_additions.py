@@ -1,10 +1,10 @@
 """SS-30 cutover-cleanup model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate declarative
+NOTE: TODO — these definitions live on a separate declarative
 Base (``SS30Base``) and are NOT yet mounted on the primary platform Base
 in ``gdx_dispatch/models/platform.py``. The SS-30 Alembic migration
 (``TODO_ss30_cutover_XXXX.py``) is on placeholder
-``down_revision = "INTEGRATION_TODO"``.
+``down_revision = "TODO"``.
 
 Tables:
     - cutover_schedule          — per (tenant, old_table) cutover record +

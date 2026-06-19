@@ -4,10 +4,10 @@
   Per-tenant usage dashboard showing current-period counters + plan limits
   for each metered event_type. Reads GET /api/billing/usage.
 
-  INTEGRATION TODO: mount in gdx/frontend/src/router/index.js at path
+  TODO: mount in gdx/frontend/src/router/index.js at path
     /admin/billing-usage once SS-24 integration lands. Gate behind
     tenant-admin capability check (role: admin/owner).
-  INTEGRATION TODO: backend router (gdx/routers/billing_usage.py) not
+  TODO: backend router (gdx/routers/billing_usage.py) not
     yet mounted in gdx/main.py — the SFC degrades gracefully on 404/500.
 -->
 <template>

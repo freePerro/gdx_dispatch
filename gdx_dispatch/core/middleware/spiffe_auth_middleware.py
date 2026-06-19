@@ -33,7 +33,7 @@ validation, the request is rejected with 401. We do NOT pass through —
 presenting a bad SVID is an explicit authentication attempt and must
 not silently fall back to anonymous.
 
-INTEGRATION_TODO: not registered in ``gdx_dispatch/main.py``. The mount point
+TODO: not registered in ``gdx_dispatch/main.py``. The mount point
 will sit BEFORE the SS-7 auth middleware so ``agent_principal`` is
 available when ``auth.py`` composes a unified principal.
 """

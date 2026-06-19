@@ -19,12 +19,12 @@ and NOTHING is written. "Silent failure is not failure, it is lying."
 All reads are tenant-scoped: even for platform-wide types, the type
 descriptor is shared but the instance data lives per-tenant.
 
-INTEGRATION TODO
+TODO
 ----------------
 * Table ``resource_instance`` is declared in
   ``gdx_dispatch/models/platform_ss33_additions.py`` on ``SS33Base``; the
   Alembic migration file is on placeholder ``down_revision =
-  "INTEGRATION_TODO"`` until SS-33 integration wires the chain.
+  "TODO"`` until SS-33 integration wires the chain.
 * Soft-delete semantics are via ``deleted_at``; the helpers below
   filter deleted rows by default and expose an ``include_deleted`` flag
   for admin recovery flows (not wired at router layer).

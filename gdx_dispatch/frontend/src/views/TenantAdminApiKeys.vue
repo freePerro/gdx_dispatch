@@ -1,14 +1,14 @@
 <!--
   SS-15 slice D — Tenant-admin PAT issuance UI.
 
-  INTEGRATION TODO: mount in gdx/frontend/src/router/index.js at path
+  TODO: mount in gdx/frontend/src/router/index.js at path
     /admin/api-keys once SS-15 integration lands. Gate route behind
     tenant-admin capability check.
-  INTEGRATION TODO: backend /api/admin/tenant-members endpoint (for the
+  TODO: backend /api/admin/tenant-members endpoint (for the
     target-user dropdown) is expected to return [{identity_id, email,
     display_name, role}]. If that endpoint is not yet available, the UI
     falls back to a free-form UUID input.
-  INTEGRATION TODO: capability options endpoint is the same one SettingsApiKeys
+  TODO: capability options endpoint is the same one SettingsApiKeys
     uses — /api/capabilities/available — reused here unchanged.
 -->
 <template>

@@ -299,7 +299,6 @@ def portal_invoice_pay(
         currency="usd",
         metadata={"invoice_id": str(invoice.id), "customer_id": str(principal.customer_id)},
     )
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

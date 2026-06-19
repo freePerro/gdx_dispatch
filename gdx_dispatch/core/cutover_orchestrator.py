@@ -29,7 +29,7 @@ Dry run
 and emits ``gdx_dispatch.cutover.executed.v1`` with ``dry_run=True`` in the
 payload — but does NOT execute the ALTERs or write the schedule row.
 
-INTEGRATION_TODO: at main-chain merge, the real table names will be
+TODO: at main-chain merge, the real table names will be
 rewritten to the production schema. The module is import-safe today
 because it defers ORM / DDL to call time.
 """

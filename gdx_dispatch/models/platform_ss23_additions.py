@@ -1,10 +1,10 @@
 """SS-23 event-bus model stub additions.
 
-NOTE: INTEGRATION_TODO — these definitions live on a separate
+NOTE: TODO — these definitions live on a separate
 declarative Base (``SS23Base``) and are NOT yet mounted on the primary
 platform Base in ``gdx_dispatch/models/platform.py``. The SS-23 Alembic
 migration (``TODO_ss23_event_bus_XXXX.py``) is on placeholder
-``down_revision = "INTEGRATION_TODO"``. When SS-24 integration lands,
+``down_revision = "TODO"``. When SS-24 integration lands,
 merge these tables onto the canonical Base and wire the migration into
 the main chain.
 

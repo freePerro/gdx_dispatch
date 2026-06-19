@@ -20,7 +20,7 @@ Modules:
                             auto-merges on email collision; emits an
                             event and surfaces 409 to the caller.
 
-INTEGRATION_TODO (do NOT do in this sprint):
+TODO (do NOT do in this sprint):
   * Wire ``gdx_dispatch.routers.federation`` into ``gdx_dispatch.main``.
   * Teach ``gdx_dispatch.core.auth.get_current_user`` to accept a session cookie
     / bearer minted by a federation callback.

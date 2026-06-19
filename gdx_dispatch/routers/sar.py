@@ -36,7 +36,7 @@ Events
 Event emission is best-effort: the request row is persisted first; if
 the event-outbox insert fails, the router still returns 202.
 
-INTEGRATION_TODO: not mounted in ``gdx_dispatch/main.py`` yet. INTEGRATION_TODO:
+TODO: not mounted in ``gdx_dispatch/app.py`` yet. TODO:
 signed URL minting currently uses an HMAC token bound to the SAR id +
 issued_at. When the platform's canonical signer lands (see
 ``gdx_dispatch/core/stripe_connect.py`` pattern), replace :func:`_mint_token`.

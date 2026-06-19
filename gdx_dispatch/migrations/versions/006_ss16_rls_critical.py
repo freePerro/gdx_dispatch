@@ -17,7 +17,7 @@ by :class:`gdx_dispatch.core.middleware.tenant_role_middleware.TenantRoleMiddlew
 No-op on non-Postgres dialects (sqlite in tests) — RLS is a PG feature.
 
 Revision ID: ss16_rls_critical
-Down revision: INTEGRATION_TODO — supervisor chains this onto the main
+Down revision: TODO — supervisor chains this onto the main
     migration graph at end-of-sprint integration. Do NOT set to a real
     revision here; the orchestrator rewrites this placeholder when it
     lifts the file into the active chain.

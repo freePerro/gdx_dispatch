@@ -16,7 +16,7 @@ The router reads the SPIFFE trust-bundle cache and workload capability
 map from :data:`request.state` — callers wire both at app-start. This
 keeps the router import-safe for tests that inject fake state.
 
-INTEGRATION_TODO: router is not mounted in ``gdx_dispatch/main.py``. Mount it
+TODO: router is not mounted in ``gdx_dispatch/main.py``. Mount it
 behind the existing super-admin dependency at main-chain merge.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _require_super_admin(principal: Principal) -> str:
     (``"super_admin"``) role spellings, plus the caps-derived
     ``is_super_admin`` flag (principal holds ``("*", "*")``).
 
-    INTEGRATION_TODO: replace with ``require_role("super-admin")``
+    TODO: replace with ``require_role("super-admin")``
     / ``require_capability(CAPABILITY)`` at main-chain merge.
     """
     if (

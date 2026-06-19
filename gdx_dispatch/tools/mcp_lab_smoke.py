@@ -171,7 +171,7 @@ def step_a1_authorize(s: Smoke, *, client_id: str, redirect_uri: str,
                       challenge: str, resource: str) -> str | None:
     """A1: /oauth/authorize — sandbox auto-approve via subject_id query.
 
-    The current implementation has subject_id as an INTEGRATION_TODO
+    The current implementation has subject_id as an TODO
     sandbox path. Production with a real session dependency would
     replace this with a browser-driven consent screen; this step works
     against the sandbox path that's currently deployed.

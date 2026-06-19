@@ -8,7 +8,7 @@ RFC references:
   * RFC 7662 — Token introspection
   * RFC 8252 — OAuth 2.0 for Native Apps (mandates PKCE, exact redirect match)
 
-INTEGRATION_TODO:
+TODO:
     - Wire into gdx_dispatch/main.py:  app.include_router(oauth2.router)
     - Replace in-memory token store with the SS-21 access_tokens table
       (see gdx_dispatch.models.platform_ss21_additions) once the migration is merged
@@ -34,13 +34,13 @@ Auth-boundary notes (for red-team auditors — 2026-04-19 triage):
       lookup which fails before this helper is reached for unknown clients.
     * /oauth/authorize DOES gate on authenticated user: missing `subject_id`
       raises 401 `login_required` before a code is minted (the 401 IS the
-      auth check — the INTEGRATION_TODO above describes replacing the query
+      auth check — the TODO above describes replacing the query
       param with a real session-cookie read, not adding a missing gate).
     * /oauth/token is RFC 6749-compliant in NOT requiring user-session auth:
       the authorization code is the user-bound credential (minted by the
       previously-authenticated authorize flow), and PKCE + client_id binding
       is the client-authn surface. Public (PKCE) clients intentionally have
-      no `client_secret`; confidential-client Basic auth is INTEGRATION_TODO
+      no `client_secret`; confidential-client Basic auth is TODO
       above.
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ router = APIRouter(prefix="/oauth", tags=["oauth2"])
 # ---------------------------------------------------------------------------
 def get_db() -> Session:  # pragma: no cover — replaced in wiring
     raise RuntimeError(
-        "get_db must be overridden. INTEGRATION_TODO: wire in main.py."
+        "get_db must be overridden. TODO: wire in main.py."
     )
 
 
@@ -521,7 +521,6 @@ def _exchange_auth_code(
     rec = consume_authorization_code(code)
     if rec is None:
         # Could be: unknown, expired, or REPLAY. Treat as invalid_grant per RFC.
-        # INTEGRATION_TODO: if replay detected, revoke prior tokens issued under
         # this code (look up via audit log).
         return _json_error("invalid_grant", "authorization code invalid, expired, or reused")
 

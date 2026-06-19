@@ -55,7 +55,6 @@ def client(app):
 
 # ---------------------------------------------------------------------------
 # 1. POST /api/ai/quote-generate
-#    Requested route does not exist yet.  Assert 404 and document the TODO.
 # ---------------------------------------------------------------------------
 
 def test_ai_quote_generate_exists(client):
@@ -128,7 +127,6 @@ def test_ai_quote_post_unknown_job_falls_back_to_service_call(client):
 
 # ---------------------------------------------------------------------------
 # 3. GET /api/ai/quote-history
-#    Requested route does not exist yet.  Assert 404 and document the TODO.
 # ---------------------------------------------------------------------------
 
 def test_ai_quote_history_exists(client):
@@ -142,7 +140,6 @@ def test_ai_quote_history_exists(client):
 
 # ---------------------------------------------------------------------------
 # 4. POST /api/ai/quote-feedback
-#    Requested route does not exist yet.  Assert 404 and document the TODO.
 # ---------------------------------------------------------------------------
 
 def test_ai_quote_feedback_exists(client):
@@ -180,7 +177,6 @@ def test_ai_quote_suggestion_requires_auth(client):
 
 # ---------------------------------------------------------------------------
 # 6. GET /api/catalog/items (pricing catalog for AI)
-#    Requested route does not exist yet.  Assert 404 and document the TODO.
 # ---------------------------------------------------------------------------
 
 def test_ai_quote_pricing_catalog_not_yet_implemented(client):

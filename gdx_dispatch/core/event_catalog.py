@@ -12,7 +12,7 @@ Public surface:
     - ``register_schema(event_type, schema)`` — programmatic registration
       (used by tests; normal flow is file discovery).
 
-INTEGRATION TODO:
+TODO:
     - ``gdx_dispatch/core/events.py::emit_event`` should call ``validate_event()``
       before adding the outbox row. Intentionally NOT wired here —
       SS-24 owns the emit_event wire-in so this slice stays additive.

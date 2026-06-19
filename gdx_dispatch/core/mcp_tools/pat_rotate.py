@@ -5,7 +5,7 @@ approval gate pattern: the handler returns a ``pending_approval``
 result and the actual rotation is completed only after a tenant-admin
 approves via the SS-15 admin_pats approval endpoint.
 
-INTEGRATION TODO
+TODO
 ----------------
 * wire through to ``gdx_dispatch.routers.auth.admin_pats`` approval flow + the SS-15
   ``AccessToken.status`` / ``metadata_json`` columns once the

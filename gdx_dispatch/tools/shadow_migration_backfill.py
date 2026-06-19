@@ -28,7 +28,7 @@ Usage::
 
 ``--reset`` clears the checkpoint before starting.
 
-INTEGRATION_TODO: real fetch/insert callables wire to the app's DB
+TODO: real fetch/insert callables wire to the app's DB
 session factory at main-chain merge.
 """
 from __future__ import annotations
@@ -213,7 +213,6 @@ def _main(argv: list[str] | None = None) -> int:  # pragma: no cover — CLI har
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    # INTEGRATION_TODO: wire to app's SessionLocal and real fetch/insert.
     from gdx_dispatch.core.database import SessionLocal
 
     db = SessionLocal()
@@ -224,12 +223,12 @@ def _main(argv: list[str] | None = None) -> int:  # pragma: no cover — CLI har
 
         def _fetch_unimplemented(last_pk, limit):
             raise NotImplementedError(
-                "INTEGRATION_TODO: wire real fetch_batch in main chain"
+                "TODO: wire real fetch_batch in main chain"
             )
 
         def _insert_unimplemented(new_table, row):
             raise NotImplementedError(
-                "INTEGRATION_TODO: wire real insert_row in main chain"
+                "TODO: wire real insert_row in main chain"
             )
 
         result = run_backfill(

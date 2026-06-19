@@ -625,7 +625,6 @@ async def create_customer_location(
     if not row:
         raise HTTPException(status_code=500, detail="Failed to create location")
     log.info("customer_location_created", extra={"customer_id": customer_id, "location_id": location_id})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -737,7 +736,6 @@ async def update_customer_location(
         "customer_location_updated",
         extra={"customer_id": customer_id, "location_id": location_id, "fields": list(data.keys())},
     )
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -791,7 +789,6 @@ async def delete_customer_location(
         log.exception("delete_customer_location_failed", extra={"customer_id": customer_id, "location_id": location_id})
         raise HTTPException(status_code=500, detail="A database error occurred") from None
     log.info("customer_location_deleted", extra={"customer_id": customer_id, "location_id": location_id})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

@@ -195,12 +195,12 @@ def _main(argv: list[str] | None = None) -> int:  # pragma: no cover
     try:
         def _sample_unimpl(n):
             raise NotImplementedError(
-                "INTEGRATION_TODO: wire real sample_old in main chain"
+                "TODO: wire real sample_old in main chain"
             )
 
         def _read_unimpl(nt, pk_col, pk):
             raise NotImplementedError(
-                "INTEGRATION_TODO: wire real read_new_row in main chain"
+                "TODO: wire real read_new_row in main chain"
             )
 
         result = run_verify(

@@ -13,7 +13,7 @@ Public read-only surface. Two endpoints:
 Both endpoints are unauthenticated by design — the metadata is
 public. Nothing returned here is tenant-scoped.
 
-INTEGRATION_TODO(ss25-integration):
+TODO(ss25-integration):
     gdx_dispatch/main.py must ``include_router(api_metadata.router)`` at
     integration time. Do not auto-mount from this module.
 """

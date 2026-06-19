@@ -1,10 +1,10 @@
 """SS-31 federation tables (provider + link + trust_bundle_cache).
 
 Revision ID: ss31_federation
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
   * Set ``down_revision`` to the actual live alembic head once the SS-21
     + SS-22 + SS-23 + ... chain is integrated. Proposed order once the
     upstream SS migrations are re-chained:
@@ -17,7 +17,7 @@ INTEGRATION_TODO:
     set_secret_encoder()).
   * Add FK constraints back to the live ``identities.id`` once that
     table's name is finalised post-SS-30 cutover.
-  * Remove this INTEGRATION_TODO block.
+  * Remove this TODO block.
 
 Creates:
   * ss31_federation_provider
@@ -32,7 +32,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-# Placeholder identifiers — see INTEGRATION_TODO above.
 revision = "ss31_federation"
 down_revision = "ss30_cutover"
 branch_labels = None

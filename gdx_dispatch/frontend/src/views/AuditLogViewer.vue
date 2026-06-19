@@ -1,10 +1,10 @@
 <!--
   SS-28 slice F — tenant-admin Audit Log Viewer.
 
-  INTEGRATION TODO: mount in gdx/frontend/src/router/index.js at path
+  TODO: mount in gdx/frontend/src/router/index.js at path
     /admin/audit-log once SS-28 integration lands. Gate route behind
     tenant-admin capability check (same gate as TenantAdminApiKeys).
-  INTEGRATION TODO: backend /api/admin/audit-log (see
+  TODO: backend /api/admin/audit-log (see
     gdx/routers/consumer_audit.py) is expected to return the shape
     { total, offset, limit, rows[], chain_integrity: {valid, break_at} }.
 
@@ -263,7 +263,7 @@ function prevPage() {
 
 function exportCsv() {
   // Client-side CSV of the CURRENT page. Export of the full result set
-  // is deferred to backend (INTEGRATION TODO — /api/admin/audit-log.csv).
+  // is deferred to backend (TODO — /api/admin/audit-log.csv).
   const headers = [
     "id",
     "created_at",

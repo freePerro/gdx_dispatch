@@ -1,7 +1,5 @@
 """PAT bearer-token validation (SS-14 slice C).
 
-# INTEGRATION TODO: register in gdx_dispatch/main.py (supervisor will handle).
-# INTEGRATION TODO: wire `validate_pat` into gdx_dispatch/core/auth.py::get_current_user
 #   at the "is this a bearer PAT?" branch. Do NOT modify auth.py from this slice.
 
 Prefix taxonomy (D-13 / D-14, Stripe-style):

@@ -25,7 +25,7 @@ Each check populates one :class:`PreflightCheck` with a pass/fail +
 exposes ``passed`` (True only if every check passed) plus per-check
 detail so the UI can surface exactly what blocked the cutover.
 
-INTEGRATION_TODO: drift-row severity / resolution tagging is not in
+TODO: drift-row severity / resolution tagging is not in
 SS-29's ``shadow_migration_drift`` schema — SS-30 treats EVERY drift
 row in the window as a blocker. A future slice may add a
 ``resolved_at`` column, at which point preflight will filter to

@@ -14,7 +14,7 @@ Tables declared here:
   * webhook_deliveries        — per-attempt delivery log
   * webhook_signing_keys      — dual-active signing keys (envelope-encrypted)
 
-INTEGRATION TODO (when SS-21 integrates with main platform):
+TODO (when SS-21 integrates with main platform):
   * Re-parent these onto `gdx_dispatch.models.platform.Base` (same as SS-20 plan).
   * Move the column declarations to their real home files (or add a central
     "third_party_oauth.py" model module).

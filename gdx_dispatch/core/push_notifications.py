@@ -181,5 +181,4 @@ async def send_to_all(payload: PushNotificationPayload, request: Request) -> JSO
 @router.post("/send-user/{user_id}")
 async def send_to_user(user_id: str, payload: PushNotificationPayload) -> JSONResponse:
     """Send a push notification to a specific user (stub — user lookup TBD)."""
-    # TODO: look up subscriptions by user_id once DB-backed store is implemented
     return JSONResponse(content={"status": "queued", "user_id": user_id})

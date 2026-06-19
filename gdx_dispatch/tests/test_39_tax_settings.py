@@ -10,7 +10,6 @@ Tests:
 
 NOTE: No tax routes exist in the current codebase.  All tests below verify that
 the routes return 404 (Not Found) at present and are annotated with
-# TODO: implement to track the implementation backlog.
 
 When the tax module is built:
 - Each test's assertion should be updated from ``404`` to the real expected
@@ -83,12 +82,10 @@ def db():
 def test_tax_settings_get(client: TestClient):
     """GET /api/tax/settings should return a 200 dict with tax configuration.
 
-    # TODO: implement — route /api/tax/settings does not exist yet.
     Current expectation: 404 (route not registered).
     When implemented, assert: resp.status_code == 200 and isinstance(resp.json(), dict).
     """
     resp = client.get("/api/tax/settings")
-    # TODO: implement — change to assert resp.status_code == 200 once route exists
     assert resp.status_code == 404, (
         f"Expected 404 (route not yet implemented), got {resp.status_code}"
     )
@@ -101,12 +98,10 @@ def test_tax_settings_get(client: TestClient):
 def test_tax_jurisdiction_list(client: TestClient):
     """GET /api/tax/jurisdictions should return a 200 list of tax jurisdictions.
 
-    # TODO: implement — route /api/tax/jurisdictions does not exist yet.
     Current expectation: 404 (route not registered).
     When implemented, assert: resp.status_code == 200 and isinstance(resp.json(), list).
     """
     resp = client.get("/api/tax/jurisdictions")
-    # TODO: implement — change to assert resp.status_code == 200 once route exists
     assert resp.status_code == 404, (
         f"Expected 404 (route not yet implemented), got {resp.status_code}"
     )
@@ -119,14 +114,12 @@ def test_tax_jurisdiction_list(client: TestClient):
 def test_tax_rate_lookup(client: TestClient):
     """GET /api/tax/rate?zip=90210 should return a 200 rate dict or 422 for bad input.
 
-    # TODO: implement — route /api/tax/rate does not exist yet.
     Current expectation: 404 (route not registered).
     When implemented, assert: resp.status_code in (200, 422).
     For 200: assert "rate" in resp.json() or "tax_rate" in resp.json().
     For 422: assert invalid zip code validation fires correctly.
     """
     resp = client.get("/api/tax/rate", params={"zip": "90210"})
-    # TODO: implement — change assertion once route exists
     assert resp.status_code == 404, (
         f"Expected 404 (route not yet implemented), got {resp.status_code}"
     )
@@ -139,7 +132,6 @@ def test_tax_rate_lookup(client: TestClient):
 def test_tax_exempt_customer(db):
     """PATCH /api/customers/{id}/tax-exempt should mark a customer as tax-exempt.
 
-    # TODO: implement — route /api/customers/{id}/tax-exempt does not exist yet.
     This test directly verifies the data model side: the Customer.metadata_
     JSON field can store a tax_exempt flag.  When the HTTP route is built,
     add a TestClient assertion in addition to this unit-level check.
@@ -166,7 +158,6 @@ def test_tax_exempt_customer(db):
         "Customer.metadata_ must support tax_exempt flag"
     )
 
-    # TODO: implement HTTP route — once built, add:
     # app = FastAPI(); app.include_router(customers_router)
     # with TestClient(app, raise_server_exceptions=False) as client:
     #     resp = client.patch(f"/api/customers/{c.id}/tax-exempt", json={"tax_exempt": True})
@@ -180,7 +171,6 @@ def test_tax_exempt_customer(db):
 def test_sales_tax_report(client: TestClient):
     """GET /api/reports/sales-tax?period=2026-03 should return a 200 dict with tax totals.
 
-    # TODO: implement — route /api/reports/sales-tax does not exist yet.
     Current expectation: 404 (route not registered).
     When implemented, assert:
     - resp.status_code == 200
@@ -188,7 +178,6 @@ def test_sales_tax_report(client: TestClient):
     - "period" in resp.json() or "total_tax" in resp.json()
     """
     resp = client.get("/api/reports/sales-tax", params={"period": "2026-03"})
-    # TODO: implement — change to assert resp.status_code == 200 once route exists
     assert resp.status_code == 404, (
         f"Expected 404 (route not yet implemented), got {resp.status_code}"
     )

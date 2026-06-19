@@ -13,7 +13,7 @@ directive. This module is the new outbound surface that supports:
     error_type and message (v3 patch P34 — never silent None-return on a
     non-HTTP exception)
 
-INTEGRATION_TODO:
+TODO:
     - Persist delivery attempts + circuit-breaker state to the SS-21
       webhook_deliveries table once the migration is merged.
     - Hook up to a Celery beat schedule for retry dispatch.

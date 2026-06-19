@@ -18,7 +18,7 @@ Period windowing:
     - ``day``:   floor(emitted_at, day UTC)    … exclusive upper bound +1d
     - ``month``: floor(emitted_at, month UTC)  … exclusive upper bound +1mo
 
-INTEGRATION TODO:
+TODO:
     - The aggregator writes to the ``metering_usage`` + ``metering_checkpoint``
       tables defined in ``gdx_dispatch.models.platform_ss24_additions``; those live
       on a separate Base until SS-24 integration wires them onto the primary

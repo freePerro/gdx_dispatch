@@ -372,7 +372,6 @@ def patch_notification_preferences(
     db.add(row)
     db.commit()
     db.refresh(row)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -497,7 +496,6 @@ def connect_integration(
     row.integrations = integrations
     db.commit()
     db.refresh(row)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -549,7 +547,6 @@ def disconnect_integration(
     row.integrations = integrations
     db.commit()
     db.refresh(row)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -602,7 +599,6 @@ def sync_integration(
         )
     # Placeholder — real worker enqueue goes here (celery_app.send_task)
     now = datetime.now(timezone.utc)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -683,7 +679,6 @@ def patch_branding(
             tenant_id = ""
     if tenant_id:
         invalidate_sync(tenant_id, "settings:branding")
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

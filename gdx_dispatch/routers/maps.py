@@ -77,7 +77,6 @@ def geocode_address(payload: GeocodeIn) -> dict[str, Any]:
     gmaps = get_google_maps_client()
     result = _first_geocode_result_or_404(gmaps.geocode(payload.address))
     location = result.get("geometry", {}).get("location", {})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -111,7 +110,6 @@ def geocode_address(payload: GeocodeIn) -> dict[str, Any]:
 def reverse_geocode(payload: ReverseGeocodeIn) -> dict[str, Any]:
     gmaps = get_google_maps_client()
     result = _first_geocode_result_or_404(gmaps.reverse_geocode((payload.lat, payload.lng)))
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -160,7 +158,6 @@ def optimize_route(payload: OptimizeRouteIn) -> dict[str, Any]:
     total_duration = sum(int(leg.get("duration", {}).get("value", 0)) for leg in legs)
     total_distance = sum(int(leg.get("distance", {}).get("value", 0)) for leg in legs)
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -200,7 +197,6 @@ def drive_time(payload: DriveTimeIn) -> dict[str, Any]:
 
     distance = element.get("distance", {})
     duration = element.get("duration", {})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -279,7 +275,6 @@ def check_service_area(payload: ServiceAreaCheckIn, request: Request) -> dict[st
 
     polygon_coords = _resolve_polygon(payload, request)
     log.info("service_area_checked", extra={"path": "/api/maps/check-service-area"})
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

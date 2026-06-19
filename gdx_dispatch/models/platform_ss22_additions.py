@@ -20,10 +20,10 @@ Rationale:
 If a future sub-slice decides to denormalise ``external_id`` onto
 ``Identity`` (e.g. for filter-by-externalId performance), declare the
 ``sa.Column`` here and add a migration named ``TODO_ss22_scim_XXXX.py``
-with ``down_revision = "INTEGRATION_TODO"`` — the integration merge will
+with ``down_revision = "TODO"`` — the integration merge will
 re-chain it to the live revision.
 
-INTEGRATION TODO:
+TODO:
   * If added, merge the column list below into the ``Identity`` class in
     ``gdx_dispatch/models/platform.py`` via a single conscious edit.
   * Do NOT import this module from ``platform.py`` — that would couple

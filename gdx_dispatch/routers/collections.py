@@ -107,7 +107,6 @@ def create_reminder(
     db.add(r)
     db.commit()
     db.refresh(r)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -201,7 +200,6 @@ def delete_reminder(reminder_id: UUID, _: dict = Depends(get_current_user), db: 
         raise HTTPException(status_code=404, detail="Reminder not found")
     db.delete(r)
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

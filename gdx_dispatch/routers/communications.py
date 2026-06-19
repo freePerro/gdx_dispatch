@@ -198,7 +198,6 @@ async def send_sms(
             )
         )
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -264,7 +263,6 @@ async def sms_webhook(request: Request, _sig: None = Depends(verify_twilio_signa
             )
         )
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -393,7 +391,6 @@ async def send_email(
             )
         )
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -651,7 +648,6 @@ async def send_communication(
                     status=status,
                 )
             )
-        # TODO(audit): verify action/entity_type/entity_id/details for this handler
         _audit_db = locals().get('db')
         if _audit_db is not None:
             try:
@@ -769,7 +765,6 @@ def add_to_dnc(payload: DNCRequest) -> dict[str, Any]:
     """Add a customer to the do-not-contact list."""
     key = f"{payload.customer_id}:{payload.channel}"
     _dnc_list.add(key)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -800,7 +795,6 @@ def remove_from_dnc(customer_id: str, channel: str = "all") -> dict[str, Any]:
     """Remove a customer from the do-not-contact list."""
     key = f"{customer_id}:{channel}"
     _dnc_list.discard(key)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

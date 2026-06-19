@@ -1,7 +1,7 @@
 """
 gdx_dispatch/models/platform_ss20_additions.py — SS-20 developer portal model stubs.
 
-NOTE: INTEGRATION_TODO — these definitions live in their own declarative
+NOTE: TODO — these definitions live in their own declarative
 Base (`DevPortalBase`) and are *not yet* mounted on the main platform
 Base. When SS-20 integrates with SS-13's dev portal foundation, merge or
 re-parent these onto the canonical Base in `gdx_dispatch/models/platform.py`.

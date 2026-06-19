@@ -30,7 +30,6 @@ def test_migration_revision_metadata() -> None:
     assert mod.revision == "ss16_rls_critical"
     # Chained onto the main migration graph in Sprint 0.9-b
     # (2026-04-20). Prior to 0.9-b the down_revision was
-    # "INTEGRATION_TODO"; 0.9-b sequenced this under SS-15.
     assert mod.down_revision == "ss15_admin_pats"
 
 

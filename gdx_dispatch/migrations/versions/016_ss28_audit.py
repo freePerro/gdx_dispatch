@@ -1,6 +1,6 @@
 """SS-28 — platform_consumer_audit + audit_retention_policy.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss27_cross_tenant_sharing"``.
+TODO: chained on placeholder ``down_revision = "ss27_cross_tenant_sharing"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -13,7 +13,7 @@ audit_event / audit_logs table — those belong to separate surfaces and
 SS-28 is explicitly additive per the sprint plan "DO NOT TOUCH" list.
 
 Revision ID: ss28_audit
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 

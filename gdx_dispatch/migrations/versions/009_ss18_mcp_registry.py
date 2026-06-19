@@ -1,17 +1,17 @@
 """SS-18 MCP tool registry tables.
 
 Revision ID: ss18_mcp_registry
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
     - set `down_revision` to the actual latest revision in the main
       chain at integration time (at time of writing the head is
       `068_server_defaults_mobile_fixtures`).
     - rename this file to the next sequential number (e.g.
       `069_ss18_mcp_registry.py`) when it is merged into the main
       alembic chain.
-    - remove the `INTEGRATION_TODO` placeholder.
+    - remove the `TODO` placeholder.
 
 Creates:
     * ``mcp_tool_registration`` — persistent tool catalog

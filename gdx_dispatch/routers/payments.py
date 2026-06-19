@@ -119,7 +119,6 @@ def payment_intent(
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating PaymentIntent for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -159,7 +158,6 @@ def setup_intent(
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating SetupIntent for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -263,7 +261,6 @@ def charge_method(
             exc,
         )
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -311,7 +308,6 @@ def ach_setup(
     except stripe.error.StripeError as exc:
         logger.error("Stripe error setting up ACH for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -361,7 +357,6 @@ def remove_payment_method(
         )
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
     logger.info("Detached PaymentMethod %s from customer %s", method_id, stripe_cid)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

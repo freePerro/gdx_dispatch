@@ -16,14 +16,14 @@ A drill is **scheduled**, not ad-hoc: every drill carries a
 orchestrator with the same id returns the prior report rather than
 running the pipeline again.
 
-INTEGRATION_TODO
+TODO
 ----------------
 
 - Router not mounted in ``gdx_dispatch/main.py`` yet.
 - ``platform_ss34_additions`` model stub lives on ``SS34Base`` —
   not mounted on the primary platform ``Base``.
 - Alembic migration ``TODO_ss34_dr_XXXX.py`` sits on placeholder
-  ``down_revision = "INTEGRATION_TODO"``.
+  ``down_revision = "TODO"``.
 - Event schemas ``gdx.dr.*.v1`` live under ``core/event_schemas/``
   but are not registered in an event-schema index yet (SS-23).
 

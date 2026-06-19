@@ -1,7 +1,7 @@
 """Support endpoints for the PAT-management UI (SS-14/SS-15 completion).
 
 The Vue views ``SettingsApiKeys.vue`` and ``TenantAdminApiKeys.vue`` were
-shipped ahead of these two backend endpoints (INTEGRATION TODO markers in
+shipped ahead of these two backend endpoints (TODO markers in
 both files). This module fills the gap so the UI stops 404ing in
 production:
 

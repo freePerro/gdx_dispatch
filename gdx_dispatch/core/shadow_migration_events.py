@@ -5,7 +5,7 @@ append them via :func:`gdx_dispatch.core.events.emit_event`. Each helper is a
 pure function: it constructs the payload dict, validates the required
 keys are present (fail-loud), and delegates the write.
 
-INTEGRATION_TODO: at main-chain integration, these helpers will be wired
+TODO: at main-chain integration, these helpers will be wired
 into the admin router (slice F) and the ShadowWriter drift path (slice B).
 The payload shapes match the schemas at
 ``gdx_dispatch/core/event_schemas/gdx.shadow.*.v1.json``.

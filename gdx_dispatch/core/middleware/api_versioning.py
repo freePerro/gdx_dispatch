@@ -16,7 +16,7 @@ Responsibilities:
 
 Integration wiring is deliberately left out — ``gdx_dispatch/main.py`` must
 ``add_middleware(APIVersioningMiddleware)`` at integration time. See
-the INTEGRATION_TODO at the bottom of this module.
+the TODO at the bottom of this module.
 """
 from __future__ import annotations
 
@@ -130,7 +130,6 @@ class APIVersioningMiddleware(BaseHTTPMiddleware):
         _ = resolved
 
 
-# INTEGRATION_TODO(ss25-integration):
 #   gdx_dispatch/main.py must add this middleware AFTER auth but BEFORE the
 #   tracing middleware so `request.state.api_version` is populated when
 #   handlers run:

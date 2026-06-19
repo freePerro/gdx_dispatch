@@ -111,7 +111,7 @@ def test_shape2_catches_empty_dialect_branch():
             if dialect == "sqlite":
                 db.execute("CREATE TRIGGER ...")
             elif dialect == "postgresql":
-                pass  # TODO: implement
+                pass
     """)
     assert len(findings) == 1
     assert findings[0].shape == 2

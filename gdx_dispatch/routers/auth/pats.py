@@ -1,9 +1,7 @@
 """Personal Access Token management endpoints (SS-14 slice D).
 
-# INTEGRATION TODO: register in gdx_dispatch/main.py (supervisor will handle).
 #   from gdx_dispatch.routers import pats as pats_router
 #   app.include_router(pats_router.router)
-# INTEGRATION TODO: replace `get_current_principal` stub below with the
 #   real project-wide dependency once auth.py is wired (SS-14 integration).
 #   Tests use `app.dependency_overrides[get_current_principal] = ...`.
 

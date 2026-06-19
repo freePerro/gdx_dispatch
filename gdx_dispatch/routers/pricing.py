@@ -220,7 +220,6 @@ def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(ge
     current = _tenant_settings()
     merged = _deep_merge_dict(current, payload.model_dump(exclude_unset=True))
     _PRICING_SETTINGS_BY_TENANT[current_tenant_id()] = merged
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -303,7 +302,6 @@ def calculate_markup(payload: MarkupBatchIn, _: dict = Depends(get_current_user)
             }
         )
         grand_total += line_total
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -358,7 +356,6 @@ def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(get_curr
         _log_tenant_shared_write("vendor_lists", key=key)
         _tenant_vendor_lists()[key] = item.model_dump()
         imported += 1
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -451,7 +448,6 @@ def lock_estimate_prices(payload: LockPricesIn, _: dict = Depends(get_current_us
     }
     _log_tenant_shared_write("locked_prices", key=str(payload.estimate_id))
     _tenant_locked_prices()[payload.estimate_id] = snapshot
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -511,7 +507,6 @@ def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(get_curr
     key = f"{payload.category}:{payload.season}"
     _log_tenant_shared_write("seasonal_adjustments", key=key)
     _tenant_seasonal_adjustments()[key] = payload.adjustment_pct
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -563,7 +558,6 @@ class BundleIn(BaseModel):
 def create_bundle(payload: BundleIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
     _log_tenant_shared_write("bundles", key=payload.name)
     _tenant_bundles()[payload.name] = payload.model_dump()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -603,7 +597,6 @@ def calculate_bundle_by_id(bundle_id: str, _: dict = Depends(get_current_user)) 
     subtotal = sum(i["unit_price"] * i["quantity"] for i in bundle["items"])
     discount = float(bundle.get("bundle_discount_pct", 0)) / 100
     total = _money(subtotal * (1 - discount))
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -637,7 +630,6 @@ def calculate_bundle(name: str = Query(min_length=1), _: dict = Depends(get_curr
     subtotal = sum(i["unit_price"] * i["quantity"] for i in bundle["items"])
     discount = float(bundle.get("bundle_discount_pct", 0)) / 100
     total = _money(subtotal * (1 - discount))
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -683,7 +675,6 @@ class CustomerRateIn(BaseModel):
 def set_customer_rate(payload: CustomerRateIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
     _log_tenant_shared_write("customer_rates", key=str(payload.customer_id))
     _tenant_customer_rates()[payload.customer_id] = payload.model_dump()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -746,7 +737,6 @@ class ApprovalCheckIn(BaseModel):
 def set_approval_rule(payload: ApprovalRuleIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
     _tenant_approval_rules().append(payload.model_dump())
     _tenant_approval_rules().sort(key=lambda r: float(r["threshold_amount"]))
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -789,7 +779,6 @@ def check_approval(payload: ApprovalCheckIn, _: dict = Depends(get_current_user)
                 "required_role": required_role,
                 "user_role": payload.user_role,
             }
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

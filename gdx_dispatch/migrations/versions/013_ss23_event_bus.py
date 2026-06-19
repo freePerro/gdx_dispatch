@@ -1,16 +1,16 @@
 """SS-23 event bus tables.
 
 Revision ID: ss23_event_bus
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
     - set ``down_revision`` to the actual latest revision in the main
       chain (at time of writing: "068") once SS-24 integration lands
       and SS23Base is merged onto the primary platform Base.
     - rename this file to the next sequential number (e.g.
       ``069_ss23_event_bus.py``) at that time.
-    - remove the ``INTEGRATION_TODO`` placeholder and mount the router
+    - remove the ``TODO`` placeholder and mount the router
       in ``gdx_dispatch/main.py``.
 
 Creates:
@@ -27,7 +27,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-# NOTE: placeholder identifiers — see INTEGRATION_TODO above
 revision = "ss23_event_bus"
 down_revision = "ss21_oauth_webhooks"
 branch_labels = None

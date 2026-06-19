@@ -1,6 +1,6 @@
 """SS-30 — cutover_schedule + deprecated_table_record.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss29_shadow_migration"``.
+TODO: chained on placeholder ``down_revision = "ss29_shadow_migration"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -17,7 +17,7 @@ Column definitions mirror ``gdx_dispatch/models/platform_ss30_additions.py``
 never touch data-plane rows.
 
 Revision ID: ss30_cutover
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 

@@ -183,7 +183,6 @@ def create_change_order(
             ))
     db.commit()
     db.refresh(co)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -266,7 +265,6 @@ def update_change_order(
         co.status = payload.status
     db.commit()
     db.refresh(co)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -306,7 +304,6 @@ def approve_change_order(
     co.approved_at = utcnow()
     db.commit()
     db.refresh(co)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -340,7 +337,6 @@ def decline_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: S
     co.status = "declined"
     db.commit()
     db.refresh(co)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -373,7 +369,6 @@ def delete_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Se
         raise HTTPException(status_code=404, detail="Change order not found")
     co.deleted_at = utcnow()
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

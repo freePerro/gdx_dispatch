@@ -1,17 +1,17 @@
 """SS-21 third-party OAuth + webhooks tables.
 
 Revision ID: ss21_oauth_webhooks
-Revises: INTEGRATION_TODO
+Revises: TODO
 Create Date: 2026-04-19
 
-INTEGRATION_TODO:
+TODO:
     - set ``down_revision`` to the actual latest revision in the main chain
       once the SS-20 migration (TODO_ss20_dev_portal_XXXX.py) is re-chained,
       then chain this one after that. Proposed order once integrated:
           068 → ss20_dev_portal → ss21_oauth_webhooks
     - rename this file to the next sequential number (e.g.
       ``070_ss21_oauth_webhooks.py``) at that time.
-    - remove this INTEGRATION_TODO block.
+    - remove this TODO block.
 
 Creates:
     - ss21_authorization_codes
@@ -29,7 +29,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-# NOTE: placeholder identifiers — see INTEGRATION_TODO above.
 revision = "ss21_oauth_webhooks"
 down_revision = "ss20_dev_portal"
 branch_labels = None

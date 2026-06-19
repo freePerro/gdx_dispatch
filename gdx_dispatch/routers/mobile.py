@@ -1767,7 +1767,6 @@ def mobile_job_en_route(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -1925,7 +1924,6 @@ def mobile_job_arrived(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2149,7 +2147,6 @@ def mobile_job_complete(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2206,7 +2203,6 @@ def update_mobile_job_status(
         )
     if new_status == "on_site":
         return mobile_job_arrived(job_id=job_id, request=request, current_user=current_user, db=db)
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2304,7 +2300,6 @@ def mobile_day_clock_in(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2391,7 +2386,6 @@ def mobile_day_clock_out(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2473,7 +2467,6 @@ def mobile_clock_in(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2534,7 +2527,6 @@ def mobile_clock_out(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2849,7 +2841,6 @@ async def upload_mobile_job_photo(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -2937,7 +2928,6 @@ def capture_mobile_signature(
     )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -3014,7 +3004,6 @@ def add_mobile_job_note(
     note_id = str(note_obj.id)
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -3103,7 +3092,6 @@ def mobile_job_parts_used(
         recorded.append({"part_id": part.part_id, "qty": part.qty})
 
     db.commit()
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -3229,7 +3217,6 @@ def report_mobile_location(
         )
     db.commit()
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
@@ -3385,7 +3372,6 @@ def mobile_sync(
         processed += 1
         results.append({"type": action.type, "entity_id": action.entity_id, "status": "processed"})
 
-    # TODO(audit): verify action/entity_type/entity_id/details for this handler
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:

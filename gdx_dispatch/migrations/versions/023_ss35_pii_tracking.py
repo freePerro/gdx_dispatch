@@ -1,6 +1,6 @@
 """SS-35 — sar_request + erasure_request + pii_event_log.
 
-INTEGRATION_TODO: chained on placeholder ``down_revision = "ss34_dr_drill"``.
+TODO: chained on placeholder ``down_revision = "ss34_dr_drill"``.
 The supervisor will retarget this to the tip of the main chain at
 end-of-sprint. Revision id uses the sprint slug so grep-find works.
 
@@ -14,7 +14,7 @@ existing data-plane table. Registrations against those tables happen
 at Python-import time via :mod:`gdx_dispatch.core.pii_fields`.
 
 Revision ID: ss35_pii_tracking
-Down revision: INTEGRATION_TODO
+Down revision: TODO
 """
 from __future__ import annotations
 
