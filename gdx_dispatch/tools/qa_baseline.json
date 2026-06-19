@@ -1,0 +1,428 @@
+{
+  "updated": "2026-04-08",
+  "api_endpoints": {
+    "/api/customers": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/estimates": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/invoices": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/jobs": {
+      "status": 200,
+      "last_checked": "2026-04-08",
+      "note": "fixed holding_area_id column"
+    },
+    "/api/leads": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/payments": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/technicians": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/users": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/timeclock/entries": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/fleet/vehicles": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/equipment": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/inventory/parts": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/proposals": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/campaigns": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/documents": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/tags": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/vendors": {
+      "status": 200,
+      "last_checked": "2026-04-08",
+      "note": "fixed missing company_module_grant"
+    },
+    "/api/purchase-orders": {
+      "status": 200,
+      "last_checked": "2026-04-08",
+      "note": "fixed missing company_module_grant"
+    },
+    "/api/scheduling": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/sticky-notes": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/communications/threads": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/reviews": {
+      "status": 200,
+      "last_checked": "2026-04-08",
+      "note": "fixed missing company_module_grant"
+    },
+    "/api/photos/recent": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/commissions/summary": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/payroll/pay-periods": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/settings/branding": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/maintenance/plans": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/service-agreements": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/change-orders": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    },
+    "/api/collections": {
+      "status": 200,
+      "last_checked": "2026-04-08"
+    }
+  },
+  "pages_verified": {
+    "/login": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/dashboard": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/jobs": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/customers": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/estimates": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/billing": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/dispatch": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/reports": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/settings": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/timeclock": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/users": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/vendors": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/signup": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/forgot-password": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/leads": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/payments": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/fleet": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/technicians": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/communications": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/activity": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/tags": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/gdpr": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/documents": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/catalog": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/purchase-orders": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/inventory": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/equipment": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/maintenance": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/appointments": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/scheduling": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/planner": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/proposals": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/warranties": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/campaigns": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/reviews": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/marketing": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/loyalty": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/automations": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/segments": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/portal": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/quickbooks": {
+      "js_errors": 1,
+      "last_checked": "2026-04-08",
+      "errors": [
+        "Navigation failed: Page.goto: Timeout 15000ms exceeded.\nCall log:\n  - navigating to \"https://gdx.example.com/quickbooks\", waiting until \"networkidle\"\n"
+      ]
+    },
+    "/exports": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/payroll": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/job-costing": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/commissions": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/collections": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/admin-settings": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/admin-ops": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/notes": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/photos": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/mobile-schedule": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/booking": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/voice": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/messages": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/maps": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/gps": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/service-agreements": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/change-orders": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    },
+    "/pricing": {
+      "js_errors": 0,
+      "last_checked": "2026-04-08"
+    }
+  },
+  "login": {
+    "method": "form",
+    "email": "qa-crawler@example.com",
+    "tenant_resolution": "subdomain gdx \u2192 backend alias \u2192 demo-garage-co",
+    "last_verified": "2026-04-08"
+  },
+  "cache_headers": {
+    "html": "no-cache, no-store, must-revalidate",
+    "assets": "public, max-age=31536000, immutable",
+    "last_verified": "2026-04-08"
+  },
+  "infrastructure": {
+    "stripe": {
+      "check": "curl -s https://api.stripe.com/v1/balance -u $STRIPE_SECRET_KEY:",
+      "expect": "available",
+      "status": "valid",
+      "last_checked": "2026-04-08"
+    },
+    "sentry": {
+      "check": "grep SENTRY_DSN gdx/.env",
+      "expect": "DSN set",
+      "status": "configured",
+      "last_checked": "2026-04-01",
+      "note": "TODO: validate events are flowing, not just key exists"
+    },
+    "google_maps": {
+      "check": "grep GOOGLE_MAPS_API_KEY gdx/.env",
+      "expect": "key set",
+      "status": "NOT CONFIGURED",
+      "last_checked": "2026-04-08"
+    },
+    "containers": {
+      "check": "docker ps --format '{{.Names}}' | sort",
+      "expect": [
+        "docker-app-1",
+        "gdx-nginx",
+        "gdx-postgres",
+        "docker-control-db-1",
+        "docker-tenant-db-1",
+        "docker-redis-1"
+      ],
+      "status": "all healthy",
+      "last_checked": "2026-04-08"
+    },
+    "ssl": {
+      "check": "curl -sv https://gdx.example.com 2>&1 | grep 'expire date'",
+      "expect": "not expired",
+      "status": "valid",
+      "last_checked": "2026-04-08",
+      "note": "expires 2026-07-01 per master plan"
+    },
+    "test_gate": {
+      "check": "cat .test_baseline && cat .test_failure_baseline",
+      "expect": "pass baseline >= 1449, fail ceiling <= 31",
+      "status": "enforced",
+      "last_checked": "2026-04-08"
+    }
+  }
+}

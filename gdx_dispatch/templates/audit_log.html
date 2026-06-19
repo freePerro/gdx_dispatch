@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audit Log — GDX Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #1a1a2e; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    .badge { display: inline-block; padding: .2rem .6rem; border-radius: 999px; font-size: .75rem; font-weight: 700; }
+    .badge-ok { background: #d1fae5; color: #065f46; }
+    .badge-warn { background: #fef3c7; color: #92400e; }
+    .badge-err { background: #fee2e2; color: #991b1b; }
+    main { max-width: 1400px; margin: 0 auto; padding: 1.5rem 1rem; }
+
+    /* Compliance summary cards */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .card .label { font-size: .75rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25rem; }
+    .card .value { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; }
+    .card .sub { font-size: .75rem; color: #6b7280; margin-top: .15rem; }
+
+    /* Filter bar */
+    .filter-bar { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 1.25rem; }
+    .filter-bar form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: flex-end; }
+    .filter-group { display: flex; flex-direction: column; gap: .25rem; }
+    .filter-group label { font-size: .75rem; color: #6b7280; font-weight: 500; }
+    .filter-group input, .filter-group select { border: 1px solid #d1d5db; border-radius: 4px; padding: .35rem .6rem; font-size: .875rem; min-width: 140px; }
+    .btn { padding: .4rem 1rem; border-radius: 4px; border: none; cursor: pointer; font-size: .875rem; font-weight: 600; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-secondary { background: #6b7280; color: #fff; }
+    .btn-export { background: #059669; color: #fff; }
+
+    /* Table */
+    .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow-x: auto; }
+    .integrity-bar { padding: .6rem 1.25rem; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: .5rem; font-size: .875rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    thead { background: #f9fafb; }
+    th { padding: .6rem 1rem; text-align: left; font-size: .75rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+    td { padding: .6rem 1rem; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+    .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: .75rem; }
+    .event-type { font-weight: 600; }
+    .payload-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: .75rem; color: #6b7280; }
+
+    /* Pagination */
+    .pagination { display: flex; align-items: center; gap: .5rem; justify-content: flex-end; padding: .75rem 1.25rem; font-size: .875rem; }
+    .pagination a { padding: .3rem .7rem; border: 1px solid #d1d5db; border-radius: 4px; color: #374151; text-decoration: none; }
+    .pagination a.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .pagination span { color: #6b7280; }
+
+    #status-msg { font-size: .8rem; color: #6b7280; padding: .25rem 0; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 4H7a2 2 0 01-2-2V6a2 2 0 012-2h5l2 2h3a2 2 0 012 2v12a2 2 0 01-2 2z"/>
+  </svg>
+  <h1>Audit Log &amp; Compliance Dashboard</h1>
+  <span id="integrity-badge" class="badge">Loading...</span>
+</header>
+
+<main>
+  <!-- Compliance Summary Cards -->
+  <div class="cards" id="compliance-cards">
+    <div class="card"><div class="label">MFA Adoption</div><div class="value" id="c-mfa">—</div></div>
+    <div class="card"><div class="label">Audit Integrity</div><div class="value" id="c-integrity">—</div></div>
+    <div class="card"><div class="label">Last Backup</div><div class="value" id="c-backup">—</div><div class="sub" id="c-backup-sub"></div></div>
+    <div class="card"><div class="label">Active Sessions</div><div class="value" id="c-sessions">—</div></div>
+    <div class="card"><div class="label">Failed Logins (24h)</div><div class="value" id="c-failed">—</div></div>
+    <div class="card"><div class="label">KB Updates (30d)</div><div class="value" id="c-kb">—</div></div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <form id="filter-form">
+      <div class="filter-group">
+        <label for="f-tenant">Tenant ID</label>
+        <input id="f-tenant" name="tenant_id" type="text" placeholder="tenant-…" />
+      </div>
+      <div class="filter-group">
+        <label for="f-event">Event Type</label>
+        <input id="f-event" name="event_type" type="text" placeholder="e.g. login_failed" />
+      </div>
+      <div class="filter-group">
+        <label for="f-user">User ID</label>
+        <input id="f-user" name="user_id" type="text" placeholder="user-…" />
+      </div>
+      <div class="filter-group">
+        <label for="f-start">Start Date</label>
+        <input id="f-start" name="start" type="date" />
+      </div>
+      <div class="filter-group">
+        <label for="f-end">End Date</label>
+        <input id="f-end" name="end" type="date" />
+      </div>
+      <div class="filter-group">
+        <label for="f-limit">Limit</label>
+        <select id="f-limit" name="limit">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="250">250</option>
+          <option value="500">500</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">Search</button>
+      <button type="button" class="btn btn-secondary" onclick="resetFilters()">Reset</button>
+      <button type="button" class="btn btn-export" onclick="exportCSV()">Export for Audit (CSV)</button>
+    </form>
+    <div id="status-msg"></div>
+  </div>
+
+  <!-- Results Table -->
+  <div class="table-wrap">
+    <div class="integrity-bar">
+      <span>Chain integrity:</span>
+      <span id="chain-status" class="badge badge-warn">Unknown</span>
+      <button class="btn btn-secondary" style="font-size:.75rem;padding:.2rem .6rem;margin-left:auto" onclick="runIntegrityCheck()">Re-check</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Tenant / Entity ID</th>
+          <th>User</th>
+          <th>Event Type</th>
+          <th>Entity Type</th>
+          <th>IP</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody id="log-tbody">
+        <tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:2rem">Loading…</td></tr>
+      </tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+  </div>
+</main>
+
+<script>
+  const API_BASE = "/api/admin";
+  let _token = "";
+  let _currentPage = 1;
+  let _totalPages = 1;
+
+  // Prompt for admin token once
+  function getToken() {
+    if (!_token) {
+      _token = prompt("Enter Admin API Token:") || "";
+    }
+    return _token;
+  }
+
+  function authHeaders() {
+    return { "Authorization": "Bearer " + getToken(), "Content-Type": "application/json" };
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // Load compliance summary
+  async function loadComplianceSummary() {
+    try {
+      const r = await fetch(API_BASE + "/compliance-summary", { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      document.getElementById("c-mfa").textContent = d.mfa_adoption_pct.toFixed(1) + "%";
+      document.getElementById("c-integrity").innerHTML = d.audit_log_integrity
+        ? '<span class="badge badge-ok">OK</span>'
+        : '<span class="badge badge-err">BROKEN</span>';
+      if (d.last_backup_age_hours < 0) {
+        document.getElementById("c-backup").textContent = "Unknown";
+      } else {
+        document.getElementById("c-backup").textContent = d.last_backup_age_hours.toFixed(1) + "h";
+        document.getElementById("c-backup-sub").textContent = "since last backup";
+      }
+      document.getElementById("c-sessions").textContent = d.active_session_count;
+      document.getElementById("c-failed").textContent = d.failed_login_24h;
+      document.getElementById("c-kb").textContent = d.tenants_with_kb_updates;
+
+      const badge = document.getElementById("integrity-badge");
+      if (d.audit_log_integrity) {
+        badge.textContent = "Chain intact";
+        badge.className = "badge badge-ok";
+      } else {
+        badge.textContent = "Chain issue";
+        badge.className = "badge badge-err";
+      }
+    } catch (e) {
+      console.error("compliance-summary error", e);
+    }
+  }
+
+  // Build query string from filter form
+  function buildQuery(page) {
+    const f = document.getElementById("filter-form");
+    const p = new URLSearchParams();
+    ["tenant_id","event_type","user_id","start","end","limit"].forEach(name => {
+      const el = f.elements[name];
+      if (el && el.value) p.set(name, el.value);
+    });
+    p.set("page", page || 1);
+    return p.toString();
+  }
+
+  // Load audit log
+  async function loadLogs(page) {
+    page = page || 1;
+    _currentPage = page;
+    document.getElementById("status-msg").textContent = "Loading…";
+    const tbody = document.getElementById("log-tbody");
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:2rem">Loading…</td></tr>';
+    try {
+      const qs = buildQuery(page);
+      const r = await fetch(API_BASE + "/audit-logs?" + qs, { headers: authHeaders() });
+      const d = await r.json();
+      if (!r.ok) {
+        tbody.innerHTML = `<tr><td colspan="7" style="color:#ef4444;padding:1rem">${escapeHtml(d.detail || d.error || "Error")}</td></tr>`;
+        document.getElementById("status-msg").textContent = "";
+        return;
+      }
+      _totalPages = d.pages || 1;
+      document.getElementById("status-msg").textContent = `${d.total} total events`;
+
+      if (!d.events || d.events.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:2rem">No events found.</td></tr>';
+      } else {
+        tbody.innerHTML = d.events.map(ev => `
+          <tr>
+            <td class="mono">${escapeHtml(ev.created_at)}</td>
+            <td class="mono" style="font-size:.7rem">${escapeHtml(ev.entity_id)}</td>
+            <td>${escapeHtml(ev.actor_id)}${ev.actor_role ? ' <span style="color:#9ca3af;font-size:.7rem">('+escapeHtml(ev.actor_role)+')</span>' : ""}</td>
+            <td><span class="event-type">${escapeHtml(ev.event_type)}</span></td>
+            <td>${escapeHtml(ev.entity_type)}</td>
+            <td class="mono" style="font-size:.7rem">${escapeHtml(ev.ip_address)}</td>
+            <td class="payload-cell" title="${escapeHtml(JSON.stringify(ev.payload))}">${escapeHtml(JSON.stringify(ev.payload))}</td>
+          </tr>
+        `).join("");
+      }
+
+      renderPagination(page, _totalPages);
+
+      // Chain badge from integrity_ok
+      const chainEl = document.getElementById("chain-status");
+      if (d.integrity_ok) {
+        chainEl.textContent = "Chain intact";
+        chainEl.className = "badge badge-ok";
+      } else {
+        chainEl.textContent = d.total >= 1000 ? "Skipped (>1000 rows)" : "Unknown";
+        chainEl.className = "badge badge-warn";
+      }
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:#ef4444;padding:1rem">Error: ${escapeHtml(String(e))}</td></tr>`;
+      document.getElementById("status-msg").textContent = "";
+    }
+  }
+
+  function renderPagination(page, pages) {
+    const el = document.getElementById("pagination");
+    if (pages <= 1) { el.innerHTML = ""; return; }
+    let html = "";
+    if (page > 1) html += `<a href="#" onclick="loadLogs(${page-1});return false">&laquo; Prev</a>`;
+    const start = Math.max(1, page - 2);
+    const end = Math.min(pages, page + 2);
+    for (let i = start; i <= end; i++) {
+      html += `<a href="#" class="${i===page?'active':''}" onclick="loadLogs(${i});return false">${i}</a>`;
+    }
+    if (page < pages) html += `<a href="#" onclick="loadLogs(${page+1});return false">Next &raquo;</a>`;
+    html += `<span>Page ${page} of ${pages}</span>`;
+    el.innerHTML = html;
+  }
+
+  async function runIntegrityCheck() {
+    const tenantId = document.getElementById("f-tenant").value;
+    const chainEl = document.getElementById("chain-status");
+    chainEl.textContent = "Checking…";
+    chainEl.className = "badge badge-warn";
+    try {
+      const qs = tenantId ? "?tenant_id=" + encodeURIComponent(tenantId) : "";
+      const r = await fetch(API_BASE + "/audit-logs/integrity-check" + qs, { headers: authHeaders() });
+      const d = await r.json();
+      if (d.ok) {
+        chainEl.textContent = "Chain intact (" + d.total_rows + " rows)";
+        chainEl.className = "badge badge-ok";
+      } else {
+        chainEl.textContent = "Broken at row " + (d.broken_at_row || "?") + " / " + d.total_rows;
+        chainEl.className = "badge badge-err";
+      }
+    } catch (e) {
+      chainEl.textContent = "Check failed";
+      chainEl.className = "badge badge-err";
+    }
+  }
+
+  function exportCSV() {
+    const tenantId = document.getElementById("f-tenant").value;
+    const eventType = document.getElementById("f-event").value;
+    const userId = document.getElementById("f-user").value;
+    const start = document.getElementById("f-start").value;
+    const end = document.getElementById("f-end").value;
+    const p = new URLSearchParams({ fmt: "csv" });
+    if (tenantId) p.set("tenant_id", tenantId);
+    if (eventType) p.set("event_type", eventType);
+    if (userId) p.set("user_id", userId);
+    if (start) p.set("start", start);
+    if (end) p.set("end", end);
+    // Open in new tab — browser will download
+    const url = API_BASE + "/compliance-report?" + p.toString();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "compliance_report.csv";
+    // Add token as query param for convenience (not ideal for prod, use session auth)
+    a.href = url + "&_token=" + encodeURIComponent(getToken());
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function resetFilters() {
+    document.getElementById("filter-form").reset();
+    loadLogs(1);
+  }
+
+  document.getElementById("filter-form").addEventListener("submit", function(e) {
+    e.preventDefault();
+    loadLogs(1);
+  });
+
+  // Init
+  loadComplianceSummary();
+  loadLogs(1);
+</script>
+</body>
+</html>

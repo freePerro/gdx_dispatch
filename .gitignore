@@ -1,0 +1,111 @@
+# Secrets — never commit
+.env
+*.env
+.env.lab
+.env.bak.*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Build metadata — written at deploy time, not in source control
+dispatch/VERSION
+
+# Output & logs
+output/
+logs/
+
+# Uploaded files — keep folder structure, ignore contents
+dispatch/documents/
+dispatch/receipts/
+dispatch/uploads/
+
+# SQLite WAL/SHM files
+*.db-shm
+*.db-wal
+
+# Test hypothesis cache
+.hypothesis/
+
+# R&D telemetry outputs (flaky-test tracker runs)
+ai-queue/rd/operations/flaky_*.json
+ai-queue/rd/operations/flaky_*.jsonl
+
+# PG integration gate run logs — triggered by pre-commit hook on
+# alembic/platform/factory file changes (run_pg_integration_tests.sh +
+# run_rls_pg_gate.sh). Transient per-commit artifacts; summary is in the
+# terminal during the run. Never needed in git.
+ai-queue/rd/operations/ss5_pg_gate_*.log
+ai-queue/rd/operations/rls_pg_gate_*.log
+
+# Orchestrator transient artifacts — regenerated each cycle, never versioned.
+# Leaving them tracked caused merge-bot to see them as eligible for auto-
+# resolve (ai-queue/ is in its scope) — a transient machine-generated file
+# has no stable "correct" content to merge against.
+ai-queue/orchestrator_status/context_pack.md
+ai-queue/orchestrator_status/adversarial_findings.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local session files — ignore everything under .claude/ EXCEPT the
+# tracked project isolation policy (loaded by scripts/claude-clean.sh via
+# --setting-sources project). settings.local.json + session scratch stay ignored.
+.claude/*
+!.claude/settings.json
+
+# Session notes / dated reports (local scratch files)
+RECOVERY_*.md
+Tests_*.md
+
+# E2E test environment (credentials)
+.env.e2e
+
+# VS Code local settings
+.vscode/settings.json
+
+# Drop folder — keep the folder structure, ignore the actual files
+drop/chi-catalog/*
+drop/chi-quotes/*
+drop/documents/*
+!drop/chi-catalog/.gitkeep
+!drop/chi-quotes/.gitkeep
+!drop/documents/.gitkeep
+tools/ai_dashboard/.env
+gdx/frontend/node_modules/
+gdx-dev-portal/node_modules/
+# Repo-root node_modules (vite leak when run from the wrong cwd).
+/node_modules/
+
+# Worker-worktree venv symlink (per-worktree setup, not source)
+.venv
+
+# Playwright MCP scratch — browser automation snapshots
+.playwright-mcp/
+
+# Playwright e2e harness artifacts (gdx/frontend/e2e)
+gdx/frontend/e2e-results.json
+gdx/frontend/e2e-route-report.json
+gdx/frontend/test-results/
+
+# orchestrator extracted to ../gdx-orchestrator on 2026-04-20
+ai-queue/_archived_orchestrator_2026-04-20/
+
+# orchestrator-staged review folders (Doug reviews, accepts into real paths, then commits)
+ai-queue/staged/
+ai-queue/operations/mode_runs/
+
+# Per-work-item declared blast-radius (read by ~/.claude/hooks/scope_check.py)
+SCOPE.md

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.federation.trust_bundle_refreshed.v1",
+  "description": "Emitted when the TrustBundleCache successfully refreshes an IdP's bundle (metadata + JWKS / signing certs). If refresh fails, a warning is logged and the stale bundle is retained — no event is emitted for the failure path; inspect last_refresh_error() instead.",
+  "type": "object",
+  "required": ["provider_id", "kind", "fetched_at", "ttl_seconds"],
+  "properties": {
+    "provider_id": {"type": "string"},
+    "kind": {"type": "string", "enum": ["oidc", "saml"]},
+    "issuer": {"type": "string"},
+    "fetched_at": {"type": ["number", "string"]},
+    "ttl_seconds": {"type": "integer"}
+  },
+  "additionalProperties": false
+}

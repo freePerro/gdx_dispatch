@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.spiffe.svid_validated.v1",
+  "description": "Emitted when a SPIFFE SVID (X.509 or JWT) is successfully validated by the spiffe_auth_middleware. One event per accepted request; downstream audit pipelines fold these into agent activity timelines.",
+  "type": "object",
+  "required": ["spiffe_id", "trust_domain", "kind", "source", "validated_at"],
+  "properties": {
+    "spiffe_id": {"type": "string"},
+    "trust_domain": {"type": "string"},
+    "kind": {"type": "string", "enum": ["x509", "jwt"]},
+    "source": {"type": "string", "enum": ["mtls", "header"]},
+    "validated_at": {"type": "string"},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "tenant_scope": {"type": ["string", "null"], "enum": ["global", "per-tenant", null]},
+    "request_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+{
+  "QueryResponse": {
+    "Customer": [
+      {
+        "Id": "1",
+        "SyncToken": "0",
+        "DisplayName": "Amy's Bird Sanctuary",
+        "GivenName": "Amy",
+        "FamilyName": "Lauterbach",
+        "CompanyName": "Amy's Bird Sanctuary",
+        "PrimaryEmailAddr": {"Address": "birds@example.com"},
+        "PrimaryPhone": {"FreeFormNumber": "(415) 555-1234"},
+        "BillAddr": {"Line1": "4581 Finch St.", "City": "Bayshore", "CountrySubDivisionCode": "CA", "PostalCode": "94326"},
+        "Active": true,
+        "Balance": 239.0,
+        "MetaData": {"CreateTime": "2026-01-15T08:12:00-08:00", "LastUpdatedTime": "2026-04-20T11:30:00-07:00"}
+      },
+      {
+        "Id": "2",
+        "SyncToken": "1",
+        "DisplayName": "Bill's Windsurf Shop",
+        "PrimaryEmailAddr": {"Address": "bill@example.com"},
+        "PrimaryPhone": {"FreeFormNumber": "(415) 555-5678"},
+        "Active": true,
+        "Balance": 0.0,
+        "MetaData": {"CreateTime": "2026-02-01T10:00:00-08:00", "LastUpdatedTime": "2026-02-01T10:00:00-08:00"}
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 2
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

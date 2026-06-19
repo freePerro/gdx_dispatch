@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.shadow.rollback.v1",
+  "description": "Emitted when a cutover is rolled back within the 24h post-cutover window. Loud, rare event — ops MUST page on it.",
+  "type": "object",
+  "required": ["tenant_id", "old_table", "new_table", "rolled_back_at", "cutover_at"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": "string"},
+    "new_table": {"type": "string"},
+    "cutover_at": {"type": "string"},
+    "rolled_back_at": {"type": "string"},
+    "actor_identity_id": {"type": ["string", "null"]},
+    "reason": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

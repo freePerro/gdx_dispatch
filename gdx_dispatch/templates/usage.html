@@ -1,0 +1,338 @@
+{% extends "tenant_base.html" %}
+{% block title %}Usage & Billing{% endblock %}
+
+{% block content %}
+<div class="py-6">
+
+  <!-- Page header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Usage & Billing</h1>
+    <p class="text-sm text-gray-500 mt-1">Monitor your usage, understand overages, and manage your plan.</p>
+  </div>
+
+  <!-- Current Plan Badge -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-center justify-between flex-wrap gap-4">
+      <div class="flex items-center gap-4">
+        <div>
+          <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Current Plan</p>
+          <span id="plan-badge" class="inline-flex items-center px-4 py-1.5 rounded-full text-sm font-bold
+            {% if plan == 'professional' %}bg-blue-100 text-blue-800
+            {% elif plan == 'enterprise' %}bg-purple-100 text-purple-800
+            {% else %}bg-gray-100 text-gray-700{% endif %}">
+            {{ plan | default('Starter') | capitalize }}
+          </span>
+        </div>
+        <div class="hidden sm:block w-px h-10 bg-gray-200"></div>
+        <div class="hidden sm:block">
+          <p class="text-xs text-gray-500">Billing period</p>
+          <p class="text-sm font-semibold text-gray-800">{{ period | default('—') }}</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="text-right">
+          <p class="text-xs text-gray-500">Est. this period</p>
+          <p class="text-2xl font-bold text-gray-900" id="billing-estimate">
+            $<span id="estimate-amount">{{ "%.2f"|format(billing_estimate | default(0)) }}</span>
+          </p>
+        </div>
+        <a href="/billing"
+           class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+          Manage Plan
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Usage Meters -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-5">Usage This Period</h2>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+
+      <!-- Jobs -->
+      {% set jobs_used = usage.metrics.jobs_created | default(0) | int %}
+      {% set jobs_limit = limits.jobs_created %}
+      {% set jobs_pct = [(jobs_used / (jobs_limit | default(500)) * 100), 100] | min if jobs_limit else 0 %}
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">Jobs Created</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ jobs_used }}{% if jobs_limit %}<span class="text-gray-400 font-normal"> / {{ jobs_limit }}</span>{% else %}<span class="text-gray-400 font-normal"> / ∞</span>{% endif %}
+          </span>
+        </div>
+        {% if jobs_limit %}
+        <div class="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+          <div class="h-2.5 rounded-full transition-all
+            {% if jobs_pct >= 90 %}bg-red-500{% elif jobs_pct >= 75 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+               style="width: {{ jobs_pct }}%"></div>
+        </div>
+        {% if jobs_pct >= 90 %}
+        <p class="text-xs text-red-600 font-medium">Near limit — consider upgrading</p>
+        {% elif jobs_pct >= 75 %}
+        <p class="text-xs text-yellow-600">Approaching limit ({{ jobs_pct | int }}% used)</p>
+        {% else %}
+        <p class="text-xs text-gray-400">{{ jobs_pct | int }}% of plan used</p>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-gray-400">Unlimited on your plan</p>
+        {% endif %}
+      </div>
+
+      <!-- SMS -->
+      {% set sms_used = usage.metrics.sms_sent | default(0) | int %}
+      {% set sms_limit = limits.sms_sent %}
+      {% set sms_pct = [(sms_used / (sms_limit | default(1000)) * 100), 100] | min if sms_limit else 0 %}
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">SMS Sent</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ sms_used }}{% if sms_limit %}<span class="text-gray-400 font-normal"> / {{ sms_limit }}</span>{% else %}<span class="text-gray-400 font-normal"> / ∞</span>{% endif %}
+          </span>
+        </div>
+        {% if sms_limit %}
+        <div class="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+          <div class="h-2.5 rounded-full transition-all
+            {% if sms_pct >= 90 %}bg-red-500{% elif sms_pct >= 75 %}bg-yellow-500{% else %}bg-purple-500{% endif %}"
+               style="width: {{ sms_pct }}%"></div>
+        </div>
+        {% if sms_pct >= 90 %}
+        <p class="text-xs text-red-600 font-medium">Near limit — consider upgrading</p>
+        {% elif sms_pct >= 75 %}
+        <p class="text-xs text-yellow-600">Approaching limit ({{ sms_pct | int }}% used)</p>
+        {% else %}
+        <p class="text-xs text-gray-400">{{ sms_pct | int }}% of plan used</p>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-gray-400">Unlimited on your plan</p>
+        {% endif %}
+      </div>
+
+      <!-- Users -->
+      {% set users_used = usage.metrics.active_users | default(0) | int %}
+      {% set users_limit = limits.active_users %}
+      {% set users_pct = [(users_used / (users_limit | default(5)) * 100), 100] | min if users_limit else 0 %}
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">Active Users</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ users_used }}{% if users_limit %}<span class="text-gray-400 font-normal"> / {{ users_limit }}</span>{% else %}<span class="text-gray-400 font-normal"> / ∞</span>{% endif %}
+          </span>
+        </div>
+        {% if users_limit %}
+        <div class="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+          <div class="h-2.5 rounded-full transition-all
+            {% if users_pct >= 90 %}bg-red-500{% elif users_pct >= 75 %}bg-yellow-500{% else %}bg-blue-500{% endif %}"
+               style="width: {{ users_pct }}%"></div>
+        </div>
+        {% if users_pct >= 90 %}
+        <p class="text-xs text-red-600 font-medium">Near limit — consider upgrading</p>
+        {% elif users_pct >= 75 %}
+        <p class="text-xs text-yellow-600">Approaching limit ({{ users_pct | int }}% used)</p>
+        {% else %}
+        <p class="text-xs text-gray-400">{{ users_pct | int }}% of plan used</p>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-gray-400">Unlimited on your plan</p>
+        {% endif %}
+      </div>
+
+      <!-- Storage -->
+      {% set storage_used = usage.metrics.storage_gb | default(0) %}
+      {% set storage_limit = limits.storage_gb %}
+      {% set storage_pct = [(storage_used / (storage_limit | default(1)) * 100), 100] | min if storage_limit else 0 %}
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">Storage</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ "%.2f"|format(storage_used) }} GB{% if storage_limit %}<span class="text-gray-400 font-normal"> / {{ storage_limit }} GB</span>{% else %}<span class="text-gray-400 font-normal"> / ∞</span>{% endif %}
+          </span>
+        </div>
+        {% if storage_limit %}
+        <div class="w-full bg-gray-200 rounded-full h-2.5 mb-1">
+          <div class="h-2.5 rounded-full transition-all
+            {% if storage_pct >= 90 %}bg-red-500{% elif storage_pct >= 75 %}bg-yellow-500{% else %}bg-orange-400{% endif %}"
+               style="width: {{ storage_pct }}%"></div>
+        </div>
+        {% if storage_pct >= 90 %}
+        <p class="text-xs text-red-600 font-medium">Near limit — consider upgrading</p>
+        {% elif storage_pct >= 75 %}
+        <p class="text-xs text-yellow-600">Approaching limit ({{ storage_pct | int }}% used)</p>
+        {% else %}
+        <p class="text-xs text-gray-400">{{ storage_pct | int }}% of plan used</p>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-gray-400">Unlimited on your plan</p>
+        {% endif %}
+      </div>
+
+    </div>
+
+    <!-- API calls stat row -->
+    <div class="mt-6 pt-5 border-t border-gray-100 flex flex-wrap gap-6">
+      <div>
+        <p class="text-xs text-gray-500 uppercase tracking-wide mb-0.5">API Calls</p>
+        <p class="text-xl font-bold text-gray-900">{{ usage.metrics.api_calls | default(0) | int | format_number if false else usage.metrics.api_calls | default(0) | int }}</p>
+        {% if limits.api_calls %}<p class="text-xs text-gray-400">limit: {{ limits.api_calls }}</p>{% else %}<p class="text-xs text-gray-400">Unlimited</p>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Overage Warnings -->
+  {% if overages %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-5 mb-6">
+    <div class="flex items-start gap-3">
+      <svg class="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.07 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+      </svg>
+      <div class="flex-1">
+        <h3 class="text-sm font-semibold text-red-800 mb-2">Overage Charges This Period</h3>
+        <div class="space-y-2">
+          {% for charge in overages %}
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-red-700">
+              {{ charge.metric | replace('_', ' ') | title }}:
+              {{ charge.used | int }} used / {{ charge.limit | int }} included
+              (+{{ charge.overage | int }} over)
+            </span>
+            <span class="font-semibold text-red-800">${{ "%.2f"|format(charge.charge_cents / 100) }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="mt-3 pt-3 border-t border-red-200 flex items-center justify-between">
+          <span class="text-sm font-semibold text-red-800">Total Overage</span>
+          <span class="font-bold text-red-900">
+            ${{ "%.2f"|format(overages | sum(attribute='charge_cents') / 100) }}
+          </span>
+        </div>
+      </div>
+    </div>
+    <div class="mt-4">
+      <a href="/billing#upgrade-section"
+         class="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors">
+        Upgrade to Avoid Overages
+      </a>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Upgrade CTA when approaching limits (no overages yet) -->
+  {% if not overages and approaching_limit %}
+  <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-5 mb-6">
+    <div class="flex items-start gap-3">
+      <svg class="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <div>
+        <h3 class="text-sm font-semibold text-yellow-800">Approaching Plan Limits</h3>
+        <p class="text-sm text-yellow-700 mt-1">
+          One or more metrics are above 75% of your plan limit. Consider upgrading before the period ends.
+        </p>
+        <a href="/billing#upgrade-section"
+           class="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm font-medium rounded-lg transition-colors">
+          View Upgrade Options
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Historical Usage Chart (last 12 months) -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-1">Historical Usage</h2>
+    <p class="text-sm text-gray-500 mb-5">Last 12 months — jobs created and SMS sent.</p>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th class="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Month</th>
+            <th class="text-right py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Jobs</th>
+            <th class="text-right py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">SMS</th>
+            <th class="text-right py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">API Calls</th>
+            <th class="text-right py-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Storage (GB)</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for row in history | default([]) %}
+          <tr class="hover:bg-gray-50 transition-colors {% if loop.first %}font-semibold{% endif %}">
+            <td class="py-2.5 px-3 text-gray-700">
+              {{ row.period }}
+              {% if loop.first %}<span class="ml-1 text-xs text-blue-600 font-normal">(current)</span>{% endif %}
+            </td>
+            <td class="py-2.5 px-3 text-right text-gray-800">{{ row.metrics.jobs_created | default(0) | int }}</td>
+            <td class="py-2.5 px-3 text-right text-gray-800">{{ row.metrics.sms_sent | default(0) | int }}</td>
+            <td class="py-2.5 px-3 text-right text-gray-800">{{ row.metrics.api_calls | default(0) | int }}</td>
+            <td class="py-2.5 px-3 text-right text-gray-800">{{ "%.2f"|format(row.metrics.storage_gb | default(0)) }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="5" class="py-8 text-center text-sm text-gray-400">No historical data available yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Current Period Billing Estimate -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Current Period Billing Estimate</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+      <div class="bg-gray-50 rounded-lg p-4">
+        <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Base Plan</p>
+        <p class="text-2xl font-bold text-gray-900">${{ "%.2f"|format(plan_price | default(0)) }}</p>
+        <p class="text-xs text-gray-500 mt-0.5">{{ plan | default('Starter') | capitalize }} monthly fee</p>
+      </div>
+
+      <div class="bg-gray-50 rounded-lg p-4">
+        <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Overage Charges</p>
+        <p class="text-2xl font-bold {% if overages %}text-red-600{% else %}text-gray-900{% endif %}">
+          ${{ "%.2f"|format(overages | sum(attribute='charge_cents') / 100 if overages else 0) }}
+        </p>
+        <p class="text-xs text-gray-500 mt-0.5">
+          {% if overages %}{{ overages | length }} metric(s) over limit{% else %}No overages{% endif %}
+        </p>
+      </div>
+
+      <div class="bg-blue-50 rounded-lg p-4 border border-blue-100">
+        <p class="text-xs text-blue-600 font-semibold uppercase tracking-wide mb-1">Estimated Total</p>
+        <p class="text-2xl font-bold text-blue-800">${{ "%.2f"|format(billing_estimate | default(0)) }}</p>
+        <p class="text-xs text-blue-500 mt-0.5">Billed at period end</p>
+      </div>
+
+    </div>
+    <p class="text-xs text-gray-400 mt-4">
+      * Estimates are based on current usage and may change before the billing period closes.
+      Final amounts are determined by Stripe.
+    </p>
+  </div>
+
+</div>
+
+<script>
+  // Refresh usage meters every 5 minutes without a full page reload.
+  (function () {
+    var tenantId = document.querySelector('meta[name="tenant-id"]')?.content || '';
+    if (!tenantId) return;
+
+    function refreshUsage() {
+      fetch('/api/usage/current', { headers: { 'x-tenant-id': tenantId } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          var el = document.getElementById('estimate-amount');
+          if (el && data.billing_estimate != null) {
+            el.textContent = parseFloat(data.billing_estimate).toFixed(2);
+          }
+        })
+        .catch(function () { /* silent — stale UI is acceptable */ });
+    }
+
+    setInterval(refreshUsage, 5 * 60 * 1000);
+  }());
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+{
+  "QueryResponse": {
+    "Payment": [
+      {
+        "Id": "300",
+        "SyncToken": "0",
+        "TxnDate": "2026-05-05",
+        "TotalAmt": 110.00,
+        "UnappliedAmt": 0.00,
+        "CustomerRef": {"value": "1", "name": "Amy's Bird Sanctuary"},
+        "Line": [
+          {
+            "Amount": 110.00,
+            "LinkedTxn": [
+              {"TxnId": "200", "TxnType": "Invoice"}
+            ]
+          }
+        ],
+        "MetaData": {"CreateTime": "2026-05-05T14:30:00-07:00", "LastUpdatedTime": "2026-05-05T14:30:00-07:00"}
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 1
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.tool_inventory.v1",
+  "description": "Physical tool or piece of equipment tracked in tenant inventory.",
+  "type": "object",
+  "required": ["sku", "name", "quantity"],
+  "properties": {
+    "sku": {"type": "string", "minLength": 1, "maxLength": 64},
+    "name": {"type": "string", "minLength": 1, "maxLength": 120},
+    "category": {"type": "string", "maxLength": 64},
+    "quantity": {"type": "integer", "minimum": 0},
+    "location": {"type": "string", "maxLength": 120},
+    "serial_number": {"type": "string", "maxLength": 64},
+    "last_checked_at": {"type": "string"},
+    "assigned_to_id": {"type": "string"},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false,
+  "x-gdx-capabilities": [
+    ["read", "tool_inventory"],
+    ["write", "tool_inventory"]
+  ],
+  "x-gdx-index-hints": ["sku", "assigned_to_id", "location"]
+}

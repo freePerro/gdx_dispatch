@@ -1,0 +1,1175 @@
+<template>
+    <section class="billing-view view-card">
+      <!-- Summary Cards -->
+      <div class="summary-cards">
+        <Card data-testid="billing-total-outstanding">
+          <template #title>Total Outstanding</template>
+          <template #content><p class="stat-value outstanding">{{ currency(totalOutstanding) }}</p></template>
+        </Card>
+        <Card data-testid="billing-overdue-amount">
+          <template #title>Overdue</template>
+          <template #content><p class="stat-value overdue">{{ currency(overdueAmount) }}</p></template>
+        </Card>
+        <Card data-testid="billing-paid-this-month">
+          <template #title>Paid This Month</template>
+          <template #content><p class="stat-value paid">{{ currency(paidThisMonth) }}</p></template>
+        </Card>
+      </div>
+
+      <!-- Ready for Billing Queue -->
+      <Card v-if="readyJobs.length" class="ready-billing-card" data-testid="ready-for-billing">
+        <template #title>
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-check-circle" style="color: var(--p-green-500)" />
+            Ready for Billing
+            <Tag :value="String(readyJobs.length)" severity="warn" rounded />
+          </div>
+        </template>
+        <template #content>
+          <DataTable
+      responsiveLayout="scroll" :value="readyJobs" :rows="5" size="small" stripedRows>
+            <Column field="customer_name" header="Customer" />
+            <Column field="title" header="Job" />
+            <Column header="Action" style="width: 16rem">
+              <template #body="{ data }">
+                <!-- Review FIRST — Doug 2026-05-10: completed jobs need a
+                     double-check + a chance to add parts before invoicing,
+                     not a one-click ship-it. The Review path navigates
+                     to job detail where parts/labor/notes can be confirmed. -->
+                <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
+                  class="mr-2"
+                  @click="reviewJob(data)" data-testid="review-job-before-billing" />
+                <Button label="Create Invoice" icon="pi pi-dollar" size="small" severity="success"
+                  @click="createInvoiceForJob(data)" data-testid="create-invoice-for-job" />
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
+      <!-- Toolbar: Search + Date filter + Create -->
+      <div class="billing-toolbar">
+        <span class="p-input-icon-left search-wrap">
+          <InputText
+            id="billing-search"
+            name="billing-search"
+            v-model="searchQuery"
+            placeholder="Search invoices..."
+            data-testid="billing-search"
+          />
+        </span>
+        <Select
+          v-model="datePreset"
+          :options="datePresetOptions"
+          option-label="label"
+          option-value="value"
+          placeholder="Date range"
+          data-testid="billing-date-preset"
+          class="date-preset-select"
+        />
+        <DatePicker
+          v-if="datePreset === 'custom'"
+          v-model="customRange"
+          selectionMode="range"
+          dateFormat="yy-mm-dd"
+          placeholder="Pick start & end"
+          data-testid="billing-custom-range"
+          showIcon
+          class="custom-range-picker"
+        />
+        <span v-if="dateRange[0] || dateRange[1]" class="date-range-summary" data-testid="billing-date-summary">
+          {{ formatDate(dateRange[0]) || '…' }} → {{ formatDate(dateRange[1]) || '…' }}
+          <Button
+            icon="pi pi-times"
+            text
+            rounded
+            size="small"
+            aria-label="Clear date filter"
+            @click="datePreset = 'all'; customRange = [null, null]"
+            data-testid="billing-date-clear"
+          />
+        </span>
+        <Button
+          label="Counter Sale"
+          icon="pi pi-shopping-bag"
+          severity="secondary"
+          data-testid="create-counter-sale-btn"
+          @click="$router.push('/billing/new?counter=1')"
+        />
+        <Button
+          label="Create Invoice"
+          icon="pi pi-plus"
+          data-testid="create-invoice-btn"
+          @click="$router.push('/billing/new')"
+        />
+      </div>
+
+      <!-- Status Filters -->
+      <div class="status-tabs">
+        <Button
+          v-for="tab in statusTabs"
+          :key="tab.value"
+          :label="`${tab.label} (${tabCount(tab.value)})`"
+          :severity="activeStatus === tab.value ? undefined : 'secondary'"
+          :data-testid="`billing-status-${tab.value.toLowerCase()}`"
+          size="small"
+          @click="activeStatus = tab.value"
+        />
+      </div>
+
+      <!-- Bulk Actions Bar (visible when selection) -->
+      <div v-if="selectedInvoices.length > 0" class="bulk-actions-bar" data-testid="bulk-actions-bar">
+        <span class="bulk-count">{{ selectedInvoices.length }} selected</span>
+        <Button label="Send Selected" icon="pi pi-send" size="small" severity="info" @click="bulkSend" :disabled="bulkProgress.active" :loading="bulkProgress.active && bulkProgress.label === 'Send'" data-testid="bulk-send" />
+        <Button label="Mark Paid" icon="pi pi-check" size="small" severity="success" @click="bulkMarkPaid" :disabled="bulkProgress.active" :loading="bulkProgress.active && bulkProgress.label === 'Mark Paid'" data-testid="bulk-mark-paid" />
+        <Button label="Export CSV" icon="pi pi-download" size="small" severity="secondary" @click="bulkExport" :disabled="bulkProgress.active" />
+        <Button label="Delete" icon="pi pi-trash" aria-label="Delete" size="small" severity="danger" text @click="bulkDelete" :disabled="bulkProgress.active" :loading="bulkProgress.active && bulkProgress.label === 'Delete'" />
+        <Button label="Clear" icon="pi pi-times" aria-label="Remove" size="small" text @click="selectedInvoices = []" :disabled="bulkProgress.active" />
+      </div>
+
+      <!-- Bulk Progress (visible while a bulk loop is running) -->
+      <div v-if="bulkProgress.active" class="bulk-progress-row" data-testid="bulk-progress">
+        <ProgressBar
+          :value="Math.round((bulkProgress.completed / Math.max(bulkProgress.total, 1)) * 100)"
+          style="height: 0.5rem; flex: 1;"
+        />
+        <span class="bulk-progress-label">{{ bulkProgress.label }}: {{ bulkProgress.completed }} of {{ bulkProgress.total }}</span>
+      </div>
+
+      <!-- Invoice Table -->
+      <!-- Custom selection column below (not PrimeVue selectionMode="multiple")
+           because PrimeVue's built-in header checkbox renders without id/name
+           and triggers a Chrome DevTools Issues warning we can't silence. -->
+      <DataTable
+        class="clickable-rows"
+      responsiveLayout="scroll"
+        :value="paginatedInvoices"
+        :loading="loading"
+        data-testid="billing-datatable"
+        stripedRows
+        @row-click="onRowClick"
+        :rowHover="true"
+        :sortField="sortField"
+        :sortOrder="sortOrder"
+        @sort="onSort"
+        dataKey="id"
+      >
+        <template #empty>{{ searchQuery || activeStatus !== 'All' ? 'No matching invoices. Try clearing your filters.' : 'No invoices yet. Click "Create Invoice" to start.' }}</template>
+        <Column headerStyle="width:3rem" bodyStyle="width:3rem">
+          <template #header>
+            <input
+              id="billing-select-all"
+              name="billing-select-all"
+              type="checkbox"
+              :checked="isAllSelected"
+              :indeterminate.prop="isSomeSelected"
+              aria-label="Select all invoices"
+              data-testid="billing-select-all"
+              @click.stop
+              @change="toggleSelectAll"
+            />
+          </template>
+          <template #body="{ data }">
+            <input
+              :id="'billing-select-' + data.id"
+              :name="'billing-select-' + data.id"
+              type="checkbox"
+              :checked="isSelected(data)"
+              :aria-label="'Select invoice ' + (data.invoice_number || data.id)"
+              :data-testid="'billing-select-' + data.id"
+              @click.stop
+              @change="toggleSelection(data)"
+            />
+          </template>
+        </Column>
+        <Column field="invoice_number" header="Invoice #" sortable>
+          <template #body="{ data }">
+            <!-- Real anchor href so right-click → open in new tab works
+                 and the URL is bookmarkable. SPA navigation handled by
+                 router-link when present, falls back to native link. -->
+            <router-link
+              :to="`/billing/${data.id}`"
+              class="link-text"
+              :data-testid="`invoice-link-${data.id}`"
+            >{{ data.invoice_number }}</router-link>
+          </template>
+        </Column>
+        <Column field="customer_name" header="Customer" sortable />
+        <Column field="total" header="Amount" sortable>
+          <template #body="{ data }">{{ currency(data.total) }}</template>
+        </Column>
+        <Column field="status" header="Status" sortable>
+          <template #body="{ data }">
+            <Tag :value="data.status" :severity="statusSeverity(data.status)" data-testid="invoice-status-tag" />
+          </template>
+        </Column>
+        <Column field="due_date" header="Due Date" sortable>
+          <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
+        </Column>
+        <Column header="Actions" style="width: 220px">
+          <template #body="{ data }">
+            <div class="action-btns">
+              <Button v-if="data.status === 'Draft'" icon="pi pi-send" severity="info" text size="small"
+                v-tooltip="'Send'" :data-testid="`send-invoice-${data.id}`" @click.stop="sendInvoice(data)" />
+              <Button icon="pi pi-file-pdf" severity="secondary" text size="small"
+                v-tooltip="'Download PDF'" :data-testid="`pdf-invoice-${data.id}`" @click.stop="downloadPdf(data)" />
+              <Button
+                v-if="data.status !== 'Paid'"
+                :label="`Pay ${currency(data.balance_due ?? data.total)}`"
+                severity="primary"
+                size="small"
+                :loading="payingInvoiceId === data.id"
+                :data-testid="`pay-invoice-${data.id}`"
+                @click.stop="payInvoiceOnline(data)"
+              />
+              <Button v-if="data.status !== 'Paid'" icon="pi pi-dollar" severity="success" text size="small"
+                v-tooltip="'Record Payment'" :data-testid="`record-payment-${data.id}`" @click.stop="openPaymentDialog(data)" />
+              <Button icon="pi pi-pencil" aria-label="Edit" severity="secondary" text size="small"
+                v-tooltip="'Edit'" @click.stop="editInvoice(data)" />
+              <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small"
+                :data-testid="`delete-invoice-${data.id}`" @click.stop="confirmDelete(data)" />
+            </div>
+          </template>
+        </Column>
+      </DataTable>
+
+      <!-- Pagination -->
+      <div class="pagination-bar" v-if="totalPages > 1">
+        <Button
+          icon="pi pi-angle-left"
+          severity="secondary"
+          text
+          :disabled="currentPage <= 1"
+          @click="currentPage--"
+        />
+        <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
+        <Button
+          icon="pi pi-angle-right"
+          severity="secondary"
+          text
+          :disabled="currentPage >= totalPages"
+          @click="currentPage++"
+        />
+      </div>
+
+      <!-- S122: Create-invoice dialog retired. + New Invoice and per-row
+           "Create Invoice for Job" buttons now route to /billing/new. -->
+
+      <!-- Record Payment Dialog -->
+      <Dialog
+        v-model:visible="showPaymentDialog"
+        header="Record Payment"
+        modal
+        :style="{ width: '480px' }"
+        data-testid="record-payment-dialog"
+      >
+        <div class="form-grid" v-if="paymentTarget">
+          <div class="form-field full-width">
+            <p><strong>Invoice:</strong> {{ paymentTarget.invoice_number }}</p>
+            <p><strong>Balance Due:</strong> {{ currency(paymentTarget.balance_due || paymentTarget.total) }}</p>
+          </div>
+          <div class="form-field">
+            <label for="pay-amount">Amount *</label>
+            <InputNumber
+              id="pay-amount"
+              v-model="newPayment.amount"
+              mode="currency"
+              currency="USD"
+              locale="en-US"
+              :min="0.01"
+              data-testid="payment-amount"
+            />
+          </div>
+          <div class="form-field">
+            <label for="pay-method">Payment Method *</label>
+            <Select
+              id="pay-method"
+              v-model="newPayment.method"
+              :options="paymentMethods"
+              data-testid="payment-method"
+            />
+          </div>
+          <div class="form-field full-width">
+            <label for="pay-reference">Reference #</label>
+            <InputText
+              id="pay-reference"
+              v-model="newPayment.reference"
+              placeholder="Check #, confirmation, etc."
+              data-testid="payment-reference"
+            />
+          </div>
+        </div>
+
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showPaymentDialog = false" />
+          <Button
+            label="Record Payment"
+            data-testid="confirm-record-payment"
+            :disabled="!newPayment.amount || !newPayment.method"
+            :loading="recordingPayment"
+            @click="recordPayment"
+          />
+        </template>
+      </Dialog>
+
+      <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->
+      <Toast data-testid="billing-toast" />
+    </section>
+</template>
+
+<script setup>
+import { computed, onMounted, ref } from "vue";
+import { useRouter, useRoute } from "vue-router";
+import { useConfirm } from "primevue/useconfirm";
+import { useToast } from "primevue/usetoast";
+import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { openAuthedFile } from "../composables/useAuthedFile";
+import Button from "primevue/button";
+import DatePicker from "primevue/datepicker";
+import Card from "primevue/card";
+import ProgressBar from "primevue/progressbar";
+import Column from "primevue/column";
+import DataTable from "primevue/datatable";
+import Dialog from "primevue/dialog";
+import Select from "primevue/select";
+import InputNumber from "primevue/inputnumber";
+import InputText from "primevue/inputtext";
+import Tag from "primevue/tag";
+import Toast from "primevue/toast";
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+const { confirmAsync } = useDestructiveConfirm();
+
+const router = useRouter();
+const route = useRoute();
+const api = useApi();
+const confirm = useConfirm();
+const toast = useToast();
+
+// --- State ---
+const loading = ref(false);
+const readyJobs = ref([]);
+const creating = ref(false);
+const recordingPayment = ref(false);
+const invoices = ref([]);
+const customers = ref([]);
+const jobs = ref([]);
+const searchQuery = ref("");
+const activeStatus = ref("All");
+
+// Date filter — preset + optional custom range
+const datePreset = ref("all");
+const customRange = ref([null, null]);
+const datePresetOptions = [
+  { label: "All time", value: "all" },
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 days", value: "7d" },
+  { label: "Last 30 days", value: "30d" },
+  { label: "Last 90 days", value: "90d" },
+  { label: "This month", value: "this_month" },
+  { label: "Last month", value: "last_month" },
+  { label: "This quarter", value: "this_quarter" },
+  { label: "This year", value: "this_year" },
+  { label: "Last year", value: "last_year" },
+  { label: "Custom range", value: "custom" },
+];
+
+function _startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function _endOfDay(d) { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
+
+const dateRange = computed(() => {
+  const now = new Date();
+  const today = _startOfDay(now);
+  switch (datePreset.value) {
+    case "all": return [null, null];
+    case "today": return [today, _endOfDay(now)];
+    case "yesterday": {
+      const y = new Date(today); y.setDate(y.getDate() - 1);
+      return [y, _endOfDay(y)];
+    }
+    case "7d": {
+      const s = new Date(today); s.setDate(s.getDate() - 6);
+      return [s, _endOfDay(now)];
+    }
+    case "30d": {
+      const s = new Date(today); s.setDate(s.getDate() - 29);
+      return [s, _endOfDay(now)];
+    }
+    case "90d": {
+      const s = new Date(today); s.setDate(s.getDate() - 89);
+      return [s, _endOfDay(now)];
+    }
+    case "this_month": {
+      const s = new Date(now.getFullYear(), now.getMonth(), 1);
+      return [s, _endOfDay(now)];
+    }
+    case "last_month": {
+      const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const e = _endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
+      return [s, e];
+    }
+    case "this_quarter": {
+      const q = Math.floor(now.getMonth() / 3);
+      const s = new Date(now.getFullYear(), q * 3, 1);
+      return [s, _endOfDay(now)];
+    }
+    case "this_year": return [new Date(now.getFullYear(), 0, 1), _endOfDay(now)];
+    case "last_year": {
+      const s = new Date(now.getFullYear() - 1, 0, 1);
+      const e = _endOfDay(new Date(now.getFullYear() - 1, 11, 31));
+      return [s, e];
+    }
+    case "custom": {
+      const [a, b] = customRange.value || [];
+      return [a ? _startOfDay(a) : null, b ? _endOfDay(b) : null];
+    }
+    default: return [null, null];
+  }
+});
+const currentPage = ref(1);
+const perPage = 20;
+const selectedInvoices = ref([]);
+
+// Sort state, owned externally so sort applies to the FULL filtered set
+// before pagination slices it. Without this, PrimeVue's `sortable` only
+// sorts the visible page (the 20 rows in `paginatedInvoices`), making
+// "sort by Status" appear broken when there are 305 invoices and the
+// Paid ones live mostly on pages 2+. Fix: DataTable runs in controlled
+// sort mode via :sortField + :sortOrder; @sort updates the refs; the
+// `sortedInvoices` computed applies the sort to `filteredInvoices`;
+// `paginatedInvoices` slices the sorted set.
+const sortField = ref(null);
+const sortOrder = ref(null);
+function onSort(event) {
+  sortField.value = event.sortField || null;
+  sortOrder.value = event.sortOrder || null;
+  currentPage.value = 1;
+}
+const payingInvoiceId = ref(null);
+
+// Phase 12 — bulk-action progress state. Driven by bulkSend / bulkMarkPaid /
+// bulkDelete; rendered as a ProgressBar above the invoice table.
+const bulkProgress = ref({ active: false, label: '', completed: 0, total: 0 });
+
+// TD-015: bulk financial ops — track per-invoice success/failure so we
+// don't claim "all done" when some 500'd silently. The previous code
+// swallowed every failure and toasted blanket success regardless.
+async function bulkSend() {
+  const total = selectedInvoices.value.length;
+  if (!(await confirmAsync({ header: 'Confirm', message: `Send ${total} invoice(s) to customers?` }))) return;
+  let ok = 0;
+  const failed = [];
+  bulkProgress.value = { active: true, label: 'Send', completed: 0, total };
+  for (const inv of selectedInvoices.value) {
+    try {
+      await api.post(`/api/invoices/${inv.id}/send`, {});
+      ok += 1;
+    } catch (e) {
+      try {
+        await api.patch(`/api/invoices/${inv.id}`, { status: "Sent" });
+        ok += 1;
+      } catch (e2) {
+        failed.push({ id: inv.id, number: inv.invoice_number, err: String(e2?.message || e?.message || e2 || e) });
+      }
+    }
+    bulkProgress.value.completed += 1;
+  }
+  bulkProgress.value = { active: false, label: '', completed: 0, total: 0 };
+  if (failed.length === 0) {
+    toast.add({ severity: "success", summary: "Bulk Send", detail: `${ok} invoice(s) sent`, life: 3000 });
+  } else {
+    toast.add({
+      severity: ok > 0 ? "warn" : "error",
+      summary: ok > 0 ? "Bulk Send — partial failure" : "Bulk Send failed",
+      detail: `${ok}/${total} sent. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
+      life: 6000,
+    });
+  }
+  selectedInvoices.value = [];
+  await loadData();
+}
+
+async function bulkMarkPaid() {
+  const total = selectedInvoices.value.length;
+  if (!(await confirmAsync({ header: 'Confirm', message: `Mark ${total} invoice(s) as paid?` }))) return;
+  let ok = 0;
+  const failed = [];
+  bulkProgress.value = { active: true, label: 'Mark Paid', completed: 0, total };
+  for (const inv of selectedInvoices.value) {
+    try {
+      await api.patch(`/api/invoices/${inv.id}`, { status: "Paid" });
+      ok += 1;
+    } catch (e) {
+      failed.push({ id: inv.id, number: inv.invoice_number, err: String(e?.message || e) });
+    }
+    bulkProgress.value.completed += 1;
+  }
+  bulkProgress.value = { active: false, label: '', completed: 0, total: 0 };
+  if (failed.length === 0) {
+    toast.add({ severity: "success", summary: "Marked Paid", detail: `${ok} invoice(s) marked paid`, life: 3000 });
+  } else {
+    toast.add({
+      severity: ok > 0 ? "warn" : "error",
+      summary: ok > 0 ? "Mark Paid — partial failure" : "Mark Paid failed",
+      detail: `${ok}/${total} marked paid. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
+      life: 6000,
+    });
+  }
+  selectedInvoices.value = [];
+  await loadData();
+}
+
+function bulkExport() {
+  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date"];
+  const rows = selectedInvoices.value.map((i) => [
+    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "",
+  ]);
+  const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `invoices-${new Date().toISOString().split("T")[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast.add({ severity: "success", summary: "Exported", detail: `${selectedInvoices.value.length} invoices exported to CSV`, life: 3000 });
+}
+
+async function bulkDelete() {
+  const total = selectedInvoices.value.length;
+  if (!(await confirmAsync({ header: 'Confirm', message: `Delete ${total} invoice(s)? This cannot be undone.` }))) return;
+  let ok = 0;
+  const failed = [];
+  bulkProgress.value = { active: true, label: 'Delete', completed: 0, total };
+  for (const inv of selectedInvoices.value) {
+    try {
+      await api.del(`/api/invoices/${inv.id}`);
+      ok += 1;
+    } catch (e) {
+      failed.push({ id: inv.id, number: inv.invoice_number, err: String(e?.message || e) });
+    }
+    bulkProgress.value.completed += 1;
+  }
+  bulkProgress.value = { active: false, label: '', completed: 0, total: 0 };
+  if (failed.length === 0) {
+    toast.add({ severity: "success", summary: "Deleted", detail: `${ok} invoice(s) deleted`, life: 3000 });
+  } else {
+    toast.add({
+      severity: ok > 0 ? "warn" : "error",
+      summary: ok > 0 ? "Delete — partial failure" : "Delete failed",
+      detail: `${ok}/${total} deleted. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
+      life: 6000,
+    });
+  }
+  selectedInvoices.value = [];
+  await loadData();
+}
+
+async function payInvoiceOnline(invoice) {
+  if (!invoice?.id || payingInvoiceId.value) return;
+  payingInvoiceId.value = invoice.id;
+  try {
+    const payload = {
+      invoice_id: invoice.id,
+      amount: toNum(invoice.balance_due ?? invoice.total),
+    };
+    const result = await api.post('/api/payments/intent', payload);
+    const redirectUrl =
+      result?.checkout_url ||
+      result?.checkoutUrl ||
+      result?.redirect_url ||
+      result?.url;
+    if (redirectUrl && typeof window !== 'undefined') {
+      window.location.href = redirectUrl;
+    } else {
+      toast.add({
+        severity: 'info',
+        summary: 'Payment Intent Created',
+        detail: 'Payment link not returned. Please try again.',
+        life: 4000,
+      });
+    }
+  } finally {
+    payingInvoiceId.value = null;
+  }
+}
+
+const showPaymentDialog = ref(false);
+const paymentTarget = ref(null);
+
+const statusTabs = [
+  { label: "All", value: "All" },
+  { label: "Draft", value: "Draft" },
+  { label: "Sent", value: "Sent" },
+  { label: "Paid", value: "Paid" },
+  { label: "Overdue", value: "Overdue" },
+];
+
+const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
+
+const newPayment = ref({ amount: 0, method: "Cash", reference: "" });
+
+const filteredInvoices = computed(() => {
+  let list = invoices.value;
+  if (activeStatus.value !== "All") {
+    list = list.filter((inv) => inv.status === activeStatus.value);
+  }
+  if (searchQuery.value) {
+    const q = searchQuery.value.toLowerCase();
+    list = list.filter((inv) => {
+      const hay = [inv.invoice_number, inv.customer_name, inv.notes].join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  const [start, end] = dateRange.value;
+  if (start || end) {
+    list = list.filter((inv) => {
+      // Prefer invoice_date (issue date), fall back to created_at
+      const raw = inv.invoice_date || inv.created_at;
+      if (!raw) return false;
+      const t = new Date(raw).getTime();
+      if (start && t < start.getTime()) return false;
+      if (end && t > end.getTime()) return false;
+      return true;
+    });
+  }
+  return list;
+});
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredInvoices.value.length / perPage)));
+
+const sortedInvoices = computed(() => {
+  if (!sortField.value) return filteredInvoices.value;
+  const field = sortField.value;
+  const dir = sortOrder.value || 1;
+  // Copy before sorting — never mutate the source array (would
+  // invalidate the upstream computed and cause loop).
+  return [...filteredInvoices.value].sort((a, b) => {
+    const av = a?.[field];
+    const bv = b?.[field];
+    // Null/undefined values sort to the end regardless of direction
+    // (matches PrimeVue's default `nullSortOrder: 1` behavior).
+    const an = av == null || av === "";
+    const bn = bv == null || bv === "";
+    if (an && bn) return 0;
+    if (an) return 1;
+    if (bn) return -1;
+    // Numeric compare when both sides are numbers; otherwise locale string
+    if (typeof av === "number" && typeof bv === "number") {
+      return (av - bv) * dir;
+    }
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * dir;
+  });
+});
+
+const paginatedInvoices = computed(() => {
+  const start = (currentPage.value - 1) * perPage;
+  return sortedInvoices.value.slice(start, start + perPage);
+});
+
+// Selection helpers for the custom select column (replaces PrimeVue
+// selectionMode="multiple" which renders a header checkbox without id/name).
+const isSelected = (row) => selectedInvoices.value.some((r) => r.id === row.id);
+const toggleSelection = (row) => {
+  if (isSelected(row)) {
+    selectedInvoices.value = selectedInvoices.value.filter((r) => r.id !== row.id);
+  } else {
+    selectedInvoices.value = [...selectedInvoices.value, row];
+  }
+};
+const isAllSelected = computed(() =>
+  paginatedInvoices.value.length > 0 &&
+  paginatedInvoices.value.every((r) => isSelected(r))
+);
+const isSomeSelected = computed(() => {
+  const some = paginatedInvoices.value.some((r) => isSelected(r));
+  return some && !isAllSelected.value;
+});
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    // Deselect everything currently visible on this page
+    const visibleIds = new Set(paginatedInvoices.value.map((r) => r.id));
+    selectedInvoices.value = selectedInvoices.value.filter((r) => !visibleIds.has(r.id));
+  } else {
+    // Add any currently-visible rows that aren't already selected
+    const existingIds = new Set(selectedInvoices.value.map((r) => r.id));
+    const toAdd = paginatedInvoices.value.filter((r) => !existingIds.has(r.id));
+    selectedInvoices.value = [...selectedInvoices.value, ...toAdd];
+  }
+};
+
+// Server-side KPIs (S113 — D-S111-billing-summary-404). Falls back to
+// client-side computation if /api/invoices/summary is unavailable so the
+// view still renders something during transient backend errors.
+const billingSummary = ref(null);
+
+async function loadBillingSummary() {
+  try {
+    billingSummary.value = await api.get('/api/invoices/summary');
+  } catch (_) {
+    billingSummary.value = null;
+  }
+}
+
+// Outstanding = receivables only. Prefer server-side aggregator (full-table
+// SUM, no pagination cap) and fall back to client-side over the loaded
+// list. Drafts excluded — they aren't yet receivables.
+const totalOutstanding = computed(() => {
+  if (billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
+    return billingSummary.value.total_outstanding;
+  }
+  return invoices.value
+    .filter((inv) => inv.status !== "Paid" && inv.status !== "Draft")
+    .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
+});
+
+const overdueAmount = computed(() => {
+  if (billingSummary.value && typeof billingSummary.value.overdue === 'number') {
+    return billingSummary.value.overdue;
+  }
+  return invoices.value
+    .filter((inv) => inv.status === "Overdue")
+    .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
+});
+
+const paidThisMonth = computed(() => {
+  if (billingSummary.value && typeof billingSummary.value.paid_this_month === 'number') {
+    return billingSummary.value.paid_this_month;
+  }
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  return invoices.value
+    .filter((inv) => inv.status === "Paid" && (inv.paid_at || inv.updated_at || "") >= monthStart)
+    .reduce((sum, inv) => sum + toNum(inv.total), 0);
+});
+
+// --- Helpers ---
+function capitalize(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function currency(amount) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(amount));
+}
+
+function formatDate(d) {
+  if (!d) return "-";
+  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function statusSeverity(status) {
+  const map = { Draft: "secondary", Sent: "info", Paid: "success", Overdue: "danger", Partial: "warn" };
+  return map[status] || "secondary";
+}
+
+function tabCount(status) {
+  if (status === "All") return invoices.value.length;
+  return invoices.value.filter((inv) => inv.status === status).length;
+}
+
+function normalizeInvoice(raw, customerMap = {}) {
+  return {
+    id: raw.id,
+    invoice_number: raw.invoice_number || raw.invoiceNumber || `INV-${String(raw.id).substring(0, 8)}`,
+    customer_name: raw.customer_name || raw.customer || customerMap[String(raw.customer_id)] || "Unknown",
+    customer_id: raw.customer_id,
+    job_id: raw.job_id,
+    total: toNum(raw.total || raw.amount || raw.total_amount || 0),
+    balance_due: toNum(raw.balance_due ?? raw.total ?? raw.amount ?? 0),
+    status: capitalize(raw.effective_status || raw.status) || "Draft",
+    due_date: raw.due_date || raw.dueDate || "",
+    paid_at: raw.paid_at || "",
+    updated_at: raw.updated_at || "",
+    notes: raw.notes || "",
+  };
+}
+
+// --- Actions ---
+async function loadData() {
+  loading.value = true;
+  try {
+    const [invRes, custRes, jobRes] = await Promise.allSettled([
+      api.get("/api/invoices", { suppressErrorToast: true }),
+      api.get("/api/customers?per_page=500", { suppressErrorToast: true }),
+      api.get("/api/jobs", { suppressErrorToast: true }),
+    ]);
+
+    const customerMap = {};
+    if (custRes.status === "fulfilled") {
+      const raw = custRes.value;
+      const list = Array.isArray(raw) ? raw : raw?.items || raw?.data || [];
+      customers.value = list;
+      for (const c of list) customerMap[String(c.id)] = c.name;
+    }
+
+    if (jobRes.status === "fulfilled") {
+      const raw = jobRes.value;
+      jobs.value = Array.isArray(raw) ? raw : raw?.items || raw?.data || [];
+    }
+
+    if (invRes.status === "fulfilled") {
+      const raw = invRes.value;
+      const list = Array.isArray(raw) ? raw : raw?.items || raw?.data || [];
+      invoices.value = list.map((inv) => normalizeInvoice(inv, customerMap));
+    }
+    // If the invoice fetch itself failed, surface it instead of silently
+    // showing an empty list (otherwise the page renders "No invoices yet"
+    // even when there are 305 invoices in the DB).
+    if (invRes.status === "rejected") {
+      const status = invRes.reason?.status || invRes.reason?.response?.status;
+      const msg = status === 401 || status === 403
+        ? "Your session may have expired — refresh the page to retry."
+        : "Failed to load invoices. Refresh to retry.";
+      toast.add({ severity: "error", summary: "Couldn't load invoices", detail: msg, life: 4000 });
+    }
+    // Load ready-for-billing jobs
+    try {
+      const rfb = await api.get("/api/jobs/ready-for-billing");
+      readyJobs.value = Array.isArray(rfb) ? rfb : [];
+    } catch (e) {
+      console.warn("ready_for_billing_failed", e);
+      readyJobs.value = [];
+    }
+  } catch (e) {
+    console.error("billing_loadData_failed", e);
+    toast.add({ severity: "error", summary: "Error", detail: "Failed to load billing data", life: 3000 });
+  } finally {
+    loading.value = false;
+  }
+}
+
+function createInvoiceForJob(job) {
+  // S122 — route to the dedicated /billing/new page. InvoiceCreateView
+  // hydrates customer + job + estimate lines + parts-from-job picker on its
+  // own. Replaces the in-place dialog that lived here pre-S122.
+  if (!job?.id) return;
+  router.push({
+    path: '/billing/new',
+    query: { job_id: job.id, customer_id: job.customer_id || '' },
+  });
+}
+
+function reviewJob(job) {
+  // Review path — open the job-detail page so the office can verify parts,
+  // labor, and notes before invoicing. Doug 2026-05-10: completed jobs
+  // shouldn't be one-click invoiced; they need a double-check + a chance
+  // to add parts that the tech may have forgotten.
+  if (job?.id) router.push(`/jobs/${job.id}`);
+}
+
+function openPaymentDialog(inv) {
+  paymentTarget.value = inv;
+  newPayment.value = { amount: 0, method: "Cash", reference: "" };
+  showPaymentDialog.value = true;
+}
+
+async function recordPayment() {
+  if (!paymentTarget.value) return;
+  recordingPayment.value = true;
+  try {
+    await api.post(`/api/invoices/${paymentTarget.value.id}/payments`, {
+      amount: newPayment.value.amount,
+      method: newPayment.value.method,
+      reference: newPayment.value.reference,
+    });
+    showPaymentDialog.value = false;
+    toast.add({ severity: "success", summary: "Recorded", detail: "Payment recorded", life: 3000 });
+    await loadData();
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to record payment", life: 3000 });
+  } finally {
+    recordingPayment.value = false;
+  }
+}
+
+async function sendInvoice(inv) {
+  try {
+    await api.post(`/api/invoices/${inv.id}/send`);
+    inv.status = "Sent";
+    toast.add({ severity: "success", summary: "Sent", detail: "Invoice sent to customer", life: 3000 });
+  } catch (e) {
+    console.warn("invoice_send_primary_failed", inv?.id, e);
+    try {
+      await api.patch(`/api/invoices/${inv.id}`, { status: "Sent" });
+      inv.status = "Sent";
+      toast.add({ severity: "success", summary: "Sent", detail: "Invoice marked as sent", life: 3000 });
+    } catch (err) {
+      toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to send", life: 3000 });
+    }
+  }
+}
+
+async function downloadPdf(inv) {
+  try {
+    await openAuthedFile(`/api/invoices/${inv.id}/pdf`);
+  } catch (e) {
+    console.error("invoice_pdf_failed", inv?.id, e);
+    toast.add({
+      severity: "error",
+      summary: "PDF failed",
+      detail: e?.message || "Could not open invoice PDF",
+      life: 5000,
+    });
+  }
+}
+
+function editInvoice(inv) {
+  // S122 — edits happen on the invoice detail page (line-level add/remove,
+  // tax, due-date PATCH). The list-page edit dialog is gone.
+  if (inv?.id) router.push(`/billing/${inv.id}`);
+}
+
+function confirmDelete(inv) {
+  confirm.require({
+    message: `Delete invoice ${inv.invoice_number}? This cannot be undone.`,
+    header: "Confirm Delete",
+    icon: "pi pi-exclamation-triangle",
+    acceptClass: "p-button-danger",
+    accept: () => deleteInvoice(inv),
+  });
+}
+
+async function deleteInvoice(inv) {
+  try {
+    await api.del(`/api/invoices/${inv.id}`);
+    invoices.value = invoices.value.filter((i) => i.id !== inv.id);
+    toast.add({ severity: "success", summary: "Deleted", detail: "Invoice deleted", life: 3000 });
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to delete", life: 3000 });
+  }
+}
+
+function onRowClick(event) {
+  const id = event?.data?.id;
+  if (id) router.push(`/billing/${id}`);
+}
+
+// Expose for InvoiceDetail to use
+defineExpose({ openPaymentDialog, sendInvoice });
+
+onMounted(async () => {
+  loadBillingSummary();
+  await loadData();
+  // ?status=Overdue|Paid|Sent|Draft on mount sets the active tab — used by
+  // the Dashboard "X overdue invoices need collection" alert so the user
+  // lands directly on the filtered list instead of the All view, where
+  // overdue rows scatter among 300 invoices sorted by created_at desc.
+  const qs = String(route.query.status || "");
+  if (qs && statusTabs.some((t) => t.value === qs)) {
+    activeStatus.value = qs;
+  }
+  // S122 — legacy ?action=create&customer_id=…&job_id=… deep links now route
+  // to the dedicated /billing/new page; preserves the Job-Detail "Create
+  // Invoice" link contract.
+  if (route.query.action === "create" && route.query.customer_id) {
+    router.replace({
+      path: '/billing/new',
+      query: {
+        customer_id: route.query.customer_id,
+        job_id: route.query.job_id || undefined,
+      },
+    });
+  }
+});
+</script>
+
+<style scoped>
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+}
+.stat-value.outstanding { color: var(--p-blue-500, #3b82f6); }
+.stat-value.overdue { color: var(--p-red-500, #ef4444); }
+.stat-value.paid { color: var(--p-green-500, #22c55e); }
+
+.billing-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.search-wrap {
+  flex: 1;
+  max-width: 360px;
+}
+.search-wrap .p-inputtext {
+  width: 100%;
+}
+
+.date-preset-select {
+  min-width: 160px;
+}
+.custom-range-picker {
+  min-width: 220px;
+}
+.date-range-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+  background: var(--p-content-hover-background);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.status-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.clickable-table :deep(tr) {
+  cursor: pointer;
+}
+
+.bulk-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--p-primary-100, rgba(14, 165, 233, 0.1));
+  border: 1px solid var(--p-primary-color);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.bulk-count {
+  font-weight: 600;
+  color: var(--p-primary-color);
+  margin-right: 0.5rem;
+}
+
+.bulk-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--p-surface-100, #f1f5f9);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+.bulk-progress-label {
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+}
+
+.link-text {
+  color: var(--p-primary-color, #3b82f6);
+  font-weight: 600;
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.page-info {
+  font-size: 0.875rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.form-field.full-width {
+  grid-column: 1 / -1;
+}
+.form-field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color, #6b7280);
+  text-transform: uppercase;
+}
+.form-field :deep(.p-dropdown),
+.form-field :deep(.p-calendar),
+.form-field :deep(.p-inputtext),
+.form-field :deep(.p-inputnumber),
+.form-field :deep(.p-textarea) {
+  width: 100%;
+}
+
+.line-items-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.line-item-header,
+.line-item-row {
+  display: grid;
+  grid-template-columns: 2fr 0.7fr 1fr 1fr 2rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.line-item-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--p-text-muted-color);
+  padding: 0 0.25rem;
+}
+.col-desc, .col-qty, .col-price, .col-total, .col-action {
+  width: 100%;
+}
+.line-total-display {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.line-item-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.line-items-subtotal {
+  margin-top: 0.5rem;
+  text-align: right;
+  font-size: 0.95rem;
+  color: var(--p-text-color);
+}
+
+@media (max-width: 900px) {
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .billing-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .search-wrap {
+    max-width: 100%;
+  }
+}
+</style>

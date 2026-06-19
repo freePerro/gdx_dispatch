@@ -1,0 +1,36 @@
+# gdx project-level semgrepignore.
+#
+# Presence of this file overrides semgrep's bundled default. We re-list the
+# standard exclusions we DO want, and intentionally omit the default's `_*`
+# pattern so that `gdx/tests/_adversarial/`, `gdx/tests/_reproductions/`, and
+# similar directories are scanned. Those test files are real test code and
+# silent-error scanners need to see them.
+
+# Source control
+.git/
+.svn/
+.hg/
+
+# Python build/cache
+.venv/
+.tox/
+.eggs/
+*.egg-info/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Node
+node_modules/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Repo-specific archives we don't scan
+_archive_historical/
+_archived_feedback_2026-04-18/

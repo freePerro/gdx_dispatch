@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.custom_field_schema.changed.v1",
+  "description": "Emitted when an admin modifies a custom-field schema (sensitivity, type, etc.). SS-23 acceptance #5 / D-52.1.",
+  "type": "object",
+  "required": ["tenant_id", "entity_type", "field_key", "changed_at", "changed_by_identity_id"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "entity_type": {"type": "string"},
+    "field_key": {"type": "string"},
+    "changed_at": {"type": "string"},
+    "changed_by_identity_id": {"type": "string"},
+    "before": {"type": "object", "additionalProperties": true},
+    "after": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

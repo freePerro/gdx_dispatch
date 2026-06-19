@@ -1,0 +1,158 @@
+{% extends "tenant_base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="py-6 max-w-3xl">
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Settings</h1>
+    <p class="text-sm text-gray-500 mt-1">Manage your company preferences and configuration.</p>
+  </div>
+
+  <form method="POST" action="/settings" class="space-y-6">
+    <!-- CSRF token if available -->
+    {% if csrf_token %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% endif %}
+
+    <!-- Company Info -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Company Information</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="company_name">Company Name</label>
+          <input type="text" id="company_name" name="company_name"
+                 value="{{ settings.company_name | default('') }}"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                 placeholder="Example Garage Doors Inc." />
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="phone">Phone</label>
+          <input type="tel" id="phone" name="phone"
+                 value="{{ settings.phone | default('') }}"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                 placeholder="(555) 000-0000" />
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="timezone">Timezone</label>
+          <select id="timezone" name="timezone"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            {% set tz_options = [
+              ('America/New_York', 'Eastern Time (ET)'),
+              ('America/Chicago', 'Central Time (CT)'),
+              ('America/Denver', 'Mountain Time (MT)'),
+              ('America/Los_Angeles', 'Pacific Time (PT)'),
+              ('America/Phoenix', 'Arizona (MST)'),
+              ('America/Anchorage', 'Alaska (AKT)'),
+              ('Pacific/Honolulu', 'Hawaii (HST)'),
+              ('UTC', 'UTC'),
+            ] %}
+            {% for tz_val, tz_label in tz_options %}
+            <option value="{{ tz_val }}" {% if settings.timezone == tz_val %}selected{% endif %}>{{ tz_label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="address">Address</label>
+          <input type="text" id="address" name="address"
+                 value="{{ settings.address | default('') }}"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                 placeholder="123 Main St, City, State 00000" />
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Terminology Customization -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-1">Terminology</h2>
+      <p class="text-sm text-gray-500 mb-4">Customize the labels used throughout the app to match your industry.</p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {% set term_fields = [
+          ('term_job', 'Job Label', 'Job', 'e.g. Work Order, Service Call'),
+          ('term_customer', 'Customer Label', 'Customer', 'e.g. Client, Account'),
+          ('term_technician', 'Technician Label', 'Technician', 'e.g. Installer, Tech, Field Rep'),
+          ('term_estimate', 'Estimate Label', 'Estimate', 'e.g. Quote, Proposal'),
+          ('term_invoice', 'Invoice Label', 'Invoice', 'e.g. Bill, Statement'),
+          ('term_dispatcher', 'Dispatcher Label', 'Dispatcher', 'e.g. Scheduler, Coordinator'),
+        ] %}
+        {% for field_name, label, default_val, placeholder in term_fields %}
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="{{ field_name }}">{{ label }}</label>
+          <input type="text" id="{{ field_name }}" name="{{ field_name }}"
+                 value="{{ settings[field_name] | default(default_val) }}"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                 placeholder="{{ placeholder }}" />
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Notification Preferences -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-1">Notifications</h2>
+      <p class="text-sm text-gray-500 mb-4">Choose when and how you receive notifications.</p>
+
+      <div class="space-y-3">
+        {% set notif_options = [
+          ('notif_new_job_email', 'Email me when a new job is created'),
+          ('notif_new_job_sms', 'SMS me when a new job is created'),
+          ('notif_job_completed_email', 'Email me when a job is marked completed'),
+          ('notif_job_completed_sms', 'SMS me when a job is marked completed'),
+          ('notif_new_customer_email', 'Email me when a new customer is added'),
+          ('notif_payment_received_email', 'Email me when a payment is received'),
+        ] %}
+        {% for field_name, label in notif_options %}
+        <label class="flex items-center gap-3 cursor-pointer select-none">
+          <input type="checkbox" name="{{ field_name }}" value="1"
+                 {% if settings[field_name] %}checked{% endif %}
+                 class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+          <span class="text-sm text-gray-700">{{ label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Webhook Configuration -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-1">API Webhook</h2>
+      <p class="text-sm text-gray-500 mb-4">
+        Send event notifications to your own endpoint. We'll POST a JSON payload for each event.
+      </p>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="webhook_url">Webhook URL</label>
+        <input type="url" id="webhook_url" name="webhook_url"
+               value="{{ settings.webhook_url | default('') }}"
+               class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+               placeholder="https://your-app.com/webhooks/gdx" />
+        <p class="text-xs text-gray-400 mt-1">Must be HTTPS. Leave blank to disable webhooks.</p>
+      </div>
+
+      {% if settings.webhook_url %}
+      <div class="mt-3 flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-green-400"></span>
+        <span class="text-xs text-gray-500">Webhook active</span>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Save button -->
+    <div class="flex justify-end gap-3">
+      <a href="/dashboard" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+        Cancel
+      </a>
+      <button type="submit"
+              class="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+        Save Settings
+      </button>
+    </div>
+
+  </form>
+</div>
+{% endblock %}

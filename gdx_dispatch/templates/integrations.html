@@ -1,0 +1,428 @@
+{% extends "tenant_base.html" %}
+{% block title %}Integrations{% endblock %}
+
+{% block content %}
+<div class="py-6 max-w-5xl">
+
+  <!-- Page Header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Integrations</h1>
+    <p class="text-sm text-gray-500 mt-1">Connect DispatchApp to external tools and automate your workflows.</p>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Integration Marketplace Cards                                       -->
+  <!-- ------------------------------------------------------------------ -->
+  {% if available_integrations %}
+  <div class="mb-8">
+    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">Available Integrations</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {% for integration in available_integrations %}
+      {% set itype = integration.type %}
+      {% set status = connected_statuses.get(itype, {}) %}
+      {% set is_connected = status.get('status') in ['connected', 'error'] %}
+      {% set status_label = status.get('status', 'disconnected') %}
+      {% set color = integration.color | default('blue') %}
+
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col gap-3">
+        <!-- Card Header -->
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-{{ color }}-50 border border-{{ color }}-100 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-{{ color }}-500" fill="currentColor" viewBox="0 0 24 24">
+                <path d="{{ integration.logo_icon }}"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold text-gray-900 leading-tight">{{ integration.name }}</h3>
+              <span class="inline-block text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 mt-0.5">{{ integration.category }}</span>
+            </div>
+          </div>
+          <!-- Status badge -->
+          {% if status_label == 'connected' %}
+          <span class="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5 flex-shrink-0">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>Connected
+          </span>
+          {% elif status_label == 'error' %}
+          <span class="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5 flex-shrink-0">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Error
+          </span>
+          {% else %}
+          <span class="inline-flex items-center gap-1 text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2 py-0.5 flex-shrink-0">
+            <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>Not Connected
+          </span>
+          {% endif %}
+        </div>
+
+        <!-- Description -->
+        <p class="text-xs text-gray-500 leading-relaxed">{{ integration.description }}</p>
+
+        <!-- Last sync time if connected -->
+        {% if is_connected and status.get('last_success_at') %}
+        <p class="text-xs text-gray-400">Last sync: {{ status.last_success_at }}</p>
+        {% endif %}
+
+        <!-- Actions -->
+        <div class="mt-auto flex items-center gap-2">
+          {% if is_connected %}
+          <button type="button"
+            onclick="disconnectIntegration('{{ itype }}')"
+            class="flex-1 text-xs font-medium text-center px-3 py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors">
+            Disconnect
+          </button>
+          {% else %}
+          <button type="button"
+            onclick="openConnectModal('{{ itype }}', '{{ integration.name }}', {{ 'true' if integration.is_oauth else 'false' }})"
+            class="flex-1 text-xs font-medium text-center px-3 py-2 rounded-lg bg-{{ color }}-600 text-white hover:bg-{{ color }}-700 transition-colors">
+            Connect
+          </button>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Zapier REST Hooks Section                                           -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg bg-orange-50 border border-orange-100 flex items-center justify-center flex-shrink-0">
+          <svg class="w-6 h-6 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">Zapier</h2>
+          <p class="text-xs text-gray-500">Automate workflows by connecting DispatchApp to 6,000+ apps.</p>
+        </div>
+      </div>
+      <a href="https://zapier.com/apps/team-garage-door" target="_blank" rel="noopener"
+         class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100 transition-colors">
+        Open Zapier
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+        </svg>
+      </a>
+    </div>
+
+    <!-- Supported Events -->
+    <div class="mb-5">
+      <p class="text-xs font-medium text-gray-600 mb-2 uppercase tracking-wide">Trigger Events</p>
+      <div class="flex flex-wrap gap-2">
+        {% for event in ["job.created", "job.completed", "invoice.paid", "customer.created", "estimate.approved"] %}
+        <span class="px-2 py-1 rounded text-xs font-mono bg-gray-100 text-gray-700 border border-gray-200">{{ event }}</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Active Subscriptions -->
+    <div class="mb-5">
+      <p class="text-xs font-medium text-gray-600 mb-2 uppercase tracking-wide">Active Subscriptions</p>
+      {% if zapier_subscriptions %}
+      <div class="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-hidden">
+        {% for sub in zapier_subscriptions %}
+        <div class="flex items-center justify-between px-4 py-3 bg-white hover:bg-gray-50">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-gray-900 truncate">{{ sub.webhook_url }}</p>
+            <p class="text-xs text-gray-500 mt-0.5">{{ sub.events | join(", ") }}</p>
+          </div>
+          <button type="button"
+            onclick="disconnectIntegration('zapier')"
+            class="ml-4 flex-shrink-0 text-xs text-red-600 hover:text-red-800 font-medium px-2 py-1 rounded hover:bg-red-50 transition-colors">
+            Disconnect
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-sm text-gray-400 italic">No Zapier subscriptions yet. Connect from <a href="https://zapier.com" target="_blank" class="text-blue-600 hover:underline">zapier.com</a>.</p>
+      {% endif %}
+    </div>
+
+    <!-- Manual Subscribe Form -->
+    <details class="group">
+      <summary class="cursor-pointer text-xs font-medium text-blue-600 hover:text-blue-800 select-none list-none flex items-center gap-1">
+        <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+        Manually add a Zapier subscription
+      </summary>
+      <div id="zapier-subscribe-result" class="hidden mt-2 text-xs rounded p-2"></div>
+      <form id="zapier-subscribe-form" class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="sm:col-span-2">
+          <label for="zapier-hook-url" class="block text-xs font-medium text-gray-600 mb-1">Hook URL</label>
+          <input type="url" id="zapier-hook-url" name="hook_url" required placeholder="https://hooks.zapier.com/hooks/catch/..."
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div>
+          <label for="zapier-event-type" class="block text-xs font-medium text-gray-600 mb-1">Event Type</label>
+          <select id="zapier-event-type" name="event_type"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="job.created">job.created</option>
+            <option value="job.completed">job.completed</option>
+            <option value="invoice.paid">invoice.paid</option>
+            <option value="customer.created">customer.created</option>
+            <option value="estimate.approved">estimate.approved</option>
+          </select>
+        </div>
+        <div class="sm:col-span-3">
+          <button type="submit"
+                  class="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            Subscribe
+          </button>
+        </div>
+      </form>
+    </details>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Native Webhooks Section                                              -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-start justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center flex-shrink-0">
+          <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="text-base font-semibold text-gray-900">Native Webhooks</h2>
+          <p class="text-xs text-gray-500">Receive signed HMAC-SHA256 HTTP POST events at your own endpoints.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Endpoint Form -->
+    <div class="mb-5 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+      <p class="text-xs font-semibold text-gray-700 mb-3 uppercase tracking-wide">Register New Endpoint</p>
+      <form method="POST" action="/webhooks" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="sm:col-span-2">
+          <label for="wh-url" class="block text-xs font-medium text-gray-600 mb-1">Endpoint URL</label>
+          <input type="url" id="wh-url" name="url" required placeholder="https://your-server.com/webhook"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div>
+          <label for="wh-events" class="block text-xs font-medium text-gray-600 mb-1">Events (comma-separated)</label>
+          <input type="text" id="wh-events" name="events" placeholder="job.created, invoice.paid"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div>
+          <label for="wh-secret" class="block text-xs font-medium text-gray-600 mb-1">Secret (optional — auto-generated if blank)</label>
+          <input type="text" id="wh-secret" name="secret" placeholder="Leave blank to auto-generate"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div class="sm:col-span-2">
+          <button type="submit"
+                  class="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            Register Endpoint
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Webhook Delivery Log -->
+    {% if webhook_endpoints %}
+    <div class="divide-y divide-gray-100 border border-gray-200 rounded-lg overflow-hidden">
+      {% for ep in webhook_endpoints %}
+      <div class="px-4 py-4 bg-white hover:bg-gray-50">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="inline-block w-2 h-2 rounded-full flex-shrink-0
+                {% if ep.is_active %}bg-green-500{% else %}bg-gray-400{% endif %}"></span>
+              <p class="text-sm font-medium text-gray-900 truncate">{{ ep.url }}</p>
+            </div>
+            <p class="text-xs text-gray-500 ml-4">
+              Events: <span class="font-mono">{{ ep.events | join(", ") if ep.events else "none" }}</span>
+            </p>
+            <p class="text-xs text-gray-400 ml-4 mt-0.5">ID: {{ ep.id }}</p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <form method="POST" action="/webhooks/{{ ep.id }}/test">
+              <button type="submit"
+                      class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors">
+                Test
+              </button>
+            </form>
+            <a href="/webhooks/{{ ep.id }}/deliveries"
+               class="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition-colors">
+              Log
+            </a>
+            {% if ep.is_active %}
+            <form method="POST" action="/webhooks/{{ ep.id }}/delete">
+              <button type="submit"
+                      class="text-xs px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 transition-colors">
+                Disable
+              </button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No webhook endpoints registered yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- API Keys Section                                                     -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-10 h-10 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+        </svg>
+      </div>
+      <div>
+        <h2 class="text-base font-semibold text-gray-900">API Keys</h2>
+        <p class="text-xs text-gray-500">Manage API keys for direct REST API access.</p>
+      </div>
+    </div>
+    <a href="/developer"
+       class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+      </svg>
+      Go to Developer Portal
+    </a>
+  </div>
+
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Connect / Disconnect Modal                                          -->
+<!-- ------------------------------------------------------------------ -->
+<div id="connect-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+    <div class="flex items-start justify-between mb-4">
+      <h2 class="text-lg font-semibold text-gray-900" id="modal-title">Connect Integration</h2>
+      <button type="button" onclick="closeModal()" aria-label="Close" class="text-gray-400 hover:text-gray-600">
+        <svg class="w-5 h-5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- OAuth instructions -->
+    <div id="oauth-section" class="hidden mb-4">
+      <p class="text-sm text-gray-600 mb-3">This integration uses OAuth. Paste the access token provided by the service after completing the OAuth flow.</p>
+      <label for="oauth-access-token" class="block text-xs font-medium text-gray-600 mb-1">Access Token</label>
+      <input type="text" id="oauth-access-token" placeholder="ya29.xxxxx or eyJ..."
+             class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+      <label for="oauth-refresh-token" class="block text-xs font-medium text-gray-600 mb-1">Refresh Token (optional)</label>
+      <input type="text" id="oauth-refresh-token" placeholder="1//xxxxx (leave blank if not available)"
+             class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+
+    <!-- API key instructions -->
+    <div id="apikey-section" class="hidden mb-4">
+      <p class="text-sm text-gray-600 mb-3">Paste your API key from the service's settings or developer console.</p>
+      <label for="apikey-input" class="block text-xs font-medium text-gray-600 mb-1">API Key</label>
+      <input type="text" id="apikey-input" placeholder="sk_live_... or AIzaSy..."
+             class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+
+    <div id="modal-error" class="hidden text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2 mb-3"></div>
+
+    <div class="flex gap-3">
+      <button type="button" onclick="closeModal()" class="flex-1 px-4 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors">
+        Cancel
+      </button>
+      <button type="button" onclick="submitConnect()" id="modal-connect-btn" class="flex-1 px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+        Connect
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+let _currentIntegrationType = null;
+let _currentIsOAuth = false;
+
+function openConnectModal(type, name, isOAuth) {
+  _currentIntegrationType = type;
+  _currentIsOAuth = isOAuth;
+  document.getElementById('modal-title').textContent = 'Connect ' + name;
+  document.getElementById('oauth-section').classList.toggle('hidden', !isOAuth);
+  document.getElementById('apikey-section').classList.toggle('hidden', isOAuth);
+  document.getElementById('modal-error').classList.add('hidden');
+  document.getElementById('oauth-access-token').value = '';
+  document.getElementById('oauth-refresh-token').value = '';
+  document.getElementById('apikey-input').value = '';
+  document.getElementById('connect-modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('connect-modal').classList.add('hidden');
+  _currentIntegrationType = null;
+}
+
+async function submitConnect() {
+  const errEl = document.getElementById('modal-error');
+  errEl.classList.add('hidden');
+  let credentials = {};
+  if (_currentIsOAuth) {
+    const token = document.getElementById('oauth-access-token').value.trim();
+    if (!token) { errEl.textContent = 'Access token is required.'; errEl.classList.remove('hidden'); return; }
+    credentials.access_token = token;
+    const refresh = document.getElementById('oauth-refresh-token').value.trim();
+    if (refresh) credentials.refresh_token = refresh;
+  } else {
+    const key = document.getElementById('apikey-input').value.trim();
+    if (!key) { errEl.textContent = 'API key is required.'; errEl.classList.remove('hidden'); return; }
+    credentials.api_key = key;
+  }
+  const btn = document.getElementById('modal-connect-btn');
+  btn.disabled = true; btn.textContent = 'Connecting...';
+  try {
+    const resp = await fetch('/api/integrations/' + _currentIntegrationType + '/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({credentials})
+    });
+    if (resp.ok) {
+      closeModal();
+      globalThis.location.reload();
+    } else {
+      const data = await resp.json().catch((_err) => ({}));
+      errEl.textContent = data.detail || 'Connection failed. Check your credentials and try again.';
+      errEl.classList.remove('hidden');
+    }
+  } catch (err) {
+    console.error('connect error', err);
+    errEl.textContent = 'Network error. Please try again.';
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Connect';
+  }
+}
+
+async function disconnectIntegration(type) {
+  if (!confirm('Disconnect this integration? Existing data will not be deleted.')) return;
+  try {
+    const resp = await fetch('/api/integrations/' + type, {method: 'DELETE'});
+    if (resp.ok) {
+      globalThis.location.reload();
+    } else {
+      alert('Failed to disconnect. Please try again.');
+    }
+  } catch (err) {
+    console.error('disconnect error', err);
+    alert('Network error. Please try again.');
+  }
+}
+</script>
+{% endblock %}

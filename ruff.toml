@@ -1,0 +1,52 @@
+# ruff.toml — GDX Dispatch
+# Replaces flake8 + black + isort in one tool (150-200x faster)
+
+line-length = 120
+
+[lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear (catches common bugs)
+    "S",     # flake8-bandit (security)
+    "UP",    # pyupgrade (modernize syntax)
+    "SIM",   # flake8-simplify
+]
+ignore = [
+    "E501",  # Line too long — handled by formatter
+    "S101",  # assert used — needed in tests
+    "S108",  # Probable insecure usage of temp file — we use /tmp intentionally
+    "S603",  # subprocess call - check for execution of untrusted input
+    "S607",  # Starting a process with a partial executable path
+]
+
+[lint.isort]
+# First-party packages. Without this, ruff groups `gdx_dispatch.*`
+# alphabetically with third-party imports (fastapi, pydantic).
+known-first-party = ["gdx_dispatch"]
+
+[lint.per-file-ignores]
+"dispatch/tests/**" = ["S101", "S106", "B011"]
+"gdx_dispatch/tests/**" = ["S101", "S106", "B011", "S105", "S110", "S112", "E402", "B017"]  # scaffold/fixture idioms
+"gdx_dispatch/tools/**" = ["S603", "S607", "S310"]
+# B008: FastAPI dependency injection idiom — `Depends(...)` in defaults is
+# the documented pattern, not a mutable-default bug.
+"gdx_dispatch/routers/**" = ["B008"]
+"gdx_dispatch/app.py" = ["B008"]
+"gdx_dispatch/core/middleware/**" = ["B008"]
+# S608 in mobile.py: all sites build SQL from code-controlled column name lists
+# (list(values.keys()), static where-clauses). Values always bound via :params.
+"gdx_dispatch/routers/mobile.py" = ["B008", "S608"]
+# GDPR test files contain pytest.skip(..., allow_module_level=True) at top — bodies
+# are stale scaffolds awaiting rewrite. F821s are expected until rewrite lands.
+"gdx_dispatch/tests/test_gdpr_enhanced.py" = ["F821", "S101", "S106", "B011"]
+"gdx_dispatch/tests/test_38_data_export.py" = ["F821", "S101", "S106", "B011"]
+"gdx_dispatch/tests/test_07_gdpr_deletion.py" = ["F821", "S101", "S106", "B011"]
+"gdx_dispatch/core/**" = ["B008"]  # FastAPI Depends() pattern across all core routers/deps
+"gdx_dispatch/control/**" = ["B008"]  # FastAPI Depends() in control-plane endpoints
+"gdx_dispatch/integrations/**" = ["B008"]  # FastAPI Depends() in integration router modules
+"gdx_dispatch/modules/**" = ["B008"]  # FastAPI Depends() in feature-module routers (customer_portal, etc.)
+"gdx_dispatch/tests/e2e/**" = ["S501", "S101", "S106", "B011"]  # tests hit local test server; S501 intentional
+"gdx_dispatch/tools/router_sql_live_audit.py" = ["S608"]  # audit tool introspects schema; column names are code-controlled

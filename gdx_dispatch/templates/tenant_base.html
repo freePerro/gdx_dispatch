@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Dashboard{% endblock %} — DispatchApp</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex">
+
+  <!-- Mobile overlay -->
+  <div id="sidebar-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-20 hidden lg:hidden" onclick="toggleSidebar()"></div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="fixed top-0 left-0 h-full w-64 bg-gray-900 text-white flex flex-col z-30 transform -translate-x-full lg:translate-x-0 transition-transform duration-200">
+
+    <!-- Brand -->
+    <div class="flex items-center gap-3 px-5 py-5 border-b border-gray-700">
+      <span class="text-2xl">🔧</span>
+      <div>
+        <div class="font-bold text-white text-sm leading-tight">DispatchApp</div>
+        <div class="text-gray-400 text-xs">Tenant Admin</div>
+      </div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 py-4 overflow-y-auto">
+      <ul class="space-y-1 px-3">
+
+        <li>
+          <a href="/dashboard"
+             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                    {% if request.url.path == '/dashboard' %}bg-blue-600 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+            </svg>
+            Dashboard
+          </a>
+        </li>
+
+        <li>
+          <a href="/team"
+             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                    {% if request.url.path == '/team' %}bg-blue-600 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            Team
+          </a>
+        </li>
+
+        <li>
+          <a href="/settings"
+             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                    {% if request.url.path == '/settings' %}bg-blue-600 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            Settings
+          </a>
+        </li>
+
+        <li>
+          <a href="/billing"
+             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                    {% if request.url.path == '/billing' %}bg-blue-600 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+            </svg>
+            Billing
+          </a>
+        </li>
+
+        <li>
+          <a href="/modules"
+             class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                    {% if request.url.path == '/modules' %}bg-blue-600 text-white{% else %}text-gray-300 hover:bg-gray-700 hover:text-white{% endif %}">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+            </svg>
+            Modules
+          </a>
+        </li>
+
+      </ul>
+    </nav>
+
+    <!-- User & Logout -->
+    <div class="border-t border-gray-700 px-4 py-4">
+      {% if current_user %}
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          {{ (current_user.email or 'U')[0].upper() }}
+        </div>
+        <div class="min-w-0">
+          <div class="text-white text-xs font-medium truncate">{{ current_user.email }}</div>
+          <span class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-xs font-medium
+            {% if current_user.role == 'owner' %}bg-purple-700 text-purple-100
+            {% elif current_user.role == 'admin' %}bg-blue-700 text-blue-100
+            {% elif current_user.role == 'dispatcher' %}bg-green-700 text-green-100
+            {% elif current_user.role == 'technician' %}bg-yellow-700 text-yellow-100
+            {% else %}bg-gray-600 text-gray-200{% endif %}">
+            {{ current_user.role | capitalize }}
+          </span>
+        </div>
+      </div>
+      {% endif %}
+
+      <form method="POST" action="/auth/logout">
+        <button type="submit"
+                class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+          </svg>
+          Sign Out
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <!-- Main content area -->
+  <div class="flex-1 flex flex-col min-w-0 lg:ml-64">
+
+    <!-- Top bar (mobile) -->
+    <header class="lg:hidden bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+      <button onclick="toggleSidebar()" class="text-gray-500 hover:text-gray-700">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+      <span class="font-semibold text-gray-800">DispatchApp</span>
+    </header>
+
+    <!-- Flash messages -->
+    <div class="px-6 pt-4">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+          <div class="mb-3 flex items-start gap-3 px-4 py-3 rounded-lg border text-sm
+            {% if category == 'success' %}bg-green-50 border-green-200 text-green-800
+            {% elif category == 'error' or category == 'danger' %}bg-red-50 border-red-200 text-red-800
+            {% elif category == 'warning' %}bg-yellow-50 border-yellow-200 text-yellow-800
+            {% else %}bg-blue-50 border-blue-200 text-blue-800{% endif %}">
+            <span class="flex-1">{{ message }}</span>
+            <button onclick="this.parentElement.remove()" class="flex-shrink-0 opacity-60 hover:opacity-100">✕</button>
+          </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      {% if flash_messages %}
+        {% for msg in flash_messages %}
+        <div class="mb-3 flex items-start gap-3 px-4 py-3 rounded-lg border text-sm
+          {% if msg.category == 'success' %}bg-green-50 border-green-200 text-green-800
+          {% elif msg.category == 'error' %}bg-red-50 border-red-200 text-red-800
+          {% elif msg.category == 'warning' %}bg-yellow-50 border-yellow-200 text-yellow-800
+          {% else %}bg-blue-50 border-blue-200 text-blue-800{% endif %}">
+          <span class="flex-1">{{ msg.text }}</span>
+          <button onclick="this.parentElement.remove()" class="flex-shrink-0 opacity-60 hover:opacity-100">✕</button>
+        </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <!-- Page content -->
+    <main class="flex-1 px-6 pb-8">
+      {% block content %}{% endblock %}
+    </main>
+
+  </div>
+
+  <script>
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      const isHidden = sidebar.classList.contains('-translate-x-full');
+      if (isHidden) {
+        sidebar.classList.remove('-translate-x-full');
+        overlay.classList.remove('hidden');
+      } else {
+        sidebar.classList.add('-translate-x-full');
+        overlay.classList.add('hidden');
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.federation.identity_collision.v1",
+  "description": "Emitted when a federated login presents an email that is already owned by a different (local or other-provider) identity. Auto-merge is refused; an admin must resolve via the admin-merge flow before the federated subject can sign in.",
+  "type": "object",
+  "required": [
+    "provider_id",
+    "external_subject",
+    "email",
+    "existing_identity_id",
+    "at",
+    "remediation"
+  ],
+  "properties": {
+    "provider_id": {"type": "string"},
+    "external_subject": {"type": "string"},
+    "email": {"type": "string"},
+    "existing_identity_id": {"type": "string"},
+    "at": {"type": "string"},
+    "remediation": {"type": "string"}
+  },
+  "additionalProperties": false
+}

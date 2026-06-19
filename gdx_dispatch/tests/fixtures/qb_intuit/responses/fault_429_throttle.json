@@ -1,0 +1,13 @@
+{
+  "Fault": {
+    "Error": [
+      {
+        "Message": "ThrottleExceeded",
+        "Detail": "Throttle Exceeded. The application has exceeded the maximum number of requests allowed for the access token.",
+        "code": "5"
+      }
+    ],
+    "type": "SYSTEM"
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

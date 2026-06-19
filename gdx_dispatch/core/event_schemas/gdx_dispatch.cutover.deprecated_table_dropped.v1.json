@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx_dispatch.cutover.deprecated_table_dropped.v1",
+  "description": "Emitted when the post-cutover cleanup cron drops a *_v1_deprecated table after its grace period elapsed.",
+  "type": "object",
+  "required": ["tenant_id", "deprecated_table", "dropped_at", "scheduled_drop_at"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": ["string", "null"]},
+    "deprecated_table": {"type": "string"},
+    "dropped_at": {"type": "string"},
+    "scheduled_drop_at": {"type": "string"},
+    "dry_run": {"type": "boolean"},
+    "actor_identity_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

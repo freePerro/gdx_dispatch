@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sar.requested.v1",
+  "description": "Emitted when a Subject Access Request is filed.",
+  "type": "object",
+  "required": ["sar_id", "target_identity_id", "requested_by_identity_id", "created_at"],
+  "properties": {
+    "sar_id": {"type": "string", "format": "uuid"},
+    "target_identity_id": {"type": "string"},
+    "requested_by_identity_id": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

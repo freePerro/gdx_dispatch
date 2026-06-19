@@ -1,0 +1,122 @@
+[
+  {
+    "endpoint": "/api/customers",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/estimates",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/invoices",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/jobs",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/leads",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/payments",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/technicians",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/users",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/timeclock/entries",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/fleet/vehicles",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/equipment",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/inventory/parts",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/proposals",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/campaigns",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/documents",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/tags",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/vendors",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/purchase-orders",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/scheduling",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/sticky-notes",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/communications/threads",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/reviews",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/photos/recent",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/commissions/summary",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/payroll/pay-periods",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/settings/branding",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/maintenance/plans",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/service-agreements",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/change-orders",
+    "status": 403
+  },
+  {
+    "endpoint": "/api/collections",
+    "status": 403
+  }
+]

@@ -1,0 +1,281 @@
+{% extends "tenant_base.html" %}
+{% block title %}Service Areas{% endblock %}
+
+{% block content %}
+<div class="py-6">
+
+  <!-- Page header -->
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Service Areas</h1>
+      <p class="text-sm text-gray-500 mt-1">Manage coverage zones and technician assignments.</p>
+    </div>
+    <button
+      onclick="document.getElementById('modal-add-area').classList.remove('hidden')"
+      class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      Add Service Area
+    </button>
+  </div>
+
+  <!-- Coverage Check Tool -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+    <h2 class="text-base font-semibold text-gray-800 mb-3">Coverage Check</h2>
+    <div class="flex gap-3 items-end">
+      <div class="flex-1 max-w-xs">
+        <label for="coverage-zip" class="block text-sm font-medium text-gray-700 mb-1">ZIP Code</label>
+        <input
+          id="coverage-zip"
+          type="text"
+          maxlength="10"
+          placeholder="e.g. 90210"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <button
+        onclick="checkCoverage()"
+        class="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500">
+        Check
+      </button>
+    </div>
+    <div id="coverage-result" class="mt-3 text-sm hidden"></div>
+  </div>
+
+  <!-- Map view placeholder -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-base font-semibold text-gray-800">Map View</h2>
+      <span class="text-xs text-gray-400 italic">Google Maps integration hook</span>
+    </div>
+    <div
+      id="service-area-map"
+      class="w-full h-64 bg-gray-100 rounded-lg flex items-center justify-center border border-dashed border-gray-300"
+      data-map-hook="service-areas">
+      <div class="text-center text-gray-400">
+        <svg class="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+        </svg>
+        <p class="text-sm">Map will render here once Google Maps API key is configured.</p>
+        <p class="text-xs mt-1">Set <code class="bg-gray-200 px-1 rounded">GOOGLE_MAPS_API_KEY</code> in tenant settings.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Service Area List -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200">
+    <div class="px-5 py-4 border-b border-gray-200">
+      <h2 class="text-base font-semibold text-gray-800">All Service Areas</h2>
+    </div>
+    <div id="service-area-list" class="divide-y divide-gray-100">
+      <!-- Populated by JS -->
+      <div class="px-5 py-8 text-center text-gray-400 text-sm" id="list-empty-state">
+        Loading service areas...
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Add/Edit Service Area Modal -->
+<div id="modal-add-area" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+  <div class="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h3 id="modal-title" class="text-lg font-semibold text-gray-900">Add Service Area</h3>
+      <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <form id="area-form" onsubmit="submitArea(event)">
+      <input type="hidden" id="area-id" value="" />
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Area Name <span class="text-red-500">*</span></label>
+          <input id="field-name" type="text" required placeholder="e.g. Downtown Zone"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">ZIP Codes</label>
+          <textarea id="field-zip-codes" rows="3" placeholder="Enter ZIP codes, one per line or comma-separated"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"></textarea>
+          <p class="text-xs text-gray-400 mt-1">Separate multiple ZIP codes with commas or newlines.</p>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Radius (miles)</label>
+            <input id="field-radius" type="number" step="0.1" min="0" placeholder="Optional"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Center Lat</label>
+            <input id="field-lat" type="number" step="0.000001" placeholder="e.g. 34.0522"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Center Lng</label>
+            <input id="field-lng" type="number" step="0.000001" placeholder="e.g. -118.2437"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+      </div>
+      <div id="form-error" class="hidden mt-3 text-sm text-red-600"></div>
+      <div class="flex gap-3 mt-5 justify-end">
+        <button type="button" onclick="closeModal()"
+          class="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+        <button type="submit"
+          class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const BASE = '/api/service-areas';
+
+  function parseZipCodes(raw) {
+    return raw.split(/[\n,]+/).map(z => z.trim()).filter(Boolean);
+  }
+
+  async function apiFetch(url, options) {
+    const resp = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      ...options,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    return data;
+  }
+
+  async function loadAreas() {
+    try {
+      const areas = await apiFetch(BASE);
+      renderList(areas);
+    } catch (e) {
+      document.getElementById('list-empty-state').textContent = 'Failed to load service areas: ' + e.message;
+    }
+  }
+
+  function renderList(areas) {
+    const container = document.getElementById('service-area-list');
+    if (!areas || areas.length === 0) {
+      container.innerHTML = '<div class="px-5 py-8 text-center text-gray-400 text-sm">No service areas yet. Click "Add Service Area" to create one.</div>';
+      return;
+    }
+    container.innerHTML = areas.map(area => `
+      <div class="px-5 py-4 flex items-center justify-between hover:bg-gray-50">
+        <div>
+          <div class="font-medium text-gray-900">${escHtml(area.name)}</div>
+          <div class="text-sm text-gray-500 mt-0.5">
+            ${area.zip_code_count} ZIP code${area.zip_code_count !== 1 ? 's' : ''}
+            ${area.radius_miles ? ` &bull; ${area.radius_miles} mi radius` : ''}
+            ${area.center_lat && area.center_lng ? ` &bull; ${area.center_lat.toFixed(4)}, ${area.center_lng.toFixed(4)}` : ''}
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${area.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}">
+            ${area.is_active ? 'Active' : 'Inactive'}
+          </span>
+          <button onclick="editArea('${area.id}')" class="text-sm text-blue-600 hover:text-blue-800 px-2 py-1">Edit</button>
+          <button onclick="deactivateArea('${area.id}', '${escHtml(area.name)}')" class="text-sm text-red-500 hover:text-red-700 px-2 py-1">Deactivate</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  window.checkCoverage = async function () {
+    const zip = document.getElementById('coverage-zip').value.trim();
+    const resultEl = document.getElementById('coverage-result');
+    resultEl.classList.remove('hidden', 'text-green-700', 'text-red-600', 'text-gray-600');
+    if (!zip) { resultEl.textContent = 'Please enter a ZIP code.'; resultEl.classList.add('text-gray-600'); resultEl.classList.remove('hidden'); return; }
+    try {
+      const result = await apiFetch(BASE + '/check-coverage', { method: 'POST', body: JSON.stringify({ zip_code: zip }) });
+      if (result.covered) {
+        resultEl.textContent = `Covered by: ${result.service_area.name}`;
+        resultEl.classList.add('text-green-700');
+      } else {
+        resultEl.textContent = `ZIP code ${zip} is not in any active service area.`;
+        resultEl.classList.add('text-red-600');
+      }
+    } catch (e) {
+      resultEl.textContent = 'Error checking coverage: ' + e.message;
+      resultEl.classList.add('text-red-600');
+    }
+    resultEl.classList.remove('hidden');
+  };
+
+  window.editArea = async function (id) {
+    try {
+      const area = await apiFetch(BASE + '/' + id);
+      document.getElementById('modal-title').textContent = 'Edit Service Area';
+      document.getElementById('area-id').value = area.id;
+      document.getElementById('field-name').value = area.name;
+      document.getElementById('field-zip-codes').value = (area.zip_codes || []).join('\n');
+      document.getElementById('field-radius').value = area.radius_miles || '';
+      document.getElementById('field-lat').value = area.center_lat || '';
+      document.getElementById('field-lng').value = area.center_lng || '';
+      document.getElementById('modal-add-area').classList.remove('hidden');
+    } catch (e) {
+      alert('Failed to load area: ' + e.message);
+    }
+  };
+
+  window.deactivateArea = async function (id, name) {
+    if (!confirm(`Deactivate service area "${name}"? This will remove it from coverage checks.`)) return;
+    try {
+      await apiFetch(BASE + '/' + id, { method: 'DELETE' });
+      loadAreas();
+    } catch (e) {
+      alert('Failed to deactivate: ' + e.message);
+    }
+  };
+
+  window.closeModal = function () {
+    document.getElementById('modal-add-area').classList.add('hidden');
+    document.getElementById('modal-title').textContent = 'Add Service Area';
+    document.getElementById('area-id').value = '';
+    document.getElementById('area-form').reset();
+    document.getElementById('form-error').classList.add('hidden');
+  };
+
+  window.submitArea = async function (e) {
+    e.preventDefault();
+    const errorEl = document.getElementById('form-error');
+    errorEl.classList.add('hidden');
+    const id = document.getElementById('area-id').value;
+    const payload = {
+      name: document.getElementById('field-name').value.trim(),
+      zip_codes: parseZipCodes(document.getElementById('field-zip-codes').value),
+      radius_miles: document.getElementById('field-radius').value ? parseFloat(document.getElementById('field-radius').value) : null,
+      center_lat: document.getElementById('field-lat').value ? parseFloat(document.getElementById('field-lat').value) : null,
+      center_lng: document.getElementById('field-lng').value ? parseFloat(document.getElementById('field-lng').value) : null,
+    };
+    try {
+      if (id) {
+        await apiFetch(BASE + '/' + id, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await apiFetch(BASE, { method: 'POST', body: JSON.stringify(payload) });
+      }
+      closeModal();
+      loadAreas();
+    } catch (e) {
+      errorEl.textContent = e.message;
+      errorEl.classList.remove('hidden');
+    }
+  };
+
+  // Load on page init
+  loadAreas();
+})();
+</script>
+{% endblock %}

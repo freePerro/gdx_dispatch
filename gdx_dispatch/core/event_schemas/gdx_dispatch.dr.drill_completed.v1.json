@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.dr.drill_completed.v1",
+  "description": "Emitted when a DR drill completes with every verification check passing. Carries duration and (for non-dry-run) the snapshot + restore identifiers so downstream consumers can link the DR run to its artifacts.",
+  "type": "object",
+  "required": ["drill_run_id", "passed"],
+  "properties": {
+    "drill_run_id": {"type": "string"},
+    "passed": {"type": "boolean", "const": true},
+    "dry_run": {"type": "boolean"},
+    "duration_s": {"type": ["number", "null"]},
+    "snapshot_id": {"type": ["string", "null"]},
+    "snapshot_sha256": {"type": ["string", "null"]},
+    "verification_check_count": {"type": ["integer", "null"]}
+  },
+  "additionalProperties": false
+}

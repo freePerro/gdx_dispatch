@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx_dispatch.cutover.cancelled.v1",
+  "description": "Emitted when run_cutover aborts mid-flight and the transaction is rolled back. Loud, rare — ops should page on it.",
+  "type": "object",
+  "required": ["tenant_id", "old_table", "cancelled_at", "reason"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": "string"},
+    "new_table": {"type": ["string", "null"]},
+    "cancelled_at": {"type": "string"},
+    "reason": {"type": "string"},
+    "actor_identity_id": {"type": ["string", "null"]},
+    "error_class": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

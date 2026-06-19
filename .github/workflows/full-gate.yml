@@ -1,0 +1,114 @@
+name: Full Gate (Nightly)
+
+# Runs the complete test suite nightly at 4 AM UTC.
+# Also available via manual workflow_dispatch.
+# Covers all production tests, qwen2.5 security tests, and root tests.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  full-gate:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gdx
+          POSTGRES_PASSWORD: gdx_test
+          POSTGRES_DB: gdx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://gdx:gdx_test@localhost:5432/gdx_test
+      REDIS_URL: redis://localhost:6379/0
+      FLASK_ENV: testing
+      WTF_CSRF_ENABLED: "False"
+      SECRET_KEY: ci-test-secret-key-not-production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: archive/dispatch_flask/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r archive/dispatch_flask/requirements.txt
+
+      - name: Production tests
+        run: |
+          cd archive/dispatch_flask && python -m pytest tests/production/ \
+            --ignore=tests/production/test_31_playwright_ui_audit.py \
+            --ignore=tests/production/test_10_playwright_optional.py \
+            --ignore=tests/production/test_52_production_live_smoke.py \
+            -v --tb=short -p no:randomly \
+            --junitxml=/tmp/production-results.xml \
+            2>&1 | tee /tmp/production-results.txt
+
+      - name: Qwen security tests
+        if: always()
+        run: |
+          cd archive/dispatch_flask && python -m pytest tests/qwen2.5_tests/ \
+            -v --tb=short \
+            --junitxml=/tmp/qwen-results.xml \
+            2>&1 | tee /tmp/qwen-results.txt
+
+      - name: Root tests
+        if: always()
+        run: |
+          cd archive/dispatch_flask && python -m pytest tests/test_*.py \
+            -v --tb=short \
+            --junitxml=/tmp/root-results.xml \
+            2>&1 | tee /tmp/root-results.txt
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-gate-results
+          path: |
+            /tmp/production-results.txt
+            /tmp/production-results.xml
+            /tmp/qwen-results.txt
+            /tmp/qwen-results.xml
+            /tmp/root-results.txt
+            /tmp/root-results.xml
+          if-no-files-found: ignore
+
+      - name: Create issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Full Gate nightly failure $(date -u +%Y-%m-%d)" \
+            --body "The nightly Full Gate workflow failed. See [run details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." \
+            --label "ci-failure"

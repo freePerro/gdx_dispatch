@@ -1,0 +1,23 @@
+{
+  "_note": "SS-32 slice D — default workload capability map. Platform-wide seed; tenant overrides live in DB (see spiffe_workload_registration table). Glob semantics: '*' matches one segment, '**' matches multiple. Deny-by-default: SPIFFE IDs not matching any entry get empty capabilities.",
+  "entries": [
+    {
+      "spiffe_id_glob": "spiffe://example.com/agent/**",
+      "capabilities": ["mcp:invoke", "mcp:list"],
+      "tenant_scope": "per-tenant",
+      "metadata": {"description": "Default agent workload — MCP tool access only"}
+    },
+    {
+      "spiffe_id_glob": "spiffe://example.com/system/outbox-drain",
+      "capabilities": ["event:drain", "event:ack"],
+      "tenant_scope": "global",
+      "metadata": {"description": "Event outbox drainer background worker"}
+    },
+    {
+      "spiffe_id_glob": "spiffe://example.com/system/celery-*",
+      "capabilities": ["celery:task:execute"],
+      "tenant_scope": "global",
+      "metadata": {"description": "Celery workers — task execution only"}
+    }
+  ]
+}

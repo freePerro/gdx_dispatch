@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.spiffe.workload_registered.v1",
+  "description": "Emitted when a super-admin registers a new SPIFFE workload (glob + capability grant) via /api/admin/spiffe/workloads. Audit trail for capability grants — used by the SS-28 hash-chained log.",
+  "type": "object",
+  "required": ["spiffe_id_glob", "capabilities", "tenant_scope", "registered_by", "registered_at"],
+  "properties": {
+    "spiffe_id_glob": {"type": "string"},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "tenant_scope": {"type": "string", "enum": ["global", "per-tenant"]},
+    "registered_by": {"type": "string"},
+    "registered_at": {"type": "string"},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}

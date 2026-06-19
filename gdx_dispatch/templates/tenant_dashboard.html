@@ -1,0 +1,202 @@
+{% extends "tenant_base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="py-6">
+
+  <!-- Page header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-sm text-gray-500 mt-1">Welcome back. Here's what's happening in the last 30 days.</p>
+  </div>
+
+  <!-- KPI Cards -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-2xl font-bold text-gray-900">{{ stats.jobs_30d | default(0) }}</div>
+        <div class="text-sm text-gray-500">Jobs (30d)</div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-2xl font-bold text-gray-900">${{ stats.revenue_30d | default('0.00') }}</div>
+        <div class="text-sm text-gray-500">Revenue (30d)</div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-2xl font-bold text-gray-900">{{ stats.active_customers | default(0) }}</div>
+        <div class="text-sm text-gray-500">Active Customers</div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-2xl font-bold text-gray-900">{{ stats.technicians | default(0) }}</div>
+        <div class="text-sm text-gray-500">Technicians</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Onboarding checklist (shown when incomplete) -->
+  {% if onboarding and onboarding.percent < 100 %}
+  <div class="bg-white rounded-xl shadow-sm border border-blue-200 p-6 mb-8">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="text-base font-semibold text-gray-900">Complete Setup</h2>
+        <p class="text-sm text-gray-500">Finish setting up your account to get the most out of DispatchApp.</p>
+      </div>
+      <span class="text-2xl font-bold text-blue-600">{{ onboarding.percent }}%</span>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="w-full bg-gray-200 rounded-full h-2 mb-5">
+      <div class="bg-blue-500 h-2 rounded-full transition-all" style="width: {{ onboarding.percent }}%"></div>
+    </div>
+
+    <ul class="space-y-2">
+      {% for step in onboarding.steps %}
+      <li class="flex items-center gap-3 text-sm">
+        {% if step.complete %}
+          <span class="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
+            <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+            </svg>
+          </span>
+          <span class="text-gray-500 line-through">{{ step.title }}</span>
+        {% else %}
+          <span class="w-5 h-5 rounded-full border-2 border-gray-300 flex-shrink-0"></span>
+          {% if step.action_url %}
+            <a href="{{ step.action_url }}" class="text-blue-600 hover:underline font-medium">{{ step.title }}</a>
+          {% else %}
+            <span class="text-gray-700 font-medium">{{ step.title }}</span>
+          {% endif %}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <!-- Bottom row: Quick Actions + Recent Jobs -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Quick Actions -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Quick Actions</h2>
+      <div class="space-y-3">
+        <a href="/jobs/new"
+           class="flex items-center gap-3 w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          Add Job
+        </a>
+        <a href="/customers/new"
+           class="flex items-center gap-3 w-full px-4 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/>
+          </svg>
+          Add Customer
+        </a>
+        <a href="/reports"
+           class="flex items-center gap-3 w-full px-4 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          View Reports
+        </a>
+      </div>
+    </div>
+
+    <!-- Recent Jobs -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 lg:col-span-2">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-base font-semibold text-gray-900">Recent Jobs</h2>
+        <a href="/jobs" class="text-sm text-blue-600 hover:underline">View all</a>
+      </div>
+
+      {% if recent_jobs %}
+      <div class="overflow-x-auto -mx-2">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-gray-100">
+              <th class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-2 pb-2">Job #</th>
+              <th class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-2 pb-2">Customer</th>
+              <th class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-2 pb-2">Status</th>
+              <th class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-2 pb-2 hidden sm:table-cell">Technician</th>
+              <th class="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-2 pb-2">Amount</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-50">
+            {% for job in recent_jobs %}
+            <tr class="hover:bg-gray-50">
+              <td class="px-2 py-3 font-medium text-blue-600">
+                <a href="/jobs/{{ job.id }}">#{{ job.job_number }}</a>
+              </td>
+              <td class="px-2 py-3 text-gray-700">{{ job.customer_name }}</td>
+              <td class="px-2 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                  {% if job.status == 'scheduled' %}bg-blue-100 text-blue-700
+                  {% elif job.status == 'in_progress' %}bg-yellow-100 text-yellow-700
+                  {% elif job.status == 'completed' %}bg-green-100 text-green-700
+                  {% elif job.status == 'cancelled' %}bg-gray-100 text-gray-600
+                  {% else %}bg-gray-100 text-gray-600{% endif %}">
+                  {{ job.status | replace('_', ' ') | title }}
+                </span>
+              </td>
+              <td class="px-2 py-3 text-gray-500 hidden sm:table-cell">{{ job.technician_name or '—' }}</td>
+              <td class="px-2 py-3 text-right text-gray-700 font-medium">
+                {% if job.amount %}${{ job.amount }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="text-center py-10 text-gray-400">
+        <svg class="w-10 h-10 mx-auto mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+        <p class="text-sm">No jobs yet. <a href="/jobs/new" class="text-blue-600 hover:underline">Create your first job</a>.</p>
+      </div>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endblock %}

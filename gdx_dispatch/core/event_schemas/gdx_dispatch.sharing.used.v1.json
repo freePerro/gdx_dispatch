@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sharing.used.v1",
+  "description": "Emitted by the cross-tenant access middleware when a sharee's request successfully traverses a share grant (RLS-bypass via security_definer). Metered against the sharer's tenant (billable relationship per SS-24).",
+  "type": "object",
+  "required": [
+    "share_id",
+    "sharer_tenant_id",
+    "sharee_tenant_id",
+    "resource_type",
+    "resource_id",
+    "capability",
+    "used_at"
+  ],
+  "properties": {
+    "share_id": {"type": "string"},
+    "sharer_tenant_id": {"type": "string"},
+    "sharee_tenant_id": {"type": "string"},
+    "resource_type": {"type": "string"},
+    "resource_id": {"type": "string"},
+    "capability": {"type": "string"},
+    "used_at": {"type": "string"},
+    "principal_identity_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,31 @@
+# Dev hot-reload override — OPT-IN, not auto-loaded.
+# Renamed from docker-compose.override.yml on 2026-04-16 because the auto-load
+# was active on production VPS and replacing the prod CMD (2 workers, no
+# --reload, gdx_dispatch.main:app) with dev config (1 worker, --reload, --factory).
+#
+# Binds the gdx/ source tree into the app container and runs uvicorn with
+# --reload so backend edits reflect in ~1 second instead of a full rebuild.
+#
+# Usage (dev only, explicit opt-in):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d app
+#   # edit gdx_dispatch/routers/*.py locally → container picks up on next request
+#
+# Production (gdx_dispatch/docker/docker-compose.yml alone) uses the Dockerfile CMD.
+services:
+  app:
+    volumes:
+      - ../../gdx_dispatch:/app/gdx_dispatch:ro
+    command:
+      - uvicorn
+      - gdx_dispatch.app:create_app
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/gdx_dispatch
+    environment:
+      ENVIRONMENT: development
+      PYTHONDONTWRITEBYTECODE: "1"

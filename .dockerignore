@@ -1,0 +1,14 @@
+# Keep the Docker build context lean. The devcontainer image only COPYs
+# gdx/requirements.txt, so everything else here is just context-upload savings.
+.git
+.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.mypy_cache
+.ruff_cache
+.playwright-mcp
+dist
+build
+*.db

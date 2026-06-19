@@ -1,0 +1,13 @@
+{
+  "Fault": {
+    "Error": [
+      {
+        "Message": "AuthenticationFailed",
+        "Detail": "Token expired: Bearer token is expired.",
+        "code": "3200"
+      }
+    ],
+    "type": "AUTHENTICATION"
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

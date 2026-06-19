@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ step_title }} — Onboarding — DispatchApp</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+  <!-- Top bar -->
+  <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">🔧</span>
+      <span class="font-bold text-gray-900 text-lg">DispatchApp</span>
+      <span class="text-gray-400 text-sm ml-2">— Account Setup</span>
+    </div>
+    {% if current_user %}
+    <div class="text-sm text-gray-500">{{ current_user.email }}</div>
+    {% endif %}
+  </header>
+
+  <div class="max-w-2xl mx-auto px-4 py-10">
+
+    <!-- Step indicator -->
+    <nav aria-label="Onboarding progress" class="mb-10">
+      <ol class="flex items-center gap-0">
+        {% for s in steps %}
+        {% set is_current = (s.step_name == step) %}
+        {% set is_done = s.is_complete %}
+        <li class="flex-1 flex flex-col items-center relative">
+          <!-- Connector line (not before first item) -->
+          {% if not loop.first %}
+          <div class="absolute top-4 right-1/2 w-full h-0.5
+            {% if is_done or is_current %}bg-blue-500{% else %}bg-gray-200{% endif %}
+            -z-0"></div>
+          {% endif %}
+
+          <!-- Circle -->
+          <div class="relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold
+            {% if is_done %}bg-green-500 text-white
+            {% elif is_current %}bg-blue-600 text-white ring-4 ring-blue-100
+            {% else %}bg-gray-200 text-gray-500{% endif %}">
+            {% if is_done %}
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+            </svg>
+            {% else %}
+            {{ loop.index }}
+            {% endif %}
+          </div>
+
+          <!-- Label -->
+          <span class="mt-2 text-xs text-center leading-tight
+            {% if is_current %}text-blue-700 font-semibold
+            {% elif is_done %}text-green-700
+            {% else %}text-gray-400{% endif %}">
+            {{ s.title }}
+          </span>
+        </li>
+        {% endfor %}
+      </ol>
+    </nav>
+
+    <!-- Card -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+
+      <!-- Heading -->
+      <h1 class="text-2xl font-bold text-gray-900 mb-1">{{ step_title }}</h1>
+      <p class="text-sm text-gray-500 mb-6">Step {{ current_idx + 1 }} of {{ total_steps }}</p>
+
+      <!-- Validation errors -->
+      {% if errors %}
+      <div class="mb-5 p-4 bg-red-50 border border-red-200 rounded-lg">
+        <p class="text-sm font-semibold text-red-800 mb-1">Please fix the following:</p>
+        <ul class="list-disc list-inside text-sm text-red-700 space-y-0.5">
+          {% for err in errors %}
+          <li>{{ err }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      <!-- Flash messages -->
+      {% for msg in flash_messages %}
+      <div class="mb-4 p-3 rounded-lg border text-sm
+        {% if msg.category == 'success' %}bg-green-50 border-green-200 text-green-800
+        {% elif msg.category == 'error' %}bg-red-50 border-red-200 text-red-800
+        {% else %}bg-blue-50 border-blue-200 text-blue-800{% endif %}">
+        {{ msg.text }}
+      </div>
+      {% endfor %}
+
+      <!-- ── Step forms ──────────────────────────────────────────────────── -->
+      <form method="POST" action="/onboarding/{{ step }}" enctype="multipart/form-data" class="space-y-5" novalidate>
+
+        {# ── company_info ─────────────────────────────────────────────── #}
+        {% if step == "company_info" %}
+        <div>
+          <label for="company_name" class="block text-sm font-medium text-gray-700 mb-1">
+            Company Name <span class="text-red-500">*</span>
+          </label>
+          <input id="company_name" name="company_name" type="text" required
+                 placeholder="e.g. Acme Garage Door LLC"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label for="industry" class="block text-sm font-medium text-gray-700 mb-1">Industry</label>
+          <select id="industry" name="industry"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Select industry…</option>
+            <option value="garage_door">Garage Door</option>
+            <option value="hvac">HVAC</option>
+            <option value="plumbing">Plumbing</option>
+            <option value="electrical">Electrical</option>
+            <option value="general_contractor">General Contractor</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div>
+          <label for="timezone" class="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
+          <select id="timezone" name="timezone"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Select timezone…</option>
+            <option value="America/New_York">Eastern (UTC-5/4)</option>
+            <option value="America/Chicago">Central (UTC-6/5)</option>
+            <option value="America/Denver">Mountain (UTC-7/6)</option>
+            <option value="America/Los_Angeles">Pacific (UTC-8/7)</option>
+            <option value="America/Phoenix">Arizona (UTC-7)</option>
+            <option value="America/Anchorage">Alaska (UTC-9/8)</option>
+            <option value="Pacific/Honolulu">Hawaii (UTC-10)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Company Logo</label>
+          <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors cursor-pointer"
+               onclick="document.getElementById('logo_upload').click()">
+            <svg class="mx-auto mb-2 w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+            </svg>
+            <p class="text-sm text-gray-500">Click to upload or drag &amp; drop</p>
+            <p class="text-xs text-gray-400 mt-1">PNG, JPG, SVG up to 2 MB</p>
+            <input id="logo_upload" name="logo" type="file" accept="image/*" class="hidden"
+                   onchange="document.getElementById('logo_name').textContent = this.files[0]?.name || ''" />
+            <p id="logo_name" class="text-xs text-blue-600 mt-1"></p>
+          </div>
+        </div>
+
+        {# ── first_technician ─────────────────────────────────────────── #}
+        {% elif step == "first_technician" %}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label for="tech_name" class="block text-sm font-medium text-gray-700 mb-1">
+              Full Name <span class="text-red-500">*</span>
+            </label>
+            <input id="tech_name" name="tech_name" type="text" required
+                   placeholder="Jane Smith"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label for="tech_role" class="block text-sm font-medium text-gray-700 mb-1">Role</label>
+            <select id="tech_role" name="tech_role"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="technician">Technician</option>
+              <option value="lead_technician">Lead Technician</option>
+              <option value="dispatcher">Dispatcher</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label for="tech_email" class="block text-sm font-medium text-gray-700 mb-1">
+            Email <span class="text-red-500">*</span>
+          </label>
+          <input id="tech_email" name="tech_email" type="email" required
+                 placeholder="jane@yourcompany.com"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label for="tech_phone" class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+          <input id="tech_phone" name="tech_phone" type="tel"
+                 placeholder="(555) 000-0000"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <p class="text-xs text-gray-500">An invitation email will be sent to the technician after setup.</p>
+
+        {# ── service_area ─────────────────────────────────────────────── #}
+        {% elif step == "service_area" %}
+        <div>
+          <label for="zip_codes" class="block text-sm font-medium text-gray-700 mb-1">
+            Service ZIP Codes
+          </label>
+          <textarea id="zip_codes" name="zip_codes" rows="3"
+                    placeholder="90210, 90211, 90212 (comma or newline separated)"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"></textarea>
+          <p class="text-xs text-gray-400 mt-1">Enter ZIP codes separated by commas or new lines.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="flex-1 border-t border-gray-200"></div>
+          <span class="text-xs text-gray-400 uppercase tracking-wide">or</span>
+          <div class="flex-1 border-t border-gray-200"></div>
+        </div>
+        <div>
+          <label for="service_radius" class="block text-sm font-medium text-gray-700 mb-1">
+            Service Radius (miles)
+          </label>
+          <div class="flex items-center gap-3">
+            <input id="service_radius" name="service_radius" type="range" min="5" max="150" step="5" value="25"
+                   class="flex-1 accent-blue-600"
+                   oninput="document.getElementById('radius_display').textContent = this.value + ' mi'" />
+            <span id="radius_display" class="text-sm font-medium text-gray-700 w-14 text-right">25 mi</span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Radius from your primary business address.</p>
+        </div>
+
+        {# ── first_job_type ────────────────────────────────────────────── #}
+        {% elif step == "first_job_type" %}
+        <p class="text-sm text-gray-600 -mt-2 mb-1">Select the services your team provides:</p>
+        <div class="grid grid-cols-2 gap-3">
+          {% set common_job_types = [
+            ("garage_door_repair", "Garage Door Repair"),
+            ("spring_replacement", "Spring Replacement"),
+            ("opener_install", "Opener Installation"),
+            ("new_door_install", "New Door Installation"),
+            ("cable_repair", "Cable Repair"),
+            ("panel_replacement", "Panel Replacement"),
+            ("emergency_service", "Emergency Service"),
+            ("maintenance_tune_up", "Maintenance / Tune-Up"),
+            ("weatherstripping", "Weatherstripping"),
+            ("commercial_door", "Commercial Door"),
+          ] %}
+          {% for value, label in common_job_types %}
+          <label class="flex items-center gap-2.5 p-3 border border-gray-200 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50">
+            <input type="checkbox" name="job_types" value="{{ value }}"
+                   class="accent-blue-600 w-4 h-4 flex-shrink-0" />
+            <span class="text-sm text-gray-700">{{ label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <div class="mt-2">
+          <label for="custom_job_type" class="block text-sm font-medium text-gray-700 mb-1">Other (custom)</label>
+          <input id="custom_job_type" name="job_types" type="text"
+                 placeholder="e.g. Gate Automation"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        {# ── payment_setup ─────────────────────────────────────────────── #}
+        {% elif step == "payment_setup" %}
+        <div class="p-5 bg-blue-50 border border-blue-200 rounded-xl flex gap-4 items-start">
+          <div class="text-blue-500 mt-0.5">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+          </div>
+          <div>
+            <p class="text-sm font-semibold text-blue-900">Secure payments via Stripe Connect</p>
+            <p class="text-sm text-blue-700 mt-1">
+              Connect your Stripe account to accept credit cards, ACH, and digital wallets.
+              You can skip this now and set it up later in Settings → Payments.
+            </p>
+          </div>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-3 mt-2">
+          <a href="/settings/stripe-connect"
+             class="flex-1 flex items-center justify-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition-colors">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            Connect Stripe Account
+          </a>
+          <button type="submit" name="skip_payment" value="1"
+                  class="flex-1 px-5 py-3 border border-gray-300 text-gray-700 font-medium text-sm rounded-xl hover:bg-gray-50 transition-colors">
+            Skip for now
+          </button>
+        </div>
+        <!-- Hidden field so form POST still marks the step complete when skipping -->
+        <input type="hidden" name="payment_skipped" value="1" />
+
+        {# ── branding ──────────────────────────────────────────────────── #}
+        {% elif step == "branding" %}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div>
+            <label for="primary_color" class="block text-sm font-medium text-gray-700 mb-1">
+              Primary Brand Color
+            </label>
+            <div class="flex items-center gap-3">
+              <input id="primary_color" name="primary_color" type="color" value="#2563eb"
+                     class="w-10 h-10 rounded-lg border border-gray-300 cursor-pointer p-0.5" />
+              <input type="text" id="primary_color_hex" value="#2563eb"
+                     placeholder="#2563eb"
+                     class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                     oninput="document.getElementById('primary_color').value = this.value" />
+            </div>
+            <script>
+              document.getElementById('primary_color').addEventListener('input', function() {
+                document.getElementById('primary_color_hex').value = this.value;
+              });
+            </script>
+          </div>
+          <div>
+            <label for="secondary_color" class="block text-sm font-medium text-gray-700 mb-1">
+              Secondary / Accent Color
+            </label>
+            <div class="flex items-center gap-3">
+              <input id="secondary_color" name="secondary_color" type="color" value="#1e40af"
+                     class="w-10 h-10 rounded-lg border border-gray-300 cursor-pointer p-0.5" />
+              <input type="text" id="secondary_color_hex" value="#1e40af"
+                     placeholder="#1e40af"
+                     class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                     oninput="document.getElementById('secondary_color').value = this.value" />
+            </div>
+            <script>
+              document.getElementById('secondary_color').addEventListener('input', function() {
+                document.getElementById('secondary_color_hex').value = this.value;
+              });
+            </script>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Header / Banner Image</label>
+          <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors cursor-pointer"
+               onclick="document.getElementById('banner_upload').click()">
+            <svg class="mx-auto mb-2 w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+            </svg>
+            <p class="text-sm text-gray-500">Upload header image (optional)</p>
+            <p class="text-xs text-gray-400 mt-1">PNG, JPG up to 5 MB — recommended 1200×300 px</p>
+            <input id="banner_upload" name="banner" type="file" accept="image/*" class="hidden"
+                   onchange="document.getElementById('banner_name').textContent = this.files[0]?.name || ''" />
+            <p id="banner_name" class="text-xs text-blue-600 mt-1"></p>
+          </div>
+        </div>
+        <!-- Live preview swatch -->
+        <div class="mt-2">
+          <p class="text-sm font-medium text-gray-700 mb-2">Preview</p>
+          <div id="brand_preview" class="rounded-xl h-14 flex items-center px-5 text-white font-semibold text-sm shadow-inner transition-colors"
+               style="background-color: #2563eb">
+            Your Company Name
+          </div>
+          <script>
+            document.getElementById('primary_color').addEventListener('input', function() {
+              document.getElementById('brand_preview').style.backgroundColor = this.value;
+            });
+          </script>
+        </div>
+
+        {% endif %}
+        {# ── End step-specific content ─────────────────────────────────── #}
+
+        <!-- Navigation buttons (not shown for payment_setup which has its own) -->
+        {% if step != "payment_setup" %}
+        <div class="flex items-center justify-between pt-2">
+          {% if current_idx > 0 %}
+          <a href="/onboarding/{{ wizard_steps[current_idx - 1] }}"
+             class="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            Back
+          </a>
+          {% else %}
+          <span></span>
+          {% endif %}
+
+          <button type="submit"
+                  class="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition-colors">
+            {% if current_idx == total_steps - 1 %}
+            Finish Setup
+            {% else %}
+            Save &amp; Continue
+            {% endif %}
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+        </div>
+        {% endif %}
+
+      </form>
+    </div>
+
+    <!-- Progress note -->
+    <p class="text-center text-xs text-gray-400 mt-6">
+      Your progress is saved automatically. You can close this page and resume anytime.
+    </p>
+  </div>
+
+</body>
+</html>

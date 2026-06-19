@@ -1,0 +1,410 @@
+[
+  {
+    "route": "/equipment-tracking",
+    "httpStatus": 200,
+    "appBytes": 48842,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/job-templates",
+    "httpStatus": 200,
+    "appBytes": 48824,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/payroll",
+    "httpStatus": 200,
+    "appBytes": 57857,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/checklists",
+    "httpStatus": 200,
+    "appBytes": 51257,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/service-agreements",
+    "httpStatus": 200,
+    "appBytes": 52187,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/maintenance",
+    "httpStatus": 200,
+    "appBytes": 49998,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/appointments",
+    "httpStatus": 200,
+    "appBytes": 54320,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/booking",
+    "httpStatus": 200,
+    "appBytes": 48132,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/leads",
+    "httpStatus": 200,
+    "appBytes": 65635,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/proposals",
+    "httpStatus": 200,
+    "appBytes": 81412,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/signatures",
+    "httpStatus": 200,
+    "appBytes": 80023,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/technicians",
+    "httpStatus": 200,
+    "appBytes": 51536,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/job-costing",
+    "httpStatus": 200,
+    "appBytes": 49315,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/photos",
+    "httpStatus": 200,
+    "appBytes": 42496,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/tags",
+    "httpStatus": 200,
+    "appBytes": 38550,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/webhooks",
+    "httpStatus": 200,
+    "appBytes": 41240,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/gdpr",
+    "httpStatus": 200,
+    "appBytes": 43061,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/feature-flags",
+    "httpStatus": 200,
+    "appBytes": 40667,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/games",
+    "httpStatus": 200,
+    "appBytes": 40549,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/games/audit-anomaly",
+    "httpStatus": 200,
+    "appBytes": 37675,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "API GET /api/games/state?actor=claude&game=audit-anomaly → 404: no state row for actor='claude' game='audit-anomaly'"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/role-permissions",
+    "httpStatus": 200,
+    "appBytes": 57104,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/users",
+    "httpStatus": 200,
+    "appBytes": 47453,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/custom-fields",
+    "httpStatus": 200,
+    "appBytes": 42154,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/saas-billing",
+    "httpStatus": 200,
+    "appBytes": 37904,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/pdf-templates",
+    "httpStatus": 200,
+    "appBytes": 43578,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/parts-to-order",
+    "httpStatus": 200,
+    "appBytes": 54516,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/commissions",
+    "httpStatus": 200,
+    "appBytes": 40330,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/variance-report",
+    "httpStatus": 200,
+    "appBytes": 39469,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/performance",
+    "httpStatus": 200,
+    "appBytes": 39572,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/mobile",
+    "httpStatus": 200,
+    "appBytes": 1272,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+      "API GET /api/mobile/schedule?date=2026-04-29 → 403: Module 'mobile' is not enabled",
+      "Failed to fetch schedule: Error: Module 'mobile' is not enabled\n    at t (http://localhost:8001/assets/index-Bnx7s-vz.js:68:17283)\n    at async Object.s [as get] (http://localhost:8001/assets/index-Bnx7s-vz.js:68:45085)\n    at async r (http://localhost:8001/assets/MobileScheduleView-CzzMPSGx.js:1:1114)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/settings/api-keys",
+    "httpStatus": 200,
+    "appBytes": 1735,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/capabilities/available → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/api-keys",
+    "httpStatus": 200,
+    "appBytes": 2070,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/admin/tenant-members → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/admin/pats → 429: Rate limit exceeded. Please slow down.",
+      "API GET /api/capabilities/available → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/custom-fields/sensitivity",
+    "httpStatus": 200,
+    "appBytes": 740,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/admin/custom-fields/sensitivity → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/billing-usage",
+    "httpStatus": 200,
+    "appBytes": 684,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/billing/usage?period_kind=month → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/shares",
+    "httpStatus": 200,
+    "appBytes": 1901,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/shares → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/audit-log",
+    "httpStatus": 200,
+    "appBytes": 1605,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "API GET /api/admin/audit-log?limit=50&offset=0 → 429: Rate limit exceeded. Please slow down.",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/privacy",
+    "httpStatus": 200,
+    "appBytes": 1449,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/shadow-migrations",
+    "httpStatus": 200,
+    "appBytes": 1331,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/cutover",
+    "httpStatus": 200,
+    "appBytes": 1332,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/federation",
+    "httpStatus": 200,
+    "appBytes": 1895,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/spiffe",
+    "httpStatus": 200,
+    "appBytes": 1794,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/resource-types",
+    "httpStatus": 200,
+    "appBytes": 1582,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/dr-drills",
+    "httpStatus": 200,
+    "appBytes": 1844,
+    "pageErrors": [],
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "status": "pass"
+  },
+  {
+    "route": "/admin/privacy-requests",
+    "httpStatus": 200,
+    "appBytes": 2278,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "status": "pass"
+  }
+]

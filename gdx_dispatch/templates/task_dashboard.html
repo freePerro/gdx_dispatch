@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GDX Task Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f1117; color: #e2e8f0; padding: 1.5rem; }
+    h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 1.5rem; color: #f8fafc; }
+    h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; color: #cbd5e1; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: #1e2330; border: 1px solid #2d3748; border-radius: 8px; padding: 1.25rem; }
+    .card .label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+    .card .value { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+    .card .value.ok { color: #4ade80; }
+    .card .value.warn { color: #facc15; }
+    .card .value.error { color: #f87171; }
+    .section { background: #1e2330; border: 1px solid #2d3748; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; color: #94a3b8; border-bottom: 1px solid #2d3748; font-weight: 500; }
+    td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #1a2030; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #252d3d; }
+    .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 9999px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .badge.success { background: #052e16; color: #4ade80; }
+    .badge.failure { background: #450a0a; color: #f87171; }
+    .badge.started { background: #0c1a4b; color: #60a5fa; }
+    .badge.pending { background: #1c1917; color: #a8a29e; }
+    .badge.retry   { background: #2d1d00; color: #fb923c; }
+    .btn-retry { background: #1d4ed8; color: #fff; border: none; border-radius: 5px; padding: 0.25rem 0.7rem; font-size: 0.78rem; cursor: pointer; }
+    .btn-retry:hover { background: #2563eb; }
+    .btn-retry:disabled { background: #374151; cursor: not-allowed; }
+    #success-bar-wrap { background: #0f1117; border-radius: 4px; height: 14px; overflow: hidden; margin-top: 0.5rem; }
+    #success-bar { height: 100%; background: #4ade80; width: 0%; transition: width 0.6s ease; }
+    .error-msg { font-size: 0.78rem; color: #f87171; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .loading { color: #94a3b8; font-style: italic; padding: 1rem 0; }
+    .refresh-btn { background: #1e2330; border: 1px solid #2d3748; color: #94a3b8; border-radius: 6px; padding: 0.35rem 0.85rem; font-size: 0.8rem; cursor: pointer; margin-bottom: 1.5rem; }
+    .refresh-btn:hover { background: #252d3d; color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>GDX Task Monitor</h1>
+  <button class="refresh-btn" onclick="loadAll()">&#8635; Refresh</button>
+
+  <!-- Metrics gauges -->
+  <div class="grid" id="metrics-grid">
+    <div class="card"><div class="label">Success Rate (24h)</div><div class="value" id="m-success-rate">—</div>
+      <div id="success-bar-wrap"><div id="success-bar"></div></div></div>
+    <div class="card"><div class="label">Avg Duration (ms)</div><div class="value" id="m-avg-dur">—</div></div>
+    <div class="card"><div class="label">Failures (24h)</div><div class="value" id="m-failed">—</div></div>
+    <div class="card"><div class="label">Queue: high</div><div class="value" id="m-q-high">—</div></div>
+    <div class="card"><div class="label">Queue: low</div><div class="value" id="m-q-low">—</div></div>
+  </div>
+
+  <!-- Recent executions -->
+  <div class="section">
+    <h2>Recent Executions (last 100)</h2>
+    <div id="recent-wrap" class="loading">Loading…</div>
+  </div>
+
+  <!-- Failed tasks -->
+  <div class="section">
+    <h2>Failed Tasks</h2>
+    <div id="failed-wrap" class="loading">Loading…</div>
+  </div>
+
+  <!-- Scheduled tasks -->
+  <div class="section">
+    <h2>Scheduled (Beat) Tasks</h2>
+    <div id="sched-wrap" class="loading">Loading…</div>
+  </div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const BASE = "/api/admin/tasks";
+
+async function apiFetch(path) {
+  const r = await fetch(BASE + path, {
+    headers: TOKEN ? { Authorization: "Bearer " + TOKEN } : {}
+  });
+  if (!r.ok) throw new Error(r.status + " " + r.statusText);
+  return r.json();
+}
+
+function statusBadge(s) {
+  return `<span class="badge ${s}">${s}</span>`;
+}
+
+function fmtDate(d) {
+  if (!d) return "—";
+  return new Date(d).toLocaleString();
+}
+
+function buildTable(rows, cols, extraFn) {
+  if (!rows.length) return "<em style='color:#94a3b8'>No records.</em>";
+  const head = cols.map(c => `<th>${c.label}</th>`).join("");
+  const body = rows.map(row => {
+    const cells = cols.map(c => `<td>${c.fn(row)}</td>`).join("");
+    const extra = extraFn ? extraFn(row) : "";
+    return `<tr>${cells}${extra}</tr>`;
+  }).join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function loadMetrics() {
+  try {
+    const m = await apiFetch("/metrics");
+    const sr = m.success_rate_24h ?? 0;
+    const srEl = document.getElementById("m-success-rate");
+    srEl.textContent = sr.toFixed(1) + "%";
+    srEl.className = "value " + (sr >= 95 ? "ok" : sr >= 80 ? "warn" : "error");
+    document.getElementById("success-bar").style.width = sr + "%";
+    document.getElementById("m-avg-dur").textContent = (m.avg_duration_ms ?? 0).toFixed(0);
+    const failEl = document.getElementById("m-failed");
+    failEl.textContent = m.failed_count ?? 0;
+    failEl.className = "value " + (m.failed_count > 0 ? "error" : "ok");
+    const qh = m.queue_depth_high ?? 0;
+    const ql = m.queue_depth_low ?? 0;
+    const qhEl = document.getElementById("m-q-high");
+    qhEl.textContent = qh;
+    qhEl.className = "value " + (qh > 100 ? "error" : qh > 20 ? "warn" : "ok");
+    const qlEl = document.getElementById("m-q-low");
+    qlEl.textContent = ql;
+    qlEl.className = "value " + (ql > 500 ? "error" : ql > 100 ? "warn" : "ok");
+  } catch(e) {
+    document.getElementById("metrics-grid").innerHTML = `<div class="card"><div class="label">Error</div><div class="value error">!</div></div>`;
+  }
+}
+
+async function loadRecent() {
+  const el = document.getElementById("recent-wrap");
+  try {
+    const rows = await apiFetch("/recent");
+    const cols = [
+      { label: "Task Name", fn: r => `<code>${r.task_name}</code>` },
+      { label: "Tenant", fn: r => r.tenant_id || "—" },
+      { label: "Started", fn: r => fmtDate(r.started_at) },
+      { label: "Duration (ms)", fn: r => r.duration_ms != null ? r.duration_ms : "—" },
+      { label: "Retries", fn: r => r.retries },
+      { label: "Status", fn: r => statusBadge(r.status) },
+    ];
+    el.innerHTML = buildTable(rows, cols, null);
+  } catch(e) {
+    el.innerHTML = `<span class="error-msg">Error: ${e.message}</span>`;
+  }
+}
+
+async function retryTask(taskId, btn) {
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    await fetch(`${BASE}/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+      headers: TOKEN ? { Authorization: "Bearer " + TOKEN } : {}
+    });
+    btn.textContent = "Queued!";
+    setTimeout(() => loadAll(), 1500);
+  } catch(e) {
+    btn.textContent = "Error";
+    btn.disabled = false;
+  }
+}
+
+async function loadFailed() {
+  const el = document.getElementById("failed-wrap");
+  try {
+    const rows = await apiFetch("/failed");
+    const cols = [
+      { label: "Task Name", fn: r => `<code>${r.task_name}</code>` },
+      { label: "Task ID", fn: r => `<code style='font-size:0.7rem'>${(r.task_id||"").substring(0,16)}…</code>` },
+      { label: "Tenant", fn: r => r.tenant_id || "—" },
+      { label: "Failed At", fn: r => fmtDate(r.started_at) },
+      { label: "Error", fn: r => `<span class="error-msg" title="${r.error_message||''}">${r.error_message||"—"}</span>` },
+    ];
+    el.innerHTML = buildTable(rows, cols, row =>
+      `<td><button class="btn-retry" onclick="retryTask('${row.task_id}',this)">Retry</button></td>`
+    );
+  } catch(e) {
+    el.innerHTML = `<span class="error-msg">Error: ${e.message}</span>`;
+  }
+}
+
+async function loadScheduled() {
+  const el = document.getElementById("sched-wrap");
+  try {
+    const rows = await apiFetch("/scheduled");
+    const cols = [
+      { label: "Name", fn: r => r.name },
+      { label: "Task", fn: r => `<code>${r.task}</code>` },
+      { label: "Schedule", fn: r => r.schedule },
+      { label: "Queue", fn: r => r.queue },
+    ];
+    el.innerHTML = buildTable(rows, cols, null);
+  } catch(e) {
+    el.innerHTML = `<span class="error-msg">Error: ${e.message}</span>`;
+  }
+}
+
+async function loadAll() {
+  await Promise.all([loadMetrics(), loadRecent(), loadFailed(), loadScheduled()]);
+}
+
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>

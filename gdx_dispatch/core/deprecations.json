@@ -1,0 +1,4 @@
+{
+  "_comment": "SS-25 deprecation registry. Loaded by gdx_dispatch.core.deprecation_registry. Keys are endpoint paths (exact match) OR path patterns (e.g. /api/v1/foo). Integration-time wiring will populate real entries; the sample below is an illustrative example only and not a real deprecation.",
+  "deprecations": []
+}

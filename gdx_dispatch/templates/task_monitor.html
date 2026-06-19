@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Celery Task Monitor — GDX Admin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #1a1a2e; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    .refresh-badge { margin-left: auto; font-size: .75rem; color: #94a3b8; }
+    main { max-width: 1400px; margin: 0 auto; padding: 1.5rem 1rem; }
+
+    /* Stats cards */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .card .label { font-size: .75rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25rem; }
+    .card .value { font-size: 1.75rem; font-weight: 700; color: #1a1a2e; }
+    .card .sub { font-size: .75rem; color: #6b7280; margin-top: .15rem; }
+    .card.danger .value { color: #dc2626; }
+    .card.warn .value { color: #d97706; }
+    .card.ok .value { color: #059669; }
+
+    /* Section */
+    .section { margin-bottom: 1.75rem; }
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6rem; }
+    .section-title { font-size: 1rem; font-weight: 600; color: #1a1a2e; }
+
+    /* Tables */
+    .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    thead { background: #f9fafb; }
+    th { padding: .55rem 1rem; text-align: left; font-size: .7rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+    td { padding: .55rem 1rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+    .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: .75rem; }
+    .empty { text-align: center; color: #9ca3af; padding: 1.5rem; }
+
+    /* Badges */
+    .badge { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .7rem; font-weight: 700; }
+    .badge-running  { background: #dbeafe; color: #1e40af; }
+    .badge-success  { background: #d1fae5; color: #065f46; }
+    .badge-failure  { background: #fee2e2; color: #991b1b; }
+    .badge-pending  { background: #fef3c7; color: #92400e; }
+    .badge-retry    { background: #ede9fe; color: #5b21b6; }
+    .badge-revoked  { background: #f3f4f6; color: #374151; }
+
+    /* Buttons */
+    .btn { padding: .3rem .75rem; border-radius: 4px; border: none; cursor: pointer; font-size: .8rem; font-weight: 600; }
+    .btn-danger  { background: #dc2626; color: #fff; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-sm      { padding: .2rem .55rem; font-size: .75rem; }
+
+    /* Queue mini-bars */
+    .queue-row { display: flex; gap: 1rem; }
+    .queue-chip { background: #fff; border-radius: 6px; padding: .5rem .9rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: .8rem; }
+    .queue-chip .qname { font-weight: 700; color: #1a1a2e; }
+    .queue-chip .qval  { color: #6b7280; }
+
+    #last-refresh { font-size: .75rem; color: #94a3b8; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+    <path stroke-linecap="round" stroke-linejoin="round"
+          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+  </svg>
+  <h1>Celery Task Monitor</h1>
+  <span class="refresh-badge">Auto-refresh every 10s &nbsp;|&nbsp; <span id="last-refresh">—</span></span>
+</header>
+
+<main>
+
+  <!-- Stats Cards -->
+  <div class="cards" id="stats-cards">
+    <div class="card ok"><div class="label">Active Now</div><div class="value" id="stat-active">—</div><div class="sub">running tasks</div></div>
+    <div class="card" id="card-queued"><div class="label">Queued</div><div class="value" id="stat-queued">—</div><div class="sub">pending across queues</div></div>
+    <div class="card" id="card-failed"><div class="label">Failed Today</div><div class="value" id="stat-failed">—</div><div class="sub">of <span id="stat-total">—</span> total today</div></div>
+    <div class="card"><div class="label">Avg Duration</div><div class="value" id="stat-avg-ms">—</div><div class="sub">ms (today)</div></div>
+  </div>
+
+  <!-- Queue depth row -->
+  <div class="section">
+    <div class="section-header"><span class="section-title">Queue Depths</span></div>
+    <div class="queue-row" id="queue-row">
+      <div class="queue-chip"><span class="qname">high</span> — <span class="qval" id="q-high-active">0</span> active / <span class="qval" id="q-high-pending">0</span> pending</div>
+      <div class="queue-chip"><span class="qname">low</span> — <span class="qval" id="q-low-active">0</span> active / <span class="qval" id="q-low-pending">0</span> pending</div>
+    </div>
+  </div>
+
+  <!-- Active Tasks -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Active Tasks</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task Name</th>
+            <th>Task ID</th>
+            <th>Tenant</th>
+            <th>Worker</th>
+            <th>Started</th>
+            <th>Duration</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-active">
+          <tr><td colspan="7" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Scheduled Tasks -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Scheduled (Beat) Tasks</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Task</th>
+            <th>Schedule</th>
+            <th>Next Run</th>
+            <th>Queue</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-scheduled">
+          <tr><td colspan="5" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Failed Tasks (history) -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Recent Failed Tasks</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task Name</th>
+            <th>Task ID</th>
+            <th>Status</th>
+            <th>Finished</th>
+            <th>Error</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-failed">
+          <tr><td colspan="6" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  const API = "/api/admin/tasks";
+  let _token = "";
+
+  function getToken() {
+    if (!_token) _token = prompt("Enter Admin API Token:") || "";
+    return _token;
+  }
+
+  function authHeaders() {
+    return { "Authorization": "Bearer " + getToken(), "Content-Type": "application/json" };
+  }
+
+  function esc(s) {
+    if (s == null) return "";
+    return String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  }
+
+  function statusBadge(s) {
+    const map = {
+      "SUCCESS": "badge-success", "FAILURE": "badge-failure",
+      "STARTED": "badge-running", "PENDING": "badge-pending",
+      "RETRY": "badge-retry", "REVOKED": "badge-revoked",
+      "success": "badge-success", "failure": "badge-failure",
+      "started": "badge-running", "pending": "badge-pending",
+    };
+    const cls = map[s] || "badge-pending";
+    return `<span class="badge ${cls}">${esc(s)}</span>`;
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  async function loadStats() {
+    try {
+      const r = await fetch(API + "/stats", { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      document.getElementById("stat-failed").textContent = d.failed_today ?? 0;
+      document.getElementById("stat-total").textContent  = d.total_today ?? 0;
+      document.getElementById("stat-avg-ms").textContent = (d.avg_duration_ms ?? 0).toFixed(1);
+
+      const failedCard = document.getElementById("card-failed");
+      failedCard.className = "card " + ((d.failed_today > 0) ? "danger" : "ok");
+
+      const q = d.queues || {};
+      const high = q.high || {};
+      const low  = q.low  || {};
+      document.getElementById("q-high-active").textContent  = high.active  ?? 0;
+      document.getElementById("q-high-pending").textContent = high.pending ?? 0;
+      document.getElementById("q-low-active").textContent   = low.active   ?? 0;
+      document.getElementById("q-low-pending").textContent  = low.pending  ?? 0;
+
+      const totalQueued = (high.pending || 0) + (low.pending || 0);
+      document.getElementById("stat-queued").textContent = totalQueued;
+      const queuedCard = document.getElementById("card-queued");
+      queuedCard.className = "card " + (totalQueued > 0 ? "warn" : "ok");
+    } catch (e) {
+      console.error("stats error", e);
+    }
+  }
+
+  // ── Active tasks ──────────────────────────────────────────────────────────
+  async function loadActive() {
+    try {
+      const r = await fetch(API + "/active", { headers: authHeaders() });
+      const tasks = r.ok ? await r.json() : [];
+      document.getElementById("stat-active").textContent = tasks.length;
+      const tbody = document.getElementById("tbody-active");
+      if (tasks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty">No active tasks.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = tasks.map(t => `
+        <tr>
+          <td>${esc(t.name)}</td>
+          <td class="mono">${esc((t.task_id||"").slice(0,16))}…</td>
+          <td>${esc(t.tenant_id || "—")}</td>
+          <td class="mono" style="font-size:.7rem">${esc(t.worker)}</td>
+          <td class="mono">${esc(t.started_at ? t.started_at.replace("T"," ").slice(0,19) : "—")}</td>
+          <td>${t.duration_s != null ? t.duration_s.toFixed(1)+"s" : "—"}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="revokeTask('${esc(t.task_id)}')">Revoke</button></td>
+        </tr>
+      `).join("");
+    } catch (e) {
+      console.error("active error", e);
+    }
+  }
+
+  // ── Scheduled tasks ───────────────────────────────────────────────────────
+  async function loadScheduled() {
+    try {
+      const r = await fetch(API + "/scheduled", { headers: authHeaders() });
+      const tasks = r.ok ? await r.json() : [];
+      const tbody = document.getElementById("tbody-scheduled");
+      if (tasks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No scheduled tasks.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = tasks.map(t => `
+        <tr>
+          <td>${esc(t.name)}</td>
+          <td class="mono" style="font-size:.75rem">${esc(t.task)}</td>
+          <td>${esc(t.schedule_human || t.schedule || "—")}</td>
+          <td class="mono" style="font-size:.75rem">${esc((t.next_run_approx||"").slice(0,19).replace("T"," ") || "—")}</td>
+          <td><span class="badge badge-pending">${esc(t.queue)}</span></td>
+        </tr>
+      `).join("");
+    } catch (e) {
+      console.error("scheduled error", e);
+    }
+  }
+
+  // ── Failed tasks (from history) ───────────────────────────────────────────
+  async function loadFailed() {
+    try {
+      const r = await fetch(API + "/history?limit=50", { headers: authHeaders() });
+      const all = r.ok ? await r.json() : [];
+      const failed = all.filter(t => t.status === "FAILURE" || t.status === "failure");
+      const tbody = document.getElementById("tbody-failed");
+      if (failed.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No failed tasks.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = failed.slice(0, 20).map(t => `
+        <tr>
+          <td>${esc(t.name || "—")}</td>
+          <td class="mono">${esc((t.task_id||"").slice(0,16))}…</td>
+          <td>${statusBadge(t.status)}</td>
+          <td class="mono">${esc((t.date_done||"").slice(0,19).replace("T"," ") || "—")}</td>
+          <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.75rem;color:#6b7280"
+              title="${esc(t.traceback)}">${esc((t.traceback||t.result||"—").slice(0,80))}</td>
+          <td><button class="btn btn-primary btn-sm" onclick="retryTask('${esc(t.task_id)}')">Retry</button></td>
+        </tr>
+      `).join("");
+    } catch (e) {
+      console.error("history error", e);
+    }
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+  async function revokeTask(taskId) {
+    if (!confirm("Revoke task " + taskId + "?")) return;
+    try {
+      const r = await fetch(API + "/" + encodeURIComponent(taskId) + "/revoke", {
+        method: "POST", headers: authHeaders()
+      });
+      const d = await r.json();
+      if (d.success) { alert("Task revoked."); refresh(); }
+      else alert("Revoke failed: " + (d.error || "unknown error"));
+    } catch (e) { alert("Error: " + e); }
+  }
+
+  async function retryTask(taskId) {
+    try {
+      const r = await fetch(API + "/" + encodeURIComponent(taskId) + "/retry", {
+        method: "POST", headers: authHeaders()
+      });
+      const d = await r.json();
+      if (d.queued || d.success) { alert("Task queued for retry."); refresh(); }
+      else alert("Retry failed: " + (d.error || JSON.stringify(d)));
+    } catch (e) { alert("Error: " + e); }
+  }
+
+  // ── Refresh ───────────────────────────────────────────────────────────────
+  function refresh() {
+    loadStats();
+    loadActive();
+    loadScheduled();
+    loadFailed();
+    document.getElementById("last-refresh").textContent =
+      new Date().toLocaleTimeString();
+  }
+
+  // Init + auto-refresh every 10s
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>

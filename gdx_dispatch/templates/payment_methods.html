@@ -1,0 +1,392 @@
+{% extends "tenant_base.html" %}
+
+{% block title %}Payment Methods{% endblock %}
+
+{% block content %}
+<div class="pt-6 max-w-3xl mx-auto">
+
+  <!-- Page Header -->
+  <div class="mb-8">
+    <h1 class="text-2xl font-bold text-gray-900">Payment Methods</h1>
+    <p class="mt-1 text-sm text-gray-500">Manage your saved cards and bank accounts. Your payment information is secured by Stripe.</p>
+  </div>
+
+  <!-- Flash messages (inline, no Flask dependency) -->
+  <div id="flash-container"></div>
+
+  <!-- Saved Payment Methods List -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-8">
+    <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+      <h2 class="text-base font-semibold text-gray-800">Saved Methods</h2>
+      <span id="methods-count" class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">Loading…</span>
+    </div>
+
+    <div id="methods-list" class="divide-y divide-gray-100">
+      <div class="px-6 py-8 text-center text-sm text-gray-400" id="methods-empty-state">
+        <svg class="mx-auto mb-3 w-10 h-10 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+        </svg>
+        No saved payment methods yet.
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Card Section -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
+    <div class="px-6 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">Add a Card</h2>
+      <p class="text-xs text-gray-400 mt-0.5">Visa, Mastercard, American Express, Discover</p>
+    </div>
+    <div class="px-6 py-5">
+      <div id="card-element" class="p-3 border border-gray-300 rounded-lg bg-gray-50 min-h-[44px]">
+        <!-- Stripe Elements mounts here -->
+      </div>
+      <div id="card-errors" class="mt-2 text-sm text-red-600 hidden"></div>
+      <button
+        id="btn-add-card"
+        onclick="addCard()"
+        class="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        Save Card
+      </button>
+    </div>
+  </div>
+
+  <!-- Add Bank Account (ACH) Section -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
+    <div class="px-6 py-4 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">Add Bank Account (ACH)</h2>
+      <p class="text-xs text-gray-400 mt-0.5">US checking or savings account — micro-deposits sent within 1–2 business days</p>
+    </div>
+    <div class="px-6 py-5">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1" for="ach-bank-name">Bank Name</label>
+          <input
+            id="ach-bank-name"
+            type="text"
+            placeholder="e.g. Chase Bank"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1" for="ach-routing">Routing Number</label>
+          <input
+            id="ach-routing"
+            type="text"
+            placeholder="9-digit routing number"
+            maxlength="9"
+            pattern="[0-9]{9}"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-xs font-medium text-gray-600 mb-1" for="ach-account">Account Number</label>
+          <input
+            id="ach-account"
+            type="text"
+            placeholder="Account number"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+      </div>
+      <div id="ach-errors" class="mt-2 text-sm text-red-600 hidden"></div>
+      <button
+        id="btn-add-ach"
+        onclick="addACH()"
+        class="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+        </svg>
+        Add Bank Account
+      </button>
+    </div>
+  </div>
+
+  <!-- Security note -->
+  <p class="text-xs text-center text-gray-400 mt-4">
+    <svg class="inline w-3.5 h-3.5 mr-1 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+    </svg>
+    Secured by Stripe. We never store your card or bank details directly.
+  </p>
+
+</div>
+
+<!-- Stripe.js -->
+<script src="https://js.stripe.com/v3/"></script>
+
+<script>
+  const STRIPE_PK = "{{ stripe_publishable_key | default('') }}";
+  let stripe = null;
+  let cardElement = null;
+
+  // ── Initialize Stripe Elements ──────────────────────────────────────────
+  document.addEventListener("DOMContentLoaded", () => {
+    if (STRIPE_PK) {
+      stripe = Stripe(STRIPE_PK);
+      const elements = stripe.elements();
+      cardElement = elements.create("card", {
+        style: {
+          base: {
+            fontSize: "14px",
+            color: "#374151",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            "::placeholder": { color: "#9CA3AF" },
+          },
+          invalid: { color: "#EF4444" },
+        },
+      });
+      cardElement.mount("#card-element");
+      cardElement.on("change", (event) => {
+        const errEl = document.getElementById("card-errors");
+        if (event.error) {
+          errEl.textContent = event.error.message;
+          errEl.classList.remove("hidden");
+        } else {
+          errEl.classList.add("hidden");
+        }
+      });
+    }
+    loadPaymentMethods();
+  });
+
+  // ── Load saved methods ──────────────────────────────────────────────────
+  async function loadPaymentMethods() {
+    try {
+      const resp = await fetch("/payments/methods", { credentials: "include" });
+      if (!resp.ok) throw new Error("Failed to load payment methods");
+      const methods = await resp.json();
+      renderMethods(methods);
+    } catch (err) {
+      console.error(err);
+      flashError("Could not load payment methods. Please refresh.");
+    }
+  }
+
+  function renderMethods(methods) {
+    const list = document.getElementById("methods-list");
+    const countEl = document.getElementById("methods-count");
+    const emptyEl = document.getElementById("methods-empty-state");
+
+    countEl.textContent = methods.length === 1 ? "1 method" : `${methods.length} methods`;
+
+    if (methods.length === 0) {
+      emptyEl.classList.remove("hidden");
+      return;
+    }
+    emptyEl.classList.add("hidden");
+
+    // Remove stale rows (keep empty state div)
+    list.querySelectorAll(".pm-row").forEach((el) => el.remove());
+
+    methods.forEach((pm) => {
+      const row = document.createElement("div");
+      row.className = "pm-row flex items-center justify-between px-6 py-4";
+      row.dataset.pmId = pm.id;
+
+      const iconHtml = pm.type === "card"
+        ? `<svg class="w-6 h-6 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+           </svg>`
+        : `<svg class="w-6 h-6 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M10 3L3 10h18l-7-7z"/>
+           </svg>`;
+
+      let detailHtml = "";
+      if (pm.type === "card") {
+        const brand = (pm.brand || "Card").charAt(0).toUpperCase() + (pm.brand || "card").slice(1);
+        detailHtml = `
+          <div>
+            <div class="text-sm font-medium text-gray-800">${brand} •••• ${pm.last4 || "????"}
+              <span class="ml-2 inline-block px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-700 font-normal">Card</span>
+            </div>
+            <div class="text-xs text-gray-400 mt-0.5">Expires ${pm.exp_month || "?"}/${pm.exp_year || "?"}</div>
+          </div>`;
+      } else {
+        detailHtml = `
+          <div>
+            <div class="text-sm font-medium text-gray-800">${pm.bank_name || "Bank Account"} •••• ${pm.last4 || "????"}
+              <span class="ml-2 inline-block px-1.5 py-0.5 rounded text-xs bg-green-50 text-green-700 font-normal">ACH</span>
+              ${pm.status === "new" ? '<span class="ml-1 inline-block px-1.5 py-0.5 rounded text-xs bg-yellow-50 text-yellow-700 font-normal">Pending verification</span>' : ""}
+            </div>
+            <div class="text-xs text-gray-400 mt-0.5">Status: ${pm.status || "unknown"}</div>
+          </div>`;
+      }
+
+      row.innerHTML = `
+        <div class="flex items-center gap-4">
+          ${iconHtml}
+          ${detailHtml}
+        </div>
+        <button
+          onclick="removeMethod('${pm.id}', this)"
+          class="text-xs text-red-500 hover:text-red-700 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors font-medium"
+          title="Remove this payment method"
+        >Remove</button>`;
+
+      list.appendChild(row);
+    });
+  }
+
+  // ── Add card via Stripe Elements ────────────────────────────────────────
+  async function addCard() {
+    if (!stripe || !cardElement) {
+      flashError("Stripe is not initialized. Please refresh the page.");
+      return;
+    }
+    const btn = document.getElementById("btn-add-card");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+
+    try {
+      // Get a SetupIntent client_secret from our API
+      const siResp = await fetch("/payments/setup", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!siResp.ok) {
+        const err = await siResp.json();
+        throw new Error(err.detail || "Failed to create setup intent");
+      }
+      const { client_secret } = await siResp.json();
+
+      // Confirm card setup with Stripe.js
+      const { setupIntent, error } = await stripe.confirmCardSetup(client_secret, {
+        payment_method: { card: cardElement },
+      });
+      if (error) throw new Error(error.message);
+
+      // Save the confirmed payment method to our API
+      const saveResp = await fetch("/payments/methods", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payment_method_id: setupIntent.payment_method }),
+      });
+      if (!saveResp.ok) {
+        const err = await saveResp.json();
+        throw new Error(err.detail || "Failed to save payment method");
+      }
+
+      flashSuccess("Card saved successfully.");
+      cardElement.clear();
+      await loadPaymentMethods();
+    } catch (err) {
+      const errEl = document.getElementById("card-errors");
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg> Save Card`;
+    }
+  }
+
+  // ── Add ACH bank account ────────────────────────────────────────────────
+  async function addACH() {
+    const bankName = document.getElementById("ach-bank-name").value.trim();
+    const routing = document.getElementById("ach-routing").value.trim();
+    const account = document.getElementById("ach-account").value.trim();
+    const errEl = document.getElementById("ach-errors");
+
+    if (!bankName || !routing || !account) {
+      errEl.textContent = "All bank account fields are required.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    if (!/^\d{9}$/.test(routing)) {
+      errEl.textContent = "Routing number must be exactly 9 digits.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    errEl.classList.add("hidden");
+
+    const btn = document.getElementById("btn-add-ach");
+    btn.disabled = true;
+    btn.textContent = "Adding…";
+
+    try {
+      const resp = await fetch("/payments/ach/setup", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bank_name: bankName, routing, account }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "Failed to add bank account");
+      }
+      flashSuccess("Bank account added. Micro-deposits will arrive in 1–2 business days for verification.");
+      document.getElementById("ach-bank-name").value = "";
+      document.getElementById("ach-routing").value = "";
+      document.getElementById("ach-account").value = "";
+      await loadPaymentMethods();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+      </svg> Add Bank Account`;
+    }
+  }
+
+  // ── Remove a payment method ─────────────────────────────────────────────
+  async function removeMethod(pmId, btn) {
+    if (!confirm("Remove this payment method? This cannot be undone.")) return;
+    btn.disabled = true;
+    btn.textContent = "Removing…";
+    try {
+      const resp = await fetch(`/payments/methods/${pmId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "Failed to remove payment method");
+      }
+      flashSuccess("Payment method removed.");
+      // Remove the row from the DOM immediately
+      const row = document.querySelector(`.pm-row[data-pm-id="${pmId}"]`);
+      if (row) row.remove();
+      // Update count
+      const remaining = document.querySelectorAll(".pm-row").length;
+      document.getElementById("methods-count").textContent =
+        remaining === 1 ? "1 method" : `${remaining} methods`;
+      if (remaining === 0) {
+        document.getElementById("methods-empty-state").classList.remove("hidden");
+      }
+    } catch (err) {
+      flashError(err.message);
+      btn.disabled = false;
+      btn.textContent = "Remove";
+    }
+  }
+
+  // ── Flash helpers ───────────────────────────────────────────────────────
+  function flashSuccess(msg) {
+    _flash(msg, "bg-green-50 border-green-200 text-green-800");
+  }
+  function flashError(msg) {
+    _flash(msg, "bg-red-50 border-red-200 text-red-800");
+  }
+  function _flash(msg, classes) {
+    const container = document.getElementById("flash-container");
+    const div = document.createElement("div");
+    div.className = `mb-3 flex items-start gap-3 px-4 py-3 rounded-lg border text-sm ${classes}`;
+    div.innerHTML = `<span class="flex-1">${msg}</span>
+      <button onclick="this.parentElement.remove()" class="flex-shrink-0 opacity-60 hover:opacity-100">✕</button>`;
+    container.prepend(div);
+    setTimeout(() => div.remove(), 6000);
+  }
+</script>
+{% endblock %}

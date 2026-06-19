@@ -1,0 +1,56 @@
+{
+  "QueryResponse": {
+    "Invoice": [
+      {
+        "Id": "200",
+        "SyncToken": "0",
+        "DocNumber": "1001",
+        "TxnDate": "2026-05-01",
+        "DueDate": "2026-05-31",
+        "TotalAmt": 110.00,
+        "Balance": 110.00,
+        "CustomerRef": {"value": "1", "name": "Amy's Bird Sanctuary"},
+        "Line": [
+          {
+            "Id": "1",
+            "LineNum": 1,
+            "Description": "Service call",
+            "Amount": 100.00,
+            "DetailType": "SalesItemLineDetail",
+            "SalesItemLineDetail": {
+              "ItemRef": {"value": "1", "name": "Services"},
+              "Qty": 1,
+              "UnitPrice": 100.00,
+              "TaxCodeRef": {"value": "TAX"}
+            }
+          },
+          {
+            "Amount": 100.00,
+            "DetailType": "SubTotalLineDetail",
+            "SubTotalLineDetail": {}
+          }
+        ],
+        "TxnTaxDetail": {
+          "TotalTax": 10.00,
+          "TaxLine": [
+            {
+              "Amount": 10.00,
+              "DetailType": "TaxLineDetail",
+              "TaxLineDetail": {
+                "TaxRateRef": {"value": "3"},
+                "PercentBased": true,
+                "TaxPercent": 10.0,
+                "NetAmountTaxable": 100.00
+              }
+            }
+          ]
+        },
+        "EmailStatus": "NotSet",
+        "MetaData": {"CreateTime": "2026-05-01T08:00:00-07:00", "LastUpdatedTime": "2026-05-01T08:00:00-07:00"}
+      }
+    ],
+    "startPosition": 1,
+    "maxResults": 1
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

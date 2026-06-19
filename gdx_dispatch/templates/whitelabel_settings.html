@@ -1,0 +1,407 @@
+{% extends "tenant_base.html" %}
+{% block title %}White-Label Settings{% endblock %}
+
+{% block content %}
+<div class="py-6 max-w-7xl">
+
+  <!-- Page header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">White-Label Settings</h1>
+    <p class="text-sm text-gray-500 mt-1">Customize your brand appearance for all users on your platform.</p>
+  </div>
+
+  <form method="POST" action="/settings/whitelabel" id="wl-form">
+    {% if csrf_token %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% endif %}
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+      <!-- ================================================================
+           LEFT COLUMN — Settings
+           ================================================================ -->
+      <div class="space-y-6">
+
+        <!-- Brand Identity -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 class="text-base font-semibold text-gray-900 mb-4">Brand Identity</h2>
+          <div class="space-y-4">
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="brand_name">
+                Brand Name
+              </label>
+              <input type="text" id="brand_name" name="brand_name"
+                     value="{{ config.brand_name if config else 'DispatchApp' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="Your Brand Name" />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="logo_url">
+                Logo URL
+              </label>
+              <input type="url" id="logo_url" name="logo_url"
+                     value="{{ config.logo_url or '' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="https://cdn.example.com/logo.png" />
+              <p class="mt-1 text-xs text-gray-500">Direct link to your logo image (PNG, SVG recommended)</p>
+            </div>
+
+            <!-- Primary Color -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                Primary Color
+              </label>
+              <div class="flex items-center gap-3">
+                <input type="color" id="primary_color_picker" name="_primary_color_picker"
+                       value="{{ config.primary_color if config else '#1a73e8' }}"
+                       class="h-10 w-14 cursor-pointer rounded border border-gray-300 p-0.5" />
+                <input type="text" id="primary_color" name="primary_color"
+                       value="{{ config.primary_color if config else '#1a73e8' }}"
+                       maxlength="7"
+                       class="w-28 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                       placeholder="#1a73e8" />
+                <span class="text-xs text-gray-500">Hex colour code</span>
+              </div>
+            </div>
+
+            <!-- Secondary Color -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                Secondary Color
+              </label>
+              <div class="flex items-center gap-3">
+                <input type="color" id="secondary_color_picker" name="_secondary_color_picker"
+                       value="{{ config.secondary_color if config else '#34a853' }}"
+                       class="h-10 w-14 cursor-pointer rounded border border-gray-300 p-0.5" />
+                <input type="text" id="secondary_color" name="secondary_color"
+                       value="{{ config.secondary_color if config else '#34a853' }}"
+                       maxlength="7"
+                       class="w-28 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                       placeholder="#34a853" />
+                <span class="text-xs text-gray-500">Hex colour code</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Domain & Email -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 class="text-base font-semibold text-gray-900 mb-4">Domain &amp; Email</h2>
+          <div class="space-y-4">
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="custom_domain">
+                Custom Domain
+              </label>
+              <input type="text" id="custom_domain" name="custom_domain"
+                     value="{{ config.custom_domain or '' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="yourbrand.com" />
+              <p class="mt-1 text-xs text-gray-500">Point a CNAME at app.example.com then enter your domain here.</p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="email_from_name">
+                Email From Name
+              </label>
+              <input type="text" id="email_from_name" name="email_from_name"
+                     value="{{ config.email_from_name if config else 'DispatchApp' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="Your Brand Name" />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="email_from_address">
+                Email From Address
+              </label>
+              <input type="email" id="email_from_address" name="email_from_address"
+                     value="{{ config.email_from_address if config else 'noreply@example.com' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="noreply@yourbrand.com" />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="support_email">
+                Support Email
+              </label>
+              <input type="email" id="support_email" name="support_email"
+                     value="{{ config.support_email if config else 'support@example.com' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="support@yourbrand.com" />
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Footer & Branding -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 class="text-base font-semibold text-gray-900 mb-4">Footer &amp; Branding</h2>
+          <div class="space-y-4">
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="footer_text">
+                Footer Text
+              </label>
+              <input type="text" id="footer_text" name="footer_text"
+                     value="{{ config.footer_text if config else 'Powered by DispatchApp' }}"
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                     placeholder="Powered by Your Brand" />
+            </div>
+
+            <div class="flex items-start gap-3 pt-2">
+              <div class="flex items-center h-5">
+                <input type="checkbox" id="hide_gdx_branding" name="hide_gdx_branding"
+                       value="1"
+                       {% if config and config.hide_gdx_branding %}checked{% endif %}
+                       class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
+              </div>
+              <div>
+                <label for="hide_gdx_branding" class="text-sm font-medium text-gray-700 cursor-pointer">
+                  Hide "Powered by DispatchApp"
+                </label>
+                <p class="text-xs text-gray-500 mt-0.5">(Available on Pro plan and above)</p>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Save -->
+        <div>
+          <button type="submit"
+                  class="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M5 13l4 4L19 7"/>
+            </svg>
+            Save White-Label Settings
+          </button>
+        </div>
+
+      </div><!-- end left column -->
+
+
+      <!-- ================================================================
+           RIGHT COLUMN — Live Preview
+           ================================================================ -->
+      <div class="space-y-6">
+
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sticky top-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-base font-semibold text-gray-900">Live Preview</h2>
+            <span class="text-xs text-gray-400">Updates as you type</span>
+          </div>
+
+          <!-- Preview box -->
+          <div id="preview-box"
+               class="rounded-xl overflow-hidden border border-gray-200 shadow-inner">
+
+            <!-- Preview header / nav bar -->
+            <div id="preview-header"
+                 style="background: linear-gradient(135deg, #1a73e8 0%, #34a853 100%);"
+                 class="px-5 py-4 flex items-center gap-3">
+
+              <!-- Logo -->
+              <img id="preview-logo"
+                   src="{{ config.logo_url or '' }}"
+                   alt="Logo"
+                   class="h-8 w-auto object-contain rounded {% if not config or not config.logo_url %}hidden{% endif %}"
+                   onerror="this.classList.add('hidden')"
+                   onload="this.classList.remove('hidden')" />
+
+              <!-- Brand name -->
+              <span id="preview-brand-name"
+                    class="text-white font-bold text-lg tracking-tight">
+                {{ config.brand_name if config else 'DispatchApp' }}
+              </span>
+            </div>
+
+            <!-- Preview nav pills -->
+            <div class="bg-gray-50 px-5 py-3 flex items-center gap-2 border-b border-gray-200">
+              <span id="preview-nav-pill"
+                    style="background-color: #1a73e8;"
+                    class="px-3 py-1 rounded-full text-white text-xs font-medium">Dashboard</span>
+              <span class="px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs font-medium">Jobs</span>
+              <span class="px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs font-medium">Customers</span>
+              <span class="px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs font-medium">Reports</span>
+            </div>
+
+            <!-- Preview body -->
+            <div class="bg-white px-5 py-6">
+              <div class="text-sm text-gray-500 mb-4">Sample dashboard content</div>
+              <div class="grid grid-cols-3 gap-3">
+                <div id="preview-stat-1"
+                     style="background-color: #1a73e8;"
+                     class="rounded-lg p-3 text-white text-center">
+                  <div class="text-xl font-bold">42</div>
+                  <div class="text-xs opacity-80">Open Jobs</div>
+                </div>
+                <div id="preview-stat-2"
+                     style="background-color: #34a853;"
+                     class="rounded-lg p-3 text-white text-center">
+                  <div class="text-xl font-bold">18</div>
+                  <div class="text-xs opacity-80">Dispatched</div>
+                </div>
+                <div class="rounded-lg p-3 bg-gray-100 text-gray-700 text-center">
+                  <div class="text-xl font-bold">7</div>
+                  <div class="text-xs opacity-80">Pending</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Preview footer -->
+            <div class="border-t border-gray-100 px-5 py-3 bg-gray-50 flex items-center justify-between">
+              <span id="preview-footer-text" class="text-xs text-gray-400">
+                {{ config.footer_text if config else 'Powered by DispatchApp' }}
+              </span>
+              <span id="preview-gdx-badge"
+                    class="gdx-branding inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-xs font-medium
+                           {% if config and config.hide_gdx_branding %}hidden{% endif %}">
+                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                GDX Powered
+              </span>
+            </div>
+
+          </div><!-- end preview-box -->
+
+          <!-- Color swatch legend -->
+          <div class="mt-4 flex items-center gap-4">
+            <div class="flex items-center gap-2">
+              <div id="swatch-primary"
+                   style="background-color: #1a73e8;"
+                   class="w-5 h-5 rounded-full border border-gray-300"></div>
+              <span class="text-xs text-gray-500">Primary</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div id="swatch-secondary"
+                   style="background-color: #34a853;"
+                   class="w-5 h-5 rounded-full border border-gray-300"></div>
+              <span class="text-xs text-gray-500">Secondary</span>
+            </div>
+          </div>
+
+        </div><!-- end sticky card -->
+
+      </div><!-- end right column -->
+
+    </div><!-- end grid -->
+  </form>
+
+</div>
+
+
+<script>
+(function () {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function isValidHex(v) {
+    return /^#[0-9a-fA-F]{6}$/.test(v);
+  }
+
+  function applyPrimary(hex) {
+    if (!isValidHex(hex)) return;
+    document.getElementById('preview-header').style.background =
+      'linear-gradient(135deg, ' + hex + ' 0%, ' + getSecondaryHex() + ' 100%)';
+    document.getElementById('preview-nav-pill').style.backgroundColor = hex;
+    document.getElementById('preview-stat-1').style.backgroundColor = hex;
+    document.getElementById('swatch-primary').style.backgroundColor = hex;
+  }
+
+  function applySecondary(hex) {
+    if (!isValidHex(hex)) return;
+    document.getElementById('preview-header').style.background =
+      'linear-gradient(135deg, ' + getPrimaryHex() + ' 0%, ' + hex + ' 100%)';
+    document.getElementById('preview-stat-2').style.backgroundColor = hex;
+    document.getElementById('swatch-secondary').style.backgroundColor = hex;
+  }
+
+  function getPrimaryHex() {
+    return document.getElementById('primary_color').value || '#1a73e8';
+  }
+
+  function getSecondaryHex() {
+    return document.getElementById('secondary_color').value || '#34a853';
+  }
+
+  // ── Primary color — keep picker and text input in sync ──────────────────
+
+  var primaryPicker = document.getElementById('primary_color_picker');
+  var primaryText   = document.getElementById('primary_color');
+
+  primaryPicker.addEventListener('input', function () {
+    primaryText.value = primaryPicker.value;
+    applyPrimary(primaryPicker.value);
+  });
+
+  primaryText.addEventListener('input', function () {
+    var v = primaryText.value.trim();
+    if (isValidHex(v)) {
+      primaryPicker.value = v;
+      applyPrimary(v);
+    }
+  });
+
+  // ── Secondary color — keep picker and text input in sync ────────────────
+
+  var secondaryPicker = document.getElementById('secondary_color_picker');
+  var secondaryText   = document.getElementById('secondary_color');
+
+  secondaryPicker.addEventListener('input', function () {
+    secondaryText.value = secondaryPicker.value;
+    applySecondary(secondaryPicker.value);
+  });
+
+  secondaryText.addEventListener('input', function () {
+    var v = secondaryText.value.trim();
+    if (isValidHex(v)) {
+      secondaryPicker.value = v;
+      applySecondary(v);
+    }
+  });
+
+  // ── Brand name — live update ─────────────────────────────────────────────
+
+  document.getElementById('brand_name').addEventListener('input', function () {
+    document.getElementById('preview-brand-name').textContent = this.value || 'Your Brand';
+  });
+
+  // ── Footer text — live update ────────────────────────────────────────────
+
+  document.getElementById('footer_text').addEventListener('input', function () {
+    document.getElementById('preview-footer-text').textContent = this.value || 'Powered by Your Brand';
+  });
+
+  // ── Logo URL — live update ───────────────────────────────────────────────
+
+  document.getElementById('logo_url').addEventListener('input', function () {
+    var img = document.getElementById('preview-logo');
+    var url = this.value.trim();
+    if (url) {
+      img.src = url;
+      img.classList.remove('hidden');
+    } else {
+      img.src = '';
+      img.classList.add('hidden');
+    }
+  });
+
+  // ── Hide GDX branding toggle ─────────────────────────────────────────────
+
+  document.getElementById('hide_gdx_branding').addEventListener('change', function () {
+    var badge = document.getElementById('preview-gdx-badge');
+    if (this.checked) {
+      badge.classList.add('hidden');
+    } else {
+      badge.classList.remove('hidden');
+    }
+  });
+
+})();
+</script>
+
+{% endblock %}

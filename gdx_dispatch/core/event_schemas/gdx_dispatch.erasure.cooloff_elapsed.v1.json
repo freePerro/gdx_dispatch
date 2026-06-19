@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.erasure.cooloff_elapsed.v1",
+  "description": "Emitted by the erasure sweeper when a request's 30-day cooloff period elapses, prompting operator review.",
+  "type": "object",
+  "required": ["erasure_id", "target_identity_id", "cooloff_elapsed_at"],
+  "properties": {
+    "erasure_id": {"type": "string", "format": "uuid"},
+    "target_identity_id": {"type": "string"},
+    "cooloff_elapsed_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

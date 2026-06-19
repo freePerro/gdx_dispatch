@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.billing.usage_pushed_to_stripe.v1",
+  "description": "Emitted after the StripeUsageSink successfully reports aggregated usage to Stripe via SubscriptionItem.create_usage_record.",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "event_type",
+    "subscription_item_id",
+    "quantity",
+    "period_start",
+    "pushed_at"
+  ],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "event_type": {"type": "string"},
+    "subscription_item_id": {"type": "string"},
+    "quantity": {"type": "integer", "minimum": 0},
+    "period_start": {"type": "string"},
+    "pushed_at": {"type": "string"},
+    "stripe_usage_record_id": {"type": "string"},
+    "action": {"type": "string", "enum": ["increment", "set"]}
+  },
+  "additionalProperties": true
+}

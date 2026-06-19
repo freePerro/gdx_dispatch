@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DispatchApp — System Status</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+    .dot-operational { background: #22c55e; }
+    .dot-degraded    { background: #f59e0b; }
+    .dot-outage      { background: #ef4444; }
+    .bar-day { min-width: 6px; border-radius: 2px; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200">
+    <div class="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">🔧</span>
+        <div>
+          <div class="font-bold text-gray-900 text-lg leading-tight">DispatchApp</div>
+          <div class="text-gray-500 text-sm">System Status</div>
+        </div>
+      </div>
+      <a href="https://example.com" class="text-sm text-blue-600 hover:underline">Back to site</a>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- Overall status banner -->
+    <section id="overall-banner" class="rounded-xl p-6 flex items-center gap-4 bg-green-50 border border-green-200">
+      <div id="overall-icon" class="text-3xl">✅</div>
+      <div>
+        <div id="overall-title" class="text-xl font-bold text-green-800">All Systems Operational</div>
+        <div id="overall-updated" class="text-sm text-green-600 mt-0.5">Loading…</div>
+      </div>
+    </section>
+
+    <!-- Service components -->
+    <section>
+      <h2 class="text-lg font-semibold text-gray-800 mb-3">Service Components</h2>
+      <div id="services-list" class="space-y-2">
+        <div class="text-gray-400 text-sm">Loading…</div>
+      </div>
+    </section>
+
+    <!-- Current incidents -->
+    <section>
+      <h2 class="text-lg font-semibold text-gray-800 mb-3">Current Incidents</h2>
+      <div id="current-incidents" class="space-y-3">
+        <div class="text-gray-400 text-sm">Loading…</div>
+      </div>
+    </section>
+
+    <!-- 90-day uptime graph -->
+    <section>
+      <h2 class="text-lg font-semibold text-gray-800 mb-1">Uptime — Last 90 Days</h2>
+      <div id="uptime-summary" class="text-sm text-gray-500 mb-3">Loading…</div>
+      <div id="uptime-graph" class="flex items-end gap-px h-12 bg-white rounded-lg border border-gray-200 p-2 overflow-hidden">
+        <div class="text-gray-300 text-xs m-auto">Loading uptime data…</div>
+      </div>
+      <div class="flex justify-between text-xs text-gray-400 mt-1">
+        <span>90 days ago</span>
+        <span>Today</span>
+      </div>
+    </section>
+
+    <!-- Incident history -->
+    <section>
+      <h2 class="text-lg font-semibold text-gray-800 mb-3">Incident History <span class="text-sm font-normal text-gray-500">(last 30 days)</span></h2>
+      <div id="incident-history" class="space-y-3">
+        <div class="text-gray-400 text-sm">Loading…</div>
+      </div>
+    </section>
+
+    <!-- Subscribe to updates -->
+    <section class="bg-white border border-gray-200 rounded-xl p-6">
+      <h2 class="text-lg font-semibold text-gray-800 mb-1">Subscribe to Updates</h2>
+      <p class="text-sm text-gray-500 mb-4">Get notified by email when incidents are created or resolved.</p>
+      <form id="subscribe-form" class="flex gap-3" onsubmit="handleSubscribe(event)">
+        <input
+          type="email"
+          id="subscribe-email"
+          placeholder="you@example.com"
+          required
+          class="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          type="submit"
+          class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors"
+        >Subscribe</button>
+      </form>
+      <div id="subscribe-msg" class="mt-2 text-sm hidden"></div>
+    </section>
+
+  </main>
+
+  <footer class="border-t border-gray-200 mt-12 py-6 text-center text-xs text-gray-400">
+    &copy; <span id="year"></span> DispatchApp &mdash; Status page auto-refreshes every 60 seconds.
+  </footer>
+
+<script>
+document.getElementById('year').textContent = new Date().getFullYear();
+
+const STATUS_COLORS = {
+  operational: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-800', sub: 'text-green-600', dot: 'dot-operational', icon: '✅', title: 'All Systems Operational' },
+  degraded:    { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-800', sub: 'text-yellow-600', dot: 'dot-degraded',    icon: '⚠️', title: 'Partial Service Disruption' },
+  outage:      { bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-800',    sub: 'text-red-600',    dot: 'dot-outage',       icon: '🔴', title: 'Service Outage' },
+};
+
+const SEV_COLORS = {
+  critical: 'bg-red-100 text-red-700 border-red-200',
+  major:    'bg-orange-100 text-orange-700 border-orange-200',
+  minor:    'bg-yellow-100 text-yellow-700 border-yellow-200',
+};
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderBanner(data.overall, data.updated_at);
+    renderServices(data.services || []);
+  } catch (e) {
+    document.getElementById('overall-title').textContent = 'Status unavailable';
+  }
+}
+
+function renderBanner(overall, updatedAt) {
+  const c = STATUS_COLORS[overall] || STATUS_COLORS.operational;
+  const banner = document.getElementById('overall-banner');
+  banner.className = `rounded-xl p-6 flex items-center gap-4 ${c.bg} border ${c.border}`;
+  document.getElementById('overall-icon').textContent = c.icon;
+  document.getElementById('overall-title').className = `text-xl font-bold ${c.text}`;
+  document.getElementById('overall-title').textContent = c.title;
+  document.getElementById('overall-updated').className = `text-sm ${c.sub} mt-0.5`;
+  document.getElementById('overall-updated').textContent = 'Last updated: ' + fmtDate(updatedAt);
+}
+
+function renderServices(services) {
+  const el = document.getElementById('services-list');
+  if (!services.length) { el.innerHTML = '<div class="text-gray-400 text-sm">No service data available.</div>'; return; }
+  el.innerHTML = services.map(s => {
+    const c = STATUS_COLORS[s.status] || STATUS_COLORS.operational;
+    const latency = s.latency_ms != null ? `<span class="text-xs text-gray-400">${s.latency_ms.toFixed(0)} ms</span>` : '';
+    return `<div class="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-4 py-3">
+      <div class="flex items-center gap-3">
+        <span class="status-dot ${c.dot}"></span>
+        <span class="text-sm font-medium text-gray-800">${s.name}</span>
+      </div>
+      <div class="flex items-center gap-3">
+        ${latency}
+        <span class="text-xs font-semibold capitalize ${c.text}">${s.status}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadIncidents() {
+  try {
+    const res = await fetch('/api/status/incidents');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const incidents = await res.json();
+    const open = incidents.filter(i => i.status === 'open');
+    const closed = incidents.filter(i => i.status === 'resolved');
+    renderCurrentIncidents(open);
+    renderIncidentHistory(closed);
+  } catch (e) {
+    document.getElementById('current-incidents').innerHTML = '<div class="text-gray-400 text-sm">Unable to load incidents.</div>';
+    document.getElementById('incident-history').innerHTML = '<div class="text-gray-400 text-sm">Unable to load history.</div>';
+  }
+}
+
+function incidentCard(inc) {
+  const sevCls = SEV_COLORS[inc.severity] || SEV_COLORS.minor;
+  const resolved = inc.resolved_at ? `<div class="text-xs text-gray-400 mt-1">Resolved: ${fmtDate(inc.resolved_at)}</div>` : '';
+  const resolution = inc.resolution ? `<div class="text-sm text-gray-600 mt-1 italic">${inc.resolution}</div>` : '';
+  return `<div class="bg-white border border-gray-200 rounded-lg px-4 py-4">
+    <div class="flex items-start justify-between gap-3">
+      <div class="font-semibold text-gray-900 text-sm">${inc.title}</div>
+      <span class="text-xs font-semibold px-2 py-0.5 rounded border capitalize ${sevCls}">${inc.severity}</span>
+    </div>
+    <div class="text-sm text-gray-600 mt-1">${inc.description}</div>
+    ${resolution}
+    <div class="text-xs text-gray-400 mt-2">Opened: ${fmtDate(inc.created_at)}</div>
+    ${resolved}
+  </div>`;
+}
+
+function renderCurrentIncidents(incidents) {
+  const el = document.getElementById('current-incidents');
+  if (!incidents.length) {
+    el.innerHTML = '<div class="bg-white border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-500">No active incidents.</div>';
+    return;
+  }
+  el.innerHTML = incidents.map(incidentCard).join('');
+}
+
+function renderIncidentHistory(incidents) {
+  const el = document.getElementById('incident-history');
+  if (!incidents.length) {
+    el.innerHTML = '<div class="text-gray-400 text-sm">No incidents in the last 30 days.</div>';
+    return;
+  }
+  el.innerHTML = incidents.map(incidentCard).join('');
+}
+
+async function loadUptimeGraph() {
+  try {
+    const res = await fetch('/api/status/uptime-history');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const days = await res.json();
+    renderUptimeGraph(days);
+  } catch (e) {
+    document.getElementById('uptime-graph').innerHTML = '<div class="text-gray-300 text-xs m-auto">No uptime data.</div>';
+  }
+}
+
+function renderUptimeGraph(days) {
+  const el = document.getElementById('uptime-graph');
+  const summary = document.getElementById('uptime-summary');
+  if (!days.length) {
+    el.innerHTML = '<div class="text-gray-300 text-xs m-auto">No data yet.</div>';
+    summary.textContent = 'No data available.';
+    return;
+  }
+  const avg = days.reduce((s, d) => s + d.uptime_pct, 0) / days.length;
+  summary.textContent = `${avg.toFixed(2)}% average uptime over the last ${days.length} days`;
+  el.innerHTML = days.map(d => {
+    const h = Math.max(4, Math.round(d.uptime_pct / 100 * 40));
+    const color = d.uptime_pct >= 99.9 ? '#22c55e' : d.uptime_pct >= 99.0 ? '#f59e0b' : '#ef4444';
+    const title = `${d.date}: ${d.uptime_pct.toFixed(2)}%`;
+    return `<div class="bar-day flex-1" style="height:${h}px;background:${color}" title="${title}"></div>`;
+  }).join('');
+}
+
+function handleSubscribe(e) {
+  e.preventDefault();
+  const email = document.getElementById('subscribe-email').value;
+  const msg = document.getElementById('subscribe-msg');
+  msg.className = 'mt-2 text-sm text-green-700';
+  msg.textContent = `Thanks! We'll notify ${email} about any incidents.`;
+  msg.classList.remove('hidden');
+  document.getElementById('subscribe-email').value = '';
+}
+
+async function refresh() {
+  await Promise.allSettled([loadStatus(), loadIncidents(), loadUptimeGraph()]);
+}
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>

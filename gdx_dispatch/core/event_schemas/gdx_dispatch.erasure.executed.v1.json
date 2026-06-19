@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.erasure.executed.v1",
+  "description": "Emitted when a right-to-erasure scrub has been executed. Payload carries affected-field COUNT only — never cleared plaintext values.",
+  "type": "object",
+  "required": ["erasure_id", "affected_field_count", "executed_at", "executed_by_identity_id"],
+  "properties": {
+    "erasure_id": {"type": "string", "format": "uuid"},
+    "affected_field_count": {"type": "integer", "minimum": 0},
+    "by_category": {
+      "type": "object",
+      "description": "Count of scrubbed fields per PII category.",
+      "additionalProperties": {"type": "integer"}
+    },
+    "executed_by_identity_id": {"type": "string"},
+    "executed_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.billing.usage_aggregated.v1",
+  "description": "Emitted by the metering pipeline when a (tenant, event_type, period) bucket is aggregated or updated.",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "event_type",
+    "period_kind",
+    "period_start",
+    "quantity",
+    "aggregated_at"
+  ],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "event_type": {"type": "string"},
+    "period_kind": {"type": "string", "enum": ["hour", "day", "month"]},
+    "period_start": {"type": "string"},
+    "quantity": {"type": "integer", "minimum": 0},
+    "aggregated_at": {"type": "string"},
+    "last_event_id": {"type": "string"}
+  },
+  "additionalProperties": true
+}

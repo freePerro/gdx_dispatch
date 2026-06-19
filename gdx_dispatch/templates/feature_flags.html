@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Feature Flags — GDX Superadmin</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #1a1a2e; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    .badge { margin-left: auto; background: #4f46e5; color: #fff; font-size: .7rem; padding: .2rem .6rem; border-radius: 9999px; font-weight: 600; letter-spacing: .04em; }
+    main { max-width: 1200px; margin: 0 auto; padding: 1.5rem 1rem; }
+
+    /* Alert */
+    .alert { padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: .875rem; display: none; }
+    .alert.success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; display: block; }
+    .alert.error   { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; display: block; }
+
+    /* Cards / sections */
+    .section { margin-bottom: 2rem; }
+    .section-title { font-size: 1rem; font-weight: 600; color: #1a1a2e; margin-bottom: .75rem; display: flex; align-items: center; gap: .5rem; }
+    .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow: hidden; }
+
+    /* Add-flag form */
+    .add-form { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 1.25rem 1.5rem; }
+    .form-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: flex-end; }
+    .field { display: flex; flex-direction: column; gap: .3rem; flex: 1; min-width: 160px; }
+    .field label { font-size: .75rem; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: .04em; }
+    .field input, .field select { padding: .45rem .75rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .875rem; background: #f9fafb; color: #111827; }
+    .field input:focus, .field select:focus { outline: 2px solid #4f46e5; border-color: transparent; background: #fff; }
+    .btn { padding: .5rem 1.1rem; border-radius: 6px; font-size: .875rem; font-weight: 600; cursor: pointer; border: none; transition: background .15s; }
+    .btn-primary { background: #4f46e5; color: #fff; }
+    .btn-primary:hover { background: #4338ca; }
+    .btn-sm { padding: .3rem .75rem; font-size: .8rem; }
+    .btn-danger { background: #ef4444; color: #fff; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-success { background: #10b981; color: #fff; }
+    .btn-success:hover { background: #059669; }
+    .btn-secondary { background: #e5e7eb; color: #374151; }
+    .btn-secondary:hover { background: #d1d5db; }
+
+    /* Flags table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    thead { background: #f9fafb; }
+    th { padding: .6rem 1rem; text-align: left; font-size: .7rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+    td { padding: .6rem 1rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+    .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: .8rem; }
+    .empty { text-align: center; color: #9ca3af; padding: 2rem; }
+    .pill { display: inline-flex; align-items: center; padding: .15rem .55rem; border-radius: 9999px; font-size: .72rem; font-weight: 600; }
+    .pill.on  { background: #d1fae5; color: #065f46; }
+    .pill.off { background: #fee2e2; color: #991b1b; }
+    .pill.pct { background: #ede9fe; color: #4f46e5; }
+
+    /* Rollout slider row */
+    .rollout-cell { display: flex; align-items: center; gap: .5rem; min-width: 180px; }
+    .rollout-cell input[type=range] { flex: 1; accent-color: #4f46e5; }
+    .rollout-cell .pct-label { font-size: .8rem; font-weight: 600; min-width: 36px; text-align: right; color: #4f46e5; }
+
+    /* Override panel (inline collapsible) */
+    .override-panel { display: none; background: #f8faff; border-top: 1px solid #e5e7eb; padding: 1rem 1.25rem; }
+    .override-panel.open { display: block; }
+    .override-panel h4 { font-size: .8rem; font-weight: 600; color: #374151; margin-bottom: .6rem; }
+    .override-list { list-style: none; padding: 0; margin: 0 0 .75rem; display: flex; flex-direction: column; gap: .35rem; }
+    .override-list li { display: flex; align-items: center; gap: .5rem; font-size: .8rem; }
+    .override-list .tenant-id { font-family: "SF Mono", "Fira Code", monospace; font-size: .75rem; color: #374151; flex: 1; }
+    .add-override-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .add-override-row input { flex: 1; min-width: 180px; padding: .35rem .65rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .8rem; background: #fff; }
+    .add-override-row select { padding: .35rem .65rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .8rem; background: #fff; }
+
+    /* Stat cards grid */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-bottom: .5rem; }
+    .stat-card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .stat-card .stat-label { font-size: .72rem; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25rem; }
+    .stat-card .stat-value { font-size: 1.5rem; font-weight: 700; }
+
+    /* Danger zone */
+    .danger-zone { border: 2px solid #fca5a5; border-radius: 8px; padding: 1rem 1.5rem; background: #fff5f5; }
+    .danger-zone-title { font-size: .95rem; font-weight: 700; color: #dc2626; margin-bottom: .4rem; }
+    .danger-zone-desc { font-size: .8rem; color: #6b7280; margin-bottom: .75rem; }
+
+    /* Field width modifier */
+    .field--narrow { max-width: 140px; }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+    <h1>Feature Flags</h1>
+    <span class="badge">Superadmin</span>
+  </header>
+
+  <main>
+    <div id="alert" class="alert"></div>
+
+    <!-- Stat cards -->
+    <div class="section">
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total Flags</div>
+          <div class="stat-value" id="stat-total">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">100% Rollout</div>
+          <div class="stat-value" id="stat-full">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Partial Rollout</div>
+          <div class="stat-value" id="stat-partial">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Disabled (0%)</div>
+          <div class="stat-value" id="stat-disabled">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Tenant Overrides</div>
+          <div class="stat-value" id="stat-overrides">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add new flag -->
+    <div class="section">
+      <div class="section-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        Add New Flag
+      </div>
+      <div class="add-form">
+        <form id="add-flag-form" onsubmit="addFlag(event)">
+          <div class="form-row">
+            <div class="field">
+              <label>Flag Key</label>
+              <input type="text" id="new-key" placeholder="e.g. new_ui_beta" required pattern="[a-z0-9_]+" title="lowercase letters, numbers, underscores only" />
+            </div>
+            <div class="field">
+              <label>Description</label>
+              <input type="text" id="new-desc" placeholder="Optional description" />
+            </div>
+            <div class="field field--narrow">
+              <label>Default</label>
+              <select id="new-default">
+                <option value="false">Disabled (0%)</option>
+                <option value="true">Enabled (100%)</option>
+              </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Flag</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Flags table -->
+    <div class="section">
+      <div class="section-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+        All Flags
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table id="flags-table">
+            <thead>
+              <tr>
+                <th>Flag Key</th>
+                <th>Rollout %</th>
+                <th>Overrides</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="flags-tbody">
+              <tr><td colspan="4" class="empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tenant flag check -->
+    <div class="section">
+      <div class="section-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Check Flags for Tenant
+      </div>
+      <div class="add-form">
+        <div class="form-row">
+          <div class="field">
+            <label>Tenant ID</label>
+            <input type="text" id="check-tenant-id" placeholder="UUID of tenant" />
+          </div>
+          <button class="btn btn-secondary" onclick="loadTenantFlags()">Load Tenant Flags</button>
+        </div>
+        <div id="tenant-flags-result" class="tenant-result"></div>
+      </div>
+    </div>
+
+    <!-- Danger zone -->
+    <div class="section">
+      <div class="section-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        Danger Zone
+      </div>
+      <div class="danger-zone">
+        <div class="danger-zone-title">Delete a Flag</div>
+        <p class="danger-zone-desc">Permanent and immediate. All tenants fall back to the flag being absent (disabled). Only delete flags already removed from the codebase.</p>
+        <div class="form-row">
+          <div class="field">
+            <label for="delete-key">Flag Key to Delete</label>
+            <input type="text" id="delete-key" placeholder="exact_flag_key" />
+          </div>
+          <button type="button" class="btn btn-danger" onclick="confirmDeleteFlag()">Delete Flag</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const ADMIN_TOKEN = window.__ADMIN_TOKEN__ || '';
+
+    function authHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ADMIN_TOKEN}`,
+      };
+    }
+
+    function showAlert(msg, type = 'success') {
+      const el = document.getElementById('alert');
+      el.textContent = msg;
+      el.className = `alert ${type}`;
+      setTimeout(() => { el.className = 'alert'; }, 4000);
+    }
+
+    async function loadFlags() {
+      try {
+        const res = await fetch('/api/admin/feature-flags', { headers: authHeaders() });
+        if (!res.ok) { showAlert('Failed to load flags: ' + res.status, 'error'); return; }
+        const flags = await res.json();
+        renderFlags(flags);
+      } catch (e) {
+        showAlert('Network error loading flags', 'error');
+      }
+    }
+
+    function renderFlags(flags) {
+      const tbody = document.getElementById('flags-tbody');
+      if (!flags.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No flags defined yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = flags.map(f => {
+        const overrideCount = Object.keys(f.tenant_overrides || {}).length;
+        const enabledCount = Object.values(f.tenant_overrides || {}).filter(Boolean).length;
+        const overrideSummary = overrideCount
+          ? `<span class="pill pct">${overrideCount} override${overrideCount !== 1 ? 's' : ''}</span> <small style="color:#6b7280">(${enabledCount} on)</small>`
+          : `<span style="color:#9ca3af;font-size:.8rem;">none</span>`;
+        return `
+          <tr id="row-${f.flag_key}">
+            <td class="mono">${escHtml(f.flag_key)}</td>
+            <td>
+              <div class="rollout-cell">
+                <input type="range" min="0" max="100" value="${f.rollout_pct}"
+                  oninput="document.getElementById('pct-${f.flag_key}').textContent=this.value+'%'"
+                  onchange="updateRollout('${f.flag_key}', this.value)"
+                />
+                <span class="pct-label" id="pct-${f.flag_key}">${f.rollout_pct}%</span>
+              </div>
+            </td>
+            <td>${overrideSummary}</td>
+            <td>
+              <button class="btn btn-sm btn-secondary" onclick="toggleOverridePanel('${f.flag_key}')">Overrides</button>
+            </td>
+          </tr>
+          <tr id="panel-row-${f.flag_key}" style="padding:0;">
+            <td colspan="4" style="padding:0;">
+              <div class="override-panel" id="panel-${f.flag_key}">
+                <h4>Tenant Overrides for <span class="mono">${escHtml(f.flag_key)}</span></h4>
+                <ul class="override-list" id="overrides-${f.flag_key}">
+                  ${renderOverrideItems(f.flag_key, f.tenant_overrides || {})}
+                </ul>
+                <div class="add-override-row">
+                  <input type="text" id="ov-tenant-${f.flag_key}" placeholder="Tenant UUID" />
+                  <select id="ov-val-${f.flag_key}">
+                    <option value="true">Enable</option>
+                    <option value="false">Disable</option>
+                  </select>
+                  <button class="btn btn-sm btn-success" onclick="addOverride('${f.flag_key}')">Add Override</button>
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderOverrideItems(flagKey, overrides) {
+      const entries = Object.entries(overrides);
+      if (!entries.length) return '<li style="color:#9ca3af;font-size:.8rem;">No overrides.</li>';
+      return entries.map(([tid, val]) => `
+        <li>
+          <span class="pill ${val ? 'on' : 'off'}">${val ? 'ON' : 'OFF'}</span>
+          <span class="tenant-id">${escHtml(tid)}</span>
+          <button class="btn btn-sm btn-danger" onclick="removeOverride('${escHtml(flagKey)}','${escHtml(tid)}')">Remove</button>
+        </li>
+      `).join('');
+    }
+
+    function toggleOverridePanel(flagKey) {
+      const panel = document.getElementById(`panel-${flagKey}`);
+      panel.classList.toggle('open');
+    }
+
+    async function updateRollout(flagKey, pct) {
+      try {
+        const res = await fetch(`/api/admin/feature-flags/${flagKey}`, {
+          method: 'PATCH',
+          headers: authHeaders(),
+          body: JSON.stringify({ rollout_pct: parseInt(pct, 10) }),
+        });
+        if (!res.ok) { showAlert('Failed to update rollout', 'error'); return; }
+        showAlert(`${flagKey} rollout set to ${pct}%`);
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    async function addOverride(flagKey) {
+      const tenantId = document.getElementById(`ov-tenant-${flagKey}`).value.trim();
+      const value = document.getElementById(`ov-val-${flagKey}`).value === 'true';
+      if (!tenantId) { showAlert('Enter a tenant ID', 'error'); return; }
+      try {
+        const res = await fetch(`/api/admin/feature-flags/${flagKey}/overrides`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ tenant_id: tenantId, value }),
+        });
+        if (!res.ok) { showAlert('Failed to add override', 'error'); return; }
+        showAlert(`Override added for ${tenantId}`);
+        document.getElementById(`ov-tenant-${flagKey}`).value = '';
+        loadFlags();
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    async function removeOverride(flagKey, tenantId) {
+      try {
+        const res = await fetch(`/api/admin/feature-flags/${flagKey}/overrides/${tenantId}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        });
+        if (!res.ok) { showAlert('Failed to remove override', 'error'); return; }
+        showAlert(`Override removed for ${tenantId}`);
+        loadFlags();
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    async function addFlag(event) {
+      event.preventDefault();
+      const key = document.getElementById('new-key').value.trim();
+      const desc = document.getElementById('new-desc').value.trim();
+      const defaultVal = document.getElementById('new-default').value === 'true';
+      if (!key) { showAlert('Flag key is required', 'error'); return; }
+      try {
+        const res = await fetch('/api/admin/feature-flags', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ flag_key: key, description: desc, default_value: defaultVal }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlert(data.detail || 'Failed to create flag', 'error'); return; }
+        if (data.status === 'exists') {
+          showAlert(`Flag "${key}" already exists`, 'error');
+        } else {
+          showAlert(`Flag "${key}" created`);
+          document.getElementById('add-flag-form').reset();
+          loadFlags();
+        }
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    async function loadTenantFlags() {
+      const tenantId = document.getElementById('check-tenant-id').value.trim();
+      if (!tenantId) { showAlert('Enter a tenant ID', 'error'); return; }
+      try {
+        const res = await fetch(`/api/feature-flags?tenant_id=${encodeURIComponent(tenantId)}`, {
+          headers: authHeaders(),
+        });
+        if (!res.ok) { showAlert('Failed to load tenant flags: ' + res.status, 'error'); return; }
+        const flags = await res.json();
+        const container = document.getElementById('tenant-flags-result');
+        if (!flags.length) { container.innerHTML = '<p style="color:#9ca3af;font-size:.875rem;">No flags defined.</p>'; return; }
+        container.innerHTML = `
+          <table style="font-size:.8rem;border-collapse:collapse;width:100%;">
+            <thead><tr style="background:#f9fafb;">
+              <th style="padding:.4rem .75rem;text-align:left;color:#6b7280;font-size:.7rem;text-transform:uppercase;border-bottom:1px solid #e5e7eb;">Flag</th>
+              <th style="padding:.4rem .75rem;text-align:left;color:#6b7280;font-size:.7rem;text-transform:uppercase;border-bottom:1px solid #e5e7eb;">Enabled</th>
+              <th style="padding:.4rem .75rem;text-align:left;color:#6b7280;font-size:.7rem;text-transform:uppercase;border-bottom:1px solid #e5e7eb;">Via</th>
+            </tr></thead>
+            <tbody>
+              ${flags.map(f => `
+                <tr>
+                  <td style="padding:.4rem .75rem;" class="mono">${escHtml(f.flag_key)}</td>
+                  <td style="padding:.4rem .75rem;"><span class="pill ${f.enabled_for_this_tenant ? 'on' : 'off'}">${f.enabled_for_this_tenant ? 'YES' : 'NO'}</span></td>
+                  <td style="padding:.4rem .75rem;color:#6b7280;">${f.override_for_this_tenant !== null && f.override_for_this_tenant !== undefined ? 'override' : `rollout ${f.rollout_pct}%`}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function updateStats(flags) {
+      document.getElementById('stat-total').textContent = flags.length;
+      document.getElementById('stat-full').textContent = flags.filter(f => f.rollout_pct === 100).length;
+      document.getElementById('stat-partial').textContent = flags.filter(f => f.rollout_pct > 0 && f.rollout_pct < 100).length;
+      document.getElementById('stat-disabled').textContent = flags.filter(f => f.rollout_pct === 0).length;
+      const totalOverrides = flags.reduce((s, f) => s + Object.keys(f.tenant_overrides || {}).length, 0);
+      document.getElementById('stat-overrides').textContent = totalOverrides;
+    }
+
+    async function confirmDeleteFlag() {
+      const key = document.getElementById('delete-key').value.trim();
+      if (!key) { showAlert('Enter a flag key to delete', 'error'); return; }
+      if (!confirm(`Permanently delete flag "${key}"? This cannot be undone.`)) return;
+      try {
+        const res = await fetch(`/api/admin/feature-flags/${encodeURIComponent(key)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        });
+        if (!res.ok) { showAlert('Failed to delete flag: ' + res.status, 'error'); return; }
+        showAlert(`Flag "${key}" deleted`);
+        document.getElementById('delete-key').value = '';
+        loadFlags();
+      } catch (e) {
+        showAlert('Network error', 'error');
+      }
+    }
+
+    // Patch loadFlags to also update stats
+    const _origLoadFlags = loadFlags;
+    loadFlags = async function () {
+      try {
+        const res = await fetch('/api/admin/feature-flags', { headers: authHeaders() });
+        if (!res.ok) { showAlert('Failed to load flags: ' + res.status, 'error'); return; }
+        const flags = await res.json();
+        renderFlags(flags);
+        updateStats(flags);
+      } catch (e) {
+        showAlert('Network error loading flags: ' + e.message, 'error');
+      }
+    };
+
+    // Load on page open
+    loadFlags();
+  </script>
+</body>
+</html>

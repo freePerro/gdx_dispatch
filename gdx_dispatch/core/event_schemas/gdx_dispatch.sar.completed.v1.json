@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sar.completed.v1",
+  "description": "Emitted when a SAR export has been built and is ready for download.",
+  "type": "object",
+  "required": ["sar_id", "target_identity_id", "field_count", "completed_at"],
+  "properties": {
+    "sar_id": {"type": "string", "format": "uuid"},
+    "target_identity_id": {"type": "string"},
+    "field_count": {"type": "integer", "minimum": 0},
+    "completed_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

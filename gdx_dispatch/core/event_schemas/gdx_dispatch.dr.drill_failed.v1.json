@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.dr.drill_failed.v1",
+  "description": "Emitted when a DR drill fails at any stage — snapshot, restore, or verification. 'stage' disambiguates which phase broke. verification failures do NOT raise in the orchestrator but DO emit this event so the operator gets paged.",
+  "type": "object",
+  "required": ["drill_run_id", "stage"],
+  "properties": {
+    "drill_run_id": {"type": "string"},
+    "stage": {"type": "string", "enum": ["snapshot", "restore", "verification"]},
+    "reason": {"type": ["string", "null"]},
+    "failed_count": {"type": ["integer", "null"]},
+    "failed_checks": {
+      "type": ["array", "null"],
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

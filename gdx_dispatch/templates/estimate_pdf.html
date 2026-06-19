@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Estimate {{ data.estimate_number or '' }}</title>
+  <style>
+    @page { size: A4; margin: 24px; }
+    body { font-family: Arial, sans-serif; color: #1f2937; font-size: 12px; }
+    .header { border-bottom: 2px solid {{ branding.primary_color }}; padding-bottom: 10px; margin-bottom: 16px; }
+    .brand { display: flex; align-items: center; justify-content: space-between; }
+    .brand h1 { margin: 0; color: {{ branding.primary_color }}; font-size: 22px; }
+    .logo { max-height: 48px; max-width: 200px; }
+    .meta { margin-top: 8px; color: #4b5563; }
+    .section { margin-top: 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th { text-align: left; background: #f3f4f6; padding: 8px; }
+    td { padding: 8px; border-bottom: 1px solid #e5e7eb; }
+    .num { text-align: right; }
+    .totals { margin-top: 12px; width: 320px; margin-left: auto; }
+    .totals td { border: none; padding: 4px 0; }
+    .totals .label { color: #4b5563; }
+    .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
+    .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
+    .attachments-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+    .attachment-photo { width: 240px; }
+    .attachment-photo img { width: 100%; max-height: 200px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 4px; }
+    .attachment-caption { font-size: 10px; color: #6b7280; margin-top: 2px; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div>
+        <h1>{{ branding.company_name }}</h1>
+        <div class="meta">{{ branding.address }}</div>
+      </div>
+      {% if branding.logo %}
+      <img class="logo" src="{{ branding.logo }}" alt="Company logo">
+      {% endif %}
+    </div>
+    <div class="meta">Estimate #: {{ data.estimate_number or '' }}</div>
+  </div>
+
+  <div class="section">
+    <strong>Customer</strong><br>
+    {{ data.customer.name or '' }}<br>
+    {{ data.customer.address or '' }}
+  </div>
+
+  {% if data.jobsite_address %}
+  <div class="section">
+    <strong>Jobsite</strong><br>
+    <div style="white-space: pre-line">{{ data.jobsite_address }}</div>
+  </div>
+  {% endif %}
+
+  {% if data.description %}
+  <div class="section">
+    <strong>Description of Work</strong>
+    <div style="white-space: pre-line">{{ data.description }}</div>
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="num">Qty</th>
+          <th class="num">Unit Price</th>
+          <th class="num">Line Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in data.lines %}
+        <tr>
+          <td>{{ line.description }}</td>
+          <td class="num">{{ line.quantity }}</td>
+          <td class="num">${{ '%.2f'|format(line.unit_price or 0) }}</td>
+          <td class="num">${{ '%.2f'|format(line.line_total or 0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <table class="totals">
+    <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
+    {% if (data.discount or 0) > 0 %}
+    <tr><td class="label">Discount</td><td class="num">-${{ '%.2f'|format(data.discount or 0) }}</td></tr>
+    {% endif %}
+    <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">${{ '%.2f'|format(data.tax or 0) }}</td></tr>
+    <tr class="grand"><td>Total</td><td class="num">${{ '%.2f'|format(data.total or 0) }}</td></tr>
+    {% if (data.deposit_pct or 0) > 0 %}
+    <tr><td class="label">{{ data.deposit_pct }}% Down</td><td class="num">${{ '%.2f'|format(data.deposit_amount or 0) }}</td></tr>
+    {% endif %}
+  </table>
+
+  {% if data.terms %}
+  <div class="section">
+    <strong>Terms</strong>
+    <div style="white-space: pre-line">{{ data.terms }}</div>
+  </div>
+  {% endif %}
+
+  {% if data.notes %}
+  <div class="section">
+    <strong>Notes</strong>
+    <div style="white-space: pre-line">{{ data.notes }}</div>
+  </div>
+  {% endif %}
+
+  {% if data.attachment_images %}
+  <div class="section">
+    <strong>Attached Photos</strong>
+    <div class="attachments-grid">
+      {% for img in data.attachment_images %}
+      <div class="attachment-photo">
+        <img src="{{ img.src }}" alt="{{ img.name }}" />
+        <div class="attachment-caption">{{ img.name }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if data.attachment_files %}
+  <div class="section">
+    <strong>Attached Files</strong>
+    <ul>
+      {% for f in data.attachment_files %}
+      <li>{{ f.name }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="signature">Customer Signature</div>
+</body>
+</html>

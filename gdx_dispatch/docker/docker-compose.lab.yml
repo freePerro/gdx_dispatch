@@ -1,0 +1,19 @@
+# Lab-only override: expose the app on the LAN so browsers on Doug's dev
+# machine can reach it as http://<tenant-slug>.lab.home:8001.
+# Layer on top of the base compose file:
+#   docker compose --env-file .env.lab \
+#     -f gdx_dispatch/docker/docker-compose.yml \
+#     -f gdx_dispatch/docker/docker-compose.lab.yml up -d
+services:
+  app:
+    ports: !override
+      - "0.0.0.0:8001:8000"
+
+  landing:
+    image: nginx:alpine
+    container_name: docker-landing-1
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8080:80"
+    volumes:
+      - ../../landing:/usr/share/nginx/html:ro

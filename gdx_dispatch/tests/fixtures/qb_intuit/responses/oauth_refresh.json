@@ -1,0 +1,7 @@
+{
+  "x_refresh_token_expires_in": 8726400,
+  "refresh_token": "AB11756864241RnZxyKjL9aBpvWqQ4cR8M",
+  "access_token": "eyJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwiYWxnIjoiZGlyIn0..fake.payload.fake",
+  "token_type": "bearer",
+  "expires_in": 3600
+}

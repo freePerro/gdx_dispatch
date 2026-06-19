@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sharing.created.v1",
+  "description": "Emitted when a sharer tenant creates a new cross-tenant share grant on a specific resource. Metered against the sharer (billable relationship).",
+  "type": "object",
+  "required": [
+    "share_id",
+    "sharer_tenant_id",
+    "sharee_tenant_id",
+    "resource_type",
+    "resource_id",
+    "capabilities",
+    "created_by_identity_id",
+    "shared_at"
+  ],
+  "properties": {
+    "share_id": {"type": "string"},
+    "sharer_tenant_id": {"type": "string"},
+    "sharee_tenant_id": {"type": "string"},
+    "resource_type": {"type": "string"},
+    "resource_id": {"type": "string"},
+    "capabilities": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "expires_at": {"type": ["string", "null"]},
+    "created_by_identity_id": {"type": "string"},
+    "shared_at": {"type": "string"}
+  },
+  "additionalProperties": true
+}

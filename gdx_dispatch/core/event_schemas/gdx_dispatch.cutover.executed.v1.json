@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx_dispatch.cutover.executed.v1",
+  "description": "Emitted when a cutover completes: old_table renamed to old_table_v1_deprecated and new_table renamed to old_table. dry_run=true payloads are for audit/preview only; no rename actually happened.",
+  "type": "object",
+  "required": ["tenant_id", "old_table", "new_table", "deprecated_table", "executed_at", "dry_run"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": "string"},
+    "new_table": {"type": "string"},
+    "deprecated_table": {"type": "string"},
+    "executed_at": {"type": "string"},
+    "dry_run": {"type": "boolean"},
+    "actor_identity_id": {"type": ["string", "null"]},
+    "scheduled_drop_at": {"type": ["string", "null"]},
+    "notes": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

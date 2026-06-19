@@ -1,0 +1,100 @@
+/**
+ * MH-2 — PrimeVue CTA contrast override (mobile hardening sprint).
+ *
+ * Audit P1 #4 / Lighthouse a11y `color-contrast` audit fail: every
+ * primary CTA across the app was using `severity="success"` (PrimeVue
+ * Aura emerald #10b981) with white labels = 2.53:1 contrast. WCAG AA
+ * requires 4.5:1 for normal text, 3:1 for large. Lighthouse-confirmed,
+ * 10 failing nodes on /mobile alone.
+ *
+ * Per Doug 2026-05-19: "drop and use brand colors". Rather than touch
+ * 40+ views to strip `severity="success"`, alias the Aura success
+ * BUTTON tokens to the primary (brand-blue) tokens. Every existing
+ * `severity="success"` button auto-converts to brand-blue; future
+ * additions inherit the safe contrast pair.
+ *
+ * SCOPE — buttons only. Status indicators that use the success palette
+ * intentionally (Tag, Message, Toast, Badge, ProgressBar) are NOT
+ * remapped here — green still means "done/paid/accepted" in those
+ * affordances. Greppable: this file only references `--p-button-*`
+ * and `--p-button-text-*` and `--p-button-outlined-*` tokens.
+ *
+ * If a button NEEDS to be green (rare — e.g. a one-of-a-kind "Mark
+ * complete" confirmation step where the field tech relies on hue),
+ * use a brand-darker variant via inline style or a scoped class.
+ * Don't reintroduce `severity="success"` for a CTA without also
+ * darkening the success-button token here.
+ */
+/* MH-2 fast-follow (first prod walk): the alias-only strategy didn't
+   move the needle because PrimeVue Aura's DEFAULT primary palette is
+   emerald `#10b981` — aliasing success→primary just made both green
+   instead of one of them blue. The actual fix is to override
+   button-PRIMARY (and the success alias chained off it) with brand-
+   blue values directly.
+
+   Color choice: `#2563eb` background with `#ffffff` text = 5.17:1
+   contrast — passes WCAG AA (4.5:1) for normal text in both light
+   and dark modes. Hover/active steps to `#1d4ed8` (7.4:1) and
+   `#1e40af` (10.4:1) so the affordance darkens on press, not
+   lightens.
+
+   `!important` on each var is deliberate: PrimeVue's Aura preset
+   injects its own `:root` rule at component-mount time, which would
+   otherwise win the cascade tie against this static stylesheet. */
+:root, [data-theme="light"], [data-theme="dark"] {
+  /* Override the BASE primary-button palette. This drives both the
+     default `<Button />` (severity=undefined / "primary") AND every
+     `severity="success"` button via the alias block below. */
+  --p-button-primary-background: #2563eb !important;
+  --p-button-primary-border-color: #2563eb !important;
+  --p-button-primary-color: #ffffff !important;
+  --p-button-primary-hover-background: #1d4ed8 !important;
+  --p-button-primary-hover-border-color: #1d4ed8 !important;
+  --p-button-primary-hover-color: #ffffff !important;
+  --p-button-primary-active-background: #1e40af !important;
+  --p-button-primary-active-border-color: #1e40af !important;
+  --p-button-primary-active-color: #ffffff !important;
+  --p-button-primary-focus-ring-color: #2563eb !important;
+  --p-button-primary-focus-ring-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.5) !important;
+
+  /* Outlined primary — same blue stops, transparent background. */
+  --p-button-outlined-primary-border-color: #2563eb !important;
+  --p-button-outlined-primary-color: #2563eb !important;
+  --p-button-outlined-primary-hover-background: rgba(37, 99, 235, 0.08) !important;
+  --p-button-outlined-primary-active-background: rgba(37, 99, 235, 0.16) !important;
+
+  /* Text primary. */
+  --p-button-text-primary-color: #2563eb !important;
+  --p-button-text-primary-hover-background: rgba(37, 99, 235, 0.08) !important;
+  --p-button-text-primary-active-background: rgba(37, 99, 235, 0.16) !important;
+}
+
+/* Dark-mode-specific override: `#2563eb` on `#0f172a` is still 5+:1
+   (the background luminance is what matters, not theme). We keep the
+   same brand-blue across modes for consistency. */
+
+:root, [data-theme="light"], [data-theme="dark"] {
+  /* Filled button — `<Button severity="success" />` */
+  --p-button-success-background: var(--p-button-primary-background) !important;
+  --p-button-success-border-color: var(--p-button-primary-border-color) !important;
+  --p-button-success-color: var(--p-button-primary-color) !important;
+  --p-button-success-hover-background: var(--p-button-primary-hover-background) !important;
+  --p-button-success-hover-border-color: var(--p-button-primary-hover-border-color) !important;
+  --p-button-success-hover-color: var(--p-button-primary-hover-color) !important;
+  --p-button-success-active-background: var(--p-button-primary-active-background) !important;
+  --p-button-success-active-border-color: var(--p-button-primary-active-border-color) !important;
+  --p-button-success-active-color: var(--p-button-primary-active-color) !important;
+  --p-button-success-focus-ring-color: var(--p-button-primary-focus-ring-color) !important;
+  --p-button-success-focus-ring-shadow: var(--p-button-primary-focus-ring-shadow) !important;
+
+  /* Outlined variant — `<Button severity="success" outlined />` */
+  --p-button-outlined-success-border-color: var(--p-button-outlined-primary-border-color) !important;
+  --p-button-outlined-success-color: var(--p-button-outlined-primary-color) !important;
+  --p-button-outlined-success-hover-background: var(--p-button-outlined-primary-hover-background) !important;
+  --p-button-outlined-success-active-background: var(--p-button-outlined-primary-active-background) !important;
+
+  /* Text variant — `<Button severity="success" text />` */
+  --p-button-text-success-color: var(--p-button-text-primary-color) !important;
+  --p-button-text-success-hover-background: var(--p-button-text-primary-hover-background) !important;
+  --p-button-text-success-active-background: var(--p-button-text-primary-active-background) !important;
+}

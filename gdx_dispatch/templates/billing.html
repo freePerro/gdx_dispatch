@@ -1,0 +1,315 @@
+{% extends "tenant_base.html" %}
+{% block title %}Billing{% endblock %}
+
+{% block content %}
+<div class="py-6">
+
+  <!-- Page header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Billing & Subscription</h1>
+    <p class="text-sm text-gray-500 mt-1">Manage your plan, view usage, and download invoices.</p>
+  </div>
+
+  <!-- Current Plan -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-start justify-between">
+      <div>
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Current Plan</h2>
+        <div class="flex items-center gap-3">
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold
+            {% if subscription.plan == 'professional' %}bg-blue-100 text-blue-800
+            {% elif subscription.plan == 'enterprise' %}bg-purple-100 text-purple-800
+            {% else %}bg-gray-100 text-gray-700{% endif %}">
+            {{ subscription.plan | default('Starter') | capitalize }}
+          </span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+            {% if subscription.status == 'active' %}bg-green-100 text-green-700
+            {% elif subscription.status == 'trialing' %}bg-yellow-100 text-yellow-700
+            {% elif subscription.status == 'past_due' %}bg-red-100 text-red-700
+            {% else %}bg-gray-100 text-gray-600{% endif %}">
+            {{ subscription.status | default('trialing') | capitalize }}
+          </span>
+        </div>
+        {% if subscription.current_period_end %}
+        <p class="text-sm text-gray-500 mt-2">
+          {% if subscription.cancel_at_period_end %}
+            Cancels on {{ subscription.current_period_end }}
+          {% else %}
+            Renews {{ subscription.current_period_end }}
+          {% endif %}
+        </p>
+        {% endif %}
+      </div>
+      <div class="text-right">
+        <div class="text-3xl font-bold text-gray-900">
+          ${{ "%.2f"|format(subscription.monthly_amount | default(0)) }}
+        </div>
+        <div class="text-sm text-gray-500">/ month</div>
+      </div>
+    </div>
+
+    <!-- Plan Features -->
+    <div class="mt-5 pt-5 border-t border-gray-100">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">Included Features</h3>
+      <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {% for feature in plan_features | default([
+          'Unlimited Jobs',
+          'Team Management',
+          'Customer Portal',
+          'Dispatch & Scheduling',
+          'Invoicing & Payments',
+          'SMS Notifications',
+          'QuickBooks Integration',
+          'API Access'
+        ]) %}
+        <li class="flex items-center gap-2 text-sm text-gray-600">
+          <svg class="w-4 h-4 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+          </svg>
+          {{ feature }}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Actions -->
+    <div class="mt-5 pt-5 border-t border-gray-100 flex flex-wrap gap-3">
+      <form method="POST" action="/billing/portal-session">
+        <button type="submit"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+          </svg>
+          Manage Billing
+        </button>
+      </form>
+      {% if not subscription.cancel_at_period_end %}
+      <button onclick="document.getElementById('upgrade-section').scrollIntoView({behavior:'smooth'})"
+              class="inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg border border-gray-300 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+        </svg>
+        Upgrade Plan
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Usage Meters -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Usage This Month</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+
+      <!-- Active Users -->
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-sm font-medium text-gray-700">Active Users</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ usage.metrics.active_users | default(0) | int }}
+            {% if limits.active_users %}/ {{ limits.active_users }}{% endif %}
+          </span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          {% set users_pct = [(usage.metrics.active_users | default(0) / (limits.active_users | default(100)) * 100), 100] | min %}
+          <div class="h-2 rounded-full {% if users_pct >= 90 %}bg-red-500{% elif users_pct >= 75 %}bg-yellow-500{% else %}bg-blue-500{% endif %}"
+               style="width: {{ users_pct }}%"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">Team members active this month</p>
+      </div>
+
+      <!-- Jobs Created -->
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-sm font-medium text-gray-700">Jobs Created</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ usage.metrics.jobs_created | default(0) | int }}
+            {% if limits.jobs_created %}/ {{ limits.jobs_created }}{% endif %}
+          </span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          {% set jobs_pct = [(usage.metrics.jobs_created | default(0) / (limits.jobs_created | default(500)) * 100), 100] | min %}
+          <div class="h-2 rounded-full {% if jobs_pct >= 90 %}bg-red-500{% elif jobs_pct >= 75 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+               style="width: {{ jobs_pct }}%"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">Service jobs this month</p>
+      </div>
+
+      <!-- SMS Sent -->
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-sm font-medium text-gray-700">SMS Sent</span>
+          <span class="text-sm font-semibold text-gray-900">
+            {{ usage.metrics.sms_sent | default(0) | int }}
+            {% if limits.sms_sent %}/ {{ limits.sms_sent }}{% endif %}
+          </span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          {% set sms_pct = [(usage.metrics.sms_sent | default(0) / (limits.sms_sent | default(1000)) * 100), 100] | min %}
+          <div class="h-2 rounded-full {% if sms_pct >= 90 %}bg-red-500{% elif sms_pct >= 75 %}bg-yellow-500{% else %}bg-purple-500{% endif %}"
+               style="width: {{ sms_pct }}%"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">Text messages sent to customers</p>
+      </div>
+
+    </div>
+
+    <!-- Secondary metrics row -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-5 border-t border-gray-100">
+      <div class="text-center">
+        <div class="text-2xl font-bold text-gray-900">{{ usage.metrics.api_calls | default(0) | int | filesizeformat if false else usage.metrics.api_calls | default(0) | int }}</div>
+        <div class="text-xs text-gray-500 mt-0.5">API Calls</div>
+      </div>
+      <div class="text-center">
+        <div class="text-2xl font-bold text-gray-900">{{ "%.1f"|format(usage.metrics.storage_gb | default(0)) }} GB</div>
+        <div class="text-xs text-gray-500 mt-0.5">Storage Used</div>
+      </div>
+      <div class="text-center col-span-2 sm:col-span-2">
+        <div class="text-xs text-gray-400 mt-2">
+          Period: {{ usage.period_start | default('—') }} to {{ usage.period_end | default('—') }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upgrade Plan -->
+  {% if not subscription.cancel_at_period_end %}
+  <div id="upgrade-section" class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-1">Upgrade Your Plan</h2>
+    <p class="text-sm text-gray-500 mb-5">Unlock more capacity and premium features.</p>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+      <!-- Starter -->
+      <div class="border rounded-xl p-5 {% if subscription.plan == 'starter' %}border-blue-500 bg-blue-50{% else %}border-gray-200{% endif %}">
+        <div class="font-semibold text-gray-900 mb-1">Starter</div>
+        <div class="text-2xl font-bold text-gray-900 mb-3">$49<span class="text-sm font-normal text-gray-500">/mo</span></div>
+        <ul class="space-y-1.5 mb-4 text-sm text-gray-600">
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Up to 5 users</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>500 jobs/month</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>1,000 SMS/month</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>10 GB storage</li>
+        </ul>
+        {% if subscription.plan == 'starter' %}
+        <div class="text-sm font-medium text-blue-600 text-center">Current Plan</div>
+        {% else %}
+        <form method="POST" action="/billing/upgrade">
+          <input type="hidden" name="new_tier" value="starter">
+          <button type="submit" class="w-full py-2 px-3 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Select Starter</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <!-- Professional -->
+      <div class="border rounded-xl p-5 {% if subscription.plan == 'professional' %}border-blue-500 bg-blue-50{% else %}border-gray-200{% endif %} relative">
+        <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+          <span class="bg-blue-600 text-white text-xs font-semibold px-3 py-1 rounded-full">Most Popular</span>
+        </div>
+        <div class="font-semibold text-gray-900 mb-1">Professional</div>
+        <div class="text-2xl font-bold text-gray-900 mb-3">$149<span class="text-sm font-normal text-gray-500">/mo</span></div>
+        <ul class="space-y-1.5 mb-4 text-sm text-gray-600">
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Up to 25 users</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Unlimited jobs</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>5,000 SMS/month</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>QuickBooks + API</li>
+        </ul>
+        {% if subscription.plan == 'professional' %}
+        <div class="text-sm font-medium text-blue-600 text-center">Current Plan</div>
+        {% else %}
+        <form method="POST" action="/billing/upgrade">
+          <input type="hidden" name="new_tier" value="professional">
+          <button type="submit" class="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors">Upgrade to Pro</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <!-- Enterprise -->
+      <div class="border rounded-xl p-5 {% if subscription.plan == 'enterprise' %}border-purple-500 bg-purple-50{% else %}border-gray-200{% endif %}">
+        <div class="font-semibold text-gray-900 mb-1">Enterprise</div>
+        <div class="text-2xl font-bold text-gray-900 mb-3">$349<span class="text-sm font-normal text-gray-500">/mo</span></div>
+        <ul class="space-y-1.5 mb-4 text-sm text-gray-600">
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Unlimited users</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Unlimited everything</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Dedicated support</li>
+          <li class="flex items-center gap-1.5"><svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586l-2.293-2.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l8-8a1 1 0 000-1.414z"/></svg>Multi-location + fleet</li>
+        </ul>
+        {% if subscription.plan == 'enterprise' %}
+        <div class="text-sm font-medium text-purple-600 text-center">Current Plan</div>
+        {% else %}
+        <form method="POST" action="/billing/upgrade">
+          <input type="hidden" name="new_tier" value="enterprise">
+          <button type="submit" class="w-full py-2 px-3 rounded-lg border border-purple-300 text-sm font-medium text-purple-700 hover:bg-purple-50 transition-colors">Upgrade to Enterprise</button>
+        </form>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Invoice History -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Invoice History</h2>
+
+    {% if invoices %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th class="text-left py-3 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Invoice</th>
+            <th class="text-left py-3 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
+            <th class="text-right py-3 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
+            <th class="text-center py-3 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="text-center py-3 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">PDF</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for inv in invoices %}
+          <tr class="hover:bg-gray-50 transition-colors">
+            <td class="py-3 px-2 text-gray-700 font-mono text-xs">{{ inv.number | default(inv.id | default('—')) }}</td>
+            <td class="py-3 px-2 text-gray-600">{{ inv.created | default('—') }}</td>
+            <td class="py-3 px-2 text-right font-semibold text-gray-900">
+              ${{ "%.2f"|format(inv.amount_paid | default(inv.amount_due | default(0))) }}
+              <span class="text-xs text-gray-400 font-normal">{{ inv.currency | default('usd') | upper }}</span>
+            </td>
+            <td class="py-3 px-2 text-center">
+              <span class="inline-block px-2 py-0.5 rounded text-xs font-medium
+                {% if inv.status == 'paid' %}bg-green-100 text-green-700
+                {% elif inv.status == 'open' %}bg-yellow-100 text-yellow-700
+                {% elif inv.status == 'void' %}bg-gray-100 text-gray-500
+                {% else %}bg-red-100 text-red-700{% endif %}">
+                {{ inv.status | default('—') | capitalize }}
+              </span>
+            </td>
+            <td class="py-3 px-2 text-center">
+              {% if inv.invoice_pdf %}
+              <a href="{{ inv.invoice_pdf }}" target="_blank" rel="noopener noreferrer"
+                 class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-medium">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                Download
+              </a>
+              {% else %}
+              <span class="text-gray-400 text-xs">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-10">
+      <svg class="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      <p class="text-sm text-gray-500">No invoices yet.</p>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

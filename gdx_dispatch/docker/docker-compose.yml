@@ -1,0 +1,184 @@
+services:
+  # ── Database ─────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gdx
+      POSTGRES_USER: gdx
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_password}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gdx -d gdx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── FastAPI Application ───────────────────────────────────────────────────────
+  app:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+      args:
+        GIT_SHA_SHORT: ${GIT_SHA_SHORT:-unknown}
+    environment:
+      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
+      # JWT signing — RS256 with asymmetric keys. App falls back to HS256
+      # with JWT_SECRET if RS_PRIVATE_KEY is empty. Set all three in production .env.
+      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      # PII encryption. App refuses to boot in production when unset.
+      # Set GDX_ENV=dev to skip the gate during development.
+      FERNET_KEY: ${FERNET_KEY:-}
+      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+      GDX_ENV: ${GDX_ENV:-dev}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      APP_VERSION: ${APP_VERSION:-dev}
+      BUILD_TIME: ${BUILD_TIME:-unknown}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      PLATFORM_SMTP_HOST: smtp.titan.email
+      PLATFORM_SMTP_PORT: "465"
+      PLATFORM_SMTP_USER: info@example.com
+      PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+      VPS_IP: ${VPS_IP:-}
+      GDX_E2E_BYPASS: ${GDX_E2E_BYPASS:-0}
+      GDX_BASE_URL: ${GDX_BASE_URL:-http://localhost:8001}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      QB_CLIENT_ID: ${QB_CLIENT_ID:-}
+      QB_CLIENT_SECRET: ${QB_CLIENT_SECRET:-}
+      QB_REDIRECT_URI: ${QB_REDIRECT_URI:-http://localhost:8001/api/qb/oauth/callback}
+      QB_ENVIRONMENT: ${QB_ENVIRONMENT:-sandbox}
+      QB_WEBHOOK_VERIFIER_TOKEN: ${QB_WEBHOOK_VERIFIER_TOKEN:-}
+      GDX_SVC_KEY: ${GDX_SVC_KEY:-}
+      POWER_APPS_TENANT_ID: ${POWER_APPS_TENANT_ID:-}
+      POWER_APPS_CLIENT_ID: ${POWER_APPS_CLIENT_ID:-}
+      GDX_MICROSOFT_SECRET_KEY: ${GDX_MICROSOFT_SECRET_KEY:-}
+      OUTLOOK_BOOTSTRAP_TENANT_SLUG: ${OUTLOOK_BOOTSTRAP_TENANT_SLUG:-gdx}
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - gdx_uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Celery Worker — priority:high ────────────────────────────────────────────
+  celery-high:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
+      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      FERNET_KEY: ${FERNET_KEY:-}
+      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+      GDX_ENV: ${GDX_ENV:-dev}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Celery Worker — priority:low ─────────────────────────────────────────────
+  celery-low:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+    command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
+      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      FERNET_KEY: ${FERNET_KEY:-}
+      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+      GDX_ENV: ${GDX_ENV:-dev}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Celery Beat ───────────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+    command: celery -A gdx_dispatch.core.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
+      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      FERNET_KEY: ${FERNET_KEY:-}
+      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+      GDX_ENV: ${GDX_ENV:-dev}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  gdx_uploads:

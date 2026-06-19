@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.training_record.v1",
+  "description": "Technician training / certification record.",
+  "type": "object",
+  "required": ["technician_id", "course_name", "completed_at"],
+  "properties": {
+    "technician_id": {"type": "string"},
+    "course_name": {"type": "string", "minLength": 1, "maxLength": 160},
+    "provider": {"type": "string", "maxLength": 120},
+    "completed_at": {"type": "string"},
+    "expires_at": {"type": "string"},
+    "score": {"type": "number", "minimum": 0, "maximum": 100},
+    "certificate_url": {"type": "string", "maxLength": 1024},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false,
+  "x-gdx-capabilities": [
+    ["read", "training_record"],
+    ["write", "training_record"]
+  ],
+  "x-gdx-index-hints": ["technician_id", "course_name", "expires_at"]
+}

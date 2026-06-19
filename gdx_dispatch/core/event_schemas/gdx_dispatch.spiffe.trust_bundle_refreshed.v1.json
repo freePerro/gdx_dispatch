@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.spiffe.trust_bundle_refreshed.v1",
+  "description": "Emitted when the SPIRE trust bundle is refreshed — either on TTL-driven auto-refresh or operator force-refresh via /api/admin/spiffe/trust-bundle/refresh.",
+  "type": "object",
+  "required": ["refreshed_at", "trust_domains"],
+  "properties": {
+    "refreshed_at": {"type": "string"},
+    "trust_domains": {"type": "array", "items": {"type": "string"}},
+    "actor_identity_id": {"type": ["string", "null"]},
+    "trigger": {"type": "string", "enum": ["ttl", "force"]},
+    "previous_fetched_at": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

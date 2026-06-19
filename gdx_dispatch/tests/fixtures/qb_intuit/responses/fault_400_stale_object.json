@@ -1,0 +1,14 @@
+{
+  "Fault": {
+    "Error": [
+      {
+        "Message": "Stale Object Error",
+        "Detail": "Stale Object Error : You and another user/process are editing the same object. Please refresh and try again.",
+        "code": "5010",
+        "element": ""
+      }
+    ],
+    "type": "ValidationFault"
+  },
+  "time": "2026-05-12T00:00:00.000-07:00"
+}

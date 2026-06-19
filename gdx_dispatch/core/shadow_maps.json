@@ -1,0 +1,25 @@
+{
+  "$schema_version": "1",
+  "$comment": "SS-29 declarative old→new table mapping. Each entry describes how a platform-v1 table should be shadowed into its platform-v2 counterpart. column_transformations is a list of {from, to, transform} records; supported transforms: 'identity', 'upper', 'lower', 'int_to_str', 'str_to_int', 'json_dumps', 'json_loads'.",
+  "maps": {
+    "customers_v1": {
+      "new_table": "customers_v2",
+      "column_renames": {
+        "cust_name": "customer_name",
+        "cust_phone": "phone_e164"
+      },
+      "column_transformations": [
+        {"from": "phone_e164", "to": "phone_e164", "transform": "identity"}
+      ],
+      "primary_key": "id"
+    },
+    "jobs_v1": {
+      "new_table": "jobs_v2",
+      "column_renames": {
+        "job_no": "job_number"
+      },
+      "column_transformations": [],
+      "primary_key": "id"
+    }
+  }
+}

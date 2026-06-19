@@ -1,0 +1,580 @@
+{% extends "tenant_base.html" %}
+{% block title %}Developer Portal{% endblock %}
+
+{% block content %}
+<div class="py-6 max-w-4xl">
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Developer Portal</h1>
+    <p class="text-sm text-gray-500 mt-1">
+      Manage API keys, configure webhooks, and explore the GDX REST API.
+      <a href="/docs" target="_blank" class="text-blue-600 hover:underline">OpenAPI docs &rarr;</a>
+    </p>
+  </div>
+
+  {% if flash %}
+  <div class="mb-4 rounded-lg px-4 py-3 text-sm
+    {% if flash.type == 'error' %}bg-red-50 text-red-800 border border-red-200
+    {% else %}bg-green-50 text-green-800 border border-green-200{% endif %}">
+    {{ flash.message }}
+  </div>
+  {% endif %}
+
+  <!-- ================================================================
+       API Keys Section
+  ================================================================ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="text-base font-semibold text-gray-900">API Keys</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Keys are shown only once at creation. Store them securely.</p>
+      </div>
+      <button
+        onclick="document.getElementById('create-key-form').classList.toggle('hidden')"
+        class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        New Key
+      </button>
+    </div>
+
+    <!-- Create Key Form (hidden by default) -->
+    <div id="create-key-form" class="hidden mb-5 p-4 bg-gray-50 rounded-lg border border-gray-200">
+      <h3 class="text-sm font-medium text-gray-800 mb-3">Create New API Key</h3>
+      <form method="POST" action="/developer/keys" class="space-y-3">
+        {% if csrf_token %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% endif %}
+
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1" for="key_name">Key Name</label>
+          <input type="text" id="key_name" name="name" required
+                 placeholder="e.g. Production Integration"
+                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Scopes</label>
+          <div class="flex flex-wrap gap-3">
+            <label class="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" name="scopes" value="read:jobs" class="rounded border-gray-300 text-blue-600">
+              read:jobs
+            </label>
+            <label class="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" name="scopes" value="write:jobs" class="rounded border-gray-300 text-blue-600">
+              write:jobs
+            </label>
+            <label class="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" name="scopes" value="read:customers" class="rounded border-gray-300 text-blue-600">
+              read:customers
+            </label>
+            <label class="flex items-center gap-1.5 text-sm text-gray-700">
+              <input type="checkbox" name="scopes" value="write:customers" class="rounded border-gray-300 text-blue-600">
+              write:customers
+            </label>
+          </div>
+        </div>
+
+        <div class="flex gap-2">
+          <button type="submit"
+                  class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
+            Create Key
+          </button>
+          <button type="button"
+                  onclick="document.getElementById('create-key-form').classList.add('hidden')"
+                  class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- New key reveal (shown after creation) -->
+    {% if new_key %}
+    <div class="mb-5 p-4 bg-yellow-50 border border-yellow-300 rounded-lg">
+      <p class="text-sm font-semibold text-yellow-800 mb-2">New API Key — Save it now. You won't see it again.</p>
+      <div class="flex items-center gap-2">
+        <code id="new-key-value"
+              class="flex-1 bg-white border border-yellow-300 rounded px-3 py-2 text-sm font-mono text-gray-900 overflow-x-auto">
+          {{ new_key }}
+        </code>
+        <button onclick="copyNewKey()"
+                class="px-3 py-2 bg-yellow-100 text-yellow-800 text-xs rounded hover:bg-yellow-200 transition-colors whitespace-nowrap">
+          Copy
+        </button>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Keys table -->
+    {% if api_keys %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200 text-left">
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Name</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Prefix</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Scopes</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Created</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Status</th>
+            <th class="pb-2"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for key in api_keys %}
+          <tr class="{% if key.revoked_at %}opacity-50{% endif %}">
+            <td class="py-3 font-medium text-gray-900">{{ key.name }}</td>
+            <td class="py-3 font-mono text-gray-600 text-xs">{{ key.key_prefix }}...</td>
+            <td class="py-3">
+              <div class="flex flex-wrap gap-1">
+                {% for scope in key.scopes %}
+                <span class="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 text-xs rounded">{{ scope }}</span>
+                {% else %}
+                <span class="text-gray-400 text-xs">none</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td class="py-3 text-gray-500 text-xs">{{ key.created_at | default('—') }}</td>
+            <td class="py-3">
+              {% if key.revoked_at %}
+              <span class="inline-block px-2 py-0.5 bg-red-50 text-red-700 text-xs rounded-full">Revoked</span>
+              {% else %}
+              <span class="inline-block px-2 py-0.5 bg-green-50 text-green-700 text-xs rounded-full">Active</span>
+              {% endif %}
+            </td>
+            <td class="py-3 text-right">
+              {% if not key.revoked_at %}
+              <form method="POST" action="/developer/keys/{{ key.id }}/revoke"
+                    onsubmit="return confirm('Revoke this key? This cannot be undone.')">
+                {% if csrf_token %}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                {% endif %}
+                <button type="submit"
+                        class="text-xs text-red-600 hover:text-red-800 hover:underline">
+                  Revoke
+                </button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500 text-center py-6">No API keys yet. Create one above to get started.</p>
+    {% endif %}
+  </div>
+
+  <!-- ================================================================
+       Quick-Start Code Examples
+  ================================================================ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Quick Start</h2>
+
+    <!-- Tab switcher -->
+    <div class="flex gap-2 mb-4 border-b border-gray-200">
+      <button onclick="showTab('tab-python')" id="btn-python"
+              class="px-3 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600 -mb-px">
+        Python
+      </button>
+      <button onclick="showTab('tab-curl')" id="btn-curl"
+              class="px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent -mb-px">
+        curl
+      </button>
+    </div>
+
+    <!-- Python examples -->
+    <div id="tab-python">
+      <p class="text-xs text-gray-500 mb-2">Install: <code class="bg-gray-100 px-1 rounded">pip install requests</code></p>
+
+      <pre class="bg-gray-900 text-gray-100 rounded-lg p-4 text-xs overflow-x-auto leading-relaxed"><code>import requests
+
+API_KEY = "gdx_live_your_key_here"
+BASE_URL = "https://{{ request.url.netloc }}/api/v1"
+
+headers = {"X-API-Key": API_KEY}
+
+# List jobs
+resp = requests.get(f"{BASE_URL}/jobs", headers=headers, params={"page": 1, "per_page": 20})
+print(resp.json())
+# {"data": [...], "meta": {"page": 1, "per_page": 20, "total": 42}}
+
+# Create a job
+job = requests.post(f"{BASE_URL}/jobs", headers=headers, json={
+    "title": "Spring tune-up",
+    "status": "scheduled",
+}).json()
+print(job["data"]["id"])
+
+# List customers
+customers = requests.get(f"{BASE_URL}/customers", headers=headers).json()
+
+# Create a customer
+new_customer = requests.post(f"{BASE_URL}/customers", headers=headers, json={
+    "name": "Jane Smith",
+    "email": "jane@example.com",
+    "phone": "555-0100",
+}).json()
+
+# List invoices (filter by status)
+invoices = requests.get(
+    f"{BASE_URL}/invoices",
+    headers=headers,
+    params={"status": "sent"},
+).json()
+</code></pre>
+    </div>
+
+    <!-- curl examples -->
+    <div id="tab-curl" class="hidden">
+      <pre class="bg-gray-900 text-gray-100 rounded-lg p-4 text-xs overflow-x-auto leading-relaxed"><code># List jobs
+curl -s "https://{{ request.url.netloc }}/api/v1/jobs?page=1&per_page=20" \
+  -H "X-API-Key: gdx_live_your_key_here"
+
+# Create a job
+curl -s -X POST "https://{{ request.url.netloc }}/api/v1/jobs" \
+  -H "X-API-Key: gdx_live_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Spring tune-up","status":"scheduled"}'
+
+# Update a job status
+curl -s -X PATCH "https://{{ request.url.netloc }}/api/v1/jobs/JOB_ID" \
+  -H "X-API-Key: gdx_live_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"in_progress"}'
+
+# List customers (with search)
+curl -s "https://{{ request.url.netloc }}/api/v1/customers?search=smith" \
+  -H "X-API-Key: gdx_live_your_key_here"
+
+# Register a webhook
+curl -s -X POST "https://{{ request.url.netloc }}/api/v1/webhooks" \
+  -H "X-API-Key: gdx_live_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://your-server.com/hooks/gdx","events":["job.created","job.updated"]}'
+</code></pre>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       Webhook Configuration
+  ================================================================ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-1">Webhook Configuration</h2>
+    <p class="text-sm text-gray-500 mb-4">
+      Register an HTTPS endpoint to receive real-time events. GDX will send a
+      <code class="bg-gray-100 px-1 rounded text-xs">POST</code> request with a JSON payload
+      whenever a subscribed event occurs.
+    </p>
+
+    <form method="POST" action="/developer/webhooks" class="space-y-4">
+      {% if csrf_token %}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% endif %}
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="wh_url">Endpoint URL</label>
+        <input type="url" id="wh_url" name="url" required
+               placeholder="https://your-server.com/hooks/gdx"
+               class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">Events to Subscribe</label>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {% for event in [
+            "job.created", "job.updated", "job.completed", "job.cancelled",
+            "customer.created", "customer.updated",
+            "invoice.created", "invoice.paid"
+          ] %}
+          <label class="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="events" value="{{ event }}"
+                   class="rounded border-gray-300 text-blue-600">
+            {{ event }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="wh_secret">
+          Signing Secret
+          <span class="font-normal text-gray-400">(optional)</span>
+        </label>
+        <input type="text" id="wh_secret" name="secret"
+               placeholder="Used to sign payloads with HMAC-SHA256"
+               class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <p class="text-xs text-gray-400 mt-1">
+          If set, each request will include an
+          <code class="bg-gray-100 px-1 rounded">X-GDX-Signature</code> header
+          you can verify on your server.
+        </p>
+      </div>
+
+      <button type="submit"
+              class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
+        Register Webhook
+      </button>
+    </form>
+
+    <!-- Registered webhooks list -->
+    {% if webhooks %}
+    <div class="mt-5 border-t border-gray-100 pt-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">Registered Endpoints</h3>
+      <div class="space-y-2">
+        {% for wh in webhooks %}
+        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200 text-sm">
+          <div class="min-w-0 flex-1">
+            <div class="font-mono text-xs text-gray-800 truncate">{{ wh.url }}</div>
+            <div class="text-xs text-gray-400 mt-0.5">
+              {{ wh.events | join(", ") if wh.events else "no events" }}
+            </div>
+          </div>
+          <span class="ml-3 flex-shrink-0 px-2 py-0.5 text-xs rounded-full
+            {% if wh.active %}bg-green-50 text-green-700{% else %}bg-gray-100 text-gray-500{% endif %}">
+            {% if wh.active %}Active{% else %}Inactive{% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ================================================================
+       API Documentation — Endpoint Reference Table
+  ================================================================ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">API Endpoint Reference</h2>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200 text-left">
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Method</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Path</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Description</th>
+            <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Scope</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% set endpoints = [
+            ("GET",    "/v1/jobs",              "List jobs",              "read:jobs"),
+            ("POST",   "/v1/jobs",              "Create job",             "write:jobs"),
+            ("GET",    "/v1/jobs/{id}",         "Get job",                "read:jobs"),
+            ("PATCH",  "/v1/jobs/{id}",         "Update job",             "write:jobs"),
+            ("GET",    "/v1/customers",         "List customers",         "read:customers"),
+            ("POST",   "/v1/customers",         "Create customer",        "write:customers"),
+            ("GET",    "/v1/customers/{id}",    "Get customer",           "read:customers"),
+            ("GET",    "/v1/invoices",          "List invoices",          "read:invoices"),
+            ("POST",   "/v1/webhooks",          "Register webhook",       "write:webhooks"),
+            ("DELETE", "/v1/webhooks/{id}",     "Unregister webhook",     "write:webhooks"),
+          ] %}
+          {% for method, path, desc, scope in endpoints %}
+          <tr>
+            <td class="py-2.5">
+              <span class="inline-block px-2 py-0.5 text-xs font-semibold rounded
+                {% if method == 'GET' %}bg-green-50 text-green-700
+                {% elif method == 'POST' %}bg-blue-50 text-blue-700
+                {% elif method == 'PATCH' %}bg-yellow-50 text-yellow-700
+                {% elif method == 'DELETE' %}bg-red-50 text-red-700
+                {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {{ method }}
+              </span>
+            </td>
+            <td class="py-2.5 font-mono text-xs text-gray-800">{{ path }}</td>
+            <td class="py-2.5 text-gray-600">{{ desc }}</td>
+            <td class="py-2.5">
+              <span class="inline-block px-1.5 py-0.5 bg-gray-100 text-gray-600 text-xs rounded font-mono">{{ scope }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-gray-400 mt-3">
+      All endpoints require <code class="bg-gray-100 px-1 rounded">X-API-Key: &lt;your-key&gt;</code> header.
+      Base URL: <code class="bg-gray-100 px-1 rounded">https://{{ request.url.netloc }}/api</code>
+    </p>
+  </div>
+
+  <!-- ================================================================
+       Recent API Call Logs
+  ================================================================ -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="text-base font-semibold text-gray-900">Recent API Call Logs</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Last 20 requests made with your API keys.</p>
+      </div>
+      <button id="refresh-logs-btn"
+              type="button"
+              onclick="loadApiLogs()"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Refresh
+      </button>
+    </div>
+    <div id="api-logs-container">
+      {% if api_logs %}
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="border-b border-gray-200 text-left">
+              <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Time</th>
+              <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Method</th>
+              <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Path</th>
+              <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Status</th>
+              <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Key</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100 font-mono">
+            {% for log in api_logs %}
+            <tr>
+              <td class="py-2 text-gray-400">{{ log.ts | default('—') }}</td>
+              <td class="py-2">
+                <span class="px-1.5 py-0.5 rounded text-xs font-semibold
+                  {% if log.method == 'GET' %}bg-green-50 text-green-700
+                  {% elif log.method == 'POST' %}bg-blue-50 text-blue-700
+                  {% elif log.method == 'PATCH' %}bg-yellow-50 text-yellow-700
+                  {% elif log.method == 'DELETE' %}bg-red-50 text-red-700
+                  {% else %}bg-gray-100 text-gray-600{% endif %}">
+                  {{ log.method }}
+                </span>
+              </td>
+              <td class="py-2 text-gray-700">{{ log.path }}</td>
+              <td class="py-2">
+                <span class="px-1.5 py-0.5 rounded text-xs font-semibold
+                  {% if log.status < 300 %}bg-green-50 text-green-700
+                  {% elif log.status < 500 %}bg-yellow-50 text-yellow-700
+                  {% else %}bg-red-50 text-red-700{% endif %}">
+                  {{ log.status }}
+                </span>
+              </td>
+              <td class="py-2 text-gray-400">{{ log.key_prefix }}...</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-sm text-gray-400 text-center py-6" id="api-logs-empty">
+        No recent API calls recorded. Logs appear after your first authenticated request.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ================================================================
+       API Reference links
+  ================================================================ -->
+  <div class="bg-blue-50 border border-blue-200 rounded-xl p-5">
+    <h2 class="text-sm font-semibold text-blue-900 mb-2">Interactive API Reference</h2>
+    <p class="text-sm text-blue-700 mb-3">
+      The full interactive API documentation is auto-generated from the OpenAPI schema.
+    </p>
+    <div class="flex gap-3">
+      <a href="/docs" target="_blank"
+         class="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+        </svg>
+        Swagger UI
+      </a>
+      <a href="/redoc" target="_blank"
+         class="inline-flex items-center gap-1.5 px-4 py-2 bg-white text-blue-700 border border-blue-300 text-sm rounded-lg hover:bg-blue-50 transition-colors">
+        ReDoc
+      </a>
+      <a href="/openapi.json" target="_blank"
+         class="inline-flex items-center gap-1.5 px-4 py-2 bg-white text-blue-700 border border-blue-300 text-sm rounded-lg hover:bg-blue-50 transition-colors">
+        openapi.json
+      </a>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const _METHOD_COLORS = {
+  GET: 'bg-green-50 text-green-700',
+  POST: 'bg-blue-50 text-blue-700',
+  PATCH: 'bg-yellow-50 text-yellow-700',
+  DELETE: 'bg-red-50 text-red-700',
+};
+
+function methodColor(m) {
+  return _METHOD_COLORS[m] || 'bg-gray-100 text-gray-600';
+}
+
+function statusColor(s) {
+  if (s < 300) return 'bg-green-50 text-green-700';
+  if (s < 500) return 'bg-yellow-50 text-yellow-700';
+  return 'bg-red-50 text-red-700';
+}
+
+function showTab(tabId) {
+  ['tab-python', 'tab-curl'].forEach(id => {
+    document.getElementById(id).classList.toggle('hidden', id !== tabId);
+  });
+  ['btn-python', 'btn-curl'].forEach(id => {
+    const btn = document.getElementById(id);
+    const active = (id === 'btn-' + tabId.replace('tab-', ''));
+    btn.className = btn.className
+      .replace('text-blue-600 border-blue-600', 'text-gray-500 border-transparent')
+      .replace('text-gray-500 border-transparent', 'text-gray-500 border-transparent');
+    if (active) {
+      btn.className = 'px-3 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600 -mb-px';
+    } else {
+      btn.className = 'px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-700 border-b-2 border-transparent -mb-px';
+    }
+  });
+}
+
+function loadApiLogs() {
+  const btn = document.getElementById('refresh-logs-btn');
+  if (btn) btn.disabled = true;
+  fetch('/api/developer/logs?limit=20', {credentials: 'include'})
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(data => {
+      const rows = (data.data || []);
+      const container = document.getElementById('api-logs-container');
+      if (!container) return;
+      if (rows.length === 0) {
+        container.innerHTML = '<p class="text-sm text-gray-400 text-center py-6">No recent API calls recorded.</p>';
+        return;
+      }
+      const rowsHtml = rows.map(log => `<tr>
+        <td class="py-2 text-gray-400">${log.ts || '—'}</td>
+        <td class="py-2"><span class="px-1.5 py-0.5 rounded text-xs font-semibold ${methodColor(log.method)}">${log.method}</span></td>
+        <td class="py-2 text-gray-700">${log.path}</td>
+        <td class="py-2"><span class="px-1.5 py-0.5 rounded text-xs font-semibold ${statusColor(log.status)}">${log.status}</span></td>
+        <td class="py-2 text-gray-400">${log.key_prefix || ''}...</td>
+      </tr>`).join('');
+      container.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-xs"><thead><tr class="border-b border-gray-200 text-left">
+        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Time</th>
+        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Method</th>
+        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Path</th>
+        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Status</th>
+        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Key</th>
+      </tr></thead><tbody class="divide-y divide-gray-100 font-mono">${rowsHtml}</tbody></table></div>`;
+    })
+    .catch(() => {})
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
+function copyNewKey() {
+  const el = document.getElementById('new-key-value');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+    const btn = el.nextElementSibling;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+</script>
+{% endblock %}

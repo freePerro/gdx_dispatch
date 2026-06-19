@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.customer.created.v1",
+  "description": "Emitted when a new customer row is created.",
+  "type": "object",
+  "required": ["customer_id", "tenant_id", "created_at"],
+  "properties": {
+    "customer_id": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "created_at": {"type": "string"},
+    "created_by_identity_id": {"type": "string"},
+    "name": {"type": "string"},
+    "source": {"type": "string"}
+  },
+  "additionalProperties": true
+}

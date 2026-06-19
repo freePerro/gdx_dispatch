@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.billing.overage_detected.v1",
+  "description": "Emitted when a tenant's aggregated usage for an event_type crosses the plan's per-period limit.",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "event_type",
+    "period_kind",
+    "period_start",
+    "limit_value",
+    "observed_quantity",
+    "detected_at"
+  ],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "event_type": {"type": "string"},
+    "period_kind": {"type": "string", "enum": ["hour", "day", "month"]},
+    "period_start": {"type": "string"},
+    "limit_value": {"type": "integer", "minimum": 0},
+    "observed_quantity": {"type": "integer", "minimum": 0},
+    "detected_at": {"type": "string"},
+    "plan_code": {"type": "string"}
+  },
+  "additionalProperties": true
+}

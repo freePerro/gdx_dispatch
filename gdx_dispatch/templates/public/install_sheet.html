@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Install Sheet — {{ job_number }}</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  @media print { body { -webkit-print-color-adjust: exact; } }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; font-size: 11pt; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a365d; padding-bottom: 12px; margin-bottom: 20px; }
+  .logo { font-size: 22pt; font-weight: 800; color: #1a365d; }
+  .logo-sub { font-size: 9pt; color: #666; }
+  .job-badge { background: #1a365d; color: white; font-size: 14pt; font-weight: 700; padding: 8px 16px; border-radius: 6px; }
+
+  .section { margin-top: 20px; }
+  .section-title { background: #f0f4f8; padding: 6px 12px; font-weight: 700; text-transform: uppercase; font-size: 10pt; letter-spacing: 0.05em; border-left: 4px solid #1a365d; margin-bottom: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .info-table { width: 100%; border-collapse: collapse; }
+  .info-table td { padding: 3px 0; vertical-align: top; }
+  .info-table .label { font-weight: 600; color: #555; width: 120px; font-size: 9pt; text-transform: uppercase; }
+  .info-table .value { font-size: 11pt; }
+
+  .specs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+  .spec { border: 1px solid #e2e8f0; padding: 8px; border-radius: 4px; }
+  .spec-label { font-size: 8pt; color: #718096; text-transform: uppercase; letter-spacing: 0.05em; }
+  .spec-value { font-weight: 700; font-size: 12pt; margin-top: 2px; }
+
+  .parts-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .parts-table th { background: #edf2f7; text-align: left; padding: 8px; border-bottom: 2px solid #cbd5e0; font-size: 9pt; text-transform: uppercase; }
+  .parts-table td { padding: 8px; border-bottom: 1px solid #e2e8f0; }
+  .parts-table tr:nth-child(even) { background: #f7fafc; }
+
+  .notes-box { border: 1px solid #e2e8f0; padding: 12px; min-height: 50px; white-space: pre-wrap; background: #fffff0; border-radius: 4px; }
+
+  .signature-section { margin-top: 50px; display: flex; justify-content: space-between; gap: 40px; }
+  .sig-block { flex: 1; }
+  .sig-line { border-bottom: 1px solid #333; height: 40px; }
+  .sig-label { font-size: 9pt; color: #666; margin-top: 4px; }
+
+  .footer { margin-top: 30px; text-align: center; font-size: 8pt; color: #999; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="logo">{{ company_name }}</div>
+    <div class="logo-sub">Installation Work Order</div>
+  </div>
+  <div class="job-badge">{{ job_number }}</div>
+</div>
+
+<div class="section">
+  <div class="section-title">Job &amp; Customer Information</div>
+  <div class="two-col">
+    <table class="info-table">
+      <tr><td class="label">Customer</td><td class="value">{{ customer_name }}</td></tr>
+      <tr><td class="label">Address</td><td class="value">{{ address }}</td></tr>
+      <tr><td class="label">Phone</td><td class="value">{{ phone }}</td></tr>
+    </table>
+    <table class="info-table">
+      <tr><td class="label">Scheduled</td><td class="value">{{ scheduled_at }}</td></tr>
+      <tr><td class="label">Technician</td><td class="value">{{ technician }}</td></tr>
+      <tr><td class="label">Job Type</td><td class="value">{{ job_type }}</td></tr>
+      <tr><td class="label">Priority</td><td class="value">{{ priority }}</td></tr>
+    </table>
+  </div>
+</div>
+
+{% if door_specs %}
+<div class="section">
+  <div class="section-title">Door Specifications</div>
+  <div class="specs-grid">
+    <div class="spec"><div class="spec-label">Model</div><div class="spec-value">{{ door_specs.model_number or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Size</div><div class="spec-value">{{ door_specs.width or '—' }}" × {{ door_specs.height or '—' }}"</div></div>
+    <div class="spec"><div class="spec-label">Color</div><div class="spec-value">{{ door_specs.color or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Insulation</div><div class="spec-value">{{ door_specs.insulation_type or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">R-Value</div><div class="spec-value">{{ door_specs.r_value or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Panel Style</div><div class="spec-value">{{ door_specs.panel_style or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Construction</div><div class="spec-value">{{ door_specs.section_construction or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Windows</div><div class="spec-value">{{ door_specs.window_option or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Window Type</div><div class="spec-value">{{ door_specs.window_type or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Finish</div><div class="spec-value">{{ door_specs.finish_type or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">High Lift</div><div class="spec-value">{{ door_specs.high_lift_display or '—' }}</div></div>
+    <div class="spec"><div class="spec-label">Brand</div><div class="spec-value">{{ door_specs.brand or '—' }}</div></div>
+  </div>
+  {% if door_specs.sales_talking_point %}
+  <div style="margin-top:10px;padding:8px;background:#f0fff4;border:1px solid #c6f6d5;border-radius:4px;font-size:10pt"><strong>Notes:</strong> {{ door_specs.sales_talking_point }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="section">
+  <div class="section-title">Parts &amp; Materials</div>
+  <table class="parts-table">
+    <thead><tr><th>Description</th><th>Category</th><th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th></tr></thead>
+    <tbody>
+    {% for part in parts %}
+      <tr><td>{{ part.description }}</td><td>{{ part.category }}</td><td style="text-align:center">{{ part.quantity }}</td><td style="text-align:right">${{ "%.2f"|format(part.unit_price) }}</td><td style="text-align:right">${{ "%.2f"|format(part.total) }}</td></tr>
+    {% else %}
+      <tr><td colspan="5" style="text-align:center;color:#999">No estimate lines found for this job</td></tr>
+    {% endfor %}
+    </tbody>
+    <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700;padding:8px">Estimate Total</td><td style="text-align:right;font-weight:700;padding:8px">${{ "%.2f"|format(estimate_total) }}</td></tr></tfoot>
+  </table>
+</div>
+
+<div class="section">
+  <div class="section-title">Special Instructions</div>
+  <div class="notes-box">{{ notes }}</div>
+</div>
+
+<div class="signature-section">
+  <div class="sig-block"><div class="sig-line"></div><div class="sig-label">Customer Signature</div></div>
+  <div class="sig-block"><div class="sig-line"></div><div class="sig-label">Technician Signature</div></div>
+  <div class="sig-block"><div class="sig-line"></div><div class="sig-label">Date</div></div>
+</div>
+
+<div class="footer">Generated by {{ company_name }} — DispatchApp Platform</div>
+
+{% if auto_print %}
+<script src="/static/install_sheet_print.js"></script>
+{% endif %}
+</body>
+</html>

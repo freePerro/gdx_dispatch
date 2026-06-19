@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pay Invoice {{ invoice.invoice_number }}</title>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      max-width: 480px;
+      width: 100%;
+      padding: 2rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: #2563eb;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-icon svg { color: #fff; }
+    .brand-name { font-size: 1rem; font-weight: 700; color: #1f2937; }
+
+    .invoice-summary {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .invoice-summary h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .invoice-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 0.9rem;
+      color: #374151;
+      margin-bottom: 0.25rem;
+    }
+
+    .invoice-total {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #111827;
+      margin-top: 0.25rem;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      border-bottom: 2px solid #e5e7eb;
+      margin-bottom: 1.5rem;
+      gap: 0;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 0.625rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #6b7280;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+    }
+
+    .tab-btn.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+
+    .tab-btn:hover:not(.active) { color: #374151; }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Stripe card element wrapper */
+    .element-wrapper {
+      background: #f8fafc;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 0.875rem 1rem;
+      margin-bottom: 1rem;
+      transition: border-color 0.15s;
+    }
+
+    .element-wrapper.focused { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+    /* ACH form fields */
+    .form-group { margin-bottom: 1rem; }
+
+    .form-label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 0.4rem;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      color: #111827;
+      background: #f8fafc;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .form-input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+    }
+
+    .form-row { display: flex; gap: 0.75rem; }
+    .form-row .form-group { flex: 1; }
+
+    /* Submit button */
+    .btn-pay {
+      width: 100%;
+      padding: 0.875rem;
+      background: #2563eb;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: background 0.15s, opacity 0.15s;
+      margin-top: 0.5rem;
+    }
+
+    .btn-pay:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-pay:disabled { opacity: 0.65; cursor: not-allowed; }
+
+    /* Spinner */
+    .spinner {
+      display: none;
+      width: 18px;
+      height: 18px;
+      border: 2.5px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .btn-pay.loading .spinner { display: inline-block; }
+    .btn-pay.loading .btn-text { display: none; }
+
+    /* Error / success */
+    .alert {
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-size: 0.875rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+
+    .alert.error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+    .alert.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+    .alert.visible { display: block; }
+
+    .secure-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      font-size: 0.75rem;
+      color: #9ca3af;
+      margin-top: 1.25rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+
+  <!-- Brand -->
+  <div class="brand">
+    <div class="brand-icon">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+      </svg>
+    </div>
+    <span class="brand-name">Secure Payment</span>
+  </div>
+
+  <!-- Invoice summary -->
+  <div class="invoice-summary">
+    <h2>Invoice Summary</h2>
+    <div class="invoice-row">
+      <span>Invoice #</span>
+      <span>{{ invoice.invoice_number }}</span>
+    </div>
+    {% if invoice.status == "paid" %}
+    <div class="invoice-row" style="color:#15803d; font-weight:600; margin-top:0.5rem;">
+      <span>Status</span>
+      <span>Paid</span>
+    </div>
+    {% else %}
+    <div class="invoice-total">${{ "%.2f"|format(invoice.total) }}</div>
+    {% endif %}
+  </div>
+
+  {% if invoice.status == "paid" %}
+  <div class="alert success visible">This invoice has already been paid. Thank you!</div>
+  {% else %}
+
+  <!-- Error / success alerts -->
+  <div id="payment-errors" class="alert error" role="alert"></div>
+  <div id="payment-success" class="alert success" role="alert"></div>
+
+  <!-- Tabs -->
+  <div class="tabs" role="tablist">
+    <button class="tab-btn active" role="tab" data-tab="card" id="tab-card" aria-selected="true">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+      </svg>
+      Credit / Debit Card
+    </button>
+    <button class="tab-btn" role="tab" data-tab="ach" id="tab-ach" aria-selected="false">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+      </svg>
+      Bank Transfer (ACH)
+    </button>
+  </div>
+
+  <!-- Card tab -->
+  <div id="panel-card" class="tab-panel active" role="tabpanel">
+    <form id="card-form">
+      <div class="element-wrapper" id="card-element-wrapper">
+        <div id="card-element"><!-- Stripe Elements mounts here --></div>
+      </div>
+      <button type="submit" class="btn-pay" id="card-submit">
+        <span class="spinner"></span>
+        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.total) }}</span>
+      </button>
+    </form>
+  </div>
+
+  <!-- ACH tab -->
+  <div id="panel-ach" class="tab-panel" role="tabpanel">
+    <form id="ach-form">
+      <div class="form-group">
+        <label class="form-label" for="ach-email">Email address</label>
+        <input type="email" id="ach-email" class="form-input" placeholder="you@example.com" required autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ach-name">Account holder name</label>
+        <input type="text" id="ach-name" class="form-input" placeholder="Jane Smith" required autocomplete="name" />
+      </div>
+      <div class="element-wrapper" id="ach-element-wrapper">
+        <div id="ach-element"><!-- ACH bank element mounts here --></div>
+      </div>
+      <p style="font-size:0.75rem;color:#6b7280;margin-bottom:0.75rem;">
+        By providing your bank account information and confirming this payment, you authorise this merchant to debit your bank account.
+      </p>
+      <button type="submit" class="btn-pay" id="ach-submit">
+        <span class="spinner"></span>
+        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.total) }} via ACH</span>
+      </button>
+    </form>
+  </div>
+
+  {% endif %}{# end if not paid #}
+
+  <!-- Secure note -->
+  <div class="secure-note">
+    <svg width="12" height="12" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
+    </svg>
+    Payments are processed securely by Stripe. We never store card details.
+  </div>
+
+</div><!-- .card -->
+
+<script>
+  const STRIPE_KEY = "{{ stripe_publishable_key }}";
+  const INVOICE_ID = "{{ invoice.id }}";
+  const AMOUNT_CENTS = {{ (invoice.total * 100) | int }};
+
+  {% if invoice.status != "paid" %}
+
+  const stripe = Stripe(STRIPE_KEY);
+  const elements = stripe.elements();
+
+  // ── Card element ────────────────────────────────────────────────────────
+  const cardStyle = {
+    base: {
+      fontSize: "15px",
+      color: "#111827",
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      "::placeholder": { color: "#9ca3af" },
+    },
+    invalid: { color: "#b91c1c" },
+  };
+  const cardElement = elements.create("card", { style: cardStyle, hidePostalCode: false });
+  cardElement.mount("#card-element");
+
+  cardElement.on("focus",  () => document.getElementById("card-element-wrapper").classList.add("focused"));
+  cardElement.on("blur",   () => document.getElementById("card-element-wrapper").classList.remove("focused"));
+
+  // ── ACH element ─────────────────────────────────────────────────────────
+  let achElement = null;
+  let achElementMounted = false;
+
+  function mountAchElement() {
+    if (achElementMounted) return;
+    achElement = elements.create("auBankAccount"); // falls back gracefully
+    // For US ACH we use collectBankAccountForSetup — element is for display only
+    achElementMounted = true;
+  }
+
+  // ── Tab switching ────────────────────────────────────────────────────────
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => {
+        b.classList.remove("active");
+        b.setAttribute("aria-selected", "false");
+      });
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      btn.setAttribute("aria-selected", "true");
+      document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
+      clearMessages();
+      if (btn.dataset.tab === "ach") mountAchElement();
+    });
+  });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function showError(msg) {
+    const el = document.getElementById("payment-errors");
+    el.textContent = msg;
+    el.classList.add("visible");
+    document.getElementById("payment-success").classList.remove("visible");
+  }
+
+  function showSuccess(msg) {
+    const el = document.getElementById("payment-success");
+    el.textContent = msg;
+    el.classList.add("visible");
+    document.getElementById("payment-errors").classList.remove("visible");
+  }
+
+  function clearMessages() {
+    document.getElementById("payment-errors").classList.remove("visible");
+    document.getElementById("payment-success").classList.remove("visible");
+  }
+
+  function setLoading(btn, loading) {
+    btn.disabled = loading;
+    btn.classList.toggle("loading", loading);
+  }
+
+  async function createIntent() {
+    const resp = await fetch("/api/payments/create-intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invoice_id: INVOICE_ID, amount: AMOUNT_CENTS }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to initialise payment.");
+    }
+    return resp.json();
+  }
+
+  async function confirmServer(paymentIntentId) {
+    await fetch("/api/payments/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payment_intent_id: paymentIntentId, invoice_id: INVOICE_ID }),
+    });
+  }
+
+  // ── Card form submit ──────────────────────────────────────────────────────
+  document.getElementById("card-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearMessages();
+    const btn = document.getElementById("card-submit");
+    setLoading(btn, true);
+
+    try {
+      const { client_secret, payment_intent_id } = await createIntent();
+
+      const result = await stripe.confirmCardPayment(client_secret, {
+        payment_method: { card: cardElement },
+      });
+
+      if (result.error) {
+        showError(result.error.message);
+      } else if (result.paymentIntent.status === "succeeded") {
+        await confirmServer(result.paymentIntent.id);
+        showSuccess("Payment successful! Thank you. A receipt will be emailed to you shortly.");
+        document.getElementById("card-form").style.display = "none";
+        document.querySelector(".tabs").style.display = "none";
+      }
+    } catch (err) {
+      showError(err.message || "An unexpected error occurred.");
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  // ── ACH form submit ───────────────────────────────────────────────────────
+  document.getElementById("ach-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearMessages();
+    const btn = document.getElementById("ach-submit");
+    const email = document.getElementById("ach-email").value.trim();
+    const name  = document.getElementById("ach-name").value.trim();
+
+    if (!email || !name) {
+      showError("Please fill in your email and account holder name.");
+      return;
+    }
+
+    setLoading(btn, true);
+
+    try {
+      // Step 1: get SetupIntent client_secret
+      const setupResp = await fetch("/api/payments/ach/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_email: email }),
+      });
+      if (!setupResp.ok) {
+        const err = await setupResp.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to set up bank account.");
+      }
+      const { client_secret } = await setupResp.json();
+
+      // Step 2: collect bank account via Stripe.js
+      const result = await stripe.collectBankAccountForSetup({
+        clientSecret: client_secret,
+        params: {
+          payment_method_type: "us_bank_account",
+          payment_method_data: {
+            billing_details: { name, email },
+          },
+        },
+        expand: ["payment_method"],
+      });
+
+      if (result.error) {
+        showError(result.error.message);
+        return;
+      }
+
+      // Step 3: charge the collected bank account
+      const pmId = result.setupIntent.payment_method;
+      const chargeResp = await fetch("/api/payments/ach/charge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payment_method_id: pmId,
+          invoice_id: INVOICE_ID,
+          amount: AMOUNT_CENTS,
+        }),
+      });
+
+      if (!chargeResp.ok) {
+        const err = await chargeResp.json().catch(() => ({}));
+        throw new Error(err.detail || "ACH charge failed.");
+      }
+
+      const { status } = await chargeResp.json();
+
+      if (status === "processing" || status === "requires_action") {
+        showSuccess("Bank transfer initiated. ACH payments typically settle in 1-2 business days. You will receive a confirmation email.");
+      } else if (status === "succeeded") {
+        showSuccess("Payment successful! Thank you. A receipt will be emailed to you shortly.");
+      } else {
+        showError("Payment status: " + status + ". Please contact support if you have questions.");
+      }
+
+      document.getElementById("ach-form").style.display = "none";
+      document.querySelector(".tabs").style.display = "none";
+
+    } catch (err) {
+      showError(err.message || "An unexpected error occurred.");
+    } finally {
+      setLoading(btn, false);
+    }
+  });
+
+  {% endif %}{# end if not paid #}
+</script>
+
+</body>
+</html>

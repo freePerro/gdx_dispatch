@@ -1,0 +1,133 @@
+name: AI Code Review (Cerebras)
+
+# Runs on every PR — posts a focused diff review as a PR comment.
+# Checks for the 5 error classes that static tools may miss in context:
+#   1. New blueprint file not registered in app_factory.py
+#   2. _safe_commit() bool used as error value
+#   3. require_module() key not in MODULE_KEYS
+#   4. New db.Column() with no op.add_column() in the diff
+#   5. fetch() URL referencing a route that doesn't exist
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ai-review:
+    name: Cerebras Diff Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run if CEREBRAS_API_KEY secret is configured
+    if: ${{ secrets.CEREBRAS_API_KEY != '' }}
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Cerebras SDK
+        run: pip install cerebras-cloud-sdk
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD \
+            -- '*.py' '*.html' \
+            > /tmp/pr_diff.txt
+          echo "lines=$(wc -l < /tmp/pr_diff.txt)" >> $GITHUB_OUTPUT
+
+      - name: Run Cerebras diff review
+        if: steps.diff.outputs.lines != '0'
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - << 'PYEOF'
+          import os
+          import sys
+          from cerebras.cloud.sdk import Cerebras
+
+          diff = open("/tmp/pr_diff.txt").read()
+          if not diff.strip():
+              print("Empty diff — nothing to review.")
+              sys.exit(0)
+
+          # Truncate to ~8000 chars to stay within context limits
+          if len(diff) > 8000:
+              diff = diff[:8000] + "\n\n[diff truncated — showing first 8000 chars]\n"
+
+          prompt = f"""You are a Python code reviewer for a Flask application (GDX Dispatch).
+Review the following diff for these SPECIFIC error classes only. Report nothing else.
+
+ERROR CLASSES TO CHECK:
+1. BLUEPRINT_NOT_REGISTERED: A new .py file added to blueprints/ that does NOT have
+   a matching 'from blueprints.X import' + 'app.register_blueprint()' in app_factory.py
+2. SAFE_COMMIT_MISUSE: Any _safe_commit() call assigned to a variable (err = _safe_commit(...))
+   where that variable is then returned or used in jsonify() as an error value.
+   _safe_commit() returns bool (True=success). The correct pattern is:
+   `if not _safe_commit("ctx"): return jsonify({{"error": "..."}})`, 500`
+3. MODULE_KEY_UNKNOWN: Any require_module("key") call where the key string does NOT appear
+   in the MODULE_KEYS list in db/models.py (check the diff for MODULE_KEYS changes too)
+4. COLUMN_NO_MIGRATION: A new db.Column(...) added to an existing SQLAlchemy model class
+   in db/models.py with NO corresponding op.add_column() for that table in any migration
+   file in the same diff
+5. DEAD_FETCH_URL: A static fetch('/api/some/path') call in a template where that exact
+   path has no matching Flask @route decorator in any blueprint file in the diff
+
+For each finding output exactly:
+FILE:LINE — ERROR_CLASS — one sentence description
+
+If no issues found, output exactly: LGTM
+
+DIFF:
+{diff}
+"""
+
+          client = Cerebras(api_key=os.environ["CEREBRAS_API_KEY"])
+          response = client.chat.completions.create(
+              model="qwen-3-235b-a22b",
+              messages=[{{"role": "user", "content": prompt}}],
+              max_tokens=1024,
+              temperature=0.1,
+          )
+
+          review = response.choices[0].message.content.strip()
+          print("Cerebras review output:")
+          print(review)
+
+          # Post as PR comment only if issues found
+          if review == "LGTM" or not review:
+              print("No issues found — skipping PR comment.")
+              sys.exit(0)
+
+          import subprocess
+          comment = f"""## 🤖 AI Code Review (Cerebras)
+
+The following potential issues were detected in this diff:
+
+```
+{review}
+```
+
+> Reviewed by `qwen-3-235b-a22b`. Static gates (pre-commit + Fast Gate) are authoritative — this is supplementary context only.
+"""
+          result = subprocess.run(
+              ["gh", "pr", "comment", os.environ["PR_NUMBER"],
+               "--repo", os.environ["REPO"],
+               "--body", comment],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0:
+              print(f"Failed to post comment: {result.stderr}", file=sys.stderr)
+          PYEOF

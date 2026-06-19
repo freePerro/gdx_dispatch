@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.pat.rotated.v1",
+  "description": "Emitted when a Personal Access Token is rotated.",
+  "type": "object",
+  "required": ["pat_id", "identity_id", "rotated_at"],
+  "properties": {
+    "pat_id": {"type": "string"},
+    "identity_id": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "rotated_at": {"type": "string"},
+    "reason": {"type": "string"}
+  },
+  "additionalProperties": false
+}

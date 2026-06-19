@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GDX System Status — DispatchApp</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8f9fa;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────── */
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    header .logo {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #f5a623;
+    }
+    header .sub {
+      font-size: 0.875rem;
+      opacity: 0.6;
+      margin-top: 2px;
+    }
+
+    /* ── Status Banner ───────────────────────────────────────────────── */
+    #status-banner {
+      padding: 20px 24px;
+      font-size: 1.125rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #status-banner.operational { background: #d4edda; color: #155724; }
+    #status-banner.degraded    { background: #fff3cd; color: #856404; }
+    #status-banner.outage      { background: #f8d7da; color: #721c24; }
+    #status-banner .dot {
+      width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+    }
+    .operational .dot { background: #28a745; }
+    .degraded    .dot { background: #ffc107; }
+    .outage      .dot { background: #dc3545; }
+
+    /* ── Main layout ─────────────────────────────────────────────────── */
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    section { margin-bottom: 40px; }
+    h2 {
+      font-size: 1rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #6c757d;
+      margin-bottom: 14px;
+    }
+
+    /* ── Component list ──────────────────────────────────────────────── */
+    .component-list { list-style: none; }
+    .component-item {
+      background: #fff;
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .component-item .status-dot {
+      width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+    }
+    .status-dot.ok         { background: #28a745; }
+    .status-dot.degraded   { background: #ffc107; }
+    .status-dot.down       { background: #dc3545; }
+    .status-dot.unknown    { background: #6c757d; }
+
+    .component-name { font-weight: 600; flex: 1; }
+    .component-status-label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 12px;
+      margin-right: 8px;
+    }
+    .label-ok         { background: #d4edda; color: #155724; }
+    .label-degraded   { background: #fff3cd; color: #856404; }
+    .label-down       { background: #f8d7da; color: #721c24; }
+    .label-unknown    { background: #e9ecef; color: #6c757d; }
+
+    .uptime-badge {
+      font-size: 0.8rem;
+      color: #6c757d;
+      white-space: nowrap;
+    }
+    .uptime-badge strong { color: #1a1a2e; }
+
+    /* ── Incidents ───────────────────────────────────────────────────── */
+    .incident-list { list-style: none; }
+    .incident-item {
+      background: #fff;
+      border-left: 4px solid #ffc107;
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin-bottom: 10px;
+    }
+    .incident-item.down { border-left-color: #dc3545; }
+    .incident-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .incident-name { font-weight: 600; }
+    .incident-status {
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .incident-status.degraded { background: #fff3cd; color: #856404; }
+    .incident-status.down     { background: #f8d7da; color: #721c24; }
+    .incident-time { font-size: 0.8rem; color: #6c757d; }
+    .no-incidents { color: #28a745; font-weight: 500; padding: 12px 0; }
+
+    /* ── Subscribe ───────────────────────────────────────────────────── */
+    .subscribe-box {
+      background: #fff;
+      border: 1px solid #e9ecef;
+      border-radius: 8px;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .subscribe-box p { color: #495057; font-size: 0.95rem; }
+    .subscribe-btn {
+      background: #f5a623;
+      color: #1a1a2e;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 20px;
+      cursor: pointer;
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: background 0.15s;
+    }
+    .subscribe-btn:hover { background: #e09400; }
+
+    /* ── Footer ──────────────────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      padding: 24px;
+      font-size: 0.8rem;
+      color: #adb5bd;
+      border-top: 1px solid #e9ecef;
+    }
+    footer a { color: #6c757d; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* ── Loading state ───────────────────────────────────────────────── */
+    .loading { opacity: 0.5; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="logo">DispatchApp</div>
+    <div class="sub">System Status</div>
+  </div>
+</header>
+
+<div id="status-banner" class="operational">
+  <span class="dot"></span>
+  <span id="banner-text">Loading system status…</span>
+</div>
+
+<main>
+  <section>
+    <h2>Components</h2>
+    <ul class="component-list" id="component-list">
+      <li class="component-item loading">Loading…</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Recent Incidents</h2>
+    <ul class="incident-list" id="incident-list">
+      <li class="loading">Loading…</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="subscribe-box">
+      <p>Get notified when GDX experiences outages or degraded performance.</p>
+      <a href="mailto:support@example.com?subject=Status+Updates" class="subscribe-btn">
+        Subscribe to Updates
+      </a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>
+    &copy; <span id="year"></span> DispatchApp &mdash;
+    <a href="https://example.com">example.com</a> &mdash;
+    <a href="mailto:support@example.com">Support</a>
+  </p>
+  <p style="margin-top:6px;">Page auto-refreshes every 60 seconds.</p>
+</footer>
+
+<script>
+  document.getElementById('year').textContent = new Date().getFullYear();
+
+  const COMPONENT_DISPLAY_NAMES = {
+    api_health:    'API',
+    db_health:     'Database',
+    redis_health:  'Cache (Redis)',
+    celery_broker: 'Background Jobs',
+    external_qb:   'QuickBooks Sync',
+    external_stripe: 'Stripe Payments',
+  };
+
+  function statusLabel(status) {
+    const map = { ok: 'Operational', degraded: 'Degraded', down: 'Major Outage' };
+    return map[status] || 'Unknown';
+  }
+
+  function statusClass(status) {
+    return status === 'ok' ? 'ok' : (status === 'degraded' ? 'degraded' : 'down');
+  }
+
+  function formatPct(pct) {
+    if (pct === null || pct === undefined) return 'N/A';
+    return pct.toFixed(2) + '%';
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+      });
+    } catch(e) { return iso; }
+  }
+
+  async function loadStatus() {
+    try {
+      const resp = await fetch('/api/status');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+
+      // Banner
+      const banner = document.getElementById('status-banner');
+      const bannerText = document.getElementById('banner-text');
+      banner.className = data.overall;
+      const overallLabels = {
+        operational: 'All Systems Operational',
+        degraded:    'Partial System Degradation',
+        outage:      'Major Service Outage',
+      };
+      bannerText.textContent = overallLabels[data.overall] || data.overall;
+
+      // Components
+      const list = document.getElementById('component-list');
+      if (!data.components || data.components.length === 0) {
+        list.innerHTML = '<li class="component-item">No component data available.</li>';
+      } else {
+        list.innerHTML = data.components.map(c => {
+          const displayName = COMPONENT_DISPLAY_NAMES[c.name] || c.name;
+          const sc = statusClass(c.status);
+          const labelCls = 'label-' + sc;
+          const uptime = formatPct(c.uptime_30d_pct);
+          return `
+            <li class="component-item">
+              <span class="status-dot ${sc}"></span>
+              <span class="component-name">${displayName}</span>
+              <span class="component-status-label ${labelCls}">${statusLabel(c.status)}</span>
+              <span class="uptime-badge">30d uptime: <strong>${uptime}</strong></span>
+            </li>`;
+        }).join('');
+      }
+
+      // Incidents
+      const incList = document.getElementById('incident-list');
+      if (!data.incidents || data.incidents.length === 0) {
+        incList.innerHTML = '<li class="no-incidents">No incidents in recent history.</li>';
+      } else {
+        incList.innerHTML = data.incidents.map(inc => {
+          const sc = statusClass(inc.status);
+          const displayName = COMPONENT_DISPLAY_NAMES[inc.check_name] || inc.check_name;
+          return `
+            <li class="incident-item ${sc}">
+              <div class="incident-header">
+                <span class="incident-name">${displayName}</span>
+                <span class="incident-status ${sc}">${statusLabel(inc.status)}</span>
+              </div>
+              <span class="incident-time">${formatTime(inc.occurred_at)}</span>
+            </li>`;
+        }).join('');
+      }
+
+    } catch (err) {
+      document.getElementById('status-banner').className = 'outage';
+      document.getElementById('banner-text').textContent = 'Unable to load status data.';
+      console.error('Status fetch error:', err);
+    }
+  }
+
+  loadStatus();
+  setInterval(loadStatus, 60000);
+</script>
+</body>
+</html>

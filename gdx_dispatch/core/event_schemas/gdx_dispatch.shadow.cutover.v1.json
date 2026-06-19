@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.shadow.cutover.v1",
+  "description": "Emitted when a shadow migration cuts over — the v2 table becomes canonical. Irreversible via automated path after the 24h rollback window.",
+  "type": "object",
+  "required": ["tenant_id", "old_table", "new_table", "cutover_at"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": "string"},
+    "new_table": {"type": "string"},
+    "cutover_at": {"type": "string"},
+    "actor_identity_id": {"type": ["string", "null"]},
+    "notes": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

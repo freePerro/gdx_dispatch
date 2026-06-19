@@ -1,0 +1,121 @@
+name: CI — Test & Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gdx_dispatch/**'
+      - 'gdx_dispatch/docker/**'
+      - '.github/workflows/**'
+    paths-ignore:
+      - 'ai-queue/**'
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs when a newer push lands on the same branch.
+# The autonomous Claude ↔ Codex loop pushes every few minutes; without
+# this, every push queues a full 10-min run even when obsolete before it
+# starts. Saved 100s of Actions-minutes after we hit the 3000 limit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: gdx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r gdx_dispatch/requirements.txt
+          pip install pytest pytest-xdist
+
+      - name: Tenant-isolation lint gates
+        # Two AST-based scans that block net-new violations of the
+        # tenant-isolation contracts. Same scans wired into local
+        # .git/hooks/pre-commit; CI here is the durable enforcement
+        # since hooks don't travel with the repo. See CLAUDE.md
+        # § Tenant Isolation + § Tenant Identity.
+        run: |
+          python -m gdx_dispatch.tools.tenant_scoping_scan --strict
+          python -m gdx_dispatch.tools.tenant_id_shape_scan --strict
+
+      - name: Run tests (parallel)
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
+        run: |
+          python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e --ignore=gdx_dispatch/tests/serial \
+            -n auto --tb=short -q -k 'not e2e and not load'
+
+      - name: Run serial tests
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
+        run: |
+          python -m pytest gdx_dispatch/tests/serial/ --tb=short -q
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -f gdx_dispatch/docker/Dockerfile -t gdx-app:${{ github.sha }} .
+
+      - name: Verify image starts
+        run: |
+          docker run -d --name gdx-test \
+            -e DATABASE_URL=sqlite:///tmp/test.db \
+            -e SECRET_KEY=ci-test \
+            -p 8000:8000 \
+            gdx-app:${{ github.sha }}
+          sleep 5
+          curl -sf http://localhost:8000/health || (docker logs gdx-test && exit 1)
+          docker stop gdx-test
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: gdx_dispatch/frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd gdx_dispatch/frontend
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Run vitest
+        run: |
+          cd gdx_dispatch/frontend
+          npx vitest run

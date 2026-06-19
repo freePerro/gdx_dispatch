@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.shadow.drift_detected.v1",
+  "description": "Emitted when ShadowWriter observes drift between the canonical write and the shadow row. One event per drift row.",
+  "type": "object",
+  "required": ["tenant_id", "old_table", "reason", "detected_at"],
+  "properties": {
+    "tenant_id": {"type": "string"},
+    "old_table": {"type": "string"},
+    "new_table": {"type": ["string", "null"]},
+    "reason": {
+      "type": "string",
+      "enum": ["hash_mismatch", "new_row_missing", "insert_failed", "transform_failed"]
+    },
+    "old_hash": {"type": ["string", "null"]},
+    "new_hash": {"type": ["string", "null"]},
+    "detected_at": {"type": "string"},
+    "drift_row_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

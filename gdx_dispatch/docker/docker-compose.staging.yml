@@ -1,0 +1,41 @@
+version: "3.8"
+# GDX Staging — mirrors production on port 8002, separate DB
+# Deploy: docker compose -f gdx_dispatch/docker/docker-compose.staging.yml up -d
+# Access: https://staging.example.com (or :8002 internally)
+
+services:
+  staging-app:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://gdx:${CONTROL_DB_PASSWORD:-dev_password}@control-db:5432/gdx_staging_control
+      CONTROL_DATABASE_URL: postgresql://gdx:${CONTROL_DB_PASSWORD:-dev_password}@control-db:5432/gdx_staging_control
+      REDIS_URL: redis://redis:6379/1
+      SECRET_KEY: ${SECRET_KEY:-staging_secret}
+      ENVIRONMENT: staging
+      GDX_BASE_URL: https://staging.example.com
+      QB_ENVIRONMENT: sandbox
+      # Inherit all other env vars from .env
+    env_file:
+      - ../../.env
+    ports:
+      - "8002:8000"
+    depends_on:
+      control-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Reuse existing infra containers from the main compose
+  control-db:
+    external: true
+    name: docker-control-db-1
+  redis:
+    external: true
+    name: docker-redis-1

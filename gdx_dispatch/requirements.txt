@@ -1,0 +1,95 @@
+fastapi>=0.135.3,<1.0
+uvicorn[standard]>=0.43.0,<1.0
+sqlalchemy>=2.0.49,<3.0
+alembic>=1.15.0,<2.0
+psycopg2-binary>=2.9.11
+cryptography>=46.0.6
+pywebpush>=2.0.0           # Phase 1.5 — Web Push delivery (VAPID-signed)
+PyJWT[crypto]>=2.8.0
+bcrypt>=4.2.0
+werkzeug>=3.1.8
+python-multipart>=0.0.22
+redis>=7.4.0
+sentry-sdk[fastapi]>=2.57.0,<3.0
+httpx>=0.28.1
+pydantic>=2.12.0,<3.0
+pydantic-settings>=2.13.0
+python-json-logger>=4.1.0
+stripe>=11.0.0,<12.0.0
+slowapi>=0.1.9,<1.0
+prometheus_client>=0.24.0
+googlemaps>=4.10.0,<5.0
+shapely>=2.0.0,<3.0
+celery>=5.6.3,<6.0
+weasyprint>=68.0
+boto3>=1.42.0
+jinja2>=3.1.6
+# SS-31 SAML federation — safe XML parsing (XXE/billion-laughs guard).
+# Imported by gdx/core/federation/{saml_provider,trust_bundle}.py. Pure-
+# Python, no build deps. Prior to this being pinned, the SS-31 router
+# silently failed to import on every container boot (caught by the
+# ss_router_unavailable wrapper, so the app still started).
+defusedxml>=0.7.1
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-instrumentation-fastapi>=0.41b0
+opentelemetry-instrumentation-sqlalchemy>=0.41b0
+opentelemetry-instrumentation-redis>=0.41b0
+opentelemetry-exporter-otlp>=1.20.0
+Pillow>=12.0.0,<13.0
+pytest-xdist>=3.5
+pytest-asyncio>=0.23  # runs the `async def test_*` suites (@pytest.mark.asyncio)
+pytest-split>=0.8     # parallel shards for gdx_dispatch/tools/run_tests_split.sh
+respx>=0.21
+schemathesis>=4.15.0
+locust>=2.20
+
+# PO-6h: LiteLLM proxy runs as a systemd user service on the host
+# (infra/systemd/user/litellm-proxy.service), using the host's
+# own venv. The FastAPI container only makes HTTP requests to it via
+# budget_enforcer_litellm.py (uses `requests`), so the `litellm[proxy]`
+# package does NOT belong in this file. Keeping it here caused a
+# dependency resolution conflict because `litellm[proxy]==1.52.0`
+# transitively pins uvicorn<0.23, while GDX requires uvicorn>=0.43.
+# Install the proxy on the host via: `pip install 'litellm[proxy]==1.52.0'`
+# in the .venv used by the systemd unit.
+
+# PO-7b/7c: filesystem watch for the orchestrator-watchdog. Plan-o
+# specified 0.24.0; 1.1.1 has the same awatch API and is already
+# installed in the shared venv. Widening the pin accordingly; if
+# an incompatibility surfaces, tighten back to 0.24.0.
+watchfiles>=0.24.0,<2.0
+
+# Sprint 0.9-g: fakeredis is used by gdx/tests/test_dev_portal.py to stand in
+# for the real Redis session store. Listed here because the repo has no
+# separate requirements-dev.txt; installing it alongside the rest is harmless
+# (pure-Python, tiny) and keeps the test suite runnable in any env.
+fakeredis>=2.20
+
+# Sprint 1.x-S5: Anthropic SDK for the per-tenant AI assistant. Pinned to a
+# minor floor for tool-use + Haiku 4.5. Bump with deliberate review (the
+# SDK occasionally renames request shapes).
+anthropic>=0.40,<1.0
+
+# Sprint 1.x-S20: FastMCP for the MCP protocol adapter.
+fastmcp>=3.2,<4.0
+
+# Sprint 1.x AI doc/email tools: text extraction for documents.summarize.
+pypdf>=6.10.2,<7.0
+python-docx>=1.1,<2.0
+
+# CC v2 (Phase B): MFA TOTP + staff password hashing + email validation.
+pyotp>=2.9.0
+passlib[argon2]>=1.7.4
+email-validator>=2.0.0
+
+# Hypothesis is pulled in transitively by schemathesis. Pinned to 6.152.4+
+# because 6.151.12 reproducibly segfaults on Python 3.14.4 during deep
+# recursion + GC — `recursive_property` / `is_empty` validate chain.
+# Research note (an earlier session, 2026-05-09): no specific hypothesis fix
+# landed for this in 6.152.x — the version bump appears to incidentally
+# dodge the GC race via allocation/refcount timing changes in 6.152.2's
+# value-printing rewrite. The real bug is upstream CPython 3.14.4
+# (incremental GC tuning regressions in deep recursion). Revisit when
+# Python 3.14.5+ ships and the venv is rebuilt.
+hypothesis>=6.152.4

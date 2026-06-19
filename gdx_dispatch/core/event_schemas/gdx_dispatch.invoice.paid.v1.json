@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.invoice.paid.v1",
+  "description": "Emitted when an invoice is marked paid (full settlement).",
+  "type": "object",
+  "required": ["invoice_id", "tenant_id", "paid_at", "amount_cents"],
+  "properties": {
+    "invoice_id": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "customer_id": {"type": "string"},
+    "paid_at": {"type": "string"},
+    "amount_cents": {"type": "integer"},
+    "payment_method": {"type": "string"}
+  },
+  "additionalProperties": true
+}

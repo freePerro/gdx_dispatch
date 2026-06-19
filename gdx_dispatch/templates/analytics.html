@@ -1,0 +1,397 @@
+{% extends "tenant_base.html" %}
+{% block title %}Analytics{% endblock %}
+
+{% block content %}
+<div class="py-6">
+
+  <!-- Page header -->
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Analytics</h1>
+      <p class="text-sm text-gray-500 mt-1">Performance overview and KPI trends for your business.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <label for="period-select" class="text-sm text-gray-600">Period:</label>
+      <select id="period-select"
+              class="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onchange="loadAllData()">
+        <option value="7d">Last 7 days</option>
+        <option value="30d" selected>Last 30 days</option>
+        <option value="90d">Last 90 days</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- KPI Cards -->
+  <div id="kpi-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+
+    <!-- Revenue -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <div id="kpi-revenue" class="text-2xl font-bold text-gray-900">—</div>
+        <div class="text-sm text-gray-500">Revenue</div>
+      </div>
+    </div>
+
+    <!-- Total Jobs -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        </svg>
+      </div>
+      <div>
+        <div id="kpi-jobs" class="text-2xl font-bold text-gray-900">—</div>
+        <div class="text-sm text-gray-500">Total Jobs</div>
+      </div>
+    </div>
+
+    <!-- Customers -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </div>
+      <div>
+        <div id="kpi-customers" class="text-2xl font-bold text-gray-900">—</div>
+        <div class="text-sm text-gray-500">Customers</div>
+      </div>
+    </div>
+
+    <!-- Close Rate -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex items-center gap-4">
+      <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+      </div>
+      <div>
+        <div id="kpi-close-rate" class="text-2xl font-bold text-gray-900">—</div>
+        <div class="text-sm text-gray-500">Close Rate</div>
+      </div>
+    </div>
+
+  </div><!-- /KPI Cards -->
+
+  <!-- Revenue Trend Chart + Top Services -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+
+    <!-- Revenue trend (occupies 2/3 width) -->
+    <div class="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Revenue Trend (Last 12 Months)</h2>
+      <div id="revenue-chart-container" class="relative h-56">
+        <canvas id="revenue-chart"></canvas>
+        <div id="revenue-chart-empty"
+             class="absolute inset-0 flex items-center justify-center text-gray-400 text-sm hidden">
+          No revenue data available.
+        </div>
+      </div>
+    </div>
+
+    <!-- Top Services by Revenue -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Top Services by Revenue</h2>
+      <div id="top-services-list" class="space-y-3">
+        <div class="text-sm text-gray-400">Loading...</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Technician Performance Table -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Technician Performance</h2>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm text-left">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th class="pb-3 font-medium text-gray-500">Technician</th>
+            <th class="pb-3 font-medium text-gray-500 text-right">Jobs Completed</th>
+            <th class="pb-3 font-medium text-gray-500 text-right">Avg Job Value</th>
+            <th class="pb-3 font-medium text-gray-500 text-right">Utilization</th>
+          </tr>
+        </thead>
+        <tbody id="tech-table-body">
+          <tr>
+            <td colspan="4" class="py-6 text-center text-gray-400 text-sm">Loading...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Customer Acquisition Funnel -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Customer Acquisition Funnel</h2>
+    <div id="funnel-container" class="space-y-3 max-w-lg">
+      <div class="text-sm text-gray-400">Loading...</div>
+    </div>
+  </div>
+
+</div><!-- /py-6 -->
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<script>
+  // ── Utility ─────────────────────────────────────────────────────────────────
+
+  function fmt_currency(val) {
+    return '$' + Number(val).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+
+  function getPeriod() {
+    return document.getElementById('period-select').value;
+  }
+
+  // Derive tenant_id from a meta tag injected server-side, or fall back to
+  // reading from the URL / session (to be wired up as needed).
+  function getTenantId() {
+    const meta = document.querySelector('meta[name="tenant-id"]');
+    return meta ? meta.content : '';
+  }
+
+  // ── Revenue Trend Chart ──────────────────────────────────────────────────────
+
+  let revenueChart = null;
+
+  function renderRevenueChart(months_data) {
+    const canvas = document.getElementById('revenue-chart');
+    const empty  = document.getElementById('revenue-chart-empty');
+    if (!months_data || months_data.length === 0) {
+      canvas.style.display = 'none';
+      empty.classList.remove('hidden');
+      return;
+    }
+    canvas.style.display = '';
+    empty.classList.add('hidden');
+
+    const labels   = months_data.map(r => r.month);
+    const revenues = months_data.map(r => r.revenue);
+
+    if (revenueChart) { revenueChart.destroy(); }
+    revenueChart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Revenue',
+          data: revenues,
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37,99,235,0.08)',
+          borderWidth: 2,
+          pointRadius: 4,
+          tension: 0.35,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: {
+            ticks: {
+              callback: v => '$' + Number(v).toLocaleString()
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ── KPI Cards ────────────────────────────────────────────────────────────────
+
+  async function loadKpis(tenantId, period) {
+    if (!tenantId) {
+      document.getElementById('kpi-revenue').textContent    = 'N/A';
+      document.getElementById('kpi-jobs').textContent       = 'N/A';
+      document.getElementById('kpi-customers').textContent  = 'N/A';
+      document.getElementById('kpi-close-rate').textContent = 'N/A';
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/platform/kpis?tenant_id=${tenantId}&period=${period}`);
+      if (!resp.ok) throw new Error('KPI fetch failed');
+      const d = await resp.json();
+      document.getElementById('kpi-revenue').textContent    = fmt_currency(d.revenue || 0);
+      document.getElementById('kpi-jobs').textContent       = (d.total_jobs || 0).toLocaleString();
+      document.getElementById('kpi-customers').textContent  = '—'; // Not in KPI endpoint yet
+      document.getElementById('kpi-close-rate').textContent = (d.close_rate || 0) + '%';
+    } catch (e) {
+      console.error('KPI load error:', e);
+    }
+  }
+
+  // ── Revenue Trend ────────────────────────────────────────────────────────────
+
+  async function loadRevenueTrend(tenantId) {
+    if (!tenantId) { renderRevenueChart([]); return; }
+    try {
+      const resp = await fetch(`/api/platform/revenue-trend?tenant_id=${tenantId}&months=12`);
+      if (!resp.ok) throw new Error('Revenue trend fetch failed');
+      const data = await resp.json();
+      renderRevenueChart(data);
+    } catch (e) {
+      console.error('Revenue trend error:', e);
+      renderRevenueChart([]);
+    }
+  }
+
+  // ── Top Services ─────────────────────────────────────────────────────────────
+
+  function renderTopServices(trend_data) {
+    const el = document.getElementById('top-services-list');
+    if (!trend_data || trend_data.length === 0) {
+      el.innerHTML = '<div class="text-sm text-gray-400">No data available.</div>';
+      return;
+    }
+    // Use revenue trend data as a proxy for top months — a dedicated services
+    // endpoint would be wired in once service-line data is available.
+    const sorted = [...trend_data].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+    const maxRev = sorted[0].revenue || 1;
+    el.innerHTML = sorted.map(r => {
+      const pct = Math.round(r.revenue / maxRev * 100);
+      return `
+        <div>
+          <div class="flex justify-between text-sm mb-1">
+            <span class="text-gray-700 font-medium">${r.month}</span>
+            <span class="text-gray-500">${fmt_currency(r.revenue)}</span>
+          </div>
+          <div class="w-full bg-gray-100 rounded-full h-2">
+            <div class="bg-blue-500 h-2 rounded-full" style="width:${pct}%"></div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ── Technician Performance ───────────────────────────────────────────────────
+
+  async function loadTechPerformance(tenantId, period) {
+    const tbody = document.getElementById('tech-table-body');
+    if (!tenantId) {
+      tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-gray-400 text-sm">No tenant context.</td></tr>';
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/platform/technician-performance?tenant_id=${tenantId}&period=${period}`);
+      if (!resp.ok) throw new Error('Tech perf fetch failed');
+      const rows = await resp.json();
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-gray-400 text-sm">No technician data for this period.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r => `
+        <tr class="border-b border-gray-100 hover:bg-gray-50">
+          <td class="py-3 font-medium text-gray-900">${escHtml(r.technician || '—')}</td>
+          <td class="py-3 text-right text-gray-700">${r.jobs_completed}</td>
+          <td class="py-3 text-right text-gray-700">${fmt_currency(r.avg_job_value)}</td>
+          <td class="py-3 text-right">
+            <span class="inline-flex items-center gap-1.5">
+              <div class="w-20 bg-gray-100 rounded-full h-2 inline-block">
+                <div class="bg-green-500 h-2 rounded-full" style="width:${Math.min(r.utilization_pct,100)}%"></div>
+              </div>
+              <span class="text-gray-700">${r.utilization_pct}%</span>
+            </span>
+          </td>
+        </tr>`).join('');
+    } catch (e) {
+      console.error('Tech performance error:', e);
+      tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-red-400 text-sm">Failed to load data.</td></tr>';
+    }
+  }
+
+  // ── Customer Acquisition Funnel ──────────────────────────────────────────────
+
+  async function loadFunnel(tenantId, period) {
+    const el = document.getElementById('funnel-container');
+    if (!tenantId) {
+      el.innerHTML = '<div class="text-sm text-gray-400">No tenant context.</div>';
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/platform/kpis?tenant_id=${tenantId}&period=${period}`);
+      if (!resp.ok) throw new Error('Funnel KPI fetch failed');
+      const d = await resp.json();
+
+      // Funnel stages from KPI data (estimate: leads = total_jobs, completed = close_rate * total_jobs)
+      const totalJobs   = d.total_jobs || 0;
+      const completed   = Math.round((d.close_rate || 0) / 100 * totalJobs);
+      const inProgress  = Math.round(totalJobs * 0.25);  // placeholder distribution
+      const scheduled   = Math.round(totalJobs * 0.35);
+      const maxVal      = totalJobs || 1;
+
+      const stages = [
+        { label: 'Total Jobs Created', value: totalJobs,   color: 'bg-blue-500' },
+        { label: 'Scheduled',          value: scheduled,   color: 'bg-indigo-500' },
+        { label: 'In Progress',        value: inProgress,  color: 'bg-purple-500' },
+        { label: 'Completed (Won)',     value: completed,   color: 'bg-green-500' },
+      ];
+
+      el.innerHTML = stages.map(s => {
+        const pct = Math.round(s.value / maxVal * 100);
+        const convPct = maxVal > 0 ? ((s.value / maxVal) * 100).toFixed(1) : '0.0';
+        return `
+          <div>
+            <div class="flex justify-between text-sm mb-1">
+              <span class="text-gray-700">${s.label}</span>
+              <span class="text-gray-500">${s.value.toLocaleString()} <span class="text-gray-400">(${convPct}%)</span></span>
+            </div>
+            <div class="w-full bg-gray-100 rounded-full h-3">
+              <div class="${s.color} h-3 rounded-full transition-all duration-500" style="width:${pct}%"></div>
+            </div>
+          </div>`;
+      }).join('');
+    } catch (e) {
+      console.error('Funnel error:', e);
+      el.innerHTML = '<div class="text-sm text-red-400">Failed to load funnel data.</div>';
+    }
+  }
+
+  // ── XSS helper ───────────────────────────────────────────────────────────────
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Orchestrate all data loads ────────────────────────────────────────────────
+
+  async function loadAllData() {
+    const tenantId = getTenantId();
+    const period   = getPeriod();
+
+    await Promise.allSettled([
+      loadKpis(tenantId, period),
+      loadRevenueTrend(tenantId).then(data => {
+        // re-use revenue trend data for top services widget
+        if (revenueChart && revenueChart.data) {
+          const months = revenueChart.data.labels.map((m, i) => ({
+            month: m, revenue: revenueChart.data.datasets[0].data[i]
+          }));
+          renderTopServices(months);
+        }
+      }),
+      loadTechPerformance(tenantId, period),
+      loadFunnel(tenantId, period),
+    ]);
+  }
+
+  // ── Init on page load ─────────────────────────────────────────────────────────
+
+  document.addEventListener('DOMContentLoaded', loadAllData);
+</script>
+{% endblock %}

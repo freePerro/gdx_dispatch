@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.erasure.requested.v1",
+  "description": "Emitted when a right-to-erasure request is filed.",
+  "type": "object",
+  "required": ["erasure_id", "target_identity_id", "requested_by_identity_id", "cooloff_until"],
+  "properties": {
+    "erasure_id": {"type": "string", "format": "uuid"},
+    "target_identity_id": {"type": "string"},
+    "requested_by_identity_id": {"type": "string"},
+    "cooloff_until": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

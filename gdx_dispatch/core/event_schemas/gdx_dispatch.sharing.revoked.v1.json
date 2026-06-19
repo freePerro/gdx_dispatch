@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sharing.revoked.v1",
+  "description": "Emitted when a share is revoked (by the sharer or by platform ops). After this event, subsequent capability checks for this share must return False.",
+  "type": "object",
+  "required": [
+    "share_id",
+    "sharer_tenant_id",
+    "sharee_tenant_id",
+    "revoked_by_identity_id",
+    "revoked_at"
+  ],
+  "properties": {
+    "share_id": {"type": "string"},
+    "sharer_tenant_id": {"type": "string"},
+    "sharee_tenant_id": {"type": "string"},
+    "revoked_by_identity_id": {"type": "string"},
+    "revoked_at": {"type": "string"}
+  },
+  "additionalProperties": true
+}

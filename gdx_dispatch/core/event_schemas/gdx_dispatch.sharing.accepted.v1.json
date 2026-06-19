@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.sharing.accepted.v1",
+  "description": "Emitted when the sharee tenant accepts a previously-created share.",
+  "type": "object",
+  "required": [
+    "share_id",
+    "sharer_tenant_id",
+    "sharee_tenant_id",
+    "accepted_by_identity_id",
+    "accepted_at"
+  ],
+  "properties": {
+    "share_id": {"type": "string"},
+    "sharer_tenant_id": {"type": "string"},
+    "sharee_tenant_id": {"type": "string"},
+    "accepted_by_identity_id": {"type": "string"},
+    "accepted_at": {"type": "string"}
+  },
+  "additionalProperties": true
+}

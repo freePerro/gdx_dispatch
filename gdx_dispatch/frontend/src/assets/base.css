@@ -1,0 +1,275 @@
+:root {
+  --color-bg-900: #0e1525;
+  --color-bg-850: #121c2f;
+  --color-bg-800: #18243b;
+  --color-surface-700: #1f2d49;
+  --color-surface-600: #263655;
+  --color-border-500: #304468;
+  --color-border-400: #3d567f;
+  --color-text-100: #e6edf9;
+  --color-text-200: #c5d0e4;
+  --color-text-300: #9eaecd;
+  --color-brand-400: #63b3ff;
+  --color-brand-500: #3892f3;
+  --color-info-500: #63b3ff;
+  --color-danger-500: #ff6d77;
+  --color-danger-bg: rgba(255, 109, 119, 0.12);
+  --color-danger-border: rgba(255, 109, 119, 0.35);
+  --color-warning-500: #f6b94a;
+  --color-warning-bg: rgba(246, 185, 74, 0.12);
+  --color-warning-border: rgba(246, 185, 74, 0.35);
+  --color-success-500: #5dd39e;
+  --color-success-bg: rgba(93, 211, 158, 0.12);
+  --color-success-border: rgba(93, 211, 158, 0.35);
+
+  --surface-app: var(--color-bg-900);
+  --surface-app-accent: #1a2950; /* radial top-left splash — dark navy in dark mode */
+  --surface-sidebar: linear-gradient(180deg, var(--color-bg-850) 0%, var(--color-bg-900) 100%);
+  --surface-header: rgba(14, 21, 37, 0.92);
+  --surface-panel: var(--color-bg-850);
+  --surface-elevated: var(--color-bg-800);
+  --surface-hover: rgba(98, 145, 212, 0.18);
+
+  --text-primary: var(--color-text-100);
+  --text-secondary: var(--color-text-200);
+  --text-muted: var(--color-text-300);
+
+  --interactive-primary: var(--color-brand-400);
+  --interactive-primary-soft: rgba(99, 179, 255, 0.22);
+
+  --border-subtle: rgba(102, 123, 164, 0.3);
+  --border-strong: rgba(131, 154, 197, 0.45);
+
+  --shadow-md: 0 8px 20px rgba(6, 10, 18, 0.28);
+  --shadow-lg: 0 16px 40px rgba(5, 8, 14, 0.45);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2rem;
+
+  --sidebar-width: 280px;
+  --sidebar-collapsed-width: 64px;
+  --topbar-height: 64px;
+  --breadcrumb-height: 44px;
+  --bottom-nav-height: 64px;
+
+  --transition-fast: 0.3s ease;
+}
+
+/* Light mode overrides */
+[data-theme="light"] {
+  --color-bg-900: #f5f7fa;
+  --color-bg-850: #ffffff;
+  --color-bg-800: #f0f2f5;
+  --color-surface-700: #e8ecf1;
+  --color-surface-600: #dde2ea;
+  --color-border-500: #c8cfd8;
+  --color-border-400: #b0bac7;
+  --color-text-100: #1a1f2e;
+  --color-text-200: #3d4558;
+  --color-text-300: #6b7a8d;
+  --color-brand-400: #2563eb;
+  --color-brand-500: #1d4ed8;
+  --color-info-500: #2563eb;
+  --color-danger-500: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-danger-border: #fecaca;
+  --color-warning-500: #b45309;
+  --color-warning-bg: #fffbeb;
+  --color-warning-border: #fed7aa;
+  --color-success-500: #15803d;
+  --color-success-bg: #f0fdf4;
+  --color-success-border: #bbf7d0;
+
+  --surface-app: var(--color-bg-900);
+  --surface-app-accent: var(--color-bg-900); /* no visible splash in light mode */
+  --surface-sidebar: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  --surface-header: rgba(255, 255, 255, 0.95);
+  --surface-panel: var(--color-bg-850);
+  --surface-elevated: var(--color-bg-800);
+  --surface-hover: rgba(37, 99, 235, 0.08);
+
+  --text-primary: var(--color-text-100);
+  --text-secondary: var(--color-text-200);
+  --text-muted: var(--color-text-300);
+
+  --interactive-primary: var(--color-brand-400);
+  --interactive-primary-soft: rgba(37, 99, 235, 0.1);
+
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.15);
+
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+/* Respect system preference when no explicit theme set */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-bg-900: #f5f7fa;
+    --color-bg-850: #ffffff;
+    --color-bg-800: #f0f2f5;
+    --color-surface-700: #e8ecf1;
+    --color-surface-600: #dde2ea;
+    --color-border-500: #c8cfd8;
+    --color-border-400: #b0bac7;
+    --color-text-100: #1a1f2e;
+    --color-text-200: #3d4558;
+    --color-text-300: #6b7a8d;
+    --color-brand-400: #2563eb;
+    --color-brand-500: #1d4ed8;
+    --color-info-500: #2563eb;
+    --color-danger-500: #dc2626;
+    --color-danger-bg: #fef2f2;
+    --color-danger-border: #fecaca;
+    --color-warning-500: #b45309;
+    --color-warning-bg: #fffbeb;
+    --color-warning-border: #fed7aa;
+    --color-success-500: #15803d;
+    --color-success-bg: #f0fdf4;
+    --color-success-border: #bbf7d0;
+
+    --surface-app: var(--color-bg-900);
+    --surface-app-accent: var(--color-bg-900); /* no visible splash in light mode */
+    --surface-sidebar: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    --surface-header: rgba(255, 255, 255, 0.95);
+    --surface-panel: var(--color-bg-850);
+    --surface-elevated: var(--color-bg-800);
+    --surface-hover: rgba(37, 99, 235, 0.08);
+
+    --text-primary: var(--color-text-100);
+    --text-secondary: var(--color-text-200);
+    --text-muted: var(--color-text-300);
+
+    --interactive-primary: var(--color-brand-400);
+    --interactive-primary-soft: rgba(37, 99, 235, 0.1);
+
+    --border-subtle: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.15);
+
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
+  }
+
+  html:not([data-theme="dark"]),
+  body:not([data-theme="dark"]) #app {
+    background: #f5f7fa;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(circle at 15% 10%, var(--surface-app-accent) 0%, var(--surface-app) 45%);
+  color: var(--text-primary);
+  font-family: 'IBM Plex Sans', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body {
+  overflow: hidden;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.view-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-md);
+  border-radius: 0.875rem;
+  padding: var(--space-4);
+}
+
+@media (max-width: 767px) {
+  .view-card {
+    padding: var(--space-3);
+  }
+}
+
+/* Canonical heading row used by views with a back-button + title.
+ * Added 2026-05-09 (UX sprint Phase 3) — previously each admin view
+ * rolled its own. Pair with <h1 class="view-heading"> per
+ * frontend_view_pattern.md. */
+.view-heading {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+.view-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.view-heading-row .back-button {
+  flex: 0 0 auto;
+}
+.view-heading-row .muted {
+  flex: 1 1 100%;
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+}
+
+/* Driver.js mobile tour overrides — Apple HIG / Material targets ≥44px.
+ * The library's default popover renders close (×) at 32×28, prev/next
+ * at 78/56 × 24 — well below the 44×44 minimum on touch. These styles
+ * scope to .gdx-tour-mobile (set in useMobileTour.js for narrow
+ * viewports) so desktop UX stays compact. Caught S112 2026-05-09. */
+.gdx-tour-mobile .driver-popover-close-btn {
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+  height: 44px;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+.gdx-tour-mobile .driver-popover-navigation-btns button {
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+}
+
+/* MH-3 (audit P1 #13): the driver.js mobile popover anchors at the
+   bottom of the viewport by default — directly overlapping the
+   AppBottomNav (height ≈64px). On the audit's 390×844 walk the popover
+   covered both the "Today's Route" content it was annotating AND the
+   nav. Push the popover up by the nav height plus a 12px gap so the
+   nav stays visible and the popover never lands ON the user's tap
+   targets. The bottom-nav height is exposed as `--bottom-nav-height`
+   in :root above; the env(safe-area-inset-bottom) accounts for iOS
+   home-indicator devices. */
+.gdx-tour-mobile.driver-popover {
+  margin-bottom: calc(var(--bottom-nav-height, 64px) + env(safe-area-inset-bottom, 0px) + 12px) !important;
+}
+
+/* Clickable-rows utility — opt-in via class="clickable-rows" on DataTable.
+ * Applies cursor:pointer + a subtle row-hover bg so users have a visual
+ * cue that rows lead somewhere. Pair with @row-click. Added 2026-05-09
+ * (S110 D-S110-jobs-row-click-no-cursor).
+ *
+ * Cursor is scoped to data cells (td) so column headers don't show
+ * pointer (they're for sorting, not navigation). */
+.clickable-rows .p-datatable-tbody > tr {
+  transition: background-color 0.12s ease;
+}
+.clickable-rows .p-datatable-tbody > tr > td {
+  cursor: pointer;
+}
+.clickable-rows .p-datatable-tbody > tr:hover {
+  background: var(--p-content-hover-background, rgba(120, 120, 120, 0.08));
+}

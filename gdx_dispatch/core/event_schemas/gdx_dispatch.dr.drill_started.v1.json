@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.dr.drill_started.v1",
+  "description": "Emitted when the orchestrator begins a scheduled DR drill — after the production-target guard has passed and before pg_dump runs. dry_run=true drills still emit this event so the stream reflects every scheduled run.",
+  "type": "object",
+  "required": ["drill_run_id", "started_at", "scope"],
+  "properties": {
+    "drill_run_id": {"type": "string"},
+    "started_at": {"type": "string"},
+    "scope": {"type": "string", "enum": ["full", "tenant", "schema"]},
+    "scope_selector": {"type": ["string", "null"]},
+    "dry_run": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

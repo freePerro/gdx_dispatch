@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.federation.provider_registered.v1",
+  "description": "Emitted when a tenant admin registers an external identity provider (OIDC or SAML) for their tenant.",
+  "type": "object",
+  "required": ["provider_id", "tenant_id", "kind", "display_name", "at"],
+  "properties": {
+    "provider_id": {"type": "string"},
+    "tenant_id": {"type": "string"},
+    "kind": {"type": "string", "enum": ["oidc", "saml"]},
+    "display_name": {"type": "string"},
+    "at": {"type": ["number", "string"]}
+  },
+  "additionalProperties": false
+}

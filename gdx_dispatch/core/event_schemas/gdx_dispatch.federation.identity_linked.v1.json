@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.federation.identity_linked.v1",
+  "description": "Emitted when reconcile_federated_identity resolves a login (created new, updated existing, or orphaned an external subject).",
+  "type": "object",
+  "required": ["provider_id", "external_subject", "at"],
+  "properties": {
+    "provider_id": {"type": "string"},
+    "identity_id": {"type": "string"},
+    "external_subject": {"type": "string"},
+    "outcome": {"type": "string", "enum": ["created", "updated", "orphaned"]},
+    "note": {"type": "string"},
+    "at": {"type": "string"}
+  },
+  "additionalProperties": false
+}

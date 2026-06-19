@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><title>Join as Supplier</title>
+<style>
+body { font-family: sans-serif; max-width: 480px; margin: 60px auto; padding: 0 16px; background: #1a1a2e; color: #e2e8f0; }
+h1 { font-size: 1.5rem; }
+label { display: block; margin-top: 16px; font-weight: 600; }
+input { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; border: 1px solid #334155; border-radius: 4px; background: #16213e; color: #e2e8f0; }
+button { margin-top: 24px; width: 100%; padding: 12px; background: #4ecca3; color: #1a1a2e; border: none; border-radius: 4px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+</style></head><body>
+<h1>Join as Supplier</h1>
+<p>You've been invited to connect as a supplier for <strong>{{ supplier_name }}</strong>.</p>
+<form id="f">
+<label>Email</label><input value="{{ supplier_email }}" disabled>
+<label>Company Name</label><input id="company" required placeholder="Your company name">
+<label>Phone</label><input id="phone" placeholder="(555) 123-4567">
+<label>Password</label><input id="pw" type="password" required minlength="8" placeholder="Choose a password">
+<button type="submit">Create Supplier Account</button>
+<div id="msg" style="margin-top:12px"></div>
+</form>
+<script src="/supplier/join/{{ token }}/form.js"></script>
+</body></html>

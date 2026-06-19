@@ -1,0 +1,5 @@
+[
+  "gdx/control/models.py:X2:gdx.models.platform:415",
+  "gdx/models/platform.py:X1:gdx.control.models:24",
+  "gdx/models/platform_extensions.py:X1:gdx.control.models:42"
+]

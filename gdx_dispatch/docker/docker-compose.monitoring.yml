@@ -1,0 +1,32 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-gdx_grafana_2026}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "3200:3200"
+      - "4317:4317"  # OTLP gRPC
+    command: -config.file=/etc/tempo/config.yaml
+    volumes:
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
+  tempo-data:

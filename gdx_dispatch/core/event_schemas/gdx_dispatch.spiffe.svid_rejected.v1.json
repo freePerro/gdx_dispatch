@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdx.spiffe.svid_rejected.v1",
+  "description": "Emitted when a SPIFFE SVID presentation fails validation (bad signature, unknown trust domain, expired token, malformed SPIFFE ID, trust bundle unavailable). Fail-closed: the request is rejected 401 and this event is the audit trail.",
+  "type": "object",
+  "required": ["reason", "source", "rejected_at"],
+  "properties": {
+    "reason": {"type": "string"},
+    "spiffe_id_attempted": {"type": ["string", "null"]},
+    "trust_domain_attempted": {"type": ["string", "null"]},
+    "source": {"type": "string", "enum": ["mtls", "header"]},
+    "rejected_at": {"type": "string"},
+    "request_id": {"type": ["string", "null"]},
+    "remote_addr": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

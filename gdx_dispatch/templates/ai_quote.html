@@ -1,0 +1,333 @@
+{% extends "tenant_base.html" %}
+
+{% block title %}AI Quote Generator{% endblock %}
+
+{% block content %}
+<div class="pt-6">
+
+  <!-- Page header -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">AI Quote Generator</h1>
+    <p class="mt-1 text-sm text-gray-500">
+      Describe the job and we will suggest parts, labor, and pricing from the catalog.
+    </p>
+  </div>
+
+  <!-- Two-column layout: form left, results right -->
+  <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+    <!-- ── Input form ── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-800 mb-4">Job Details</h2>
+
+      <form id="quote-form" class="space-y-4">
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="equipment_type">
+            Equipment Type
+          </label>
+          <select id="equipment_type" name="equipment_type"
+                  class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">-- Select type --</option>
+            <option value="single car residential">Single Car Residential</option>
+            <option value="double car residential">Double Car Residential</option>
+            <option value="commercial door">Commercial Door</option>
+            <option value="roll-up door">Roll-Up Door</option>
+            <option value="opener only">Opener Only</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="job_description">
+            Job Description
+          </label>
+          <textarea id="job_description" name="job_description" rows="3"
+                    placeholder="e.g. Replace broken torsion spring on 2-car door"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"></textarea>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1" for="issue_description">
+            Issue / Symptoms
+          </label>
+          <textarea id="issue_description" name="issue_description" rows="3"
+                    placeholder="e.g. Door won't open, spring snapped, loud grinding noise"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"></textarea>
+        </div>
+
+        <button type="submit" id="generate-btn"
+                class="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2.5 px-4 rounded-lg transition-colors">
+          <svg id="btn-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          <span id="btn-label">Generate Quote</span>
+        </button>
+
+      </form>
+    </div>
+
+    <!-- ── Results panel ── -->
+    <div id="results-panel" class="hidden space-y-4">
+
+      <!-- Confidence + notes -->
+      <div id="quote-meta" class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-blue-800">Quote Confidence</span>
+          <span id="confidence-badge"
+                class="inline-block px-2 py-0.5 rounded-full text-xs font-bold bg-blue-200 text-blue-900">—</span>
+        </div>
+        <ul id="notes-list" class="space-y-1 text-xs text-blue-700 list-disc list-inside"></ul>
+      </div>
+
+      <!-- Line items table -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-base font-semibold text-gray-800">Suggested Line Items</h2>
+          <button onclick="addToEstimate()"
+                  class="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+            Add to Estimate
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-200">
+                <th class="text-left py-2 pr-4 font-medium text-gray-600">Item</th>
+                <th class="text-center py-2 px-2 font-medium text-gray-600">Qty</th>
+                <th class="text-right py-2 px-2 font-medium text-gray-600">Unit</th>
+                <th class="text-right py-2 pl-2 font-medium text-gray-600">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody id="line-items-body" class="divide-y divide-gray-100"></tbody>
+            <tfoot>
+              <tr class="border-t-2 border-gray-300">
+                <td colspan="3" class="pt-3 pr-2 text-right text-sm font-semibold text-gray-700">Total</td>
+                <td id="total-cell" class="pt-3 pl-2 text-right text-sm font-bold text-gray-900">$0.00</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Pricing Health Summary ── -->
+  <div class="mt-8">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-gray-800">Pricing Health (Last 90 Days)</h2>
+      <button onclick="loadPricingHealth()"
+              class="text-xs text-blue-600 hover:text-blue-800 font-medium underline">
+        Refresh
+      </button>
+    </div>
+
+    <div id="health-loading" class="text-sm text-gray-400 italic">Loading pricing health...</div>
+
+    <div id="health-cards" class="hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+      <!-- Score card -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Health Score</p>
+        <p id="health-score" class="text-2xl font-bold text-gray-800">—</p>
+      </div>
+
+      <!-- Avg margin card -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Avg Margin</p>
+        <p id="health-margin" class="text-2xl font-bold text-gray-800">—</p>
+      </div>
+
+      <!-- Below market -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Below Market Items</p>
+        <ul id="health-below" class="text-sm text-red-600 space-y-0.5 list-disc list-inside"></ul>
+        <p id="health-below-none" class="text-sm text-gray-400 italic hidden">None</p>
+      </div>
+
+      <!-- Recommendations -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Recommendations</p>
+        <ul id="health-recs" class="text-xs text-gray-600 space-y-1 list-disc list-inside"></ul>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ── Quote generation ──────────────────────────────────────────────────────
+
+  const form = document.getElementById('quote-form');
+  const resultsPanel = document.getElementById('results-panel');
+  const generateBtn = document.getElementById('generate-btn');
+  const btnLabel = document.getElementById('btn-label');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const payload = {
+      job_description: document.getElementById('job_description').value.trim(),
+      equipment_type: document.getElementById('equipment_type').value,
+      issue_description: document.getElementById('issue_description').value.trim(),
+    };
+
+    if (!payload.job_description && !payload.issue_description) {
+      alert('Please enter a job description or issue description.');
+      return;
+    }
+
+    generateBtn.disabled = true;
+    btnLabel.textContent = 'Generating…';
+
+    try {
+      const resp = await fetch('/api/ai/quote', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) throw new Error(`API error ${resp.status}`);
+      const data = await resp.json();
+      renderQuote(data);
+    } catch (err) {
+      alert('Failed to generate quote: ' + err.message);
+    } finally {
+      generateBtn.disabled = false;
+      btnLabel.textContent = 'Generate Quote';
+    }
+  });
+
+  function renderQuote(data) {
+    // Confidence badge
+    const pct = Math.round((data.confidence || 0) * 100);
+    const badge = document.getElementById('confidence-badge');
+    badge.textContent = pct + '%';
+    badge.className = 'inline-block px-2 py-0.5 rounded-full text-xs font-bold ' +
+      (pct >= 80 ? 'bg-green-200 text-green-900' :
+       pct >= 60 ? 'bg-yellow-200 text-yellow-900' :
+                  'bg-red-200 text-red-900');
+
+    // Notes
+    const notesList = document.getElementById('notes-list');
+    notesList.innerHTML = (data.notes || [])
+      .map(n => `<li>${n}</li>`)
+      .join('');
+
+    // Line items
+    const tbody = document.getElementById('line-items-body');
+    tbody.innerHTML = '';
+    (data.line_items || []).forEach(item => {
+      const tr = document.createElement('tr');
+      tr.dataset.partKey = item.part_key;
+      tr.dataset.unitPrice = item.unit_price;
+      tr.innerHTML = `
+        <td class="py-2 pr-4 text-gray-800">${item.name}</td>
+        <td class="py-2 px-2 text-center">
+          <input type="number" min="1" value="${item.qty}"
+                 class="qty-input w-16 text-center border border-gray-300 rounded px-1 py-0.5 text-sm"
+                 onchange="recalcRow(this)">
+        </td>
+        <td class="py-2 px-2 text-right text-gray-600">$${item.unit_price.toFixed(2)}</td>
+        <td class="py-2 pl-2 text-right font-medium text-gray-900 subtotal-cell">$${item.subtotal.toFixed(2)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('total-cell').textContent = '$' + (data.total || 0).toFixed(2);
+    resultsPanel.classList.remove('hidden');
+  }
+
+  function recalcRow(input) {
+    const tr = input.closest('tr');
+    const qty = parseFloat(input.value) || 1;
+    const unitPrice = parseFloat(tr.dataset.unitPrice) || 0;
+    const subtotal = qty * unitPrice;
+    tr.querySelector('.subtotal-cell').textContent = '$' + subtotal.toFixed(2);
+    recalcTotal();
+  }
+
+  function recalcTotal() {
+    let total = 0;
+    document.querySelectorAll('#line-items-body tr').forEach(tr => {
+      const cell = tr.querySelector('.subtotal-cell');
+      if (cell) total += parseFloat(cell.textContent.replace('$', '')) || 0;
+    });
+    document.getElementById('total-cell').textContent = '$' + total.toFixed(2);
+  }
+
+  function addToEstimate() {
+    const rows = [];
+    document.querySelectorAll('#line-items-body tr').forEach(tr => {
+      rows.push({
+        part_key: tr.dataset.partKey,
+        qty: tr.querySelector('.qty-input').value,
+        subtotal: tr.querySelector('.subtotal-cell').textContent,
+      });
+    });
+    alert('Line items ready to attach to estimate.\n\n' +
+          rows.map(r => `${r.part_key} x${r.qty} = ${r.subtotal}`).join('\n'));
+  }
+
+  // ── Pricing health ────────────────────────────────────────────────────────
+
+  async function loadPricingHealth() {
+    const tenantId = document.body.dataset.tenantId || '';
+    if (!tenantId) {
+      document.getElementById('health-loading').textContent = 'Tenant ID unavailable.';
+      return;
+    }
+
+    document.getElementById('health-loading').classList.remove('hidden');
+    document.getElementById('health-cards').classList.add('hidden');
+
+    try {
+      const resp = await fetch(`/api/ai/pricing/health?tenant_id=${encodeURIComponent(tenantId)}`);
+      if (!resp.ok) throw new Error(`API error ${resp.status}`);
+      const data = await resp.json();
+      renderHealth(data);
+    } catch (err) {
+      document.getElementById('health-loading').textContent = 'Could not load pricing health: ' + err.message;
+    }
+  }
+
+  function renderHealth(data) {
+    const scoreEl = document.getElementById('health-score');
+    scoreEl.textContent = (data.health_score || '—').toUpperCase();
+    scoreEl.className = 'text-2xl font-bold ' +
+      (data.health_score === 'good' ? 'text-green-600' :
+       data.health_score === 'fair' ? 'text-yellow-600' :
+                                      'text-red-600');
+
+    const margin = Math.round((data.avg_margin || 0) * 100);
+    document.getElementById('health-margin').textContent = margin + '%';
+
+    const belowList = document.getElementById('health-below');
+    const belowNone = document.getElementById('health-below-none');
+    if ((data.below_market_items || []).length) {
+      belowList.innerHTML = data.below_market_items.map(i => `<li>${i}</li>`).join('');
+      belowNone.classList.add('hidden');
+    } else {
+      belowList.innerHTML = '';
+      belowNone.classList.remove('hidden');
+    }
+
+    const recsList = document.getElementById('health-recs');
+    recsList.innerHTML = (data.recommendations || [])
+      .map(r => `<li>${r}</li>`)
+      .join('');
+
+    document.getElementById('health-loading').classList.add('hidden');
+    document.getElementById('health-cards').classList.remove('hidden');
+  }
+
+  // Auto-load health on page ready
+  document.addEventListener('DOMContentLoaded', loadPricingHealth);
+</script>
+{% endblock %}

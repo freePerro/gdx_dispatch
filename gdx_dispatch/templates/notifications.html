@@ -1,0 +1,253 @@
+{% extends "tenant_base.html" %}
+{% block title %}Notifications{% endblock %}
+
+{% block content %}
+<div class="py-6 max-w-3xl">
+
+  <!-- Page header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Notifications</h1>
+      <p class="text-sm text-gray-500 mt-1">
+        Your unread messages and alerts.
+        <span id="unread-badge" class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 hidden">
+          <span id="unread-count">0</span> unread
+        </span>
+      </p>
+    </div>
+    <button
+      onclick="markAllRead()"
+      class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+      Mark All Read
+    </button>
+  </div>
+
+  <!-- Notification list -->
+  <div id="notification-list" class="space-y-3 mb-10">
+    <div class="text-sm text-gray-400 text-center py-8" id="empty-state">Loading notifications…</div>
+  </div>
+
+  <!-- Preference settings -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-1">Notification Preferences</h2>
+    <p class="text-sm text-gray-500 mb-5">Choose how you want to be notified for each event type.</p>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th class="text-left py-2 pr-4 font-medium text-gray-600 w-1/3">Event</th>
+            <th class="text-center py-2 px-3 font-medium text-gray-600">Email</th>
+            <th class="text-center py-2 px-3 font-medium text-gray-600">SMS</th>
+            <th class="text-center py-2 px-3 font-medium text-gray-600">Push</th>
+            <th class="text-center py-2 px-3 font-medium text-gray-600">In-App</th>
+          </tr>
+        </thead>
+        <tbody id="pref-table-body" class="divide-y divide-gray-100">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const CHANNELS = ["email", "sms", "push", "in_app"];
+const NOTIFICATION_TYPES = [
+  { key: "job_update",            label: "Job Updates" },
+  { key: "payment_received",      label: "Payment Received" },
+  { key: "new_message",           label: "New Messages" },
+  { key: "appointment_reminder",  label: "Appointment Reminders" },
+  { key: "lead_assigned",         label: "Lead Assigned" },
+  { key: "invoice_due",           label: "Invoice Due" },
+];
+
+// In-memory preference cache: "type:channel" -> bool
+let prefCache = {};
+
+// ── Fetch + render notifications ────────────────────────────────────────────
+
+async function loadNotifications() {
+  try {
+    const res = await fetch("/api/notifications", { credentials: "include" });
+    if (!res.ok) { showEmpty("Could not load notifications."); return; }
+    const data = await res.json();
+    renderNotifications(data);
+    updateBadge(data.length);
+  } catch (e) {
+    showEmpty("Error loading notifications.");
+  }
+}
+
+function renderNotifications(items) {
+  const list = document.getElementById("notification-list");
+  if (!items.length) { showEmpty("You're all caught up — no unread notifications."); return; }
+  document.getElementById("empty-state").classList.add("hidden");
+  list.innerHTML = items.map(n => `
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex items-start gap-4"
+         id="notif-${n.id}">
+      <div class="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+        <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-medium text-gray-900 truncate">${escHtml(n.subject || n.notification_type)}</span>
+          <span class="text-xs text-gray-400 flex-shrink-0">${formatAge(n.created_at)}</span>
+        </div>
+        ${n.body ? `<p class="text-sm text-gray-600 mt-0.5 line-clamp-2">${escHtml(n.body)}</p>` : ""}
+        <div class="mt-1 flex items-center gap-3">
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+            ${escHtml(n.channel)}
+          </span>
+          <button onclick="markRead('${n.id}')"
+                  class="text-xs text-blue-600 hover:text-blue-800 font-medium">
+            Mark read
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function showEmpty(msg) {
+  const el = document.getElementById("empty-state");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function updateBadge(count) {
+  const badge = document.getElementById("unread-badge");
+  document.getElementById("unread-count").textContent = count;
+  if (count > 0) badge.classList.remove("hidden");
+  else badge.classList.add("hidden");
+}
+
+// ── Mark read ────────────────────────────────────────────────────────────────
+
+async function markRead(id) {
+  const res = await fetch(`/api/notifications/${id}/read`, {
+    method: "POST", credentials: "include"
+  });
+  if (res.ok) {
+    const el = document.getElementById(`notif-${id}`);
+    if (el) el.remove();
+    const remaining = document.querySelectorAll("[id^='notif-']").length;
+    updateBadge(remaining);
+    if (!remaining) showEmpty("You're all caught up — no unread notifications.");
+  }
+}
+
+async function markAllRead() {
+  const res = await fetch("/api/notifications/read-all", {
+    method: "POST", credentials: "include"
+  });
+  if (res.ok) {
+    document.getElementById("notification-list").innerHTML = "";
+    showEmpty("You're all caught up — no unread notifications.");
+    updateBadge(0);
+  }
+}
+
+// ── Preferences ──────────────────────────────────────────────────────────────
+
+async function loadPreferences() {
+  try {
+    const res = await fetch("/api/notifications/preferences", { credentials: "include" });
+    if (!res.ok) return;
+    const prefs = await res.json();
+    prefs.forEach(p => { prefCache[`${p.notification_type}:${p.channel}`] = p.is_enabled; });
+  } catch (e) { /* silent */ }
+  renderPrefTable();
+}
+
+function renderPrefTable() {
+  const tbody = document.getElementById("pref-table-body");
+  tbody.innerHTML = NOTIFICATION_TYPES.map(nt => `
+    <tr>
+      <td class="py-3 pr-4 text-sm text-gray-700 font-medium">${escHtml(nt.label)}</td>
+      ${CHANNELS.map(ch => {
+        const key = `${nt.key}:${ch}`;
+        // Default: email and in_app enabled, sms/push disabled
+        const defaultOn = (ch === "email" || ch === "in_app");
+        const enabled = (key in prefCache) ? prefCache[key] : defaultOn;
+        return `
+          <td class="py-3 px-3 text-center">
+            <button
+              role="switch"
+              aria-checked="${enabled}"
+              data-type="${nt.key}"
+              data-channel="${ch}"
+              onclick="togglePref(this)"
+              class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 ${enabled ? 'bg-blue-600' : 'bg-gray-200'}">
+              <span class="inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-5' : 'translate-x-1'}"></span>
+            </button>
+          </td>
+        `;
+      }).join("")}
+    </tr>
+  `).join("");
+}
+
+async function togglePref(btn) {
+  const type = btn.dataset.type;
+  const channel = btn.dataset.channel;
+  const wasEnabled = btn.getAttribute("aria-checked") === "true";
+  const newVal = !wasEnabled;
+
+  // Optimistic UI update
+  btn.setAttribute("aria-checked", String(newVal));
+  btn.className = btn.className
+    .replace(/bg-(blue-600|gray-200)/, `bg-${newVal ? "blue-600" : "gray-200"}`);
+  const dot = btn.querySelector("span");
+  dot.className = dot.className
+    .replace(/translate-x-[15]/, `translate-x-${newVal ? "5" : "1"}`);
+
+  try {
+    const res = await fetch("/api/notifications/preferences", {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notification_type: type, channel: channel, is_enabled: newVal }),
+    });
+    if (res.ok) {
+      prefCache[`${type}:${channel}`] = newVal;
+    } else {
+      // Revert
+      btn.setAttribute("aria-checked", String(wasEnabled));
+    }
+  } catch (e) {
+    btn.setAttribute("aria-checked", String(wasEnabled));
+  }
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+
+function escHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatAge(iso) {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+loadNotifications();
+loadPreferences();
+</script>
+{% endblock %}

@@ -1,0 +1,59 @@
+{
+  "name": "gdx-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:help": "node scripts/build_help_index.mjs",
+    "check:tours": "node scripts/check_tour_anchors.mjs",
+    "predev": "node scripts/build_help_index.mjs && node scripts/check_tour_anchors.mjs",
+    "prebuild": "node scripts/build_help_index.mjs && node scripts/check_tour_anchors.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "story:dev": "histoire dev",
+    "story:build": "histoire build",
+    "e2e": "playwright test",
+    "e2e:lab": "E2E_BASE_URL=http://localhost:8001 E2E_TENANT_SLUG=lab-tenant E2E_EMAIL=lab@example.com E2E_PASSWORD=changeme playwright test",
+    "e2e:gdx": "E2E_BASE_URL=https://gdx.example.com E2E_TENANT_SLUG=demo-garage-co E2E_READ_ONLY=1 playwright test",
+    "e2e:gdx": "E2E_BASE_URL=https://gdx.example.com E2E_TENANT_SLUG=gdx E2E_READ_ONLY=1 playwright test",
+    "lint:ux": "node scripts/ux_gate.mjs"
+  },
+  "dependencies": {
+    "@primeuix/themes": "^2.0.3",
+    "@sentry/vue": "^10.47.0",
+    "chart.js": "^4.5.1",
+    "dexie": "^4.4.2",
+    "dompurify": "^3.4.10",
+    "driver.js": "^1.4.0",
+    "fake-indexeddb": "^6.2.5",
+    "markdown-it": "^14.2.0",
+    "minisearch": "^7.2.0",
+    "pinia": "^2.1.7",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.2.5",
+    "vue": "^3.5.13",
+    "vue-chartjs": "^5.3.3",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@histoire/plugin-vue": "^1.0.0-beta.1",
+    "@playwright/test": "^1.59.1",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "@vue/test-utils": "^2.4.6",
+    "histoire": "^1.0.0-beta.1",
+    "jsdom": "^26.0.0",
+    "openapi-typescript": "^7.13.0",
+    "vite": "^7.3.5",
+    "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "js-yaml": "^4.2.0",
+    "ws": "^8.21.0",
+    "shell-quote": "^1.8.4",
+    "js-cookie": "^3.0.7",
+    "esbuild": "^0.28.1",
+    "launch-editor": "^2.14.1"
+  }
+}
