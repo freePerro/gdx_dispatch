@@ -434,16 +434,6 @@ def platform_login(
         raise _unauth()
 
     # If multiple memberships and the SPA hasn't picked one yet, show picker.
-    if len(rows) > 1 and not body.tenant_id:
-        return JSONResponse({
-            "status": "select_tenant",
-            "tenants": [
-                {"tenant_id": str(r.tenant_id), "slug": r.slug,
-                 "name": r.name, "role": r.role}
-                for r in rows
-            ],
-        })
-
     if body.tenant_id:
         match = next((r for r in rows if str(r.tenant_id) == body.tenant_id), None)
         if match is None:

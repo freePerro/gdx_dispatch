@@ -1,0 +1,30 @@
+--- gdx_dispatch/frontend/src/views/LoginPicker.vue
++++ gdx_dispatch/frontend/src/views/LoginPicker.vue
+@@ -34,8 +34,8 @@
+ const email = ref('')
+ const password = ref('')
+ const submitting = ref(false)
+-
+-const tenantChoices = computed(() => auth.tenantChoices || [])
+-const showTenantChoices = computed(() => tenantChoices.value.length > 1)
++
++const tenantChoices = []
++const showTenantChoices = false
+ 
+ async function loadTenants() {
+   error.value = ''
+@@ -87,13 +87,6 @@
+       email: email.value.trim(),
+       password: password.value,
+     })
+-    if (result && result.status === 'select_tenant') {
+-      // Multi-tenant: tenantChoices is populated on the store; the
+-      // template will switch to the workspace-pick UI below.
+-      submitting.value = false
+-      return
+-    }
+-    // Single-tenant: auth.login() triggered a full-page redirect — we
+-    // won't reach here. Safety net: if we do, reload to pick up the
+-    // session-tenant state.
+     window.location.reload()
+   } catch (e) {

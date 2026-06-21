@@ -28,6 +28,10 @@ gdx_dispatch/
 └── requirements.txt  Python dependencies
 ```
 
+The Vue frontend lives in [`gdx_dispatch/frontend/`](gdx_dispatch/frontend/),
+with its entrypoint at [`gdx_dispatch/frontend/src/main.js`](gdx_dispatch/frontend/src/main.js)
+and root component at [`gdx_dispatch/frontend/src/App.vue`](gdx_dispatch/frontend/src/App.vue).
+
 ## Quick start (Docker)
 
 Requires Docker and Docker Compose.

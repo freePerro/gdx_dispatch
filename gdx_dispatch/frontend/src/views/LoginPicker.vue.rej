@@ -1,0 +1,14 @@
+--- LoginPicker.vue
++++ LoginPicker.vue
+@@ -34,8 +34,8 @@
+ const email = ref('')
+ const password = ref('')
+ const submitting = ref(false)
+-
+-const tenantChoices = computed(() => auth.tenantChoices || [])
+-const showTenantChoices = computed(() => tenantChoices.value.length > 1)
++
++const tenantChoices = []
++const showTenantChoices = false
+ 
+ async function loadTenants() {

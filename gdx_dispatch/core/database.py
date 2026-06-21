@@ -21,3 +21,11 @@ def get_db(request=None) -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+def tenant_context():
+    """Fallback stub for tenant_context imported by modules prior to refactor."""
+    return nullcontext()
+
+def get_tenant_db(request=None):
+    """Fallback stub for get_tenant_db imported by modules prior to refactor."""
+    return get_db(request)

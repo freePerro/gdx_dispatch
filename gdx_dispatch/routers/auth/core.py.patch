@@ -1,0 +1,24 @@
+--- gdx_dispatch/routers/auth/core.py	2026-06-21 00:00:00.000000000 +0000
++++ gdx_dispatch/routers/auth/core.py	2026-06-21 00:00:00.000000000 +0000
+@@ -432,17 +432,6 @@
+         # Same response shape as bad password — never confirm/deny email.
+         raise _unauth()
+ 
+-    # If multiple memberships and the SPA hasn't picked one yet, show picker.
+-    if len(rows) > 1 and not body.tenant_id:
+-        return JSONResponse({
+-            "status": "select_tenant",
+-            "tenants": [
+-                {"tenant_id": str(r.tenant_id), "slug": r.slug,
+-                 "name": r.name, "role": r.role}
+-                for r in rows
+-            ],
+-        })
+-
+     if body.tenant_id:
+         match = next((r for r in rows if str(r.tenant_id) == body.tenant_id), None)
+         if match is None:
+@@ -450,7 +439,7 @@
+         row = match
+     else:
+         row = rows[0]

@@ -11,16 +11,7 @@ const route = useRoute()
 const auth = useAuthStore()
 const theme = useThemeStore()
 
-// Auto-detect tenant from subdomain or stored session
-const _parts = window.location.hostname.split('.')
-const _subdomain = _parts.length >= 3 ? _parts[0] : ''
-const _storedSlug = sessionStorage.getItem('gdx_tenant_slug') || ''
-// Send raw subdomain — backend resolves aliases via _SUBDOMAIN_ALIASES
-const _resolvedSub = _subdomain
-const _autoSlug = (_resolvedSub && _resolvedSub !== 'www') ? _resolvedSub : _storedSlug
-const needsCompany = !_autoSlug
 
-const company = ref(_autoSlug)
 const email = ref('')
 const password = ref('')
 const error = ref('')
@@ -58,7 +49,6 @@ async function handleLogin() {
 
   try {
     const result = await auth.login({
-      company: company.value,
       email: email.value,
       password: password.value,
     })
@@ -142,26 +132,7 @@ async function pickTenant(tenantId) {
         <p v-if="error" class="error-message" data-testid="login-error">{{ error }}</p>
       </div>
 
-      <form v-else @submit.prevent="handleLogin" class="login-form" data-testid="login-form">
-        <div class="input-group" v-if="needsCompany">
-          <label for="login-company">Company Name</label>
-          <div class="input-wrapper">
-            <svg class="input-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-            </svg>
-            <input
-              id="login-company"
-              v-model="company"
-              type="text"
-              placeholder="your-company"
-              autocomplete="organization"
-              required
-              data-testid="login-company"
-            />
-          </div>
-        </div>
-
+      <form @submit.prevent="handleLogin" class="login-form" data-testid="login-form">
         <div class="input-group">
           <label for="login-email">Email</label>
           <div class="input-wrapper">

@@ -45,8 +45,8 @@ def single_tenant() -> dict[str, Any]:
     resolve to the same one DB.
     """
     return {
-        "id": os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx",
-        "slug": os.getenv("GDX_TENANT_SLUG") or "gdx",
+        "id": os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "00000000-0000-0000-0000-000000000001",
+        "slug": os.getenv("GDX_TENANT_SLUG") or "00000000-0000-0000-0000-000000000001",
         "name": os.getenv("GDX_TENANT_NAME") or "Example Garage Doors",
         "db_url": os.getenv("DATABASE_URL", "sqlite:///./gdx.db"),
         "subscription_status": "active",
