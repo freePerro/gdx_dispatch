@@ -100,38 +100,6 @@ def test_from_session_populates_auth_kind_session():
     assert p.oauth_token_id is None
 
 
-def test_from_pat_extracts_prefix_and_pat_id():
-    class FakePatRow:
-        id = uuid4()
-        prefix = "gdx_pat_live_"
-
-    row = FakePatRow()
-    p = Principal.from_pat(
-        pat_row=row,
-        identity_id=uuid4(),
-        tenant_id="acme-corp",
-        role="pat",
-        capabilities=[("read", "invoice")],
-    )
-    assert p.auth_kind == "pat"
-    assert p.pat_id == row.id
-    assert p.pat_prefix == "gdx_pat_live_"
-    assert p.session_id is None
-
-
-def test_from_scim_carries_token_id():
-    token_record = {"token_id": "scim-token-xyz", "tenant_id": "irrelevant"}
-    p = Principal.from_scim(
-        token_record=token_record,
-        identity_id=uuid4(),
-        tenant_id="acme-corp",
-        capabilities=[("read", "identity")],
-    )
-    assert p.auth_kind == "scim"
-    assert p.scim_token_id == "scim-token-xyz"
-    assert p.principal_role == "scim_client"
-
-
 def test_from_spiffe_synthesizes_identity_from_uuid5():
     """Same spiffe_id → same identity_id across calls (deterministic)."""
     sid = "spiffe://garagedoor.ai/agent/dispatcher-01"

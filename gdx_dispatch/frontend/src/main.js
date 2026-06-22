@@ -17,27 +17,6 @@ import './assets/responsive.css';
 // on-emerald CTA contrast app-wide.
 import './assets/primevue-cta-contrast.css';
 
-// Platform-host login hand-off: when the user signs in at
-// app.example.com they're redirected to <slug>.example.com
-// with the access token in a URL fragment. Read it FIRST (before the
-// auth store reads sessionStorage) so the SPA boots authenticated.
-(function _consumeHandoffFragment() {
-  try {
-    const m = (window.location.hash || '').match(/[#&]gdx_handoff=([^&]+)/);
-    if (!m) return;
-    const decoded = JSON.parse(atob(decodeURIComponent(m[1])));
-    if (decoded && decoded.t) {
-      sessionStorage.setItem('gdx_access_token', decoded.t);
-      if (decoded.s) sessionStorage.setItem('gdx_tenant_slug', decoded.s);
-      if (decoded.u) sessionStorage.setItem('gdx_user', JSON.stringify(decoded.u));
-    }
-  } catch (_) { /* malformed fragment — ignore, user will land on login */ }
-  if (window.location.hash.includes('gdx_handoff=')) {
-    const cleanHash = window.location.hash.replace(/[#&]gdx_handoff=[^&]+/, '');
-    history.replaceState(null, '', window.location.pathname + window.location.search + cleanHash);
-  }
-})();
-
 const app = createApp(App);
 installErrorCapture(app);
 const pinia = createPinia();

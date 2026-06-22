@@ -1,38 +1,30 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher.
 
-Accepts any of five auth flows and returns a unified
+Accepts any of three auth flows and returns a unified
 :class:`gdx_dispatch.core.unified_principal.Principal`:
 
 * **session**  — session/JWT cookie-or-Bearer (SS-7)
-* **pat**      — ``gdx_pat_live_*`` / ``gdx_pat_test_*`` bearer (SS-14)
-* **scim**     — SCIM enterprise-IdP bearer token (SS-22)
 * **spiffe**   — SPIFFE X.509 (mTLS-peer) or JWT-SVID (SS-32)
 * **oauth**    — OAuth2 authorization-code bearer (SS-21)
+
+(The PAT and SCIM flows were removed with the single-tenant cleanup —
+the identity island that backed them is gone.)
 
 Dispatch order (highest priority first):
 
 1. ``Authorization: Bearer <token>`` header. Sub-dispatch by token shape:
 
-   * ``gdx_pat_live_`` / ``gdx_pat_test_`` / ``gdx_sk_live_`` /
-     ``gdx_sk_test_`` prefix → PAT flow.
-   * Token registered in ``app.state.scim_tokens`` (or ``GDX_SCIM_TOKENS``
-     env) → SCIM flow.
    * Three-segment ``eyJ...`` JWT shape → SPIFFE JWT-SVID if ``sub``
      starts with ``spiffe://``, else OAuth2 bearer.
    * Otherwise: opaque → try OAuth2 token store lookup; if not found,
      raise 401 ``unknown_bearer_shape``.
 
-2. Session cookie (``session`` or ``sid`` or ``access_token``) → SS-7
-   session flow.
+2. Session cookie (``access_token``) → SS-7 session flow.
 
 3. ``request.state.peer_spiffe_id`` (set by upstream mTLS layer) →
    SPIFFE X.509 flow.
 
 4. Nothing authenticates → 401 ``missing_credentials``.
-
-0.9-d writes ONLY this new module and its tests. Existing validator and
-factory modules are imported verbatim — no edits to ``gdx_dispatch/core/auth.py``,
-``pat_validation.py``, ``scim_auth.py``, ``spiffe/*``, or any router.
 
 Scope string convention for OAuth
 ---------------------------------
@@ -65,8 +57,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
-from typing import Any
 from uuid import UUID, uuid5, NAMESPACE_URL
 
 from fastapi import Depends, HTTPException, Request
@@ -158,38 +148,6 @@ _PLATFORM_TENANT_SLUG = "__platform__"
 
 # ── Shape detection helpers (pure, cheap) ────────────────────────────────
 
-_PAT_PREFIXES: tuple[str, ...] = (
-    "gdx_pat_live_",
-    "gdx_pat_test_",
-    "gdx_sk_live_",
-    "gdx_sk_test_",
-)
-
-
-def _is_pat_token(token: str) -> bool:
-    return token.startswith(_PAT_PREFIXES)
-
-
-def _looks_like_scim_token(request: Request, token: str) -> bool:
-    """Return True iff ``token`` is a known SCIM bearer token.
-
-    Consults ``request.app.state.scim_tokens`` first (test override), then
-    falls back to the ``GDX_SCIM_TOKENS`` env var (production path).
-    O(1) dict lookup in both cases.
-    """
-    table = getattr(request.app.state, "scim_tokens", None)
-    if isinstance(table, dict) and token in table:
-        return True
-    raw = os.getenv("GDX_SCIM_TOKENS", "")
-    if not raw.strip():
-        return False
-    try:
-        env_table = json.loads(raw)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(env_table, dict) and token in env_table
-
-
 def _looks_like_jwt(token: str) -> bool:
     """Shape check only — three base64url segments separated by dots.
 
@@ -258,28 +216,6 @@ def _colon_cap_to_tuple(flat: str) -> tuple[str, str] | None:
     return (action, resource)
 
 
-def _pat_dict_cap_to_tuple(
-    cap: dict[str, Any],
-) -> tuple[str, str] | None:
-    """Translate an SS-14 PAT capability dict (from
-    :func:`gdx_dispatch.core.pat_validation.validate_pat`) into the unified tuple.
-
-    PAT validator emits dicts like
-    ``{"action": "read", "resource_type": "customers", ...}``. We ignore
-    ``instance_pattern`` + ``conditions`` — those are per-resource narrowing
-    that the policy engine evaluates separately.
-    """
-    if not isinstance(cap, dict):
-        return None
-    action = cap.get("action")
-    resource = cap.get("resource_type")
-    if not isinstance(action, str) or not isinstance(resource, str):
-        return None
-    if not action or not resource:
-        return None
-    return (action, resource)
-
-
 # ── Per-flow dispatch shims ──────────────────────────────────────────────
 
 
@@ -292,93 +228,6 @@ def _get_db_or_none(request: Request) -> Session | None:
     PAT / OAuth dispatch will raise a 503-ish HTTPException in that case.
     """
     return getattr(request.state, "db", None)
-
-
-async def _dispatch_pat(request: Request, token: str) -> Principal:
-    """Validate a PAT bearer token and return a unified Principal."""
-    from gdx_dispatch.core.pat_validation import validate_pat
-
-    db = _get_db_or_none(request)
-    if db is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error_type": "db_unavailable",
-                "detail": "PAT validation requires a DB session on request.state.db",
-            },
-        )
-    redis_client = getattr(request.app.state, "redis", None)
-    pat_principal = validate_pat(token, db, redis_client)
-    if pat_principal is None:
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "invalid_pat", "detail": "PAT not recognized or expired"},
-        )
-
-    # Look up the AccessToken row for its prefix (Principal.from_pat needs it).
-    from gdx_dispatch.models.platform_extensions import AccessToken
-
-    pat_row = db.get(AccessToken, UUID(pat_principal.pat_id))
-    if pat_row is None:
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "pat_row_missing", "detail": "PAT validated but row not found"},
-        )
-
-    caps: list[tuple[str, str]] = []
-    for c in pat_principal.capabilities:
-        t = _pat_dict_cap_to_tuple(c)
-        if t is not None:
-            caps.append(t)
-
-    # "restricted" shape is signalled by owner_type=="installation" narrowing
-    # (v3 patch P36). For now we surface is_restricted=False — 0.9-h or
-    # Phase 3 can refine when capability-restricted PATs ship.
-    return Principal.from_pat(
-        pat_row=pat_row,
-        identity_id=UUID(pat_principal.identity_id),
-        # ``pat_principal.tenant_id`` comes from ``Membership.tenant_id``
-        # — UUID per D97 (was slug; flipped 031). Pass through as-is.
-        tenant_id=pat_principal.tenant_id,
-        role=pat_principal.role,
-        capabilities=caps,
-    )
-
-
-async def _dispatch_scim(request: Request, token: str) -> Principal:
-    """Validate a SCIM token and return a unified Principal."""
-    from gdx_dispatch.core.scim_auth import ScimAuthError, require_scim_auth
-
-    try:
-        scim_principal = require_scim_auth(
-            request=request, authorization=f"Bearer {token}"
-        )
-    except ScimAuthError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail={"error_type": "scim_auth_failed", "detail": exc.detail},
-        ) from exc
-
-    caps: list[tuple[str, str]] = []
-    for c in scim_principal.capabilities:
-        t = _colon_cap_to_tuple(c)
-        if t is not None:
-            caps.append(t)
-
-    # SCIM tokens are tenant-scoped service credentials; identity_id
-    # is not a human identity. Synthesize deterministically from the
-    # token_id so audit can pivot on it.
-    synth_identity = uuid5(NAMESPACE_URL, f"scim:{scim_principal.token_id}")
-
-    return Principal.from_scim(
-        token_record={"token_id": scim_principal.token_id},
-        identity_id=synth_identity,
-        # SCIM token table stores ``tenant_id`` as the tenant slug
-        # (opaque string keyed on the IdP's tenant config). Pass it
-        # through — the platform FKs on ``tenants.slug``.
-        tenant_id=scim_principal.tenant_id,
-        capabilities=caps,
-    )
 
 
 async def _dispatch_spiffe_jwt(request: Request, token: str) -> Principal:
@@ -806,12 +655,6 @@ async def get_current_principal(request: Request) -> Principal:
                     "detail": "Authorization header has Bearer scheme but empty token",
                 },
             )
-
-        if _is_pat_token(token):
-            return await _dispatch_pat(request, token)
-
-        if _looks_like_scim_token(request, token):
-            return await _dispatch_scim(request, token)
 
         if _looks_like_jwt(token):
             if _jwt_has_spiffe_sub(token):

@@ -1,22 +1,19 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher tests.
 
 Mocks each underlying validator so this test module can verify the
-dispatcher's DECISION LOGIC without standing up the full SS-14 PAT DB,
-SS-22 SCIM env, SS-32 SPIFFE trust bundle, or SS-21 OAuth token store.
+dispatcher's DECISION LOGIC without standing up the full SS-32 SPIFFE
+trust bundle or SS-21 OAuth token store.
 
 Covered flows:
 
 * missing credentials → 401 missing_credentials
 * unknown bearer shape → 401 unknown_bearer_shape
-* ``gdx_pat_live_*`` and ``gdx_pat_test_*`` → PAT dispatch (mocked validate_pat)
-* SCIM registered token → SCIM dispatch
 * JWT with ``spiffe://`` sub → SPIFFE JWT dispatch (mocked validate_jwt_svid)
 * JWT with user sub → OAuth dispatch (mocked token store)
 * session cookie → session dispatch
 * mTLS peer_spiffe_id → SPIFFE mTLS dispatch (mocked resolve_capabilities)
 * scope-to-capability translation convention
-* SCIM colon-flattened caps translation
-* Bearer priority over session cookie
+* colon-flattened caps translation
 """
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -105,94 +102,7 @@ async def test_unknown_bearer_shape_raises_401() -> None:
     assert exc.value.detail["error_type"] == "unknown_bearer_shape"
 
 
-# ── 3/4. PAT prefixes ──────────────────────────────────────────────────
-
-
-@dataclass
-class _FakePatPrincipal:
-    identity_id: str
-    tenant_id: str
-    role: str
-    auth_method: str
-    pat_id: str
-    owner_type: str
-    capabilities: list[dict[str, Any]]
-
-
-@dataclass
-class _FakePatRow:
-    id: UUID
-    prefix: str
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "prefix", ["gdx_pat_live_", "gdx_pat_test_"]
-)
-async def test_bearer_gdx_pat_dispatches_pat(prefix: str) -> None:
-    ident = uuid4()
-    tenant = "acme-corp"
-    pat_uuid = uuid4()
-    fake_pat = _FakePatPrincipal(
-        identity_id=str(ident),
-        tenant_id=tenant,
-        role="pat",
-        auth_method="pat",
-        pat_id=str(pat_uuid),
-        owner_type="user",
-        capabilities=[
-            {"action": "read", "resource_type": "customers", "instance_pattern": None, "conditions": {}},
-            {"action": "write", "resource_type": "invoices", "instance_pattern": None, "conditions": {}},
-        ],
-    )
-    fake_row = _FakePatRow(id=pat_uuid, prefix=prefix)
-
-    db = MagicMock()
-    db.get = MagicMock(return_value=fake_row)
-    req = _FakeRequest(
-        headers={"authorization": f"Bearer {prefix}abcdef123456"},
-        state={"db": db},
-    )
-
-    with patch(
-        "gdx_dispatch.core.pat_validation.validate_pat", return_value=fake_pat
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "pat"
-    assert principal.identity_id == ident
-    assert principal.tenant_id == tenant
-    assert principal.pat_id == pat_uuid
-    assert principal.pat_prefix == prefix
-    assert ("read", "customers") in principal.capabilities
-    assert ("write", "invoices") in principal.capabilities
-
-
-# ── 5. SCIM ────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_bearer_scim_token_dispatches_scim() -> None:
-    scim_token = "scim-opaque-xyz"
-    scim_table = {
-        scim_token: {
-            "tenant_id": "acme-corp",
-            "capabilities": ["write:identity", "read:user", "garbage-no-colon"],
-        }
-    }
-    req = _FakeRequest(
-        headers={"authorization": f"Bearer {scim_token}"},
-        app_state={"scim_tokens": scim_table},
-    )
-    principal = await get_current_principal(req)  # type: ignore[arg-type]
-    assert principal.auth_kind == "scim"
-    assert ("write", "identity") in principal.capabilities
-    assert ("read", "user") in principal.capabilities
-    # Malformed (no colon) entries must be dropped, not crash.
-    assert len(principal.capabilities) == 2
-
-
-# ── 6. SPIFFE JWT ──────────────────────────────────────────────────────
+# ── SPIFFE JWT ─────────────────────────────────────────────────────────
 
 
 def _make_jwt(payload: dict[str, Any]) -> str:
@@ -649,42 +559,7 @@ def test_scim_colon_caps_translation() -> None:
     assert _colon_cap_to_tuple("write:") is None
 
 
-# ── 12. Bearer priority over session cookie ────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_two_auth_sources_present_bearer_wins() -> None:
-    # Both a session cookie AND a PAT bearer → PAT path must win
-    # (matches dispatcher's Step 1 order: Authorization header first).
-    ident = uuid4()
-    tenant = "acme-corp"
-    pat_uuid = uuid4()
-    fake_pat = _FakePatPrincipal(
-        identity_id=str(ident),
-        tenant_id=tenant,
-        role="pat",
-        auth_method="pat",
-        pat_id=str(pat_uuid),
-        owner_type="user",
-        capabilities=[],
-    )
-    fake_row = _FakePatRow(id=pat_uuid, prefix="gdx_pat_live_")
-    db = MagicMock()
-    db.get = MagicMock(return_value=fake_row)
-
-    req = _FakeRequest(
-        headers={"authorization": "Bearer gdx_pat_live_xyz"},
-        cookies={"session": "should-be-ignored"},
-        state={"db": db},
-    )
-    with patch(
-        "gdx_dispatch.core.pat_validation.validate_pat", return_value=fake_pat
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-    assert principal.auth_kind == "pat"  # NOT session
-
-
-# ── 13. Empty bearer token ────────────────────────────────────────────
+# ── Empty bearer token ─────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

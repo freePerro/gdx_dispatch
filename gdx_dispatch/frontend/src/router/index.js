@@ -126,12 +126,9 @@ const PartsToOrderView = () => import('../views/PartsToOrderView.vue');
 const CommissionsView = () => import('../views/CommissionsView.vue');
 const VarianceReportView = () => import('../views/VarianceReportView.vue');
 const PerformanceView = () => import('../views/PerformanceView.vue');
-const LoginPickerView = () => import('../views/LoginPicker.vue');
 
 // Sprint 0.9-o: SS-14..35 admin/user routes
 // 2026-05-05 audit pruned views whose backends never mounted (SS-27/SS-33/custom-field-sensitivity/SAR-erasure).
-const SettingsApiKeys = () => import('../views/SettingsApiKeys.vue');
-const TenantAdminApiKeys = () => import('../views/TenantAdminApiKeys.vue');
 const BillingUsage = () => import('../views/BillingUsage.vue');
 const AuditLogViewer = () => import('../views/AuditLogViewer.vue');
 
@@ -144,7 +141,6 @@ const routes = [
   // wizard. Every other route is wrapped by App.vue's AppLayout so the
   // sidebar/topbar/bottom-nav are stable across navigations.
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, noShell: true } },
-  { path: '/login-picker', name: 'login-picker', component: LoginPickerView, meta: { public: true, noSidebar: true, noShell: true } },
   { path: '/forgot-password', name: 'forgot-password', component: () => import('../views/ForgotPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/signup', name: 'signup', component: () => import('../views/SignupView.vue'), meta: { public: true, noShell: true } },
@@ -283,8 +279,6 @@ const routes = [
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },
   // Sprint 0.9-o: SS-14..35 admin/user routes
-  { path: '/settings/api-keys', name: 'settings-api-keys', component: SettingsApiKeys },
-  { path: '/admin/api-keys', name: 'admin-api-keys', component: TenantAdminApiKeys },
   { path: '/admin/billing-usage', name: 'admin-billing-usage', component: BillingUsage },
   { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer },
   // Sprint 1.2: SS-29..35 platform-admin views

@@ -31,28 +31,6 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: auth")
     auth = APIRouter(prefix="/auth", tags=["auth"])
 
-try:
-    # SS-12A: auth_gateway is the BFF scaffold router. Registered AFTER
-    # the legacy ``auth`` router below so legacy ``POST /auth/refresh`` +
-    # ``POST /auth/logout`` retain precedence in the mounted app while
-    # SS-12A ships scaffold-only placeholders. Scaffold happy-path asserts
-    # run against an isolated FastAPI app in
-    # ``gdx_dispatch/tests/test_auth_gateway_scaffold.py`` so they are observable
-    # without touching legacy behavior. SS-12A redo r2: that test file
-    # verifies the main-app wiring via a static source check on this
-    # module (asserting the import below AND that this include_router
-    # call is ordered after the legacy ``auth`` include) rather than
-    # instantiating ``create_app()``, which timed out Codex's 90s
-    # replay budget under container dispatch. SS-12A redo r3: the
-    # isolated-app ``TestClient`` in that file is now entered as a
-    # context manager, so one anyio ``BlockingPortal`` is reused across
-    # all requests and shut down deterministically at module teardown —
-    # replacing the per-request portal churn that stalled Codex's
-    # dispatch at the first request-issuing scaffold test.
-    from gdx_dispatch.routers.auth import gateway as auth_gateway_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: auth_gateway")
-    auth_gateway_router = APIRouter(prefix="/auth", tags=["auth_gateway"])
 
 try:
     from gdx_dispatch.routers import jobs
@@ -583,29 +561,11 @@ except Exception:
     users_router = APIRouter(prefix="/api/users", tags=["users"])
 
 try:
-    # SS-13 Slice A — login-picker backend endpoint. Serves
-    # ``GET /api/me/tenants`` to the Slice B server-rendered picker handler.
-    # Pre-tenant-selection, so no module gate.
-    from gdx_dispatch.routers import me as me_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: me_router")
-    me_router = APIRouter(prefix="/api/me", tags=["me"])
-
-try:
     # Forecasting module — /api/forecast/* + /api/quickbooks/recurring-transactions.
     from gdx_dispatch.modules.forecasting import router as forecasting_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: forecasting_router")
     forecasting_router = None  # type: ignore
-
-try:
-    # SS-13 Slice D — explicit backend route for ``GET /login-picker``
-    # that returns the Vue SPA index.html so the picker page is an
-    # explicit registered route (not a silent SPA-catch-all fall-through).
-    from gdx_dispatch.routers.auth import login_picker as login_picker_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: login_picker_router")
-    login_picker_router = APIRouter(tags=["auth_gateway"])
 
 try:
     from gdx_dispatch.modules.quickbooks import qb_router as quickbooks
@@ -1546,9 +1506,6 @@ def create_app() -> FastAPI:
         return result
 
     app.include_router(auth.router if hasattr(auth, "router") else auth)
-    app.include_router(
-        auth_gateway_router.router if hasattr(auth_gateway_router, "router") else auth_gateway_router
-    )
     app.include_router(jobs.router if hasattr(jobs, "router") else jobs)
     app.include_router(
         job_diagnosis_router.router if hasattr(job_diagnosis_router, "router") else job_diagnosis_router
@@ -1712,8 +1669,6 @@ def create_app() -> FastAPI:
     app.include_router(referrals_router.router if hasattr(referrals_router, "router") else referrals_router)
     app.include_router(search_router.router if hasattr(search_router, "router") else search_router)
     app.include_router(users_router.router if hasattr(users_router, "router") else users_router)
-    app.include_router(me_router.router if hasattr(me_router, "router") else me_router)
-    app.include_router(login_picker_router.router if hasattr(login_picker_router, "router") else login_picker_router)
     app.include_router(quickbooks.router if hasattr(quickbooks, "router") else quickbooks)
     if forecasting_router is not None:
         app.include_router(forecasting_router.router)
@@ -2066,15 +2021,10 @@ def create_app() -> FastAPI:
     # except branch.
     # Command Center / SaaS-platform routers were removed for this single-tenant
     # release (their tables are gone from the squashed baseline). Only the
-    # identity/PAT/SCIM cluster (the kept "identity island") and a couple of
-    # app-level metadata endpoints remain.
+    # app-level metadata endpoints. (The PAT/SCIM identity cluster was
+    # removed with the single-tenant cleanup.)
     _ss_routers: list[tuple[str, str, str]] = [
         # (SS-label, dotted-import-path, friendly-name-for-logs)
-        ("SS-14", "gdx_dispatch.routers.auth.pats", "pats"),                  # moved Phase C2
-        ("SS-14", "gdx_dispatch.routers.auth.pats_support", "pats_support"),  # moved Phase C2
-        ("SS-15", "gdx_dispatch.routers.auth.admin_pats", "admin_pats"),      # moved Phase C2
-        ("SS-15", "gdx_dispatch.routers.custom_field_sensitivity", "custom_field_sensitivity"),
-        ("SS-22", "gdx_dispatch.routers.auth.scim", "scim"),       # moved Phase C1
         ("SS-25", "gdx_dispatch.routers.api_metadata", "api_metadata"),
         ("SS-26", "gdx_dispatch.routers.well_known", "well_known"),
     ]
@@ -2085,15 +2035,6 @@ def create_app() -> FastAPI:
             app.include_router(_ss_router)
         except Exception:
             _ss_log.exception("ss_router_unavailable: %s/%s", _ss_label, _ss_friendly)
-
-    # SS-22 SCIM RFC-7644 exception handlers (must register on the app,
-    # not on its router, so SCIM-shaped error JSON is returned for any
-    # exception raised from /scim/v2/* routes).
-    try:
-        from gdx_dispatch.routers.auth.scim import register_scim_exception_handlers
-        register_scim_exception_handlers(app)
-    except Exception:
-        _ss_log.exception("ss22_scim_exception_handlers_unavailable")
 
     # Universal route reorder: move literal-path routes ahead of
     # parameterized ones so /customers/duplicates doesn't get eaten by

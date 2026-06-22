@@ -1,21 +1,13 @@
 /*
- * SS-13 Slice F — Centralized auth URL builders.
+ * Centralized auth URL builders.
  *
- * One source of truth for the shape of /login?redirect=<returnTo>, shared
- * by LoginPicker.vue (produces the URL) and LoginView.vue (consumes the
- * query param). Avoids drift between the producer and consumer so a
- * future change to the query key or encoding lands in one place.
+ * One source of truth for the shape of /login?redirect=<returnTo>,
+ * consumed by LoginView.vue and the router navigation guards. Avoids
+ * drift so a future change to the query key or encoding lands in one
+ * place.
  */
 
 const DEFAULT_POST_LOGIN_PATH = '/dashboard'
-
-/**
- * Canonical return-to path for the login picker view. Shared by
- * LoginPicker.vue (producer of the `?redirect=` query param) so the
- * constant stays colocated with `getLoginRedirectUrl` below and any
- * future caller that needs to link back to the picker.
- */
-export const LOGIN_PICKER_RETURN_TO = '/login-picker'
 
 /**
  * Build the /login URL with a redirect-back query parameter pointing at
