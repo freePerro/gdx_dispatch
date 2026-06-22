@@ -55,7 +55,6 @@ describe('LoginView', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(401, { detail: 'bad creds' })));
 
     const wrapper = mount(LoginView);
-    await wrapper.find('input[type="text"]').setValue('test-co');
     await wrapper.find('input[type="email"]').setValue('bad@test.com');
     await wrapper.find('input[type="password"]').setValue('wrong');
     await wrapper.find('form').trigger('submit');

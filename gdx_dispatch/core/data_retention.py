@@ -14,7 +14,7 @@ import logging  # noqa: E402
 from datetime import timedelta  # noqa: E402
 from typing import Annotated  # noqa: E402
 
-from fastapi import APIRouter, Depends, Header  # noqa: E402
+from fastapi import APIRouter, Depends, Header, Request  # noqa: E402
 from sqlalchemy import delete, func, select, update  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 

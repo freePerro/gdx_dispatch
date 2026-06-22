@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
