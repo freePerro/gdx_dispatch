@@ -2059,13 +2059,7 @@ def create_app() -> FastAPI:
     from gdx_dispatch.core.mcp_mount import mount_mcp
     mount_mcp(app)
 
-    # Wire the oauth2 router's get_db placeholder to the real control-plane
-    # session factory. The router declares a sentinel get_db that raises at
-    # runtime if not overridden — prevents accidental import-time DB binding
-    # in tests, but requires this explicit wire-up at app construction.
     from gdx_dispatch.core.database import get_db as _get_db
-    from gdx_dispatch.routers.auth.oauth2 import get_db as _oauth2_get_db
-    app.dependency_overrides[_oauth2_get_db] = _get_db
 
     # Same wire-up for the federation router (SS-31). The placeholder raises
     # RuntimeError if not overridden — without this, every /auth/federation/*

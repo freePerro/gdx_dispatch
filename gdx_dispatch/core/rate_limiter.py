@@ -125,7 +125,7 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
 
     # Unauthenticated brute-force surface — keyed per IP with the stricter limit.
     # Matched by prefix so query strings and sub-paths are covered.
-    _AUTH_PREFIXES = ("/auth/login", "/auth/platform-login", "/signup")
+    _AUTH_PREFIXES = ("/auth/login", "/signup")
 
     def __init__(self, app: Any, limiter: RateLimiter | None = None) -> None:
         super().__init__(app)

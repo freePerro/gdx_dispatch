@@ -1,23 +1,22 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher.
 
-Accepts any of three auth flows and returns a unified
+Accepts any of two auth flows and returns a unified
 :class:`gdx_dispatch.core.unified_principal.Principal`:
 
 * **session**  — session/JWT cookie-or-Bearer (SS-7)
 * **spiffe**   — SPIFFE X.509 (mTLS-peer) or JWT-SVID (SS-32)
-* **oauth**    — OAuth2 authorization-code bearer (SS-21)
 
-(The PAT and SCIM flows were removed with the single-tenant cleanup —
-the identity island that backed them is gone.)
+(The PAT, SCIM, and OAuth2 dev-portal flows were removed with the
+single-tenant cleanup — the identity island and SS-21 authorization
+server that backed them are gone.)
 
 Dispatch order (highest priority first):
 
 1. ``Authorization: Bearer <token>`` header. Sub-dispatch by token shape:
 
    * Three-segment ``eyJ...`` JWT shape → SPIFFE JWT-SVID if ``sub``
-     starts with ``spiffe://``, else OAuth2 bearer.
-   * Otherwise: opaque → try OAuth2 token store lookup; if not found,
-     raise 401 ``unknown_bearer_shape``.
+     starts with ``spiffe://``, else the SS-7 login-JWT flow.
+   * Otherwise: opaque → 401 ``unknown_bearer_shape``.
 
 2. Session cookie (``access_token``) → SS-7 session flow.
 
@@ -26,23 +25,8 @@ Dispatch order (highest priority first):
 
 4. Nothing authenticates → 401 ``missing_credentials``.
 
-Scope string convention for OAuth
----------------------------------
-OAuth2 scope strings follow ``"<resource>.<action>"`` (e.g.
-``"customers.read"``). ``_scope_to_cap`` translates each scope to the
-canonical unified ``(action, resource_type)`` 2-tuple. Malformed scopes
-(no dot, empty parts) are dropped with a debug log rather than crashing
-auth — an OAuth token granted zero recognizable scopes still
-authenticates but yields ``Principal.has_capability(...) == False`` for
-everything.
-
 Stubs / future-slice markers
 ----------------------------
-* **OAuth session-user lookup**: SS-21's in-memory ``TokenRecord`` does
-  not carry a UUID ``id``; we synthesize one via UUID5 from the
-  ``access_token`` string for ``Principal.oauth_token_id``. Slice 0.9-h
-  (or whenever SS-21's DB-backed ``OAuthToken`` row is wired) should
-  replace the synthesized id with the real row PK.
 * **Session capabilities**: SS-7 ``Principal`` (``gdx_dispatch/core/principal.py``)
   carries no ``capabilities`` field. We fall back to an empty capability
   tuple for session principals; slice 0.9-e (router sweep) + Phase 3
@@ -133,7 +117,6 @@ def default_caps_for_role(role: str) -> tuple[tuple[str, str], ...]:
 # Module-level sentinel UUID namespaces for synthesizing stable ids
 # where a real row id is not (yet) available. Distinct from
 # SPIFFE_ID_NAMESPACE so collisions cannot span scopes.
-_OAUTH_TOKEN_NAMESPACE = uuid5(NAMESPACE_URL, "gdx:oauth_token_synth")
 _SESSION_IDENTITY_NAMESPACE = uuid5(NAMESPACE_URL, "gdx:session_identity_synth")
 
 # Reserved tenant slug for platform-scoped (non-tenant) principals —
@@ -180,26 +163,6 @@ def _jwt_has_spiffe_sub(token: str) -> bool:
 
 
 # ── Capability translation helpers ────────────────────────────────────────
-
-
-def _scope_to_cap(scope: str) -> tuple[str, str] | None:
-    """Translate an OAuth2 ``"<resource>.<action>"`` scope string into a
-    unified ``(action, resource_type)`` capability tuple.
-
-    Returns None for malformed scopes — caller drops them. We deliberately
-    do NOT raise; a token with one bad scope still authenticates under
-    its valid scopes.
-    """
-    if not isinstance(scope, str) or not scope:
-        return None
-    if scope.count(".") != 1:
-        log.debug("oauth_scope_malformed: %r (expected '<resource>.<action>')", scope)
-        return None
-    resource, action = scope.split(".", 1)
-    if not resource or not action:
-        log.debug("oauth_scope_empty_part: %r", scope)
-        return None
-    return (action, resource)
 
 
 def _colon_cap_to_tuple(flat: str) -> tuple[str, str] | None:
@@ -514,79 +477,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
     )
 
 
-async def _dispatch_oauth(request: Request, token: str) -> Principal:
-    """Validate an OAuth2 bearer token and return a unified Principal.
-
-    SS-21 currently uses an in-process :class:`_InMemoryTokenStore`
-    (see :mod:`gdx_dispatch.routers.auth.oauth2`). We look up the access token there —
-    0.9-h / Phase 3 will swap this for the ``ss21_oauth_tokens`` DB row
-    lookup once SS-21's ``TODO`` is discharged.
-
-    Fallthrough to ``_dispatch_login_jwt`` when the OAuth store misses on
-    a JWT-shaped token — login JWTs minted by /auth/login arrive via the
-    same Authorization: Bearer header but aren't tracked in this store.
-    See D-S118-dispatcher-jwt-gap.
-    """
-    from gdx_dispatch.routers.auth.oauth2 import get_token_store
-
-    store = get_token_store()
-    rec = store.get_by_access(token)
-    if rec is None or rec.revoked:
-        if _looks_like_jwt(token):
-            return await _dispatch_login_jwt(request, token)
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "invalid_oauth_token", "detail": "bearer token unknown or revoked"},
-        )
-
-    import time
-
-    if rec.expires_at < time.time():
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "oauth_token_expired", "detail": "bearer token expired"},
-        )
-
-    # Translate space-separated scopes to unified capability tuples.
-    caps: list[tuple[str, str]] = []
-    for scope in (rec.scope or "").split():
-        t = _scope_to_cap(scope)
-        if t is not None:
-            caps.append(t)
-
-    # Synthesize IDs — TokenRecord has no UUID .id; rec is the in-memory
-    # dataclass from gdx_dispatch.routers.auth.oauth2. Phase 3 swap point noted in
-    # module docstring.
-    synth_oauth_id = uuid5(_OAUTH_TOKEN_NAMESPACE, rec.access_token)
-
-    try:
-        identity_id = UUID(rec.subject_id) if rec.subject_id else uuid5(
-            _SESSION_IDENTITY_NAMESPACE, f"oauth:{rec.subject_id or rec.access_token}"
-        )
-    except (ValueError, TypeError):
-        identity_id = uuid5(_SESSION_IDENTITY_NAMESPACE, f"oauth:{rec.subject_id}")
-
-    # ``rec.tenant_id`` is the opaque tenant slug stored in the OAuth
-    # token record. When absent, fall back to a namespaced ``oauth:...``
-    # slug keyed on the client id — platform filters miss loudly
-    # instead of matching anything real.
-    tenant_id = rec.tenant_id or f"oauth-unresolved:{rec.client_id}"
-
-    # Shim object exposing the ``.id`` attribute Principal.from_oauth
-    # requires. We attach the synthesized UUID directly.
-    class _OAuthRowShim:
-        def __init__(self, token_id: UUID) -> None:
-            self.id = token_id
-
-    return Principal.from_oauth(
-        oauth_token=_OAuthRowShim(synth_oauth_id),
-        identity_id=identity_id,
-        tenant_id=tenant_id,
-        role="oauth_client",
-        capabilities=caps,
-    )
-
-
 async def _dispatch_session(request: Request) -> Principal:
     """Build a Principal from the `access_token` session cookie.
 
@@ -659,23 +549,19 @@ async def get_current_principal(request: Request) -> Principal:
         if _looks_like_jwt(token):
             if _jwt_has_spiffe_sub(token):
                 return await _dispatch_spiffe_jwt(request, token)
-            return await _dispatch_oauth(request, token)
+            return await _dispatch_login_jwt(request, token)
 
-        # Opaque bearer token — try OAuth store lookup as the last option.
-        try:
-            return await _dispatch_oauth(request, token)
-        except HTTPException as exc:
-            # If OAuth rejected it specifically, surface a generic
-            # unknown-shape error so we don't leak which store was tried.
-            if exc.status_code == 401:
-                raise HTTPException(
-                    status_code=401,
-                    detail={
-                        "error_type": "unknown_bearer_shape",
-                        "detail": "Authorization uses Bearer scheme but token shape is not recognized",
-                    },
-                ) from exc
-            raise
+        # Opaque bearer token — no recognized shape. The OAuth2 dev-portal
+        # authorization server (SS-21) was removed with the single-tenant
+        # cleanup; the only bearer tokens we accept now are login JWTs
+        # (handled above) and SPIFFE JWT-SVIDs.
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "unknown_bearer_shape",
+                "detail": "Authorization uses Bearer scheme but token shape is not recognized",
+            },
+        )
 
     # 2. Session cookie — only the JWT-shape access_token cookie set by
     # /auth/login. `session` and `sid` cookies are no longer accepted

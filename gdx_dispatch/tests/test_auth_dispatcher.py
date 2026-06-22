@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import base64
 import json
-import time
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -31,7 +30,6 @@ from fastapi import HTTPException
 from gdx_dispatch.core import auth_dispatcher
 from gdx_dispatch.core.auth_dispatcher import (
     _colon_cap_to_tuple,
-    _scope_to_cap,
     get_current_principal,
 )
 
@@ -93,11 +91,9 @@ async def test_missing_auth_raises_401_missing_credentials() -> None:
 @pytest.mark.asyncio
 async def test_unknown_bearer_shape_raises_401() -> None:
     req = _FakeRequest(headers={"authorization": "Bearer totally-random-garbage"})
-    # OAuth fallback will be attempted — must fail → unknown_bearer_shape.
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store") as mock_store:
-        mock_store.return_value.get_by_access = MagicMock(return_value=None)
-        with pytest.raises(HTTPException) as exc:
-            await get_current_principal(req)  # type: ignore[arg-type]
+    # Opaque (non-JWT) bearer → no recognized shape → unknown_bearer_shape.
+    with pytest.raises(HTTPException) as exc:
+        await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
     assert exc.value.detail["error_type"] == "unknown_bearer_shape"
 
@@ -165,39 +161,7 @@ async def test_bearer_jwt_with_spiffe_sub_dispatches_spiffe_jwt() -> None:
     assert ("invoke", "mcp.tool") in principal.capabilities
 
 
-# ── 7. OAuth JWT ────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_bearer_jwt_without_spiffe_sub_dispatches_oauth() -> None:
-    token = _make_jwt({"sub": "user-uuid", "iat": 1, "exp": 9999999999})
-
-    @dataclass
-    class _FakeRec:
-        access_token: str
-        refresh_token: str = "r"
-        client_id: str = "app1"
-        scope: str = "customers.read invoices.write"
-        tenant_id: str | None = None
-        subject_id: str | None = None
-        issued_at: float = 0.0
-        expires_at: float = time.time() + 3600
-        revoked: bool = False
-
-    fake_rec = _FakeRec(access_token=token)
-    store = MagicMock()
-    store.get_by_access = MagicMock(return_value=fake_rec)
-
-    req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "oauth"
-    assert ("read", "customers") in principal.capabilities
-    assert ("write", "invoices") in principal.capabilities
-
-
-# ── 7.5 Bearer login JWT (D-S118-dispatcher-jwt-gap) ───────────────────
+# ── Bearer login JWT (D-S118-dispatcher-jwt-gap) ───────────────────────
 
 
 @pytest.mark.asyncio
@@ -531,22 +495,7 @@ async def test_mtls_peer_spiffe_id_dispatches_spiffe_mtls() -> None:
     assert ("read", "widget") in principal.capabilities
 
 
-# ── 10. Scope → capability tuple translation ──────────────────────────
-
-
-def test_scope_string_to_capability_tuple_translation() -> None:
-    # Documented convention: "<resource>.<action>" → ("<action>", "<resource>").
-    assert _scope_to_cap("customers.read") == ("read", "customers")
-    assert _scope_to_cap("invoices.write") == ("write", "invoices")
-    # Malformed: no dot, empty part, wrong type, etc. → None (caller drops).
-    assert _scope_to_cap("nodot") is None
-    assert _scope_to_cap("too.many.dots") is None
-    assert _scope_to_cap(".read") is None
-    assert _scope_to_cap("customers.") is None
-    assert _scope_to_cap("") is None
-
-
-# ── 11. SCIM colon-flattened caps translation ────────────────────────
+# ── Colon-flattened caps translation ──────────────────────────────────
 
 
 def test_scim_colon_caps_translation() -> None:
