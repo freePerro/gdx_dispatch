@@ -46,6 +46,21 @@ docker compose -f gdx_dispatch/docker/docker-compose.yml up -d --build
 This brings up PostgreSQL, Redis, the API, and the Celery workers. The API is
 exposed on <http://localhost:8001> with a health check at `/health`.
 
+On first start the API container automatically (and idempotently) runs database
+migrations, creates the application tables, and seeds a single default tenant
+plus an **initial admin user** so you can log in right away:
+
+- Email: `GDX_ADMIN_EMAIL` (default `admin@example.com`)
+- Password: `GDX_ADMIN_PASSWORD` if you set it, otherwise a random password is
+  generated and printed to the container logs:
+
+  ```bash
+  docker compose -f gdx_dispatch/docker/docker-compose.yml logs app | grep -A4 "initial admin account"
+  ```
+
+The admin is created with `must_change_password` set — change it after your
+first login.
+
 ## Local development
 
 **Backend:**
