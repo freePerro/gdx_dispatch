@@ -332,6 +332,9 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
         "email": body.email,
         "name": (_u.full_name or _u.name or body.email) if _u is not None else body.email,
         "role": role,
+        # Signals the SPA to prompt for a password change (e.g. the seeded
+        # initial admin, which is created with must_change_password=True).
+        "must_change_password": bool(getattr(_u, "must_change_password", False)),
     }
     resp = JSONResponse({
         "access_token": access,

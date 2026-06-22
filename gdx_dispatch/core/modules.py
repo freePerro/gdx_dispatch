@@ -83,10 +83,13 @@ def _ensure_company_module_grants_table(db: Session) -> None:
         text(
             """
             CREATE TABLE IF NOT EXISTS company_module_grants (
-                company_id TEXT NOT NULL,
-                module_key TEXT NOT NULL,
-                granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (company_id, module_key)
+                id VARCHAR(36) PRIMARY KEY,
+                company_id VARCHAR(36) NOT NULL,
+                module_key VARCHAR(100) NOT NULL,
+                granted_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE,
+                expires_at TIMESTAMP WITH TIME ZONE,
+                CONSTRAINT uq_company_module_grant UNIQUE (company_id, module_key)
             )
             """
         )
