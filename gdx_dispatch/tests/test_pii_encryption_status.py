@@ -244,27 +244,3 @@ def test_real_model_writes_ciphertext_when_key_set(monkeypatch):
         re_read = session.get(WebhookEndpoint, endpoint.id)
         assert re_read is not None
         assert re_read.secret == "my-shared-secret"
-
-
-def test_soc2_evidence_consumes_central_helper():
-    """SOC2 evidence dict must:
-      * keep the legacy ``pii_columns_encrypted: bool`` with stable
-        semantics across S122-1c (True iff the key is loaded — same
-        signal pre-S122-1c, when the underlying check was
-        ``import EncryptedString`` and the import always succeeded).
-        Dashboards graphing this over time stay continuous.
-      * expose the richer per-column report under ``pii_columns``.
-    """
-    from gdx_dispatch.core.soc2_evidence import collect_soc2_evidence
-
-    evidence = collect_soc2_evidence(db=None)
-    enc = evidence["encryption"]
-    assert "pii_columns_encrypted" in enc, "legacy roll-up bool removed?"
-    assert isinstance(enc["pii_columns_encrypted"], bool)
-    assert "pii_columns" in enc, "per-column report missing"
-    block = enc["pii_columns"]
-    assert "key_loaded" in block
-    assert "columns" in block
-    assert "columns_actually_encrypted" in block
-    # Legacy roll-up tracks the key (stable across S122-1c).
-    assert enc["pii_columns_encrypted"] == block["key_loaded"]

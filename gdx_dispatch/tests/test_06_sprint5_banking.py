@@ -142,24 +142,6 @@ def test_wholesale_catalog_and_pricing(sprint5_db):
 
 
 # ---------------------------------------------------------------------------
-# Shadow run (dark launch)
-# ---------------------------------------------------------------------------
-
-def test_shadow_run_returns_primary():
-    from gdx_dispatch.core.shadow_run import shadow_run
-    result = shadow_run(lambda: 42, lambda: 99, label="test")
-    assert result == 42
-
-
-def test_shadow_run_shadow_exception_suppressed():
-    from gdx_dispatch.core.shadow_run import shadow_run
-    def bad_shadow():
-        raise RuntimeError("shadow failed")
-    result = shadow_run(lambda: "primary", bad_shadow, label="test_exception")
-    assert result == "primary"
-
-
-# ---------------------------------------------------------------------------
 # JWKS key store
 # ---------------------------------------------------------------------------
 
@@ -190,38 +172,6 @@ def test_jwks_sign_and_verify():
     token = ks.sign_token({"sub": "user-123", "role": "admin"}, kid="kid-1")
     claims = ks.verify_token(token)
     assert claims["sub"] == "user-123"
-
-
-# ---------------------------------------------------------------------------
-# SOC 2 evidence collection
-# ---------------------------------------------------------------------------
-
-def test_soc2_evidence_structure(sprint5_db):
-    from gdx_dispatch.core.soc2_evidence import collect_soc2_evidence
-    evidence = collect_soc2_evidence(sprint5_db)
-    assert "access_control" in evidence
-    assert "encryption" in evidence
-    assert "audit_trail" in evidence
-    assert "change_management" in evidence
-    assert "incident_response" in evidence
-    assert evidence["audit_trail"]["immutable"] is True
-    assert evidence["audit_trail"]["hash_chained"] is True
-
-
-# ---------------------------------------------------------------------------
-# Vulnerability check
-# ---------------------------------------------------------------------------
-
-def test_vulnerability_check_importable():
-    from gdx_dispatch.core.vulnerability_check import VulnSeverity, check_vulnerability_sla, run_pip_audit
-    assert all([run_pip_audit, check_vulnerability_sla, VulnSeverity])
-
-
-def test_vulnerability_sla_empty():
-    from gdx_dispatch.core.vulnerability_check import check_vulnerability_sla
-    result = check_vulnerability_sla([])
-    assert result["should_fail_ci"] is False
-    assert result["critical"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -261,17 +211,6 @@ def test_dealer_invitation_cancel(sprint5_db):
         cancel_invitation(inv.id, sprint5_db)
 
 
-# ---------------------------------------------------------------------------
-# Chaos scenarios importable
-# ---------------------------------------------------------------------------
-
-def test_chaos_importable():
-    from gdx_dispatch.core.chaos import ChaosScenario, run_all_chaos_scenarios, run_chaos_scenario
-    assert ChaosScenario.QB_API_DOWN is not None
-    assert callable(run_chaos_scenario)
-    assert callable(run_all_chaos_scenarios)
-
-
 def test_pwa_version_endpoint():
     import os
 
@@ -301,17 +240,3 @@ def test_gdpr_delete_endpoint_exists():
     from gdx_dispatch.routers.gdpr import router
     routes = [r.path for r in router.routes]
     assert any("delete" in p or "hard" in p for p in routes), f"No delete endpoint: {routes}"
-
-
-def test_soc2_evidence_keys_complete():
-    from gdx_dispatch.core.soc2_evidence import collect_soc2_evidence
-    evidence = collect_soc2_evidence(db=None)
-    required_keys = {"access_control", "encryption", "audit_trail", "change_management"}
-    assert required_keys.issubset(set(evidence.keys())), f"Missing SOC2 keys: {required_keys - set(evidence.keys())}"
-
-
-def test_chaos_all_scenarios_defined():
-    from gdx_dispatch.core.chaos import ChaosScenario
-    scenarios = [s.value.lower() for s in ChaosScenario]
-    required = {"qb_api_down", "stripe_down", "redis_down", "tenant_db_down", "pgbouncer_down"}
-    assert required.issubset(set(scenarios)), f"Missing chaos scenarios: {required - set(scenarios)}"

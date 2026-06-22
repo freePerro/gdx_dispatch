@@ -10,11 +10,6 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute=0),
             "options": {"queue": "priority:high"},
         },
-        "apply-late-fees-daily-midnight": {
-            "task": "gdx_dispatch.tasks.late_fees.apply_late_fees_for_all_tenants",
-            "schedule": crontab(hour=0, minute=0),
-            "options": {"queue": "priority:low"},
-        },
         "generate-recurring-jobs-daily-6am": {
             "task": "gdx_dispatch.tasks.recurring.generate_recurring_jobs_for_all_tenants",
             "schedule": crontab(hour=6, minute=0),
@@ -24,6 +19,10 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
         # since pre-2026-04 — fired every 15 minutes producing
         # synced_count=0. Removed 2026-05-12. CDC poller (S122-18) is the
         # real replacement; webhooks (S122-CE) carry the active path until it ships.
+        # "apply-late-fees-daily-midnight" was the same pattern — wired to the
+        # no-op gdx_dispatch.tasks.late_fees stub (helpers returned []). Removed
+        # 2026-06-22 along with the module; re-add with the task when late-fee
+        # logic actually exists.
         # trial-reminders-daily-9am removed in the single-tenant collapse —
         # gdx_dispatch.tasks.trial_reminders was a SaaS trial-lifecycle task (deleted).
         "outlook-renew-subscriptions-every-6h": {
