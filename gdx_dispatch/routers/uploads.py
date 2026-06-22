@@ -157,12 +157,14 @@ def _user_id_from(user: dict[str, Any]) -> str:
 
 def _build_file_path(tenant_id: str, entity_type: str, entity_id: str, filename: str) -> Path:
     # Constrain the resolved path to the upload root so a crafted tenant_id /
-    # entity_type / entity_id / filename can't traverse out. (CodeQL path-injection)
-    base = _upload_dir().resolve()
-    candidate = (base / tenant_id / entity_type / entity_id / filename).resolve()
-    if not candidate.is_relative_to(base):
+    # entity_type / entity_id / filename can't traverse out. realpath + startswith
+    # is the form CodeQL's py/path-injection recognizes as a barrier; the trailing
+    # os.sep stops a sibling like "<root>-evil" from passing. (CodeQL path-injection)
+    base = os.path.realpath(_upload_dir())
+    candidate = os.path.realpath(os.path.join(base, tenant_id, entity_type, entity_id, filename))
+    if not candidate.startswith(base + os.sep):
         raise HTTPException(status_code=400, detail="Invalid upload path")
-    return candidate
+    return Path(candidate)
 
 
 def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:

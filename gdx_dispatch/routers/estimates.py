@@ -1798,12 +1798,13 @@ ESTIMATE_ATTACHMENT_ALLOWED_MIME = {
 
 def _attachment_dir(tenant_id: str, estimate_id: str) -> Path:
     # Constrain to the upload root so a crafted tenant_id can't traverse out.
-    # (CodeQL path-injection)
-    base = Path(os.getenv("UPLOAD_DIR", "/app/uploads")).resolve()
-    candidate = (base / tenant_id / "estimate" / estimate_id).resolve()
-    if not candidate.is_relative_to(base):
+    # realpath + startswith is the form CodeQL recognizes as a barrier; the
+    # trailing os.sep stops a sibling like "<root>-evil". (CodeQL path-injection)
+    base = os.path.realpath(os.getenv("UPLOAD_DIR", "/app/uploads"))
+    candidate = os.path.realpath(os.path.join(base, tenant_id, "estimate", estimate_id))
+    if not candidate.startswith(base + os.sep):
         raise HTTPException(status_code=400, detail="Invalid attachment path")
-    return candidate
+    return Path(candidate)
 
 
 def _sanitize_attachment_name(name: str | None) -> str:
@@ -1919,12 +1920,12 @@ def download_estimate_attachment(
     if not doc:
         raise HTTPException(status_code=404, detail="Attachment not found")
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
-    base = _attachment_dir(tenant_id, str(estimate_id))
-    path = (base / doc.filename).resolve()
-    if not path.is_relative_to(base) or not path.exists() or not path.is_file():
+    base = str(_attachment_dir(tenant_id, str(estimate_id)))
+    fullpath = os.path.realpath(os.path.join(base, doc.filename))
+    if not fullpath.startswith(base + os.sep) or not os.path.isfile(fullpath):
         raise HTTPException(status_code=404, detail="File missing on disk")
     return FileResponse(
-        path=path,
+        path=fullpath,
         media_type=doc.content_type or "application/octet-stream",
         filename=doc.original_name,
     )

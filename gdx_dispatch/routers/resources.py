@@ -234,7 +234,9 @@ async def create_resource(
     safe_name = os.path.basename(file.filename or "upload")
     base = os.path.realpath(UPLOAD_DIR)
     file_dest = os.path.realpath(os.path.join(base, company_id, category, f"{resource_id}_{safe_name}"))
-    if os.path.commonpath([base, file_dest]) != base:
+    # realpath + startswith is the barrier CodeQL recognizes (commonpath isn't);
+    # trailing os.sep stops a sibling like "<root>-evil" from passing.
+    if not file_dest.startswith(base + os.sep):
         raise HTTPException(status_code=400, detail="Invalid upload path")
     os.makedirs(os.path.dirname(file_dest), exist_ok=True)
 
