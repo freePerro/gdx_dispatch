@@ -1446,12 +1446,10 @@ def create_app() -> FastAPI:
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("ss14_idempotency_middleware_unavailable")
 
-    # SS-28 Consumer audit log capture.
-    try:
-        from gdx_dispatch.core.middleware.consumer_audit_middleware import ConsumerAuditMiddleware
-        app.add_middleware(ConsumerAuditMiddleware, db_session_factory=SessionLocal)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("ss28_consumer_audit_middleware_unavailable")
+    # SS-28 Consumer audit log capture — REMOVED. This was a multi-tenant
+    # platform (Command Center) middleware that fail-closed-wrote to the
+    # platform_consumer_audit table on every request; that table and the rest
+    # of the platform schema are gone in this single-tenant release.
 
     # SS-25 API versioning (Accept header parse + deprecation registry).
     try:
