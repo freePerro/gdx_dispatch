@@ -11,9 +11,7 @@ on:
       - 'gdx_dispatch/**'
       - 'gdx_dispatch/requirements.txt'
       - '.github/workflows/**'
-    paths-ignore:
-      - 'ai-queue/**'
-      - '**/*.md'
+      - '!**/*.md'
   pull_request:
     branches: [main, master]
   schedule:

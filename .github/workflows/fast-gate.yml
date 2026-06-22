@@ -10,9 +10,7 @@ on:
     paths:
       - 'gdx_dispatch/**'
       - '.github/workflows/**'
-    paths-ignore:
-      - 'ai-queue/**'
-      - '**/*.md'
+      - '!**/*.md'
   pull_request:
     branches: [main, master]
 
