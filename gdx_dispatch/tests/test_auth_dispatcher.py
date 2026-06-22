@@ -18,6 +18,7 @@ Covered flows:
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -218,7 +219,6 @@ async def test_bearer_login_jwt_falls_through_and_runs_gates() -> None:
     })
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value=fake_payload),
         patch("gdx_dispatch.routers.auth.core.finalize_login_jwt", finalize_mock),
@@ -285,7 +285,6 @@ async def test_dispatch_uses_db_role_not_jwt_role_after_demote() -> None:
     })
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value={
             "sub": sub_uuid,
@@ -335,7 +334,6 @@ async def test_dispatch_typ_guard_rejects_refresh_token() -> None:
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", return_value=fake_validated),
     ):
         with pytest.raises(HTTPException) as ei:
@@ -360,7 +358,6 @@ async def test_bearer_jwt_invalid_signature_returns_401() -> None:
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", side_effect=Exception("InvalidSignatureError")),
     ):
@@ -734,7 +731,7 @@ async def test_realsigned_bearer_denylist_revoke_returns_401(_rs256_mode) -> Non
             app_state={"denylist": denylist},
         )
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(_fresh_req())  # type: ignore[arg-type]
 
     assert principal.auth_kind == "session"
@@ -744,7 +741,7 @@ async def test_realsigned_bearer_denylist_revoke_returns_401(_rs256_mode) -> Non
     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     denylist.add(jti, expires_at)
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(_fresh_req())  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -777,7 +774,7 @@ async def test_realsigned_bearer_signature_tamper_returns_401(_rs256_mode) -> No
         headers={"authorization": f"Bearer {tampered}"},
         state={"tenant": {"id": tenant_uuid}},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -807,7 +804,6 @@ async def test_realsigned_bearer_slice2_db_verify_rejects_deleted_user(_rs256_mo
     )
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.routers.auth.core._db_verify_user", return_value=None),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -839,7 +835,7 @@ async def test_realsigned_bearer_slice6_tenant_mismatch_returns_403(_rs256_mode)
         state={"tenant": {"id": host_tenant}},
     )
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 403
@@ -1002,7 +998,7 @@ async def test_legacy_bearer_jwt_with_revoked_jti_returns_401() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -1029,7 +1025,7 @@ async def test_legacy_bearer_jwt_not_revoked_still_works() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(req)  # type: ignore[arg-type]
     assert principal.auth_kind == "session"
     assert principal.principal_role == "admin"
@@ -1086,7 +1082,6 @@ async def test_denylist_gate_fires_before_db_verify() -> None:
         app_state={"denylist": denylist},
     )
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.routers.auth.core._db_verify_user", db_verify_called),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -1127,7 +1122,7 @@ async def test_legacy_bearer_jwt_without_jti_does_not_crash() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(req)  # type: ignore[arg-type]
     assert principal.auth_kind == "session"
 

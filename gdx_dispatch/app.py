@@ -714,11 +714,6 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_modules_router")
     admin_modules_router = APIRouter(tags=["tenant-modules"])
 
-try:
-    from gdx_dispatch.routers import sandbox_admin
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: sandbox_admin")
-    sandbox_admin = APIRouter(prefix="/api/admin/sandbox", tags=["sandbox-admin"])
 
 try:
     from gdx_dispatch.core.integrations import router as integrations_router
@@ -1707,7 +1702,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_flags_router, prefix="/api/admin", tags=["feature-flags"])
     app.include_router(feature_flags_ui_router)
     app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
-    app.include_router(sandbox_admin.router if hasattr(sandbox_admin, "router") else sandbox_admin)
     app.include_router(push_router)
     app.include_router(locations_router)
     app.include_router(tenant_ui_router, prefix="/legacy", tags=["tenant-ui"])
@@ -2058,29 +2052,6 @@ def create_app() -> FastAPI:
     import gdx_dispatch.core.mcp_tools  # noqa: F401  — side-effect: registers tool set
     from gdx_dispatch.core.mcp_mount import mount_mcp
     mount_mcp(app)
-
-    from gdx_dispatch.core.database import get_db as _get_db
-
-    # Same wire-up for the federation router (SS-31). The placeholder raises
-    # RuntimeError if not overridden — without this, every /auth/federation/*
-    # endpoint 500s on a get_db dependency miss.
-    try:
-        from gdx_dispatch.routers.federation import get_db as _federation_get_db
-        app.dependency_overrides[_federation_get_db] = _get_db
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("federation_get_db_wire_failed")
-
-    # Same wire-up for the SAR router (SS-35). Pre-2026-05-15 it read
-    # request.state.db (no prod middleware sets it) → every /api/sar/*
-    # call 500'd. download/status only touch `sar_request` (RLS OFF), so
-    # the control-plane factory serves them correctly. request_sar's
-    # cross-tenant PII build is separately fenced (501) until the
-    # SECURITY DEFINER gather lands — see sar._sar_build_ready().
-    try:
-        from gdx_dispatch.routers.sar import get_db as _sar_get_db
-        app.dependency_overrides[_sar_get_db] = _get_db
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("sar_get_db_wire_failed")
 
     # ── Vue SPA frontend ────────────────────────────────────────────────────
     # Serve built Vue assets and catch-all for client-side routing
