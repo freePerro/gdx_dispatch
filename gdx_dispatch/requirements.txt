@@ -9,6 +9,8 @@ PyJWT[crypto]>=2.8.0
 bcrypt>=4.2.0
 werkzeug>=3.1.8
 python-multipart>=0.0.22
+# email-validator is a runtime requirement of pydantic EmailStr (modules/outlook/send_router.py).
+email-validator>=2.0.0
 redis>=7.4.0
 sentry-sdk[fastapi]>=2.57.0,<3.0
 httpx>=0.28.1
@@ -24,12 +26,6 @@ celery>=5.6.3,<6.0
 weasyprint>=68.0
 boto3>=1.42.0
 jinja2>=3.1.6
-# SS-31 SAML federation — safe XML parsing (XXE/billion-laughs guard).
-# Imported by gdx/core/federation/{saml_provider,trust_bundle}.py. Pure-
-# Python, no build deps. Prior to this being pinned, the SS-31 router
-# silently failed to import on every container boot (caught by the
-# ss_router_unavailable wrapper, so the app still started).
-defusedxml>=0.7.1
 opentelemetry-api>=1.20.0
 opentelemetry-sdk>=1.20.0
 opentelemetry-instrumentation-fastapi>=0.41b0
@@ -77,11 +73,6 @@ fastmcp>=3.2,<4.0
 # Sprint 1.x AI doc/email tools: text extraction for documents.summarize.
 pypdf>=6.10.2,<7.0
 python-docx>=1.1,<2.0
-
-# CC v2 (Phase B): MFA TOTP + staff password hashing + email validation.
-pyotp>=2.9.0
-passlib[argon2]>=1.7.4
-email-validator>=2.0.0
 
 # Hypothesis is pulled in transitively by schemathesis. Pinned to 6.152.4+
 # because 6.151.12 reproducibly segfaults on Python 3.14.4 during deep
