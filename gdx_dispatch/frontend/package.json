@@ -16,7 +16,6 @@
     "story:build": "histoire build",
     "e2e": "playwright test",
     "e2e:lab": "E2E_BASE_URL=http://localhost:8001 E2E_TENANT_SLUG=lab-tenant E2E_EMAIL=lab@example.com E2E_PASSWORD=changeme playwright test",
-    "e2e:gdx": "E2E_BASE_URL=https://gdx.example.com E2E_TENANT_SLUG=demo-garage-co E2E_READ_ONLY=1 playwright test",
     "e2e:gdx": "E2E_BASE_URL=https://gdx.example.com E2E_TENANT_SLUG=gdx E2E_READ_ONLY=1 playwright test",
     "lint:ux": "node scripts/ux_gate.mjs"
   },
@@ -25,7 +24,7 @@
     "@sentry/vue": "^10.47.0",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
-    "dompurify": "^3.4.10",
+    "dompurify": "^3.4.11",
     "driver.js": "^1.4.0",
     "fake-indexeddb": "^6.2.5",
     "markdown-it": "^14.2.0",

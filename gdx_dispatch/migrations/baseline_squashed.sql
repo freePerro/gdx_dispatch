@@ -1,22 +1,3 @@
-CREATE TABLE public.capabilities (
-    id uuid NOT NULL,
-    capability_set_id uuid NOT NULL,
-    action character varying(32) NOT NULL,
-    resource_type character varying(64) NOT NULL,
-    instance_pattern character varying(255) DEFAULT '*'::character varying NOT NULL,
-    conditions jsonb DEFAULT '{}'::jsonb NOT NULL,
-    parent_capability_id uuid,
-    granted_via_installation_id uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    revoked_at timestamp with time zone
-);
-CREATE TABLE public.capability_sets (
-    id uuid NOT NULL,
-    name character varying(128) NOT NULL,
-    description text,
-    scope_type character varying(32) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
 CREATE TABLE public.game_definitions (
     id uuid NOT NULL,
     slug character varying(100) NOT NULL,
@@ -60,52 +41,6 @@ CREATE TABLE public.game_state (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     tenant_id uuid
-);
-CREATE TABLE public.identities (
-    id uuid NOT NULL,
-    email character varying(255) NOT NULL,
-    display_name character varying(255),
-    status character varying(32) DEFAULT 'active'::character varying NOT NULL,
-    email_verified_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    deleted_at timestamp with time zone
-);
-CREATE TABLE public.identity_providers (
-    id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    provider_type character varying(32) NOT NULL,
-    provider_subject character varying(255) NOT NULL,
-    provider_email character varying(255),
-    email_verified_by_provider boolean DEFAULT false NOT NULL,
-    is_authoritative_for_domain boolean DEFAULT false NOT NULL,
-    linked_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_used_at timestamp with time zone,
-    revoked_at timestamp with time zone,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-CREATE TABLE public.installations (
-    id uuid NOT NULL,
-    oauth_client_id uuid,
-    installer_identity_id uuid NOT NULL,
-    capability_set_id uuid NOT NULL,
-    billing_account_id uuid,
-    status character varying(32) DEFAULT 'active'::character varying NOT NULL,
-    installed_at timestamp with time zone DEFAULT now() NOT NULL,
-    uninstalled_at timestamp with time zone,
-    config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    health_status character varying(32) DEFAULT 'healthy'::character varying NOT NULL,
-    last_event_at timestamp with time zone,
-    tenant_id uuid NOT NULL
-);
-CREATE TABLE public.memberships (
-    id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    role character varying(32) NOT NULL,
-    capability_set_id uuid NOT NULL,
-    granted_at timestamp with time zone DEFAULT now() NOT NULL,
-    granted_by_identity_id uuid,
-    revoked_at timestamp with time zone,
-    tenant_id uuid NOT NULL
 );
 CREATE TABLE public.platform_feature_flags (
     id uuid NOT NULL,
@@ -239,10 +174,6 @@ CREATE TABLE public.tenants (
     employee_count integer,
     industry character varying(64)
 );
-ALTER TABLE ONLY public.capabilities
-    ADD CONSTRAINT capabilities_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.capability_sets
-    ADD CONSTRAINT capability_sets_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.game_definitions
     ADD CONSTRAINT game_definitions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.game_definitions
@@ -251,14 +182,6 @@ ALTER TABLE ONLY public.game_events
     ADD CONSTRAINT game_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.game_state
     ADD CONSTRAINT game_state_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.identities
-    ADD CONSTRAINT identities_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.identity_providers
-    ADD CONSTRAINT identity_providers_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.installations
-    ADD CONSTRAINT installations_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.memberships
-    ADD CONSTRAINT memberships_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.platform_feature_flags
     ADD CONSTRAINT platform_feature_flags_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.server_errors
@@ -273,28 +196,14 @@ ALTER TABLE ONLY public.tenants
     ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.tenants
     ADD CONSTRAINT tenants_slug_key UNIQUE (slug);
-ALTER TABLE ONLY public.capability_sets
-    ADD CONSTRAINT uq_capset_name_scope UNIQUE (name, scope_type);
 ALTER TABLE ONLY public.platform_feature_flags
     ADD CONSTRAINT uq_feature_flag_key_tenant UNIQUE (flag_key, tenant_id);
 ALTER TABLE ONLY public.game_state
     ADD CONSTRAINT uq_game_state_actor_game UNIQUE (actor_id, game_slug);
-ALTER TABLE ONLY public.identity_providers
-    ADD CONSTRAINT uq_idp_provider_subject UNIQUE (provider_type, provider_subject);
 ALTER TABLE ONLY public.service_accounts
     ADD CONSTRAINT uq_service_accounts_key_hash UNIQUE (key_hash);
 ALTER TABLE ONLY public.service_accounts
     ADD CONSTRAINT uq_service_accounts_name UNIQUE (name);
-CREATE INDEX ix_capabilities_active ON public.capabilities USING btree (capability_set_id, resource_type, action) WHERE (revoked_at IS NULL);
-CREATE INDEX ix_capabilities_capset ON public.capabilities USING btree (capability_set_id);
-CREATE INDEX ix_capabilities_parent ON public.capabilities USING btree (parent_capability_id);
-CREATE INDEX ix_capabilities_resource_type ON public.capabilities USING btree (resource_type);
-CREATE INDEX ix_identities_email ON public.identities USING btree (email);
-CREATE INDEX ix_identities_status ON public.identities USING btree (status);
-CREATE INDEX ix_idp_identity_id ON public.identity_providers USING btree (identity_id);
-CREATE INDEX ix_idp_provider_email ON public.identity_providers USING btree (provider_email);
-CREATE INDEX ix_installations_status ON public.installations USING btree (status);
-CREATE INDEX ix_memberships_identity ON public.memberships USING btree (identity_id);
 CREATE INDEX ix_server_errors_exception_class ON public.server_errors USING btree (exception_class);
 CREATE INDEX ix_server_errors_git_sha ON public.server_errors USING btree (git_sha);
 CREATE INDEX ix_server_errors_group_fingerprint ON public.server_errors USING btree (group_fingerprint);
@@ -305,51 +214,17 @@ CREATE INDEX ix_server_errors_request_id ON public.server_errors USING btree (re
 CREATE INDEX ix_server_errors_status_code ON public.server_errors USING btree (status_code);
 CREATE INDEX ix_server_errors_tenant_id ON public.server_errors USING btree (tenant_id);
 CREATE INDEX ix_service_accounts_key_prefix ON public.service_accounts USING btree (key_prefix);
-ALTER TABLE ONLY public.capabilities
-    ADD CONSTRAINT capabilities_capability_set_id_fkey FOREIGN KEY (capability_set_id) REFERENCES public.capability_sets(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.capabilities
-    ADD CONSTRAINT capabilities_parent_capability_id_fkey FOREIGN KEY (parent_capability_id) REFERENCES public.capabilities(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.capabilities
-    ADD CONSTRAINT fk_capabilities_granted_via_install FOREIGN KEY (granted_via_installation_id) REFERENCES public.installations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.game_definitions
     ADD CONSTRAINT fk_game_definitions_tenant_id_tenants FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.game_state
     ADD CONSTRAINT fk_game_state_tenant_id_tenants FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.installations
-    ADD CONSTRAINT fk_installations_tenant_id_tenants FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.memberships
-    ADD CONSTRAINT fk_memberships_tenant_id_tenants FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.platform_feature_flags
     ADD CONSTRAINT fk_platform_feature_flags_tenant_id_tenants FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.game_events
     ADD CONSTRAINT game_events_game_slug_fkey FOREIGN KEY (game_slug) REFERENCES public.game_definitions(slug) ON DELETE RESTRICT;
 ALTER TABLE ONLY public.game_state
     ADD CONSTRAINT game_state_game_slug_fkey FOREIGN KEY (game_slug) REFERENCES public.game_definitions(slug) ON DELETE RESTRICT;
-ALTER TABLE ONLY public.identity_providers
-    ADD CONSTRAINT identity_providers_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.installations
-    ADD CONSTRAINT installations_capability_set_id_fkey FOREIGN KEY (capability_set_id) REFERENCES public.capability_sets(id);
-ALTER TABLE ONLY public.installations
-    ADD CONSTRAINT installations_installer_identity_id_fkey FOREIGN KEY (installer_identity_id) REFERENCES public.identities(id);
-ALTER TABLE ONLY public.memberships
-    ADD CONSTRAINT memberships_capability_set_id_fkey FOREIGN KEY (capability_set_id) REFERENCES public.capability_sets(id);
-ALTER TABLE ONLY public.memberships
-    ADD CONSTRAINT memberships_granted_by_identity_id_fkey FOREIGN KEY (granted_by_identity_id) REFERENCES public.identities(id);
-ALTER TABLE ONLY public.memberships
-    ADD CONSTRAINT memberships_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tenant_module_grants
     ADD CONSTRAINT tenant_module_grants_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 ALTER TABLE ONLY public.tenant_settings
     ADD CONSTRAINT tenant_settings_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-CREATE OR REPLACE FUNCTION public.tenant_login_lookup(email_in text)
- RETURNS TABLE(identity_id uuid, tenant_id uuid, slug text, name text, role text, db_url_enc text)
- LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog', 'public'
-AS $function$
-            SELECT i.id, t.id, t.slug, t.name, m.role, NULL::text
-            FROM identities i
-            JOIN memberships m ON m.identity_id = i.id
-            JOIN tenants t ON t.id = m.tenant_id
-            WHERE lower(i.email) = lower(email_in)
-              AND i.deleted_at IS NULL AND m.revoked_at IS NULL AND t.deleted_at IS NULL
-            ORDER BY t.slug;
-        $function$;

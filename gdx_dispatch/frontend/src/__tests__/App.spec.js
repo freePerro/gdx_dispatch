@@ -52,7 +52,6 @@ describe('App.vue — AppLayout mount contract', () => {
 describe('router — noShell meta on bare-shell routes', () => {
   const expectedNoShell = [
     '/login',
-    '/login-picker',
     '/forgot-password',
     '/reset-password',
     '/signup',

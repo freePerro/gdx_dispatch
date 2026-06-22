@@ -48,20 +48,10 @@ async function handleLogin() {
   submitting.value = true
 
   try {
-    const result = await auth.login({
+    await auth.login({
       email: email.value,
       password: password.value,
     })
-    // Platform-host multi-tenant case: backend returned a list of tenants,
-    // no token issued yet. The picker is rendered below; user clicks one
-    // and we re-submit with tenant_id.
-    if (result && result.status === 'select_tenant') {
-      submitting.value = false
-      return
-    }
-    // On platform host, single-tenant login triggered a full-page redirect
-    // inside auth.login() — we won't reach here. The branch below is for
-    // the per-tenant subdomain login path.
     await theme.loadBranding()
     const target = getPostLoginRedirect(route)
     if (target.startsWith('/oauth/')) {
@@ -83,22 +73,6 @@ async function handleLogin() {
     submitting.value = false
   }
 }
-
-async function pickTenant(tenantId) {
-  error.value = ''
-  submitting.value = true
-  try {
-    await auth.login({
-      email: auth.pendingPlatformCreds?.email || email.value,
-      password: auth.pendingPlatformCreds?.password || password.value,
-      tenant_id: tenantId,
-    })
-    // Successful pick triggers a full-page redirect inside auth.login.
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Unable to login'
-    submitting.value = false
-  }
-}
 </script>
 
 <template>
@@ -113,23 +87,6 @@ async function pickTenant(tenantId) {
       <div class="header">
         <h1>Sign In</h1>
         <p>Enter your credentials to access your workspace</p>
-      </div>
-
-      <div v-if="auth.tenantChoices && auth.tenantChoices.length > 1" class="tenant-picker" data-testid="tenant-picker">
-        <p class="picker-prompt">You belong to multiple workspaces — pick one to continue:</p>
-        <button
-          v-for="t in auth.tenantChoices"
-          :key="t.tenant_id"
-          type="button"
-          class="tenant-choice"
-          :disabled="submitting"
-          :data-testid="`tenant-choice-${t.slug}`"
-          @click="pickTenant(t.tenant_id)"
-        >
-          <span class="tenant-name">{{ t.name }}</span>
-          <span class="tenant-slug">{{ t.slug }}.example.com</span>
-        </button>
-        <p v-if="error" class="error-message" data-testid="login-error">{{ error }}</p>
       </div>
 
       <form @submit.prevent="handleLogin" class="login-form" data-testid="login-form">

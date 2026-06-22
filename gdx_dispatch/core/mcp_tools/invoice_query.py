@@ -50,7 +50,7 @@ async def handler(
         return {"invoices": [], "count": 0, "_stub": True}
 
     # Real implementation wired in SS-19.
-    from gdx_dispatch.models.platform import Invoice  # local import
+    from gdx_dispatch.models.tenant_models import Invoice  # local import
 
     q = db.query(Invoice)
     if customer_id:

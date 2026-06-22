@@ -55,19 +55,7 @@ export const useAuthStore = defineStore('auth', () => {
     return {};
   }
 
-  // True when the SPA is loaded on the tenant-agnostic platform host
-  // (app.example.com). On this host the user has not yet picked a
-  // tenant, so login must go through /auth/platform-login (email-first,
-  // resolves tenant from platform identity → membership).
-  function _isPlatformHost() {
-    return window.location.hostname === 'app.example.com';
-  }
-
   async function login(credentials) {
-    if (_isPlatformHost()) {
-      return _platformLogin(credentials);
-    }
-
     // Store company slug for tenant resolution
     if (credentials.company) {
       sessionStorage.setItem('gdx_tenant_slug', credentials.company);
@@ -120,68 +108,10 @@ export const useAuthStore = defineStore('auth', () => {
     return data;
   }
 
-  // Tracks state for the multi-tenant picker UX: the LoginView reads this
-  // to render the picker after a `select_tenant` response.
-  const tenantChoices = ref([]);
-  const pendingPlatformCreds = ref(null);
-
-  async function _platformLogin(credentials) {
-    const body = { email: credentials.email, password: credentials.password };
-    if (credentials.tenant_id) body.tenant_id = credentials.tenant_id;
-
-    let response;
-    try {
-      response = await fetch('/auth/platform-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      });
-    } catch (err) {
-      _clearSession();
-      await _serverLogout();
-      throw err;
-    }
-
-    if (!response.ok) {
-      _clearSession();
-      await _serverLogout();
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(errData.detail || 'Login failed');
-    }
-
-    const data = await response.json();
-
-    if (data.status === 'select_tenant') {
-      // Multi-tenant: stash creds + choices, let LoginView render picker.
-      tenantChoices.value = data.tenants || [];
-      pendingPlatformCreds.value = { email: credentials.email, password: credentials.password };
-      return data;
-    }
-
-    // Single-tenant (or post-pick): hand off to the destination subdomain.
-    // Token travels in URL fragment so the destination SPA's main.js can
-    // copy it into sessionStorage without leaving it in browser history
-    // (fragments are stripped before navigation completes when scrubbed).
-    if (data.access_token && data.redirect_url) {
-      const userPayload = data.user || {};
-      const handoff = {
-        t: data.access_token,
-        u: userPayload,
-        s: data.tenant && data.tenant.slug,
-      };
-      const fragment = encodeURIComponent(btoa(JSON.stringify(handoff)));
-      window.location.assign(`${data.redirect_url}#gdx_handoff=${fragment}`);
-      return data;
-    }
-
-    throw new Error('Login response missing token or redirect_url');
-  }
-
   // Wipe every trace of an authenticated session — store refs, the
   // sessionStorage shadows the store hydrates from, and the permission
   // cache. Used by `logout()` and (critically) by every failure path in
-  // login()/_platformLogin so a wrong-password attempt doesn't leave the
+  // login() so a wrong-password attempt doesn't leave the
   // PRIOR user's session intact in sessionStorage. 2026-05-09 incident:
   // chrome-devtools browser carried a stale admin token; my login as
   // auditor28 returned "Invalid credentials" but the route guard's
@@ -386,8 +316,6 @@ export const useAuthStore = defineStore('auth', () => {
     refreshAccessToken,
     loadPermissions,
     hasPermission,
-    tenantChoices,
-    pendingPlatformCreds,
     hydrateUser,
   };
 });

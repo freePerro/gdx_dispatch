@@ -1,6 +1,6 @@
 /**
- * Architectural lint — only the auth store and the platform-login
- * handoff scrubber may write `gdx_access_token` to sessionStorage.
+ * Architectural lint — only the auth store may write `gdx_access_token`
+ * to sessionStorage.
  *
  * 2026-05-09 incident: a stale `gdx_access_token` from a prior session
  * left the route guard's `isAuthenticated = Boolean(accessToken.value)`
@@ -12,12 +12,11 @@
  * router guard, an event handler), the chokepoint never sees it and
  * the whole defense bypasses.
  *
- * This test pins the structural invariant: only two source files in
+ * This test pins the structural invariant: only one source file in
  * src/ may call `sessionStorage.setItem('gdx_access_token', ...)`:
  *   - src/stores/auth.js (login() + refreshAccessToken())
- *   - src/main.js        (platform-login handoff fragment scrubber)
  *
- * If a third source surfaces, this test fails. Either the writer
+ * If a second source surfaces, this test fails. Either the writer
  * belongs in the auth store (most likely) or it joins the allowlist
  * here with a documented reason.
  */
@@ -29,7 +28,6 @@ const SRC_DIR = join(__dirname, '..');
 
 const ALLOWED = new Set([
   'stores/auth.js',
-  'main.js',
 ]);
 
 // Pattern: sessionStorage.setItem('gdx_access_token', ...) — accepts any quote

@@ -45,12 +45,6 @@ _SQL_PATH = Path(__file__).resolve().parent.parent / "baseline_squashed.sql"
 # Control-plane tables this baseline creates (kept for the single-tenant app).
 _BASELINE_TABLES = [
     "server_errors",
-    "memberships",
-    "capabilities",
-    "capability_sets",
-    "identity_providers",
-    "identities",
-    "installations",
     "game_events",
     "game_state",
     "game_definitions",

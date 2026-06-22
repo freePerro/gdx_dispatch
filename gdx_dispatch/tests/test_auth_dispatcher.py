@@ -1,32 +1,29 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher tests.
 
 Mocks each underlying validator so this test module can verify the
-dispatcher's DECISION LOGIC without standing up the full SS-14 PAT DB,
-SS-22 SCIM env, SS-32 SPIFFE trust bundle, or SS-21 OAuth token store.
+dispatcher's DECISION LOGIC without standing up the full SS-32 SPIFFE
+trust bundle or SS-21 OAuth token store.
 
 Covered flows:
 
 * missing credentials → 401 missing_credentials
 * unknown bearer shape → 401 unknown_bearer_shape
-* ``gdx_pat_live_*`` and ``gdx_pat_test_*`` → PAT dispatch (mocked validate_pat)
-* SCIM registered token → SCIM dispatch
 * JWT with ``spiffe://`` sub → SPIFFE JWT dispatch (mocked validate_jwt_svid)
 * JWT with user sub → OAuth dispatch (mocked token store)
 * session cookie → session dispatch
 * mTLS peer_spiffe_id → SPIFFE mTLS dispatch (mocked resolve_capabilities)
 * scope-to-capability translation convention
-* SCIM colon-flattened caps translation
-* Bearer priority over session cookie
+* colon-flattened caps translation
 """
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
-import time
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -34,7 +31,6 @@ from fastapi import HTTPException
 from gdx_dispatch.core import auth_dispatcher
 from gdx_dispatch.core.auth_dispatcher import (
     _colon_cap_to_tuple,
-    _scope_to_cap,
     get_current_principal,
 )
 
@@ -96,103 +92,14 @@ async def test_missing_auth_raises_401_missing_credentials() -> None:
 @pytest.mark.asyncio
 async def test_unknown_bearer_shape_raises_401() -> None:
     req = _FakeRequest(headers={"authorization": "Bearer totally-random-garbage"})
-    # OAuth fallback will be attempted — must fail → unknown_bearer_shape.
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store") as mock_store:
-        mock_store.return_value.get_by_access = MagicMock(return_value=None)
-        with pytest.raises(HTTPException) as exc:
-            await get_current_principal(req)  # type: ignore[arg-type]
+    # Opaque (non-JWT) bearer → no recognized shape → unknown_bearer_shape.
+    with pytest.raises(HTTPException) as exc:
+        await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
     assert exc.value.detail["error_type"] == "unknown_bearer_shape"
 
 
-# ── 3/4. PAT prefixes ──────────────────────────────────────────────────
-
-
-@dataclass
-class _FakePatPrincipal:
-    identity_id: str
-    tenant_id: str
-    role: str
-    auth_method: str
-    pat_id: str
-    owner_type: str
-    capabilities: list[dict[str, Any]]
-
-
-@dataclass
-class _FakePatRow:
-    id: UUID
-    prefix: str
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "prefix", ["gdx_pat_live_", "gdx_pat_test_"]
-)
-async def test_bearer_gdx_pat_dispatches_pat(prefix: str) -> None:
-    ident = uuid4()
-    tenant = "acme-corp"
-    pat_uuid = uuid4()
-    fake_pat = _FakePatPrincipal(
-        identity_id=str(ident),
-        tenant_id=tenant,
-        role="pat",
-        auth_method="pat",
-        pat_id=str(pat_uuid),
-        owner_type="user",
-        capabilities=[
-            {"action": "read", "resource_type": "customers", "instance_pattern": None, "conditions": {}},
-            {"action": "write", "resource_type": "invoices", "instance_pattern": None, "conditions": {}},
-        ],
-    )
-    fake_row = _FakePatRow(id=pat_uuid, prefix=prefix)
-
-    db = MagicMock()
-    db.get = MagicMock(return_value=fake_row)
-    req = _FakeRequest(
-        headers={"authorization": f"Bearer {prefix}abcdef123456"},
-        state={"db": db},
-    )
-
-    with patch(
-        "gdx_dispatch.core.pat_validation.validate_pat", return_value=fake_pat
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "pat"
-    assert principal.identity_id == ident
-    assert principal.tenant_id == tenant
-    assert principal.pat_id == pat_uuid
-    assert principal.pat_prefix == prefix
-    assert ("read", "customers") in principal.capabilities
-    assert ("write", "invoices") in principal.capabilities
-
-
-# ── 5. SCIM ────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_bearer_scim_token_dispatches_scim() -> None:
-    scim_token = "scim-opaque-xyz"
-    scim_table = {
-        scim_token: {
-            "tenant_id": "acme-corp",
-            "capabilities": ["write:identity", "read:user", "garbage-no-colon"],
-        }
-    }
-    req = _FakeRequest(
-        headers={"authorization": f"Bearer {scim_token}"},
-        app_state={"scim_tokens": scim_table},
-    )
-    principal = await get_current_principal(req)  # type: ignore[arg-type]
-    assert principal.auth_kind == "scim"
-    assert ("write", "identity") in principal.capabilities
-    assert ("read", "user") in principal.capabilities
-    # Malformed (no colon) entries must be dropped, not crash.
-    assert len(principal.capabilities) == 2
-
-
-# ── 6. SPIFFE JWT ──────────────────────────────────────────────────────
+# ── SPIFFE JWT ─────────────────────────────────────────────────────────
 
 
 def _make_jwt(payload: dict[str, Any]) -> str:
@@ -255,39 +162,7 @@ async def test_bearer_jwt_with_spiffe_sub_dispatches_spiffe_jwt() -> None:
     assert ("invoke", "mcp.tool") in principal.capabilities
 
 
-# ── 7. OAuth JWT ────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_bearer_jwt_without_spiffe_sub_dispatches_oauth() -> None:
-    token = _make_jwt({"sub": "user-uuid", "iat": 1, "exp": 9999999999})
-
-    @dataclass
-    class _FakeRec:
-        access_token: str
-        refresh_token: str = "r"
-        client_id: str = "app1"
-        scope: str = "customers.read invoices.write"
-        tenant_id: str | None = None
-        subject_id: str | None = None
-        issued_at: float = 0.0
-        expires_at: float = time.time() + 3600
-        revoked: bool = False
-
-    fake_rec = _FakeRec(access_token=token)
-    store = MagicMock()
-    store.get_by_access = MagicMock(return_value=fake_rec)
-
-    req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-
-    assert principal.auth_kind == "oauth"
-    assert ("read", "customers") in principal.capabilities
-    assert ("write", "invoices") in principal.capabilities
-
-
-# ── 7.5 Bearer login JWT (D-S118-dispatcher-jwt-gap) ───────────────────
+# ── Bearer login JWT (D-S118-dispatcher-jwt-gap) ───────────────────────
 
 
 @pytest.mark.asyncio
@@ -344,7 +219,6 @@ async def test_bearer_login_jwt_falls_through_and_runs_gates() -> None:
     })
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value=fake_payload),
         patch("gdx_dispatch.routers.auth.core.finalize_login_jwt", finalize_mock),
@@ -411,7 +285,6 @@ async def test_dispatch_uses_db_role_not_jwt_role_after_demote() -> None:
     })
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", return_value={
             "sub": sub_uuid,
@@ -461,7 +334,6 @@ async def test_dispatch_typ_guard_rejects_refresh_token() -> None:
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", return_value=fake_validated),
     ):
         with pytest.raises(HTTPException) as ei:
@@ -486,7 +358,6 @@ async def test_bearer_jwt_invalid_signature_returns_401() -> None:
     req = _FakeRequest(headers={"authorization": f"Bearer {token}"})
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.core.auth.validate_principal", side_effect=_JWTErr("primary failed")),
         patch("jwt.decode", side_effect=Exception("InvalidSignatureError")),
     ):
@@ -621,22 +492,7 @@ async def test_mtls_peer_spiffe_id_dispatches_spiffe_mtls() -> None:
     assert ("read", "widget") in principal.capabilities
 
 
-# ── 10. Scope → capability tuple translation ──────────────────────────
-
-
-def test_scope_string_to_capability_tuple_translation() -> None:
-    # Documented convention: "<resource>.<action>" → ("<action>", "<resource>").
-    assert _scope_to_cap("customers.read") == ("read", "customers")
-    assert _scope_to_cap("invoices.write") == ("write", "invoices")
-    # Malformed: no dot, empty part, wrong type, etc. → None (caller drops).
-    assert _scope_to_cap("nodot") is None
-    assert _scope_to_cap("too.many.dots") is None
-    assert _scope_to_cap(".read") is None
-    assert _scope_to_cap("customers.") is None
-    assert _scope_to_cap("") is None
-
-
-# ── 11. SCIM colon-flattened caps translation ────────────────────────
+# ── Colon-flattened caps translation ──────────────────────────────────
 
 
 def test_scim_colon_caps_translation() -> None:
@@ -649,42 +505,7 @@ def test_scim_colon_caps_translation() -> None:
     assert _colon_cap_to_tuple("write:") is None
 
 
-# ── 12. Bearer priority over session cookie ────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_two_auth_sources_present_bearer_wins() -> None:
-    # Both a session cookie AND a PAT bearer → PAT path must win
-    # (matches dispatcher's Step 1 order: Authorization header first).
-    ident = uuid4()
-    tenant = "acme-corp"
-    pat_uuid = uuid4()
-    fake_pat = _FakePatPrincipal(
-        identity_id=str(ident),
-        tenant_id=tenant,
-        role="pat",
-        auth_method="pat",
-        pat_id=str(pat_uuid),
-        owner_type="user",
-        capabilities=[],
-    )
-    fake_row = _FakePatRow(id=pat_uuid, prefix="gdx_pat_live_")
-    db = MagicMock()
-    db.get = MagicMock(return_value=fake_row)
-
-    req = _FakeRequest(
-        headers={"authorization": "Bearer gdx_pat_live_xyz"},
-        cookies={"session": "should-be-ignored"},
-        state={"db": db},
-    )
-    with patch(
-        "gdx_dispatch.core.pat_validation.validate_pat", return_value=fake_pat
-    ):
-        principal = await get_current_principal(req)  # type: ignore[arg-type]
-    assert principal.auth_kind == "pat"  # NOT session
-
-
-# ── 13. Empty bearer token ────────────────────────────────────────────
+# ── Empty bearer token ─────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -910,7 +731,7 @@ async def test_realsigned_bearer_denylist_revoke_returns_401(_rs256_mode) -> Non
             app_state={"denylist": denylist},
         )
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(_fresh_req())  # type: ignore[arg-type]
 
     assert principal.auth_kind == "session"
@@ -920,7 +741,7 @@ async def test_realsigned_bearer_denylist_revoke_returns_401(_rs256_mode) -> Non
     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     denylist.add(jti, expires_at)
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(_fresh_req())  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -953,7 +774,7 @@ async def test_realsigned_bearer_signature_tamper_returns_401(_rs256_mode) -> No
         headers={"authorization": f"Bearer {tampered}"},
         state={"tenant": {"id": tenant_uuid}},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -983,7 +804,6 @@ async def test_realsigned_bearer_slice2_db_verify_rejects_deleted_user(_rs256_mo
     )
 
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.routers.auth.core._db_verify_user", return_value=None),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -1015,7 +835,7 @@ async def test_realsigned_bearer_slice6_tenant_mismatch_returns_403(_rs256_mode)
         state={"tenant": {"id": host_tenant}},
     )
 
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 403
@@ -1178,7 +998,7 @@ async def test_legacy_bearer_jwt_with_revoked_jti_returns_401() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         with pytest.raises(HTTPException) as exc:
             await get_current_principal(req)  # type: ignore[arg-type]
     assert exc.value.status_code == 401
@@ -1205,7 +1025,7 @@ async def test_legacy_bearer_jwt_not_revoked_still_works() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(req)  # type: ignore[arg-type]
     assert principal.auth_kind == "session"
     assert principal.principal_role == "admin"
@@ -1262,7 +1082,6 @@ async def test_denylist_gate_fires_before_db_verify() -> None:
         app_state={"denylist": denylist},
     )
     with (
-        patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store),
         patch("gdx_dispatch.routers.auth.core._db_verify_user", db_verify_called),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -1303,7 +1122,7 @@ async def test_legacy_bearer_jwt_without_jti_does_not_crash() -> None:
         state={"tenant": {"id": tenant_uuid}},
         app_state={"denylist": denylist},
     )
-    with patch("gdx_dispatch.routers.auth.oauth2.get_token_store", return_value=store):
+    with contextlib.nullcontext():
         principal = await get_current_principal(req)  # type: ignore[arg-type]
     assert principal.auth_kind == "session"
 

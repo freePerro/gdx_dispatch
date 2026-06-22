@@ -53,7 +53,7 @@ async def handler(
         return {"id": "stub-job-id", "status": "scheduled", "_stub": True}
 
     # Real wiring happens in SS-19; keep the surface honest here.
-    from gdx_dispatch.models.platform import Job  # local import
+    from gdx_dispatch.models.tenant_models import Job  # local import
 
     job = Job(
         customer_id=customer_id,

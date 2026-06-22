@@ -102,7 +102,6 @@ const ExportsView = () => import('../views/ExportsView.vue');
 // Sprint 1.2: SS-29..35 platform-admin views
 // SS-29 ShadowMigrations, SS-30 CutoverControl, SS-32 SpiffeWorkloads,
 // SS-34 DrDrills, SS-35 PrivacyRequests moved to Command Center 2026-05-03 (S92).
-const FederationProviders = () => import('../views/FederationProviders.vue');
 // ResourceTypes view removed 2026-05-05 — SS-33 backend (`/api/resource-types`) is unmounted; view 404'd on every load.
 // 2026-04-29 / UX audit F-82 — payroll module admin view (entries / config).
 const AdminPayrollView = () => import('../views/admin/PayrollView.vue');
@@ -126,13 +125,9 @@ const PartsToOrderView = () => import('../views/PartsToOrderView.vue');
 const CommissionsView = () => import('../views/CommissionsView.vue');
 const VarianceReportView = () => import('../views/VarianceReportView.vue');
 const PerformanceView = () => import('../views/PerformanceView.vue');
-const LoginPickerView = () => import('../views/LoginPicker.vue');
 
 // Sprint 0.9-o: SS-14..35 admin/user routes
 // 2026-05-05 audit pruned views whose backends never mounted (SS-27/SS-33/custom-field-sensitivity/SAR-erasure).
-const SettingsApiKeys = () => import('../views/SettingsApiKeys.vue');
-const TenantAdminApiKeys = () => import('../views/TenantAdminApiKeys.vue');
-const BillingUsage = () => import('../views/BillingUsage.vue');
 const AuditLogViewer = () => import('../views/AuditLogViewer.vue');
 
 
@@ -144,7 +139,6 @@ const routes = [
   // wizard. Every other route is wrapped by App.vue's AppLayout so the
   // sidebar/topbar/bottom-nav are stable across navigations.
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, noShell: true } },
-  { path: '/login-picker', name: 'login-picker', component: LoginPickerView, meta: { public: true, noSidebar: true, noShell: true } },
   { path: '/forgot-password', name: 'forgot-password', component: () => import('../views/ForgotPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue'), meta: { public: true, noShell: true } },
   { path: '/signup', name: 'signup', component: () => import('../views/SignupView.vue'), meta: { public: true, noShell: true } },
@@ -283,15 +277,9 @@ const routes = [
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },
   // Sprint 0.9-o: SS-14..35 admin/user routes
-  { path: '/settings/api-keys', name: 'settings-api-keys', component: SettingsApiKeys },
-  { path: '/admin/api-keys', name: 'admin-api-keys', component: TenantAdminApiKeys },
-  { path: '/admin/billing-usage', name: 'admin-billing-usage', component: BillingUsage },
   { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer },
-  // Sprint 1.2: SS-29..35 platform-admin views
-  // SS-29/30/32/34/35 moved to Command Center 2026-05-03 (S92).
-  // 2026-05-05 — removed routes for platform-admin views whose backends never mounted:
-  //   /admin/custom-fields/sensitivity, /admin/shares, /privacy, /admin/resource-types
-  { path: '/admin/federation', name: 'admin-federation', component: FederationProviders },
+  // 2026-05-05 — removed routes for platform-admin views whose backends never mounted.
+  // 2026-06-22 — removed /admin/billing-usage + /admin/federation (single-tenant cleanup).
   { path: '/admin/payroll', name: 'admin-payroll', component: AdminPayrollView, meta: { requiresPermission: 'payroll.read' } },
   { path: '/admin/feature-settings/tech-mobile', name: 'admin-feature-settings-tech-mobile', component: TechMobileSettingsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/feedback', name: 'feedback', component: () => import('../views/FeedbackPortalView.vue') },

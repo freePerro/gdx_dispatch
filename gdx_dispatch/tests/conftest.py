@@ -214,13 +214,6 @@ def make_fresh_db():
     TenantModelsBase.metadata.create_all(engine, checkfirst=True)
     TenantBase.metadata.create_all(engine, checkfirst=True)
 
-    # Phase C: platform_consumer_audit (SS28) moved to the single app DB.
-    # ConsumerAuditMiddleware now uses SessionLocal, so the table must exist.
-    try:
-        from gdx_dispatch.models.platform_ss28_additions import SS28Base
-        SS28Base.metadata.create_all(engine, checkfirst=True)
-    except Exception:
-        pass
     for tbl in [
         Part.__table__,
         JobPart.__table__,
@@ -326,10 +319,9 @@ def tenant_db():
 def control_db():
     """Isolated control plane DB for test_02 e2e tests + SS-5 platform harness.
 
-    Importing ``gdx_dispatch.models.platform`` and ``gdx_dispatch.models.platform_extensions``
-    here (not just at module top) ensures their mapper classes are registered
-    against ``ControlBase.metadata`` before ``create_all`` runs — SS-5
-    factories assume every platform table exists.
+    Importing ``gdx_dispatch.models.platform_extensions`` here (not just at
+    module top) ensures its mapper classes are registered against
+    ``ControlBase.metadata`` before ``create_all`` runs.
 
     Supports two modes:
 
@@ -345,7 +337,6 @@ def control_db():
       mid-request. The engine is reused across tests to avoid connection
       churn.
     """
-    import gdx_dispatch.models.platform  # noqa: F401 — register mappers
     import gdx_dispatch.models.platform_extensions  # noqa: F401 — register mappers
     from gdx_dispatch.control.models import Base as ControlBase
 
@@ -419,9 +410,7 @@ def _pg_integration_engine(url: str):
     return _PG_ENGINE_CACHE[url]
 
 
-# ── SS-5 Slice A platform harness fixtures ─────────────────────────────────
 # Re-exported from gdx_dispatch.tests.fixtures so pytest discovery picks them up here.
-from gdx_dispatch.tests.fixtures.installations import make_installation_with_key  # noqa: E402,F401
 from gdx_dispatch.tests.fixtures.keypairs import test_app_keypair  # noqa: E402,F401
 from gdx_dispatch.tests.fixtures.pg import (  # noqa: E402,F401
     pg_template_db,
@@ -429,4 +418,3 @@ from gdx_dispatch.tests.fixtures.pg import (  # noqa: E402,F401
     pg_test_engine,
     pg_test_session,
 )
-from gdx_dispatch.tests.fixtures.shares import make_dual_tenant_share_setup  # noqa: E402,F401

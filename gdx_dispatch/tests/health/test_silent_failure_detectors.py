@@ -210,8 +210,8 @@ def test_database_schema_conformance():
     import sqlalchemy.exc
     from sqlalchemy import create_engine, inspect
 
-    from gdx_dispatch.models import platform, platform_extensions  # noqa: F401
-    from gdx_dispatch.models.platform import Base
+    from gdx_dispatch.models import platform_extensions  # noqa: F401
+    from gdx_dispatch.control.models import Base
 
     # Context-awareness: if we can't reach the DB from this host, the detector
     # can't do its job HERE — but the drift it's looking for may still exist

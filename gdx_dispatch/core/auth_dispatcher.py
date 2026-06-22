@@ -1,56 +1,32 @@
 """Sprint 0.9 slice 0.9-d — composite ``get_current_principal`` dispatcher.
 
-Accepts any of five auth flows and returns a unified
+Accepts any of two auth flows and returns a unified
 :class:`gdx_dispatch.core.unified_principal.Principal`:
 
 * **session**  — session/JWT cookie-or-Bearer (SS-7)
-* **pat**      — ``gdx_pat_live_*`` / ``gdx_pat_test_*`` bearer (SS-14)
-* **scim**     — SCIM enterprise-IdP bearer token (SS-22)
 * **spiffe**   — SPIFFE X.509 (mTLS-peer) or JWT-SVID (SS-32)
-* **oauth**    — OAuth2 authorization-code bearer (SS-21)
+
+(The PAT, SCIM, and OAuth2 dev-portal flows were removed with the
+single-tenant cleanup — the identity island and SS-21 authorization
+server that backed them are gone.)
 
 Dispatch order (highest priority first):
 
 1. ``Authorization: Bearer <token>`` header. Sub-dispatch by token shape:
 
-   * ``gdx_pat_live_`` / ``gdx_pat_test_`` / ``gdx_sk_live_`` /
-     ``gdx_sk_test_`` prefix → PAT flow.
-   * Token registered in ``app.state.scim_tokens`` (or ``GDX_SCIM_TOKENS``
-     env) → SCIM flow.
    * Three-segment ``eyJ...`` JWT shape → SPIFFE JWT-SVID if ``sub``
-     starts with ``spiffe://``, else OAuth2 bearer.
-   * Otherwise: opaque → try OAuth2 token store lookup; if not found,
-     raise 401 ``unknown_bearer_shape``.
+     starts with ``spiffe://``, else the SS-7 login-JWT flow.
+   * Otherwise: opaque → 401 ``unknown_bearer_shape``.
 
-2. Session cookie (``session`` or ``sid`` or ``access_token``) → SS-7
-   session flow.
+2. Session cookie (``access_token``) → SS-7 session flow.
 
 3. ``request.state.peer_spiffe_id`` (set by upstream mTLS layer) →
    SPIFFE X.509 flow.
 
 4. Nothing authenticates → 401 ``missing_credentials``.
 
-0.9-d writes ONLY this new module and its tests. Existing validator and
-factory modules are imported verbatim — no edits to ``gdx_dispatch/core/auth.py``,
-``pat_validation.py``, ``scim_auth.py``, ``spiffe/*``, or any router.
-
-Scope string convention for OAuth
----------------------------------
-OAuth2 scope strings follow ``"<resource>.<action>"`` (e.g.
-``"customers.read"``). ``_scope_to_cap`` translates each scope to the
-canonical unified ``(action, resource_type)`` 2-tuple. Malformed scopes
-(no dot, empty parts) are dropped with a debug log rather than crashing
-auth — an OAuth token granted zero recognizable scopes still
-authenticates but yields ``Principal.has_capability(...) == False`` for
-everything.
-
 Stubs / future-slice markers
 ----------------------------
-* **OAuth session-user lookup**: SS-21's in-memory ``TokenRecord`` does
-  not carry a UUID ``id``; we synthesize one via UUID5 from the
-  ``access_token`` string for ``Principal.oauth_token_id``. Slice 0.9-h
-  (or whenever SS-21's DB-backed ``OAuthToken`` row is wired) should
-  replace the synthesized id with the real row PK.
 * **Session capabilities**: SS-7 ``Principal`` (``gdx_dispatch/core/principal.py``)
   carries no ``capabilities`` field. We fall back to an empty capability
   tuple for session principals; slice 0.9-e (router sweep) + Phase 3
@@ -65,8 +41,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
-from typing import Any
 from uuid import UUID, uuid5, NAMESPACE_URL
 
 from fastapi import Depends, HTTPException, Request
@@ -143,7 +117,6 @@ def default_caps_for_role(role: str) -> tuple[tuple[str, str], ...]:
 # Module-level sentinel UUID namespaces for synthesizing stable ids
 # where a real row id is not (yet) available. Distinct from
 # SPIFFE_ID_NAMESPACE so collisions cannot span scopes.
-_OAUTH_TOKEN_NAMESPACE = uuid5(NAMESPACE_URL, "gdx:oauth_token_synth")
 _SESSION_IDENTITY_NAMESPACE = uuid5(NAMESPACE_URL, "gdx:session_identity_synth")
 
 # Reserved tenant slug for platform-scoped (non-tenant) principals —
@@ -157,38 +130,6 @@ _PLATFORM_TENANT_SLUG = "__platform__"
 
 
 # ── Shape detection helpers (pure, cheap) ────────────────────────────────
-
-_PAT_PREFIXES: tuple[str, ...] = (
-    "gdx_pat_live_",
-    "gdx_pat_test_",
-    "gdx_sk_live_",
-    "gdx_sk_test_",
-)
-
-
-def _is_pat_token(token: str) -> bool:
-    return token.startswith(_PAT_PREFIXES)
-
-
-def _looks_like_scim_token(request: Request, token: str) -> bool:
-    """Return True iff ``token`` is a known SCIM bearer token.
-
-    Consults ``request.app.state.scim_tokens`` first (test override), then
-    falls back to the ``GDX_SCIM_TOKENS`` env var (production path).
-    O(1) dict lookup in both cases.
-    """
-    table = getattr(request.app.state, "scim_tokens", None)
-    if isinstance(table, dict) and token in table:
-        return True
-    raw = os.getenv("GDX_SCIM_TOKENS", "")
-    if not raw.strip():
-        return False
-    try:
-        env_table = json.loads(raw)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(env_table, dict) and token in env_table
-
 
 def _looks_like_jwt(token: str) -> bool:
     """Shape check only — three base64url segments separated by dots.
@@ -224,26 +165,6 @@ def _jwt_has_spiffe_sub(token: str) -> bool:
 # ── Capability translation helpers ────────────────────────────────────────
 
 
-def _scope_to_cap(scope: str) -> tuple[str, str] | None:
-    """Translate an OAuth2 ``"<resource>.<action>"`` scope string into a
-    unified ``(action, resource_type)`` capability tuple.
-
-    Returns None for malformed scopes — caller drops them. We deliberately
-    do NOT raise; a token with one bad scope still authenticates under
-    its valid scopes.
-    """
-    if not isinstance(scope, str) or not scope:
-        return None
-    if scope.count(".") != 1:
-        log.debug("oauth_scope_malformed: %r (expected '<resource>.<action>')", scope)
-        return None
-    resource, action = scope.split(".", 1)
-    if not resource or not action:
-        log.debug("oauth_scope_empty_part: %r", scope)
-        return None
-    return (action, resource)
-
-
 def _colon_cap_to_tuple(flat: str) -> tuple[str, str] | None:
     """Translate an SS-22 SCIM colon-flattened capability string
     ``"<action>:<resource>"`` into the unified 2-tuple.
@@ -253,28 +174,6 @@ def _colon_cap_to_tuple(flat: str) -> tuple[str, str] | None:
     if not isinstance(flat, str) or flat.count(":") != 1:
         return None
     action, resource = flat.split(":", 1)
-    if not action or not resource:
-        return None
-    return (action, resource)
-
-
-def _pat_dict_cap_to_tuple(
-    cap: dict[str, Any],
-) -> tuple[str, str] | None:
-    """Translate an SS-14 PAT capability dict (from
-    :func:`gdx_dispatch.core.pat_validation.validate_pat`) into the unified tuple.
-
-    PAT validator emits dicts like
-    ``{"action": "read", "resource_type": "customers", ...}``. We ignore
-    ``instance_pattern`` + ``conditions`` — those are per-resource narrowing
-    that the policy engine evaluates separately.
-    """
-    if not isinstance(cap, dict):
-        return None
-    action = cap.get("action")
-    resource = cap.get("resource_type")
-    if not isinstance(action, str) or not isinstance(resource, str):
-        return None
     if not action or not resource:
         return None
     return (action, resource)
@@ -292,93 +191,6 @@ def _get_db_or_none(request: Request) -> Session | None:
     PAT / OAuth dispatch will raise a 503-ish HTTPException in that case.
     """
     return getattr(request.state, "db", None)
-
-
-async def _dispatch_pat(request: Request, token: str) -> Principal:
-    """Validate a PAT bearer token and return a unified Principal."""
-    from gdx_dispatch.core.pat_validation import validate_pat
-
-    db = _get_db_or_none(request)
-    if db is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error_type": "db_unavailable",
-                "detail": "PAT validation requires a DB session on request.state.db",
-            },
-        )
-    redis_client = getattr(request.app.state, "redis", None)
-    pat_principal = validate_pat(token, db, redis_client)
-    if pat_principal is None:
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "invalid_pat", "detail": "PAT not recognized or expired"},
-        )
-
-    # Look up the AccessToken row for its prefix (Principal.from_pat needs it).
-    from gdx_dispatch.models.platform_extensions import AccessToken
-
-    pat_row = db.get(AccessToken, UUID(pat_principal.pat_id))
-    if pat_row is None:
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "pat_row_missing", "detail": "PAT validated but row not found"},
-        )
-
-    caps: list[tuple[str, str]] = []
-    for c in pat_principal.capabilities:
-        t = _pat_dict_cap_to_tuple(c)
-        if t is not None:
-            caps.append(t)
-
-    # "restricted" shape is signalled by owner_type=="installation" narrowing
-    # (v3 patch P36). For now we surface is_restricted=False — 0.9-h or
-    # Phase 3 can refine when capability-restricted PATs ship.
-    return Principal.from_pat(
-        pat_row=pat_row,
-        identity_id=UUID(pat_principal.identity_id),
-        # ``pat_principal.tenant_id`` comes from ``Membership.tenant_id``
-        # — UUID per D97 (was slug; flipped 031). Pass through as-is.
-        tenant_id=pat_principal.tenant_id,
-        role=pat_principal.role,
-        capabilities=caps,
-    )
-
-
-async def _dispatch_scim(request: Request, token: str) -> Principal:
-    """Validate a SCIM token and return a unified Principal."""
-    from gdx_dispatch.core.scim_auth import ScimAuthError, require_scim_auth
-
-    try:
-        scim_principal = require_scim_auth(
-            request=request, authorization=f"Bearer {token}"
-        )
-    except ScimAuthError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail={"error_type": "scim_auth_failed", "detail": exc.detail},
-        ) from exc
-
-    caps: list[tuple[str, str]] = []
-    for c in scim_principal.capabilities:
-        t = _colon_cap_to_tuple(c)
-        if t is not None:
-            caps.append(t)
-
-    # SCIM tokens are tenant-scoped service credentials; identity_id
-    # is not a human identity. Synthesize deterministically from the
-    # token_id so audit can pivot on it.
-    synth_identity = uuid5(NAMESPACE_URL, f"scim:{scim_principal.token_id}")
-
-    return Principal.from_scim(
-        token_record={"token_id": scim_principal.token_id},
-        identity_id=synth_identity,
-        # SCIM token table stores ``tenant_id`` as the tenant slug
-        # (opaque string keyed on the IdP's tenant config). Pass it
-        # through — the platform FKs on ``tenants.slug``.
-        tenant_id=scim_principal.tenant_id,
-        capabilities=caps,
-    )
 
 
 async def _dispatch_spiffe_jwt(request: Request, token: str) -> Principal:
@@ -665,79 +477,6 @@ async def _dispatch_login_jwt(request: Request, token: str) -> Principal:
     )
 
 
-async def _dispatch_oauth(request: Request, token: str) -> Principal:
-    """Validate an OAuth2 bearer token and return a unified Principal.
-
-    SS-21 currently uses an in-process :class:`_InMemoryTokenStore`
-    (see :mod:`gdx_dispatch.routers.auth.oauth2`). We look up the access token there —
-    0.9-h / Phase 3 will swap this for the ``ss21_oauth_tokens`` DB row
-    lookup once SS-21's ``TODO`` is discharged.
-
-    Fallthrough to ``_dispatch_login_jwt`` when the OAuth store misses on
-    a JWT-shaped token — login JWTs minted by /auth/login arrive via the
-    same Authorization: Bearer header but aren't tracked in this store.
-    See D-S118-dispatcher-jwt-gap.
-    """
-    from gdx_dispatch.routers.auth.oauth2 import get_token_store
-
-    store = get_token_store()
-    rec = store.get_by_access(token)
-    if rec is None or rec.revoked:
-        if _looks_like_jwt(token):
-            return await _dispatch_login_jwt(request, token)
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "invalid_oauth_token", "detail": "bearer token unknown or revoked"},
-        )
-
-    import time
-
-    if rec.expires_at < time.time():
-        raise HTTPException(
-            status_code=401,
-            detail={"error_type": "oauth_token_expired", "detail": "bearer token expired"},
-        )
-
-    # Translate space-separated scopes to unified capability tuples.
-    caps: list[tuple[str, str]] = []
-    for scope in (rec.scope or "").split():
-        t = _scope_to_cap(scope)
-        if t is not None:
-            caps.append(t)
-
-    # Synthesize IDs — TokenRecord has no UUID .id; rec is the in-memory
-    # dataclass from gdx_dispatch.routers.auth.oauth2. Phase 3 swap point noted in
-    # module docstring.
-    synth_oauth_id = uuid5(_OAUTH_TOKEN_NAMESPACE, rec.access_token)
-
-    try:
-        identity_id = UUID(rec.subject_id) if rec.subject_id else uuid5(
-            _SESSION_IDENTITY_NAMESPACE, f"oauth:{rec.subject_id or rec.access_token}"
-        )
-    except (ValueError, TypeError):
-        identity_id = uuid5(_SESSION_IDENTITY_NAMESPACE, f"oauth:{rec.subject_id}")
-
-    # ``rec.tenant_id`` is the opaque tenant slug stored in the OAuth
-    # token record. When absent, fall back to a namespaced ``oauth:...``
-    # slug keyed on the client id — platform filters miss loudly
-    # instead of matching anything real.
-    tenant_id = rec.tenant_id or f"oauth-unresolved:{rec.client_id}"
-
-    # Shim object exposing the ``.id`` attribute Principal.from_oauth
-    # requires. We attach the synthesized UUID directly.
-    class _OAuthRowShim:
-        def __init__(self, token_id: UUID) -> None:
-            self.id = token_id
-
-    return Principal.from_oauth(
-        oauth_token=_OAuthRowShim(synth_oauth_id),
-        identity_id=identity_id,
-        tenant_id=tenant_id,
-        role="oauth_client",
-        capabilities=caps,
-    )
-
-
 async def _dispatch_session(request: Request) -> Principal:
     """Build a Principal from the `access_token` session cookie.
 
@@ -807,32 +546,22 @@ async def get_current_principal(request: Request) -> Principal:
                 },
             )
 
-        if _is_pat_token(token):
-            return await _dispatch_pat(request, token)
-
-        if _looks_like_scim_token(request, token):
-            return await _dispatch_scim(request, token)
-
         if _looks_like_jwt(token):
             if _jwt_has_spiffe_sub(token):
                 return await _dispatch_spiffe_jwt(request, token)
-            return await _dispatch_oauth(request, token)
+            return await _dispatch_login_jwt(request, token)
 
-        # Opaque bearer token — try OAuth store lookup as the last option.
-        try:
-            return await _dispatch_oauth(request, token)
-        except HTTPException as exc:
-            # If OAuth rejected it specifically, surface a generic
-            # unknown-shape error so we don't leak which store was tried.
-            if exc.status_code == 401:
-                raise HTTPException(
-                    status_code=401,
-                    detail={
-                        "error_type": "unknown_bearer_shape",
-                        "detail": "Authorization uses Bearer scheme but token shape is not recognized",
-                    },
-                ) from exc
-            raise
+        # Opaque bearer token — no recognized shape. The OAuth2 dev-portal
+        # authorization server (SS-21) was removed with the single-tenant
+        # cleanup; the only bearer tokens we accept now are login JWTs
+        # (handled above) and SPIFFE JWT-SVIDs.
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "unknown_bearer_shape",
+                "detail": "Authorization uses Bearer scheme but token shape is not recognized",
+            },
+        )
 
     # 2. Session cookie — only the JWT-shape access_token cookie set by
     # /auth/login. `session` and `sid` cookies are no longer accepted
