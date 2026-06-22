@@ -19,13 +19,12 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         backend=backend,
         include=[
             "gdx_dispatch.tasks.reminders",
-            "gdx_dispatch.tasks.late_fees",
             "gdx_dispatch.tasks.recurring",
-            # S122-3 (T2): gdx_dispatch.tasks.qb_sync was a no-op stub (the three
-            # private helpers returned None / []); the beat fired every 15
-            # minutes producing synced_count=0. Real periodic sync arrives
-            # in Phase 2 via CDC poller (S122-18). Webhooks (now
-            # CloudEvents-aware per S122-CE) carry the active path.
+            # gdx_dispatch.tasks.qb_sync (S122-3 T2) and gdx_dispatch.tasks.late_fees
+            # were both no-op stubs whose private helpers returned None / [] — the
+            # beat fired on schedule producing zero work. Removed. Real periodic QB
+            # sync arrives in Phase 2 via CDC poller (S122-18); webhooks
+            # (CloudEvents-aware per S122-CE) carry the active path meanwhile.
             "gdx_dispatch.tasks.email_poller",
             "gdx_dispatch.tasks.customer_volume_refresh",
             "gdx_dispatch.tasks.estimate_archive",
@@ -49,7 +48,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         task_default_queue="priority:low",
         task_routes={
             "gdx_dispatch.tasks.reminders.*": {"queue": "priority:high"},
-            "gdx_dispatch.tasks.late_fees.*": {"queue": "priority:low"},
             "gdx_dispatch.tasks.recurring.*": {"queue": "priority:low"},
             "gdx_dispatch.tasks.email_poller.*": {"queue": "priority:low"},
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
@@ -79,7 +77,6 @@ from gdx_dispatch.modules.phone_com import tasks as _phone_com_tasks  # noqa: E4
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import email_poller as _email_poller_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
-from gdx_dispatch.tasks import late_fees as _late_fee_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import recurring as _recurring_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import reminders as _reminder_tasks  # noqa: E402,F401
 
