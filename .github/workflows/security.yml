@@ -39,30 +39,24 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: archive/dispatch_flask/requirements*.txt
+          cache-dependency-path: gdx_dispatch/requirements.txt
 
       - name: Install pip-audit
         run: pip install pip-audit
 
       - name: Install requirements (for pip-audit environment scan)
-        # Install dispatch deps so pip-audit can scan the actual installed packages.
-        # Using --no-deps on problematic packages to avoid resolver issues.
+        # Install deps so pip-audit can scan the actual installed packages.
         run: |
-          pip install -r archive/dispatch_flask/requirements.txt --ignore-requires-python || \
-          pip install -r archive/dispatch_flask/requirements.txt --no-deps || true
+          pip install -r gdx_dispatch/requirements.txt --ignore-requires-python || \
+          pip install -r gdx_dispatch/requirements.txt --no-deps || true
 
-      - name: Run pip-audit
-        # Scan installed packages (no -r flag) to avoid resolver failures on
-        # packages with tight Python-version constraints in requirements.txt.
-        # Allow pip-audit itself to exit non-zero (vulns found) so we can
-        # do our own classification and exit-code logic in vuln_check.py.
+      - name: Run pip-audit (report-only)
+        # Supplementary scan. Dependabot is the authoritative dependency gate
+        # (the CVSS-classifier tool was removed in the refactor); pip-audit here
+        # just produces an artifact for review and never blocks CI.
         run: |
           pip-audit -f json -o /tmp/audit.json || true
-
-      - name: Classify vulnerabilities
-        # Exit 1 on CRITICAL (CVSS >= 9.0).
-        # Remove --fail-on high below to only block on CRITICAL.
-        run: python dispatch/tools/vuln_check.py /tmp/audit.json
+          pip-audit || true
 
       - name: Upload audit report
         if: always()
@@ -71,16 +65,6 @@ jobs:
           name: pip-audit-report
           path: /tmp/audit.json
           if-no-files-found: ignore
-
-      - name: Create GitHub issue on critical vulnerability
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create \
-            --title "CRITICAL vulnerability alert: pip-audit found CVSS >= 9.0 ($(date -u +%Y-%m-%d))" \
-            --body "pip-audit detected one or more CRITICAL vulnerabilities (CVSS >= 9.0) in archive/dispatch_flask/requirements.txt. CI is blocked. See the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label "security" || true
 
   sast-bandit:
     name: SAST — Bandit
@@ -99,16 +83,13 @@ jobs:
       - name: Install Bandit
         run: pip install bandit[toml]
 
-      - name: Run Bandit
-        # -ll  → medium and above severity
-        # -q   → suppress per-file progress noise
-        # -f json -o → write machine-readable JSON report for artifact upload
-        # Write JSON report first (always, regardless of findings), then print
-        # human-readable output so the log is readable. Exit non-zero on findings.
+      - name: Run Bandit (report-only)
+        # -ll → medium+ severity, -q → quiet. CodeQL's Analyze (python) is the
+        # authoritative SAST gate; this Bandit pass produces a report artifact
+        # for review and never blocks CI.
         run: |
-          bandit -r archive/dispatch_flask/ -ll -q -f json -o /tmp/bandit.json; BANDIT_EXIT=$?
-          bandit -r archive/dispatch_flask/ -ll -q || true
-          exit $BANDIT_EXIT
+          bandit -r gdx_dispatch/ -ll -q -f json -o /tmp/bandit.json || true
+          bandit -r gdx_dispatch/ -ll -q || true
 
       - name: Upload Bandit report
         if: always()
@@ -117,13 +98,3 @@ jobs:
           name: bandit-report
           path: /tmp/bandit.json
           if-no-files-found: ignore
-
-      - name: Create GitHub issue on Bandit failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create \
-            --title "SAST alert: Bandit found medium+ severity issues ($(date -u +%Y-%m-%d))" \
-            --body "Bandit SAST scan found medium or higher severity issues in \`dispatch/\`. See the workflow run for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label "security" || true

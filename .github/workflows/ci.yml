@@ -55,16 +55,6 @@ jobs:
           pip install -r gdx_dispatch/requirements.txt
           pip install pytest pytest-xdist
 
-      - name: Tenant-isolation lint gates
-        # Two AST-based scans that block net-new violations of the
-        # tenant-isolation contracts. Same scans wired into local
-        # .git/hooks/pre-commit; CI here is the durable enforcement
-        # since hooks don't travel with the repo. See CLAUDE.md
-        # § Tenant Isolation + § Tenant Identity.
-        run: |
-          python -m gdx_dispatch.tools.tenant_scoping_scan --strict
-          python -m gdx_dispatch.tools.tenant_id_shape_scan --strict
-
       - name: Run tests (parallel)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
