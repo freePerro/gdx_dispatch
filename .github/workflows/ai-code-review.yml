@@ -17,11 +17,15 @@ jobs:
     name: Cerebras Diff Review
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Only run if CEREBRAS_API_KEY secret is configured
-    if: ${{ secrets.CEREBRAS_API_KEY != '' }}
 
     permissions:
       pull-requests: write
+
+    # `secrets` isn't a valid context in a job-level `if:`, so expose the key as
+    # env (where secrets ARE allowed) and gate the working steps on it — env IS
+    # readable from a step-level `if:`. Keyless forks fall through harmlessly.
+    env:
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
 
     steps:
       - name: Checkout
@@ -39,6 +43,7 @@ jobs:
 
       - name: Get PR diff
         id: diff
+        if: ${{ env.CEREBRAS_API_KEY != '' }}
         run: |
           git diff origin/${{ github.base_ref }}...HEAD \
             -- '*.py' '*.html' \
@@ -46,9 +51,8 @@ jobs:
           echo "lines=$(wc -l < /tmp/pr_diff.txt)" >> $GITHUB_OUTPUT
 
       - name: Run Cerebras diff review
-        if: steps.diff.outputs.lines != '0'
+        if: ${{ steps.diff.outputs.lines != '0' && env.CEREBRAS_API_KEY != '' }}
         env:
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
