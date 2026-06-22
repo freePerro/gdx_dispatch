@@ -47,9 +47,17 @@ def run_migrations_online():
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    from sqlalchemy import text
+
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
+            # Single-migrator gate. Alembic has NO built-in concurrency control,
+            # so every migrator (container entrypoint AND the in-app DB admin
+            # panel) takes the same transaction-scoped advisory lock here. A
+            # second migrator blocks until the first commits, then proceeds.
+            # xact-scoped so it auto-releases at commit and is pooler-safe.
+            connection.execute(text("SELECT pg_advisory_xact_lock(823641723)"))
             context.run_migrations()
 
 
