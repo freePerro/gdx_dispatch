@@ -54,7 +54,7 @@ async def handler(
     if db is None:
         return {"id": customer_id, "name": None, "email": None, "phone": None, "_stub": True}
 
-    from gdx_dispatch.models.platform import Customer  # local import: avoid eager model pull
+    from gdx_dispatch.models.tenant_models import Customer  # local import: avoid eager model pull
 
     row = db.get(Customer, customer_id)
     if row is None:

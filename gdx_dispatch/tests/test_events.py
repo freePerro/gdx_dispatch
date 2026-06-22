@@ -5,7 +5,7 @@ transactional contract that the helper never commits on the caller's behalf.
 """
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -13,7 +13,11 @@ from sqlalchemy.orm import sessionmaker
 from gdx_dispatch.control.models import Base
 from gdx_dispatch.core.events import emit_event
 from gdx_dispatch.models.platform_extensions import EventOutbox
-from gdx_dispatch.tests.factories.platform import tenant_uuid_from_slug
+
+
+def tenant_uuid_from_slug(slug: str) -> UUID:
+    """Deterministic test-only UUID derived from a slug-style name (D97)."""
+    return uuid5(NAMESPACE_DNS, f"d97-test-{slug}")
 
 
 def _make_engine(tmp_path):
