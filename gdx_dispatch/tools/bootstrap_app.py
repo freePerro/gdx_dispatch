@@ -101,6 +101,7 @@ def main() -> int:
                     email=admin_email,
                     username="admin",
                     full_name="Administrator",
+                    password_hash=_hash_password(admin_password),
                     # 'owner' resolves to the WILDCARD permission set
                     # (BUILTIN_ROLES["owner"]), so the bootstrap account has
                     # full access to everything — including billing and any
