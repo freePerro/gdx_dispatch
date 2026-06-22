@@ -109,3 +109,14 @@ ai-queue/operations/mode_runs/
 
 # Per-work-item declared blast-radius (read by ~/.claude/hooks/scope_check.py)
 SCOPE.md
+
+# Patch / reject artifacts from git apply / patch (never source)
+*.patch
+*.rej
+*.orig
+
+# One-off local fix scripts and scratch dumps (not source)
+/fix.py
+/fix_alembic.py
+/patch_tenant.py
+/all_todos.txt
