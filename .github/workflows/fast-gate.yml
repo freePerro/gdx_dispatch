@@ -1,5 +1,8 @@
 name: Fast Gate
 
+permissions:
+  contents: read
+
 # Runs on every PR and every push to main.
 # This is the minimum quality bar — must be green before merging.
 # Full overnight chain runs separately on schedule.

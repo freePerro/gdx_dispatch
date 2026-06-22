@@ -637,7 +637,8 @@ def revoke_task(task_id: str) -> dict:
         return {"success": True, "error": None}
     except Exception as exc:
         logging.getLogger(__name__).exception("revoke_task caught exception")
-        return {"success": False, "error": str(exc)}
+        # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
+        return {"success": False, "error": "Failed to revoke task"}
 
 
 # ---------------------------------------------------------------------------

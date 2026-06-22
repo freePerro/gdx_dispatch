@@ -1432,7 +1432,8 @@ def batch_create_invoices(
             created.append(str(invoice.id))
         except Exception as e:
             log.exception("batch_invoice_create_failed")
-            errors.append({"job_id": job_id, "error": str(e)})
+            # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
+            errors.append({"job_id": job_id, "error": "Invoice creation failed"})
     if created:
         db.commit()
     _audit_db = locals().get('db')

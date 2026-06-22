@@ -458,7 +458,8 @@ def get_connect_balance(
         return {"available": available, "pending": pending, "currency": "usd", "connected": True}
     except Exception as e:
         logging.getLogger(__name__).exception("get_connect_balance caught exception")
-        return {"available": 0, "pending": 0, "error": str(e)[:100], "connected": True}
+        # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
+        return {"available": 0, "pending": 0, "error": "Unable to retrieve balance", "connected": True}
 
 
 @router.post("/connect/webhook", response_model=None)

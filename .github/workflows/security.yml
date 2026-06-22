@@ -1,5 +1,8 @@
 name: Security Scan
 
+permissions:
+  contents: read
+
 # Runs daily at 06:00 UTC and on every push to main / every PR targeting main.
 # Fails CI if CRITICAL vulnerabilities (CVSS >= 9.0) are found.
 # Also runs Bandit SAST for code-level security issues.
