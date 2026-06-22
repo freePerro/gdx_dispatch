@@ -1,5 +1,9 @@
 name: CI — Test & Build
 
+# Least-privilege default; no job needs write access to repo contents.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

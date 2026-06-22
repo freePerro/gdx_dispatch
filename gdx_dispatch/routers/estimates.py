@@ -1797,7 +1797,13 @@ ESTIMATE_ATTACHMENT_ALLOWED_MIME = {
 
 
 def _attachment_dir(tenant_id: str, estimate_id: str) -> Path:
-    return Path(os.getenv("UPLOAD_DIR", "/app/uploads")) / tenant_id / "estimate" / estimate_id
+    # Constrain to the upload root so a crafted tenant_id can't traverse out.
+    # (CodeQL path-injection)
+    base = Path(os.getenv("UPLOAD_DIR", "/app/uploads")).resolve()
+    candidate = (base / tenant_id / "estimate" / estimate_id).resolve()
+    if not candidate.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="Invalid attachment path")
+    return candidate
 
 
 def _sanitize_attachment_name(name: str | None) -> str:
@@ -1913,8 +1919,9 @@ def download_estimate_attachment(
     if not doc:
         raise HTTPException(status_code=404, detail="Attachment not found")
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
-    path = _attachment_dir(tenant_id, str(estimate_id)) / doc.filename
-    if not path.exists() or not path.is_file():
+    base = _attachment_dir(tenant_id, str(estimate_id))
+    path = (base / doc.filename).resolve()
+    if not path.is_relative_to(base) or not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File missing on disk")
     return FileResponse(
         path=path,

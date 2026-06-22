@@ -381,7 +381,7 @@
   document.getElementById('logo_url').addEventListener('input', function () {
     var img = document.getElementById('preview-logo');
     var url = this.value.trim();
-    if (url) {
+    if (url && /^https?:\/\//i.test(url)) {
       img.src = url;
       img.classList.remove('hidden');
     } else {

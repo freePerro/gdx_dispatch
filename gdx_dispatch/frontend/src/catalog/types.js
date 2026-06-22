@@ -119,13 +119,18 @@ export function readField(obj, path) {
   return path.split('.').reduce((o, key) => (o == null ? o : o[key]), obj);
 }
 
+// Reject keys that would let a crafted path walk into the prototype chain.
+const UNSAFE_KEY = /^(__proto__|prototype|constructor)$/;
+
 export function writeField(obj, path, value) {
   if (!path) return;
   if (!path.includes('.')) {
+    if (UNSAFE_KEY.test(path)) return;
     obj[path] = value;
     return;
   }
   const keys = path.split('.');
+  if (keys.some((k) => UNSAFE_KEY.test(k))) return;
   let cursor = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const k = keys[i];

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import logging
@@ -36,13 +35,11 @@ def _require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 
 def _hash_password(password: str) -> str:
-    try:
-        import bcrypt
+    # Fail closed: bcrypt is a hard dependency. No SHA-256 fallback — a fast
+    # hash for password storage is worse than erroring loudly. (CodeQL #71)
+    import bcrypt
 
-        return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    except Exception:
-        log.exception("bcrypt_unavailable_falling_back_sha256")
-        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 class UserCreate(BaseModel):

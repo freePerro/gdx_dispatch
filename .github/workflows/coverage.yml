@@ -1,5 +1,8 @@
 name: Coverage
 
+permissions:
+  contents: read
+
 # Tracks code coverage on pushes to main and on PRs.
 
 on:

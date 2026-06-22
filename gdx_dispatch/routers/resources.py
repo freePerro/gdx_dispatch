@@ -228,13 +228,15 @@ async def create_resource(
     resource_id = uuid4()
     now = datetime.now(timezone.utc)
 
-    # Create upload directory structure
-    upload_path = os.path.join(UPLOAD_DIR, company_id, category)
-    os.makedirs(upload_path, exist_ok=True)
-
-    # Sanitize filename — prevent path traversal
+    # Sanitize filename + constrain destination to UPLOAD_DIR. category is an
+    # allowlisted enum and company_id is tenant-scoped, but resolve+contain is
+    # the durable guard against path traversal. (CodeQL path-injection)
     safe_name = os.path.basename(file.filename or "upload")
-    file_dest = os.path.join(upload_path, f"{str(resource_id)}_{safe_name}")
+    base = os.path.realpath(UPLOAD_DIR)
+    file_dest = os.path.realpath(os.path.join(base, company_id, category, f"{resource_id}_{safe_name}"))
+    if os.path.commonpath([base, file_dest]) != base:
+        raise HTTPException(status_code=400, detail="Invalid upload path")
+    os.makedirs(os.path.dirname(file_dest), exist_ok=True)
 
     # Save file
     try:

@@ -1,5 +1,8 @@
 name: Full Gate (Nightly)
 
+permissions:
+  contents: read
+
 # Runs the complete test suite nightly at 4 AM UTC.
 # Also available via manual workflow_dispatch.
 # Covers all production tests, qwen2.5 security tests, and root tests.

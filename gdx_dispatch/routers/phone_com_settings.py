@@ -568,7 +568,8 @@ def get_phone_com_token_details(
             details = c.get_access_token_details()
     except Exception as exc:  # noqa: BLE001
         log.warning("phone_com.token_details upstream failed: %s", exc)
-        return {"available": False, "error": str(exc)}
+        # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
+        return {"available": False, "error": "Upstream provider error"}
     if details is None:
         return {"available": False, "reason": "permanent_token"}
     return {
@@ -599,5 +600,8 @@ def post_phone_com_sync_now(
     phone_com_full_resync.delay(str(tid))
     result = _run_resync_sync(tid, control_db)
     if not result.get("ok"):
+        # Surface the upstream Phone.com error (e.g. "401 oauth2.access_denied")
+        # — it's an actionable provider status for the admin, not an internal
+        # trace. (CodeQL stack-trace-exposure #38: dismissed as intentional.)
         raise HTTPException(status_code=502, detail=result.get("error") or "sync failed")
     return result

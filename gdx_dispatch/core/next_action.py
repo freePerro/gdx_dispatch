@@ -210,7 +210,8 @@ class NextActionQueue:
             )
             with contextlib.suppress(Exception):
                 tenant_db.rollback()
-            return {"error": str(exc), "id": action_id}
+            # Generic message; full exception is logged above. (CodeQL stack-trace-exposure)
+            return {"error": "Failed to complete action", "id": action_id}
 
     def snooze_action(
         self,
@@ -246,7 +247,8 @@ class NextActionQueue:
             )
             with contextlib.suppress(Exception):
                 tenant_db.rollback()
-            return {"error": str(exc), "id": action_id}
+            # Generic message; full exception is logged above. (CodeQL stack-trace-exposure)
+            return {"error": "Failed to snooze action", "id": action_id}
 
     def create_action(
         self,
@@ -285,7 +287,8 @@ class NextActionQueue:
             )
             with contextlib.suppress(Exception):
                 tenant_db.rollback()
-            return {"error": str(exc)}
+            # Generic message; full exception is logged above. (CodeQL stack-trace-exposure)
+            return {"error": "Failed to create action"}
 
     def get_auto_actions(
         self,
