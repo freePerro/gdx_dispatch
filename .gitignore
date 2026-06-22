@@ -77,11 +77,7 @@ Tests_*.md
 .vscode/settings.json
 
 # Drop folder — keep the folder structure, ignore the actual files
-drop/chi-catalog/*
-drop/chi-quotes/*
 drop/documents/*
-!drop/chi-catalog/.gitkeep
-!drop/chi-quotes/.gitkeep
 !drop/documents/.gitkeep
 tools/ai_dashboard/.env
 gdx/frontend/node_modules/
