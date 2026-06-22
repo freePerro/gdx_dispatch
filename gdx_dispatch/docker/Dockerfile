@@ -54,11 +54,15 @@ COPY --from=frontend-builder /build/dist ./gdx_dispatch/frontend/dist
 # as root:root and the app cannot write.
 RUN useradd -m appuser \
     && mkdir -p /app/uploads \
+    && chmod +x /app/gdx_dispatch/docker/entrypoint.sh \
     && chown -R appuser /app
 USER appuser
 
 EXPOSE 8000
 
+# The entrypoint runs migrations + first-run bootstrap (idempotent) and then
+# exec's CMD. This is what lets a fresh `docker compose up` actually log in.
+ENTRYPOINT ["/app/gdx_dispatch/docker/entrypoint.sh"]
 CMD ["uvicorn", "gdx_dispatch.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \

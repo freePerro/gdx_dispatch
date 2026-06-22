@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""First-run application bootstrap (idempotent).
+
+Brings an empty database up to a state where a fresh `docker compose up`
+can actually log in. Designed to run on every container start — each step
+is a no-op when its work is already done.
+
+Pipeline:
+  1. Create the ORM-managed tenant-plane tables (users, companies,
+     company_module_grants, …) via TenantBase.metadata.create_all().
+     Alembic (run separately, before this) creates the control-plane tables
+     (tenants, audit_logs, …); the tenant-plane tables are ORM-only, so
+     `alembic upgrade head` alone never creates them.
+  2. Seed the single default tenant row (matches what TenantMiddleware pins
+     every request to via single_tenant()), so the audit_logs → tenants FK
+     resolves and the audit trail works.
+  3. Seed the matching company row (company_id == tenant id in single-tenant
+     mode).
+  4. Seed an initial admin user so someone can log in. The password comes
+     from GDX_ADMIN_PASSWORD if set, otherwise a random one is generated and
+     printed to the logs. The user is flagged must_change_password=True.
+
+Env vars:
+  GDX_TENANT_ID / GDX_TENANT_SLUG / GDX_TENANT_NAME — tenant identity
+      (defaults supplied by single_tenant(); zero-config works).
+  GDX_ADMIN_EMAIL     — admin login (default: admin@example.com)
+  GDX_ADMIN_PASSWORD  — admin password (default: randomly generated, logged)
+  GDX_SKIP_BOOTSTRAP=1 — skip entirely (e.g. when managing the DB yourself).
+
+Run: python -m gdx_dispatch.tools.bootstrap_app
+"""
+from __future__ import annotations
+
+import logging
+import os
+import secrets
+from uuid import uuid4
+
+from sqlalchemy import select
+
+log = logging.getLogger("gdx_dispatch.bootstrap")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password the same way the rest of the app does (bcrypt, $2b$…)."""
+    import bcrypt
+
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def main() -> int:
+    if os.getenv("GDX_SKIP_BOOTSTRAP", "").strip() == "1":
+        log.info("GDX_SKIP_BOOTSTRAP=1 — skipping first-run bootstrap.")
+        return 0
+
+    # Importing the models package registers every ORM model on TenantBase's
+    # metadata so create_all() sees the full tenant-plane schema.
+    import gdx_dispatch.models  # noqa: F401
+
+    from gdx_dispatch.control.models import Tenant
+    from gdx_dispatch.core.audit import TenantBase
+    from gdx_dispatch.core.database import SessionLocal, engine
+    from gdx_dispatch.core.tenant import single_tenant
+    from gdx_dispatch.models.tenant_models import Company, User
+
+    # ── 1. Tenant-plane tables (ORM-managed; alembic doesn't create these) ──
+    log.info("Ensuring ORM-managed tenant tables exist (create_all)…")
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+
+    tenant = single_tenant()
+    tenant_id = str(tenant["id"])
+
+    with SessionLocal() as db:
+        # ── 2. Default tenant row (control-plane; FK target for audit_logs) ──
+        if db.get(Tenant, tenant_id) is None:
+            db.add(Tenant(id=tenant_id, slug=str(tenant["slug"]), name=str(tenant["name"])))
+            db.flush()
+            log.info("Seeded tenant row id=%s slug=%s", tenant_id, tenant["slug"])
+        else:
+            log.info("Tenant row already present (id=%s).", tenant_id)
+
+        # ── 3. Matching company row (company_id == tenant id) ──
+        if db.get(Company, tenant_id) is None:
+            db.add(Company(id=tenant_id, name=str(tenant["name"])))
+            db.flush()
+            log.info("Seeded company row id=%s", tenant_id)
+        else:
+            log.info("Company row already present (id=%s).", tenant_id)
+
+        # ── 4. Initial admin user ──
+        admin_email = os.getenv("GDX_ADMIN_EMAIL", "admin@example.com").strip().lower()
+        existing = db.execute(select(User).where(User.email == admin_email)).scalars().first()
+        if existing is None:
+            admin_password = os.getenv("GDX_ADMIN_PASSWORD") or secrets.token_urlsafe(12)
+            generated = "GDX_ADMIN_PASSWORD" not in os.environ
+            db.add(
+                User(
+                    id=str(uuid4()),
+                    email=admin_email,
+                    username="admin",
+                    full_name="Administrator",
+                    password_hash=_hash_password(admin_password),
+                    role="admin",
+                    company_id=tenant_id,
+                    active=True,
+                    must_change_password=True,
+                )
+            )
+            db.commit()
+            banner = (
+                "\n"
+                "════════════════════════════════════════════════════════════\n"
+                "  GDX Dispatch — initial admin account created\n"
+                f"    email:    {admin_email}\n"
+                f"    password: {admin_password}\n"
+                "  You MUST change this password on first login.\n"
+            )
+            if not generated:
+                banner += "  (password taken from GDX_ADMIN_PASSWORD)\n"
+            banner += "════════════════════════════════════════════════════════════"
+            log.warning(banner)
+        else:
+            db.commit()
+            log.info("Admin user already present (%s) — leaving it untouched.", admin_email)
+
+    log.info("Bootstrap complete.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
