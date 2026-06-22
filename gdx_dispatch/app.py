@@ -2064,35 +2064,19 @@ def create_app() -> FastAPI:
     # gdx_dispatch.routers.*. Dotted import paths are explicit so a future move
     # of any of these gets caught at edit-time, not lost in the silent
     # except branch.
+    # Command Center / SaaS-platform routers were removed for this single-tenant
+    # release (their tables are gone from the squashed baseline). Only the
+    # identity/PAT/SCIM cluster (the kept "identity island") and a couple of
+    # app-level metadata endpoints remain.
     _ss_routers: list[tuple[str, str, str]] = [
         # (SS-label, dotted-import-path, friendly-name-for-logs)
         ("SS-14", "gdx_dispatch.routers.auth.pats", "pats"),                  # moved Phase C2
         ("SS-14", "gdx_dispatch.routers.auth.pats_support", "pats_support"),  # moved Phase C2
         ("SS-15", "gdx_dispatch.routers.auth.admin_pats", "admin_pats"),      # moved Phase C2
         ("SS-15", "gdx_dispatch.routers.custom_field_sensitivity", "custom_field_sensitivity"),
-        ("SS-18", "gdx_dispatch.routers.mcp_registry", "mcp_registry"),
-        ("SS-19", "gdx_dispatch.routers.mcp_execute", "mcp_execute"),
-        ("SS-19", "gdx_dispatch.routers.mcp_sse", "mcp_sse"),
-        ("SS-20", "gdx_dispatch.routers.dev_portal", "dev_portal"),
-        ("SS-21", "gdx_dispatch.routers.auth.oauth2", "oauth2"),  # moved Phase C1
-        ("SS-21", "gdx_dispatch.routers.admin_consent", "admin_consent"),
         ("SS-22", "gdx_dispatch.routers.auth.scim", "scim"),       # moved Phase C1
-        ("SS-23", "gdx_dispatch.routers.event_catalog", "event_catalog"),
-        ("SS-24", "gdx_dispatch.routers.billing_usage", "billing_usage"),
         ("SS-25", "gdx_dispatch.routers.api_metadata", "api_metadata"),
         ("SS-26", "gdx_dispatch.routers.well_known", "well_known"),
-        ("SS-26", "gdx_dispatch.routers.dev_portal_events", "dev_portal_events"),
-        ("SS-27", "gdx_dispatch.routers.cross_tenant_shares", "cross_tenant_shares"),
-        ("SS-28", "gdx_dispatch.routers.consumer_audit", "consumer_audit"),
-        ("SS-29", "gdx_dispatch.routers.shadow_migration_admin", "shadow_migration_admin"),
-        ("SS-30", "gdx_dispatch.routers.cutover", "cutover"),
-        ("SS-31", "gdx_dispatch.routers.federation", "federation"),
-        ("SS-32", "gdx_dispatch.routers.spiffe_admin", "spiffe_admin"),
-        ("SS-33", "gdx_dispatch.routers.resource_types", "resource_types"),
-        ("SS-33", "gdx_dispatch.routers.resource_instances", "resource_instances"),
-        ("SS-34", "gdx_dispatch.routers.dr_admin", "dr_admin"),
-        ("SS-35", "gdx_dispatch.routers.sar", "sar"),
-        ("SS-35", "gdx_dispatch.routers.erasure", "erasure"),
     ]
     for _ss_label, _ss_dotted, _ss_friendly in _ss_routers:
         try:
