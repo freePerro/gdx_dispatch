@@ -50,11 +50,12 @@
 
             <!-- Primary Color -->
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="primary_color">
                 Primary Color
               </label>
               <div class="flex items-center gap-3">
                 <input type="color" id="primary_color_picker" name="_primary_color_picker"
+                       aria-label="Primary color picker"
                        value="{{ config.primary_color if config else '#1a73e8' }}"
                        class="h-10 w-14 cursor-pointer rounded border border-gray-300 p-0.5" />
                 <input type="text" id="primary_color" name="primary_color"
@@ -68,11 +69,12 @@
 
             <!-- Secondary Color -->
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">
+              <label class="block text-sm font-medium text-gray-700 mb-1" for="secondary_color">
                 Secondary Color
               </label>
               <div class="flex items-center gap-3">
                 <input type="color" id="secondary_color_picker" name="_secondary_color_picker"
+                       aria-label="Secondary color picker"
                        value="{{ config.secondary_color if config else '#34a853' }}"
                        class="h-10 w-14 cursor-pointer rounded border border-gray-300 p-0.5" />
                 <input type="text" id="secondary_color" name="secondary_color"
