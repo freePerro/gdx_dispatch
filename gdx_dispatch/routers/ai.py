@@ -2,6 +2,7 @@ import json
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Any
 
 try:
     from zoneinfo import ZoneInfo

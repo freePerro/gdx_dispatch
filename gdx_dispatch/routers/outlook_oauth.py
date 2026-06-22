@@ -174,9 +174,13 @@ def _exchange_code_for_tokens(
 
 def _safe_redirect(*, status_q: str, detail: str | None = None) -> RedirectResponse:
     """Always redirect to a same-origin Settings URL — never echo external input."""
-    suffix = f"&detail={detail}" if detail else ""
+    # urlencode the params so a crafted status/detail can't inject query
+    # params or break out of the same-origin path. (CodeQL url-redirection)
+    params = {"integration": "outlook", "status": status_q}
+    if detail:
+        params["detail"] = detail
     return RedirectResponse(
-        f"/settings?integration=outlook&status={status_q}{suffix}",
+        f"/settings?{urlencode(params)}",
         status_code=302,
     )
 

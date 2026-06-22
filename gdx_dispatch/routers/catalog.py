@@ -1118,6 +1118,7 @@ async def ai_import_catalog(
         log.exception("ai_import_catalog_failed extra_context=%s", "unknown")
         raise HTTPException(status_code=422, detail="Could not read file as text. Upload CSV, TXT, or extracted PDF text.") from None
 
+    tenant_id, _ = _audit_ids(user, request)
     prompt = f"""You are parsing a parts catalog for a garage door company. Extract all parts from the text below and return a JSON array.
 
 For each part, extract:

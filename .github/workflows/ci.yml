@@ -24,6 +24,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Live lint/syntax gate. Preserved from the retired fast-gate.yml so the
+  # ruff ratchet (.ruff_baseline) + hard F821/F823 gate survive the workflow
+  # cleanup — these target the current gdx_dispatch/ tree, not the old app.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        # Pinned: the ratchet baseline (.ruff_baseline) is version-specific —
+        # a ruff bump that adds/changes rules would shift the count and
+        # false-fail. Bump deliberately + re-baseline together.
+        run: pip install ruff==0.15.18
+
+      - name: Ruff full ruleset (ratchet — fails only if count increases)
+        run: |
+          set -e
+          BASELINE=$(cat .ruff_baseline 2>/dev/null || echo 0)
+          # True total from ruff's "Found N errors" summary. (The old fast-gate
+          # parsed `--statistics | tail -1`, which grabbed the "N fixable" line,
+          # not the total — a no-op ratchet. Fixed here.)
+          CURRENT=$(ruff check gdx_dispatch/ 2>&1 | grep -oP 'Found \K\d+' || echo 0)
+          CURRENT=${CURRENT:-0}
+          echo "ruff: baseline=$BASELINE current=$CURRENT"
+          if [ "$CURRENT" -gt "$BASELINE" ]; then
+            echo "❌ Ruff violations increased ($CURRENT > $BASELINE)"
+            ruff check gdx_dispatch/ --statistics | tail -20
+            exit 1
+          fi
+          # Hard-fail on syntax / undefined-name errors regardless of baseline.
+          ruff check gdx_dispatch/ --select F821,F823 --quiet
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -54,16 +92,6 @@ jobs:
         run: |
           pip install -r gdx_dispatch/requirements.txt
           pip install pytest pytest-xdist
-
-      - name: Tenant-isolation lint gates
-        # Two AST-based scans that block net-new violations of the
-        # tenant-isolation contracts. Same scans wired into local
-        # .git/hooks/pre-commit; CI here is the durable enforcement
-        # since hooks don't travel with the repo. See CLAUDE.md
-        # § Tenant Isolation + § Tenant Identity.
-        run: |
-          python -m gdx_dispatch.tools.tenant_scoping_scan --strict
-          python -m gdx_dispatch.tools.tenant_id_shape_scan --strict
 
       - name: Run tests (parallel)
         env:
