@@ -101,8 +101,13 @@ def main() -> int:
                     email=admin_email,
                     username="admin",
                     full_name="Administrator",
-                    password_hash=_hash_password(admin_password),
-                    role="admin",
+                    # 'owner' resolves to the WILDCARD permission set
+                    # (BUILTIN_ROLES["owner"]), so the bootstrap account has
+                    # full access to everything — including billing and any
+                    # permission an endpoint requires that isn't in the catalog
+                    # (e.g. dispatch.read). The first account on a self-hosted
+                    # single-tenant deploy owns the whole tenant.
+                    role="owner",
                     company_id=tenant_id,
                     active=True,
                     must_change_password=True,
