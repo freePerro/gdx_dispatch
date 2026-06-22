@@ -118,10 +118,16 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      # Only the `app` service runs Alembic. Without this, all 4 containers race
+      # `alembic upgrade head` on boot — which Alembic explicitly does not
+      # support. Celery waits for app (healthy = migrations+bootstrap done).
+      GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      app:
         condition: service_healthy
     restart: unless-stopped
 
@@ -145,10 +151,16 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      # Only the `app` service runs Alembic. Without this, all 4 containers race
+      # `alembic upgrade head` on boot — which Alembic explicitly does not
+      # support. Celery waits for app (healthy = migrations+bootstrap done).
+      GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      app:
         condition: service_healthy
     restart: unless-stopped
 
@@ -172,13 +184,29 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      # Only the `app` service runs Alembic. Without this, all 4 containers race
+      # `alembic upgrade head` on boot — which Alembic explicitly does not
+      # support. Celery waits for app (healthy = migrations+bootstrap done).
+      GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      app:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
+  # external:true so `docker compose down -v` (or a prune) can NEVER delete the
+  # database or uploads — Compose will neither create nor destroy these. The
+  # `name:` pins them to the volumes the running stack already uses, so this is
+  # a zero-data-movement adoption. Create once (idempotent):
+  #   docker volume create docker_db_data
+  #   docker volume create docker_gdx_uploads
   db_data:
+    external: true
+    name: docker_db_data
   gdx_uploads:
+    external: true
+    name: docker_gdx_uploads
