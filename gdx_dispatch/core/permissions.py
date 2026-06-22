@@ -66,6 +66,9 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     ("reports.read", "View reports", "reports"),
     ("reports.export", "Export reports", "reports"),
 
+    # Dispatch (dispatch board + tech-efficiency report)
+    ("dispatch.read", "View dispatch board and tech-efficiency report", "dispatch"),
+
     # Payroll
     ("payroll.read", "View payroll", "payroll"),
     ("payroll.write", "Edit payroll", "payroll"),
@@ -127,6 +130,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
     "dispatcher": [
         "jobs.read_all", "jobs.write",
         "scheduling.read_all", "scheduling.write",
+        "dispatch.read",
         "customers.read_all", "customers.write",
         "leads.read", "leads.write", "leads.delete",
         "estimates.read_all", "estimates.write",
