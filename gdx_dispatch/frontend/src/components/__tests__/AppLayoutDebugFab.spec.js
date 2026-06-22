@@ -52,7 +52,10 @@ function mountLayout() {
 }
 
 describe('AppLayout — MH-1 debug FAB gate', () => {
-  const ORIGINAL_ENV = import.meta.env.VITE_SHOW_DEBUG_FAB;
+  // Alias so no statement begins with `import.meta` — CodeQL's JS extractor
+  // misparses a statement-leading `import.meta...=` as an import declaration.
+  const env = import.meta.env;
+  const ORIGINAL_ENV = env.VITE_SHOW_DEBUG_FAB;
 
   beforeEach(() => {
     // Reset auth state per test.
@@ -61,11 +64,11 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   afterEach(() => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = ORIGINAL_ENV;
+    env.VITE_SHOW_DEBUG_FAB = ORIGINAL_ENV;
   });
 
   it('hides the FAB for a field tech with env unset', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = '';
+    env.VITE_SHOW_DEBUG_FAB = '';
     authState.role = 'tech';
     authState.user = { role: 'tech' };
     const w = mountLayout();
@@ -73,7 +76,7 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   it('hides the FAB for an admin (e.g. auditor28) with env unset', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = '';
+    env.VITE_SHOW_DEBUG_FAB = '';
     authState.role = 'admin';
     authState.user = { role: 'admin' };
     const w = mountLayout();
@@ -81,7 +84,7 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   it('shows the FAB for the owner role with env unset', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = '';
+    env.VITE_SHOW_DEBUG_FAB = '';
     authState.role = 'owner';
     authState.user = { role: 'owner' };
     const w = mountLayout();
@@ -89,7 +92,7 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   it('shows the FAB for ANY role when VITE_SHOW_DEBUG_FAB=1', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = '1';
+    env.VITE_SHOW_DEBUG_FAB = '1';
     authState.role = 'tech';
     authState.user = { role: 'tech' };
     const w = mountLayout();
@@ -97,7 +100,7 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   it('treats unrelated env values as off', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = 'true'; // not '1'
+    env.VITE_SHOW_DEBUG_FAB = 'true'; // not '1'
     authState.role = 'admin';
     authState.user = { role: 'admin' };
     const w = mountLayout();
@@ -105,7 +108,7 @@ describe('AppLayout — MH-1 debug FAB gate', () => {
   });
 
   it('case-insensitive role check (Owner / OWNER)', () => {
-    import.meta.env.VITE_SHOW_DEBUG_FAB = '';
+    env.VITE_SHOW_DEBUG_FAB = '';
     authState.role = 'OWNER';
     authState.user = { role: 'OWNER' };
     const w = mountLayout();
