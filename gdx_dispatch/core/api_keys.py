@@ -13,7 +13,6 @@ import hashlib
 import logging
 import os
 import secrets
-import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -404,25 +403,26 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not getattr(request.state, "tenant", None):
             request.state.tenant = {"id": str(api_key.tenant_id)}
 
-        # --- Fire-and-forget: update last_used_at ---
+        # --- Best-effort: update last_used_at (synchronous) ---
+        # This used to run in a per-request `threading.Thread(daemon=True)`.
+        # That unmanaged daemon thread opened its own session and committed; it
+        # raced with interpreter / pytest teardown mid-`fdatasync` and
+        # segfaulted the process (a torn SQLite/ORM handle touched after
+        # shutdown began — a non-deterministic native crash), and under api-key
+        # load it spawned unbounded threads. The update is a single indexed
+        # UPDATE, and this middleware already does sync DB + redis I/O on this
+        # path, so do it inline.
         key_id_val = api_key.id
-
-        def _update_last_used() -> None:
-            # SessionLocal is the module-level name (patchable in tests)
-            upd_db = SessionLocal()
-            try:
-                k = upd_db.query(APIKey).filter(APIKey.id == key_id_val).first()
-                if k:
-                    k.last_used_at = datetime.now(UTC)
-                    upd_db.commit()
-            except Exception:
-                logging.getLogger(__name__).exception("_update_last_used caught exception")
-                pass
-            finally:
-                upd_db.close()
-
-        t = threading.Thread(target=_update_last_used, daemon=True)
-        t.start()
+        upd_db = SessionLocal()
+        try:
+            k = upd_db.query(APIKey).filter(APIKey.id == key_id_val).first()
+            if k:
+                k.last_used_at = datetime.now(UTC)
+                upd_db.commit()
+        except Exception:
+            logging.getLogger(__name__).exception("update last_used_at failed")
+        finally:
+            upd_db.close()
 
         return await call_next(request)
 
