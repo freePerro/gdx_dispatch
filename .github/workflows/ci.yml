@@ -113,25 +113,16 @@ jobs:
           # each to a shard and runs it in that shard's single process.
           PYTEST_DISABLE_SPLIT_GUARD: "1"
         run: |
-          # Retry ONLY on native segfault (exit 139). A residual,
-          # non-deterministic SIGSEGV remains in the test harness (an anyio /
-          # TestClient worker thread does DB I/O that races teardown, and
-          # faulthandler then crashes dumping the torn thread) — tracked in
-          # issue #20. It is NOT a test failure: a real failure (exit 1) fails
-          # fast below, no retry. pytest-split runs a full shard in one
-          # process, so a crash kills the shard; retrying the rare crashed
-          # shard keeps CI deterministic until #20's root cause is fixed.
-          set +e
-          for attempt in 1 2 3 4 5 6; do
-            python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-              --splits 7 --group ${{ matrix.group }} --tb=short -q
-            rc=$?
-            [ "$rc" -eq 0 ] && exit 0
-            [ "$rc" -ne 139 ] && exit "$rc"
-            echo "::warning::shard ${{ matrix.group }} segfaulted (exit 139), retry ${attempt}/6 — known harness flake (#20)"
-          done
-          echo "::error::shard ${{ matrix.group }} segfaulted 6x — test-harness crash (#20), not a test failure"
-          exit 1
+          # --forked (pytest-forked) runs each test in its own subprocess. A
+          # residual non-deterministic native SIGSEGV (issue #20 — an anyio /
+          # TestClient worker thread races teardown, then faulthandler crashes
+          # dumping the torn thread) only manifests after cross-test state
+          # accumulates in one long-lived process. Per-test forking resets that
+          # state, so the crash can't build up or take down the whole shard,
+          # and any real test failure surfaces normally instead of being masked
+          # by the crash. Slower than in-process, but correct and deterministic.
+          python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
+            --splits 7 --group ${{ matrix.group }} --forked --tb=short -q
 
   build:
     runs-on: ubuntu-latest

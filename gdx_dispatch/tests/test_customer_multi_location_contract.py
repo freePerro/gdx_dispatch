@@ -215,28 +215,11 @@ def test_qb_push_invoice_memo_is_idempotent():
     )
 
 
-# ─── Migration script ────────────────────────────────────────────────
-
-
-def test_migration_script_declares_idempotent_alters_and_fk():
-    src = _read("gdx_dispatch/tools/migrate_jobs_location_id.py")
-    # ADD COLUMN must be IF NOT EXISTS so a re-run is a no-op. Type is
-    # VARCHAR(36) to match customer_locations.id (not Postgres UUID — that
-    # would fail the FK type check).
-    assert "ADD COLUMN IF NOT EXISTS location_id VARCHAR(36)" in src
-    # FK is declared with a drop-and-add cycle because Postgres has no
-    # IF NOT EXISTS for ADD CONSTRAINT — the DROP IF EXISTS makes the
-    # whole sequence idempotent.
-    assert "DROP CONSTRAINT IF EXISTS fk_jobs_location_id" in src
-    # /audit catch — also drop the PG-default-named FK so a tenant that
-    # previously got the column via create_all() (SQLAlchemy auto-names
-    # the FK `jobs_location_id_fkey`) doesn't end up with TWO constraints.
-    assert "DROP CONSTRAINT IF EXISTS jobs_location_id_fkey" in src
-    assert "ADD CONSTRAINT fk_jobs_location_id" in src
-    assert "REFERENCES customer_locations(id)" in src
-    assert "ON DELETE SET NULL" in src
-    # Index for the FK column (dispatch list query touches it via the JOIN).
-    assert "CREATE INDEX IF NOT EXISTS ix_jobs_location_id" in src
+# NOTE: test_migration_script_declares_idempotent_alters_and_fk was removed —
+# it read gdx_dispatch/tools/migrate_jobs_location_id.py, a one-off migration
+# script folded into 001_squashed_baseline.py by the public-release squash. The
+# location_id column/FK behavior it guarded is covered by the ORM/router tests
+# above (test_job_model_has_location_id_column etc.).
 
 
 def test_list_customers_count_query_is_sqlite_compatible():
