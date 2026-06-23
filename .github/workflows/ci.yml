@@ -127,6 +127,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: test
+    # The image runs Alembic migrations at startup (gdx_dispatch/migrations/env.py
+    # takes a `pg_advisory_xact_lock`, and baseline_squashed.sql is Postgres SQL),
+    # so the boot smoke-test needs a real Postgres — SQLite can't satisfy it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: gdx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -136,13 +153,25 @@ jobs:
 
       - name: Verify image starts
         run: |
-          docker run -d --name gdx-test \
-            -e DATABASE_URL=sqlite:///tmp/test.db \
+          # --network host so the container reaches the postgres service on
+          # localhost:5432. JWT_SECRET (>=32 bytes) is required at import or the
+          # auth routers silently fail to load and the app comes up as a
+          # ~7-route skeleton that would hide real breakage.
+          # MASTER_ENCRYPTION_KEY (a Fernet key) is required at startup or the
+          # app aborts ("STARTUP_ENCRYPTION_MISSING ... Application startup
+          # failed"). This is a throwaway test key for a throwaway CI DB — it
+          # protects nothing real.
+          docker run -d --name gdx-test --network host \
+            -e DATABASE_URL=postgresql://test:test@localhost:5432/gdx_test \
+            -e JWT_SECRET=ci-verify-image-start-secret-at-least-32-bytes \
+            -e MASTER_ENCRYPTION_KEY=nsF1JvgxTAqhkYxLo4J8k-SB2JptrgzXbPVJDUOI8w4= \
             -e SECRET_KEY=ci-test \
-            -p 8000:8000 \
             gdx-app:${{ github.sha }}
-          sleep 5
-          curl -sf http://localhost:8000/health || (docker logs gdx-test && exit 1)
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8000/health && { ok=1; break; }
+            sleep 3
+          done
+          [ "${ok:-}" = 1 ] || (docker logs gdx-test && exit 1)
           docker stop gdx-test
 
   frontend:
