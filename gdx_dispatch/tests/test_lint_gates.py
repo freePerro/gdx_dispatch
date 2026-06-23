@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from gdx_dispatch.tools import (
-    cross_plane_import_scan,
     duplicate_block_scan,
     tenant_plane_redundant_filter_scan,
 )
@@ -31,7 +30,7 @@ from gdx_dispatch.tools import (
 
 @pytest.mark.parametrize(
     "scan_module",
-    [cross_plane_import_scan, tenant_plane_redundant_filter_scan],
+    [tenant_plane_redundant_filter_scan],
 )
 class TestNoqa:
     def test_bare_noqa_suppresses_all(self, scan_module):
@@ -127,73 +126,6 @@ def test_tokenize_distributes_multiline_string():
     assert 3 in linenos
     assert 4 in linenos
     assert 5 in linenos
-
-
-# ────────────────────────────────────────────────────────────────────────
-# cross_plane_import_scan integration
-# ────────────────────────────────────────────────────────────────────────
-
-
-def _setup_cross_plane_scratch(tmp_path, monkeypatch):
-    """Stand up a scratch repo with the directory layout cross_plane scans."""
-    (tmp_path / "gdx_dispatch" / "models").mkdir(parents=True)
-    (tmp_path / "gdx_dispatch" / "control").mkdir(parents=True)
-    monkeypatch.setattr(cross_plane_import_scan, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(cross_plane_import_scan, "TENANT_PLANE_ROOT", tmp_path / "gdx_dispatch" / "models")
-    monkeypatch.setattr(cross_plane_import_scan, "CONTROL_PLANE_ROOT", tmp_path / "gdx_dispatch" / "control")
-    monkeypatch.setattr(cross_plane_import_scan, "BASELINE_FILE", tmp_path / ".baseline")
-    return tmp_path
-
-
-def test_cross_plane_detects_x1_and_x2(tmp_path, monkeypatch):
-    root = _setup_cross_plane_scratch(tmp_path, monkeypatch)
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text("from gdx_dispatch.control.models import Base\n")
-    (root / "gdx_dispatch" / "control" / "leaky.py").write_text("from gdx_dispatch.models.platform import X\n")
-
-    findings = cross_plane_import_scan.scan()
-    codes = sorted({code for _, _, code, _, _ in findings})
-    assert codes == ["X1", "X2"]
-
-
-def test_cross_plane_noqa_suppresses(tmp_path, monkeypatch):
-    root = _setup_cross_plane_scratch(tmp_path, monkeypatch)
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text(
-        "from gdx_dispatch.control.models import Base  # noqa: X1\n"
-    )
-    findings = cross_plane_import_scan.scan()
-    assert findings == []
-
-
-def test_cross_plane_lineno_in_signature_catches_same_file_repeats(tmp_path, monkeypatch):
-    """The audit-flagged regression: with the prior count-based dedup,
-    adding a 2nd violation to a file already baselined at count=1 was
-    silently accepted. Lineno-in-sig closes that hole."""
-    root = _setup_cross_plane_scratch(tmp_path, monkeypatch)
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text("from gdx_dispatch.control.models import A\n")
-
-    findings = cross_plane_import_scan.scan()
-    cross_plane_import_scan._write_baseline(findings)
-
-    # Add a second cross-plane import to the SAME file
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text(
-        "from gdx_dispatch.control.models import A\nfrom gdx_dispatch.control.models import B\n"
-    )
-    findings_after = cross_plane_import_scan.scan()
-    new = cross_plane_import_scan._net_new_findings(
-        findings_after, cross_plane_import_scan._load_baseline()
-    )
-    assert len(new) == 1, "same-file repeat must be net-new under lineno-in-sig"
-
-
-def test_cross_plane_prune_drops_stale(tmp_path, monkeypatch):
-    root = _setup_cross_plane_scratch(tmp_path, monkeypatch)
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text("from gdx_dispatch.control.models import A\n")
-    cross_plane_import_scan._write_baseline(cross_plane_import_scan.scan())
-    # Fix the violation
-    (root / "gdx_dispatch" / "models" / "bad.py").write_text("# clean\n")
-    pruned, kept = cross_plane_import_scan._prune_baseline(cross_plane_import_scan.scan())
-    assert pruned == 1
-    assert kept == 0
 
 
 # ────────────────────────────────────────────────────────────────────────

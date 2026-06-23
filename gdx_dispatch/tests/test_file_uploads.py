@@ -180,8 +180,9 @@ def test_signature_invalid_rejected(tenant_db_session):
 
 def test_uploads_router_registered_in_main_app():
     from gdx_dispatch.app import create_app
+    from gdx_dispatch.tests.conftest import app_route_paths
 
     app = create_app()
-    paths = {route.path for route in app.routes}
+    paths = app_route_paths(app)
     assert "/api/jobs/{job_id}/photos" in paths
     assert "/api/jobs/{job_id}/signature" in paths

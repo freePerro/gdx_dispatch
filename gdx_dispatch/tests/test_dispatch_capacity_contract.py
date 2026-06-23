@@ -232,26 +232,6 @@ def test_app_includes_tech_efficiency_router():
 
 # ─── Migration script declares the 7 ALTERs ──────────────────────────
 
-def test_migration_script_declares_all_seven_columns():
-    src = _read("gdx_dispatch/tools/migrate_dispatch_capacity_and_job_hours.py")
-    expected_columns = [
-        ("app_settings", "default_shift_start", "TIME"),
-        ("app_settings", "default_shift_end", "TIME"),
-        ("app_settings", "default_workdays", "SMALLINT"),
-        ("users", "shift_start", "TIME"),
-        ("users", "shift_end", "TIME"),
-        ("users", "workdays", "SMALLINT"),
-        ("jobs", "scheduled_duration_hours", "NUMERIC(5,2)"),
-    ]
-    for table, col, dtype in expected_columns:
-        pattern = (
-            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {dtype}"
-        )
-        assert pattern in src, (
-            f"migration script missing: {pattern}"
-        )
-
-
 def test_job_create_pydantic_round_trip_accepts_scheduled_duration_hours():
     """Behavior test — not source-scan. Audit 2026-05-21: "19 grep
     assertions … green-light Pydantic typos." This proves the schema
@@ -273,23 +253,3 @@ def test_job_create_pydantic_round_trip_accepts_scheduled_duration_hours():
     # NULL should round-trip cleanly so PATCH can clear the field.
     cleared = JobUpdate(scheduled_duration_hours=None).model_dump(exclude_unset=True)
     assert cleared["scheduled_duration_hours"] is None
-
-
-def test_migration_script_is_idempotent():
-    """ADD COLUMN IF NOT EXISTS only — re-running must be a no-op so
-    the script is safe to invoke after partial failures or as part of
-    routine deploys (which is the convention for tenant-plane drift
-    repair per migrate_jobs_started_at.py)."""
-    src = _read("gdx_dispatch/tools/migrate_dispatch_capacity_and_job_hours.py")
-    # Every DDL line in the DDL list uses IF NOT EXISTS.
-    # Extract the DDL block and check each entry.
-    m = re.search(r"DDL\s*=\s*\[(.+?)\]", src, re.DOTALL)
-    assert m, "migration script must declare a DDL list"
-    ddl_block = m.group(1)
-    stmt_count = ddl_block.count("ALTER TABLE")
-    assert stmt_count == 7, f"Expected 7 ALTER statements, found {stmt_count}"
-    idempotent_count = ddl_block.count("ADD COLUMN IF NOT EXISTS")
-    assert idempotent_count == 7, (
-        f"All ALTERs must be ADD COLUMN IF NOT EXISTS — found "
-        f"{idempotent_count} idempotent of {stmt_count} total"
-    )

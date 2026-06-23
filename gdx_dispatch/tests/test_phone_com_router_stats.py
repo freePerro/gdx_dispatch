@@ -16,7 +16,7 @@ from gdx_dispatch.control.models import Base as ControlBase
 from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.phone_com.models import (
     PhoneComExtension,
@@ -70,7 +70,7 @@ def _app(ce, te, tid):
 
     app.dependency_overrides[get_current_user] = fake_user
     app.dependency_overrides[get_db] = fake_control_db
-    app.dependency_overrides[get_db] = fake_tenant_db
+    app.dependency_overrides[get_tenant_db] = fake_tenant_db
     app.dependency_overrides[require_module("phone_com")] = lambda: None
     return app, csm, tsm
 

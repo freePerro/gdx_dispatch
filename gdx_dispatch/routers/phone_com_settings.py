@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.control.models import Tenant, TenantSettings
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import PhoneComClient
@@ -369,7 +369,7 @@ phone_com_full_resync = _DelayShim()
 def get_phone_com_settings(
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> PhoneComSettingsOut:
     """Read state. Reachable by any authenticated user (knowing the
     integration is configured isn't sensitive)."""
@@ -384,7 +384,7 @@ def patch_phone_com_settings(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     _require_admin(user)
     tid = _coerce_tenant_uuid(user)
@@ -436,7 +436,7 @@ def delete_phone_com_token(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     _require_admin(user)
     tid = _coerce_tenant_uuid(user)
@@ -463,7 +463,7 @@ def delete_phone_com_token(
 def post_phone_com_test(
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     _require_admin(user)
     tid = _coerce_tenant_uuid(user)
@@ -487,7 +487,7 @@ def post_oauth_exchange(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     """Exchange a Phone.com auth-code for an access token, then store the
     token via the same key_storage path used by the paste-token flow.
@@ -545,7 +545,7 @@ def post_oauth_exchange(
 def get_phone_com_token_details(
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     """Calls ``GET /v4/oauth/access-token/details`` for the tenant's active
     token. Returns ``{"available": false}`` for permanent tokens (most of

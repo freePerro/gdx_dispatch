@@ -28,7 +28,7 @@ from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job
 from gdx_dispatch.modules.phone_com import key_storage
@@ -191,7 +191,7 @@ def list_calls(
     has_voicemail: bool | None = None,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=200),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001 — auth gate
 ) -> CallListOut:
     q = tenant_db.query(PhoneComCall)
@@ -247,7 +247,7 @@ def list_calls(
 @router.get("/calls/{call_id}")
 def get_call_detail(
     call_id: UUID,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     call = tenant_db.get(PhoneComCall, call_id)
@@ -299,7 +299,7 @@ def _voicemail_for_call(tenant_db: Session, call_id: UUID) -> PhoneComVoicemail 
 @router.get("/calls/{call_id}/recording")
 def stream_call_recording(
     call_id: UUID,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     control_db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -332,7 +332,7 @@ def stream_call_recording(
 @router.get("/calls/{call_id}/voicemail-audio")
 def stream_voicemail_audio(
     call_id: UUID,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     control_db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> StreamingResponse:
@@ -359,7 +359,7 @@ def stream_voicemail_audio(
 @router.get("/calls/{call_id}/voicemail-transcript")
 def get_voicemail_transcript(
     call_id: UUID,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     vm = _voicemail_for_call(tenant_db, call_id)
@@ -392,7 +392,7 @@ def _mark_call_heard(tenant_db: Session, call_id: UUID, user_id: UUID | None) ->
 @router.post("/calls/{call_id}/mark-heard", status_code=status.HTTP_204_NO_CONTENT)
 def post_mark_call_heard(
     call_id: UUID,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> None:
     _mark_call_heard(tenant_db, call_id, _coerce_user_uuid(user))
@@ -410,7 +410,7 @@ class LinkJobIn(BaseModel):
 def patch_call_job(
     call_id: UUID,
     payload: LinkJobIn,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Set or clear `phone_com_calls.job_id`. job_id=null unlinks."""
@@ -437,7 +437,7 @@ def list_cold_leads(
     min_duration_s: int = Query(default=10, ge=0, le=3600),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=200),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Group calls with customer_id IS NULL by from_number. Filters out
@@ -526,7 +526,7 @@ class MessageOut(BaseModel):
 def list_message_threads(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=1, le=200),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Each row = one conversation. Last message wins for display fields."""
@@ -579,7 +579,7 @@ def get_message_thread(
     thread_key: str,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     q = tenant_db.query(PhoneComMessage).filter(
@@ -642,7 +642,7 @@ def _thread_key_for(a: str, b: str) -> str:
 def send_message(
     payload: SendMessageIn,
     request: Request,  # noqa: ARG001
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     control_db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -705,7 +705,7 @@ def send_message(
 @router.get("/stats/summary")
 def get_stats_summary(
     days: int = Query(default=30, ge=1, le=365),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     rows = (
@@ -753,7 +753,7 @@ def get_stats_summary(
 
 @router.get("/extensions")
 def list_extensions(
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     rows = (
@@ -780,7 +780,7 @@ def list_extensions(
 
 @router.get("/numbers")
 def list_phone_numbers(
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     rows = (
@@ -819,7 +819,7 @@ class _PhoneNumberMetaIn(BaseModel):
 def update_phone_number_meta(
     number_id: str,
     payload: _PhoneNumberMetaIn,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner", "manager"}:
@@ -859,7 +859,7 @@ class _StrategyIn(BaseModel):
 
 @router.get("/strategy")
 def get_outbound_strategy(
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     from gdx_dispatch.modules.phone_com.outbound_did import candidate_strategies
@@ -874,7 +874,7 @@ def get_outbound_strategy(
 @router.patch("/strategy")
 def set_outbound_strategy(
     payload: _StrategyIn,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner"}:
@@ -904,7 +904,7 @@ def mark_thread_read(
     thread_key: str,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> None:
     """Mark every message in this thread read on Phone.com so the desk
     phone / mobile app stop showing the unread badge.
@@ -965,7 +965,7 @@ def list_faxes(
     direction: str | None = Query(default=None, pattern=r"^(in|out)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Local fax list — populated by the webhook receiver and the daily
@@ -1001,7 +1001,7 @@ def stream_fax_pdf(
     fax_id: UUID,
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> StreamingResponse:
     """Stream the PDF from Phone.com without exposing the upstream URL or
     Bearer token to the caller. Caller must be authenticated; module-gated
@@ -1049,7 +1049,7 @@ class _BlockedCallIn(BaseModel):
 def list_blocked_calls(
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     """Pass-through to Phone.com — blocked-calls are not local data, they
     live in the Phone.com account. We don't cache them since the list is
@@ -1070,7 +1070,7 @@ def post_blocked_call(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> dict[str, Any]:
     if (user.get("role") or "").lower() not in {"admin", "owner", "manager"}:
         raise HTTPException(status_code=403, detail="admin/manager required")
@@ -1110,7 +1110,7 @@ def delete_blocked_call(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     control_db: Session = Depends(get_db),
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
 ) -> None:
     if (user.get("role") or "").lower() not in {"admin", "owner", "manager"}:
         raise HTTPException(status_code=403, detail="admin/manager required")
@@ -1142,7 +1142,7 @@ def delete_blocked_call(
 @router.get("/inbound-stats")
 def inbound_stats(
     days: int = 30,
-    tenant_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
     user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
 ) -> dict[str, Any]:
     """Calls + SMS by inbound DID + campaign_tag. Marketing attribution."""

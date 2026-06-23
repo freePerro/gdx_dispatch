@@ -57,6 +57,45 @@ import pytest
 from sqlalchemy import create_engine, event
 
 
+def iter_app_routes(app):
+    """Yield ``(full_path, route)`` for every leaf route in ``app``.
+
+    FastAPI >=0.137 stopped flattening ``include_router()`` into ``app.routes``:
+    each include now inserts a lazy ``_IncludedRouter`` wrapper (no ``.path``)
+    instead of the sub-router's concrete routes. Route-registration tests that
+    did ``{r.path for r in app.routes}`` therefore saw only ~14 top-level routes
+    and raised ``AttributeError`` on the wrappers. This recurses the wrappers
+    (re-applying each include prefix) and falls back to flat iteration on older
+    FastAPI where ``_IncludedRouter`` doesn't exist.
+
+    Coupling note: this reaches three private FastAPI internals
+    (``_IncludedRouter``, ``.include_context.prefix``, ``.original_router``).
+    ``requirements.txt`` floats ``fastapi>=0.135.3,<1.0``, so a future patch that
+    renames any of them breaks every route-introspection test at once. That's a
+    LOUD failure (red CI on the route tests), not a silent one — when it fires,
+    update this helper (or pin fastapi), don't paper over it.
+    """
+    try:
+        from fastapi.routing import _IncludedRouter
+    except ImportError:  # older FastAPI — routes are already flat
+        _IncludedRouter = ()
+
+    def _walk(routes, prefix=""):
+        for rt in routes:
+            if _IncludedRouter and isinstance(rt, _IncludedRouter):
+                sub = prefix + getattr(rt.include_context, "prefix", "")
+                yield from _walk(rt.original_router.routes, sub)
+            elif hasattr(rt, "path"):
+                yield prefix + rt.path, rt
+
+    yield from _walk(app.routes)
+
+
+def app_route_paths(app):
+    """Set of every registered full path (see :func:`iter_app_routes`)."""
+    return {path for path, _ in iter_app_routes(app)}
+
+
 def pytest_configure(config):
     # schemathesis 4.15.1 xdist plugin crashes on worker shutdown
     # (workeroutput AttributeError). Unregister it — we don't need

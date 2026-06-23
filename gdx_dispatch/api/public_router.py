@@ -25,9 +25,33 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.tenant import company_id, single_tenant
 from gdx_dispatch.core.webhooks.models import WebhookEndpoint
+
+# ---------------------------------------------------------------------------
+# Control-plane DB dependency for API-key auth
+# ---------------------------------------------------------------------------
+#
+# The api_keys table lives in the control plane. In production the control and
+# tenant databases are the same physical DB, so a plain SessionLocal() session
+# resolves api_keys fine. But the auth lookup MUST NOT ride the same get_db
+# dependency the data routes use: tests (and any future split-DB deployment)
+# override get_db to point at the tenant database, which has no api_keys table.
+# Keeping a distinct dependency lets the auth path always reach the control DB
+# (or its test double) independently of the tenant-data override.
+
+
+def get_control_db() -> Any:
+    """Yield a control-plane DB session for API-key verification."""
+    from gdx_dispatch.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 # ---------------------------------------------------------------------------
 # API key auth dependency
@@ -36,7 +60,7 @@ from gdx_dispatch.core.webhooks.models import WebhookEndpoint
 
 async def _require_api_key(
     request: Request,
-    control_db: Annotated[Session, Depends(get_db)],
+    control_db: Annotated[Session, Depends(get_control_db)],
 ) -> dict[str, Any]:
     """Validate X-API-Key header and inject tenant context onto request.state.
 

@@ -259,9 +259,10 @@ def test_list_expenses_excludes_soft_deleted(client):
 
 def test_expense_routes_registered_in_main_app():
     from gdx_dispatch.app import create_app
+    from gdx_dispatch.tests.conftest import app_route_paths
 
     app = create_app()
-    paths = {route.path for route in app.routes}
+    paths = app_route_paths(app)
     assert "/api/expenses" in paths
     assert "/api/expenses/{expense_id}" in paths
     assert "/api/expenses/{expense_id}/lines" in paths

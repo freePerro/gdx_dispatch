@@ -64,6 +64,15 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # pytest-split shard matrix. The repo deliberately disabled xdist (`-n`):
+    # benchmarks (2026-04-24) showed N=7 splits beat `-n 14` by ~17% AND
+    # eliminated the cross-worker-fixture-race flakiness xdist introduced
+    # (see pytest.ini + gdx_dispatch/tools/run_tests_split.sh). Each shard is
+    # an independent pytest process — no shared-fixture protocol between them.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7]
     services:
       postgres:
         image: postgres:16
@@ -89,26 +98,23 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: |
-          pip install -r gdx_dispatch/requirements.txt
-          pip install pytest pytest-xdist
+        # requirements.txt pins pytest-split / pytest-asyncio (and pulls in
+        # pytest). It still pins pytest-xdist too, but CI no longer uses it —
+        # the split matrix below replaces the old `-n auto` invocation.
+        run: pip install -r gdx_dispatch/requirements.txt
 
-      - name: Run tests (parallel)
+      - name: Run tests (pytest-split shard ${{ matrix.group }}/7)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
-          # CI runs xdist-parallel (-n auto), so the interactive serial-suite
-          # guard in conftest.py doesn't apply. Without this the guard SystemExit(2)s
-          # the whole job (it was already red on main for this reason).
+          # The conftest.py guard only blocks a bare serial full-suite run;
+          # split shards are the sanctioned fast path, but set the bypass
+          # explicitly so the guard never trips in CI. Serial tests under
+          # gdx_dispatch/tests/serial/ are included — pytest-split assigns
+          # each to a shard and runs it in that shard's single process.
           PYTEST_DISABLE_SPLIT_GUARD: "1"
         run: |
-          python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e --ignore=gdx_dispatch/tests/serial \
-            -n auto --tb=short -q -k 'not e2e and not load'
-
-      - name: Run serial tests
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
-        run: |
-          python -m pytest gdx_dispatch/tests/serial/ --tb=short -q
+          python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
+            --splits 7 --group ${{ matrix.group }} --tb=short -q
 
   build:
     runs-on: ubuntu-latest

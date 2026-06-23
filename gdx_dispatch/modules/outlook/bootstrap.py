@@ -25,7 +25,6 @@ import logging
 import os
 from contextlib import closing
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.control.models import Tenant, TenantSettings
@@ -73,16 +72,11 @@ def seed_outlook_credentials_from_env(
     # policy for table tenant_settings".
     control_db.commit()
 
-    with tenant_context(str(tenant.id)):
-        # Belt-and-suspenders: also issue SET LOCAL on the session itself.
-        # The engine begin listener at gdx_dispatch/core/database.py:50 reads the
-        # tenant_context contextvar at txn-begin time, but in the lifespan
-        # path we observed in 2026-04-28 prod logs the listener didn't
-        # propagate the GUC for the INSERT (likely an asyncio contextvar
-        # boundary on app startup). An explicit SET LOCAL here is
-        # transaction-scoped and safe in all paths.
-        control_db.execute(text("SET LOCAL app.tenant_id = :v"), {"v": str(tenant.id)})
-
+    with tenant_context():
+        # Single-tenant collapse: the control/app/tenant planes are one DB now,
+        # so the Postgres RLS GUC (`SET LOCAL app.tenant_id`) no longer applies.
+        # tenant_context() is a nullcontext shim; the explicit SET LOCAL was
+        # removed with the RLS policies it guarded.
         settings = control_db.get(TenantSettings, tenant.id)
         if settings is None:
             settings = TenantSettings()

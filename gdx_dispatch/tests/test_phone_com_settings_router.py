@@ -24,7 +24,7 @@ from gdx_dispatch.control.models import Base as ControlBase
 from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.database import get_db, get_db
+from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.modules.phone_com import key_storage
 from gdx_dispatch.modules.phone_com.client import BASE_URL
 from gdx_dispatch.routers import phone_com_settings
@@ -129,7 +129,7 @@ def _make_app(control_engine, tenant_engine, *, role: str = "admin",
 
     app.dependency_overrides[get_current_user] = fake_user
     app.dependency_overrides[get_db] = fake_control_db
-    app.dependency_overrides[get_db] = fake_tenant_db
+    app.dependency_overrides[get_tenant_db] = fake_tenant_db
     return app
 
 

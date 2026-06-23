@@ -125,11 +125,14 @@ class Installation(Base):
     tenant_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
+    # ponytail: identities/capability_sets tables were removed with the
+    # multi-tenant SaaS surface; these stay plain UUID columns (no FK) since
+    # there's no table to reference. Re-add the FK if those tables ever return.
     installer_identity_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("identities.id"), nullable=False
+        Uuid(as_uuid=True), nullable=False
     )
     capability_set_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("capability_sets.id"), nullable=False
+        Uuid(as_uuid=True), nullable=False
     )
     billing_account_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("billing_accounts.id"), nullable=False
@@ -159,8 +162,9 @@ class AccessToken(Base):
     installation_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("installations.id")
     )
+    # ponytail: capability_sets table removed with multi-tenant surface — plain UUID, no FK.
     capability_set_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("capability_sets.id"), nullable=False
+        Uuid(as_uuid=True), nullable=False
     )
     name: Mapped[str | None] = mapped_column(String(128))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -195,9 +199,8 @@ class RevocationDenylistEntry(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     token_jti: Mapped[str | None] = mapped_column(String(64))
-    identity_id: Mapped[UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("identities.id")
-    )
+    # ponytail: identities table removed with multi-tenant surface — plain UUID, no FK.
+    identity_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     installation_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("installations.id")
     )
