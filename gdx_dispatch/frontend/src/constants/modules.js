@@ -145,6 +145,7 @@ export const MODULE_CATEGORIES = [
       { key: 'onboarding', label: 'Onboarding', icon: 'pi pi-flag', to: '/onboarding', type: 'Admin' },
       { key: 'admin_ops', label: 'Admin Operations', icon: 'pi pi-server', to: '/admin-ops', type: 'Admin', permission: 'settings.write' },
       { key: 'server_errors', label: 'Server Logs', icon: 'pi pi-exclamation-triangle', to: '/server-errors', type: 'Admin', permission: 'settings.write' },
+      { key: 'admin_db', label: 'Database', icon: 'pi pi-database', to: '/admin/database', type: 'Admin', permission: 'settings.write' },
       { key: 'payroll', label: 'Payroll', icon: 'pi pi-wallet', to: '/admin/payroll', type: 'Admin', permission: 'payroll.read' },
       { key: 'settings', label: 'Settings', icon: 'pi pi-cog', to: '/settings', type: 'Customers', permission: 'settings.read' },
     ],
