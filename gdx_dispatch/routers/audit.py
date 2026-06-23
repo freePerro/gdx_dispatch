@@ -26,7 +26,7 @@ router = APIRouter(
 
 def _require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     role = str(user.get("role") or "")
-    if role not in {"admin", "owner"}:
+    if role not in {"admin", "owner", "superadmin"}:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 

@@ -59,9 +59,30 @@ def _alembic_cfg() -> Config:
     return cfg
 
 
+# Control-plane tables live on the control Base (gdx_dispatch/control/models.py)
+# and are owned by Alembic migrations, NOT create_all. compare_metadata runs
+# against TenantBase.metadata, which doesn't know them, so it reports each as
+# "in DB, not in ORM" — a false positive. Suppress those rows. (Mirrors
+# migration 001's _BASELINE_TABLES.)
+_CONTROL_PLANE_TABLES = frozenset({
+    "tenants", "tenant_settings", "tenant_module_grants", "platform_feature_flags",
+    "service_accounts", "server_errors", "game_definitions", "game_events", "game_state",
+})
+
+
 def _render_diff(diff) -> dict | None:
     """Turn one compare_metadata tuple into a UI-friendly row, or None to skip."""
     kind = diff[0]
+    # Don't flag Alembic-managed control-plane tables (or their columns/indexes)
+    # as drift against TenantBase — they live on the control Base.
+    if kind == "remove_table" and diff[1].name in _CONTROL_PLANE_TABLES:
+        return None
+    if kind == "remove_column" and diff[2] in _CONTROL_PLANE_TABLES:
+        return None
+    if kind in ("remove_index", "remove_constraint"):
+        tbl = getattr(getattr(diff[1], "table", None), "name", None)
+        if tbl in _CONTROL_PLANE_TABLES:
+            return None
     # model-ahead (DB is MISSING something the ORM expects) = the dangerous kind
     if kind == "add_table":
         return {"severity": "missing", "kind": kind, "object": diff[1].name,
