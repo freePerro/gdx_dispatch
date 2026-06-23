@@ -4,6 +4,8 @@ import csv
 import io
 import json
 import logging
+import os
+import re
 from datetime import UTC, datetime
 from uuid import UUID as _UUID, uuid4
 
@@ -507,3 +509,54 @@ def billing_reconciliation(
         raise HTTPException(status_code=503, detail="Reconciliation module not available") from None
     finally:
         control_db.close()
+
+
+_RELEASES_URL = "https://api.github.com/repos/freePerro/gdx_dispatch/releases/latest"
+
+
+def _ver_tuple(v: str) -> tuple[int, ...]:
+    # ponytail: digits-only semver compare; "v1.10.0-rc1" -> (1, 10, 0). Enough
+    # to answer "is latest newer". Swap for packaging.version if pre-release
+    # ordering ever matters.
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(n) for n in nums[:3]) if nums else ()
+
+
+@router.get("/update-check")
+async def update_check(_: dict = Depends(_require_admin)) -> dict:
+    """Compare the running release (APP_VERSION) against the latest GitHub release.
+
+    Self-hosted boxes use this to know an update exists; they apply it with
+    docker/update.sh. update_available is only true when both versions parse to
+    real numbers and latest > current, so 'dev'/'latest' tags never false-alarm.
+    """
+    import httpx
+
+    current = os.getenv("APP_VERSION", "dev")
+    out: dict = {
+        "current": current,
+        "latest": None,
+        "update_available": False,
+        "notes_url": None,
+        "error": None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                _RELEASES_URL, headers={"Accept": "application/vnd.github+json"}
+            )
+        if r.status_code == 404:
+            out["error"] = "no_releases"
+            return out
+        r.raise_for_status()
+        data = r.json()
+        tag = data.get("tag_name") or ""
+        latest = tag.removeprefix("v").removeprefix("V") or None
+        out["latest"] = latest
+        out["notes_url"] = data.get("html_url")
+        cur_t, lat_t = _ver_tuple(current), _ver_tuple(latest or "")
+        out["update_available"] = bool(cur_t and lat_t and lat_t > cur_t)
+    except Exception:
+        log.warning("update_check_failed", exc_info=True)
+        out["error"] = "unreachable"
+    return out

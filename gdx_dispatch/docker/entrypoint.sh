@@ -27,8 +27,12 @@ else
     ( cd /app/gdx_dispatch && python -m alembic -c alembic.ini upgrade head )
 fi
 
-echo "[entrypoint] Bootstrapping schema + default tenant/admin…"
-python -m gdx_dispatch.tools.bootstrap_app
+if [ "${GDX_SKIP_BOOTSTRAP:-}" = "1" ]; then
+    echo "[entrypoint] GDX_SKIP_BOOTSTRAP=1 — skipping schema bootstrap."
+else
+    echo "[entrypoint] Bootstrapping schema + default tenant/admin…"
+    python -m gdx_dispatch.tools.bootstrap_app
+fi
 
 echo "[entrypoint] Starting application: $*"
 exec "$@"
