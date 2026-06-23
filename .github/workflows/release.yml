@@ -1,0 +1,86 @@
+name: Release
+
+# Cut a release by pushing a semver tag:  git tag v1.2.0 && git push origin v1.2.0
+# This builds the image, smoke-tests it, pushes it to GHCR as <version> + latest,
+# and creates a GitHub Release. The image tag is what a self-hoster pins via
+# APP_VERSION (docker-compose.selfhost.yml), and the Release is what
+# /api/admin/update-check compares against.
+#
+# Intentionally does NOT gate on the CI `test` job — releases point at an
+# already-merged commit, and that job is independently red right now.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push to GHCR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # github.repository is owner/name; metadata-action lowercases it for
+          # GHCR (which rejects uppercase) — e.g. ghcr.io/freeperro/gdx_dispatch.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build image (load locally for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gdx_dispatch/docker/Dockerfile
+          build-args: GIT_SHA_SHORT=${{ github.sha }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test /health
+        run: |
+          img="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          docker run -d --name rel-test \
+            -e DATABASE_URL=sqlite:///tmp/test.db \
+            -e SECRET_KEY=ci-test \
+            -p 8000:8000 "$img"
+          ok=
+          for _ in $(seq 1 15); do
+            if curl -sf http://localhost:8000/health >/dev/null; then ok=1; break; fi
+            sleep 3
+          done
+          docker logs rel-test
+          docker rm -f rel-test
+          [ "$ok" = "1" ] || { echo "image failed /health — not pushing"; exit 1; }
+
+      - name: Push image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gdx_dispatch/docker/Dockerfile
+          build-args: GIT_SHA_SHORT=${{ github.sha }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
