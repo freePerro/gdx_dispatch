@@ -96,6 +96,10 @@ jobs:
       - name: Run tests (parallel)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/gdx_test
+          # CI runs xdist-parallel (-n auto), so the interactive serial-suite
+          # guard in conftest.py doesn't apply. Without this the guard SystemExit(2)s
+          # the whole job (it was already red on main for this reason).
+          PYTEST_DISABLE_SPLIT_GUARD: "1"
         run: |
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e --ignore=gdx_dispatch/tests/serial \
             -n auto --tb=short -q -k 'not e2e and not load'
