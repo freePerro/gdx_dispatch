@@ -57,6 +57,16 @@ def client() -> Generator[TestClient, None, None]:
 
 
 def test_module_gating(client: TestClient):
+    # Single-tenant: the owner owns the whole install, so every module is
+    # seeded enabled on first access (see core.modules._seed_default_modules).
+    # The first request seeds + passes the gate.
+    assert client.get("/api/inventory/parts").status_code == 200
+
+    # The require_module gate 403s only once an admin explicitly disables the
+    # module — that's the gating behavior this test pins.
+    disable = client.post("/api/settings/modules/inventory/disable")
+    assert disable.status_code == 200, disable.text
+
     response = client.get("/api/inventory/parts")
     assert response.status_code == 403
     assert "not enabled" in response.text

@@ -72,4 +72,7 @@ def test_single_tenant_id_is_env_driven(monkeypatch):
     assert single_tenant()["id"] == "company-uuid-123"
     monkeypatch.delenv("GDX_TENANT_ID", raising=False)
     monkeypatch.delenv("GDX_DEFAULT_TENANT_ID", raising=False)
-    assert single_tenant()["id"] == "gdx"
+    # Default when no env is set: the control plane is UUID-typed, so the
+    # fallback is a canonical UUID, not the bare "gdx" slug (see
+    # gdx_dispatch/core/tenant.py:single_tenant).
+    assert single_tenant()["id"] == "00000000-0000-0000-0000-000000000001"

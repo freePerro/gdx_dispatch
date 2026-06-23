@@ -6,6 +6,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 
+from gdx_dispatch.tests.conftest import app_route_paths
+
 
 def test_admin_flags_module_imports():
     """admin_flags router must import cleanly and expose a FastAPI APIRouter."""
@@ -45,7 +47,7 @@ def test_module_grant_endpoint_registered():
     """App routes must include /api/admin/tenants/{tenant_id}/modules."""
     from gdx_dispatch.app import create_app
     app = create_app()
-    paths = [route.path for route in app.routes]
+    paths = app_route_paths(app)
     assert any("/api/admin/tenants/{tenant_id}/modules" in p for p in paths), (
         f"Expected /api/admin/tenants/{{tenant_id}}/modules in routes. Found: {paths}"
     )
@@ -55,7 +57,7 @@ def test_flags_endpoint_registered():
     """App routes must include /api/admin/flags."""
     from gdx_dispatch.app import create_app
     app = create_app()
-    paths = [route.path for route in app.routes]
+    paths = app_route_paths(app)
     assert any(p == "/api/admin/flags" for p in paths), (
         f"Expected /api/admin/flags in routes. Found: {paths}"
     )

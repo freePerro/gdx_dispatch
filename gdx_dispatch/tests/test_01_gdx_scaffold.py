@@ -4,6 +4,8 @@ test_01_gdx_scaffold.py — Verify GDX FastAPI scaffold starts and routes are re
 import pytest
 from fastapi.testclient import TestClient
 
+from gdx_dispatch.tests.conftest import app_route_paths
+
 
 @pytest.fixture
 def gdx_client():
@@ -203,7 +205,7 @@ def test_auth_routes_registered():
     """Auth routes are registered in the app."""
     from gdx_dispatch.app import create_app
     app = create_app()
-    paths = {r.path for r in app.routes}
+    paths = app_route_paths(app)
     assert "/auth/login" in paths
     assert "/auth/refresh" in paths
     assert "/auth/logout" in paths
@@ -213,7 +215,7 @@ def test_jobs_routes_registered():
     """Jobs routes are registered in the app."""
     from gdx_dispatch.app import create_app
     app = create_app()
-    paths = {r.path for r in app.routes}
+    paths = app_route_paths(app)
     assert "/api/jobs" in paths
     assert "/api/jobs/{job_id}" in paths
 
@@ -230,7 +232,7 @@ def test_stripe_webhook_route_registered():
     """Stripe webhook route is registered."""
     from gdx_dispatch.app import create_app
     app = create_app()
-    paths = {r.path for r in app.routes}
+    paths = app_route_paths(app)
     assert "/stripe/webhook" in paths
 
 

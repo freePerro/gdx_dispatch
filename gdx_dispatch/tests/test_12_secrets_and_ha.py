@@ -42,8 +42,9 @@ def test_control_plane_ha_doc_exists():
 
 def test_jwks_route_registered():
     from gdx_dispatch.app import app
+    from gdx_dispatch.tests.conftest import app_route_paths
 
-    routes = [getattr(r, "path", "") for r in app.routes]
+    routes = app_route_paths(app)
     assert any("jwks.json" in path for path in routes), (
         f"/.well-known/jwks.json route not found in app routes. "
         f"Registered routes: {[p for p in routes if p]}"

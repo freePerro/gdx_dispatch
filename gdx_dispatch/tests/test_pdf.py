@@ -35,7 +35,8 @@ def pdf_app():
     app = FastAPI()
     app.include_router(pdf_router.router)
     app.dependency_overrides[get_db] = _override_db
-    for route in app.routes:
+    from gdx_dispatch.tests.conftest import iter_app_routes
+    for _, route in iter_app_routes(app):
         if not hasattr(route, "dependant"):
             continue
         for dep in route.dependant.dependencies:

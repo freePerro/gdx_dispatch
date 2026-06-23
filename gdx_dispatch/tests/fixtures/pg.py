@@ -152,6 +152,17 @@ def _drop_stale_templates() -> None:
 @pytest.fixture(scope="session")
 def pg_template_db(request) -> str:
     """Create the template DB once per session and load structure.sql into it."""
+    # requires_pg gate: skip (not error) the whole pg-fixture chain when no
+    # PostgreSQL is reachable. Without this, environments without a test PG
+    # (default CI, most laptops) raised psycopg2.OperationalError at setup and
+    # surfaced as ERRORs. Set GDX_TEST_PG_HOST/PORT/USER/PASSWORD to run these.
+    try:
+        _admin_conn().close()
+    except psycopg2.OperationalError as exc:
+        pytest.skip(
+            f"PostgreSQL not reachable at {PG_HOST}:{PG_PORT} "
+            f"(set GDX_TEST_PG_* to run requires-pg tests): {exc}"
+        )
     _drop_stale_templates()
     request.addfinalizer(lambda: _cleanup_template(TEMPLATE_DB))
     if not STRUCTURE_SQL.exists():

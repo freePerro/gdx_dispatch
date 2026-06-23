@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.phone_com.models import PhoneComCall, PhoneComVoicemail
 from gdx_dispatch.models.tenant_models import Job
@@ -37,6 +37,7 @@ def client(db_session):
     app = FastAPI()
     app.dependency_overrides[require_module("phone_com")] = lambda: True
     app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_tenant_db] = lambda: db_session
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": str(uuid4()), "tenant_id": str(uuid4()), "role": "admin",
     }

@@ -63,44 +63,8 @@ def test_other_workflow_flags_stay_false() -> None:
         )
 
 
-def test_migration_079_present_and_alters_three_columns() -> None:
-    """The migration file exists, has the right anchor, and ALTERs only
-    the three closeout flags. Revision name must be ≤32 chars (the
-    alembic_version.version_num column is varchar(32) — first deploy
-    blew up with StringDataRightTruncation when the rev was 38 chars)."""
-    path = REPO_ROOT / "gdx_dispatch" / "migrations" / "versions" / "079_closeout_defaults_true.py"
-    assert path.exists(), "migration 079 not found"
-    text = path.read_text(encoding="utf-8")
-    assert 'revision = "079_closeout_defaults_true"' in text
-    assert 'down_revision = "078_cc_audit_chain_hex"' in text
-    # Pin the length guardrail explicitly — anyone bumping this filename
-    # has to keep the rev string ≤32 chars.
-    import re as _re
-    m = _re.search(r'^revision = "([^"]+)"', text, _re.MULTILINE)
-    assert m, "couldn't find revision string"
-    assert len(m.group(1)) <= 32, (
-        f"revision string {m.group(1)!r} is {len(m.group(1))} chars; "
-        "alembic_version.version_num is varchar(32). See "
-        "memory/project_cc_v2_platform_gotchas.md."
-    )
-    # The migration loops over _FLAGS, so it has ONE literal SET DEFAULT
-    # statement per direction (true on upgrade, false on downgrade).
-    assert "SET DEFAULT true" in text, "upgrade missing SET DEFAULT true"
-    assert "SET DEFAULT false" in text, "downgrade missing SET DEFAULT false"
-    # Must touch ONLY the three closeout flags
-    for col in (
-        "workflow_require_parts_on_complete",
-        "workflow_require_hours_on_complete",
-        "workflow_require_signature_on_complete",
-    ):
-        assert col in text, f"migration 079 missing column {col}"
-    # Must NOT touch the other three workflow flags.
-    for col in (
-        "workflow_lock_schedule_on_start",
-        "workflow_post_arrival_event",
-        "workflow_sms_arrival_notify",
-    ):
-        assert col not in text, (
-            f"migration 079 references {col} — it shouldn't. Only the "
-            "closeout gates default true; side-effect flags stay opt-in."
-        )
+# NOTE: the standalone migration 079_closeout_defaults_true.py was folded into
+# 001_squashed_baseline.py by the public-release squash, so the former
+# test_migration_079_present_and_alters_three_columns (which asserted that file
+# existed) was removed. The ORM-default behavior it guarded is still covered by
+# test_orm_defaults_for_closeout_gates_are_true above.

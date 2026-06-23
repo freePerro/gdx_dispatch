@@ -53,10 +53,11 @@ def test_settings_modules_returns_rich_shape() -> None:
         "test-jwt-secret-at-least-32-bytes-long-for-hs256-sha256-safety",
     )
     from gdx_dispatch.app import app
+    from gdx_dispatch.tests.conftest import iter_app_routes
 
     target = None
-    for route in app.routes:
-        if getattr(route, "path", None) == "/api/settings/modules" and \
+    for full_path, route in iter_app_routes(app):
+        if full_path == "/api/settings/modules" and \
                 "GET" in (getattr(route, "methods", None) or set()):
             target = route
             break

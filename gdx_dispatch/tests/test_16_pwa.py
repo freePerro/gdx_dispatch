@@ -6,6 +6,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from gdx_dispatch.tests.conftest import app_route_paths
+
 
 def _pwa_client() -> TestClient:
     """Minimal app with only the PWA router — no TenantMiddleware."""
@@ -181,7 +183,7 @@ def test_pwa_routes_registered_in_app():
     from gdx_dispatch.app import create_app
 
     app = create_app()
-    paths = [route.path for route in app.routes]
+    paths = app_route_paths(app)
     assert "/sw.js" in paths, f"/sw.js not registered. Found: {paths}"
     assert "/manifest.json" in paths, f"/manifest.json not registered. Found: {paths}"
     assert any("/api/push" in p for p in paths), f"/api/push/* not registered. Found: {paths}"

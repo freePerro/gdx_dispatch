@@ -35,14 +35,16 @@ def app(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "x" * 64)
     app = FastAPI()
     app.include_router(admin_router)
-    cdb = MagicMock()
-    tdb = MagicMock()
+    # Single-tenant collapse: control + tenant planes are one DB, and the
+    # router exposes a single db dependency (get_db_for_admin). Use one
+    # MagicMock for both planes so configuring either `cdb` or `tdb` in a
+    # test reaches the dependency the router actually resolves.
+    db = MagicMock()
+    cdb = tdb = db
     app.dependency_overrides[get_admin_principal] = _admin
-    app.dependency_overrides[get_db_for_admin] = lambda: cdb
-    app.dependency_overrides[get_db_for_admin] = lambda: tdb
+    app.dependency_overrides[get_db_for_admin] = lambda: db
     app.dependency_overrides[get_current_user] = _admin
-    app.dependency_overrides[get_db] = lambda: cdb
-    app.dependency_overrides[get_db] = lambda: tdb
+    app.dependency_overrides[get_db] = lambda: db
     return TestClient(app), cdb, tdb
 
 
