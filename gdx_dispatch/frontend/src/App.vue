@@ -35,10 +35,14 @@ import CommandPalette from './components/CommandPalette.vue';
 import ErrorBoundary from './components/ErrorBoundary.vue';
 import AppLayout from './components/AppLayout.vue';
 import Toast from 'primevue/toast';
+import { useIdleLogout } from './composables/useIdleLogout';
 
 const commandPaletteOpen = ref(false);
 const toast = useToast();
 const route = useRoute();
+
+// Inactivity auto-logout (configured in Settings → Feature Settings).
+useIdleLogout();
 
 const noShell = computed(() => Boolean(route?.meta?.noShell));
 

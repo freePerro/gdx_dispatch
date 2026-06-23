@@ -62,6 +62,7 @@ const PurchaseOrdersView = () => import('../views/PurchaseOrdersView.vue');
 const ChangeOrdersView = () => import('../views/ChangeOrdersView.vue');
 const ReferralsView = () => import('../views/ReferralsView.vue');
 const AdminOpsView = () => import('../views/AdminOpsView.vue');
+const ServerErrorsView = () => import('../views/ServerErrorsView.vue');
 const NotFoundView = () => import('../views/NotFoundView.vue');
 const AIAssistantView = () => import('../views/AIAssistantView.vue');
 const PhoneComCallsView = () => import('../views/PhoneComCallsView.vue');
@@ -221,6 +222,7 @@ const routes = [
   { path: '/change-orders', name: 'change-orders', component: ChangeOrdersView },
   { path: '/warranties', name: 'warranties', component: WarrantiesView },
   { path: '/admin-ops', name: 'admin-ops', component: AdminOpsView, meta: { requiresPermission: 'settings.write' } },
+  { path: '/server-errors', name: 'server-errors', component: ServerErrorsView, meta: { requiresPermission: 'settings.write' } },
   // /admin-settings → /settings (deduped). Bookmark redirect.
   { path: '/admin-settings', redirect: '/settings' },
   // /ai-settings was removed when AI Assistant config moved to

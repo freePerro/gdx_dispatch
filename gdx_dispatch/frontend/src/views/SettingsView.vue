@@ -443,6 +443,25 @@
         <!-- Estimates Tab — 2026-04-30. Per-tenant feature toggles for the
              estimate editor. -->
         <TabPanel value="estimates">
+          <Card data-testid="security-card" style="margin-bottom:1rem">
+            <template #title>Security</template>
+            <template #content>
+              <div style="display:flex; flex-direction:column; gap:0.6rem;">
+                <strong>Auto-logout on inactivity</strong>
+                <div class="muted">
+                  Sign out after a period of no activity (mouse, keyboard, touch). Applies to
+                  this device. Set to 0 to disable.
+                </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                  <InputNumber v-model="idleTimeoutMin" :min="0" :max="480" suffix=" min"
+                    :useGrouping="false" style="width: 10rem" data-testid="idle-timeout-min" />
+                  <Button label="Save" icon="pi pi-save" @click="saveIdleTimeout" data-testid="idle-timeout-save" />
+                  <span class="muted">{{ idleTimeoutMin > 0 ? `logs out after ${idleTimeoutMin} min idle` : 'disabled' }}</span>
+                </div>
+              </div>
+            </template>
+          </Card>
+
           <Card>
             <template #title>Estimates</template>
             <template #content>
@@ -1031,6 +1050,7 @@ import OutlookIntegrationCard from "../components/OutlookIntegrationCard.vue";
 import OutlookConnectButton from "../components/OutlookConnectButton.vue";
 import MarginTiersPanel from "../components/MarginTiersPanel.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { getIdleTimeoutMin, setIdleTimeoutMin } from "../composables/useIdleLogout";
 import { useQBSync } from "../composables/useQBSync";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
@@ -1575,6 +1595,22 @@ const estimatesFeatures = reactive({
 const emailSubjectPlaceholder = "{{job_title}}";
 const emailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached estimate for {{job_title}}.\n\nReply with any questions, or to move forward.\n\nThanks,\n{{company_name}}";
 const estimatesFeaturesSaving = ref(false);
+
+// Inactivity auto-logout (per-device, stored in localStorage; enforced by
+// useIdleLogout mounted in App.vue).
+const idleTimeoutMin = ref(getIdleTimeoutMin());
+function saveIdleTimeout() {
+  setIdleTimeoutMin(idleTimeoutMin.value);
+  toast.add({
+    severity: "success",
+    summary: "Saved",
+    detail: idleTimeoutMin.value > 0
+      ? `Auto-logout after ${idleTimeoutMin.value} min of inactivity.`
+      : "Auto-logout disabled.",
+    life: 4000,
+  });
+}
+
 async function loadEstimatesFeatures() {
   try {
     const p = await api.get("/api/estimates-features");
