@@ -134,7 +134,7 @@ def reset_performance_logger() -> None:
 
 
 def _require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    if str(user.get("role") or "") not in {"admin", "owner"}:
+    if str(user.get("role") or "") not in {"admin", "owner", "superadmin"}:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 

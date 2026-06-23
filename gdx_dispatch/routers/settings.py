@@ -69,7 +69,10 @@ class BrandingPatchIn(BaseModel):
 
 
 def _require_admin(current_user: dict[str, Any]) -> None:
-    if str(current_user.get("role", "")) != "admin":
+    # owner outranks admin (RBAC_HIERARCHY); superadmin is platform-level. Gating
+    # on == "admin" wrongly 403'd the owner — the seeded account — out of every
+    # /api/settings endpoint.
+    if str(current_user.get("role", "")) not in {"admin", "owner", "superadmin"}:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
