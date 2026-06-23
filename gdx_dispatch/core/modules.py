@@ -112,18 +112,21 @@ def _seed_default_modules(db: Session, company_id: str) -> None:
     ).scalar()
     if has_any:
         return
-    for key, cfg in MODULES.items():
-        if cfg["default"]:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
-                    VALUES (:_id, :company_id, :module_key, :_now, :_now)
-                    ON CONFLICT (company_id, module_key) DO NOTHING
-                    """
-                ),
-                {"company_id": company_id, "module_key": key, "_id": str(uuid4()), "_now": datetime.now(timezone.utc)},
-            )
+    # Single-tenant: the owner owns the whole install, so seed EVERY module on
+    # first boot (the per-module `default` flag is vestigial SaaS tiering). This
+    # runs once — guarded by has_any above — so a later admin-disable sticks and
+    # is never resurrected.
+    for key in MODULES:
+        db.execute(
+            text(
+                """
+                INSERT INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
+                VALUES (:_id, :company_id, :module_key, :_now, :_now)
+                ON CONFLICT (company_id, module_key) DO NOTHING
+                """
+            ),
+            {"company_id": company_id, "module_key": key, "_id": str(uuid4()), "_now": datetime.now(timezone.utc)},
+        )
     db.commit()
 
 
