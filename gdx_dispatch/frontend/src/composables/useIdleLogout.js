@@ -1,17 +1,16 @@
 /**
  * useIdleLogout — log the user out after N minutes of no activity.
  *
- * The timeout is configured in Settings → Feature Settings and stored in
- * localStorage (per device). 0 = disabled. Mount once near the app root.
- *
- * ponytail: per-device (localStorage), no backend. If you need it enforced
- * tenant-wide by an admin, persist the value on TenantSettings and seed
- * getIdleTimeoutMin() from the API after login — the composable stays the same.
+ * Tenant-wide: the timeout lives on TenantSettings and is fetched from
+ * /api/session-policy on login, then cached in localStorage (which drives the
+ * timer + survives reloads/offline). Admins set it in Settings → Feature
+ * Settings → Security. 0 = disabled. Mount once near the app root.
  */
 import { onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import { useAuthStore } from '../stores/auth';
+import { createApiClient } from './useApi';
 
 const STORAGE_KEY = 'gdx_idle_timeout_min';
 const CONFIG_EVENT = 'gdx:idle-config-changed';
@@ -32,8 +31,24 @@ export function useIdleLogout() {
   const auth = useAuthStore();
   const router = useRouter();
   const toast = useToast();
+  const apiClient = createApiClient();
   let timer = null;
   let lastReset = 0;
+
+  // Pull the tenant-wide value from the server and cache it locally (which
+  // re-arms via the config event). Best-effort: on failure keep the cached
+  // localStorage value so offline / transient errors don't disable the timer.
+  async function syncServerPolicy() {
+    if (!auth.isAuthenticated) return;
+    try {
+      const data = await apiClient.get('/api/session-policy');
+      if (data && typeof data.idle_timeout_minutes === 'number') {
+        setIdleTimeoutMin(data.idle_timeout_minutes);
+      }
+    } catch {
+      /* keep cached value */
+    }
+  }
 
   function clear() {
     if (timer) { clearTimeout(timer); timer = null; }
@@ -74,12 +89,16 @@ export function useIdleLogout() {
     ACTIVITY_EVENTS.forEach((e) => window.addEventListener(e, reset, { passive: true }));
     window.addEventListener(CONFIG_EVENT, armFresh);
     armFresh();
+    syncServerPolicy();
   });
 
-  // Arm immediately on login (not just on the first mouse move afterward) and
-  // cancel the timer on logout. Without this, a user who logs in and walks away
-  // is never armed.
-  watch(() => auth.isAuthenticated, () => armFresh());
+  // On login: fetch the tenant policy and arm immediately (not just on the first
+  // mouse move). On logout: armFresh re-reads and the isAuthenticated gate stops
+  // the timer.
+  watch(() => auth.isAuthenticated, (isAuth) => {
+    armFresh();
+    if (isAuth) syncServerPolicy();
+  });
 
   onUnmounted(() => {
     clear();

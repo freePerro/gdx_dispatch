@@ -450,12 +450,13 @@
                 <strong>Auto-logout on inactivity</strong>
                 <div class="muted">
                   Sign out after a period of no activity (mouse, keyboard, touch). Applies to
-                  this device. Set to 0 to disable.
+                  every user — each picks up a change on their next sign-in or page reload.
+                  Set to 0 to disable.
                 </div>
                 <div style="display:flex; align-items:center; gap:0.75rem;">
                   <InputNumber v-model="idleTimeoutMin" :min="0" :max="480" suffix=" min"
                     :useGrouping="false" style="width: 10rem" data-testid="idle-timeout-min" />
-                  <Button label="Save" icon="pi pi-save" @click="saveIdleTimeout" data-testid="idle-timeout-save" />
+                  <Button label="Save" icon="pi pi-save" :loading="idleTimeoutSaving" @click="saveIdleTimeout" data-testid="idle-timeout-save" />
                   <span class="muted">{{ idleTimeoutMin > 0 ? `logs out after ${idleTimeoutMin} min idle` : 'disabled' }}</span>
                 </div>
               </div>
@@ -1596,19 +1597,40 @@ const emailSubjectPlaceholder = "{{job_title}}";
 const emailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached estimate for {{job_title}}.\n\nReply with any questions, or to move forward.\n\nThanks,\n{{company_name}}";
 const estimatesFeaturesSaving = ref(false);
 
-// Inactivity auto-logout (per-device, stored in localStorage; enforced by
-// useIdleLogout mounted in App.vue).
+// Inactivity auto-logout — tenant-wide, stored on TenantSettings via
+// /api/session-policy. localStorage is the local cache that drives the timer
+// (useIdleLogout, mounted in App.vue).
 const idleTimeoutMin = ref(getIdleTimeoutMin());
-function saveIdleTimeout() {
-  setIdleTimeoutMin(idleTimeoutMin.value);
-  toast.add({
-    severity: "success",
-    summary: "Saved",
-    detail: idleTimeoutMin.value > 0
-      ? `Auto-logout after ${idleTimeoutMin.value} min of inactivity.`
-      : "Auto-logout disabled.",
-    life: 4000,
-  });
+const idleTimeoutSaving = ref(false);
+async function loadIdleTimeout() {
+  try {
+    const data = await api.get("/api/session-policy");
+    if (data && typeof data.idle_timeout_minutes === "number") {
+      idleTimeoutMin.value = data.idle_timeout_minutes;
+      setIdleTimeoutMin(data.idle_timeout_minutes); // refresh local cache
+    }
+  } catch {
+    /* fall back to the cached localStorage value already in the ref */
+  }
+}
+async function saveIdleTimeout() {
+  idleTimeoutSaving.value = true;
+  try {
+    const data = await api.patch(
+      "/api/session-policy",
+      { idle_timeout_minutes: idleTimeoutMin.value },
+      {
+        successMessage: idleTimeoutMin.value > 0
+          ? `Auto-logout after ${idleTimeoutMin.value} min of inactivity (tenant-wide).`
+          : "Auto-logout disabled (tenant-wide).",
+      },
+    );
+    const v = data?.idle_timeout_minutes ?? idleTimeoutMin.value;
+    idleTimeoutMin.value = v;
+    setIdleTimeoutMin(v); // update this device immediately
+  } finally {
+    idleTimeoutSaving.value = false;
+  }
 }
 
 async function loadEstimatesFeatures() {
@@ -1949,7 +1971,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout()]);
 });
 
 onBeforeUnmount(() => {

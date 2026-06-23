@@ -217,6 +217,8 @@ class TenantSettings(Base):
     dispatch_warn_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_block_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_show_unassigned_lane: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # Tenant-wide inactivity auto-logout (minutes; 0 = disabled). See migration 002.
+    session_idle_timeout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     default_payment_terms_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30, server_default="30")
     contractor_payment_terms_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retail_payment_terms_days: Mapped[int | None] = mapped_column(Integer, nullable=True)

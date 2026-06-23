@@ -1977,6 +1977,13 @@ def create_app() -> FastAPI:
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).exception('failed to wire dispatch_settings module')
 
+    # Session policy — tenant-wide inactivity auto-logout.
+    try:
+        from gdx_dispatch.routers.session_policy import router as session_policy_router
+        app.include_router(session_policy_router)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception('failed to wire session_policy router')
+
     # 2026-04-29 / UX audit F-82 — Payroll module (true vs estimated cost).
     # Local var name MUST NOT be `payroll_router` — that name binds to the
     # module-level import at app.py:274, and a function-local assignment
