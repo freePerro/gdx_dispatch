@@ -375,7 +375,10 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
             raise _unauth("Invalid refresh token")
         old_jti, sub = str(c["jti"]), str(c["sub"])
     except (JWTError, KeyError, TypeError, ValueError) as exc:
-        log.exception("auth_refresh_failed")
+        # Routine: client presented an expired/invalid/old-signing-key refresh
+        # token. Not a server fault — one-line warning, no stack trace. The
+        # frontend clears the session and redirects to login on this 401.
+        log.warning("auth_refresh_rejected: %s", exc.__class__.__name__)
         raise _unauth("Invalid or expired refresh token") from exc
     tid_for_audit = str(c.get("tenant_id", ""))
 
@@ -615,8 +618,10 @@ def logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
             redis.sadd("used_refresh_jtis", str(c.get("jti", ""))); redis.expire("used_refresh_jtis", REFRESH_TTL)  # noqa: E701,E702
             logout_sub = str(c.get("sub") or "anonymous")
             logout_tid = str(c.get("tenant_id", ""))
-        except JWTError:
-            log.exception("auth_logout_token_decode_failed")
+        except JWTError as exc:
+            # Logging out with a stale/undecodable token is expected — the
+            # local logout still proceeds. Info-level, no stack trace.
+            log.info("auth_logout_token_undecodable: %s", exc.__class__.__name__)
     try:
         log_audit_event_sync(
             db,

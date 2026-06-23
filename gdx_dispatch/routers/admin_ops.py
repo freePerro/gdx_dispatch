@@ -30,8 +30,14 @@ router = APIRouter(
 )
 
 
+# Admin-tier roles, matching require_role(...) usage across the other routers.
+# `owner` outranks `admin` in RBAC_HIERARCHY, so gating on role == "admin" alone
+# wrongly locked the owner (the seeded account) out of every endpoint here.
+_ADMIN_ROLES = {"admin", "owner", "superadmin"}
+
+
 def _require_admin(user: dict = Depends(get_current_user)) -> dict:
-    if user.get("role") != "admin":
+    if user.get("role") not in _ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Insufficient role")
     return user
 
