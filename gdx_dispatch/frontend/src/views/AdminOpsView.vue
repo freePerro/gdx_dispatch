@@ -3,6 +3,13 @@
       <Toolbar data-testid="admin-ops-toolbar">
         <template #start>
           <h2 class="page-title">System Admin</h2>
+          <span v-if="updateInfo" class="version-badge" data-testid="app-version">
+            v{{ updateInfo.current }}
+            <template v-if="updateInfo.update_available">
+              <Tag severity="warn" :value="`update available → ${updateInfo.latest}`" data-testid="update-available" />
+              <a v-if="updateInfo.notes_url" :href="updateInfo.notes_url" target="_blank" rel="noopener noreferrer">release notes</a>
+            </template>
+          </span>
         </template>
         <template #end>
           <div class="admin-ops-actions">
@@ -133,6 +140,7 @@ const targetFilter = ref(null);
 const showDialog = ref(false);
 const selectedEntry = ref(null);
 const runningAction = ref('');
+const updateInfo = ref(null);
 
 const statusTabs = ['all', 'success', 'failed'];
 
@@ -217,5 +225,18 @@ function openDetails(entry) {
   showDialog.value = true;
 }
 
-onMounted(loadEntries);
+async function loadUpdateInfo() {
+  // Best-effort: the endpoint always returns 200 (errors land in .error), so a
+  // GitHub outage shows the running version without a scary toast.
+  try {
+    updateInfo.value = await api.get('/api/admin/update-check');
+  } catch {
+    /* ignore — version badge is non-critical */
+  }
+}
+
+onMounted(() => {
+  loadEntries();
+  loadUpdateInfo();
+});
 </script>

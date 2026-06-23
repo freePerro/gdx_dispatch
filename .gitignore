@@ -116,3 +116,6 @@ SCOPE.md
 /fix_alembic.py
 /patch_tenant.py
 /all_todos.txt
+
+# Self-host DB snapshots written by docker/update.sh
+backups/

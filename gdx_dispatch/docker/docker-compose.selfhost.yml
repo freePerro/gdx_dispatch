@@ -1,0 +1,44 @@
+# Self-host overlay: run published images instead of building locally.
+#
+# Layer this ON TOP of docker-compose.yml so the big env blocks stay in one
+# place (no second copy to drift). It only swaps `build:` for a pulled image:
+#
+#   docker compose -p gdx --env-file ./.env \
+#     -f gdx_dispatch/docker/docker-compose.yml \
+#     -f gdx_dispatch/docker/docker-compose.selfhost.yml up -d
+#
+# update.sh wraps exactly that. Pin the release in .env: APP_VERSION=1.2.0
+# (or leave it unset to track :latest). The image tag IS the version that
+# /pwa/version reports — one source of truth.
+#
+# ponytail: both `build` and `image` are present after the merge; pull_policy:
+# always makes `up` fetch the published image and never build on the customer box.
+#
+# Migration safety: every service inherits entrypoint.sh, which runs
+# `alembic upgrade head` + bootstrap on boot. Letting all four do that against
+# one Postgres at once races real DDL migrations. Here only `app` migrates;
+# the celery services skip both (GDX_SKIP_MIGRATIONS / GDX_SKIP_BOOTSTRAP), so
+# exactly one container ever touches the schema. update.sh also starts app
+# first and waits for health before the rest.
+services:
+  app:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+  celery-high:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    environment:
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
+  celery-low:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    environment:
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
+  celery-beat:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    environment:
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
