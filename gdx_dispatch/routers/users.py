@@ -22,6 +22,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
+from gdx_dispatch.core.permissions import assert_can_assign_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context
 from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
@@ -272,6 +273,7 @@ def create_user(payload: UserCreateIn, request: Request, user: dict = Depends(ge
     # Full email is still stored in `email`. This only affects the `username`
     # fallback we synthesize when the caller doesn't provide one.
     username = email[:80]
+    assert_can_assign_role(user, payload.role)
     u = User(id=uuid4(), company_id=tid, email=email, username=username, full_name=humanize_name(payload.name.strip()),
              password_hash=generate_password_hash(payload.password), role=payload.role,
              active=True, schedulable=True, created_at=now, updated_at=now)
@@ -386,6 +388,7 @@ def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dic
     if _user_id(user) == user_id:
         raise HTTPException(status_code=400, detail="Cannot change your own role")
     old_role = u.role or "user"
+    assert_can_assign_role(user, payload.role, old_role)
     u.role = payload.role
     u.updated_at = utcnow()
     _sync_user_role_assignment(db, tid, user_id, payload.role)
@@ -621,6 +624,7 @@ def invite_user(payload: InviteIn, request: Request, user: dict = Depends(get_cu
     existing = db.execute(select(User.id).where(User.email == email, User.company_id == tid, User.deleted_at.is_(None))).first()
     if existing:
         raise HTTPException(status_code=409, detail="A user with this email already exists")
+    assert_can_assign_role(user, payload.role)
     temp_password = secrets.token_urlsafe(16)
     now = utcnow()
     u = User(id=uuid4(), company_id=tid, email=email, full_name=payload.name.strip(),

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import Job, Technician, TimeEntry
 from gdx_dispatch.modules.inventory.models import JobPart
 
@@ -58,6 +59,15 @@ async def _current_user_dependency(request: Request) -> dict[str, Any]:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return await get_current_user(request, token)
+
+
+def _require_dispatch(user: dict[str, Any] = Depends(_current_user_dependency)) -> dict[str, Any]:
+    """Back-office labor management is dispatch/admin-only. Technicians record
+    their own time via the self-scoped /api/timeclock endpoints, not here —
+    these endpoints take an arbitrary tech_id and expose tenant-wide cost data."""
+    if not is_dispatch_manager(user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    return user
 
 
 def _to_float(value: Decimal | float | int | None) -> float:
@@ -128,7 +138,7 @@ def _get_job_or_404(db: Session, job_id: UUID) -> Job:
 @router.get("/jobs/{job_id}/time-entries", response_model=None)
 def list_job_time_entries(
     job_id: UUID,
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     _get_job_or_404(db, job_id)
@@ -146,7 +156,7 @@ def create_job_time_entry(
     request: Request,
     job_id: UUID,
     payload: TimeEntryCreate,
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _get_job_or_404(db, job_id)
@@ -199,7 +209,7 @@ def create_job_time_entry(
 def update_time_entry(
     entry_id: UUID,
     payload: TimeEntryPatch,
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     row = db.get(TimeEntry, entry_id)
@@ -260,7 +270,7 @@ def update_time_entry(
 @router.delete("/time-entries/{entry_id}", response_model=None)
 def delete_time_entry(
     entry_id: UUID,
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     row = db.get(TimeEntry, entry_id)
@@ -298,7 +308,7 @@ def delete_time_entry(
 @router.get("/jobs/{job_id}/costing", response_model=None, operation_id="get_job_labor_costing")
 def get_job_labor_costing(
     job_id: UUID,
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _get_job_or_404(db, job_id)
@@ -340,7 +350,7 @@ def get_job_labor_costing(
 def labor_summary(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    _: dict[str, Any] = Depends(_current_user_dependency),
+    _: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     now = datetime.now(UTC).date()

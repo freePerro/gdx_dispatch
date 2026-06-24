@@ -26,6 +26,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -245,52 +246,27 @@ def _job_belongs_to_user(
     tenant_id: str,
     job_id: str,
     user_id: str | None,
-    technician_id: str | None,
+    technician_id: str | None,  # noqa: ARG001 — kept for call-site compatibility
 ) -> bool:
-    if not job_id or not tenant_id:
-        return False
+    # Delegate to the shared helper so web + mobile enforce ONE ownership rule.
+    # jobs.assigned_to holds a technician.id (not a user id); the shared helper
+    # resolves the caller's technician record itself, so technician_id is unused.
+    from gdx_dispatch.core.job_access import job_belongs_to_user as _job_belongs
 
-    if user_id:
-        row = db.execute(
-            _text(
-                """
-                SELECT 1
-                FROM jobs
-                WHERE id = :job_id
-                  AND company_id = :tenant_id
-                  AND deleted_at IS NULL
-                  AND assigned_to = :user_id
-                LIMIT 1
-                """
-            ),
-            {"job_id": job_id, "tenant_id": tenant_id, "user_id": user_id},
-        ).scalar()
-        if row:
-            return True
+    return _job_belongs(db, tenant_id, str(job_id) if job_id else "", user_id)
 
-    if technician_id:
-        row = db.execute(
-            _text(
-                """
-                SELECT 1
-                FROM appointments
-                WHERE job_id = :job_id
-                  AND company_id = :tenant_id
-                  AND tech_id = :technician_id
-                  AND deleted_at IS NULL
-                LIMIT 1
-                """
-            ),
-            {
-                "job_id": job_id,
-                "tenant_id": tenant_id,
-                "technician_id": technician_id,
-            },
-        ).scalar()
-        if row:
-            return True
 
-    return False
+def _assert_job_access(db: Session, request: Request, current_user: Any, job_id: str) -> None:
+    """Ownership gate for technician-facing job endpoints. Dispatch/admin may
+    touch any job in the tenant; a technician may only touch jobs assigned to
+    them. Raises 404 (not 403) so one tech can't probe another's job ids."""
+    if is_dispatch_manager(current_user):
+        return
+    tenant_id = _tenant_id(request)
+    user_id = _user_id(current_user or {})
+    technician_id = _get_technician_id(db, tenant_id, user_id)
+    if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
+        raise HTTPException(status_code=404, detail="job not found")
 
 
 def _get_technician_id(db: Session, tenant_id: str, user_id: str) -> str | None:
@@ -1274,6 +1250,7 @@ def mobile_my_job_detail(
     if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1470,6 +1447,7 @@ def mobile_job_start(
     if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1590,6 +1568,7 @@ def mobile_job_status_update(
     if not _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1657,6 +1636,7 @@ def get_mobile_job_detail(
 ):
     _ = current_user
     tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1729,6 +1709,7 @@ def mobile_job_en_route(
     tenant_id = _tenant_id(request)
     user = current_user or {}
     user_id = _user_id(user)
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1830,6 +1811,7 @@ def mobile_job_arrived(
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
 
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -2009,6 +1991,7 @@ def mobile_job_complete(
     tenant_id = _tenant_id(request)
     user = current_user or {}
     user_id = _user_id(user)
+    _assert_job_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -2443,6 +2426,7 @@ def mobile_clock_in(
     user_id = _user_id(user)
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -2519,6 +2503,7 @@ def mobile_clock_out(
     user_id = _user_id(user)
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -2777,6 +2762,7 @@ async def upload_mobile_job_photo(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -2907,6 +2893,7 @@ def capture_mobile_signature(
 ):
     _ = current_user
     tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -2975,6 +2962,7 @@ def add_mobile_job_note(
 ):
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user or {})
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -3060,6 +3048,7 @@ def mobile_job_parts_used(
 ):
     _ = current_user
     tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
@@ -3467,6 +3456,8 @@ def mobile_update_job_status(
     except (ValueError, AttributeError):
         log.exception("mobile_update_job_status_failed")
         return jsonable_response({"detail": "invalid job_id"}, 422)
+    # Ownership: a tech may only transition their own jobs (dispatch/admin any).
+    _assert_job_access(db, request, current_user, job_id)
 
     try:
         _jid = _UUID(job_id)

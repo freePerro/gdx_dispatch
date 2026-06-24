@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.job_access import assert_job_access
+from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -155,10 +157,10 @@ def _get_photo_scoped(
 def list_job_photos(
     job_id: UUID,
     request: Request,
-    _: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    assert_job_access(db, _tenant_id(request), user, str(job_id))
     stmt = (
         select(JobPhoto)
         .where(
@@ -180,6 +182,7 @@ def create_job_photo(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    assert_job_access(db, tenant_id, user, str(job_id))
     photo = JobPhoto(
         company_id=tenant_id,
         job_id=job_id,
@@ -216,6 +219,7 @@ def update_job_photo(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    assert_job_access(db, tenant_id, user, str(job_id))
     photo = _get_photo_scoped(db, photo_id, job_id, tenant_id)
     data = payload.model_dump(exclude_unset=True)
     if "kind" in data and data["kind"] is not None:
@@ -247,6 +251,7 @@ def delete_job_photo(
     db: Session = Depends(get_db),
 ):
     tenant_id = _tenant_id(request)
+    assert_job_access(db, tenant_id, user, str(job_id))
     photo = _get_photo_scoped(db, photo_id, job_id, tenant_id)
     photo.deleted_at = utcnow()
     db.commit()
@@ -265,11 +270,14 @@ def delete_job_photo(
 @router.get("/api/photos/recent", response_model=None)
 def recent_photos(
     request: Request,
-    _: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=200),
 ) -> list[dict[str, Any]]:
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    # Tenant-wide photo feed across all jobs — dispatch/admin only; a technician
+    # would otherwise see customer-premises photos from jobs that aren't theirs.
+    if not is_dispatch_manager(user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
     stmt = (
         select(JobPhoto)
         .where(

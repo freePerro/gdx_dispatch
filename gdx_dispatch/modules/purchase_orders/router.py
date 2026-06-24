@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrder as PurchaseOrder
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrderLine as PurchaseOrderLine
 from gdx_dispatch.modules.purchase_orders.service import create_po, receive_po
 
-router = APIRouter(prefix="/api", tags=["purchase_orders"], dependencies=[Depends(require_module("purchase_orders"))])
+router = APIRouter(prefix="/api", tags=["purchase_orders"], dependencies=[Depends(require_module("purchase_orders")), Depends(get_current_user)])
 
 class POLineIn(BaseModel): part_id: UUID | None = None; description: str; qty: int = 1; unit_cost: float = 0  # noqa: E701,E702
 class POCreateIn(BaseModel): vendor_name: str; vendor_email: str | None = None; job_id: UUID | None = None; notes: str | None = None; lines: list[POLineIn] = Field(default_factory=list)  # noqa: E701,E702

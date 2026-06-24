@@ -19,7 +19,7 @@ from gdx_dispatch.routers.photos import router
 def _make_client(
     tenant_id: str = "tenant-test",
     user_sub: str = "user-1",
-    user_role: str = "technician",
+    user_role: str = "dispatcher",
     engine=None,
 ) -> TestClient:
     if engine is None:

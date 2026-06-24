@@ -208,14 +208,19 @@ def test_get_job_detail_success(session_factory):
 
 def test_get_job_detail_404_for_missing_job(session_factory):
     db = session_factory()
+    # A technician requesting a job that doesn't exist (or isn't assigned to
+    # them) is denied 404 by the ownership gate, raised as an HTTPException.
+    from fastapi import HTTPException
+
     try:
-        r = mobile_router.get_mobile_job_detail(
-            job_id="missing",
-            request=_request(),
-            current_user=_TEST_USER,
-            db=db,
-        )
-        assert r.status_code == 404
+        with pytest.raises(HTTPException) as ei:
+            mobile_router.get_mobile_job_detail(
+                job_id="missing",
+                request=_request(),
+                current_user=_TEST_USER,
+                db=db,
+            )
+        assert ei.value.status_code == 404
     finally:
         db.close()
 
