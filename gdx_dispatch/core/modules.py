@@ -145,6 +145,26 @@ def _is_granted_in_company_table(db: Session, company_id: str, module_key: str) 
     return bool(granted)
 
 
+def enabled_module_keys(db: Session, company_id: str) -> set[str]:
+    """All module keys granted to a tenant. Used by the plugin proxy to forward
+    the authoritative enabled-modules set to plugin-host (so plugins gate without
+    a DB round-trip). Returns an empty set on any DB error — fail closed: a
+    transient failure must not silently enable a plugin."""
+    if not company_id:
+        return set()
+    try:
+        rows = db.execute(
+            text("SELECT module_key FROM company_module_grants WHERE company_id = :cid"),
+            {"cid": company_id},
+        ).fetchall()
+        return {r[0] for r in rows if r[0]}
+    except SQLAlchemyError:
+        logging.getLogger("gdx_dispatch.modules").exception(
+            "enabled_module_keys query failed for tenant=%s", company_id
+        )
+        return set()
+
+
 def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
     canonical_key = normalize_module_key(module_key)
     tenant = getattr(request.state, "tenant", {}) or {}
