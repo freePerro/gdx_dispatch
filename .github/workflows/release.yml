@@ -19,6 +19,24 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The image runs Alembic migrations at startup (migrations/env.py takes a
+    # `pg_advisory_xact_lock`, and baseline_squashed.sql is Postgres SQL), so the
+    # boot smoke-test needs a real Postgres — SQLite fails with "no such function:
+    # pg_advisory_xact_lock". Mirrors the ci.yml `build` job.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: gdx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -55,13 +73,20 @@ jobs:
 
       - name: Smoke test /health
         run: |
+          # --network host so the container reaches the postgres service on
+          # localhost:5432. JWT_SECRET (>=32 bytes) and MASTER_ENCRYPTION_KEY (a
+          # Fernet key) are both required at startup or the app aborts / loads as
+          # a ~7-route skeleton. Throwaway keys for a throwaway CI DB. (Mirrors
+          # ci.yml `build`.)
           img="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
-          docker run -d --name rel-test \
-            -e DATABASE_URL=sqlite:///tmp/test.db \
+          docker run -d --name rel-test --network host \
+            -e DATABASE_URL=postgresql://test:test@localhost:5432/gdx_test \
+            -e JWT_SECRET=ci-verify-image-start-secret-at-least-32-bytes \
+            -e MASTER_ENCRYPTION_KEY=nsF1JvgxTAqhkYxLo4J8k-SB2JptrgzXbPVJDUOI8w4= \
             -e SECRET_KEY=ci-test \
-            -p 8000:8000 "$img"
+            "$img"
           ok=
-          for _ in $(seq 1 15); do
+          for _ in $(seq 1 20); do
             if curl -sf http://localhost:8000/health >/dev/null; then ok=1; break; fi
             sleep 3
           done
