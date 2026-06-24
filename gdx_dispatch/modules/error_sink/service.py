@@ -89,7 +89,10 @@ def record_server_error(
 
         # We open a fresh control session — the request's session may already
         # be in a rollback state by the time the handler runs.
-        ctx = tenant_context(tenant_id) if tenant_id else _NullCtx()
+        # tenant_context() is a no-arg no-op stub since the single-tenant
+        # cleanup; passing tenant_id raised TypeError and silently dropped
+        # every error that had a tenant_id. tenant_id is still stored below.
+        ctx = tenant_context() if tenant_id else _NullCtx()
         with ctx, SessionLocal() as cdb:
             cdb.execute(
                 text(

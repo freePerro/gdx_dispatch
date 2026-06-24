@@ -22,7 +22,7 @@ class DispatchSettings:
 def get_settings(tenant_id: str) -> DispatchSettings:
     """Read per-tenant dispatch flags. Best-effort — defaults on any read error."""
     try:
-        with tenant_context(tenant_id), SessionLocal() as cdb:
+        with tenant_context(), SessionLocal() as cdb:
             row = cdb.execute(
                 text(
                     "SELECT dispatch_warn_save_no_tech, "

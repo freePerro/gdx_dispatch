@@ -22,14 +22,18 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     request_id = getattr(request.state, "request_id", "unknown") if hasattr(request, "state") else "unknown"
 
     if isinstance(exc, HTTPException):
-        # Only sink server-side failures, not client-side validation /
-        # auth errors. 503 is excluded because in this codebase it's the
-        # convention for "feature not configured" (Google SSO, Microsoft
+        # Sink server-side failures plus 403 Forbidden. 403 ("permission
+        # denied") is captured even though it's a 4xx because it signals a
+        # real user hitting an authorization wall — admins need to see these
+        # in the Server Logs page. Other 4xx are NOT sinked: 401 is pure
+        # token-refresh/expiry noise (hundreds/hour) and 400/404/422 are
+        # client validation noise. 503 is excluded because in this codebase
+        # it's the convention for "feature not configured" (Google/Microsoft
         # SSO, legacy /api/superadmin, /legacy/billing — all 503 by design
         # when the relevant env var is absent). Real DB-down 503s come
         # through the non-HTTPException branch below (OperationalError →
         # 503) and remain logged.
-        if exc.status_code >= 500 and exc.status_code != 503:
+        if (exc.status_code >= 500 and exc.status_code != 503) or exc.status_code == 403:
             _sink(request, exc, exc.status_code, request_id)
         return JSONResponse(
             status_code=exc.status_code,

@@ -17,11 +17,13 @@ needing the app or a DB.
 """
 from __future__ import annotations
 
+import asyncio
 import types
 
 import pytest
+from fastapi import HTTPException
 
-from gdx_dispatch.core.error_handler import ErrorHandlerMiddleware
+from gdx_dispatch.core.error_handler import ErrorHandlerMiddleware, global_exception_handler
 
 
 def _fake_request(path: str = "/api/jobs", method: str = "POST"):
@@ -94,3 +96,34 @@ def test_middleware_503_is_not_sinked(captured) -> None:
     resp = _handle(_FakeOperationalError("connection reset"))
     assert resp.status_code == 503
     assert captured == [], "503 must be excluded from the sink"
+
+
+# --- global_exception_handler: 403 "permission denied" visibility ----------
+# A 403 is an HTTPException raised by an authz dependency (require_role etc.).
+# It must be recorded so admins can see authorization failures on the Server
+# Logs page — but 401/404/etc. must stay out to avoid token-refresh noise.
+
+def _handle_http(status_code: int):
+    exc = HTTPException(status_code=status_code, detail="nope")
+    return asyncio.run(global_exception_handler(_fake_request(), exc))
+
+
+def test_handler_403_is_sinked(captured) -> None:
+    """403 permission-denied MUST reach the sink → visible in Server Logs."""
+    resp = _handle_http(403)
+    assert resp.status_code == 403
+    assert len(captured) == 1 and captured[0]["status_code"] == 403
+
+
+def test_handler_401_is_not_sinked(captured) -> None:
+    """401 is token-expiry/refresh noise (hundreds/hour) — must NOT be sinked."""
+    resp = _handle_http(401)
+    assert resp.status_code == 401
+    assert captured == [], "401 must not flood the sink"
+
+
+def test_handler_404_is_not_sinked(captured) -> None:
+    """Other 4xx stay out of the sink."""
+    resp = _handle_http(404)
+    assert resp.status_code == 404
+    assert captured == []
