@@ -61,6 +61,42 @@ plus an **initial admin user** so you can log in right away:
 The admin is created with `must_change_password` set — change it after your
 first login.
 
+## Self-hosting (running a published release)
+
+The Quick start above builds the image locally. To instead run a pre-built,
+pinned release from GitHub Container Registry, layer the self-host overlay on
+top of the base compose file and pin the version in `.env`:
+
+```bash
+cp .env.template .env          # fill in [REQUIRED] values
+echo 'APP_VERSION=1.0.0' >> .env   # or leave unset to track :latest
+
+docker compose -p gdx --env-file ./.env \
+  -f gdx_dispatch/docker/docker-compose.yml \
+  -f gdx_dispatch/docker/docker-compose.selfhost.yml up -d
+```
+
+This pulls `ghcr.io/freeperro/gdx_dispatch:<APP_VERSION>` instead of building.
+The image tag is the single source of truth for the running version (reported
+by `/health` and the admin **update-check**).
+
+### Updating
+
+To upgrade to a newer release, bump `APP_VERSION` in `.env` (or leave it on
+`latest`) and run the updater — it snapshots the database, pulls the new image,
+applies migrations on boot, and only starts the workers once `/health` is green:
+
+```bash
+./gdx_dispatch/docker/update.sh
+# or pin explicitly:  APP_VERSION=1.1.0 ./gdx_dispatch/docker/update.sh
+```
+
+The pre-update database snapshot is written to `backups/` — keep it; it's your
+rollback if a migration goes wrong (the script prints the exact restore steps if
+the new image fails to come up). Admins can check whether a newer release exists
+from **Settings → update-check** (`GET /api/admin/update-check`), which compares
+the running version against the latest GitHub release.
+
 ## Local development
 
 **Backend:**
