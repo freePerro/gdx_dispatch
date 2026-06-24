@@ -138,7 +138,6 @@ export const MODULE_CATEGORIES = [
       { key: 'tags', label: 'Tags', icon: 'pi pi-tags', to: '/tags', type: 'Customers' },
       { key: 'custom_fields', label: 'Custom Fields', icon: 'pi pi-sliders-h', to: '/custom-fields', type: 'Admin', permission: 'settings.write' },
       { key: 'webhooks', label: 'Webhooks', icon: 'pi pi-bell', to: '/webhooks', type: 'Operations', permission: 'webhooks.manage' },
-      { key: 'feature_flags', label: 'Feature Flags', icon: 'pi pi-sliders-h', to: '/feature-flags', type: 'Admin', permission: 'settings.write' },
       { key: 'gdpr', label: 'GDPR & Compliance', icon: 'pi pi-shield', to: '/gdpr', type: 'Admin', permission: 'settings.write' },
       { key: 'activity', label: 'Activity', icon: 'pi pi-history', to: '/activity', type: 'Admin' },
       { key: 'sso', label: 'SSO', icon: 'pi pi-lock', to: '/sso', type: 'Admin', permission: 'settings.write' },

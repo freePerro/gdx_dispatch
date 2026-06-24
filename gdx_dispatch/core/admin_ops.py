@@ -1,4 +1,4 @@
-"""Shared admin bearer-auth dependency for core/admin_modules + core/admin_flags."""
+"""Shared admin bearer-auth dependency for core/admin_modules."""
 from __future__ import annotations
 
 import os

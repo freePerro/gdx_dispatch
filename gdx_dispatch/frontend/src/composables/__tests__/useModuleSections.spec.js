@@ -58,7 +58,6 @@ const CATALOG = [
   { key: 'payroll', label: 'Payroll', icon: 'pi pi-wallet', to: '/admin/payroll', permission: 'payroll.read' },
   // Admin-only items that must never show to a tech.
   { key: 'webhooks', label: 'Webhooks', icon: 'pi pi-bell', to: '/webhooks' },
-  { key: 'feature_flags', label: 'Feature Flags', icon: 'pi pi-sliders-h', to: '/feature-flags' },
   { key: 'role_permissions', label: 'Roles & Permissions', icon: 'pi pi-lock', to: '/role-permissions' },
   { key: 'sso', label: 'SSO', icon: 'pi pi-key', to: '/sso' },
   { key: 'gdpr', label: 'GDPR & Compliance', icon: 'pi pi-shield', to: '/gdpr' },
@@ -91,7 +90,6 @@ describe('useModuleSections — role gate', () => {
     expect(keys).not.toContain('billing');
     expect(keys).not.toContain('payroll');
     expect(keys).not.toContain('webhooks');
-    expect(keys).not.toContain('feature_flags');
     expect(keys).not.toContain('role_permissions');
     expect(keys).not.toContain('sso');
     expect(keys).not.toContain('gdpr');
@@ -131,7 +129,6 @@ describe('useModuleSections — role gate', () => {
     expect(keys).toContain('estimates');
     expect(keys).toContain('billing');
     expect(keys).not.toContain('webhooks');
-    expect(keys).not.toContain('feature_flags');
     expect(keys).not.toContain('role_permissions');
     expect(keys).not.toContain('sso');
     expect(keys).not.toContain('gdpr');
@@ -206,9 +203,9 @@ describe('useModuleSections — search', () => {
   });
 
   it('matches by route too', () => {
-    const s = groupModulesForRole(CATALOG, 'admin', '/feature-flags');
+    const s = groupModulesForRole(CATALOG, 'admin', '/webhooks');
     const keys = _allKeys(s);
-    expect(keys).toEqual(['feature_flags']);
+    expect(keys).toEqual(['webhooks']);
   });
 
   it('returns an empty section list when no match', () => {
@@ -257,7 +254,7 @@ describe('isModuleAllowedForRole — DT-1 desktop sidebar + CommandPalette gate'
   });
 
   it('tech: blocks admin-only items (webhooks, sso, payroll, role_permissions)', () => {
-    for (const key of ['webhooks', 'sso', 'payroll', 'role_permissions', 'feature_flags', 'gdpr']) {
+    for (const key of ['webhooks', 'sso', 'payroll', 'role_permissions', 'gdpr']) {
       expect(isModuleAllowedForRole(key, 'tech')).toBe(false);
     }
   });

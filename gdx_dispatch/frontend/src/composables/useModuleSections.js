@@ -113,7 +113,7 @@ const SECTION_BY_KEY = {
   // Admin
   documents: 'Admin', pdf_templates: 'Admin', resources: 'Admin',
   users: 'Admin', role_permissions: 'Admin', custom_fields: 'Admin',
-  webhooks: 'Admin', feature_flags: 'Admin', gdpr: 'Admin',
+  webhooks: 'Admin', gdpr: 'Admin',
   activity: 'Admin', sso: 'Admin', onboarding: 'Admin',
   admin_operations: 'Admin', settings: 'Admin',
   // Account (MH-9b)

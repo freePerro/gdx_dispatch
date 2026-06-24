@@ -223,9 +223,8 @@ def test_jobs_routes_registered():
 
 def test_control_models_importable():
     """Control plane models can be imported."""
-    from gdx_dispatch.control.models import FeatureFlag, Tenant
+    from gdx_dispatch.control.models import Tenant
     assert Tenant.__tablename__ == "tenants"
-    assert FeatureFlag.__tablename__ == "platform_feature_flags"
 
 
 def test_stripe_webhook_route_registered():
@@ -258,13 +257,6 @@ def test_observability_importable():
     # Should not raise with empty DSN
     init_sentry("", "test")
     init_otel("gdx-test")
-
-
-def test_feature_flags_importable():
-    """Feature flags module can be imported with expected functions."""
-    from gdx_dispatch.core.feature_flags import is_flag_enabled, set_flag_rollout
-    assert callable(is_flag_enabled)
-    assert callable(set_flag_rollout)
 
 
 def test_core_fsm_models_importable():

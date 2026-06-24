@@ -399,12 +399,6 @@ except Exception:
     tags_router_module = APIRouter(tags=["tags_router"])
 
 try:
-    from gdx_dispatch.routers import feature_flags as feature_flags_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("feature_flags_router_load_failed")
-    feature_flags_router = APIRouter(tags=["feature_flags"])
-
-try:
     from gdx_dispatch.routers import games as games_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("games_router_load_failed")
@@ -701,18 +695,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_db_router")
     admin_db_router = APIRouter(prefix="/api/admin/db", tags=["admin-db"])
-
-try:
-    from gdx_dispatch.core.admin_flags import router as admin_flags_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_flags_router")
-    admin_flags_router = APIRouter(tags=["feature-flags"])
-
-try:
-    from gdx_dispatch.core.feature_flags_router import router as feature_flags_ui_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: feature_flags_ui_router")
-    feature_flags_ui_router = APIRouter(tags=["feature-flags-ui"])
 
 try:
     from gdx_dispatch.core.admin_modules import router as admin_modules_router
@@ -1597,7 +1579,6 @@ def create_app() -> FastAPI:
         app.include_router(surveys_router.admin_router)
     app.include_router(photos_router.router if hasattr(photos_router, "router") else photos_router)
     app.include_router(tags_router_module.router if hasattr(tags_router_module, "router") else tags_router_module)
-    app.include_router(feature_flags_router.router if hasattr(feature_flags_router, "router") else feature_flags_router)
     app.include_router(games_router.router if hasattr(games_router, "router") else games_router)
     app.include_router(activity_router.router if hasattr(activity_router, "router") else activity_router)
     app.include_router(webhooks_router.router if hasattr(webhooks_router, "router") else webhooks_router)
@@ -1706,8 +1687,6 @@ def create_app() -> FastAPI:
     # The router object is still importable for gdx_dispatch/tests/test_24_onboarding.py.
     app.include_router(admin_ops_router)
     app.include_router(admin_db_router)
-    app.include_router(admin_flags_router, prefix="/api/admin", tags=["feature-flags"])
-    app.include_router(feature_flags_ui_router)
     app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
     # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
     # container with the authenticated principal (ADR-013). Guarded so a missing

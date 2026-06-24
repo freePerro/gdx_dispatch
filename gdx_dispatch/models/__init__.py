@@ -259,10 +259,6 @@ try:
 except ImportError:
     pass
 try:
-    from gdx_dispatch.routers.feature_flags import FeatureFlag  # noqa: F401
-except ImportError:
-    pass
-try:
     from gdx_dispatch.routers.purchase_orders import PurchaseOrder, PurchaseOrderLine  # noqa: F401
 except ImportError:
     pass
