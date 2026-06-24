@@ -185,29 +185,40 @@ async def send_campaign(
             "segment_id": campaign["segment_id"],
         },
     )
-    # Compatibility fallback for minimal SQLite test schemas where ORM audit writes are skipped.
+    # Compatibility fallback for minimal SQLite test schemas where ORM audit
+    # writes are skipped. On real Postgres the `log_audit_event` ORM call above
+    # already persisted the row (to `audit_logs`), so this raw insert is
+    # redundant there — and it targets the legacy `audit_log` name which only
+    # the minimal test schema has. Best-effort: must never 500 the send nor
+    # duplicate the real audit row.
     digest = hashlib.sha256(f"campaign_send:{campaign_id}:{sent_count}:{now}".encode()).hexdigest()
-    db.execute(
-        text(
-            """
-            INSERT INTO audit_log
-                (id, event_type, actor_id, entity_type, entity_id, payload, created_at, hash, prev_hash)
-            VALUES
-                (:id, :event_type, :actor_id, :entity_type, :entity_id, :payload, :created_at, :hash, :prev_hash)
-            """
-        ),
-        {
-            "id": str(uuid4()),
-            "event_type": "campaign_send",
-            "actor_id": "system",
-            "entity_type": "campaign",
-            "entity_id": campaign_id,
-            "payload": json.dumps({"sent": sent_count, "channel": campaign["channel"]}),
-            "created_at": now,
-            "hash": digest,
-            "prev_hash": "0" * 64,
-        },
-    )
+    try:
+        # SAVEPOINT so a failure (e.g. no `audit_log` table on real Postgres)
+        # rolls back only this redundant insert, not the send + ORM audit row.
+        with db.begin_nested():
+            db.execute(
+                text(
+                    """
+                    INSERT INTO audit_log
+                        (id, event_type, actor_id, entity_type, entity_id, payload, created_at, hash, prev_hash)
+                    VALUES
+                        (:id, :event_type, :actor_id, :entity_type, :entity_id, :payload, :created_at, :hash, :prev_hash)
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "event_type": "campaign_send",
+                    "actor_id": "system",
+                    "entity_type": "campaign",
+                    "entity_id": campaign_id,
+                    "payload": json.dumps({"sent": sent_count, "channel": campaign["channel"]}),
+                    "created_at": now,
+                    "hash": digest,
+                    "prev_hash": "0" * 64,
+                },
+            )
+    except Exception:
+        pass
     db.commit()
     return {"campaign_id": campaign_id, "sent": sent_count}
 
