@@ -18,6 +18,11 @@ from gdx_dispatch.core.database import engine
 from gdx_dispatch.plugin_api.base import PluginBase
 from gdx_dispatch.plugin_api.discovery import discover_plugins
 from gdx_dispatch.plugin_host.app import create_plugin_host
+from gdx_dispatch.plugin_host.reconcile import reconcile
+
+# 0. reconcile: pip-install any registry packages into the /plugins volume and
+#    put it on sys.path (no-op when the registry is empty).
+reconcile()
 
 # 1. discover (imports plugin packages, registering models on PluginBase)
 _plugins = discover_plugins()

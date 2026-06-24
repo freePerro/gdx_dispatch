@@ -1715,6 +1715,8 @@ def create_app() -> FastAPI:
     try:
         from gdx_dispatch.routers.plugins_proxy import router as plugins_proxy_router
         app.include_router(plugins_proxy_router)
+        from gdx_dispatch.routers.admin_plugins import router as admin_plugins_router
+        app.include_router(admin_plugins_router)
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("plugins proxy router failed to load")
     app.include_router(push_router)
