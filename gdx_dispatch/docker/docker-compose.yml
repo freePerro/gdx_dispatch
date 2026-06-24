@@ -1,3 +1,35 @@
+# ── Shared environment ───────────────────────────────────────────────────────
+# Defined once, merged into every service via `<<: *app-env`. A service may add
+# or override keys after the merge (explicit keys win). This is the source of
+# truth for config every container must agree on — adding a var here forwards it
+# to app + all 3 celery services at once, so they can never drift apart.
+# Merge requires map syntax (KEY: value); the `- KEY=value` list form does NOT
+# merge. See https://docs.docker.com/reference/compose-file/fragments/
+x-app-env: &app-env
+  DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
+  # JWT signing — RS256 with asymmetric keys. App falls back to HS256
+  # with JWT_SECRET if RS_PRIVATE_KEY is empty. Set all three in production .env.
+  RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+  RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:-}
+  # PII encryption. App refuses to boot in production when unset.
+  # Set GDX_ENV=dev to skip the gate during development.
+  FERNET_KEY: ${FERNET_KEY:-}
+  GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+  MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+  GDX_ENV: ${GDX_ENV:-dev}
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+  VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+  # Tenant identity. core/tenant.py:48-50 reads these; unset → the app falls
+  # back to the 0000…0001 placeholder tenant and serves an empty DB.
+  GDX_TENANT_ID: ${GDX_TENANT_ID:-}
+  GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
+  GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-}
+  GDX_TENANT_NAME: ${GDX_TENANT_NAME:-}
+
 services:
   # ── Database ─────────────────────────────────────────────────────────────────
   db:
@@ -38,23 +70,8 @@ services:
       args:
         GIT_SHA_SHORT: ${GIT_SHA_SHORT:-unknown}
     environment:
-      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
-      # JWT signing — RS256 with asymmetric keys. App falls back to HS256
-      # with JWT_SECRET if RS_PRIVATE_KEY is empty. Set all three in production .env.
-      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
-      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-}
-      # PII encryption. App refuses to boot in production when unset.
-      # Set GDX_ENV=dev to skip the gate during development.
-      FERNET_KEY: ${FERNET_KEY:-}
-      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
-      GDX_ENV: ${GDX_ENV:-dev}
-      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      <<: *app-env
+      # ── app-only ──
       SENTRY_DSN: ${SENTRY_DSN:-}
       APP_VERSION: ${APP_VERSION:-dev}
       BUILD_TIME: ${BUILD_TIME:-unknown}
@@ -105,19 +122,7 @@ services:
       dockerfile: gdx_dispatch/docker/Dockerfile
     command: celery -A gdx_dispatch.core.celery_app worker -Q priority:high -c 4 --loglevel=info
     environment:
-      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
-      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
-      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-}
-      FERNET_KEY: ${FERNET_KEY:-}
-      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
-      GDX_ENV: ${GDX_ENV:-dev}
-      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
+      <<: *app-env
       # Only the `app` service runs Alembic. Without this, all 4 containers race
       # `alembic upgrade head` on boot — which Alembic explicitly does not
       # support. Celery waits for app (healthy = migrations+bootstrap done).
@@ -138,22 +143,7 @@ services:
       dockerfile: gdx_dispatch/docker/Dockerfile
     command: celery -A gdx_dispatch.core.celery_app worker -Q priority:low -c 2 --loglevel=info
     environment:
-      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
-      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
-      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-}
-      FERNET_KEY: ${FERNET_KEY:-}
-      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
-      GDX_ENV: ${GDX_ENV:-dev}
-      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
-      # Only the `app` service runs Alembic. Without this, all 4 containers race
-      # `alembic upgrade head` on boot — which Alembic explicitly does not
-      # support. Celery waits for app (healthy = migrations+bootstrap done).
+      <<: *app-env
       GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
@@ -171,22 +161,7 @@ services:
       dockerfile: gdx_dispatch/docker/Dockerfile
     command: celery -A gdx_dispatch.core.celery_app beat --loglevel=info
     environment:
-      DATABASE_URL: postgresql://gdx:${DB_PASSWORD:-dev_password}@db:5432/gdx
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev_secret_key_change_in_production}
-      RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
-      RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-}
-      FERNET_KEY: ${FERNET_KEY:-}
-      GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
-      GDX_ENV: ${GDX_ENV:-dev}
-      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
-      # Only the `app` service runs Alembic. Without this, all 4 containers race
-      # `alembic upgrade head` on boot — which Alembic explicitly does not
-      # support. Celery waits for app (healthy = migrations+bootstrap done).
+      <<: *app-env
       GDX_SKIP_MIGRATIONS: "1"
     depends_on:
       db:
