@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from gdx_dispatch.core.audit import log_audit_event_sync
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context, current_tenant_id
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -214,7 +214,7 @@ def get_pricing_settings(_: dict = Depends(get_current_user)) -> dict[str, objec
 
 
 @router.patch("/api/pricing/settings", response_model=None)
-def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
     _log_tenant_shared_write("pricing_settings")
     # Mutate the per-tenant slot in place
     current = _tenant_settings()
@@ -349,7 +349,7 @@ class VendorPriceBatchIn(BaseModel):
 
 
 @router.post("/api/pricing/vendor-lists")
-def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
     imported = 0
     for item in payload.items:
         key = f"{item.vendor_name}:{item.sku}"
@@ -503,7 +503,7 @@ def get_seasonal_pricing(_: dict = Depends(get_current_user)) -> list[dict[str, 
 
 
 @router.patch("/api/pricing/seasonal")
-def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
     key = f"{payload.category}:{payload.season}"
     _log_tenant_shared_write("seasonal_adjustments", key=key)
     _tenant_seasonal_adjustments()[key] = payload.adjustment_pct

@@ -183,6 +183,66 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
 PLATFORM_LOCKED_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
 
 
+# Roles whose *assignment* to a user is owner-exclusive. admin == owner for
+# operations, but only an owner (or superadmin) may grant, change, or remove the
+# admin/owner role on a user — that's the single owner-only privilege.
+_OWNER_ASSIGNABLE_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
+_ROLE_ADMIN_ACTORS: Final[frozenset[str]] = frozenset({"owner", "superadmin", "super_admin", "super-admin"})
+
+
+# Roles permitted to act on OTHER users' records (timeclock, labor, others'
+# jobs). A plain technician may only act on their own. Mirrors the established
+# _DISPATCH_ROLES in job_assignments/parts_needed, plus the superadmin variants.
+# NOTE: users.role stores the LEGACY strings "dispatch"/"tech"; the RBAC
+# catalog uses "dispatcher"/"technician". The principal can carry either form
+# depending on path, so accept BOTH dispatcher spellings here. "tech"/
+# "technician" are intentionally absent — technicians are not dispatch managers.
+DISPATCH_ROLES: Final[frozenset[str]] = frozenset(
+    {"owner", "admin", "dispatch", "dispatcher", "manager", "superadmin", "super_admin", "super-admin"}
+)
+
+
+def _actor_role(actor: object) -> str:
+    if isinstance(actor, dict):
+        return str(actor.get("role") or "").strip().lower()
+    return str(getattr(actor, "role", "") or "").strip().lower()
+
+
+def is_dispatch_manager(actor: object) -> bool:
+    """True if the actor may act on other users' records (dispatch/admin tier)."""
+    return _actor_role(actor) in DISPATCH_ROLES
+
+
+def assert_can_assign_role(actor: object, target_role: str | None, current_role: str | None = None) -> None:
+    """Raise 403 unless the actor may assign/change this role.
+
+    Guards both directions: granting admin/owner to a user, AND changing the
+    role of a user who is currently admin/owner (demote/edit). Only owner /
+    superadmin pass. Everyone else (incl. admin) is blocked from touching the
+    admin tier.
+    """
+    target = (target_role or "").strip().lower()
+    current = (current_role or "").strip().lower()
+    if target not in _OWNER_ASSIGNABLE_ROLES and current not in _OWNER_ASSIGNABLE_ROLES:
+        return  # non-privileged role change — admins may do it
+    if isinstance(actor, dict):
+        actor_role = str(actor.get("role") or "")
+    else:
+        actor_role = str(getattr(actor, "role", "") or "")
+    if actor_role.strip().lower() in _ROLE_ADMIN_ACTORS:
+        return
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error_type": "insufficient_role",
+            "detail": "only an owner may grant or change the admin/owner role",
+            "required_roles": ["owner"],
+        },
+    )
+
+
 BUILTIN_DESCRIPTIONS: Final[dict[str, str]] = {
     "owner": "Full access to everything including billing and tenant settings",
     "admin": "Administrative access (cannot edit billing)",

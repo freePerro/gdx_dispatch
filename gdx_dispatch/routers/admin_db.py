@@ -40,11 +40,12 @@ from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 
-# DB ops are owner-only — stricter than the settings.write used by admin_ops.
+# DB ops require admin or owner (admin == owner for operations; only role
+# administration is owner-exclusive).
 router = APIRouter(
     prefix="/api/admin/db",
     tags=["admin-db"],
-    dependencies=[Depends(require_role("owner"))],
+    dependencies=[Depends(require_role("admin", "owner"))],
 )
 
 _BACKUP_DIR = Path("/app/uploads/_db_backups")

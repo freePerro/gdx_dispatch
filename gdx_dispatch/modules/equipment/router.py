@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentServiceHistory
 
-router = APIRouter(prefix="/api", tags=["equipment"], dependencies=[Depends(require_module("equipment_tracking"))])
+router = APIRouter(prefix="/api", tags=["equipment"], dependencies=[Depends(require_module("equipment_tracking")), Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------
