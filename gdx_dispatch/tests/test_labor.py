@@ -322,4 +322,6 @@ def test_labor_routes_require_auth_dependency():
         if route.path not in auth_paths:
             continue
         deps = [getattr(dep, "call", None) for dep in route.dependant.dependencies]
-        assert labor_router._current_user_dependency in deps
+        # Labor management now requires the dispatch/admin gate, which itself
+        # authenticates via _current_user_dependency.
+        assert labor_router._require_dispatch in deps

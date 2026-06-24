@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -93,10 +94,15 @@ def _user_id(current_user: Any) -> str:
 
 
 def _resolve_tech_id(current_user: Any, payload_tech_id: str | None) -> str:
-    if payload_tech_id:
-        return payload_tech_id
+    """Resolve the technician id to act on. A non-dispatch caller may only act
+    on their OWN timeclock: supplying another technician_id is rejected. Dispatch
+    /admin may act on anyone (e.g. correcting a tech's shift)."""
     user = current_user or {}
-    return str(user.get("user_id") or user.get("sub") or "")
+    own = str(user.get("user_id") or user.get("sub") or "")
+    requested = (payload_tech_id or "").strip()
+    if requested and requested != own and not is_dispatch_manager(user):
+        raise HTTPException(status_code=403, detail="cannot act on another technician's timeclock")
+    return requested or own
 
 
 def _minutes_between(start_iso: str, end_iso: str) -> int:
@@ -330,7 +336,7 @@ def get_timeclock_status(
     db: Session = Depends(get_db),
 ) -> TimeClockStatusResponse:
     tenant_id = _tenant_id(request)
-    tech_id = technician_id or _resolve_tech_id(current_user, None)
+    tech_id = _resolve_tech_id(current_user, technician_id)
     if not tech_id:
         raise HTTPException(status_code=422, detail="technician_id is required")
 
@@ -444,7 +450,7 @@ def list_time_entries(
     # /timeclock view doesn't contradict itself (status was filtered by
     # caller; entries returned all tenant rows; admin saw "Clocked Out"
     # alongside another tech's "In progress" row).
-    tech_id = technician_id or _resolve_tech_id(current_user, None)
+    tech_id = _resolve_tech_id(current_user, technician_id)
 
     try:
         clauses = [
@@ -474,6 +480,7 @@ def create_manual_entry(
         raise HTTPException(status_code=422, detail="clock_out_at must be after clock_in_at")
 
     tenant_id = _tenant_id(request)
+    tech_id = _resolve_tech_id(current_user, payload.technician_id)
     row_id = str(uuid4())
     clock_in_iso = payload.clock_in_at.astimezone(UTC).isoformat() if payload.clock_in_at.tzinfo else payload.clock_in_at.replace(tzinfo=UTC).isoformat()
     clock_out_iso = payload.clock_out_at.astimezone(UTC).isoformat() if payload.clock_out_at.tzinfo else payload.clock_out_at.replace(tzinfo=UTC).isoformat()
@@ -483,7 +490,7 @@ def create_manual_entry(
         entry = TimeclockEntry(
             id=row_id,
             tenant_id=tenant_id,
-            technician_id=payload.technician_id,
+            technician_id=tech_id,
             clock_in_at=clock_in_iso,
             clock_out_at=clock_out_iso,
             minutes=minutes,
@@ -511,7 +518,7 @@ def create_manual_entry(
 
         return TimeEntryResponse(
             id=row_id,
-            technician_id=payload.technician_id,
+            technician_id=tech_id,
             clock_in_at=clock_in_iso,
             clock_out_at=clock_out_iso,
             minutes=minutes,
@@ -543,6 +550,10 @@ def update_time_entry(
         ).scalars().first()
         if not entry:
             raise HTTPException(status_code=404, detail="Entry not found")
+
+        own = str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or "")
+        if str(entry.technician_id) != own and not is_dispatch_manager(current_user):
+            raise HTTPException(status_code=403, detail="cannot edit another technician's entry")
 
         updates = payload.model_dump(exclude_unset=True, mode="json")
         clock_in_iso = updates.get("clock_in_at", entry.clock_in_at)
@@ -599,7 +610,9 @@ def payroll_summary(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[PayrollSummaryItem]:
-    _ = current_user
+    # Tenant-wide payroll aggregate — dispatch/admin only, not individual techs.
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
     tenant_id = _tenant_id(request)
     if end < start:
         raise HTTPException(status_code=422, detail="end must be on or after start")

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.permissions import PLATFORM_LOCKED_ROLES, assert_can_assign_role
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -123,6 +124,7 @@ def create_user(
     if existing:
         raise HTTPException(status_code=409, detail="User with this email already exists")
 
+    assert_can_assign_role(_, body.role)
     now = datetime.now(UTC)
     user_id = uuid4()
     u = User(id=user_id, username=body.username.strip(), email=email,
@@ -188,6 +190,7 @@ def invite_user(
     placeholder_pw = _hash_password(_secrets.token_urlsafe(32)[:72])
     username = (body.full_name or email.split("@")[0]).strip()[:50]
 
+    assert_can_assign_role(_, body.role)
     u = User(id=user_id, username=username, email=email, password_hash=placeholder_pw,
              role=body.role, company_id=tenant_id, active=True, must_change_password=True,
              created_at=now, updated_at=now)
@@ -236,6 +239,7 @@ def patch_user(
 
     next_role = body.role if body.role is not None else (current.role or "user")
     next_active = body.active if body.active is not None else bool(current.active)
+    assert_can_assign_role(_, next_role, current.role)
     current.role = next_role
     current.active = next_active
     current.updated_at = datetime.now(UTC)
@@ -455,6 +459,14 @@ def update_role_permissions(
     db: Session = Depends(get_db),
     request: Request = None,
 ) -> dict:
+    # Platform-lock: the owner/admin role permission-sets cannot be rewritten
+    # (mirrors role_permissions.py). Prevents privilege escalation by editing
+    # the admin tier's capabilities.
+    if (body.role or "").strip().lower() in PLATFORM_LOCKED_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="The owner and admin roles are platform-locked and cannot be edited.",
+        )
     serialized = json.dumps(body.permissions)
     now = datetime.now(UTC).isoformat()
 

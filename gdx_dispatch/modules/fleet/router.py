@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.fleet.models import Vehicle, VehicleServiceRecord
 from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service, update_odometer
 
-router = APIRouter(prefix="/api", tags=["fleet"], dependencies=[Depends(require_module("fleet"))])
+router = APIRouter(prefix="/api", tags=["fleet"], dependencies=[Depends(require_module("fleet")), Depends(get_current_user)])
 
 class VehicleIn(BaseModel): vin: str | None = None; make: str; model: str; year: int; license_plate: str | None = None; assigned_technician_id: str | None = None; status: str = "available"; odometer: int = 0; last_service_odometer: int | None = None; last_service_at: datetime | None = None; service_interval_miles: int = 3000  # noqa: E701,E702
 class VehiclePatch(BaseModel): vin: str | None = None; make: str | None = None; model: str | None = None; year: int | None = None; license_plate: str | None = None; assigned_technician_id: str | None = None; status: str | None = None; odometer: int | None = None; last_service_odometer: int | None = None; last_service_at: datetime | None = None; service_interval_miles: int | None = None  # noqa: E701,E702

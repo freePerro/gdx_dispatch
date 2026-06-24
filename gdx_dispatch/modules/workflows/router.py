@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.workflows.models import WorkflowRule, WorkflowRun
 
-router = APIRouter(prefix="/api", tags=["workflows"], dependencies=[Depends(require_module("workflows"))])
+router = APIRouter(prefix="/api", tags=["workflows"], dependencies=[Depends(require_module("workflows")), Depends(get_current_user)])
 
 class WorkflowRuleIn(BaseModel): name: str; trigger_event: str; conditions: list[dict] = Field(default_factory=list); actions: list[dict] = Field(default_factory=list); is_active: bool = True  # noqa: E701,E702
 class WorkflowRulePatch(BaseModel): name: str | None = None; trigger_event: str | None = None; conditions: list[dict] | None = None; actions: list[dict] | None = None; is_active: bool | None = None  # noqa: E701,E702

@@ -65,6 +65,10 @@ def _viewer_user() -> dict:
     return {"user_id": "viewer-1", "tenant_id": "tenant-1", "role": "viewer"}
 
 
+def _owner_user() -> dict:
+    return {"user_id": "owner-1", "tenant_id": "tenant-1", "role": "owner"}
+
+
 def _seed_user(db: Session, *, username: str, email: str, role: str = "viewer", active: bool = True) -> str:
     user_id = uuid.uuid4()
     db.execute(
@@ -202,11 +206,21 @@ def test_post_admin_users_rejects_duplicate_email(db: Session):
 def test_patch_admin_user_updates_role_and_active(db: Session):
     user_id = _seed_user(db, username="patchme", email="patchme@example.com", role="viewer", active=True)
 
-    body = admin_ops.patch_user(user_id, admin_ops.UserPatch(role="admin", active=False), _admin_user(), db)
+    # Granting the admin role is owner-exclusive.
+    body = admin_ops.patch_user(user_id, admin_ops.UserPatch(role="admin", active=False), _owner_user(), db)
 
     assert body["id"] == user_id
     assert body["role"] == "admin"
     assert body["active"] is False
+
+
+def test_patch_admin_user_role_grant_denied_for_admin(db: Session):
+    """An admin (not owner) cannot grant the admin role — owner-exclusive."""
+    user_id = _seed_user(db, username="grantme", email="grantme@example.com", role="viewer", active=True)
+
+    with pytest.raises(HTTPException) as exc:
+        admin_ops.patch_user(user_id, admin_ops.UserPatch(role="admin"), _admin_user(), db)
+    assert exc.value.status_code == 403
 
 
 def test_patch_admin_user_404_when_missing(db: Session):

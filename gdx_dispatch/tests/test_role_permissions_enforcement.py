@@ -225,3 +225,33 @@ def test_builtin_role_jobs_read_all_matches_catalog(tc, role_name, perms):
     _seed_role_with_perms(tc, perms)
     expected = 200 if (WILDCARD in perms or "jobs.read_all" in perms) else 403
     assert tc.get("/jobs").status_code == expected, f"role={role_name} perms={perms}"
+
+
+# --- Owner-exclusive role assignment (admin == owner EXCEPT granting admin) ---
+# Only an owner/superadmin may grant, change, or remove the admin/owner role.
+# Admins manage non-privileged roles only.
+
+@pytest.mark.parametrize(
+    "actor_role,target,current,expect_denied",
+    [
+        ("owner", "admin", None, False),       # owner grants admin — ok
+        ("superadmin", "owner", None, False),  # superadmin grants owner — ok
+        ("admin", "admin", None, True),        # admin grants admin — DENIED
+        ("admin", "owner", None, True),        # admin grants owner — DENIED
+        ("admin", "technician", None, False),  # admin grants non-priv — ok
+        ("admin", "technician", "admin", True),# admin demotes an admin — DENIED
+        ("owner", "technician", "admin", False),# owner demotes an admin — ok
+        ("admin", "technician", "technician", False),  # non-priv both ways — ok
+    ],
+)
+def test_assert_can_assign_role(actor_role, target, current, expect_denied):
+    from fastapi import HTTPException
+
+    from gdx_dispatch.core.permissions import assert_can_assign_role
+
+    if expect_denied:
+        with pytest.raises(HTTPException) as ei:
+            assert_can_assign_role({"role": actor_role}, target, current)
+        assert ei.value.status_code == 403
+    else:
+        assert_can_assign_role({"role": actor_role}, target, current)  # no raise

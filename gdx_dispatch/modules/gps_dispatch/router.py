@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.modules.gps_dispatch.service import assign_route, get_technician_locations, update_technician_location
 
-router = APIRouter(prefix="/api", tags=["gps_dispatch"], dependencies=[Depends(require_module("gps_dispatch"))])
+router = APIRouter(prefix="/api", tags=["gps_dispatch"], dependencies=[Depends(require_module("gps_dispatch")), Depends(get_current_user)])
 
 
 @router.post("/dispatch/location", response_model=None)

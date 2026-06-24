@@ -20,7 +20,7 @@ from gdx_dispatch.routers.notes import router
 def _make_client(
     tenant_id: str = "tenant-test",
     user_sub: str = "user-1",
-    user_role: str = "technician",
+    user_role: str = "dispatcher",
     engine=None,
 ) -> TestClient:
     if engine is None:
@@ -152,11 +152,11 @@ def test_non_author_cannot_edit_others_note():
     )
     # Author creates a note
     author = _make_client(
-        tenant_id="tenant-x", user_sub="author-1", user_role="technician", engine=shared
+        tenant_id="tenant-x", user_sub="author-1", user_role="dispatcher", engine=shared
     )
     # Different non-admin tries to edit (same DB)
     other = _make_client(
-        tenant_id="tenant-x", user_sub="other-1", user_role="technician", engine=shared
+        tenant_id="tenant-x", user_sub="other-1", user_role="dispatcher", engine=shared
     )
     try:
         job_id = str(uuid4())
@@ -186,7 +186,7 @@ def test_admin_can_edit_any_note():
         poolclass=StaticPool,
     )
     author = _make_client(
-        tenant_id="tenant-y", user_sub="author-2", user_role="technician", engine=shared
+        tenant_id="tenant-y", user_sub="author-2", user_role="dispatcher", engine=shared
     )
     admin = _make_client(
         tenant_id="tenant-y", user_sub="admin-1", user_role="admin", engine=shared

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_access import assert_job_access
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -218,10 +219,10 @@ def _author_gate(note: JobNote, user: Any) -> None:
 def list_job_notes(
     job_id: UUID,
     request: Request,
-    _: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    assert_job_access(db, _tenant_id(request), user, str(job_id))
     stmt = (
         select(JobNote)
         .where(
@@ -243,6 +244,7 @@ def create_job_note(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    assert_job_access(db, tenant_id, user, str(job_id))
     note = JobNote(
         company_id=tenant_id,
         job_id=str(job_id),
