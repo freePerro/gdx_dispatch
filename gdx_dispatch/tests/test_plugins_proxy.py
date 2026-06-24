@@ -64,6 +64,17 @@ def test_proxy_forwards_authoritative_identity(monkeypatch):
     assert _FakeClient.captured["url"].endswith("/api/plugins/example/items")
 
 
+def test_proxy_catalog_path_has_no_trailing_slash(monkeypatch):
+    # GET /api/plugins (empty sub-path) must forward to .../api/plugins, NOT
+    # .../api/plugins/ — plugin-host serves the catalog without a trailing slash
+    # and a slash 404s there. (Regression: found in live testing.)
+    c = _client(monkeypatch, modules={"example"})
+    r = c.get("/api/plugins")
+    assert r.status_code == 200
+    assert _FakeClient.captured["url"].endswith("/api/plugins")
+    assert not _FakeClient.captured["url"].endswith("/api/plugins/")
+
+
 def test_proxy_strips_client_spoofed_gdx_headers(monkeypatch):
     c = _client(monkeypatch, modules={"billing"})  # 'example' NOT granted
     # Client tries to smuggle itself into the 'example' module.

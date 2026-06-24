@@ -32,10 +32,17 @@ def _plugin_host_url() -> str:
     return os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
 
 
-@router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+
+# Two routes → one handler: the bare /api/plugins (catalog list) and every
+# sub-path /api/plugins/<...>. Without the bare route, GET /api/plugins (no
+# trailing slash) wouldn't match {path:path} and core would 404 it.
+@router.api_route("", methods=_METHODS)
+@router.api_route("/{path:path}", methods=_METHODS)
 async def proxy_to_plugin_host(
-    path: str,
     request: Request,
+    path: str = "",
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -56,7 +63,10 @@ async def proxy_to_plugin_host(
     fwd[H_MODULES] = ",".join(sorted(modules))
 
     body = await request.body()
-    url = f"{_plugin_host_url()}/api/plugins/{path}"
+    # Don't append a trailing slash when path is empty (the catalog list endpoint
+    # GET /api/plugins) — plugin-host serves it without one, and a trailing slash
+    # 404s there.
+    url = f"{_plugin_host_url()}/api/plugins" + (f"/{path}" if path else "")
     async with httpx.AsyncClient(timeout=30.0) as client:
         upstream = await client.request(
             request.method, url, params=request.query_params, content=body, headers=fwd
