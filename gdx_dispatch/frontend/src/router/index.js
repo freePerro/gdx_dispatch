@@ -89,7 +89,6 @@ const TagsView = () => import('../views/TagsView.vue');
 const PhotosView = () => import('../views/PhotosView.vue');
 const WebhooksView = () => import('../views/WebhooksView.vue');
 const GdprView = () => import('../views/GdprView.vue');
-const FeatureFlagsView = () => import('../views/FeatureFlagsView.vue');
 const GameCatalogView = () => import('../views/GameCatalogView.vue');
 const GamePlayerView = () => import('../views/GamePlayerView.vue');
 const RolePermissionsView = () => import('../views/RolePermissionsView.vue');
@@ -256,7 +255,6 @@ const routes = [
   { path: '/tags', name: 'tags', component: TagsView },
   { path: '/webhooks', name: 'webhooks', component: WebhooksView, meta: { requiresPermission: 'webhooks.manage' } },
   { path: '/gdpr', name: 'gdpr', component: GdprView, meta: { requiresPermission: 'settings.write' } },
-  { path: '/feature-flags', name: 'feature-flags', component: FeatureFlagsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/admin/games', name: 'GameCatalog', component: GameCatalogView },
   { path: '/admin/games/:slug', name: 'GamePlayer', component: GamePlayerView },
   { path: '/role-permissions', name: 'role-permissions', component: RolePermissionsView, meta: { requiresPermission: 'settings.write' } },

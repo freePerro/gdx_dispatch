@@ -24,7 +24,7 @@ class EstimatesFeatures:
 def get_features(tenant_id: str) -> EstimatesFeatures:
     """Read per-tenant estimates flags. Best-effort — defaults on any read error."""
     try:
-        with tenant_context(tenant_id), SessionLocal() as cdb:
+        with tenant_context(), SessionLocal() as cdb:
             row = cdb.execute(
                 text(
                     "SELECT estimates_allow_line_margin_override, "

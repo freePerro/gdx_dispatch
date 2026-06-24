@@ -1185,11 +1185,13 @@ def start_job(
             try:
                 db.execute(
                     _text(
-                        "INSERT INTO job_notes (id, job_id, body, created_at, created_by) "
-                        "VALUES (:id, :jid, :body, :ts, :uid)"
+                        "INSERT INTO job_notes "
+                        "(id, company_id, job_id, author_id, body, visibility, created_at, updated_at) "
+                        "VALUES (:id, :cid, :jid, :uid, :body, 'internal', :ts, :ts)"
                     ),
                     {
                         "id": str(uuid.uuid4()),
+                        "cid": tenant_id,
                         "jid": str(job.id),
                         "body": f"Tech arrived on site at {now.strftime('%I:%M %p')}",
                         "ts": now,
@@ -1268,7 +1270,7 @@ def complete_job(
             if parts is None:
                 # Fall back to live count.
                 parts = db.execute(
-                    _text("SELECT COUNT(*) FROM job_part_needed WHERE job_id = :jid"),
+                    _text("SELECT COUNT(*) FROM job_parts_needed WHERE job_id = :jid"),
                     {"jid": str(job.id)},
                 ).scalar() or 0
             if int(parts or 0) <= 0:

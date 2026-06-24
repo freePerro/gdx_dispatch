@@ -170,15 +170,20 @@ def _usage_stats(db: Session, tenant_id: str) -> dict[str, Any]:
         {"tenant_id": tenant_id},
     ).mappings().all()
 
+    # Day bucket: Postgres needs `created_at::date` (created_at is timestamptz —
+    # SUBSTR errors on it); SQLite (tests) has no `::date` cast but SUBSTR works
+    # on its text timestamps. Pick per dialect.
+    is_sqlite = db.bind is not None and db.bind.dialect.name == "sqlite"
+    day_expr = "SUBSTR(created_at, 1, 10)" if is_sqlite else "created_at::date"
     by_day_rows = db.execute(
         text(
-            """
-            SELECT SUBSTR(created_at, 1, 10) AS day,
+            f"""
+            SELECT {day_expr} AS day,
                    COALESCE(SUM(total_tokens), 0) AS total_tokens,
                    COALESCE(SUM(cost_usd), 0) AS total_cost
             FROM ai_usage_logs
             WHERE tenant_id = :tenant_id
-            GROUP BY SUBSTR(created_at, 1, 10)
+            GROUP BY {day_expr}
             ORDER BY day DESC
             """
         ),

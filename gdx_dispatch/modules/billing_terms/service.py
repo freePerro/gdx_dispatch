@@ -77,7 +77,7 @@ def resolve_effective_terms(
     _ = tenant_db
     tid = str(tenant_id)
     try:
-        with tenant_context(tid), SessionLocal() as cdb:
+        with tenant_context(), SessionLocal() as cdb:
             row = cdb.execute(
                 text(
                     "SELECT default_payment_terms_days, "

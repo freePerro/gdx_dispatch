@@ -1305,11 +1305,16 @@ def mobile_my_job_detail(
     checklist_rows = db.execute(
         _text(
             """
-            SELECT id, name, checklist_type, completed_at
-            FROM job_checklists
-            WHERE company_id = :tenant_id
-              AND job_id = :job_id
-            ORDER BY created_at ASC
+            SELECT c.id AS id,
+                   COALESCE(t.name, 'Checklist') AS name,
+                   NULL AS checklist_type,
+                   NULL AS completed_at
+            FROM checklists c
+            LEFT JOIN checklist_templates t
+              ON t.id = c.template_id AND t.tenant_id = c.tenant_id
+            WHERE c.tenant_id = :tenant_id
+              AND c.job_id = :job_id
+            ORDER BY c.created_at ASC
             """
         ),
         {"tenant_id": tenant_id, "job_id": job_id},
@@ -1320,11 +1325,15 @@ def mobile_my_job_detail(
         items_query = db.execute(
             _text(
                 """
-                SELECT id, item_text, is_checked, checked_at, notes
-                FROM job_checklist_items
-                WHERE company_id = :tenant_id
+                SELECT id AS id,
+                       item_label AS item_text,
+                       completed AS is_checked,
+                       NULL AS checked_at,
+                       NULL AS notes
+                FROM checklist_items
+                WHERE tenant_id = :tenant_id
                   AND checklist_id = :checklist_id
-                ORDER BY sort_order ASC
+                ORDER BY id ASC
                 """
             ),
             {
@@ -1409,13 +1418,15 @@ def mobile_job_checklist_items(
     rows = db.execute(
         _text(
             """
-            SELECT jci.id, jci.item_text, jci.is_checked, jci.checked_at
-            FROM job_checklist_items jci
-            JOIN job_checklists jc ON jc.id = jci.checklist_id
-            WHERE jci.company_id = :tenant_id
-              AND jc.company_id = :tenant_id
-              AND jc.job_id = :job_id
-            ORDER BY jci.sort_order ASC
+            SELECT ci.id AS id,
+                   ci.item_label AS item_text,
+                   ci.completed AS is_checked,
+                   NULL AS checked_at
+            FROM checklist_items ci
+            JOIN checklists c ON c.id = ci.checklist_id AND c.tenant_id = ci.tenant_id
+            WHERE ci.tenant_id = :tenant_id
+              AND c.job_id = :job_id
+            ORDER BY ci.id ASC
             """
         ),
         {"tenant_id": tenant_id, "job_id": job_id},

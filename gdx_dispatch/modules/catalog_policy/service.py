@@ -28,7 +28,7 @@ class CatalogPolicy:
 def get_policy(tenant_id: str) -> CatalogPolicy:
     """Read the per-tenant flags. Best-effort — defaults on any read error."""
     try:
-        with tenant_context(tenant_id), SessionLocal() as cdb:
+        with tenant_context(), SessionLocal() as cdb:
             row = cdb.execute(
                 text(
                     "SELECT catalog_require_description, "

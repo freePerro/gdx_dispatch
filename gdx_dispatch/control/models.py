@@ -67,25 +67,6 @@ class TenantModuleGrant(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class PlatformFeatureFlag(Base):
-    """Platform-wide feature flags with rollout percentages."""
-    __tablename__ = "platform_feature_flags"
-    __table_args__ = (
-        CheckConstraint("rollout_pct >= 0 AND rollout_pct <= 100", name="ck_platform_ff_rollout_pct"),
-    )
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    flag_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    default_value: Mapped[bool] = mapped_column(default=False, nullable=False)
-    rollout_pct: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tenant_overrides: Mapped[dict[str, bool]] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-
-FeatureFlag = PlatformFeatureFlag
-
-
 class GameDefinition(Base):
     __tablename__ = "game_definitions"
     __table_args__ = (

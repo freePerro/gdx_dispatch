@@ -104,7 +104,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
     _TENANTLESS_ALLOWED_PATHS = {"/api/feedback/client-error"}
 
     _BYPASS_PREFIXES = (
-        "/admin/", "/pwa/", "/api/push/", "/api/feature-flags", "/assets",
+        "/admin/", "/pwa/", "/api/push/", "/assets",
         "/onboarding", "/signup", "/stripe/webhook", "/supplier/join/",
         "/api/supplier/register", "/api/supplier/login",
     )

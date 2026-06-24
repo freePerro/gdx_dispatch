@@ -2068,7 +2068,7 @@ class MarketingCampaign(Base):
 
 
 class ChecklistTemplate(Base):
-    __tablename__ = "checklist_templates_router"
+    __tablename__ = "checklist_templates"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2077,7 +2077,7 @@ class ChecklistTemplate(Base):
 
 
 class Checklist(Base):
-    __tablename__ = "checklists_router"
+    __tablename__ = "checklists"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     job_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2086,7 +2086,7 @@ class Checklist(Base):
 
 
 class ChecklistItem(Base):
-    __tablename__ = "checklist_items_router"
+    __tablename__ = "checklist_items"
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     checklist_id: Mapped[str] = mapped_column(Text, nullable=False)
