@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdx-plugin-example"
+version = "0.1.0"
+description = "Reference GDX third-party plugin — exercises the full plugin contract end to end."
+requires-python = ">=3.11"
+
+# THE import hook: registers this plugin under the gdx.modules entry-point group
+# so the plugin-host's discover_plugins() finds it after `pip install`.
+[project.entry-points."gdx.modules"]
+example = "gdx_plugin_example:manifest"
+
+[tool.setuptools]
+packages = ["gdx_plugin_example"]
