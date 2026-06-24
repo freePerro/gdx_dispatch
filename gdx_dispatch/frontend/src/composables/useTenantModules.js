@@ -73,6 +73,9 @@ function normalizeEnabledModules(payload) {
 // caller explicitly invokes loadTenantModules() to refresh after a save.
 const _loading = ref(false);
 const _enabledModules = ref({});
+// Installed third-party plugins, from the /api/plugins catalog (ADR-013). Each
+// entry: { key, name, tier, ui }. Drives a synthetic "Plugins" nav category.
+const _plugins = ref([]);
 let _loadPromise = null;
 
 const _categories = computed(() => {
@@ -80,15 +83,19 @@ const _categories = computed(() => {
   // field stay visible; entries that name one are hidden when the user
   // lacks it. Auth store handles admin/owner escape hatch + wildcard.
   let _hasPerm = () => true;
+  let _isOwner = false;
   try {
     const auth = useAuthStore();
     _hasPerm = (k) => auth.hasPermission(k);
+    // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
+    // matches the backend gate on /api/admin/plugins.
+    _isOwner = ['owner', 'superadmin'].includes(auth.role);
   } catch (_e) {
     // useAuthStore() requires an active Pinia instance — during unit tests
     // without Pinia, fall through to the no-op so module filtering still works.
   }
 
-  return MODULE_CATEGORIES.map((category) => {
+  const base = MODULE_CATEGORIES.map((category) => {
     const modules = category.modules.filter((module) => {
       // `requires` (optional): the entry is gated on a different module
       // grant than its own key. Used when one backend module powers
@@ -107,6 +114,31 @@ const _categories = computed(() => {
       modules,
     };
   }).filter((category) => category.modules.length > 0);
+
+  // ADR-013: append a "Plugins" category for installed third-party plugins,
+  // plus an owner-only "Manage plugins" install link. Per-request enablement is
+  // enforced server-side by the proxy + each plugin's require_module; this is
+  // just nav visibility (every installed plugin shows).
+  const pluginModules = _plugins.value.map((p) => ({
+    key: `plugin:${p.key}`,
+    label: p.name || p.key,
+    icon: 'pi pi-box',
+    to: `/plugins/${p.key}`,
+    type: 'Plugin',
+  }));
+  if (_isOwner) {
+    pluginModules.push({
+      key: 'plugins:manage',
+      label: 'Manage plugins',
+      icon: 'pi pi-cog',
+      to: '/admin/plugins',
+      type: 'Plugin',
+    });
+  }
+  if (pluginModules.length) {
+    base.push({ key: 'plugins', label: 'Plugins', icon: 'pi pi-box', modules: pluginModules });
+  }
+  return base;
 });
 
 const _allEnabledModules = computed(() => _categories.value.flatMap((category) => category.modules));
@@ -133,6 +165,15 @@ async function _doLoad(api) {
     _enabledModules.value = {};
   } finally {
     _loading.value = false;
+  }
+
+  // Plugin catalog is best-effort: if plugin-host isn't deployed the proxy
+  // errors, so a failure just means "no plugins" — never block module nav.
+  try {
+    const plugins = await api.get('/api/plugins');
+    _plugins.value = Array.isArray(plugins) ? plugins : [];
+  } catch (_error) {
+    _plugins.value = [];
   }
 }
 

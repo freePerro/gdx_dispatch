@@ -285,6 +285,14 @@ const routes = [
   { path: '/admin/payroll', name: 'admin-payroll', component: AdminPayrollView, meta: { requiresPermission: 'payroll.read' } },
   { path: '/admin/feature-settings/tech-mobile', name: 'admin-feature-settings-tech-mobile', component: TechMobileSettingsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/feedback', name: 'feedback', component: () => import('../views/FeedbackPortalView.vue') },
+  // Third-party plugin screens (ADR-013): one dynamic route renders any
+  // installed plugin's server-declared UI manifest via the generic host
+  // renderer. The :key param is the plugin key from the /api/plugins catalog.
+  { path: '/plugins/:key', name: 'plugin', component: () => import('../components/PluginScreen.vue'), props: (route) => ({ pluginKey: route.params.key }) },
+  // Owner-only in-app plugin install/manage UI (ADR-013 step 5). The view
+  // render-guards on role and the backend enforces owner/superadmin, so no
+  // route-meta permission gate (there's no owner-only permission key).
+  { path: '/admin/plugins', name: 'admin-plugins', component: () => import('../views/PluginsAdminView.vue') },
   { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { public: true, noShell: true } },
 ];
 

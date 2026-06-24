@@ -119,3 +119,6 @@ SCOPE.md
 
 # Self-host DB snapshots written by docker/update.sh
 backups/
+
+# Verification-gate artifact (local commit/push gate; not source)
+/VERIFICATION_MANIFEST.md

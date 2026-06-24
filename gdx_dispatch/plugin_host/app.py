@@ -15,6 +15,9 @@ See gdx_dispatch/docs/decisions/ADR-013-third-party-module-plugins.md.
 from __future__ import annotations
 
 import logging
+import os
+import signal
+import threading
 
 from fastapi import FastAPI, HTTPException
 
@@ -43,6 +46,19 @@ def create_plugin_host(plugins=None) -> FastAPI:
             {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui}
             for p in catalog.values()
         ]
+
+    @app.post("/internal/restart")
+    def restart_self():
+        """Exit the process so Docker (restart: unless-stopped) recreates the
+        container — a fresh boot re-runs reconcile() + discovery, which is how
+        in-app plugin installs/removals take effect. This is safe because
+        plugin-host is a SEPARATE container from the core app: the app keeps
+        serving while plugin-host cycles. Internal-only — no host port, reached
+        only from the core app over the compose network (not under /api/plugins,
+        so the public proxy can't route here). SIGTERM (not os._exit) lets
+        uvicorn shut down gracefully; the 0.5s delay lets this response flush."""
+        threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        return {"status": "restarting"}
 
     @app.get("/api/plugins/{key}/ui")
     def plugin_ui(key: str):

@@ -115,6 +115,43 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── Plugin Host ──────────────────────────────────────────────────────────────
+  # Runs all installed third-party plugins in one container, isolated from the
+  # core app (ADR-013 Model B). Core proxies /api/plugins/* here over the compose
+  # network — NO host port, it's internal-only. Reuses the app image; only the
+  # command differs. Skips migrations/bootstrap (app owns the schema); its own
+  # boot runs PluginBase.metadata.create_all for plugin tables + reconcile().
+  plugin-host:
+    build:
+      context: ../..
+      dockerfile: gdx_dispatch/docker/Dockerfile
+    command: uvicorn gdx_dispatch.plugin_host.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *app-env
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
+    volumes:
+      # In-app-installed plugins are pip-installed here on boot (reconcile.py).
+      # plugin_registry (the DB table) is the source of truth; this volume is a
+      # rebuildable cache, so it is NOT external — losing it costs one reconcile.
+      - gdx_plugins:/plugins
+    depends_on:
+      db:
+        condition: service_healthy
+      # Wait for app: it runs alembic + bootstrap, so the schema exists before
+      # plugin-host's create_all / registry reconcile touch the DB.
+      app:
+        condition: service_healthy
+    healthcheck:
+      # A bad plugin can wedge boot (import or create_all failure). Without this,
+      # a crash-loop is invisible — compose reports the container "up" between
+      # restarts. /health is served before plugin routers mount.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # ── Celery Worker — priority:high ────────────────────────────────────────────
   celery-high:
     build:
@@ -185,3 +222,6 @@ volumes:
   gdx_uploads:
     external: true
     name: docker_gdx_uploads
+  # Plugin install cache (pip --target). Rebuildable from plugin_registry on
+  # reconcile, so a plain managed volume — not external like db/uploads.
+  gdx_plugins:
