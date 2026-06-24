@@ -66,3 +66,25 @@ def test_plugin_router_is_mounted_and_reachable():
 def test_health_reflects_mounted_plugin():
     c = TestClient(create_plugin_host(plugins=[_demo_plugin()]))
     assert c.get("/health").json()["plugins"] == ["demo"]
+
+
+def test_restart_endpoint_schedules_sigterm_without_dying(monkeypatch):
+    # The route schedules a SIGTERM via threading.Timer; patch Timer so the
+    # test process is NOT actually killed, and assert it responds + arms it.
+    import gdx_dispatch.plugin_host.app as host_app
+
+    armed = {}
+
+    class _FakeTimer:
+        def __init__(self, delay, fn):
+            armed["delay"] = delay
+
+        def start(self):
+            armed["started"] = True
+
+    monkeypatch.setattr(host_app.threading, "Timer", _FakeTimer)
+    c = TestClient(create_plugin_host(plugins=[]))
+    r = c.post("/internal/restart")
+    assert r.status_code == 200
+    assert r.json() == {"status": "restarting"}
+    assert armed.get("started") is True

@@ -42,3 +42,9 @@ services:
     environment:
       GDX_SKIP_MIGRATIONS: "1"
       GDX_SKIP_BOOTSTRAP: "1"
+  plugin-host:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    pull_policy: always
+    environment:
+      GDX_SKIP_MIGRATIONS: "1"
+      GDX_SKIP_BOOTSTRAP: "1"
