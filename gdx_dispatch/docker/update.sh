@@ -8,12 +8,21 @@
 #
 # Usage:  ./update.sh            # pull whatever APP_VERSION in .env points at
 #         APP_VERSION=1.3.0 ./update.sh   # pull a specific release
+#
+# Optional overrides (defaults match the shipped docker-compose, so the
+# common case needs none of these):
+#   HEALTH_PORT=8002 ./update.sh       # app published on a non-default host port
+#   EXTRA_COMPOSE=path/to/override.yml ./update.sh   # layer an extra compose file
+#                                                    # (e.g. a custom port mapping)
 set -euo pipefail
 cd "$(dirname "$0")/../.."   # repo root (where .env lives)
 
 COMPOSE=(docker compose -p gdx --env-file ./.env
   -f gdx_dispatch/docker/docker-compose.yml
   -f gdx_dispatch/docker/docker-compose.selfhost.yml)
+# Layer an optional caller-supplied override (e.g. a non-default port mapping)
+# onto the compose invocation. Empty by default → no change for standard setups.
+[ -n "${EXTRA_COMPOSE:-}" ] && COMPOSE+=(-f "$EXTRA_COMPOSE")
 
 ts="$(date +%Y%m%d-%H%M%S)"
 snapshot="backups/gdx-pre-update-${ts}.sql.gz"
@@ -36,7 +45,7 @@ tries="$(( ${HEALTH_TIMEOUT:-600} / 5 ))"
 echo "[update] Waiting up to ${HEALTH_TIMEOUT:-600}s for health (migrations run first)…"
 healthy=0
 for _ in $(seq 1 "${tries}"); do
-  if curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1; then
+  if curl -sf "http://127.0.0.1:${HEALTH_PORT:-8001}/health" >/dev/null 2>&1; then
     healthy=1
     break
   fi
