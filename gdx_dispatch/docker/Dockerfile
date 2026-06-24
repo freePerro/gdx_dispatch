@@ -53,9 +53,9 @@ COPY --from=frontend-builder /build/dist ./gdx_dispatch/frontend/dist
 # volume is empty). Without this pre-creation the volume initializes
 # as root:root and the app cannot write.
 RUN useradd -m appuser \
-    && mkdir -p /app/uploads \
+    && mkdir -p /app/uploads /plugins \
     && chmod +x /app/gdx_dispatch/docker/entrypoint.sh \
-    && chown -R appuser /app
+    && chown -R appuser /app /plugins
 USER appuser
 
 EXPOSE 8000

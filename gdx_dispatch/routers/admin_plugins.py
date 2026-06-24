@@ -8,6 +8,10 @@ backend access (confined to plugin-host).
 """
 from __future__ import annotations
 
+import logging
+import os
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -63,6 +67,21 @@ def add_plugin(
         "status": "registered",
         "note": "restart the plugin-host container to apply",
     }
+
+
+@router.post("/restart", status_code=202)
+def restart_plugin_host(_: dict = Depends(_require_owner)) -> dict:
+    """Trigger a plugin-host restart so pending installs/removals take effect.
+    Safe from inside the app: plugin-host is a separate container, so the core
+    app keeps serving while it cycles (unlike app self-update). Best-effort —
+    plugin-host may already be cycling or not deployed; the UI polls
+    /api/plugins to confirm it comes back."""
+    url = os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
+    try:
+        httpx.post(f"{url}/internal/restart", timeout=5.0)
+    except Exception:
+        logging.getLogger(__name__).warning("plugin-host restart trigger failed (may be cycling)")
+    return {"status": "restart requested"}
 
 
 @router.delete("/{package}")

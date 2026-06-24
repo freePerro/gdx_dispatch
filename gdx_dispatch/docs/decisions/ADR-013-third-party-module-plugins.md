@@ -1,7 +1,8 @@
 # ADR-013 — Full-stack third-party module plugins
 
-**Status:** Accepted (designed 2026-06-23 with Doug; reconstructed after a context-cleared
-session, then refined through the model A/B/C comparison below)
+**Status:** Implemented 2026-06-24 (designed 2026-06-23 with Doug; reconstructed after a
+context-cleared session, then refined through the model A/B/C comparison below). See
+**Build status** at the end.
 
 ## Context
 
@@ -205,12 +206,50 @@ arbitrary uploader, and never executes plugin code inside the **core** app.
   `plugin_registry` table.
 - Owner-only install/enable/disable flows + audit.
 
-## Next steps (when we build)
+## Build status — DONE (2026-06-24)
 
-1. Define the `gdx.plugin_api` surface — smallest viable set (auth context, DB session,
-   `require_module`, `PluginBase`, UI-manifest types).
-2. Stand up the `plugin-host` container + the `/api/plugins/*` proxy with identity forwarding.
-3. UI-manifest schema v0 (list + form + actions + nav) and the host renderer.
-4. `discover_plugins()` + the mount/migration phases; per-plugin Alembic + ordering.
-5. `plugin_registry` table + the in-app install/reconcile flow on the `/plugins` volume.
-6. A reference plugin (`gdx-plugin-example`) exercising all of it end-to-end.
+All six design steps landed, plus deployment + app wiring:
+
+1. ✅ `gdx.plugin_api` surface (`PluginBase`, manifest types, forwarded-identity context).
+2. ✅ `plugin-host` container + `/api/plugins/*` proxy with identity forwarding (client `X-GDX-*`
+   stripped, server-authoritative values injected).
+3. ✅ UI-manifest schema v0 + host renderer (`PluginScreen.vue` / `usePluginScreen.js`).
+4. ✅ `discover_plugins()` + mount/migration phases (`create_all`; per-plugin Alembic when a
+   plugin needs schema *changes*).
+5. ✅ `plugin_registry` table + in-app install/reconcile on the `/plugins` volume.
+6. ✅ Reference plugin (`gdx-plugin-example`).
+
+**Deployment (compose).** `plugin-host` is a service that reuses the app image with a different
+command (`uvicorn gdx_dispatch.plugin_host.main:app`), shares the `*app-env` anchor, skips
+migrations/bootstrap (the app owns the schema), and mounts a `gdx_plugins:/plugins` volume. It is
+internal-only — no host port; the core app proxies to it over the compose network. The selfhost
+overlay pulls the published image for it like the other services.
+
+**App surface.** `/plugins/:key` route renders any installed plugin's manifest; the `/api/plugins`
+catalog feeds a "Plugins" nav category; owner-only install UI lives at `/admin/plugins`
+(`PluginsAdminView.vue`) over `/api/admin/plugins`.
+
+**How "restart only the plugin-host" is implemented (no docker socket, no sidecar).** The install
+UI records intent in `plugin_registry`; applying it needs a process restart so boot re-runs
+`reconcile()` (pip-install) + discovery. Because plugin-host is a *separate* container from the
+core app, it restarts its **own process**: `POST /internal/restart` (internal-only, not under
+`/api/plugins`) schedules a self-`SIGTERM`; Docker's `restart: unless-stopped` recreates the
+container; the core app keeps serving throughout. Owner-only `POST /api/admin/plugins/restart`
+fronts it, and the UI polls `/api/plugins` until plugin-host answers again. (Contrast: *app*
+self-update still needs the separate updater sidecar, because the app can't recreate itself
+mid-request.)
+
+**Verified (2026-06-24).** The register → `pip install --target /plugins` → `discover_plugins()`
+(entry-point group `gdx.modules`) → mount → catalog/UI loop was run end-to-end in the app image as
+`appuser` against the real `gdx-plugin-example`: `/plugins` is writable, the package installs, and
+its manifest surfaces in `/api/plugins`, `/health`, and the UI endpoint. (Concern that `--target`
+installs are invisible to `importlib.metadata` entry-points is **false** — `--target` writes
+`.dist-info`, and `entry_points()` reads it once `/plugins` is on `sys.path`, which `reconcile()`
+ensures before discovery.) `plugin-host` has a `/health` healthcheck so a wedge is visible.
+
+**Not yet exercised on a live multi-container deploy:** the owner-clicks-install → registry row →
+restart → reconcile pip-install → recreate cycle on a running compose stack (verified per-step, not
+as one live sequence). **Known follow-up (when real plugins exist):** a bad plugin that imports
+fine but fails `metadata.create_all` is unguarded (per-plugin *import* is already skipped in
+`load_manifests`); add a failure-count / quarantine so it can't crash-loop. Not built now — no
+third-party plugins exist yet, and the healthcheck surfaces a wedge.
