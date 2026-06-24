@@ -1709,6 +1709,14 @@ def create_app() -> FastAPI:
     app.include_router(admin_flags_router, prefix="/api/admin", tags=["feature-flags"])
     app.include_router(feature_flags_ui_router)
     app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
+    # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
+    # container with the authenticated principal (ADR-013). Guarded so a missing
+    # plugin stack never blocks core boot.
+    try:
+        from gdx_dispatch.routers.plugins_proxy import router as plugins_proxy_router
+        app.include_router(plugins_proxy_router)
+    except Exception:
+        logging.getLogger("gdx_dispatch.app").exception("plugins proxy router failed to load")
     app.include_router(push_router)
     app.include_router(locations_router)
     app.include_router(tenant_ui_router, prefix="/legacy", tags=["tenant-ui"])
