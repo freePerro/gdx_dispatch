@@ -2,6 +2,8 @@
 
 This document describes the RBAC system that backs `/role-permissions`. It covers the permission catalog, the seven builtin roles, the enforcement contract, and the recipe for adding a new permission.
 
+> **See also:** [Role & Nav Naming Conventions](ROLE_AND_NAV_NAMING_CONVENTIONS.md) — canonical role spellings + `normalize_role`, and the permission-driven nav-visibility tiers (`nav.office` / `nav.admin`). Read it before adding a role comparison or a nav module.
+
 ## TL;DR
 
 - **Catalog** lives in [`gdx_dispatch/core/permissions.py`](../core/permissions.py) — single source of truth for both backend enforcement and frontend UI.

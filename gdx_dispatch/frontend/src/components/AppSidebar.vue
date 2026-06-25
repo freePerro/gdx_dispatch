@@ -225,8 +225,8 @@ import PanelMenu from 'primevue/panelmenu';
 import { useThemeStore } from '../stores/theme';
 import { useAuthStore } from '../stores/auth';
 import { useTenantModules } from '../composables/useTenantModules';
-import { isModuleAllowedForRole } from '../composables/useModuleSections';
 import { useTour } from '../composables/useTour';
+import { isTechnician } from '../constants/roles';
 import { resolveInitialFavorites } from '../utils/sidebarFavorites';
 
 const FAVORITES_KEY = 'gdx_sidebar_favorites';
@@ -255,33 +255,23 @@ const tour = useTour();
 const { branding } = storeToRefs(theme);
 const { categories, allEnabledModules, enabledModules } = useTenantModules();
 
-// DT-1: role-gate every module surface this component renders. The mobile
-// More drawer already does this via `groupModulesForRole`; the desktop
-// sidebar was pulling raw `allEnabledModules` and bypassing the gate, so
-// a tech logging in on desktop saw the full ~50-module list (Payroll,
-// QuickBooks, Admin Ops, etc.).
+// Module visibility is permission-driven: `allEnabledModules` / `categories`
+// come from useTenantModules already filtered by the user's permissions (a tech
+// never receives a module they lack the permission for). No separate role gate.
 const currentRole = computed(() => auth.user?.role || '');
-const roleAllowedModules = computed(() =>
-  allEnabledModules.value.filter((m) => isModuleAllowedForRole(m.key, currentRole.value)),
-);
-// DT-2: tech home is /mobile (MobileTodayView), NOT /dashboard. Same gate
-// as `_normalizeRole` — `technician` aliases to `tech`.
+const roleAllowedModules = allEnabledModules;
+// DT-2: tech home is /mobile (MobileTodayView), NOT /dashboard. isTechnician
+// is variant-aware (short `tech` + long `technician`).
 const homePin = computed(() => {
-  const r = String(currentRole.value || '').toLowerCase();
-  if (r === 'tech' || r === 'technician') {
+  if (isTechnician(currentRole.value)) {
     return { to: '/mobile', label: 'Today', icon: 'pi pi-home' };
   }
   return { to: '/dashboard', label: 'Dashboard', icon: 'pi pi-home' };
 });
 
-const roleAllowedCategories = computed(() =>
-  categories.value
-    .map((category) => ({
-      ...category,
-      modules: category.modules.filter((m) => isModuleAllowedForRole(m.key, currentRole.value)),
-    }))
-    .filter((category) => category.modules.length > 0),
-);
+// `categories` is already permission-filtered (and empty categories dropped) by
+// useTenantModules — render it directly.
+const roleAllowedCategories = categories;
 
 function launchTour() {
   const role = String(auth.user?.role || '').toLowerCase();

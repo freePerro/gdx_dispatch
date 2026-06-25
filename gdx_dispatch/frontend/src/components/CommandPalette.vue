@@ -54,7 +54,7 @@ import InputText from 'primevue/inputtext';
 import { QUICK_ACTIONS } from '../constants/modules';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
-import { isModuleAllowedForRole } from '../composables/useModuleSections';
+import { isTechnician } from '../constants/roles';
 
 const props = defineProps({
   modelValue: {
@@ -70,12 +70,12 @@ const query = ref('');
 const { allEnabledModules, isEnabled } = useTenantModules();
 const auth = useAuthStore();
 
-// DT-1: same role gate as the desktop sidebar. Without this, a tech could
-// Ctrl-K → "payroll" → navigate to a module that's hidden from their nav.
+// Nav records come straight from `allEnabledModules`, which useTenantModules
+// already permission-filters (a tech never sees a module they lack the
+// permission for, so Ctrl-K can't surface a hidden module either).
 const baseRecords = computed(() => {
   const role = auth.user?.role || '';
   const dynamicModules = allEnabledModules.value
-    .filter((module) => isModuleAllowedForRole(module.key, role))
     .map((module) => ({
       key: module.key,
       label: module.label,
@@ -84,12 +84,10 @@ const baseRecords = computed(() => {
       to: module.to,
     }));
 
-  // DT-1: AppTopbar already hides the Create-job / Create-customer buttons
-  // for tech via `canCreate` (topbar:201-206), and dispatch isn't in
-  // FIELD_TECH_MODULES. Without this filter, Ctrl-K would re-open those
-  // actions to a tech — inconsistent with the rest of the role gate.
-  const normalizedRole = String(role || '').toLowerCase();
-  const isTech = normalizedRole === 'tech' || normalizedRole === 'technician';
+  // AppTopbar already hides the Create-job / Create-customer buttons for tech
+  // via `canCreate`. Mirror that here so Ctrl-K doesn't re-open those actions
+  // to a tech. (Quick-action gating is separate from module nav visibility.)
+  const isTech = isTechnician(role);
 
   const actions = QUICK_ACTIONS.filter((action) => {
     if (action.key === 'create-job') {

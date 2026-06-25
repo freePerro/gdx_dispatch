@@ -84,7 +84,7 @@ import Drawer from 'primevue/drawer';
 import InputText from 'primevue/inputtext';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
-import { groupModulesForRole } from '../composables/useModuleSections';
+import { groupModules } from '../composables/useModuleSections';
 
 const route = useRoute();
 const router = useRouter();
@@ -220,11 +220,12 @@ const moreModules = computed(() => {
   return isTech ? [...base, { ...PROFILE_DRAWER_ENTRY, mobile_friendly: true }] : base;
 });
 
-// MH-4: role-gate + group + search-filter via the shared composable.
+// Group + search-filter via the shared composable. Visibility is already
+// permission-filtered upstream (allEnabledModules), so this only organizes.
 // Empty section list means "no matches for the current search" — the
 // drawer renders an empty-state hint in that case.
 const moreSections = computed(() =>
-  groupModulesForRole(moreModules.value, auth.user?.role, moreSearch.value),
+  groupModules(moreModules.value, moreSearch.value),
 );
 
 function isRouteActive(targetPath) {

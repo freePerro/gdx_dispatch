@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from gdx_dispatch.core import roles as _roles
+
 WILDCARD: Final = "*"
 
 
@@ -107,6 +109,17 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     # Phase 4 Polish (Sprint tech_mobile)
     ("mobile.dispatch_view", "Use the mobile dispatch surface (/mobile/dispatch)", "mobile"),
     ("mobile.chat", "Send/receive per-job chat messages", "mobile"),
+
+    # Navigation tiers — nav-visibility ONLY (no API route enforces these).
+    # They replace the old hardcoded FIELD_TECH_MODULES / OFFICE_MODULES Sets in
+    # the frontend: a module with no fine-grained permission is gated by its nav
+    # tier instead, so module visibility is now a single permission-driven source
+    # of truth that admins can edit per role in the Roles & Permissions UI.
+    #   field tier  → ungated (every role; no permission needed)
+    #   office tier → nav.office
+    #   admin tier  → nav.admin
+    ("nav.office", "See office-tier navigation modules", "navigation"),
+    ("nav.admin", "See admin-tier navigation modules", "navigation"),
 ]
 
 
@@ -139,6 +152,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read", "vendor_statements.write",
         "mobile.use", "mobile.dispatch_view", "mobile.chat",
+        "nav.office",
     ],
     "technician": [
         "jobs.read_own", "jobs.write",
@@ -148,6 +162,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "inventory.read", "inventory.write",
         "pricing.labor_matrix.read",
         "mobile.use", "mobile.chat",
+        # No nav.office / nav.admin — technicians are the field tier.
     ],
     "sales": [
         "customers.read_all", "customers.write",
@@ -157,6 +172,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "jobs.read_all",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read",
+        "nav.office",
     ],
     "accounting": [
         "leads.read",
@@ -168,8 +184,11 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "billing.read",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read", "vendor_statements.write",
+        "nav.office",
     ],
-    "viewer": [k for k in AVAILABLE_PERMISSIONS if ".read" in k],
+    # viewer = read-only auditor across every module, plus office-tier nav so the
+    # ungated office modules (which carry no .read permission) stay visible.
+    "viewer": [k for k in AVAILABLE_PERMISSIONS if ".read" in k] + ["nav.office"],
 }
 
 
@@ -187,19 +206,12 @@ PLATFORM_LOCKED_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
 # operations, but only an owner (or superadmin) may grant, change, or remove the
 # admin/owner role on a user — that's the single owner-only privilege.
 _OWNER_ASSIGNABLE_ROLES: Final[frozenset[str]] = frozenset({"owner", "admin"})
-_ROLE_ADMIN_ACTORS: Final[frozenset[str]] = frozenset({"owner", "superadmin", "super_admin", "super-admin"})
 
-
-# Roles permitted to act on OTHER users' records (timeclock, labor, others'
-# jobs). A plain technician may only act on their own. Mirrors the established
-# _DISPATCH_ROLES in job_assignments/parts_needed, plus the superadmin variants.
-# NOTE: users.role stores the LEGACY strings "dispatch"/"tech"; the RBAC
-# catalog uses "dispatcher"/"technician". The principal can carry either form
-# depending on path, so accept BOTH dispatcher spellings here. "tech"/
-# "technician" are intentionally absent — technicians are not dispatch managers.
-DISPATCH_ROLES: Final[frozenset[str]] = frozenset(
-    {"owner", "admin", "dispatch", "dispatcher", "manager", "superadmin", "super_admin", "super-admin"}
-)
+# Role groups now live in core/roles.py (single source of truth, variant-aware
+# via normalize_role). Re-exported here for any legacy importer; both contain
+# ONLY canonical forms — compare via the helpers / normalize_role, not raw `in`.
+_ROLE_ADMIN_ACTORS: Final[frozenset[str]] = _roles.ROLE_ADMIN_ACTORS
+DISPATCH_ROLES: Final[frozenset[str]] = _roles.DISPATCH_MANAGER_ROLES
 
 
 def _actor_role(actor: object) -> str:
@@ -209,8 +221,12 @@ def _actor_role(actor: object) -> str:
 
 
 def is_dispatch_manager(actor: object) -> bool:
-    """True if the actor may act on other users' records (dispatch/admin tier)."""
-    return _actor_role(actor) in DISPATCH_ROLES
+    """True if the actor may act on other users' records (dispatch/admin tier).
+
+    Delegates to core/roles.py, which normalizes legacy spellings (dispatch →
+    dispatcher, etc.) before the tier check.
+    """
+    return _roles.is_dispatch_manager(_actor_role(actor))
 
 
 def assert_can_assign_role(actor: object, target_role: str | None, current_role: str | None = None) -> None:
@@ -229,7 +245,7 @@ def assert_can_assign_role(actor: object, target_role: str | None, current_role:
         actor_role = str(actor.get("role") or "")
     else:
         actor_role = str(getattr(actor, "role", "") or "")
-    if actor_role.strip().lower() in _ROLE_ADMIN_ACTORS:
+    if _roles.is_role_admin_actor(actor_role):
         return
     from fastapi import HTTPException
 
