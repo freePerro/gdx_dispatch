@@ -1049,13 +1049,29 @@ function addFromLabor() {
 const saveCatalogOpen = ref(false);
 const savingCatalog = ref(false);
 const saveCatalogForm = ref({ description: "", cost: null, pricing_category: "parts" });
-const pricingCategoryOptions = [
+// Hardcoded fallback; replaced at mount by the data-driven list from
+// /api/catalogs/pricing-categories so admin-seeded tier categories appear.
+const pricingCategoryOptions = ref([
   { label: "Doors", value: "doors" },
   { label: "Openers", value: "openers" },
   { label: "Parts", value: "parts" },
   { label: "Labor", value: "labor" },
   { label: "Other", value: "other" },
-];
+]);
+
+async function loadPricingCategories() {
+  try {
+    const cats = await api.get("/api/catalogs/pricing-categories", { suppressErrorToast: true });
+    if (Array.isArray(cats) && cats.length) {
+      pricingCategoryOptions.value = cats.map((c) => ({
+        label: c.charAt(0).toUpperCase() + c.slice(1),
+        value: c,
+      }));
+    }
+  } catch (e) {
+    /* keep the hardcoded fallback */
+  }
+}
 
 function openSaveToCatalog(line) {
   saveCatalogForm.value = {
@@ -1226,27 +1242,37 @@ const canCreate = computed(() =>
 
 async function loadCatalog() {
   try {
-    const [supplierRes, doorsRes, partsRes] = await Promise.allSettled([
+    const [supplierRes, doorsRes, partsRes, customRes] = await Promise.allSettled([
       api.get("/api/supplier/catalog"),
       api.get("/api/catalog/doors?page_size=100"),
       api.get("/api/catalog/parts?page_size=100"),
+      api.get("/api/catalogs/all-items"),
     ]);
     const supplier = supplierRes.status === "fulfilled"
       ? (Array.isArray(supplierRes.value) ? supplierRes.value : supplierRes.value?.items || [])
       : [];
     const doors = doorsRes.status === "fulfilled" ? (doorsRes.value?.items || []) : [];
     const parts = partsRes.status === "fulfilled" ? (partsRes.value?.items || []) : [];
+    // The tenant's own custom + imported catalogs (custom_catalog_items). These
+    // carry cost + a stored pricing_category so the engine marks them up.
+    const custom = customRes.status === "fulfilled" ? (customRes.value?.items || []) : [];
     catalogItems.value = [
+      ...custom.map((c) => ({
+        id: c.id, name: c.name, category: c.category || "Parts",
+        unit_price: c.price || 0, cost: c.cost ?? null,
+        pricing_category: c.pricing_category || null,
+        supplier_name: "My Catalog", sku: c.sku,
+      })),
       ..._BUILT_IN_PARTS,
       ...supplier.map((s, i) => ({ ...s, id: s.id || `sup-${i}`, supplier_name: s.supplier_name || "Supplier" })),
       ...doors.map((d) => ({
         id: d.id, name: `${d.brand || "CHI"} ${d.model_number || ""} ${d.door_type || "Door"} ${d.width || ""}x${d.height || ""}`.trim(),
-        category: "Doors", unit_price: d.sell_price || d.cost || 0,
-        supplier_name: d.brand || "CHI", sku: d.sku,
+        category: "Doors", unit_price: d.sell_price || d.cost || 0, cost: d.cost ?? null,
+        pricing_category: "doors", supplier_name: d.brand || "CHI", sku: d.sku,
       })),
       ...parts.map((p) => ({
         id: p.id, name: p.name, category: p.part_type || "Parts",
-        unit_price: p.sell_price || p.cost || 0,
+        unit_price: p.sell_price || p.cost || 0, cost: p.cost ?? null,
         supplier_name: p.brand || "CHI", sku: p.sku,
       })),
     ];
@@ -1257,13 +1283,29 @@ async function loadCatalog() {
 
 function addFromCatalog() {
   for (const item of selectedCatalogItems.value) {
-    form.value.line_items.push({
+    const cost = Number(item.cost) > 0 ? Number(item.cost) : null;
+    const pc = cost ? (item.pricing_category || categoryToPricingCategory(item.category)) : null;
+    // Display category drives the dropdown; derive from the canonical pricing
+    // bucket (title-cased) so it always matches an option and reflects how the
+    // line is priced. Falls back to the item's free-form category otherwise.
+    const titleCased = pc ? pc.charAt(0).toUpperCase() + pc.slice(1) : null;
+    const displayCat = titleCased && lineCategories.includes(titleCased)
+      ? titleCased : (item.category || "Parts");
+    const line = {
       ...defaultLineItem(),
-      category: item.category || "Parts",
+      category: displayCat,
       description: item.name,
       quantity: 1,
       unit_price: item.unit_price || 0,
-    });
+      // Carry cost + pricing bucket so the tier engine computes the marked-up
+      // sell. Without these the line posts at the catalog price (zero markup).
+      cost,
+      pricing_category: pc,
+    };
+    form.value.line_items.push(line);
+    // Show the marked-up sell in the builder immediately, matching what the
+    // backend engine will persist on save (instead of displaying raw cost).
+    if (cost) recomputeSell(line);
   }
   selectedCatalogItems.value = [];
   showCatalogPicker.value = false;
@@ -1630,7 +1672,7 @@ function _linePostPayload(li) {
     quantity: li.quantity,
     unit_price: li.unit_price,
     cost: isLaborMatrix ? null : (li.cost ?? null),
-    pricing_category: isLaborMatrix ? null : categoryToPricingCategory(li.category),
+    pricing_category: isLaborMatrix ? null : (li.pricing_category || categoryToPricingCategory(li.category)),
     labor_price_item_id: li.labor_price_item_id ?? null,
     estimated_man_hours: li.estimated_man_hours ?? null,
   };
@@ -2113,6 +2155,7 @@ onMounted(async () => {
   loadCatalog();
   loadPricingTiers();
   loadPricingSettings();
+  loadPricingCategories();
   loadEstimateFeatures();
   _discoverEstimateSource();   // plugin hook (ADR-013) — no-op when none installed
   await loadTenantTaxDefault();
