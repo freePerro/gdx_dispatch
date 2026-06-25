@@ -83,4 +83,41 @@ def test_admin_excludes_billing_write():
 def test_viewer_is_read_only():
     perms = BUILTIN_ROLES["viewer"]
     for p in perms:
-        assert ".read" in p, f"viewer grants non-read permission: {p!r}"
+        # nav.* are nav-visibility markers (no write capability), allowed.
+        assert ".read" in p or p.startswith("nav."), f"viewer grants non-read permission: {p!r}"
+
+
+# ── Navigation-tier permissions (Set→permission nav migration) ──────────────
+# Nav visibility is a single permission-driven source of truth. nav.office /
+# nav.admin replace the old hardcoded FIELD_TECH_MODULES / OFFICE_MODULES Sets.
+# These grants must reproduce the field/office/admin tiers; the frontend parity
+# test (useModuleSections.spec.js) mirrors them.
+
+def test_nav_tier_permissions_exist():
+    assert "nav.office" in AVAILABLE_PERMISSIONS
+    assert "nav.admin" in AVAILABLE_PERMISSIONS
+    assert "navigation" in PERMISSION_CATEGORIES
+
+
+def test_office_roles_have_nav_office():
+    for role in ("dispatcher", "sales", "accounting", "viewer"):
+        assert "nav.office" in BUILTIN_ROLES[role], f"{role} missing nav.office"
+
+
+def test_technician_is_field_tier_no_nav_perms():
+    perms = BUILTIN_ROLES["technician"]
+    assert "nav.office" not in perms, "technician must stay field tier (no nav.office)"
+    assert "nav.admin" not in perms, "technician must stay field tier (no nav.admin)"
+
+
+def test_admin_has_both_nav_tiers():
+    # admin = _all_except(billing.write) → inherits both nav tiers automatically.
+    assert "nav.office" in BUILTIN_ROLES["admin"]
+    assert "nav.admin" in BUILTIN_ROLES["admin"]
+
+
+def test_nav_admin_is_admin_owner_only():
+    # nav.admin gates admin-tier nav. Only admin (auto) and owner (wildcard) hold
+    # it; no office/field role should — that would leak admin nav to them.
+    for role in ("dispatcher", "technician", "sales", "accounting", "viewer"):
+        assert "nav.admin" not in BUILTIN_ROLES[role], f"{role} must NOT have nav.admin"

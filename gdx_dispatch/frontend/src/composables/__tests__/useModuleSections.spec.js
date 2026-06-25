@@ -1,165 +1,185 @@
 /**
- * MH-4 — Lock the "More" drawer role gate + grouping + search behaviour.
+ * Nav visibility — Set→permission migration guard + grouping behaviour.
  *
- * Audit P1 #5: pre-fix the mobile More drawer rendered all ~80 enabled
- * modules with NO role filter — Payroll/Webhooks/Feature Flags/GDPR/
- * SSO/Admin Operations were all tappable by a field tech.
- * P2 #22: "Payroll" appeared twice (both /payroll and /admin/payroll).
+ * The old hardcoded FIELD_TECH_MODULES / OFFICE_MODULES Sets (which decided nav
+ * visibility by ROLE STRING) were deleted. Visibility is now a single
+ * permission-driven source of truth: each module declares a `permission` and a
+ * user sees it iff they hold it (ungated modules = field tier, visible to all).
  *
- * Tests cover:
- *   - role-allowlist (tech / office / admin) drops the right items
- *   - sections appear in SECTION_ORDER, empty sections elided
- *   - search filter matches label / key / route, case-insensitive
- *   - Payroll de-duped by (label, permission)
- *   - unknown module key lands in "Other" (defensive)
+ * This suite freezes the pre-migration Set behaviour as a snapshot and asserts
+ * the new permission model:
+ *   1. loses NOTHING for any builtin role (zero regressions), and
+ *   2. differs ONLY by the 19 approved "reveals" — modules a role already had
+ *      the API permission for but the Set was inconsistently hiding from nav.
  */
 import { describe, it, expect } from 'vitest';
-import {
-  groupModulesForRole,
-  isModuleAllowedForRole,
-  FIELD_TECH_MODULES,
-  OFFICE_MODULES,
-  SECTION_ORDER,
-} from '../useModuleSections';
+import { groupModules, moduleVisible, SECTION_ORDER } from '../useModuleSections';
+import { MODULE_CATEGORIES, flattenModules } from '../../constants/modules';
 
-// Synthetic catalog mirroring the real shape from constants/modules.js,
-// kept small + explicit so failures point at the right rule.
-const CATALOG = [
-  { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/jobs' },
-  { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock' },
-  { key: 'photos', label: 'Photos', icon: 'pi pi-images', to: '/photos' },
-  { key: 'inventory', label: 'Inventory', icon: 'pi pi-box', to: '/inventory' },
-  { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox' },
-  { key: 'communications', label: 'Comms', icon: 'pi pi-comment', to: '/communications' },
-  // MH-9: keys moved OUT of FIELD_TECH_MODULES — must show to office,
-  // must NOT show to tech. Each one's tech-invisibility is asserted
-  // below; one office-visibility check pins parts_to_order as the
-  // representative.
-  { key: 'parts_to_order', label: 'Parts to Order', icon: 'pi pi-box', to: '/parts-to-order' },
-  { key: 'scheduling', label: 'Scheduling', icon: 'pi pi-calendar', to: '/scheduling' },
-  { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/planner' },
-  { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/dispatch' },
-  { key: 'maintenance', label: 'Maintenance', icon: 'pi pi-wrench', to: '/maintenance' },
-  { key: 'technicians', label: 'Technicians', icon: 'pi pi-users', to: '/technicians' },
-  { key: 'maps', label: 'Maps', icon: 'pi pi-map', to: '/maps' },
-  { key: 'gps', label: 'GPS', icon: 'pi pi-compass', to: '/gps' },
-  { key: 'daily_loadsheet', label: 'Daily Loadsheet', icon: 'pi pi-list', to: '/daily-loadsheet' },
-  { key: 'equipment', label: 'Equipment', icon: 'pi pi-cog', to: '/equipment' },
-  { key: 'customer_portal', label: 'Customer Portal', icon: 'pi pi-globe', to: '/customer-portal' },
-  { key: 'appointments', label: 'Appointments', icon: 'pi pi-calendar', to: '/appointments' },
-  { key: 'tasks', label: 'Tasks', icon: 'pi pi-check', to: '/tasks' },
-  { key: 'checklists', label: 'Checklists', icon: 'pi pi-list', to: '/checklists' },
-  { key: 'job_templates', label: 'Job Templates', icon: 'pi pi-clone', to: '/job-templates' },
-  { key: 'customers', label: 'Customers', icon: 'pi pi-users', to: '/customers' },
-  { key: 'estimates', label: 'Estimates', icon: 'pi pi-file-edit', to: '/estimates' },
-  { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', permission: 'invoices.read_all' },
-  // Duplicate payroll entries — must collapse to ONE.
-  { key: 'payroll', label: 'Payroll', icon: 'pi pi-money-bill', to: '/payroll', permission: 'payroll.read' },
-  { key: 'payroll', label: 'Payroll', icon: 'pi pi-wallet', to: '/admin/payroll', permission: 'payroll.read' },
-  // Admin-only items that must never show to a tech.
-  { key: 'webhooks', label: 'Webhooks', icon: 'pi pi-bell', to: '/webhooks' },
-  { key: 'role_permissions', label: 'Roles & Permissions', icon: 'pi pi-lock', to: '/role-permissions' },
-  { key: 'sso', label: 'SSO', icon: 'pi pi-key', to: '/sso' },
-  { key: 'gdpr', label: 'GDPR & Compliance', icon: 'pi pi-shield', to: '/gdpr' },
-];
+// ── Resolved builtin-role permissions. MIRROR of core/permissions.py
+//    BUILTIN_ROLES (keep in sync; regenerate with the dump in that file's
+//    docstring if roles change). 'owner' = wildcard. ────────────────────────
+const RESOLVED_ROLE_PERMS = {
+  owner: '*',
+  admin: ['accounting.export','accounting.read','accounting.write','billing.read','customers.delete','customers.read_all','customers.read_own','customers.write','dispatch.read','estimates.read_all','estimates.read_own','estimates.send','estimates.write','inventory.read','inventory.write','invoices.read_all','invoices.read_own','invoices.refund','invoices.send','invoices.write','jobs.delete','jobs.read_all','jobs.read_own','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.admin','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','scheduling.read_all','scheduling.read_own','scheduling.write','settings.read','settings.write','users.read','users.write','vendor_statements.read','vendor_statements.write','webhooks.manage'],
+  dispatcher: ['customers.read_all','customers.write','dispatch.read','estimates.read_all','estimates.write','invoices.read_all','jobs.read_all','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.office','payments.read','pricing.labor_matrix.read','pricing.labor_matrix.write','scheduling.read_all','scheduling.write','vendor_statements.read','vendor_statements.write'],
+  technician: ['customers.read_own','estimates.read_own','inventory.read','inventory.write','jobs.read_own','jobs.write','mobile.chat','mobile.use','pricing.labor_matrix.read','scheduling.read_own'],
+  sales: ['customers.read_all','customers.write','estimates.read_all','estimates.send','estimates.write','invoices.read_all','jobs.read_all','leads.delete','leads.read','leads.write','nav.office','pricing.labor_matrix.read','pricing.labor_matrix.write','vendor_statements.read'],
+  accounting: ['accounting.export','accounting.read','accounting.write','billing.read','invoices.read_all','invoices.refund','invoices.send','invoices.write','leads.read','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','vendor_statements.read','vendor_statements.write'],
+  viewer: ['accounting.read','billing.read','customers.read_all','customers.read_own','dispatch.read','estimates.read_all','estimates.read_own','inventory.read','invoices.read_all','invoices.read_own','jobs.read_all','jobs.read_own','leads.read','nav.office','payments.read','payroll.read','pricing.labor_matrix.read','reports.read','scheduling.read_all','scheduling.read_own','settings.read','users.read','vendor_statements.read'],
+};
 
-// MH-9: the 15 keys moved from FIELD_TECH_MODULES → OFFICE_MODULES.
-// Asserted dropped from tech, retained for office.
-const MH9_DROPPED_FROM_TECH = [
-  'dispatch', 'scheduling', 'appointments', 'tasks', 'planner',
-  'checklists', 'job_templates', 'maintenance', 'technicians',
-  'maps', 'gps', 'daily_loadsheet', 'equipment', 'parts_to_order',
-  'customer_portal',
-];
+// ── Frozen pre-migration snapshot (the deleted Sets + the module→permission
+//    map as it was BEFORE tagging). This is the "before" we migrated from. ───
+const OLD_FIELD = new Set(['jobs', 'timeclock', 'photos', 'inbox', 'communications', 'inventory']);
+const OLD_OFFICE = new Set([
+  'dispatch', 'scheduling', 'appointments', 'tasks', 'planner', 'checklists',
+  'job_templates', 'maintenance', 'technicians', 'maps', 'gps', 'daily_loadsheet',
+  'equipment', 'parts_to_order', 'customer_portal', 'customers', 'leads', 'estimates',
+  'proposals', 'change_orders', 'service_agreements', 'signatures', 'billing', 'payments',
+  'collections', 'invoice_reminders', 'reviews', 'referrals', 'surveys', 'booking',
+  'warranties', 'phone_com_calls', 'phone_com_messages', 'phone_com_faxes', 'campaigns',
+  'segments', 'automations', 'winback', 'loyalty', 'fleet', 'performance',
+  'equipment_tracking', 'delivery_loadsheet', 'documents', 'pdf_templates', 'resources',
+  'reports', 'tags', 'catalog', 'vendors', 'purchase_orders',
+]);
+const OLD_MODULE_PERM = {
+  billing: 'invoices.read_all', payments: 'payments.read', expenses: 'accounting.read',
+  collections: 'invoices.read_all', invoice_reminders: 'invoices.read_all', payroll: 'payroll.read',
+  labor_matrix: 'pricing.labor_matrix.read', vendor_statements: 'vendor_statements.read',
+  budget: 'accounting.read', spending_trends: 'accounting.read', users: 'users.read',
+  role_permissions: 'settings.write', custom_fields: 'settings.write', webhooks: 'webhooks.manage',
+  gdpr: 'settings.write', sso: 'settings.write', admin_ops: 'settings.write',
+  server_errors: 'settings.write', admin_db: 'settings.write', settings: 'settings.read',
+};
 
-function _allKeys(sections) {
-  return sections.flatMap((s) => s.modules.map((m) => m.key));
+// The 19 approved reveals (see migration decision: "Reveal them"). Each is a
+// role that already holds the API permission but the old Set hid the nav.
+const APPROVED_REVEALS = new Set([
+  'dispatcher:labor_matrix', 'dispatcher:vendor_statements',
+  'technician:labor_matrix',
+  'sales:labor_matrix', 'sales:vendor_statements',
+  'accounting:expenses', 'accounting:payroll', 'accounting:labor_matrix',
+  'accounting:vendor_statements', 'accounting:budget', 'accounting:spending_trends',
+  'viewer:expenses', 'viewer:payroll', 'viewer:labor_matrix', 'viewer:vendor_statements',
+  'viewer:budget', 'viewer:spending_trends', 'viewer:users', 'viewer:settings',
+]);
+
+const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'accounting', 'viewer'];
+const MODULES = flattenModules();
+
+function canonical(role) {
+  const r = String(role || '').toLowerCase();
+  if (r === 'tech' || r === 'technician') return 'technician';
+  if (r === 'dispatch' || r === 'dispatcher') return 'dispatcher';
+  return r;
+}
+function roleHas(role, perm) {
+  const perms = RESOLVED_ROLE_PERMS[canonical(role)] || [];
+  if (perms === '*') return true;
+  return perms.includes(perm);
+}
+function oldSetAllowed(role, key) {
+  const r = canonical(role);
+  if (r === 'admin' || r === 'owner' || r === 'super_admin') return true;
+  if (r === 'technician') return OLD_FIELD.has(key);
+  return OLD_FIELD.has(key) || OLD_OFFICE.has(key);
+}
+function oldVisible(role, key) {
+  if (!oldSetAllowed(role, key)) return false;
+  const perm = OLD_MODULE_PERM[key];
+  return perm ? roleHas(role, perm) : true;
+}
+function newVisible(role, module) {
+  return moduleVisible(module, (k) => roleHas(role, k));
 }
 
-describe('useModuleSections — role gate', () => {
-  it('tech sees only field-relevant modules; admin/finance items hidden', () => {
-    const s = groupModulesForRole(CATALOG, 'tech');
-    const keys = _allKeys(s);
-    expect(keys).toContain('jobs');
-    expect(keys).toContain('timeclock');
-    expect(keys).toContain('photos');
-    expect(keys).toContain('inventory');
-    expect(keys).toContain('inbox');
-    expect(keys).toContain('communications');
-    // Money / admin items MUST be absent
-    expect(keys).not.toContain('billing');
-    expect(keys).not.toContain('payroll');
-    expect(keys).not.toContain('webhooks');
-    expect(keys).not.toContain('role_permissions');
-    expect(keys).not.toContain('sso');
-    expect(keys).not.toContain('gdpr');
+describe('nav visibility — Set→permission migration parity', () => {
+  it('zero regressions: no builtin role loses any module it could see before', () => {
+    const regressions = [];
+    for (const role of PARITY_ROLES) {
+      for (const m of MODULES) {
+        if (oldVisible(role, m.key) && !newVisible(role, m)) regressions.push(`${role}:${m.key}`);
+      }
+    }
+    expect(regressions).toEqual([]);
   });
 
-  it('MH-9b: tech sees Profile under Account section when injected', () => {
-    const catalogPlusProfile = [
-      ...CATALOG,
-      { key: 'profile', label: 'Profile', icon: 'pi pi-user', to: '/profile' },
-    ];
-    const s = groupModulesForRole(catalogPlusProfile, 'tech');
-    const sectionOf = (k) => s.find((b) => b.modules.some((m) => m.key === k))?.section;
-    expect(sectionOf('profile')).toBe('Account');
+  it('differs from the old Sets only by the 19 approved reveals', () => {
+    const reveals = new Set();
+    for (const role of PARITY_ROLES) {
+      for (const m of MODULES) {
+        if (!oldVisible(role, m.key) && newVisible(role, m)) reveals.add(`${role}:${m.key}`);
+      }
+    }
+    expect([...reveals].sort()).toEqual([...APPROVED_REVEALS].sort());
+  });
+});
+
+describe('moduleVisible — single permission-driven gate', () => {
+  it('ungated module (no permission) is visible to everyone', () => {
+    expect(moduleVisible({ key: 'jobs' }, () => false)).toBe(true);
+  });
+  it('gated module is hidden without the permission', () => {
+    expect(moduleVisible({ key: 'quickbooks', permission: 'nav.admin' }, () => false)).toBe(false);
+  });
+  it('gated module is shown with the permission', () => {
+    expect(moduleVisible({ key: 'quickbooks', permission: 'nav.admin' }, (k) => k === 'nav.admin')).toBe(true);
+  });
+});
+
+describe('catalog tagging — tier invariants', () => {
+  const FIELD = new Set(['jobs', 'timeclock', 'photos', 'communications', 'inbox', 'inventory']);
+
+  it('the only ungated modules are the 6 field-tier ones', () => {
+    const ungated = MODULES.filter((m) => !m.permission).map((m) => m.key);
+    expect(new Set(ungated)).toEqual(FIELD);
   });
 
-  it('MH-9: dispatcher/planner/scheduling/maps/parts-to-order etc. NOT visible to tech', () => {
-    const s = groupModulesForRole(CATALOG, 'tech');
-    const keys = _allKeys(s);
-    for (const dropped of MH9_DROPPED_FROM_TECH) {
-      expect(keys, `tech should NOT see "${dropped}" post-MH-9`).not.toContain(dropped);
+  it('technician (field tier) sees no nav.office or nav.admin gated module', () => {
+    for (const m of MODULES) {
+      if (newVisible('technician', m)) {
+        expect(['nav.office', 'nav.admin']).not.toContain(m.permission);
+      }
     }
   });
 
-  it('also treats backend canonical "technician" role as tech', () => {
-    const s = groupModulesForRole(CATALOG, 'technician');
-    const keys = _allKeys(s);
-    expect(keys).not.toContain('webhooks');
-    expect(keys).not.toContain('payroll');
-    expect(keys).not.toContain('dispatch');
-    expect(keys).not.toContain('parts_to_order');
-  });
-
-  it('office role adds customers + money basics but still hides admin items', () => {
-    const s = groupModulesForRole(CATALOG, 'office');
-    const keys = _allKeys(s);
-    expect(keys).toContain('customers');
-    expect(keys).toContain('estimates');
-    expect(keys).toContain('billing');
-    expect(keys).not.toContain('webhooks');
-    expect(keys).not.toContain('role_permissions');
-    expect(keys).not.toContain('sso');
-    expect(keys).not.toContain('gdpr');
-  });
-
-  it('MH-9: office role retains the 15 keys that techs lost', () => {
-    const s = groupModulesForRole(CATALOG, 'office');
-    const keys = _allKeys(s);
-    for (const moved of MH9_DROPPED_FROM_TECH) {
-      expect(keys, `office should still see "${moved}" post-MH-9`).toContain(moved);
+  it('office roles see nav.office modules but not nav.admin modules', () => {
+    const scheduling = MODULES.find((m) => m.key === 'scheduling'); // nav.office
+    const quickbooks = MODULES.find((m) => m.key === 'quickbooks'); // nav.admin
+    for (const role of ['dispatcher', 'sales', 'accounting', 'viewer']) {
+      expect(newVisible(role, scheduling)).toBe(true);
+      expect(newVisible(role, quickbooks)).toBe(false);
     }
   });
 
-  it('admin/owner/super_admin see the full catalog', () => {
-    for (const role of ['admin', 'owner', 'super_admin']) {
-      const s = groupModulesForRole(CATALOG, role);
-      const keys = _allKeys(s);
-      expect(keys).toContain('webhooks');
-      expect(keys).toContain('sso');
-      expect(keys).toContain('gdpr');
-      expect(keys).toContain('payroll');
+  it('admin and owner see every module', () => {
+    for (const role of ['admin', 'owner']) {
+      for (const m of MODULES) expect(newVisible(role, m)).toBe(true);
     }
   });
 });
 
-describe('useModuleSections — grouping', () => {
-  it('emits sections in the documented order', () => {
-    const s = groupModulesForRole(CATALOG, 'admin');
-    const names = s.map((b) => b.section);
+// ── grouping / search / dedupe (groupModules no longer role-gates) ──────────
+const SYN = [
+  { key: 'jobs', label: 'Jobs', icon: '', to: '/jobs' },
+  { key: 'inbox', label: 'Inbox', icon: '', to: '/inbox' },
+  { key: 'billing', label: 'Billing', icon: '', to: '/billing', permission: 'invoices.read_all' },
+  { key: 'inventory', label: 'Inventory', icon: '', to: '/inventory' },
+  { key: 'webhooks', label: 'Webhooks', icon: '', to: '/webhooks', permission: 'webhooks.manage' },
+  // Duplicate payroll entries — must collapse to ONE (label+permission de-dupe).
+  { key: 'payroll', label: 'Payroll', icon: '', to: '/payroll', permission: 'payroll.read' },
+  { key: 'payroll', label: 'Payroll', icon: '', to: '/admin/payroll', permission: 'payroll.read' },
+];
+
+function allKeys(sections) {
+  return sections.flatMap((s) => s.modules.map((m) => m.key));
+}
+
+describe('groupModules — grouping', () => {
+  it('emits sections in SECTION_ORDER', () => {
+    const names = groupModules(SYN).map((b) => b.section);
     const positions = names.map((n) => SECTION_ORDER.indexOf(n));
-    // Each section's index in the output must be ascending in SECTION_ORDER
     for (let i = 1; i < positions.length; i++) {
       if (positions[i - 1] === -1 || positions[i] === -1) continue;
       expect(positions[i]).toBeGreaterThan(positions[i - 1]);
@@ -167,16 +187,13 @@ describe('useModuleSections — grouping', () => {
   });
 
   it('drops empty sections', () => {
-    // tech list won't have a "Money" section since billing/payroll/etc.
-    // are filtered out by the allowlist
-    const s = groupModulesForRole(CATALOG, 'tech');
-    const names = s.map((b) => b.section);
+    const noMoney = SYN.filter((m) => !['billing', 'payroll'].includes(m.key));
+    const names = groupModules(noMoney).map((b) => b.section);
     expect(names).not.toContain('Money');
-    expect(names).not.toContain('Admin');
   });
 
   it('routes a known key to its documented section', () => {
-    const s = groupModulesForRole(CATALOG, 'admin');
+    const s = groupModules(SYN);
     const sectionOf = (k) => s.find((b) => b.modules.some((m) => m.key === k))?.section;
     expect(sectionOf('jobs')).toBe('Field');
     expect(sectionOf('inbox')).toBe('Customers & Comms');
@@ -186,122 +203,55 @@ describe('useModuleSections — grouping', () => {
   });
 
   it('lands an unknown key in "Other" rather than dropping it', () => {
-    const s = groupModulesForRole(
-      [...CATALOG, { key: 'experimental_thing', label: 'Experimental', icon: '', to: '/x' }],
-      'admin',
-    );
+    const s = groupModules([...SYN, { key: 'experimental_thing', label: 'X', icon: '', to: '/x' }]);
     const sectionOf = (k) => s.find((b) => b.modules.some((m) => m.key === k))?.section;
     expect(sectionOf('experimental_thing')).toBe('Other');
   });
+
+  it('routes injected Profile to the Account section', () => {
+    const s = groupModules([...SYN, { key: 'profile', label: 'Profile', icon: '', to: '/profile' }]);
+    const sectionOf = (k) => s.find((b) => b.modules.some((m) => m.key === k))?.section;
+    expect(sectionOf('profile')).toBe('Account');
+  });
 });
 
-describe('useModuleSections — search', () => {
+describe('groupModules — search', () => {
   it('case-insensitive label match', () => {
-    const s = groupModulesForRole(CATALOG, 'admin', 'PAYR');
-    const keys = _allKeys(s);
-    expect(keys).toEqual(['payroll']);
+    expect(allKeys(groupModules(SYN, 'PAYR'))).toEqual(['payroll']);
   });
-
   it('matches by route too', () => {
-    const s = groupModulesForRole(CATALOG, 'admin', '/webhooks');
-    const keys = _allKeys(s);
-    expect(keys).toEqual(['webhooks']);
+    expect(allKeys(groupModules(SYN, '/webhooks'))).toEqual(['webhooks']);
   });
-
   it('returns an empty section list when no match', () => {
-    const s = groupModulesForRole(CATALOG, 'admin', 'zzznotamodule');
-    expect(s).toEqual([]);
+    expect(groupModules(SYN, 'zzznotamodule')).toEqual([]);
   });
-
   it('empty / whitespace query is treated as no filter', () => {
-    const a = groupModulesForRole(CATALOG, 'admin', '');
-    const b = groupModulesForRole(CATALOG, 'admin', '   ');
-    expect(_allKeys(a).length).toBeGreaterThan(0);
-    expect(_allKeys(b).length).toBe(_allKeys(a).length);
+    const a = allKeys(groupModules(SYN, ''));
+    const b = allKeys(groupModules(SYN, '   '));
+    expect(a.length).toBeGreaterThan(0);
+    expect(b.length).toBe(a.length);
   });
 });
 
-describe('useModuleSections — Payroll de-duplication', () => {
-  it('collapses both Payroll catalog entries into one (label+permission de-dupe)', () => {
-    const s = groupModulesForRole(CATALOG, 'admin');
-    const payrolls = s.flatMap((b) => b.modules).filter((m) => m.label === 'Payroll');
+describe('groupModules — Payroll de-duplication', () => {
+  it('collapses both Payroll entries into one (label+permission de-dupe)', () => {
+    const payrolls = groupModules(SYN).flatMap((b) => b.modules).filter((m) => m.label === 'Payroll');
     expect(payrolls.length).toBe(1);
   });
-
-  it('keeps the FIRST Payroll entry (canonical `/payroll`, not the admin alias)', () => {
-    const s = groupModulesForRole(CATALOG, 'admin');
-    const payroll = s.flatMap((b) => b.modules).find((m) => m.label === 'Payroll');
+  it('keeps the FIRST Payroll entry (canonical /payroll)', () => {
+    const payroll = groupModules(SYN).flatMap((b) => b.modules).find((m) => m.label === 'Payroll');
     expect(payroll?.to).toBe('/payroll');
   });
 });
 
-describe('isModuleAllowedForRole — DT-1 desktop sidebar + CommandPalette gate', () => {
-  // The new exported helper is what AppSidebar and CommandPalette use to
-  // gate their non-section surfaces (icon strip, top pins, Ctrl-K search).
-  // Lock its behaviour matches `groupModulesForRole`'s internal gate so the
-  // two never drift.
-
-  it('tech: allows every FIELD_TECH_MODULES key', () => {
-    for (const key of FIELD_TECH_MODULES) {
-      expect(isModuleAllowedForRole(key, 'tech')).toBe(true);
-    }
-  });
-
-  it('tech: blocks every OFFICE_MODULES key (the 15 MH-9 dropped)', () => {
-    for (const key of OFFICE_MODULES) {
-      expect(isModuleAllowedForRole(key, 'tech')).toBe(false);
-    }
-  });
-
-  it('tech: blocks admin-only items (webhooks, sso, payroll, role_permissions)', () => {
-    for (const key of ['webhooks', 'sso', 'payroll', 'role_permissions', 'gdpr']) {
-      expect(isModuleAllowedForRole(key, 'tech')).toBe(false);
-    }
-  });
-
-  it('technician (long form) resolves identically to tech', () => {
-    for (const key of OFFICE_MODULES) {
-      expect(isModuleAllowedForRole(key, 'technician')).toBe(false);
-    }
-    expect(isModuleAllowedForRole('jobs', 'technician')).toBe(true);
-  });
-
-  it('dispatcher / sales / office: allows FIELD_TECH + OFFICE keys, blocks admin-only', () => {
-    for (const role of ['dispatcher', 'sales', 'office']) {
-      expect(isModuleAllowedForRole('jobs', role)).toBe(true);
-      expect(isModuleAllowedForRole('dispatch', role)).toBe(true);
-      expect(isModuleAllowedForRole('customers', role)).toBe(true);
-      expect(isModuleAllowedForRole('webhooks', role)).toBe(false);
-      expect(isModuleAllowedForRole('sso', role)).toBe(false);
-    }
-  });
-
-  it('admin / owner / super_admin: allows everything', () => {
-    for (const role of ['admin', 'owner', 'super_admin']) {
-      expect(isModuleAllowedForRole('webhooks', role)).toBe(true);
-      expect(isModuleAllowedForRole('payroll', role)).toBe(true);
-      expect(isModuleAllowedForRole('any_future_key', role)).toBe(true);
-    }
-  });
-
-  it('null / undefined / empty role: falls through to office set (defensive)', () => {
-    // Pre-login or pre-role-resolved state — treat as office, NOT admin.
-    expect(isModuleAllowedForRole('jobs', null)).toBe(true);
-    expect(isModuleAllowedForRole('webhooks', null)).toBe(false);
-    expect(isModuleAllowedForRole('jobs', undefined)).toBe(true);
-    expect(isModuleAllowedForRole('webhooks', '')).toBe(false);
-  });
-});
-
-describe('useModuleSections — invariants', () => {
-  it('FIELD_TECH_MODULES and OFFICE_MODULES are disjoint by design (additive policy)', () => {
-    const overlap = [...FIELD_TECH_MODULES].filter((k) => OFFICE_MODULES.has(k));
-    expect(overlap).toEqual([]);
-  });
-
-  it('SECTION_ORDER includes the 6 documented sections + "Other" fallback', () => {
+describe('SECTION_ORDER invariant', () => {
+  it('includes the 6 documented sections + "Other" fallback', () => {
     expect(SECTION_ORDER).toEqual([
       'Field', 'Customers & Comms', 'Money', 'Inventory', 'Admin', 'Account', 'Other',
     ]);
+  });
+
+  it('MODULE_CATEGORIES is non-empty (sanity)', () => {
+    expect(MODULE_CATEGORIES.length).toBeGreaterThan(0);
   });
 });

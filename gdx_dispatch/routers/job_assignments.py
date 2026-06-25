@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.models.tenant_models import Job, JobAssignment
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -39,9 +40,6 @@ router = APIRouter(
 )
 
 
-_DISPATCH_ROLES = {"dispatcher", "admin", "owner", "super_admin"}
-
-
 def _tid(request: Request) -> str:
     return str((getattr(request.state, "tenant", {}) or {}).get("id", ""))
 
@@ -50,12 +48,11 @@ def _uid(user: dict) -> str:
     return str(user.get("sub") or user.get("user_id") or "system")
 
 
-def _role(user: dict) -> str:
-    return str(user.get("role") or "").lower()
-
-
 def _require_dispatch_role(user: dict) -> None:
-    if _role(user) not in _DISPATCH_ROLES:
+    # Shared dispatch-manager predicate (core/roles via core/permissions):
+    # owner/admin/dispatcher/manager/superadmin, variant-aware so the legacy
+    # 'dispatch' spelling stored in users.role is honored too.
+    if not is_dispatch_manager(user):
         raise HTTPException(
             status_code=403,
             detail="assignment changes require dispatcher, admin, or owner role",

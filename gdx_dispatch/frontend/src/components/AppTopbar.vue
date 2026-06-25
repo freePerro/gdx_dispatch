@@ -162,6 +162,7 @@ import { useThemeStore } from '../stores/theme';
 import { useNotificationsStore } from '../stores/notifications';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useViewMode } from '../composables/useViewMode';
+import { isTechnician, humanizeRole } from '../constants/roles';
 
 const emit = defineEmits(['toggle-navigation', 'open-search', 'show-notifications']);
 
@@ -200,10 +201,7 @@ function newEstimate() {
 // Field techs don't create jobs or estimates from the topbar — keep the
 // office strip clean. Anyone non-tech sees the buttons; backend role/
 // permission gates the actual POST.
-const canCreate = computed(() => {
-  const role = String(auth.user?.role || '').toLowerCase();
-  return !(role === 'tech' || role === 'technician');
-});
+const canCreate = computed(() => !isTechnician(auth.user?.role));
 
 const tenantModules = useTenantModules();
 // AI Assistant is OPT-IN per-tenant (paid/optional feature) AND
@@ -212,10 +210,8 @@ const tenantModules = useTenantModules();
 // to be permissive about core features; that's wrong for llm, which
 // must be explicitly granted before the button surfaces.
 const aiAssistantEnabled = computed(() => {
-  const role = String(auth.user?.role || '').toLowerCase();
-  // Accept 'technician' (long form, role-permissions UI) AND 'tech'
-  // (short form, backend VALID_ROLES) so this fires for both shapes.
-  if (role === 'technician' || role === 'tech') return false;
+  // Field techs don't need an Assistant in their topbar (variant-aware).
+  if (isTechnician(auth.user?.role)) return false;
   // Read the explicit flag, not the optimistic fallback.
   return tenantModules.enabledModules.value.llm === true;
 });
@@ -247,21 +243,6 @@ const avatarLabel = computed(() => {
   return (fullName || 'U').trim().slice(0, 1).toUpperCase();
 });
 
-function _humanizeRole(r) {
-  if (!r) return '';
-  const map = {
-    owner: 'Owner',
-    admin: 'Admin',
-    dispatcher: 'Dispatcher',
-    technician: 'Technician',
-    sales: 'Sales',
-    accounting: 'Accounting',
-    viewer: 'Viewer',
-    super_admin: 'Super admin',
-  };
-  return map[r.toLowerCase()] || r;
-}
-
 const userMenuItems = computed(() => {
   const u = auth.user || {};
   const c = auth.claims || {};
@@ -278,7 +259,7 @@ const userMenuItems = computed(() => {
   const emailRow = (u.email || c.email) && (u.email || c.email) !== displayName
     ? (u.email || c.email)
     : null;
-  const subline = [_humanizeRole(u.role || c.role), branding.value?.company_name]
+  const subline = [humanizeRole(u.role || c.role), branding.value?.company_name]
     .filter(Boolean)
     .join(' · ');
   return [

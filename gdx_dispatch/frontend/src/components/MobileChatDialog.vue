@@ -10,6 +10,7 @@ import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { isTechnician } from '../constants/roles'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -135,7 +136,7 @@ function fmtTime(iso) {
 function isMine(m) {
   // Best-effort: tech messages render right-aligned. For dispatchers we
   // lean on sender_role; for techs we mark our own outgoing role.
-  return m.sender_role === 'tech'
+  return isTechnician(m.sender_role)
 }
 </script>
 
