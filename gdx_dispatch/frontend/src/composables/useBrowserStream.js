@@ -46,6 +46,11 @@ export function keyPayload(domType, e) {
   return payload;
 }
 
+/** Pure: a single printable character with no modifier → goes via insertText. */
+export function isPrintableKey(e) {
+  return !!e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
 export function wsTicketUrl(ticket) {
   const scheme = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws';
   const host = typeof location !== 'undefined' ? location.host : 'localhost';
@@ -102,7 +107,21 @@ export function useBrowserStream() {
   }
 
   function key(domType, e) {
+    // Printable chars (no modifier) go via insertText so punctuation isn't
+    // mis-mapped to a virtual key (the "." → VK_DELETE bug). Control keys
+    // (Enter, Backspace, Tab, arrows, …) still need real key events.
+    if (isPrintableKey(e)) {
+      if (domType === 'keydown') send({ type: 'text', text: e.key });
+      return;
+    }
     send({ type: 'key', payload: keyPayload(domType, e) });
+  }
+
+  // Paste into the remote browser: the local clipboard isn't shared, so read the
+  // pasted text and insert it server-side via the same `text` path.
+  function paste(e) {
+    const text = e.clipboardData && e.clipboardData.getData('text');
+    if (text) send({ type: 'text', text });
   }
 
   function saveSession() {
@@ -116,5 +135,5 @@ export function useBrowserStream() {
     connected.value = false;
   }
 
-  return { frameSrc, connected, error, connect, mouse, key, saveSession, disconnect };
+  return { frameSrc, connected, error, connect, mouse, key, paste, saveSession, disconnect };
 }

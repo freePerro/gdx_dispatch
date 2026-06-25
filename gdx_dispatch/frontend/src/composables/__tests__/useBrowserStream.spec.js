@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { mapCoords, keyPayload, wsTicketUrl, REMOTE_W, REMOTE_H } from '../useBrowserStream';
+import { mapCoords, keyPayload, wsTicketUrl, isPrintableKey, REMOTE_W, REMOTE_H } from '../useBrowserStream';
+
+describe('isPrintableKey (text vs control routing)', () => {
+  it('treats single chars (incl. punctuation) with no modifier as printable', () => {
+    expect(isPrintableKey({ key: '.' })).toBe(true);
+    expect(isPrintableKey({ key: 'a' })).toBe(true);
+    expect(isPrintableKey({ key: '@' })).toBe(true);
+  });
+  it('treats control keys as not printable', () => {
+    expect(isPrintableKey({ key: 'Enter' })).toBe(false);
+    expect(isPrintableKey({ key: 'Backspace' })).toBe(false);
+    expect(isPrintableKey({ key: 'Tab' })).toBe(false);
+  });
+  it('treats modified keys (Ctrl/Meta/Alt) as not printable', () => {
+    expect(isPrintableKey({ key: 'v', ctrlKey: true })).toBe(false);
+    expect(isPrintableKey({ key: 'c', metaKey: true })).toBe(false);
+  });
+});
 
 describe('useBrowserStream pure logic', () => {
   it('mapCoords scales a displayed point into remote viewport space', () => {
