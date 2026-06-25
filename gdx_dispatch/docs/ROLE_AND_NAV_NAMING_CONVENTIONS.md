@@ -68,6 +68,22 @@ normalize in Python, never in the query:
 If you need to compare a role you read from the DB against a canonical constant,
 normalize it in Python after the fetch.
 
+### ⚠️ Known inconsistency — two user-write vocabularies (TODO)
+
+`users.role` is written in **two different vocabularies** depending on the path:
+
+| Write path | Vocabulary it validates/writes |
+|---|---|
+| `routers/users.py` (`VALID_ROLES`) | SHORT: `admin, dispatch, tech, sales, owner` |
+| `core/tenant_ui.py` (`/team/invite`) | LONG: `admin, dispatcher, technician, viewer` |
+
+So a `users.role` row can legitimately be **either** `'tech'` **or** `'technician'`
+(and `'dispatch'` or `'dispatcher'`) depending on how the user was created. This is
+why every comparison MUST normalize — a raw `role !== 'tech'` check silently treats
+a long-form `'technician'` user as a non-tech. The real fix is to pick ONE write
+vocabulary (or normalize on write); until then, `normalize_role` / `isTechnician`
+at every read site is load-bearing, not optional.
+
 ---
 
 ## Part 2 — Nav module visibility

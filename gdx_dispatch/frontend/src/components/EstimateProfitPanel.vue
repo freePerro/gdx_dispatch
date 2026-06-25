@@ -90,6 +90,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useAuthStore } from '../stores/auth';
+import { isTechnician } from '../constants/roles';
 import { useApi } from '../composables/useApi';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -111,10 +112,7 @@ const settings = ref({ volume_discount_enabled: false, volume_tiers: [] });
 
 // Visibility: hide from techs. Default visible if role is unknown so we
 // don't accidentally hide from admin/owner due to a missing field.
-const visible = computed(() => {
-  const role = (auth.user?.role || auth.user?.user_role || '').toLowerCase();
-  return role !== 'tech';
-});
+const visible = computed(() => !isTechnician(auth.user?.role || auth.user?.user_role));
 
 const engineLines = computed(() =>
   props.lines.filter(l => l.cost_snapshot != null && l.margin_pct_snapshot != null)

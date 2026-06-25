@@ -2,6 +2,7 @@ import { computed, onMounted, ref } from 'vue';
 import { MODULE_CATEGORIES } from '../constants/modules';
 import { useApi } from './useApi';
 import { useAuthStore } from '../stores/auth';
+import { isOwner } from '../constants/roles';
 
 // 2026-04-29 nav-cleanup: every module that ships in MODULE_CATEGORIES is
 // enabled by default. Tenants opt OUT via /api/settings/modules grants; the
@@ -89,7 +90,7 @@ const _categories = computed(() => {
     _hasPerm = (k) => auth.hasPermission(k);
     // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
     // matches the backend gate on /api/admin/plugins.
-    _isOwner = ['owner', 'superadmin'].includes(auth.role);
+    _isOwner = isOwner(auth.role);
   } catch (_e) {
     // useAuthStore() requires an active Pinia instance — during unit tests
     // without Pinia, fall through to the no-op so module filtering still works.

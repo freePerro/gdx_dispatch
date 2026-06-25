@@ -849,6 +849,7 @@ import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
+import { isTechnician as isTechRole } from "../constants/roles";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";
@@ -1004,11 +1005,10 @@ const pickedLocationAddressMissing = computed(
 );
 const photoDocs = computed(() => documents.value.filter((doc) => doc.entity_type === "job_photo"));
 const signatureDoc = computed(() => documents.value.find((doc) => doc.entity_type === "job_signature"));
-const isTechnician = computed(() => {
-  const r = (auth.user?.role || "").toLowerCase();
-  return r === "technician" || r === "tech";
-});
-const patchable = computed(() => auth.user?.role !== "tech");
+const isTechnician = computed(() => isTechRole(auth.user?.role));
+// Techs can't patch job fields (variant-aware: was `!== "tech"`, which missed
+// the long-form 'technician' spelling).
+const patchable = computed(() => !isTechnician.value);
 
 function invoiceStatusSeverity(status) {
   const map = {

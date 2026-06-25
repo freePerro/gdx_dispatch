@@ -142,6 +142,7 @@ import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useAuthStore } from '../stores/auth';
+import { isOwner as isOwnerRole } from '../constants/roles';
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -150,7 +151,7 @@ const auth = useAuthStore();
 
 // Match the backend gate exactly (_OWNER_ROLES = {owner, superadmin}); `admin`
 // is intentionally excluded — an admin would see the form but 403 on submit.
-const isOwner = computed(() => ['owner', 'superadmin'].includes(auth.role));
+const isOwner = computed(() => isOwnerRole(auth.role));
 
 const registry = ref([]);
 const artifacts = ref([]);
