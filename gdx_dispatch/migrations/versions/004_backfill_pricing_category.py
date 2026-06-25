@@ -22,8 +22,17 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # custom_catalog_items is NOT in baseline_squashed.sql — created by
+    # create_all() at app startup, which on a fresh DB runs AFTER the
+    # entrypoint's `alembic upgrade head`. Guard the backfill so it no-ops when
+    # the table doesn't exist yet (a fresh DB has nothing to backfill anyway);
+    # on existing DBs it runs. Mirrors the guard in migration 003.
     op.get_bind().exec_driver_sql(
         """
+        DO $$ BEGIN
+          IF to_regclass('public.custom_catalog_items') IS NULL THEN
+            RETURN;
+          END IF;
         UPDATE custom_catalog_items
         SET pricing_category = CASE
           WHEN lower(trim(category)) IN ('doors','openers','parts','other') THEN lower(trim(category))
@@ -38,7 +47,8 @@ def upgrade() -> None:
           WHEN lower(trim(product_class)) = 'labor' THEN NULL
           ELSE 'other'
         END
-        WHERE pricing_category IS NULL AND deleted_at IS NULL
+        WHERE pricing_category IS NULL AND deleted_at IS NULL;
+        END $$;
         """
     )
 

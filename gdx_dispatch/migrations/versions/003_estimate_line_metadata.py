@@ -22,8 +22,22 @@ def upgrade() -> None:
     # IF NOT EXISTS keeps this idempotent — the entrypoint runs upgrade head on
     # every boot across multiple containers. JSON (not JSONB) to match the other
     # JSON columns in this schema (e.g. customers.metadata_).
+    #
+    # estimate_lines is NOT in baseline_squashed.sql — it's created by
+    # SQLAlchemy create_all() at app startup. On a fresh DB the entrypoint runs
+    # `alembic upgrade head` BEFORE the app boots, so the table doesn't exist
+    # yet; guard the ALTER so the migration is a no-op then (create_all builds
+    # estimate_lines WITH line_metadata from the model). On existing DBs the
+    # table is present and the ALTER runs. Without this guard a fresh-DB boot
+    # (the release smoke test) aborts here.
     op.get_bind().exec_driver_sql(
-        "ALTER TABLE estimate_lines ADD COLUMN IF NOT EXISTS line_metadata JSON"
+        """
+        DO $$ BEGIN
+          IF to_regclass('public.estimate_lines') IS NOT NULL THEN
+            ALTER TABLE estimate_lines ADD COLUMN IF NOT EXISTS line_metadata JSON;
+          END IF;
+        END $$;
+        """
     )
 
 
