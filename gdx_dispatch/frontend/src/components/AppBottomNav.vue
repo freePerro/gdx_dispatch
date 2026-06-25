@@ -85,6 +85,7 @@ import InputText from 'primevue/inputtext';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
 import { groupModules } from '../composables/useModuleSections';
+import { isTechnician } from '../constants/roles';
 
 const route = useRoute();
 const router = useRouter();
@@ -115,11 +116,9 @@ const tabItems = computed(() => {
   // run the planner — those tabs are noise + cause confusion. The
   // tech-shaped strip is Today / Jobs / Clock / More. Office roles
   // (dispatcher / admin / owner / sales) keep the original strip.
-  const role = String(auth.user?.role || '').toLowerCase();
-  // Backend canonical short role is 'tech' (per VALID_ROLES in users.py),
-  // but the role-permissions UI uses 'technician'. Accept both so the
-  // tech-shaped strip fires regardless of which form the JWT carries.
-  const isTech = role === 'technician' || role === 'tech';
+  // isTechnician accepts both the short 'tech' (DB / VALID_ROLES) and long
+  // 'technician' (role-permissions UI) spellings of the role.
+  const isTech = isTechnician(auth.user?.role);
   const items = isTech
     ? [
         // MH-9b (Doug 2026-05-19): Photos is a per-job action techs do
@@ -202,8 +201,7 @@ const PROFILE_DRAWER_ENTRY = {
 };
 
 const moreModules = computed(() => {
-  const role = String(auth.user?.role || '').toLowerCase();
-  const isTech = role === 'technician' || role === 'tech';
+  const isTech = isTechnician(auth.user?.role);
   const base = allEnabledModules.value
     .filter((module) => !reservedKeys.has(module.key))
     .map((module) => {

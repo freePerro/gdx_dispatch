@@ -319,6 +319,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { useAuthStore } from "../stores/auth";
+import { normalizeRole } from "../constants/roles";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -336,7 +337,9 @@ const auth = useAuthStore();
 const canSeePipeline = computed(() => {
   // Mirrors server gate: owner/admin/dispatcher/sales/accounting/manager.
   // Technician + viewer hidden — same rule as EstimateProfitPanel.
-  const r = (auth.role || '').toLowerCase();
+  // normalizeRole maps the short DB form (e.g. 'dispatch') to canonical
+  // ('dispatcher') so it matches the long-form allowlist below.
+  const r = normalizeRole(auth.role);
   return ['owner', 'admin', 'dispatcher', 'sales', 'accounting', 'manager'].includes(r);
 });
 const pipeline = ref({ count: 0, total_sell: 0, total_cost: 0, net_profit: 0, blended_margin: 0, estimates_with_manual_lines: 0 });

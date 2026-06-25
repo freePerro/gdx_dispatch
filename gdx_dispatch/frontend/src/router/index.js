@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
 
@@ -344,8 +345,7 @@ export function createAppRouter() {
       // Tech role gets redirected from desktop-shaped jobs/dispatch/planner
       // surfaces to their mobile-shaped equivalents. /jobs has a card-based
       // /mobile/jobs alternative; everything else falls back to /mobile.
-      const role = String(auth.user?.role || '').toLowerCase();
-      const isTech = role === 'technician' || role === 'tech';
+      const isTech = isTechnician(auth.user?.role);
       if (isTech) {
         // Tech role: redirect from desktop-shaped surfaces to mobile.
         // /jobs has a card-based mobile equivalent; everything else
