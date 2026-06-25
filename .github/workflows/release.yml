@@ -105,6 +105,53 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
 
+      # ── Browser-capable plugin-host image (ADR-014) ─────────────────────────
+      # plugin-host runs headless Chromium for browser-driving plugins, so it
+      # needs its own Playwright-base image. Published as a SEPARATE GHCR repo
+      # (<repo>-plugin-host) at the same version tags; docker-compose.selfhost.yml
+      # pins plugin-host to it. app/celery stay on the slim image above.
+      - name: Plugin-host image metadata
+        id: meta_ph
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-plugin-host
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build plugin-host image (load for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gdx_dispatch/docker/Dockerfile.plugin-host
+          load: true
+          tags: ${{ steps.meta_ph.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test plugin-host (Chromium launches)
+        run: |
+          # The whole point of this image is a working headless Chromium —
+          # verify it launches. --no-sandbox is fine for a throwaway smoke run.
+          img="$(printf '%s\n' "${{ steps.meta_ph.outputs.tags }}" | head -n1)"
+          docker run --rm --ipc=host --entrypoint python "$img" -c "
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=['--no-sandbox','--disable-dev-shm-usage'])
+              b.close()
+          print('plugin-host chromium OK')
+          "
+
+      - name: Push plugin-host image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gdx_dispatch/docker/Dockerfile.plugin-host
+          push: true
+          tags: ${{ steps.meta_ph.outputs.tags }}
+          labels: ${{ steps.meta_ph.outputs.labels }}
+          cache-from: type=gha
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

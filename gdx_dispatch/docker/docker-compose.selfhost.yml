@@ -43,7 +43,9 @@ services:
       GDX_SKIP_MIGRATIONS: "1"
       GDX_SKIP_BOOTSTRAP: "1"
   plugin-host:
-    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-latest}
+    # Browser-capable image (Playwright base, ADR-014) — published alongside the
+    # app image by release.yml. Only plugin-host pulls it; app/celery stay slim.
+    image: ghcr.io/freeperro/gdx_dispatch-plugin-host:${APP_VERSION:-latest}
     pull_policy: always
     environment:
       GDX_SKIP_MIGRATIONS: "1"
