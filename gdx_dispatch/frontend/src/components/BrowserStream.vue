@@ -24,6 +24,7 @@
       @mousemove.prevent="(e) => mouse('mousemove', e, screen)"
       @keydown.prevent="(e) => key('keydown', e)"
       @keyup.prevent="(e) => key('keyup', e)"
+      @paste.prevent="(e) => paste(e)"
     />
   </div>
 </template>
@@ -48,7 +49,7 @@ const transparentPixel =
 
 const api = useApiWithToast();
 const screen = ref(null);
-const { frameSrc, connected, error, connect, mouse, key, saveSession, disconnect } =
+const { frameSrc, connected, error, connect, mouse, key, paste, saveSession, disconnect } =
   useBrowserStream();
 
 async function onSave() {

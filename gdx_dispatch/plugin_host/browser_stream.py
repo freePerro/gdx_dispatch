@@ -137,6 +137,14 @@ async def stream_browser(ws, url: str) -> None:
                 kind = ev.get("type")
                 if kind == "mouse":
                     await cdp.send("Input.dispatchMouseEvent", ev["payload"])
+                elif kind == "text":
+                    # Typed printable chars + pasted text: insert as a literal
+                    # string so punctuation isn't mis-mapped to a virtual key (e.g.
+                    # "." was being sent as VK_DELETE). insertText fires
+                    # input/beforeinput but NOT per-char keydown — fine for login
+                    # forms (they read the final value). Cap length to bound a
+                    # giant paste (the operator's own session, but still).
+                    await cdp.send("Input.insertText", {"text": str(ev.get("text", ""))[:100_000]})
                 elif kind == "key":
                     await cdp.send("Input.dispatchKeyEvent", ev["payload"])
                 elif kind == "nav" and host_allowed(ev.get("url", "")):

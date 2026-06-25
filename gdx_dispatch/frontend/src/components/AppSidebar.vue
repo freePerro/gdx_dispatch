@@ -207,11 +207,11 @@
 
     <div
       class="sidebar-build-stamp"
-      :title="`Built ${buildTime}`"
+      :title="`build ${buildSha} · built ${buildTime}`"
       data-testid="sidebar-build-stamp"
     >
-      <span v-if="!collapsed">build {{ buildSha }}</span>
-      <span v-else>{{ buildSha }}</span>
+      <span v-if="!collapsed">{{ versionLabel }}</span>
+      <span v-else>{{ versionLabelShort }}</span>
     </div>
   </aside>
 </template>
@@ -398,6 +398,24 @@ function handleItemClick(_to, _label, _icon) {
 
 const buildSha = typeof __BUILD_SHA__ !== 'undefined' ? __BUILD_SHA__ : 'dev';
 const buildTime = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
+
+// Show the deployed RELEASE version (APP_VERSION, from /pwa/version) rather than
+// the raw git SHA. Falls back to the build SHA if the version is unknown ("dev")
+// or the fetch fails. The SHA + build time stay in the hover title for debugging.
+const releaseVersion = ref('');
+const versionLabel = computed(() =>
+  releaseVersion.value && releaseVersion.value !== 'dev'
+    ? `v${releaseVersion.value}` : `build ${buildSha}`);
+const versionLabelShort = computed(() =>
+  releaseVersion.value && releaseVersion.value !== 'dev'
+    ? `v${releaseVersion.value}` : buildSha);
+
+onMounted(async () => {
+  try {
+    const r = await fetch('/pwa/version');
+    if (r.ok) releaseVersion.value = (await r.json())?.version || '';
+  } catch { /* leave blank → falls back to build SHA */ }
+});
 </script>
 
 <style scoped>
