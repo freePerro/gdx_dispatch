@@ -48,5 +48,6 @@ def tenant_context():
     return nullcontext()
 
 def get_tenant_db(request=None):
-    """Fallback stub for get_tenant_db imported by modules prior to refactor."""
-    return get_db(request)
+    """Fallback stub for get_tenant_db imported by modules prior to refactor.
+    Must be a generator (not return one) so FastAPI's Depends() injects a Session."""
+    yield from get_db(request)
