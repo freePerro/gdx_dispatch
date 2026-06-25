@@ -667,7 +667,15 @@ def get_phone_com_diagnostics(
     try:
         listeners = (client.list_listeners() or {}).get("items", [])
     except PhoneComAPIError as exc:
-        checks.append(_check("listeners", "Listeners", "fail", f"Phone.com error: {exc}"))
+        # Surface only the HTTP status (actionable: 401 vs 503), not the
+        # exception string — its body_snippet can carry the upstream response.
+        # Full detail goes to the server log. (CodeQL py/stack-trace-exposure.)
+        log.warning("phone_com diagnostics list_listeners failed", exc_info=True)
+        status_txt = f"HTTP {exc.status_code}" if exc.status_code else "request failed"
+        checks.append(_check(
+            "listeners", "Listeners", "fail",
+            f"Phone.com API {status_txt} — see server logs.",
+        ))
         return {"ok": False, "checks": checks}
 
     if not listeners:

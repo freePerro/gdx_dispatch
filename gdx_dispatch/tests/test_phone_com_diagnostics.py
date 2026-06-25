@@ -158,6 +158,26 @@ def test_diagnostics_warns_on_phone_prefixed_filter_tags(
 
 
 @respx.mock
+def test_diagnostics_listener_error_hides_upstream_body(
+    control_engine, tenant_engine, tenant_id,
+):
+    app, csm, tsm = _make_app(control_engine, tenant_engine, tenant_id)
+    _seed(csm, tsm, tenant_id)
+    # Upstream 401 with a body that must NOT leak into the response.
+    respx.get(LISTENERS_URL).mock(return_value=httpx.Response(
+        401, text="SECRET-UPSTREAM-BODY oauth2.access_denied",
+    ))
+    r = TestClient(app).get("/api/settings/integrations/phone-com/diagnostics")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    listeners = next(c for c in body["checks"] if c["key"] == "listeners")
+    assert listeners["status"] == "fail"
+    assert "HTTP 401" in listeners["detail"]
+    assert "SECRET-UPSTREAM-BODY" not in r.text  # upstream body never exposed
+
+
+@respx.mock
 def test_diagnostics_warns_when_no_listeners(
     control_engine, tenant_engine, tenant_id,
 ):
