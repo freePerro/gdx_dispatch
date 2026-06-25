@@ -92,6 +92,11 @@ export function useBrowserStream() {
     const map = { mousedown: 'mousePressed', mouseup: 'mouseReleased', mousemove: 'mouseMoved' };
     const t = map[domType];
     if (!t || !el) return;
+    // The screen <img> uses @mousedown.prevent (to suppress drag/selection), which
+    // also suppresses the focus a click normally gives — so keydown would never
+    // fire on it and typing wouldn't work. Focus it explicitly on press so the
+    // keyboard handlers receive events.
+    if (domType === 'mousedown' && typeof el.focus === 'function') el.focus();
     const { x, y } = mapCoords(el.getBoundingClientRect(), e.clientX, e.clientY);
     send({ type: 'mouse', payload: { type: t, x, y, button: 'left', clickCount: 1, buttons: 1 } });
   }
