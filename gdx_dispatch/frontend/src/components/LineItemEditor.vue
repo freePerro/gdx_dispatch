@@ -705,6 +705,8 @@ async function openCatalogPicker() {
         sku: it.sku || '',
         description: it.description_display || it.description || it.name || '',
         category: it.category || it.pricing_category || '',
+        pricing_category: it.pricing_category || '',
+        cost: Number(it.cost || 0),
         price: Number(it.price || 0),
       }));
       catalogLoaded.value = true;
@@ -726,6 +728,8 @@ async function openCatalogPicker() {
             sku: it.sku || '',
             description: it.description_display || it.description || it.name || '',
             category: it.category || it.pricing_category || '',
+            pricing_category: it.pricing_category || '',
+            cost: Number(it.cost || 0),
             price: Number(it.price || 0),
           });
         }
@@ -751,7 +755,11 @@ function addFromCatalog() {
       unit_price: Number(item.price) || 0,
       ...(props.showTaxable ? { taxable: true } : {}),
       ...(props.categories.length ? { category: item.category || null } : {}),
-      ...(props.showCost ? { cost: null } : {}),
+      // Carry the catalog item's cost + pricing bucket so the backend tier
+      // engine computes the marked-up sell price. Without these the line was
+      // posted at the catalog price (= cost for imports → zero markup).
+      ...(props.showCost ? { cost: Number(item.cost) || null } : {}),
+      ...(item.pricing_category ? { pricing_category: item.pricing_category } : {}),
       ...(props.showMargin ? { margin_pct_override: null } : {}),
     });
   }

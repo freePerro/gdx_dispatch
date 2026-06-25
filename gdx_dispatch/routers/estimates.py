@@ -643,25 +643,39 @@ def create_estimate(
             )
             estimated_man_hours_val = Decimal(str(row.assumed_man_hours or 0))
         else:
-            unit = Decimal(str(item.unit_price or 0))
-            line_total = (Decimal(qty) * unit).quantize(Decimal("0.01"))
-            # Default snapshot = whatever cost the client sent (None for free-form).
-            cost_snapshot = Decimal(str(item.cost)) if item.cost is not None else None
-            margin_pct_snapshot = None
-            pricing_source = None
             estimated_man_hours_val = (
                 Decimal(str(item.estimated_man_hours))
                 if item.estimated_man_hours is not None else None
             )
-            # Derive margin_pct_snapshot whenever cost + unit_price are both present
-            # (CHI / typed-catalog doors etc. that don't go through the engine path).
-            # Without this, the line is born with NULL margin and the PATCH lock-out
-            # rule classifies it "manually-priced" forever (prod incident 2026-05-07).
-            if margin_pct_snapshot is None and cost_snapshot is not None:
-                derived = _derive_margin_pct(cost_snapshot, unit)
-                if derived is not None:
-                    margin_pct_snapshot = derived
-                    pricing_source = pricing_source or "client_cost"
+            if item.cost is not None and item.pricing_category:
+                # Engine path — catalog/imported items with cost + pricing bucket
+                # get the tier markup, same as the add-line-to-existing path. This
+                # is what makes "add from catalog" on a NEW estimate mark up
+                # instead of posting at cost (zero margin).
+                result = _engine_price_line(
+                    db, estimate, cost=item.cost,
+                    pricing_category=item.pricing_category, margin_override=None,
+                )
+                unit = Decimal(str(result.sell))
+                cost_snapshot = Decimal(str(result.cost))
+                margin_pct_snapshot = result.margin_pct
+                pricing_source = result.source
+            else:
+                unit = Decimal(str(item.unit_price or 0))
+                # Default snapshot = whatever cost the client sent (None for free-form).
+                cost_snapshot = Decimal(str(item.cost)) if item.cost is not None else None
+                margin_pct_snapshot = None
+                pricing_source = None
+                # Derive margin_pct_snapshot whenever cost + unit_price are both present
+                # (CHI / typed-catalog doors etc. that don't go through the engine path).
+                # Without this, the line is born with NULL margin and the PATCH lock-out
+                # rule classifies it "manually-priced" forever (prod incident 2026-05-07).
+                if cost_snapshot is not None:
+                    derived = _derive_margin_pct(cost_snapshot, unit)
+                    if derived is not None:
+                        margin_pct_snapshot = derived
+                        pricing_source = "client_cost"
+            line_total = (Decimal(qty) * unit).quantize(Decimal("0.01"))
         db.add(EstimateLine(
             estimate_id=estimate.id,
             description=item.description.strip(),
