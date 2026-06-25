@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -103,6 +103,15 @@ class EstimateLine(TenantBase):
         index=True,
     )
     estimated_man_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=True)
+    # PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE even if it looks unused
+    # in core. A plugin (e.g. the operator-installed CHI pricing plugin) writes the
+    # full captured source spec here when it adds a line: door specs, install
+    # detail, receiving/load + weight, and source ids. It is deliberately generic
+    # (any line may carry source metadata) and persists in CORE so it survives the
+    # estimate→Job conversion (via estimate.job_id) and is readable downstream by
+    # techs / receiving / order tracking — independent of whether the plugin that
+    # wrote it is still installed.
+    line_metadata: Mapped[dict] = mapped_column(JSON, nullable=True)
     # -- columns from production schema not yet in ORM --
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
 
