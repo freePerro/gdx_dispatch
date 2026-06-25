@@ -18,6 +18,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.plugin_consent import (
+    consented_permissions,
+    fetch_permissions,
+    record_consent,
+)
+from gdx_dispatch.plugin_api.manifest import PERMISSION_RISKS
 from gdx_dispatch.plugin_host.reconcile import desired_packages, ensure_registry_table
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -67,6 +73,42 @@ def add_plugin(
         "status": "registered",
         "note": "restart the plugin-host container to apply",
     }
+
+
+@router.get("/{key}/permissions")
+def plugin_permissions(
+    key: str,
+    _: dict = Depends(_require_owner),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The elevated permissions a plugin declares, each with its risk text and
+    whether an owner has already consented (ADR-014). Drives the consent dialog."""
+    declared = fetch_permissions(key)
+    granted = consented_permissions(db, key)
+    return {
+        "key": key,
+        "permissions": [
+            {"name": p, "risk": PERMISSION_RISKS.get(p, p), "consented": p in granted}
+            for p in declared
+        ],
+        "all_consented": bool(declared) and set(declared).issubset(granted),
+    }
+
+
+@router.post("/{key}/consent", status_code=201)
+def consent_plugin(
+    key: str,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Owner grants consent for the plugin's currently-declared permissions.
+    Records exactly what was declared now, so a later-added permission isn't
+    silently covered by old consent."""
+    declared = fetch_permissions(key)
+    if not declared:
+        raise HTTPException(status_code=400, detail="plugin declares no permissions")
+    record_consent(db, key, declared, str(user.get("sub") or ""))
+    return {"key": key, "consented": declared}
 
 
 @router.post("/restart", status_code=202)
