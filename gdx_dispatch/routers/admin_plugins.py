@@ -8,11 +8,12 @@ backend access (confined to plugin-host).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -24,8 +25,17 @@ from gdx_dispatch.core.plugin_consent import (
     record_consent,
 )
 from gdx_dispatch.plugin_api.manifest import PERMISSION_RISKS
-from gdx_dispatch.plugin_host.reconcile import desired_packages, ensure_registry_table
+from gdx_dispatch.plugin_host.reconcile import (
+    desired_packages,
+    ensure_artifact_table,
+    ensure_registry_table,
+    safe_artifact_name,
+)
 from gdx_dispatch.routers.auth import get_current_user
+
+# Cap an uploaded plugin artifact — wheels/sdists are small; a big upload is a
+# red flag, not a real plugin.
+_MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
 
 router = APIRouter(prefix="/api/admin/plugins", tags=["admin-plugins"])
 
@@ -47,6 +57,69 @@ class PluginInstall(BaseModel):
 def list_registry(_: dict = Depends(_require_owner), db: Session = Depends(get_db)) -> list[dict]:
     ensure_registry_table(db)
     return [{"package": p, "version": v} for p, v in desired_packages(db)]
+
+
+@router.post("/upload", status_code=201)
+async def upload_artifact(
+    file: UploadFile = File(...),
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Upload a private plugin wheel/sdist (not on a pip index, e.g. an internal
+    plugin). Stored in plugin_artifact; plugin-host installs it on restart.
+    Owner-only + audited — same trust tier as adding a dependency, since the
+    package runs with backend access in plugin-host."""
+    name = safe_artifact_name(file.filename or "")
+    if name is None:
+        raise HTTPException(400, "filename must be a .whl or .tar.gz with no path")
+    # Read at most cap+1 bytes so an oversized upload can't be pulled wholesale
+    # into memory before we reject it.
+    content = await file.read(_MAX_ARTIFACT_BYTES + 1)
+    if not content:
+        raise HTTPException(400, "empty file")
+    if len(content) > _MAX_ARTIFACT_BYTES:
+        raise HTTPException(413, "artifact too large")
+    ensure_artifact_table(db)
+    digest = hashlib.sha256(content).hexdigest()
+    db.execute(
+        text(
+            """
+            INSERT INTO plugin_artifact (filename, sha256, content, uploaded_by)
+            VALUES (:f, :h, :c, :by)
+            ON CONFLICT (filename) DO UPDATE
+              SET sha256 = EXCLUDED.sha256, content = EXCLUDED.content,
+                  uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
+            """
+        ),
+        {"f": name, "h": digest, "c": content, "by": str(user.get("sub") or "")},
+    )
+    db.commit()
+    return {"filename": name, "sha256": digest, "size": len(content),
+            "note": "restart plugin-host to install"}
+
+
+@router.get("/artifacts")
+def list_artifacts(_: dict = Depends(_require_owner), db: Session = Depends(get_db)) -> list[dict]:
+    """Uploaded artifacts (metadata only — never the bytes)."""
+    ensure_artifact_table(db)
+    rows = db.execute(
+        text("SELECT filename, sha256, uploaded_at FROM plugin_artifact ORDER BY filename")
+    ).fetchall()
+    return [{"filename": r[0], "sha256": r[1],
+             "uploaded_at": r[2].isoformat() if r[2] else None} for r in rows]
+
+
+@router.delete("/artifacts/{filename}")
+def delete_artifact(
+    filename: str,
+    _: dict = Depends(_require_owner),
+    db: Session = Depends(get_db),
+) -> dict:
+    ensure_artifact_table(db)
+    db.execute(text("DELETE FROM plugin_artifact WHERE filename = :f"), {"f": filename})
+    db.commit()
+    return {"filename": filename, "status": "removed",
+            "note": "already-installed copy stays until plugin-host restarts"}
 
 
 @router.post("", status_code=201)
