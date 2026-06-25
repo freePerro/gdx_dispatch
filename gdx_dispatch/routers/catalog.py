@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.models.pricing_engine import PricingTierSet
 from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, DoorSpec
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -372,6 +373,7 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "cost": _to_float(item.cost),
         "price": _to_float(item.price),
         "category": item.category,
+        "pricing_category": item.pricing_category,
         "product_class": product_class,
         "active": bool(item.active),
         "qb_item_id": item.qb_item_id,
@@ -452,6 +454,11 @@ class CatalogItemCreateIn(BaseModel):
     unit_price: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     category: str | None = Field(default=None, max_length=120)
+    # Engine pricing bucket (doors/openers/parts/labor/other). Optional —
+    # when omitted it's derived from category/product_class at write time so
+    # estimate lines never fall through to the $0 manual path. See
+    # _derive_pricing_category.
+    pricing_category: str | None = Field(default=None, max_length=40)
     active: bool = True
     qb_item_id: str | None = Field(default=None, max_length=120)
     # Sprint typed-catalogs — typed install attributes when the parent
@@ -581,6 +588,16 @@ def list_all_catalog_items(
         .order_by(CustomCatalogItem.name.asc(), CustomCatalogItem.id.asc())
     ).scalars().all()
     return {"items": [_serialize_item(item) for item in rows], "total": len(rows)}
+
+
+@router.get("/api/catalogs/pricing-categories", response_model=None)
+def list_pricing_categories(
+    _: dict = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[str]:
+    """Valid engine pricing buckets — base set plus any admin-seeded tier
+    category. Frontend uses this instead of a hardcoded list so adding a
+    margin tier for a new type (e.g. 'gates') surfaces it everywhere."""
+    return sorted(_valid_pricing_categories(db))
 
 
 @router.get("/api/catalogs", response_model=None)
@@ -729,6 +746,10 @@ def add_catalog_item(
         cost=_money(payload.cost),
         price=_money(effective_price),
         category=payload.category.strip() if payload.category else None,
+        pricing_category=_derive_pricing_category(
+            payload.pricing_category, payload.category, product_class,
+            _valid_pricing_categories(db),
+        ),
         product_class=product_class,
         active=payload.active and active_after_policy,
         qb_item_id=payload.qb_item_id.strip() if payload.qb_item_id else None,
@@ -766,6 +787,75 @@ def add_catalog_item(
 # ---------------------------------------------------------------------------
 
 _VALID_PRICING_CATEGORIES = {"doors", "openers", "parts", "labor", "other"}
+
+# product_class (door/opener/spring/…) → engine pricing_category. springs,
+# tracks and remotes are all priced as "parts".
+_PRODUCT_CLASS_TO_PRICING = {
+    "door": "doors", "opener": "openers", "spring": "parts",
+    "track": "parts", "remote": "parts", "parts": "parts",
+}
+
+# Free-form category words → bucket, for words that aren't just a singular of
+# the bucket. Garage-door domain: remotes/keypads/springs/tracks/cables are all
+# priced as parts; operators are openers.
+_PRICING_SYNONYMS = {
+    "operator": "openers", "operators": "openers",
+    "remote": "parts", "remotes": "parts", "keypad": "parts", "keypads": "parts",
+    "accessory": "parts", "accessories": "parts", "hardware": "parts",
+    "spring": "parts", "springs": "parts", "track": "parts", "tracks": "parts",
+    "cable": "parts", "cables": "parts", "part": "parts",
+}
+
+
+def _normalize_to_bucket(cand: str | None, valid: set[str]) -> str | None:
+    """Map one free-form word to a valid (non-labor) pricing bucket, or None.
+
+    Handles exact matches, singular→plural (opener→openers, door→doors, and
+    any admin-seeded type like gate→gates), and domain synonyms."""
+    c = (cand or "").strip().lower()
+    if not c:
+        return None
+    if c in valid and c != "labor":
+        return c
+    if f"{c}s" in valid and f"{c}s" != "labor":
+        return f"{c}s"
+    return _PRICING_SYNONYMS.get(c)
+
+
+def _valid_pricing_categories(db: Session) -> set[str]:
+    """Base buckets ∪ any pricing_category that has an active tier set, so an
+    admin-seeded type (e.g. 'gates') becomes valid everywhere with no code
+    change. Base set is the floor — validation still works before any seed."""
+    rows = (
+        db.execute(select(PricingTierSet.pricing_category).where(PricingTierSet.active).distinct())
+        .scalars()
+        .all()
+    )
+    return _VALID_PRICING_CATEGORIES | {(r or "").strip().lower() for r in rows if r}
+
+
+def _derive_pricing_category(
+    explicit: str | None,
+    category: str | None,
+    product_class: str | None,
+    valid: set[str] = _VALID_PRICING_CATEGORIES,
+) -> str | None:
+    """Best-guess the engine pricing_category for a catalog item.
+
+    Explicit value wins; else fall back to the free-form `category` if it's a
+    valid bucket, else map from product_class. Returns a value that always has
+    a seeded tier set so estimate lines never hit the $0 manual fallback.
+    'labor' is never returned — labor lines price via the LaborPriceItem matrix,
+    not the tier engine (which rejects category='labor'); those stay None.
+    """
+    for cand in (explicit, category):
+        bucket = _normalize_to_bucket(cand, valid)
+        if bucket:
+            return bucket
+    pc = (product_class or "").strip().lower()
+    if pc == "labor":
+        return None
+    return _PRODUCT_CLASS_TO_PRICING.get(pc, "other")
 
 
 class SaveFromEstimateLineIn(BaseModel):
@@ -988,6 +1078,7 @@ def _normalize_import_item(raw: dict[str, object]) -> CatalogItemCreateIn:
         cost=float(raw.get("cost") or 0),
         price=float(raw.get("price")) if raw.get("price") not in (None, "") else None,
         category=str(raw.get("category") or "").strip() or None,
+        pricing_category=str(raw.get("pricing_category") or "").strip() or None,
         active=bool(raw.get("active", True)),
         qb_item_id=str(raw.get("qb_item_id") or "").strip() or None,
     )
@@ -1001,7 +1092,8 @@ def bulk_import_catalog_items(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    _get_catalog_or_404(catalog_id, db)
+    catalog = _get_catalog_or_404(catalog_id, db)
+    product_class = (catalog.product_class or "parts").strip().lower()
 
     if payload.format == "json":
         raw_items = payload.items or []
@@ -1010,6 +1102,7 @@ def bulk_import_catalog_items(
             raise HTTPException(status_code=422, detail="csv_data is required for csv imports")
         raw_items = [dict(row) for row in csv.DictReader(StringIO(payload.csv_data))]
 
+    valid_categories = _valid_pricing_categories(db)
     imported = 0
     for raw in raw_items:
         item = _normalize_import_item(raw)
@@ -1021,6 +1114,10 @@ def bulk_import_catalog_items(
             cost=_money(item.cost),
             price=_money(item.price if item.price is not None else item.cost),
             category=item.category,
+            pricing_category=_derive_pricing_category(
+                item.pricing_category, item.category, product_class, valid_categories
+            ),
+            product_class=product_class,
             active=item.active,
             qb_item_id=item.qb_item_id,
         )

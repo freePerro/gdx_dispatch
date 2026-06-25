@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+# ── Plugin-host image (browser-capable) ──────────────────────────────────────
+# The plugin-host normally reuses the slim app image. But browser-driving plugins
+# (e.g. ones that scrape a vendor portal that exposes no API) need headless
+# Chromium + its ~80 system libs. We DON'T add that to the shared app/celery image
+# (~400MB of bloat on containers that never browse). Instead the plugin-host gets
+# its own image off the official Playwright base, which already ships Chromium and
+# every browser system dep. ADR-013 Model B.
+#
+# To use: point the plugin-host service at this file in docker-compose.yml:
+#   plugin-host:
+#     build:
+#       context: ../..
+#       dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
+#
+# Keep the base image's Playwright version in lockstep with the `playwright` pin
+# in each browser-using plugin's pyproject.toml.
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+
+WORKDIR /app
+
+# Python deps (same requirements as the app — plugin-host imports gdx_dispatch).
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY gdx_dispatch/requirements.txt ./requirements.txt
+RUN uv pip install --system --no-cache -r requirements.txt
+
+# The Playwright base ships the browsers (under /ms-playwright) but NOT the Python
+# package. Install it pinned to the base image's browser build (v1.49.1-noble ⇒
+# chromium-1148). Browser-using plugins must stay on this 1.49.x line so reconcile
+# doesn't upgrade playwright out from under the baked-in browsers.
+RUN uv pip install --system --no-cache playwright==1.49.1
+
+# The app package (plugin-host imports gdx_dispatch.plugin_host / plugin_api /
+# core.database). No frontend build — plugin-host serves no UI.
+COPY gdx_dispatch/ ./gdx_dispatch/
+
+# /plugins: writable cache where reconcile.py pip-installs in-app-installed plugins.
+# Owned by pwuser since the container runs as that non-root user (below).
+RUN mkdir -p /plugins && chown pwuser /plugins
+
+# Run as the Playwright image's non-root user so headless Chromium keeps its
+# sandbox — no insecure/"unsupported" --no-sandbox flag. Browsers under
+# /ms-playwright are readable by pwuser in the base image.
+USER pwuser
+
+EXPOSE 8000
+CMD ["uvicorn", "gdx_dispatch.plugin_host.main:app", "--host", "0.0.0.0", "--port", "8000"]

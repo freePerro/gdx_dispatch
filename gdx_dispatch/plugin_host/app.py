@@ -19,7 +19,7 @@ import os
 import signal
 import threading
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 
 from gdx_dispatch.plugin_api.discovery import discover_plugins
 
@@ -43,7 +43,8 @@ def create_plugin_host(plugins=None) -> FastAPI:
     @app.get("/api/plugins")
     def list_plugins():
         return [
-            {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui}
+            {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui,
+             "permissions": list(getattr(p, "permissions", ()))}
             for p in catalog.values()
         ]
 
@@ -59,6 +60,15 @@ def create_plugin_host(plugins=None) -> FastAPI:
         uvicorn shut down gracefully; the 0.5s delay lets this response flush."""
         threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         return {"status": "restarting"}
+
+    @app.websocket("/internal/browser/ws")
+    async def browser_ws(ws: WebSocket, url: str):
+        """Stream a headless browser to the operator (ADR-014). Internal-only —
+        reached solely via the core proxy, which enforces owner role + consent
+        before relaying here. `url` is allowlist-checked in stream_browser."""
+        from gdx_dispatch.plugin_host.browser_stream import stream_browser
+
+        await stream_browser(ws, url)
 
     @app.get("/api/plugins/{key}/ui")
     def plugin_ui(key: str):

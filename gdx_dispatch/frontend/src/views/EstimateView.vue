@@ -191,6 +191,13 @@
                   <Button label="Add from Catalog" icon="pi pi-book" text size="small" severity="info"
                     data-testid="est-add-catalog-btn"
                     @click="showCatalogPicker = true" />
+                  <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Shown
+                       ONLY when an installed plugin declares an estimate_source
+                       (e.g. the CHI pricing plugin); invisible in stock core. -->
+                  <Button v-if="estimateSource && isExisting" :label="`Add ${estimateSource.label}`"
+                    icon="pi pi-images" text size="small" severity="info"
+                    data-testid="est-add-captured-btn"
+                    @click="openCapturedPicker" />
                   <Button label="Add Labor" icon="pi pi-wrench" text size="small" severity="info"
                     data-testid="est-add-labor-btn"
                     @click="openLaborPicker" />
@@ -337,6 +344,58 @@
           <Button :label="`Add ${selectedCatalogItems.length} Item${selectedCatalogItems.length !== 1 ? 's' : ''}`"
             icon="pi pi-plus" :disabled="!selectedCatalogItems.length"
             @click="addFromCatalog" data-testid="catalog-add-btn" />
+        </template>
+      </Dialog>
+
+      <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Captured-item picker
+           for an installed estimate_source plugin (e.g. CHI pricing). Inert unless
+           estimateSource is set. A folder explorer: pick a folder, multi-select
+           doors, add each as a line (captured price → cost → margin engine) with
+           its photo + full spec. -->
+      <Dialog v-model:visible="capturedPickerVisible"
+        :header="estimateSource ? `Add ${estimateSource.label}` : 'Add captured item'"
+        modal :style="{ width: '700px' }" data-testid="captured-picker-dialog">
+        <p v-if="capturedLoading">Loading…</p>
+        <template v-else>
+          <!-- Folder list -->
+          <div v-if="capturedFolder === null">
+            <p class="captured-hint">Pick a folder:</p>
+            <ul class="captured-folders">
+              <li v-for="f in capturedFolderList" :key="f.key"
+                class="captured-folder" :data-testid="`captured-folder-${f.key}`"
+                @click="openFolder(f.key)">
+                <i class="pi pi-folder" />
+                <span class="captured-folder__name">{{ f.label }}</span>
+                <span class="captured-folder__count">{{ f.count }}</span>
+                <i class="pi pi-chevron-right captured-folder__chev" />
+              </li>
+            </ul>
+          </div>
+          <!-- Doors in a folder (multi-select) -->
+          <div v-else>
+            <Button text size="small" icon="pi pi-arrow-left" label="Folders" @click="backToFolders" />
+            <span class="captured-breadcrumb">{{ capturedFolderLabel }}</span>
+            <DataTable :value="doorsInFolder" dataKey="id"
+              v-model:selection="selectedDoors" selectionMode="multiple"
+              stripedRows responsiveLayout="scroll"
+              :paginator="doorsInFolder.length > 10" :rows="10"
+              style="margin-top: 0.5rem" data-testid="captured-doors-table">
+              <Column selectionMode="multiple" style="width: 3rem" />
+              <Column field="qcd" header="Quote #" />
+              <Column field="cart_name" header="Cart" />
+              <Column header="Price" style="width: 110px">
+                <template #body="{ data }">{{ currency(data.price) }}</template>
+              </Column>
+              <template #empty><span>No doors in this folder.</span></template>
+            </DataTable>
+          </div>
+        </template>
+        <template #footer>
+          <Button label="Close" severity="secondary" @click="capturedPickerVisible = false" />
+          <Button v-if="capturedFolder !== null"
+            :label="`Add ${selectedDoors.length} door${selectedDoors.length === 1 ? '' : 's'}`"
+            icon="pi pi-plus" :disabled="!selectedDoors.length || addingDoors" :loading="addingDoors"
+            data-testid="captured-add-btn" @click="addSelectedDoors" />
         </template>
       </Dialog>
 
@@ -749,6 +808,140 @@ async function loadPricingTiers() {
 
 // --- Catalog picker ---
 const showCatalogPicker = ref(false);
+
+// --- Plugin estimate source (ADR-013) — DO NOT REMOVE (this is a plugin hook). ---
+// An installed plugin (e.g. the CHI pricing plugin) can declare an estimate_source
+// in its manifest; we then offer "Add <label>" to pull its captured items in as
+// estimate lines. estimateSource stays null when no such plugin is installed, so
+// every binding below is inert in stock core.
+const estimateSource = ref(null);          // { label, list_endpoint, draft_endpoint }
+const capturedPickerVisible = ref(false);
+const capturedItems = ref([]);             // all captures (summary rows incl. folder)
+const capturedLoading = ref(false);
+const capturedFolder = ref(null);          // selected folder key; null = folder list view
+const selectedDoors = ref([]);             // multi-selected door rows
+const addingDoors = ref(false);
+const CAPTURED_ALL = "__all__";
+const CAPTURED_NONE = "__none__";
+
+// File-explorer model: folders derived from the captures' folder field.
+const capturedFolderList = computed(() => {
+  const items = capturedItems.value || [];
+  const counts = {};
+  let none = 0;
+  for (const it of items) {
+    if (it.folder) counts[it.folder] = (counts[it.folder] || 0) + 1;
+    else none += 1;
+  }
+  const list = [{ key: CAPTURED_ALL, label: "All doors", count: items.length }];
+  Object.keys(counts).sort().forEach((f) => list.push({ key: f, label: f, count: counts[f] }));
+  if (none) list.push({ key: CAPTURED_NONE, label: "(No folder)", count: none });
+  return list;
+});
+const capturedFolderLabel = computed(() => {
+  if (capturedFolder.value === CAPTURED_ALL) return "All doors";
+  if (capturedFolder.value === CAPTURED_NONE) return "(No folder)";
+  return capturedFolder.value;
+});
+const doorsInFolder = computed(() => {
+  const items = capturedItems.value || [];
+  if (capturedFolder.value === CAPTURED_ALL) return items;
+  if (capturedFolder.value === CAPTURED_NONE) return items.filter((it) => !it.folder);
+  return items.filter((it) => it.folder === capturedFolder.value);
+});
+
+async function _discoverEstimateSource() {
+  try {
+    const plugins = await api.get("/api/plugins");
+    const p = (Array.isArray(plugins) ? plugins : []).find((x) => x?.ui?.estimate_source);
+    if (p) estimateSource.value = p.ui.estimate_source;
+  } catch {
+    /* no plugin-host / no plugins → feature stays hidden */
+  }
+}
+
+async function openCapturedPicker() {
+  if (!estimateSource.value) return;
+  capturedPickerVisible.value = true;
+  capturedFolder.value = null;
+  selectedDoors.value = [];
+  capturedLoading.value = true;
+  try {
+    capturedItems.value = (await api.get(estimateSource.value.list_endpoint)) || [];
+  } catch {
+    capturedItems.value = [];
+  } finally {
+    capturedLoading.value = false;
+  }
+}
+
+function openFolder(key) {
+  capturedFolder.value = key;
+  selectedDoors.value = [];
+}
+function backToFolders() {
+  capturedFolder.value = null;
+  selectedDoors.value = [];
+}
+
+// Add every selected door as its own line — one door = one line item. Captured
+// price → cost → margin engine; photo + full spec ride along.
+async function addSelectedDoors() {
+  if (!selectedDoors.value.length || !estimateSource.value) return;
+  addingDoors.value = true;
+  let added = 0;
+  let noPhoto = 0;
+  try {
+    for (const item of selectedDoors.value) {
+      let draft;
+      try {
+        draft = await api.get(estimateSource.value.draft_endpoint.replace("{id}", item.id));
+      } catch {
+        continue;
+      }
+      const li = defaultLineItem();
+      li.category = draft.category || "Doors";
+      li.description = draft.description || "";
+      li.cost = draft.cost ?? null;
+      li.quantity = draft.quantity || 1;
+      li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
+      recomputeSell(li);                                 // captured cost → engine markup
+      form.value.line_items.push(li);                    // deep watcher autosaves it
+      if (draft.image && isExisting.value) {
+        await _attachCapturedImage(draft.image, item);
+      } else if (!draft.image) {
+        noPhoto += 1;
+      }
+      added += 1;
+    }
+    capturedPickerVisible.value = false;
+    toast.add({
+      severity: "success",
+      summary: `Added ${added} door${added === 1 ? "" : "s"}`,
+      detail: noPhoto ? `${noPhoto} had no photo (re-capture to attach).` : undefined,
+      life: 3000,
+    });
+  } finally {
+    addingDoors.value = false;
+  }
+}
+
+async function _attachCapturedImage(dataUrl, item) {
+  // Door photo → a core Document on the estimate (best-effort; the line + spec
+  // already persist via autosave regardless of the photo).
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
+    const fd = new FormData();
+    fd.append("file", blob, `chi-${item.qcd || item.id}.${ext}`);
+    await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
+    await loadAttachments();   // refresh the panel so the photo shows immediately
+    toast.add({ severity: "success", summary: "Door photo attached", life: 2500 });
+  } catch {
+    toast.add({ severity: "warn", summary: "Photo not attached",
+      detail: "The line and spec were saved; the photo upload failed.", life: 4000 });
+  }
+}
 const catalogItems = ref([]);
 const catalogSearch = ref("");
 const selectedCatalogItems = ref([]);
@@ -856,13 +1049,29 @@ function addFromLabor() {
 const saveCatalogOpen = ref(false);
 const savingCatalog = ref(false);
 const saveCatalogForm = ref({ description: "", cost: null, pricing_category: "parts" });
-const pricingCategoryOptions = [
+// Hardcoded fallback; replaced at mount by the data-driven list from
+// /api/catalogs/pricing-categories so admin-seeded tier categories appear.
+const pricingCategoryOptions = ref([
   { label: "Doors", value: "doors" },
   { label: "Openers", value: "openers" },
   { label: "Parts", value: "parts" },
   { label: "Labor", value: "labor" },
   { label: "Other", value: "other" },
-];
+]);
+
+async function loadPricingCategories() {
+  try {
+    const cats = await api.get("/api/catalogs/pricing-categories", { suppressErrorToast: true });
+    if (Array.isArray(cats) && cats.length) {
+      pricingCategoryOptions.value = cats.map((c) => ({
+        label: c.charAt(0).toUpperCase() + c.slice(1),
+        value: c,
+      }));
+    }
+  } catch (e) {
+    /* keep the hardcoded fallback */
+  }
+}
 
 function openSaveToCatalog(line) {
   saveCatalogForm.value = {
@@ -1033,27 +1242,37 @@ const canCreate = computed(() =>
 
 async function loadCatalog() {
   try {
-    const [supplierRes, doorsRes, partsRes] = await Promise.allSettled([
+    const [supplierRes, doorsRes, partsRes, customRes] = await Promise.allSettled([
       api.get("/api/supplier/catalog"),
       api.get("/api/catalog/doors?page_size=100"),
       api.get("/api/catalog/parts?page_size=100"),
+      api.get("/api/catalogs/all-items"),
     ]);
     const supplier = supplierRes.status === "fulfilled"
       ? (Array.isArray(supplierRes.value) ? supplierRes.value : supplierRes.value?.items || [])
       : [];
     const doors = doorsRes.status === "fulfilled" ? (doorsRes.value?.items || []) : [];
     const parts = partsRes.status === "fulfilled" ? (partsRes.value?.items || []) : [];
+    // The tenant's own custom + imported catalogs (custom_catalog_items). These
+    // carry cost + a stored pricing_category so the engine marks them up.
+    const custom = customRes.status === "fulfilled" ? (customRes.value?.items || []) : [];
     catalogItems.value = [
+      ...custom.map((c) => ({
+        id: c.id, name: c.name, category: c.category || "Parts",
+        unit_price: c.price || 0, cost: c.cost ?? null,
+        pricing_category: c.pricing_category || null,
+        supplier_name: "My Catalog", sku: c.sku,
+      })),
       ..._BUILT_IN_PARTS,
       ...supplier.map((s, i) => ({ ...s, id: s.id || `sup-${i}`, supplier_name: s.supplier_name || "Supplier" })),
       ...doors.map((d) => ({
         id: d.id, name: `${d.brand || "CHI"} ${d.model_number || ""} ${d.door_type || "Door"} ${d.width || ""}x${d.height || ""}`.trim(),
-        category: "Doors", unit_price: d.sell_price || d.cost || 0,
-        supplier_name: d.brand || "CHI", sku: d.sku,
+        category: "Doors", unit_price: d.sell_price || d.cost || 0, cost: d.cost ?? null,
+        pricing_category: "doors", supplier_name: d.brand || "CHI", sku: d.sku,
       })),
       ...parts.map((p) => ({
         id: p.id, name: p.name, category: p.part_type || "Parts",
-        unit_price: p.sell_price || p.cost || 0,
+        unit_price: p.sell_price || p.cost || 0, cost: p.cost ?? null,
         supplier_name: p.brand || "CHI", sku: p.sku,
       })),
     ];
@@ -1064,13 +1283,29 @@ async function loadCatalog() {
 
 function addFromCatalog() {
   for (const item of selectedCatalogItems.value) {
-    form.value.line_items.push({
+    const cost = Number(item.cost) > 0 ? Number(item.cost) : null;
+    const pc = cost ? (item.pricing_category || categoryToPricingCategory(item.category)) : null;
+    // Display category drives the dropdown; derive from the canonical pricing
+    // bucket (title-cased) so it always matches an option and reflects how the
+    // line is priced. Falls back to the item's free-form category otherwise.
+    const titleCased = pc ? pc.charAt(0).toUpperCase() + pc.slice(1) : null;
+    const displayCat = titleCased && lineCategories.includes(titleCased)
+      ? titleCased : (item.category || "Parts");
+    const line = {
       ...defaultLineItem(),
-      category: item.category || "Parts",
+      category: displayCat,
       description: item.name,
       quantity: 1,
       unit_price: item.unit_price || 0,
-    });
+      // Carry cost + pricing bucket so the tier engine computes the marked-up
+      // sell. Without these the line posts at the catalog price (zero markup).
+      cost,
+      pricing_category: pc,
+    };
+    form.value.line_items.push(line);
+    // Show the marked-up sell in the builder immediately, matching what the
+    // backend engine will persist on save (instead of displaying raw cost).
+    if (cost) recomputeSell(line);
   }
   selectedCatalogItems.value = [];
   showCatalogPicker.value = false;
@@ -1437,10 +1672,12 @@ function _linePostPayload(li) {
     quantity: li.quantity,
     unit_price: li.unit_price,
     cost: isLaborMatrix ? null : (li.cost ?? null),
-    pricing_category: isLaborMatrix ? null : categoryToPricingCategory(li.category),
+    pricing_category: isLaborMatrix ? null : (li.pricing_category || categoryToPricingCategory(li.category)),
     labor_price_item_id: li.labor_price_item_id ?? null,
     estimated_man_hours: li.estimated_man_hours ?? null,
   };
+  // Plugin integration (ADR-013) — carry the captured source spec onto the line.
+  if (li._capturedMeta) payload.line_metadata = li._capturedMeta;
   if (estimateFeatures.value.estimates_allow_line_margin_override
       && li._marginUserEdited
       && Number.isFinite(Number(li.margin_pct_override))
@@ -1918,7 +2155,9 @@ onMounted(async () => {
   loadCatalog();
   loadPricingTiers();
   loadPricingSettings();
+  loadPricingCategories();
   loadEstimateFeatures();
+  _discoverEstimateSource();   // plugin hook (ADR-013) — no-op when none installed
   await loadTenantTaxDefault();
   if (isExisting.value) {
     await fetchEstimate();
@@ -1948,6 +2187,22 @@ onUnmounted(() => {
   max-width: 1280px;
   margin: 0 auto;
 }
+
+/* Captured-door folder explorer (plugin picker) */
+.captured-hint { margin: 0 0 0.5rem; color: var(--p-text-color-secondary, #6b7280); }
+.captured-folders { list-style: none; margin: 0; padding: 0; }
+.captured-folder {
+  display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.5rem;
+  border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+}
+.captured-folder:hover { background: rgba(128, 128, 128, 0.12); border-color: var(--surface-border, #ccc); }
+.captured-folder__name { flex: 1; }
+.captured-folder__count {
+  font-size: 0.8rem; color: var(--p-text-color-secondary, #6b7280);
+  background: rgba(128, 128, 128, 0.15); border-radius: 10px; padding: 0 0.5rem;
+}
+.captured-folder__chev { color: var(--p-text-color-secondary, #6b7280); }
+.captured-breadcrumb { margin-left: 0.5rem; font-weight: 600; }
 
 /* Slice 3 — autosave status pill in the action bar. */
 .autosave-status {

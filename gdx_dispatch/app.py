@@ -1692,6 +1692,10 @@ def create_app() -> FastAPI:
     # container with the authenticated principal (ADR-013). Guarded so a missing
     # plugin stack never blocks core boot.
     try:
+        # WS browser-stream proxy (ADR-014) — registered first; it's a websocket
+        # route so it won't collide with the HTTP catch-all below.
+        from gdx_dispatch.routers.browser_proxy import router as browser_proxy_router
+        app.include_router(browser_proxy_router)
         from gdx_dispatch.routers.plugins_proxy import router as plugins_proxy_router
         app.include_router(plugins_proxy_router)
         from gdx_dispatch.routers.admin_plugins import router as admin_plugins_router

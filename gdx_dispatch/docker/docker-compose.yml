@@ -124,8 +124,13 @@ services:
   plugin-host:
     build:
       context: ../..
-      dockerfile: gdx_dispatch/docker/Dockerfile
+      # Browser-capable image (Playwright base) so plugins can drive a headless
+      # Chromium (ADR-014). Only plugin-host carries the browser; app/celery stay
+      # on the slim image.
+      dockerfile: gdx_dispatch/docker/Dockerfile.plugin-host
     command: uvicorn gdx_dispatch.plugin_host.main:app --host 0.0.0.0 --port 8000
+    # Chromium exhausts Docker's default 64MB /dev/shm and crashes without this.
+    ipc: host
     environment:
       <<: *app-env
       GDX_SKIP_MIGRATIONS: "1"
