@@ -22,6 +22,7 @@
       @mousedown.prevent="(e) => mouse('mousedown', e, screen)"
       @mouseup.prevent="(e) => mouse('mouseup', e, screen)"
       @mousemove.prevent="(e) => mouse('mousemove', e, screen)"
+      @wheel.prevent="(e) => wheel(e, screen)"
       @keydown.prevent="(e) => key('keydown', e)"
       @keyup.prevent="(e) => key('keyup', e)"
       @paste.prevent="(e) => paste(e)"
@@ -49,7 +50,7 @@ const transparentPixel =
 
 const api = useApiWithToast();
 const screen = ref(null);
-const { frameSrc, connected, error, connect, mouse, key, paste, saveSession, disconnect } =
+const { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, disconnect } =
   useBrowserStream();
 
 async function onSave() {

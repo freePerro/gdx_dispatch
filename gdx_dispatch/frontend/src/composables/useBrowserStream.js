@@ -93,17 +93,35 @@ export function useBrowserStream() {
     };
   }
 
+  let pressed = false;  // is the left button currently held? (for correct drag vs hover)
+
   function mouse(domType, e, el) {
     const map = { mousedown: 'mousePressed', mouseup: 'mouseReleased', mousemove: 'mouseMoved' };
     const t = map[domType];
     if (!t || !el) return;
     // The screen <img> uses @mousedown.prevent (to suppress drag/selection), which
-    // also suppresses the focus a click normally gives — so keydown would never
-    // fire on it and typing wouldn't work. Focus it explicitly on press so the
-    // keyboard handlers receive events.
+    // also suppresses the focus a click normally gives — so keydown wouldn't fire
+    // on it and typing wouldn't work. Focus it explicitly on press.
     if (domType === 'mousedown' && typeof el.focus === 'function') el.focus();
+    if (domType === 'mousedown') pressed = true;
+    if (domType === 'mouseup') pressed = false;
     const { x, y } = mapCoords(el.getBoundingClientRect(), e.clientX, e.clientY);
-    send({ type: 'mouse', payload: { type: t, x, y, button: 'left', clickCount: 1, buttons: 1 } });
+    // Only report the button as held when it actually is — sending buttons:1 on
+    // every move made Chromium treat all movement as a drag, which broke clicks,
+    // hovers, and dropdowns. mousePressed/Released are clicks; moves carry the
+    // live button state so a real drag still works.
+    const payload =
+      domType === 'mousemove'
+        ? { type: t, x, y, button: pressed ? 'left' : 'none', buttons: pressed ? 1 : 0 }
+        : { type: t, x, y, button: 'left', clickCount: 1, buttons: domType === 'mousedown' ? 1 : 0 };
+    send({ type: 'mouse', payload });
+  }
+
+  function wheel(e, el) {
+    if (!el) return;
+    const { x, y } = mapCoords(el.getBoundingClientRect(), e.clientX, e.clientY);
+    // Reuse the mouse path: CDP dispatchMouseEvent type "mouseWheel" scrolls.
+    send({ type: 'mouse', payload: { type: 'mouseWheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY } });
   }
 
   function key(domType, e) {
@@ -135,5 +153,5 @@ export function useBrowserStream() {
     connected.value = false;
   }
 
-  return { frameSrc, connected, error, connect, mouse, key, paste, saveSession, disconnect };
+  return { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, disconnect };
 }
