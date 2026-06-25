@@ -65,7 +65,25 @@
                   :key="m.id"
                   :class="['msg-bubble', m.direction === 'in' ? 'msg-in' : 'msg-out']"
                 >
-                  <div class="msg-body">{{ m.body }}</div>
+                  <div v-if="m.body" class="msg-body">{{ m.body }}</div>
+                  <div v-if="m.attachments && m.attachments.length" class="msg-media">
+                    <a
+                      v-for="(att, i) in m.attachments"
+                      :key="i"
+                      :href="mediaBlob(m.id, i) || undefined"
+                      target="_blank"
+                      rel="noopener"
+                      data-test="pc-msg-media"
+                    >
+                      <img
+                        v-if="mediaBlob(m.id, i)"
+                        :src="mediaBlob(m.id, i)"
+                        class="msg-media-img"
+                        alt="MMS attachment"
+                      />
+                      <span v-else class="text-muted">📎 attachment</span>
+                    </a>
+                  </div>
                   <div class="msg-meta text-muted">
                     {{ formatDateTime(m.sent_at) }}
                     <span v-if="m.delivery_status"> · {{ m.delivery_status }}</span>
@@ -129,6 +147,52 @@ const composeBody = ref('')
 const composeStatus = ref(null)
 const markReadLoading = ref(false)
 
+// MMS media is auth'd; like the call-audio proxy it can't ride an <img src>
+// header, so fetch each attachment as a blob (Bearer + same-origin cookie)
+// and bind an object URL. Keyed `${messageId}:${idx}`.
+const mediaBlobs = ref({})
+
+function mediaKey(id, idx) {
+  return `${id}:${idx}`
+}
+function mediaBlob(id, idx) {
+  return mediaBlobs.value[mediaKey(id, idx)] || null
+}
+
+function _authHeaders() {
+  const tok = sessionStorage.getItem('gdx_access_token')
+    || localStorage.getItem('gdx_access_token')
+    || localStorage.getItem('auth_token')
+    || ''
+  return tok ? { Authorization: `Bearer ${tok}` } : {}
+}
+
+async function _loadThreadMedia(messages) {
+  for (const m of messages) {
+    const atts = m.attachments || []
+    for (let i = 0; i < atts.length; i++) {
+      const key = mediaKey(m.id, i)
+      if (mediaBlobs.value[key]) continue
+      try {
+        const r = await fetch(`/api/phone-com/messages/${m.id}/media/${i}`, {
+          headers: _authHeaders(),
+        })
+        if (!r.ok) continue
+        mediaBlobs.value[key] = URL.createObjectURL(await r.blob())
+      } catch (_e) {
+        /* leave unset — the 📎 fallback shows */
+      }
+    }
+  }
+}
+
+function _revokeMedia() {
+  for (const url of Object.values(mediaBlobs.value)) {
+    if (url && url.startsWith('blob:')) URL.revokeObjectURL(url)
+  }
+  mediaBlobs.value = {}
+}
+
 function formatDateTime(iso) {
   if (!iso) return ''
   const t = Date.parse(iso)
@@ -153,12 +217,14 @@ const fetchThreads = async () => {
 const openThread = async (thread) => {
   selectedThread.value = thread
   threadMessages.value = []
+  _revokeMedia()
   threadLoading.value = true
   try {
     const r = await api.get(
       `/api/phone-com/messages/threads/${encodeURIComponent(thread.thread_key)}?per_page=500`,
     )
     threadMessages.value = r.items
+    _loadThreadMedia(r.items)  // fire-and-forget; bubbles render as blobs resolve
   } catch (err) {
     error.value = err.message || 'Failed to load thread'
   } finally {
@@ -210,6 +276,7 @@ const closeThread = () => {
   threadMessages.value = []
   composeBody.value = ''
   composeStatus.value = null
+  _revokeMedia()
 }
 
 onMounted(fetchThreads)
@@ -304,6 +371,18 @@ onMounted(fetchThreads)
 .msg-meta {
   font-size: 0.75rem;
   margin-top: 0.2rem;
+}
+.msg-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+}
+.msg-media-img {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 6px;
+  display: block;
 }
 .compose-row {
   display: flex;
