@@ -3,11 +3,25 @@
     <div class="browser-stream__bar">
       <span :class="['browser-stream__dot', connected ? 'is-on' : 'is-off']" />
       <span>{{ connected ? 'Connected' : 'Connecting…' }}</span>
-      <Button
-        label="Save login session"
+      <!-- Folder picker (ADR-013): pick an existing folder or type a new one;
+           captures are filed under it so they don't pile into one flat list. -->
+      <Select
+        v-if="foldersEndpoint"
+        v-model="folder"
+        :options="folderOptions"
+        editable
         size="small"
+        placeholder="Folder…"
+        class="browser-stream__folder"
+        data-testid="browser-folder"
+      />
+      <Button
+        v-if="captureEndpoint"
+        :label="captureLabel"
+        size="small"
+        :loading="capturing"
         :disabled="!connected"
-        @click="onSave"
+        @click="onCapture"
       />
       <span v-if="error" class="browser-stream__error">{{ error }}</span>
     </div>
@@ -36,29 +50,61 @@
 // here. All logic is in useBrowserStream so it unit-tests; this is the template.
 import { onMounted, onBeforeUnmount, ref } from 'vue';
 import Button from 'primevue/button';
+import Select from 'primevue/select';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useBrowserStream } from '../composables/useBrowserStream';
 
 const props = defineProps({
   pluginKey: { type: String, required: true },
   url: { type: String, required: true },
+  // When a screen declares a capture endpoint, show a button that ships the live
+  // page's text+URL to it (the plugin extracts the structured data server-side).
+  captureEndpoint: { type: String, default: '' },
+  captureLabel: { type: String, default: 'Capture this page' },
+  // When set, show a folder picker (existing folders from this endpoint, or type
+  // a new one); the chosen folder rides along with each capture.
+  foldersEndpoint: { type: String, default: '' },
 });
-const emit = defineEmits(['session']);
+const emit = defineEmits(['captured']);
 
 const transparentPixel =
   'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 const api = useApiWithToast();
 const screen = ref(null);
-const { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, disconnect } =
+const capturing = ref(false);
+const folder = ref('');
+const folderOptions = ref([]);
+const { frameSrc, connected, error, connect, mouse, wheel, key, paste, capturePage, disconnect } =
   useBrowserStream();
 
-async function onSave() {
-  const state = await saveSession();
-  emit('session', state);
+async function loadFolders() {
+  if (!props.foldersEndpoint) return;
+  try {
+    folderOptions.value = (await api.get(props.foldersEndpoint)) || [];
+  } catch {
+    folderOptions.value = [];
+  }
 }
 
-onMounted(() => connect({ key: props.pluginKey, url: props.url, api }));
+async function onCapture() {
+  capturing.value = true;
+  try {
+    const { url, text, image } = await capturePage();
+    const res = await api.post(props.captureEndpoint,
+      { url, text, image, folder: (folder.value || '').trim() || null },
+      { successMessage: 'Captured' });
+    emit('captured', res);
+    loadFolders();   // a brand-new folder name should appear in the picker next time
+  } finally {
+    capturing.value = false;
+  }
+}
+
+onMounted(() => {
+  connect({ key: props.pluginKey, url: props.url, api });
+  loadFolders();
+});
 onBeforeUnmount(disconnect);
 </script>
 

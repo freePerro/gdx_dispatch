@@ -64,6 +64,7 @@ export function useBrowserStream() {
   const error = ref(null);
   let sock = null;
   let onSession = null;           // resolver for a pending saveSession()
+  let onCapture = null;           // resolver for a pending capturePage()
 
   function send(obj) {
     if (sock && sock.readyState === 1) sock.send(JSON.stringify(obj));
@@ -90,6 +91,7 @@ export function useBrowserStream() {
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'frame') frameSrc.value = `data:image/jpeg;base64,${msg.data}`;
       else if (msg.type === 'session' && onSession) { onSession(msg.state); onSession = null; }
+      else if (msg.type === 'capture' && onCapture) { onCapture({ url: msg.url, text: msg.text, image: msg.image }); onCapture = null; }
     };
   }
 
@@ -146,6 +148,12 @@ export function useBrowserStream() {
     return new Promise((resolve) => { onSession = resolve; send({ type: 'save_session' }); });
   }
 
+  // Grab the live page's visible text + URL (the page the operator is on, already
+  // logged in) so the host can POST it to a plugin's capture endpoint.
+  function capturePage() {
+    return new Promise((resolve) => { onCapture = resolve; send({ type: 'capture' }); });
+  }
+
   function disconnect() {
     send({ type: 'close' });
     if (sock) { try { sock.close(); } catch { /* ignore */ } }
@@ -153,5 +161,5 @@ export function useBrowserStream() {
     connected.value = false;
   }
 
-  return { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, disconnect };
+  return { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, capturePage, disconnect };
 }

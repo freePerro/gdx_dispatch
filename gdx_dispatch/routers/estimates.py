@@ -92,6 +92,8 @@ def _serialize_line(line: EstimateLine) -> dict[str, object]:
         # S97 slice 4 — labor matrix link + man-hours snapshot.
         "labor_price_item_id": str(line.labor_price_item_id) if line.labor_price_item_id else None,
         "estimated_man_hours": _to_float(line.estimated_man_hours) if line.estimated_man_hours is not None else None,
+        # Plugin integration (ADR-013) — captured source spec, null on ordinary lines.
+        "line_metadata": getattr(line, "line_metadata", None),
     }
 
 
@@ -316,6 +318,11 @@ class EstimateLineCreateNested(BaseModel):
     # S97 slice 5 — labor matrix link.
     labor_price_item_id: UUID | None = None
     estimated_man_hours: float | None = Field(default=None, ge=0, le=999.99)
+    # PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Full captured source
+    # spec a plugin (e.g. CHI pricing) attaches to this line; persisted on the
+    # line so it survives estimate→Job and is readable downstream. See
+    # EstimateLine.line_metadata.
+    line_metadata: dict | None = None
 
 
 class EstimateCreateIn(BaseModel):
@@ -364,6 +371,11 @@ class EstimateLineCreateIn(BaseModel):
     # S97 slice 5 — labor matrix link snapshotted onto the line at create.
     labor_price_item_id: UUID | None = None
     estimated_man_hours: float | None = Field(default=None, ge=0, le=999.99)
+    # PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Full captured source
+    # spec a plugin (e.g. CHI pricing) attaches to this line; persisted on the
+    # line so it survives estimate→Job and is readable downstream. See
+    # EstimateLine.line_metadata.
+    line_metadata: dict | None = None
 
     @field_validator("description")
     @classmethod
@@ -664,6 +676,9 @@ def create_estimate(
             labor_price_item_id=item.labor_price_item_id,
             estimated_man_hours=estimated_man_hours_val,
             company_id=tenant_id,
+            # Plugin integration (ADR-013) — captured source spec, if the line came
+            # from a plugin (e.g. CHI pricing). See EstimateLine.line_metadata.
+            line_metadata=item.line_metadata,
         ))
         running_total += line_total
     estimate.total = running_total
@@ -874,6 +889,8 @@ def add_line(
         pricing_source=pricing_source,
         labor_price_item_id=payload.labor_price_item_id,
         estimated_man_hours=estimated_man_hours_val,
+        # Plugin integration (ADR-013) — carries the captured source spec, if any.
+        line_metadata=payload.line_metadata,
     )
     db.add(line)
     db.flush()
