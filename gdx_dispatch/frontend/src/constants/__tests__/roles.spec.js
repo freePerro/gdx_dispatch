@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  normalizeRole, isTechnician, isAdminTier, humanizeRole,
+  normalizeRole, isTechnician, isAdminTier, isOwner, humanizeRole,
   TECHNICIAN, DISPATCHER, SUPER_ADMIN, OWNER,
 } from '../roles';
 
@@ -41,6 +41,19 @@ describe('isAdminTier', () => {
   it('false for office/field roles', () => {
     for (const r of ['dispatcher', 'dispatch', 'tech', 'technician', 'sales', 'viewer', '']) {
       expect(isAdminTier(r)).toBe(false);
+    }
+  });
+});
+
+describe('isOwner (owner tier — owner/superadmin, NOT admin)', () => {
+  it('true for owner + all superadmin spellings', () => {
+    for (const r of ['owner', 'super_admin', 'superadmin', 'super-admin']) {
+      expect(isOwner(r)).toBe(true);
+    }
+  });
+  it('false for admin and everyone else', () => {
+    for (const r of ['admin', 'dispatcher', 'dispatch', 'tech', 'technician', 'sales', 'viewer', '', null]) {
+      expect(isOwner(r)).toBe(false);
     }
   });
 });

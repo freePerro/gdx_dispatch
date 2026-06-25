@@ -47,6 +47,14 @@ export function isAdminTier(role) {
   return r === OWNER || r === ADMIN || r === SUPER_ADMIN;
 }
 
+/** True for the owner tier — owner or superadmin (NOT admin). Use for
+ *  owner-exclusive surfaces (e.g. "Manage plugins"). Variant-aware, so the
+ *  super_admin / super-admin spellings resolve correctly. */
+export function isOwner(role) {
+  const r = normalizeRole(role);
+  return r === OWNER || r === SUPER_ADMIN;
+}
+
 const HUMAN = {
   owner: 'Owner',
   admin: 'Admin',
