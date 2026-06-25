@@ -258,8 +258,21 @@ export const useAuthStore = defineStore('auth', () => {
 
   function hasPermission(key) {
     if (!isAuthenticated.value) return false;
-    if (isAdmin.value) return true; // legacy escape hatch matches backend
     if (!key) return true;
+    // Admin/owner escape hatch — kept BEFORE the set loads AND when the loaded
+    // set is empty. This is UX-only filtering (the backend is the sole enforcer).
+    // NOTE: `isAdmin` derives from the JWT `role` claim, which APPROXIMATES but
+    // does NOT mirror the backend — the backend resolves admin/owner from
+    // User.role in the tenant DB (core/modules.py) so it can ignore a stale JWT
+    // role. On a stale JWT the two disagree; acceptable here because the API
+    // still 403s anything the real role can't do.
+    // A NON-EMPTY loaded set is authoritative, so an admin whose caps lack a key
+    // (e.g. settings.write) no longer sees pages the API denies. An *empty*
+    // resolved set for an admin means the backend resolver hit a fallback
+    // (missing tenant/user_id, role-lookup error) and returned `[]` as HTTP 200 —
+    // never a real grant — so it must NOT collapse the admin's nav and lock them
+    // out of their own tenant.
+    if (isAdmin.value && (!permissionsLoaded.value || permissions.value.size === 0)) return true;
     if (permissions.value.has('*')) return true;
     return permissions.value.has(key);
   }

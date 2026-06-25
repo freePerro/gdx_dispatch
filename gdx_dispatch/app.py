@@ -686,9 +686,11 @@ except Exception:
 
 try:
     from gdx_dispatch.routers.admin_ops import router as admin_ops_router
+    from gdx_dispatch.routers.admin_ops import read_router as admin_ops_read_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: admin_ops_router")
     admin_ops_router = APIRouter(prefix="/api/admin", tags=["admin"])
+    admin_ops_read_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 try:
     from gdx_dispatch.routers.admin_db import router as admin_db_router
@@ -1686,6 +1688,7 @@ def create_app() -> FastAPI:
     # is no longer mounted — the Vue SPA's /onboarding route owns those paths now.
     # The router object is still importable for gdx_dispatch/tests/test_24_onboarding.py.
     app.include_router(admin_ops_router)
+    app.include_router(admin_ops_read_router)
     app.include_router(admin_db_router)
     app.include_router(admin_modules_router, prefix="/api/admin", tags=["tenant-modules"])
     # Third-party plugin proxy: forwards /api/plugins/* to the plugin-host
