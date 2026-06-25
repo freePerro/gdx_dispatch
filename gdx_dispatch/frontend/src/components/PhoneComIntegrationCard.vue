@@ -342,6 +342,36 @@ const removeBlockedNumber = async (id) => {
   }
 }
 
+// Diagnostics panel — token/voip/webhook health + the listener event-filter
+// tag-match check (does our 'phone.*' match Phone.com's bare tags?).
+const diagOpen = ref(false)
+const diagLoading = ref(false)
+const diagError = ref(null)
+const diagChecks = ref([])
+
+function diagIcon(s) {
+  return s === 'ok' ? '✓' : s === 'warn' ? '!' : s === 'fail' ? '✕' : '·'
+}
+
+const runDiagnostics = async () => {
+  diagLoading.value = true
+  diagError.value = null
+  try {
+    const r = await api.get('/api/settings/integrations/phone-com/diagnostics')
+    diagChecks.value = r.checks || []
+  } catch (err) {
+    diagError.value = err.message || 'Diagnostics failed'
+    diagChecks.value = []
+  } finally {
+    diagLoading.value = false
+  }
+}
+
+const toggleDiagnostics = () => {
+  diagOpen.value = !diagOpen.value
+  if (diagOpen.value) runDiagnostics()
+}
+
 const disconnect = async () => {
   if (!(await confirmAsync({ header: 'Confirm', message: 'Disconnect Phone.com? This clears the token and removes the webhook from Phone.com.' }))) return
   try {
@@ -717,6 +747,33 @@ onMounted(async () => {
               </div>
             </div>
           </div>
+
+          <div class="subpanel">
+            <button
+              type="button"
+              class="btn-link"
+              data-test="pc-diag-toggle"
+              @click="toggleDiagnostics"
+            >
+              {{ diagOpen ? 'Hide diagnostics' : 'Run diagnostics' }}
+            </button>
+            <div v-if="diagOpen" class="diag-panel" data-test="pc-diag-panel">
+              <div v-if="diagLoading" class="muted">Running…</div>
+              <div v-if="diagError" class="status-row status-error">{{ diagError }}</div>
+              <ul v-if="diagChecks.length" class="diag-list">
+                <li
+                  v-for="c in diagChecks"
+                  :key="c.key"
+                  :class="['diag-item', `diag-${c.status}`]"
+                  data-test="pc-diag-row"
+                >
+                  <span class="diag-badge">{{ diagIcon(c.status) }}</span>
+                  <span class="diag-label">{{ c.label }}</span>
+                  <span class="diag-detail">{{ c.detail }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
         <div v-else class="empty-state muted" data-test="pc-empty-state">
           <p class="empty-headline">No token yet — here's how to get one that works.</p>
@@ -1022,4 +1079,42 @@ onMounted(async () => {
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
 }
+
+.diag-panel {
+  margin-top: 0.5rem;
+}
+.diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.diag-item {
+  display: grid;
+  grid-template-columns: 1.25rem 9rem 1fr;
+  gap: 0.5rem;
+  align-items: start;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.diag-badge {
+  font-weight: 700;
+  text-align: center;
+}
+.diag-label {
+  font-weight: 600;
+}
+.diag-detail {
+  color: var(--text-muted, inherit);
+}
+.diag-ok .diag-badge { color: var(--color-success-500); }
+.diag-ok { background: var(--color-success-bg); border-color: var(--color-success-border); }
+.diag-warn .diag-badge { color: var(--color-warning-500); }
+.diag-warn { background: var(--color-warning-bg); border-color: var(--color-warning-border); }
+.diag-fail .diag-badge { color: var(--color-danger-500); }
+.diag-fail { background: var(--color-danger-bg); border-color: var(--color-danger-border); }
 </style>
