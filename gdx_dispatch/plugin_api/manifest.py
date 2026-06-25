@@ -13,6 +13,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+# Elevated capabilities a plugin may declare; each is consent-gated at install
+# (ADR-014). Keep this the single source of truth — core + frontend read it.
+KNOWN_PERMISSIONS = frozenset({"browser"})
+
+# One-line human descriptions shown in the owner consent dialog. Every entry in
+# KNOWN_PERMISSIONS must have a description here.
+PERMISSION_RISKS = {
+    "browser": (
+        "Runs a real web browser on the server that this plugin controls, and "
+        "lets you drive it from your screen. It can load external sites and use "
+        "any login you complete in it. Only install plugins you trust."
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PluginManifest:
@@ -34,6 +48,11 @@ class PluginManifest:
                       this module stays import-light).
       migrations_path filesystem path to the plugin's Alembic version dir, or None.
       ui              declarative UI manifest (screens); schema lands in step 4.
+      permissions     elevated capabilities the plugin needs, each gated by an
+                      owner consent dialog at install (ADR-014). Currently only
+                      "browser" — a streamed headless browser the operator drives
+                      (e.g. to log into a no-API site). "" / () = no elevated
+                      capability, installs silently like any core module.
     """
 
     key: str
@@ -43,6 +62,7 @@ class PluginManifest:
     router: Any = None
     migrations_path: str | None = None
     ui: Any = None
+    permissions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # Fail loud at declaration time — a malformed key would otherwise surface
@@ -55,3 +75,6 @@ class PluginManifest:
             raise ValueError("PluginManifest.name must be non-empty")
         if self.tier not in ("starter", "professional", "business"):
             raise ValueError(f"PluginManifest.tier invalid: {self.tier!r}")
+        unknown = set(self.permissions) - KNOWN_PERMISSIONS
+        if unknown:
+            raise ValueError(f"PluginManifest.permissions unknown: {sorted(unknown)}")

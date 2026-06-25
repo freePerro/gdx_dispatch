@@ -8,6 +8,14 @@
         <Column v-for="c in screen.columns" :key="c.field" :field="c.field" :header="c.label" />
       </DataTable>
 
+      <!-- Phase 2 (ADR-014): streamed headless browser, gated by the "browser"
+           permission + owner consent on the backend. -->
+      <BrowserStream
+        v-if="screen.type === 'browser'"
+        :plugin-key="pluginKey"
+        :url="screen.url"
+      />
+
       <form
         v-if="screen.create"
         class="plugin-screen__create"
@@ -33,6 +41,7 @@ import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import InputText from 'primevue/inputtext';
 import Button from 'primevue/button';
+import BrowserStream from './BrowserStream.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { usePluginScreen } from '../composables/usePluginScreen';
 
