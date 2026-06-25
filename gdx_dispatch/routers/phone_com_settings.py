@@ -30,7 +30,7 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db, get_tenant_db
 from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.modules.phone_com import key_storage
-from gdx_dispatch.modules.phone_com.client import PhoneComClient
+from gdx_dispatch.modules.phone_com.client import PhoneComAPIError, PhoneComClient
 
 log = logging.getLogger("gdx_dispatch.routers.phone_com_settings")
 
@@ -605,3 +605,117 @@ def post_phone_com_sync_now(
         # trace. (CodeQL stack-trace-exposure #38: dismissed as intentional.)
         raise HTTPException(status_code=502, detail=result.get("error") or "sync failed")
     return result
+
+
+# ── in-app diagnostics ───────────────────────────────────────────────────
+
+
+def _check(key: str, label: str, status_: str, detail: str, **extra: Any) -> dict[str, Any]:
+    return {"key": key, "label": label, "status": status_, "detail": detail, **extra}
+
+
+@router.get("/diagnostics")
+def get_phone_com_diagnostics(
+    user: dict[str, Any] = Depends(get_current_user),
+    control_db: Session = Depends(get_db),
+    tenant_db: Session = Depends(get_tenant_db),
+) -> dict[str, Any]:
+    """Read-only integration health for the Settings card. Verifies token,
+    voip_id, webhook registration, and — the important one — whether our
+    listener event-filters match the tags Phone.com actually recognizes.
+    The in-app version of tools/phone_com_check_listener_filters.py."""
+    _require_admin(user)
+    tid = _coerce_tenant_uuid(user)
+    checks: list[dict[str, Any]] = []
+
+    # 1. Token
+    token = key_storage.get_token(control_db, tid)
+    settings = control_db.get(TenantSettings, tid)
+    last_err = settings.phone_com_token_last_error if settings else None
+    if not token:
+        checks.append(_check("token", "API token", "fail", "No token stored — configure the integration."))
+        return {"ok": False, "checks": checks}
+    checks.append(_check(
+        "token", "API token", "warn" if last_err else "ok",
+        last_err or "Token present.",
+    ))
+
+    # 2. voip_id
+    app = tenant_db.query(AppSettings).first()
+    voip_raw = app.phone_com_voip_id if app else None
+    try:
+        voip_id = int(voip_raw) if voip_raw else None
+    except (TypeError, ValueError):
+        voip_id = None
+    if voip_id is None:
+        checks.append(_check("voip_id", "Account (voip_id)", "fail", "Not set — run Test on the integration."))
+        return {"ok": False, "checks": checks}
+    checks.append(_check("voip_id", "Account (voip_id)", "ok", f"voip_id {voip_id}"))
+
+    # 3. Webhook registration (from persisted ids)
+    cb = settings.phone_com_webhook_callback_id if settings else None
+    li_id = settings.phone_com_webhook_listener_id if settings else None
+    if cb and li_id:
+        checks.append(_check("webhook", "Webhook registration", "ok", f"callback {cb}, listener {li_id}"))
+    else:
+        checks.append(_check("webhook", "Webhook registration", "warn",
+                             "No webhook registered — events arrive only via the 15-min poll."))
+
+    # 4. Listener event-filters — do our values match Phone.com's tags?
+    ours = list(PhoneComClient.DEFAULT_LISTENER_EVENT_TYPES)
+    client = PhoneComClient(token=token, voip_id=voip_id)
+    try:
+        listeners = (client.list_listeners() or {}).get("items", [])
+    except PhoneComAPIError as exc:
+        # Surface only the HTTP status (actionable: 401 vs 503), not the
+        # exception string — its body_snippet can carry the upstream response.
+        # Full detail goes to the server log. (CodeQL py/stack-trace-exposure.)
+        log.warning("phone_com diagnostics list_listeners failed", exc_info=True)
+        status_txt = f"HTTP {exc.status_code}" if exc.status_code else "request failed"
+        checks.append(_check(
+            "listeners", "Listeners", "fail",
+            f"Phone.com API {status_txt} — see server logs.",
+        ))
+        return {"ok": False, "checks": checks}
+
+    if not listeners:
+        checks.append(_check("listeners", "Listeners", "warn",
+                             "None registered at Phone.com — running on polling only.", ours=ours))
+        return {"ok": True, "checks": checks}
+
+    found: set[str] = set()
+    listener_rows: list[dict[str, Any]] = []
+    for li in listeners:
+        lid = li.get("id")
+        try:
+            filters = (client.list_listener_filters(listener_id=lid) or {}).get("items", [])
+        except PhoneComAPIError:
+            filters = []
+        for f in filters:
+            for v in (f.get("value") if isinstance(f.get("value"), list) else [f.get("value")]):
+                if v is not None:
+                    found.add(str(v))
+        listener_rows.append({"id": lid, "callback_id": li.get("callback_id"),
+                              "filter_values": sorted(
+                                  {str(v) for f in filters
+                                   for v in (f.get("value") if isinstance(f.get("value"), list) else [f.get("value")])
+                                   if v is not None})})
+
+    if not found:
+        checks.append(_check("filter_tags", "Event filter tags", "warn",
+                             "Listeners have no event-value filters — receiving ALL events, "
+                             "or filters were never created. Our 'phone.*' values are not applied.",
+                             ours=ours, registered=[], listeners=listener_rows))
+    elif all(v.startswith("phone.") for v in found):
+        checks.append(_check("filter_tags", "Event filter tags", "warn",
+                             f"Filters use our 'phone.*' values {sorted(found)}. Phone.com's "
+                             "documented tags are bare (call, *ms-message, api-error-trusted); "
+                             "if so these match nothing and webhook events never arrive.",
+                             ours=ours, registered=sorted(found), listeners=listener_rows))
+    else:
+        checks.append(_check("filter_tags", "Event filter tags", "ok",
+                             f"Registered tags at Phone.com: {sorted(found)}.",
+                             ours=ours, registered=sorted(found), listeners=listener_rows))
+
+    ok = all(c["status"] != "fail" for c in checks)
+    return {"ok": ok, "checks": checks}
