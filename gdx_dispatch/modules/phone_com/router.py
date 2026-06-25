@@ -371,6 +371,115 @@ def get_voicemail_transcript(
     }
 
 
+# ── click-to-call (outbound origination) ───────────────────────────────
+
+
+class OriginateCallIn(BaseModel):
+    to: str = Field(..., min_length=3, max_length=40)
+    customer_id: UUID | None = None
+    job_id: UUID | None = None
+
+
+def _caller_extension_for(tenant_db: Session, user_id: UUID | None) -> int:
+    """Ring the logged-in tech's own Phone.com extension, falling back to the
+    tenant default. Returns the numeric extension id or raises 503."""
+    ext_raw: str | None = None
+    if user_id is not None:
+        row = (
+            tenant_db.query(PhoneComExtension)
+            .filter(PhoneComExtension.user_id == user_id)
+            .first()
+        )
+        ext_raw = row.phone_com_extension_id if row else None
+    if not ext_raw:
+        app = tenant_db.query(AppSettings).first()
+        ext_raw = app.phone_com_default_extension_id if app else None
+    if not ext_raw:
+        raise HTTPException(
+            status_code=503,
+            detail="No Phone.com extension for this user and no default set — Settings → Phone.com",
+        )
+    try:
+        return int(ext_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=503, detail="extension id is not numeric") from None
+
+
+@router.post("/calls/originate")
+def originate_call(
+    payload: OriginateCallIn,
+    tenant_db: Session = Depends(get_tenant_db),
+    control_db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Click-to-call: Phone.com rings this tech's extension, then bridges the
+    customer. The customer sees the tenant's default caller-id."""
+    to_number = normalize_e164(payload.to) or payload.to
+    tenant_id = _coerce_tenant_uuid(user)
+    caller_extension = _caller_extension_for(tenant_db, _coerce_user_uuid(user))
+    app = tenant_db.query(AppSettings).first()
+    callee_caller_id = app.phone_com_default_caller_id if app else None
+    client = _get_phone_com_client(tenant_id, control_db, tenant_db)
+    try:
+        result = client.originate_call(
+            callee_phone_number=to_number,
+            caller_extension=caller_extension,
+            callee_caller_id=callee_caller_id,
+        )
+    except PhoneComAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"status": "ringing", "call": result}
+
+
+# ── inbound MMS media proxy ────────────────────────────────────────────
+
+
+def _attachment_url(att: Any) -> str | None:
+    """Phone.com attachment shapes vary: a bare URL string, or a dict with a
+    url/uri/media_url key. Return the first usable URL."""
+    if isinstance(att, str):
+        return att or None
+    if isinstance(att, dict):
+        for k in ("url", "uri", "media_url", "content_url"):
+            v = att.get(k)
+            if isinstance(v, str) and v:
+                return v
+    return None
+
+
+@router.get("/messages/{message_id}/media/{idx}")
+def stream_message_media(
+    message_id: UUID,
+    idx: int,
+    tenant_db: Session = Depends(get_tenant_db),
+    control_db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> StreamingResponse:
+    """Proxy-stream an inbound MMS attachment from Phone.com (auth'd, durable
+    URLs expire), mirroring the voicemail-audio proxy — no local blob storage."""
+    msg = tenant_db.get(PhoneComMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    attachments = msg.attachments or []
+    if not (0 <= idx < len(attachments)):
+        raise HTTPException(status_code=404, detail="attachment index out of range")
+    url = _attachment_url(attachments[idx])
+    if not url:
+        raise HTTPException(status_code=404, detail="attachment has no url")
+
+    tenant_id = _coerce_tenant_uuid(user)
+    client = _get_phone_com_client(tenant_id, control_db, tenant_db)
+    try:
+        chunks, content_type = client.stream_url(url, requires_auth=True)
+    except PhoneComAPIError as exc:
+        raise HTTPException(status_code=502, detail="upstream media stream failed") from exc
+    return StreamingResponse(
+        chunks,
+        media_type=content_type or "application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _mark_call_heard(tenant_db: Session, call_id: UUID, user_id: UUID | None) -> None:
     vm = _voicemail_for_call(tenant_db, call_id)
     if vm is None:

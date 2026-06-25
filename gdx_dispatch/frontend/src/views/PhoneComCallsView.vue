@@ -117,13 +117,17 @@
         </Column>
         <Column header="" style="width: 150px">
           <template #body="{ data }">
-            <a
-              v-if="data.from_number"
-              :href="`tel:${data.from_number}`"
-              class="action-icon"
-              title="Call back"
-              @click.stop
-            >📞</a>
+            <Button
+              v-if="customerNumber(data)"
+              icon="pi pi-phone"
+              text
+              rounded
+              severity="success"
+              size="small"
+              :title="`Call ${customerNumber(data)} — rings your extension first`"
+              @click.stop="originateCall(data)"
+              data-test="pc-click-to-call"
+            />
             <i v-if="data.has_recording" class="pi pi-microphone action-icon" title="has recording" />
             <i v-if="data.has_voicemail" class="pi pi-envelope action-icon" title="has voicemail" />
             <Button
@@ -486,6 +490,37 @@ const unlinkJob = async () => {
     }
   } catch (err) {
     error.value = err.message || 'Failed to unlink'
+  }
+}
+
+// Click-to-call: Phone.com rings the dispatcher's own extension, then bridges
+// the customer. The number to dial is the customer's side of the call.
+function customerNumber(call) {
+  return call.direction === 'out' ? call.to_number : call.from_number
+}
+
+const originateCall = async (call) => {
+  const to = customerNumber(call)
+  if (!to) return
+  try {
+    await api.post('/api/phone-com/calls/originate', {
+      to,
+      customer_id: call.customer_id || undefined,
+      job_id: call.job_id || undefined,
+    })
+    toast.add({
+      severity: 'success',
+      summary: 'Calling…',
+      detail: `Your Phone.com extension will ring, then connect to ${to}.`,
+      life: 4000,
+    })
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: 'Call failed',
+      detail: err.message || 'Could not start call — check Settings → Phone.com.',
+      life: 5000,
+    })
   }
 }
 

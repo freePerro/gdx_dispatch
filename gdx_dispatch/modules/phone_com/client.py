@@ -653,6 +653,33 @@ class PhoneComClient:
             )
         return resp.json()
 
+    def originate_call(
+        self,
+        *,
+        voip_id: int | None = None,
+        callee_phone_number: str,
+        caller_extension: int,
+        callee_caller_id: str | None = None,
+    ) -> dict[str, Any]:
+        """``POST /accounts/{vid}/calls`` — click-to-call. Phone.com rings the
+        caller (the tech's extension) first, then bridges the callee (customer).
+        ``caller_extension`` is the Phone.com *extension id* (integer)."""
+        vid = self._resolve_voip_id(voip_id)
+        payload: dict[str, Any] = {
+            "callee_phone_number": callee_phone_number,
+            "caller_extension": caller_extension,
+        }
+        if callee_caller_id:
+            payload["callee_caller_id"] = callee_caller_id
+        resp = self._request_with_retry("POST", f"/accounts/{vid}/calls", json=payload)
+        if not resp.is_success:
+            raise PhoneComAPIError(
+                f"phone_com originate_call {resp.status_code}",
+                status_code=resp.status_code,
+                body_snippet=resp.text[:500],
+            )
+        return resp.json()
+
     def stream_url(
         self,
         url: str,

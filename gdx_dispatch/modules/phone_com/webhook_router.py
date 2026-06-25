@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.models.tenant_models import AppSettings
-from gdx_dispatch.modules.phone_com import upserts, webhook_signing
+from gdx_dispatch.modules.phone_com import key_storage, upserts, webhook_signing
 from gdx_dispatch.modules.phone_com.models import (
     PhoneComCall,
     PhoneComMessage,
@@ -103,6 +103,8 @@ def _classify_event(payload: dict[str, Any]) -> str:
     )
     raw = str(raw).lower().strip()
     # Phone.com event-tag schema is in flux; map flexibly.
+    if "api-error" in raw or "api_error" in raw:
+        return "api_error"
     if "fax" in raw or payload.get("pdf_url") or payload.get("pages"):
         return "fax"
     if "voicemail" in raw or payload.get("voicemail_url") or payload.get("voicemail_transcript"):
@@ -211,6 +213,14 @@ async def receive_webhook(
             elif kind == "fax":
                 row = _upsert_fax(tenant_db, payload)
                 event_id = row.phone_com_fax_id
+            elif kind == "api_error":
+                # Proactive health: Phone.com tells us a request to their API
+                # failed (commonly an expired/revoked token). Surface it on the
+                # integration's last_error the moment it happens, instead of
+                # waiting for the next sync to discover it.
+                err = str(payload.get("error") or payload.get("message") or payload.get("type") or "unspecified")[:500]
+                key_storage.mark_failed(tenant_db, tenant_uuid, f"phone.com api-error: {err}")
+                log.warning("phone_com_webhook api-error tenant=%s err=%s", tenant_slug, err)
             else:
                 log.warning(
                     "phone_com_webhook unknown_event tenant=%s payload_keys=%s",
