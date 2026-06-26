@@ -634,3 +634,45 @@ def test_estimate_line_persisted_in_db(client: TestClient):
         assert str(row.estimate_id) == estimate["id"]
     finally:
         db.close()
+
+
+def _job_parts(client: TestClient, job_id: str):
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        return db.execute(
+            select(JobPartNeeded).where(JobPartNeeded.job_id == job_id)
+        ).scalars().all()
+    finally:
+        db.close()
+
+
+def test_accept_copies_estimate_lines_onto_job(client: TestClient):
+    # #56 — estimate→job conversion must carry the agreed parts/labor onto the
+    # job (job_parts_needed) so receiving / field tech / invoicing see them.
+    estimate = _create_estimate(client)
+    client.post(
+        f"/api/estimates/{estimate['id']}/lines",
+        json={"description": "Torsion Spring", "quantity": 2, "unit_price": 120.0, "category": "parts"},
+    ).raise_for_status()
+    client.post(
+        f"/api/estimates/{estimate['id']}/lines",
+        json={"description": "CHI Door 16x7", "quantity": 1, "unit_price": 1850.0,
+              "line_metadata": {"sku": "CHI-2216", "vendor": "CHI", "color": "white"}},
+    ).raise_for_status()
+
+    r = client.post(f"/api/estimates/{estimate['id']}/accept")
+    assert r.status_code == 200, r.text
+    job_id = r.json().get("auto_converted_job_id")
+    assert job_id, r.json()
+
+    parts = _job_parts(client, job_id)
+    by_name = {p.part_name: p for p in parts}
+    assert set(by_name) == {"Torsion Spring", "CHI Door 16x7"}
+    assert by_name["Torsion Spring"].quantity == 2
+    door = by_name["CHI Door 16x7"]
+    assert door.sku == "CHI-2216"
+    assert door.supplier == "CHI"
+    # line_metadata scalars survive into the readable notes summary
+    assert "color=white" in (door.notes or "")
