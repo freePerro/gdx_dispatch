@@ -251,6 +251,17 @@
                 />
                 <Button v-if="integrations.quickbooks.connected" label="Disconnect" severity="danger" size="small" text @click="disconnectIntegration('quickbooks')" />
               </div>
+              <div class="status-row" style="margin-top:0.5rem; gap:0.5rem; align-items:center;">
+                <ToggleSwitch
+                  v-model="integrations.catalogSyncEnabled"
+                  :disabled="integrations.catalogSyncSaving"
+                  inputId="qbo-catalog-sync"
+                  data-testid="qbo-catalog-sync-toggle"
+                  @update:modelValue="toggleCatalogSync"
+                />
+                <label for="qbo-catalog-sync">Catalog sync (pull/push)</label>
+                <small class="muted">Off by default — blocks QB from repopulating the catalog.</small>
+              </div>
             </div>
 
             <div class="integration-shell" data-testid="integration-stripe">
@@ -1353,6 +1364,10 @@ const integrations = reactive({
   quickbooks: { connected: false, lastSync: null },
   stripe: { connected: false, mode: null },
   sms: { connected: false, provider: null },
+  // #57 — operator toggles (bool map from /api/settings/integrations).
+  boolMap: {},
+  catalogSyncEnabled: false,
+  catalogSyncSaving: false,
 });
 
 async function loadIntegrations() {
@@ -1361,6 +1376,8 @@ async function loadIntegrations() {
     if (result?.quickbooks) integrations.quickbooks = result.quickbooks;
     if (result?.stripe) integrations.stripe = result.stripe;
     if (result?.sms) integrations.sms = result.sms;
+    integrations.boolMap = result?.integrations || {};
+    integrations.catalogSyncEnabled = Boolean(result?.integrations?.quickbooks_catalog_sync);
   } catch {
     // Integrations endpoint may not exist yet; leave defaults
   }
@@ -1435,6 +1452,28 @@ async function syncNow(provider) {
     await loadIntegrations();
   } catch (err) {
     toast.add({ severity: "error", summary: "Sync failed", detail: err.message || "Could not sync.", life: 4000 });
+  }
+}
+
+// #57 — enable/disable QB catalog pull/push. Defaults off; gates the
+// /api/catalogs/{id}/sync/qb/* endpoints server-side.
+async function toggleCatalogSync(value) {
+  integrations.catalogSyncSaving = true;
+  try {
+    await api.patch("/api/settings", {
+      integrations: { ...integrations.boolMap, quickbooks_catalog_sync: value },
+    });
+    await loadIntegrations();
+    toast.add({
+      severity: "success",
+      summary: value ? "QB catalog sync enabled" : "QB catalog sync disabled",
+      life: 3000,
+    });
+  } catch (err) {
+    integrations.catalogSyncEnabled = !value; // revert optimistic flip
+    toast.add({ severity: "error", summary: "Could not update", detail: err.message || "", life: 4000 });
+  } finally {
+    integrations.catalogSyncSaving = false;
   }
 }
 

@@ -1666,6 +1666,18 @@ JSON array:"""
     }
 
 
+def _require_qb_catalog_sync_enabled(db: Session) -> None:
+    """#57 — refuse QB catalog pull/push unless the operator enabled it in
+    Admin → Integration Settings (default off; the prod QB catalog is untrusted
+    and must not be repopulated by a stray sync)."""
+    from gdx_dispatch.routers.settings import quickbooks_catalog_sync_enabled
+    if not quickbooks_catalog_sync_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail="QuickBooks catalog sync is disabled. Enable it in Admin → Integration Settings.",
+        )
+
+
 @router.post("/api/catalogs/{catalog_id}/sync/qb/pull", response_model=None)
 def qb_pull_sync(
     catalog_id: UUID,
@@ -1674,6 +1686,7 @@ def qb_pull_sync(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
+    _require_qb_catalog_sync_enabled(db)
     catalog = _get_catalog_or_404(catalog_id, db)
     created = 0
     updated = 0
@@ -1708,6 +1721,7 @@ def qb_push_sync(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    _require_qb_catalog_sync_enabled(db)
     _get_catalog_or_404(catalog_id, db)
     rows = db.execute(
         select(CustomCatalogItem).where(

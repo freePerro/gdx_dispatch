@@ -474,3 +474,58 @@ def test_bulk_import_maps_vendor_and_supplier_alias(db_session: Session):
     by_name = {i["name"]: i["vendor"] for i in listing["items"]}
     assert by_name["A"] == "VendorCo"
     assert by_name["B"] == "SupplierCo"
+
+
+# ── #57: QB catalog sync gate ───────────────────────────────────────────────
+
+def _set_catalog_sync(db_session, enabled: bool):
+    from gdx_dispatch.models.tenant_models import AppSettings
+    row = db_session.query(AppSettings).first()
+    if row is None:
+        row = AppSettings(integrations={})
+        db_session.add(row)
+    row.integrations = {"quickbooks_catalog_sync": enabled}
+    db_session.commit()
+
+
+def test_qb_pull_blocked_when_catalog_sync_disabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPullIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, False)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.qb_pull_sync(
+            UUID(str(catalog["id"])),
+            QBSyncPullIn(items=[{"sku": "X", "name": "X", "cost": 1}]),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_qb_pull_allowed_when_catalog_sync_enabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPullIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, True)
+    res = catalog_router.qb_pull_sync(
+        UUID(str(catalog["id"])),
+        QBSyncPullIn(items=[{"sku": "X", "name": "Widget", "cost": 10}]),
+        _mock_request(), _user(), db_session,
+    )
+    assert res["created"] == 1
+
+
+def test_qb_push_blocked_when_catalog_sync_disabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPushIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, False)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.qb_push_sync(
+            UUID(str(catalog["id"])), QBSyncPushIn(),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_catalog_sync_defaults_off(db_session: Session):
+    # No AppSettings row at all → helper reports disabled (safe default).
+    from gdx_dispatch.routers.settings import quickbooks_catalog_sync_enabled
+    assert quickbooks_catalog_sync_enabled(db_session) is False
