@@ -1343,6 +1343,24 @@ def delete_catalog_item(
     return {"deleted": True}
 
 
+def _import_attributes(catalog: "CustomCatalog", raw: dict[str, object], product_class: str) -> dict | None:
+    """Custom-field values for a bulk/AI-imported row (#53).
+
+    Only custom catalogs have a field_schema; for everything else return None.
+    Accepts either a nested ``attributes`` dict or flat columns named after the
+    schema fields (so a CSV with a "Vendor" column works the same as JSON with
+    ``{"attributes": {"Vendor": …}}``). _coerce_attributes keeps only declared
+    fields, so scalar columns (sku/name/cost/…) are dropped automatically.
+    """
+    if product_class != "custom":
+        return None
+    src: dict[str, object] = dict(raw) if isinstance(raw, dict) else {}
+    nested = raw.get("attributes")
+    if isinstance(nested, dict):
+        src.update(nested)
+    return _coerce_attributes(catalog.field_schema or [], src)
+
+
 def _normalize_import_item(raw: dict[str, object]) -> CatalogItemCreateIn:
     return CatalogItemCreateIn(
         sku=str(raw.get("sku") or "").strip() or None,
@@ -1396,6 +1414,9 @@ def bulk_import_catalog_items(
             active=item.active,
             qb_item_id=item.qb_item_id,
         )
+        attrs = _import_attributes(catalog, raw, product_class)
+        if attrs is not None:
+            row.attributes = attrs
         db.add(row)
         imported += 1
 
@@ -1543,6 +1564,7 @@ JSON array:"""
         raise HTTPException(status_code=500, detail="AI did not return a JSON array")
 
     # Import the extracted items
+    product_class = (catalog.product_class or "parts").strip().lower()
     imported = 0
     for raw in extracted_items:
         try:
@@ -1555,8 +1577,12 @@ JSON array:"""
                 cost=_money(item.cost),
                 price=_money(_retail_for(catalog, item.cost, item.price)),
                 category=item.category,
+                product_class=product_class,
                 active=True,
             )
+            attrs = _import_attributes(catalog, raw, product_class)
+            if attrs is not None:
+                row.attributes = attrs
             db.add(row)
             imported += 1
         except Exception:
