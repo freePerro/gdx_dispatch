@@ -366,6 +366,33 @@ def test_patch_line_updates_values_and_recalculates_total(client: TestClient):
     assert est["total"] == pytest.approx(135.0)
 
 
+def test_patch_line_sort_order_reorders_lines(client: TestClient):
+    estimate = _create_estimate(client)
+    ids = []
+    for name in ("A", "B", "C"):
+        r = client.post(
+            f"/api/estimates/{estimate['id']}/lines",
+            json={"description": name, "quantity": 1, "unit_price": 10},
+        )
+        assert r.status_code in (200, 201), r.text
+        ids.append(r.json()["id"])
+
+    # Lines come back in creation order (sort_order 1,2,3).
+    est = client.get(f"/api/estimates/{estimate['id']}").json()
+    assert [ln["description"] for ln in est["lines"]] == ["A", "B", "C"]
+
+    # Move "C" to the top by lowering its sort_order; read-back reflects it.
+    up = client.patch(
+        f"/api/estimates/{estimate['id']}/lines/{ids[2]}",
+        json={"sort_order": 0},
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["sort_order"] == 0
+
+    est2 = client.get(f"/api/estimates/{estimate['id']}").json()
+    assert [ln["description"] for ln in est2["lines"]] == ["C", "A", "B"]
+
+
 def test_patch_line_404_for_missing_line(client: TestClient):
     estimate = _create_estimate(client)
     r = client.patch(
