@@ -11,6 +11,11 @@
           <Button label="AI Import" icon="pi pi-sparkles" severity="success" data-testid="ai-import-btn"
             :disabled="!selectedCatalog" @click="showAiImportDialog = true" />
           <Button v-if="selectedCatalog" label="Sync QBO" icon="pi pi-sync" severity="info" @click="syncQbo" :loading="syncing" />
+          <Button v-if="selectedCatalog && !selectedCatalog.read_only"
+            :label="selectedCatalog.active === false ? 'Activate' : 'Deactivate'"
+            :icon="selectedCatalog.active === false ? 'pi pi-eye' : 'pi pi-eye-slash'"
+            severity="warning" outlined data-testid="toggle-catalog-active-btn"
+            @click="toggleCatalogActive" :loading="togglingActive" />
           <Button v-if="selectedCatalog && !selectedCatalog.read_only" label="Delete Catalog" icon="pi pi-trash"
             severity="danger" outlined data-testid="delete-catalog-btn" @click="confirmDeleteCatalog" :loading="deletingCatalog" />
         </template>
@@ -24,8 +29,9 @@
              which product class each catalog holds (Parts/Doors/etc). -->
         <div class="catalog-tabs">
           <Button v-for="cat in catalogs" :key="cat.id"
-            :label="`${cat.name} · ${classLabel(cat)}`"
+            :label="`${cat.name} · ${classLabel(cat)}${cat.active === false ? ' · Inactive' : ''}`"
             :severity="selectedCatalog?.id === cat.id ? undefined : 'secondary'"
+            :outlined="cat.active === false"
             size="small"
             @click="selectCatalog(cat)"
             :data-testid="`catalog-${cat.id}`" />
@@ -283,6 +289,7 @@ const savingItem = ref(false);
 const importing = ref(false);
 const syncing = ref(false);
 const deletingCatalog = ref(false);
+const togglingActive = ref(false);
 const importFile = ref(null);
 const aiFile = ref(null);
 const aiImporting = ref(false);
@@ -526,6 +533,20 @@ async function confirmDeleteItem(item) {
   if (!(await confirmAsync({ header: 'Confirm', message: `Delete "${item.name}"?` }))) return;
   await api.delete(`/api/catalogs/${selectedCatalog.value.id}/items/${item.id}`);
   await selectCatalog(selectedCatalog.value);
+}
+
+async function toggleCatalogActive() {
+  const cat = selectedCatalog.value;
+  if (!cat) return;
+  togglingActive.value = true;
+  try {
+    const updated = await api.patch(`/api/catalogs/${cat.id}`, { active: cat.active === false });
+    Object.assign(cat, updated);
+    const idx = catalogs.value.findIndex((c) => c.id === cat.id);
+    if (idx >= 0) catalogs.value[idx] = { ...catalogs.value[idx], ...updated };
+  } finally {
+    togglingActive.value = false;
+  }
 }
 
 async function confirmDeleteCatalog() {

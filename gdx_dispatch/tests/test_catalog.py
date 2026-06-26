@@ -375,3 +375,57 @@ def test_delete_catalog_refuses_virtual(db_session: Session):
             UUID(VIRTUAL_CHI_DOORS_ID), _mock_request(), _user(), db_session,
         )
     assert exc.value.status_code == 409
+
+
+def test_patch_catalog_active_toggles_and_filters_picker(db_session: Session):
+    # #50 — deactivating a catalog keeps it listed but drops its items from the
+    # estimate/billing picker (all-items). Reactivating restores them.
+    catalog = _create_catalog(db_session, name="Seasonal")
+    _create_item(db_session, str(catalog["id"]))
+
+    before = catalog_router.list_all_catalog_items(_user(), db_session)
+    assert before["total"] == 1
+
+    patched = catalog_router.patch_catalog(
+        UUID(str(catalog["id"])),
+        catalog_router.CatalogPatchIn(active=False),
+        _mock_request(), _user(), db_session,
+    )
+    assert patched["active"] is False
+    # Still listed on the Catalogs page...
+    rows = catalog_router.list_catalogs(_user(), db_session)
+    assert any(r["id"] == catalog["id"] for r in rows)
+    # ...but its items leave the picker.
+    after = catalog_router.list_all_catalog_items(_user(), db_session)
+    assert after["total"] == 0
+
+    catalog_router.patch_catalog(
+        UUID(str(catalog["id"])),
+        catalog_router.CatalogPatchIn(active=True),
+        _mock_request(), _user(), db_session,
+    )
+    assert catalog_router.list_all_catalog_items(_user(), db_session)["total"] == 1
+
+
+def test_patch_catalog_404_for_missing(db_session: Session):
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.patch_catalog(
+            UUID(int=0), catalog_router.CatalogPatchIn(active=False),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 404
+
+
+def test_patch_catalog_refuses_virtual(db_session: Session):
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.patch_catalog(
+            UUID(VIRTUAL_CHI_DOORS_ID), catalog_router.CatalogPatchIn(active=False),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_new_catalog_defaults_active_true(db_session: Session):
+    catalog = _create_catalog(db_session, name="Fresh")
+    assert catalog["active"] is True

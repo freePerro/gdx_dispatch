@@ -681,6 +681,10 @@ class CustomCatalog(Base):
     # contributed by a Catalog Pack, so pricing runs in-core with no pack code.
     pricing_strategy: Mapped[str] = mapped_column(String(40), nullable=False, default="manual", server_default="manual")
     pricing_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    # #50 — whole-catalog enable/disable. Inactive catalogs stay on the Catalogs
+    # page (with a badge) but their items leave the estimate/billing pickers.
+    # Distinct from deleted_at (remove): active=False is "temporarily hide".
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

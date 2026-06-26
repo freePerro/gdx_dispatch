@@ -357,6 +357,8 @@ def _serialize_catalog(catalog: CustomCatalog) -> dict[str, object]:
         # ADR-015 Slice 2 — pricing strategy applied to items saved without a price.
         "pricing_strategy": getattr(catalog, "pricing_strategy", None) or "manual",
         "pricing_config": getattr(catalog, "pricing_config", None) or {},
+        # #50 — whole-catalog enable/disable (default true for legacy rows).
+        "active": bool(getattr(catalog, "active", True)),
         "created_at": catalog.created_at.isoformat() if catalog.created_at else None,
         "updated_at": catalog.updated_at.isoformat() if catalog.updated_at else None,
     }
@@ -745,6 +747,7 @@ def list_all_catalog_items(
         .join(CustomCatalog, CustomCatalogItem.catalog_id == CustomCatalog.id)
         .where(
             CustomCatalog.deleted_at.is_(None),
+            CustomCatalog.active.is_(True),  # #50 — inactive catalogs leave the picker
             CustomCatalogItem.deleted_at.is_(None),
             CustomCatalogItem.active.is_(True),
         )
@@ -874,6 +877,45 @@ def create_catalog(
             "source_system": row.source_system,
             "product_class": row.product_class,
         },
+        request=request,
+    )
+    db.commit()
+    return _serialize_catalog(row)
+
+
+class CatalogPatchIn(BaseModel):
+    # #50 — currently only the active flag is mutable post-create.
+    active: bool
+
+
+@router.patch("/api/catalogs/{catalog_id}", response_model=None)
+def patch_catalog(
+    catalog_id: UUID,
+    payload: CatalogPatchIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Enable/disable a whole catalog (#50). Inactive catalogs stay on the
+    Catalogs page but their items leave the estimate/billing pickers
+    (all-items filters CustomCatalog.active). Virtual CHI catalogs can't toggle.
+    """
+    if str(catalog_id) in VIRTUAL_CATALOG_IDS:
+        raise HTTPException(status_code=409, detail="Virtual catalogs cannot be modified")
+    row = _get_catalog_or_404(catalog_id, db)
+    row.active = payload.active
+    db.commit()
+    db.refresh(row)
+
+    tenant_id, user_id = _audit_ids(user, request)
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="catalog_updated",
+        entity_type="catalog",
+        entity_id=str(row.id),
+        details={"name": row.name, "active": row.active},
         request=request,
     )
     db.commit()
