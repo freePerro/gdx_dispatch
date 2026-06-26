@@ -155,7 +155,7 @@ except ImportError:
 # Phase 2: register models from modules/routers/core that use TenantBase
 # but were never imported here (2026-04-12 an earlier session)
 try:
-    from gdx_dispatch.modules.wholesale.models import CatalogItem, ChannelAnalytics, PricingTier  # noqa: F401
+    from gdx_dispatch.modules.wholesale.models import CatalogItem, ChannelAnalytic, PricingTier  # noqa: F401
 except ImportError:
     pass
 try:
@@ -171,7 +171,7 @@ try:
 except ImportError:
     pass
 try:
-    from gdx_dispatch.modules.distributor.models import DealerOrder, DistributorAnalytics  # noqa: F401
+    from gdx_dispatch.modules.distributor.models import DealerOrder, DistributorAnalytic  # noqa: F401
 except ImportError:
     pass
 try:
