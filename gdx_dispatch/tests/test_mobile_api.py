@@ -439,3 +439,49 @@ def test_mobile_router_registered_in_app():
     content = app_py.read_text()
     assert "from gdx_dispatch.routers import mobile as mobile_router" in content
     assert "app.include_router(mobile_router.router if hasattr(mobile_router, \"router\") else mobile_router)" in content
+
+
+def test_transition_writes_audit_synchronously(session_factory):
+    # #20 — the transition endpoint used to fire a DETACHED create_task(
+    # log_audit_event(db, ...)) on the request-scoped session, which
+    # Depends(get_db) closes on return → commit-on-closed-SQLite-connection →
+    # flaky native SIGSEGV in the harness. It now writes synchronously; assert
+    # the audit row is present immediately after the call (no detached task).
+    from sqlalchemy import select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    SessionLocal = session_factory
+    admin = {"user_id": "admin-1", "role": "admin", "tenant_id": "tenant-a"}
+    job_uuid = uuid4().hex
+    db = SessionLocal()
+    try:
+        db.execute(text(
+            "INSERT INTO customers (id, name, phone, email, address, company_id) "
+            "VALUES (:id, 'C', '5551112222', 'c@e.co', 'addr', 'tenant-a')"
+        ), {"id": uuid4().hex})
+        cust = db.execute(text("SELECT id FROM customers LIMIT 1")).scalar()
+        db.execute(text(
+            "INSERT INTO jobs (id, company_id, customer_id, title, description, "
+            "dispatch_status, lifecycle_stage, created_at, deleted_at) "
+            "VALUES (:id, 'tenant-a', :cust, 'T', 'D', 'assigned', 'scheduled', :now, NULL)"
+        ), {"id": job_uuid, "cust": cust, "now": datetime.now(UTC)})
+        db.commit()
+
+        r = mobile_router.mobile_update_job_status(
+            job_id=str(__import__("uuid").UUID(job_uuid)),
+            status="en_route",
+            request=_request(),
+            current_user=admin,
+            db=db,
+        )
+        assert r.status_code == 200, _as_json(r)
+
+        # Audit row exists synchronously (proves no detached task / closed-session commit).
+        rows = db.execute(
+            select(AuditLog).where(AuditLog.action == "job_status_mobile_update")
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].entity_id == str(__import__("uuid").UUID(job_uuid))
+    finally:
+        db.close()

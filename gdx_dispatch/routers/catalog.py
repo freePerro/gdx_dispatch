@@ -357,6 +357,8 @@ def _serialize_catalog(catalog: CustomCatalog) -> dict[str, object]:
         # ADR-015 Slice 2 — pricing strategy applied to items saved without a price.
         "pricing_strategy": getattr(catalog, "pricing_strategy", None) or "manual",
         "pricing_config": getattr(catalog, "pricing_config", None) or {},
+        # #50 — whole-catalog enable/disable (default true for legacy rows).
+        "active": bool(getattr(catalog, "active", True)),
         "created_at": catalog.created_at.isoformat() if catalog.created_at else None,
         "updated_at": catalog.updated_at.isoformat() if catalog.updated_at else None,
     }
@@ -391,6 +393,7 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "cost": _to_float(item.cost),
         "price": _to_float(item.price),
         "category": item.category,
+        "vendor": getattr(item, "vendor", None),
         "pricing_category": item.pricing_category,
         "product_class": product_class,
         "active": bool(item.active),
@@ -613,6 +616,7 @@ class CatalogItemCreateIn(BaseModel):
     unit_price: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     category: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, max_length=200)  # #55
     # Engine pricing bucket (doors/openers/parts/labor/other). Optional —
     # when omitted it's derived from category/product_class at write time so
     # estimate lines never fall through to the $0 manual path. See
@@ -645,6 +649,7 @@ class CatalogItemPatchIn(BaseModel):
     cost: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     category: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, max_length=200)  # #55
     active: bool | None = None
     qb_item_id: str | None = Field(default=None, max_length=120)
     spec: dict[str, object] | None = None
@@ -745,6 +750,7 @@ def list_all_catalog_items(
         .join(CustomCatalog, CustomCatalogItem.catalog_id == CustomCatalog.id)
         .where(
             CustomCatalog.deleted_at.is_(None),
+            CustomCatalog.active.is_(True),  # #50 — inactive catalogs leave the picker
             CustomCatalogItem.deleted_at.is_(None),
             CustomCatalogItem.active.is_(True),
         )
@@ -880,6 +886,78 @@ def create_catalog(
     return _serialize_catalog(row)
 
 
+class CatalogPatchIn(BaseModel):
+    # #50 — currently only the active flag is mutable post-create.
+    active: bool
+
+
+@router.patch("/api/catalogs/{catalog_id}", response_model=None)
+def patch_catalog(
+    catalog_id: UUID,
+    payload: CatalogPatchIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Enable/disable a whole catalog (#50). Inactive catalogs stay on the
+    Catalogs page but their items leave the estimate/billing pickers
+    (all-items filters CustomCatalog.active). Virtual CHI catalogs can't toggle.
+    """
+    if str(catalog_id) in VIRTUAL_CATALOG_IDS:
+        raise HTTPException(status_code=409, detail="Virtual catalogs cannot be modified")
+    row = _get_catalog_or_404(catalog_id, db)
+    row.active = payload.active
+    db.commit()
+    db.refresh(row)
+
+    tenant_id, user_id = _audit_ids(user, request)
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="catalog_updated",
+        entity_type="catalog",
+        entity_id=str(row.id),
+        details={"name": row.name, "active": row.active},
+        request=request,
+    )
+    db.commit()
+    return _serialize_catalog(row)
+
+
+@router.delete("/api/catalogs/{catalog_id}", response_model=None)
+def delete_catalog(
+    catalog_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """Soft-delete a catalog (#49). Sets deleted_at; list/get/all-items already
+    filter deleted_at IS NULL, so the catalog and its items leave the pickers.
+    Items keep their own rows (filtered via the catalog join). Virtual CHI
+    catalogs are feed-backed and cannot be deleted.
+    """
+    if str(catalog_id) in VIRTUAL_CATALOG_IDS:
+        raise HTTPException(status_code=409, detail="Virtual catalogs cannot be deleted")
+    row = _get_catalog_or_404(catalog_id, db)
+    row.deleted_at = utcnow()
+    db.commit()
+
+    tenant_id, user_id = _audit_ids(user, request)
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="catalog_deleted",
+        entity_type="catalog",
+        entity_id=str(row.id),
+        details={"name": row.name, "soft_delete": True},
+        request=request,
+    )
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/api/catalogs/{catalog_id}", response_model=None)
 def get_catalog(
     catalog_id: UUID,
@@ -977,6 +1055,7 @@ def add_catalog_item(
         cost=_money(payload.cost),
         price=_money(effective_price),
         category=payload.category.strip() if payload.category else None,
+        vendor=payload.vendor.strip() if payload.vendor else None,
         pricing_category=_derive_pricing_category(
             payload.pricing_category, payload.category, product_class,
             _valid_pricing_categories(db),
@@ -1242,6 +1321,12 @@ def patch_catalog_item(
             if isinstance(updates["category"], str) and updates["category"].strip()
             else None
         )
+    if "vendor" in updates:
+        row.vendor = (
+            updates["vendor"].strip()
+            if isinstance(updates["vendor"], str) and updates["vendor"].strip()
+            else None
+        )
     if "active" in updates and updates["active"] is not None:
         row.active = bool(updates["active"])
     if "qb_item_id" in updates:
@@ -1310,6 +1395,24 @@ def delete_catalog_item(
     return {"deleted": True}
 
 
+def _import_attributes(catalog: "CustomCatalog", raw: dict[str, object], product_class: str) -> dict | None:
+    """Custom-field values for a bulk/AI-imported row (#53).
+
+    Only custom catalogs have a field_schema; for everything else return None.
+    Accepts either a nested ``attributes`` dict or flat columns named after the
+    schema fields (so a CSV with a "Vendor" column works the same as JSON with
+    ``{"attributes": {"Vendor": …}}``). _coerce_attributes keeps only declared
+    fields, so scalar columns (sku/name/cost/…) are dropped automatically.
+    """
+    if product_class != "custom":
+        return None
+    src: dict[str, object] = dict(raw) if isinstance(raw, dict) else {}
+    nested = raw.get("attributes")
+    if isinstance(nested, dict):
+        src.update(nested)
+    return _coerce_attributes(catalog.field_schema or [], src)
+
+
 def _normalize_import_item(raw: dict[str, object]) -> CatalogItemCreateIn:
     return CatalogItemCreateIn(
         sku=str(raw.get("sku") or "").strip() or None,
@@ -1318,6 +1421,7 @@ def _normalize_import_item(raw: dict[str, object]) -> CatalogItemCreateIn:
         cost=float(raw.get("cost") or 0),
         price=float(raw.get("price")) if raw.get("price") not in (None, "") else None,
         category=str(raw.get("category") or "").strip() or None,
+        vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
         pricing_category=str(raw.get("pricing_category") or "").strip() or None,
         active=bool(raw.get("active", True)),
         qb_item_id=str(raw.get("qb_item_id") or "").strip() or None,
@@ -1356,6 +1460,7 @@ def bulk_import_catalog_items(
             # import of cost-only rows prices identically to the Add form.
             price=_money(_retail_for(catalog, item.cost, item.price)),
             category=item.category,
+            vendor=item.vendor,
             pricing_category=_derive_pricing_category(
                 item.pricing_category, item.category, product_class, valid_categories
             ),
@@ -1363,6 +1468,9 @@ def bulk_import_catalog_items(
             active=item.active,
             qb_item_id=item.qb_item_id,
         )
+        attrs = _import_attributes(catalog, raw, product_class)
+        if attrs is not None:
+            row.attributes = attrs
         db.add(row)
         imported += 1
 
@@ -1383,7 +1491,8 @@ def bulk_import_catalog_items(
     return {"imported": imported, "failed": 0}
 
 
-def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> str:
+def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Session) -> str:
+    catalog_id = catalog.id
     qb_item_id = str(raw.get("qb_item_id") or "").strip() or None
     sku = str(raw.get("sku") or "").strip() or None
 
@@ -1412,8 +1521,9 @@ def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> st
             name=str(raw.get("name") or "").strip() or "QB Item",
             description=str(raw.get("description") or "").strip() or None,
             cost=_money(float(raw.get("cost") or 0)),
-            price=_money(float(raw.get("price") or raw.get("cost") or 0)),
+            price=_money(_retail_for(catalog, raw.get("cost"), raw.get("price"))),
             category=str(raw.get("category") or "").strip() or None,
+            vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
             active=bool(raw.get("active", True)),
             qb_item_id=qb_item_id,
         )
@@ -1424,12 +1534,104 @@ def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> st
     match.name = str(raw.get("name") or match.name)
     match.description = str(raw.get("description") or "").strip() or match.description
     match.cost = _money(float(raw.get("cost") or match.cost or 0))
-    match.price = _money(float(raw.get("price") or match.price or 0))
+    match.price = _money(_retail_for(catalog, raw.get("cost") or match.cost, raw.get("price")) or match.price or 0)
     match.category = str(raw.get("category") or "").strip() or match.category
     match.active = bool(raw.get("active", match.active))
     if qb_item_id:
         match.qb_item_id = qb_item_id
     return "updated"
+
+
+def _extract_import_text(content_bytes: bytes, filename: str | None) -> str:
+    """Decode an uploaded price sheet to text (#52).
+
+    Handles real PDFs server-side via pypdf so operators can upload the actual
+    sheet instead of pre-extracting it; everything else is treated as UTF-8 text
+    (CSV/TXT/JSON).
+    """
+    is_pdf = content_bytes[:5] == b"%PDF-" or (filename or "").lower().endswith(".pdf")
+    if is_pdf:
+        try:
+            from io import BytesIO
+
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(content_bytes))
+            return "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not extract text from the PDF: {exc}. Try exporting it as CSV/text.",
+            ) from None
+    return content_bytes.decode("utf-8", errors="replace")
+
+
+def _chunk_text_for_ai(text: str, max_chars: int = 12000) -> list[str]:
+    """Split on line boundaries into <= max_chars chunks (#52).
+
+    A multi-page sheet (~130 items) overflows a single model call's output
+    budget, truncating the JSON. Paginating the input keeps each model call's
+    output well under its token cap.
+    """
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in text.splitlines(keepends=True):
+        if cur_len + len(line) > max_chars and cur:
+            chunks.append("".join(cur))
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += len(line)
+    if cur:
+        chunks.append("".join(cur))
+    return chunks or [""]
+
+
+def _parse_ai_json_array(ai_response: object) -> list:
+    """Pull a JSON array out of a model response, tolerant of code fences and
+    surrounding prose (grabs the outermost [...] span). Raises ValueError on
+    failure so the caller can count it as a failed chunk."""
+    import json as _json
+    import re as _re
+    # AIRouter.generate() returns {"content": ...} (NOT "text"); accept a raw
+    # string too for callers/mocks that hand back the text directly.
+    if isinstance(ai_response, str):
+        text = ai_response
+    else:
+        d = ai_response or {}
+        text = d.get("content") or d.get("text", "")
+    text = _re.sub(r"^```(?:json)?\s*", "", str(text).strip())
+    text = _re.sub(r"\s*```$", "", text)
+    start, end = text.find("["), text.rfind("]")
+    if start != -1 and end > start:
+        text = text[start:end + 1]
+    data = _json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("AI did not return a JSON array")
+    return data
+
+
+def _ai_import_prompt(chunk_text: str) -> str:
+    return f"""You are parsing a parts catalog for a garage door company. Extract all parts from the text below and return a JSON array.
+
+For each part, extract:
+- sku (or generate one from name if missing)
+- name (required)
+- description
+- cost (unit cost as number)
+- price (retail price as number, can be same as cost if not given)
+- category
+- vendor (manufacturer)
+- manufacturer_part_number
+
+Return ONLY a valid JSON array, no prose. Example:
+[{{"sku":"SPR-001","name":"Torsion Spring 2\\" 0.243","description":"Right wind","cost":45.00,"price":89.00,"category":"Springs","vendor":"CHI","manufacturer_part_number":"TS-0243R"}}]
+
+Text to parse:
+---
+{chunk_text}
+---
+
+JSON array:"""
 
 
 @router.post("/api/catalogs/{catalog_id}/ai-import", response_model=None)
@@ -1448,67 +1650,49 @@ async def ai_import_catalog(
     """
     from gdx_dispatch.core.ai_router import AITask, get_ai_router
 
-    _get_catalog_or_404(catalog_id, db)
+    catalog = _get_catalog_or_404(catalog_id, db)
 
     content_bytes = await file.read()
-    try:
-        text_content = content_bytes.decode("utf-8", errors="replace")[:50000]  # Cap at 50KB
-    except Exception:
-        log.exception("ai_import_catalog_failed extra_context=%s", "unknown")
-        raise HTTPException(status_code=422, detail="Could not read file as text. Upload CSV, TXT, or extracted PDF text.") from None
+    # Cap at 200KB of text — enough for multi-page sheets, bounded for safety.
+    text_content = _extract_import_text(content_bytes, file.filename)[:200000]
+    if not text_content.strip():
+        raise HTTPException(status_code=422, detail="No readable text found in the upload.")
 
     tenant_id, _ = _audit_ids(user, request)
-    prompt = f"""You are parsing a parts catalog for a garage door company. Extract all parts from the text below and return a JSON array.
 
-For each part, extract:
-- sku (or generate one from name if missing)
-- name (required)
-- description
-- cost (unit cost as number)
-- price (retail price as number, can be same as cost if not given)
-- category
-- vendor (manufacturer)
-- manufacturer_part_number
+    # #52 — paginate large sheets so the model's JSON output never truncates.
+    # Each chunk is parsed independently; a chunk that fails is counted, not
+    # fatal, so a single bad page doesn't zero the whole import.
+    chunks = _chunk_text_for_ai(text_content)
+    extracted_items: list = []
+    failed_chunks = 0
+    for chunk in chunks:
+        try:
+            ai_response = await get_ai_router().generate(
+                task=AITask.GENERAL,
+                prompt=_ai_import_prompt(chunk),
+                tenant_id=tenant_id,
+                max_tokens=8192,
+                temperature=0.1,
+            )
+            extracted_items.extend(_parse_ai_json_array(ai_response))
+        except Exception:
+            log.exception("ai_import_chunk_failed")
+            failed_chunks += 1
+            continue
 
-Return ONLY a valid JSON array, no prose. Example:
-[{{"sku":"SPR-001","name":"Torsion Spring 2\" 0.243","description":"Right wind","cost":45.00,"price":89.00,"category":"Springs","vendor":"CHI","manufacturer_part_number":"TS-0243R"}}]
-
-Text to parse:
----
-{text_content}
----
-
-JSON array:"""
-
-    try:
-        ai_response = await get_ai_router().generate(
-            task=AITask.GENERAL,
-            prompt=prompt,
-            tenant_id=tenant_id,
-            max_tokens=4096,
-            temperature=0.1,
+    if not extracted_items:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"AI extraction returned no usable items "
+                f"({failed_chunks}/{len(chunks)} chunk(s) failed). "
+                "Try a smaller or cleaner file."
+            ),
         )
-    except Exception as exc:
-        log.exception("ai_import_catalog_failed extra_context=%s", exc)
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {exc}") from None
-
-    # Parse the JSON response
-    import json as _json
-    import re as _re
-    text = ai_response if isinstance(ai_response, str) else ai_response.get("text", "")
-    # Strip markdown code fences if present
-    text = _re.sub(r"^```(?:json)?\s*", "", text.strip())
-    text = _re.sub(r"\s*```$", "", text)
-    try:
-        extracted_items = _json.loads(text)
-    except Exception:
-        log.exception("ai_import_catalog_failed extra_context=%s", "unknown")
-        raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {text[:200]}") from None
-
-    if not isinstance(extracted_items, list):
-        raise HTTPException(status_code=500, detail="AI did not return a JSON array")
 
     # Import the extracted items
+    product_class = (catalog.product_class or "parts").strip().lower()
     imported = 0
     for raw in extracted_items:
         try:
@@ -1519,10 +1703,15 @@ JSON array:"""
                 name=item.name,
                 description=item.description,
                 cost=_money(item.cost),
-                price=_money(item.price if item.price is not None else item.cost),
+                price=_money(_retail_for(catalog, item.cost, item.price)),
                 category=item.category,
+                vendor=item.vendor,
+                product_class=product_class,
                 active=True,
             )
+            attrs = _import_attributes(catalog, raw, product_class)
+            if attrs is not None:
+                row.attributes = attrs
             db.add(row)
             imported += 1
         except Exception:
@@ -1539,15 +1728,38 @@ JSON array:"""
         action="catalog_ai_imported",
         entity_type="catalog",
         entity_id=str(catalog_id),
-        details={"imported": imported, "total_extracted": len(extracted_items), "filename": file.filename},
+        details={
+            "imported": imported,
+            "total_extracted": len(extracted_items),
+            "chunks": len(chunks),
+            "failed_chunks": failed_chunks,
+            "filename": file.filename,
+        },
         request=request,
     )
     db.commit()
     return {
         "imported": imported,
         "total_extracted": len(extracted_items),
+        # #52 — surface partial extraction so the UI can warn instead of
+        # silently importing a truncated catalog.
+        "chunks": len(chunks),
+        "failed_chunks": failed_chunks,
+        "partial": failed_chunks > 0,
         "sample": extracted_items[:3] if extracted_items else [],
     }
+
+
+def _require_qb_catalog_sync_enabled(db: Session) -> None:
+    """#57 — refuse QB catalog pull/push unless the operator enabled it in
+    Admin → Integration Settings (default off; the prod QB catalog is untrusted
+    and must not be repopulated by a stray sync)."""
+    from gdx_dispatch.routers.settings import quickbooks_catalog_sync_enabled
+    if not quickbooks_catalog_sync_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail="QuickBooks catalog sync is disabled. Enable it in Admin → Integration Settings.",
+        )
 
 
 @router.post("/api/catalogs/{catalog_id}/sync/qb/pull", response_model=None)
@@ -1558,11 +1770,12 @@ def qb_pull_sync(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
-    _get_catalog_or_404(catalog_id, db)
+    _require_qb_catalog_sync_enabled(db)
+    catalog = _get_catalog_or_404(catalog_id, db)
     created = 0
     updated = 0
     for raw in payload.items:
-        action = _upsert_qb_item(catalog_id, raw, db)
+        action = _upsert_qb_item(catalog, raw, db)
         if action == "created":
             created += 1
         else:
@@ -1592,6 +1805,7 @@ def qb_push_sync(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    _require_qb_catalog_sync_enabled(db)
     _get_catalog_or_404(catalog_id, db)
     rows = db.execute(
         select(CustomCatalogItem).where(

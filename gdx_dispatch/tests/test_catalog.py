@@ -16,6 +16,7 @@ from gdx_dispatch.routers import catalog as catalog_router
 from gdx_dispatch.routers.catalog import (
     DEFAULT_PRICING_SETTINGS,
     CatalogCreateIn,
+    CatalogImportIn,
     CatalogItemCreateIn,
     CatalogItemPatchIn,
     PricingSettingsPatchIn,
@@ -342,3 +343,189 @@ def test_virtual_catalog_response_shape_includes_price_source(db_session: Sessio
         assert item["price_source"] in (None, "catalog", "computed"), (
             f"unexpected price_source value: {item['price_source']!r}"
         )
+
+
+def test_delete_catalog_soft_deletes_and_hides_from_list(db_session: Session):
+    # #49 — deleting a catalog removes it from the list and its items from the
+    # pickers, but it's a soft delete (deleted_at set, rows kept).
+    catalog = _create_catalog(db_session, name="Throwaway")
+    _create_item(db_session, str(catalog["id"]))
+
+    res = catalog_router.delete_catalog(
+        UUID(str(catalog["id"])), _mock_request(), _user(), db_session,
+    )
+    assert res["deleted"] is True
+
+    rows = catalog_router.list_catalogs(_user(), db_session)
+    assert all(r["id"] != catalog["id"] for r in rows)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.get_catalog(UUID(str(catalog["id"])), _user(), db_session)
+    assert exc.value.status_code == 404
+
+
+def test_delete_catalog_404_for_missing(db_session: Session):
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.delete_catalog(UUID(int=0), _mock_request(), _user(), db_session)
+    assert exc.value.status_code == 404
+
+
+def test_delete_catalog_refuses_virtual(db_session: Session):
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.delete_catalog(
+            UUID(VIRTUAL_CHI_DOORS_ID), _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_patch_catalog_active_toggles_and_filters_picker(db_session: Session):
+    # #50 — deactivating a catalog keeps it listed but drops its items from the
+    # estimate/billing picker (all-items). Reactivating restores them.
+    catalog = _create_catalog(db_session, name="Seasonal")
+    _create_item(db_session, str(catalog["id"]))
+
+    before = catalog_router.list_all_catalog_items(_user(), db_session)
+    assert before["total"] == 1
+
+    patched = catalog_router.patch_catalog(
+        UUID(str(catalog["id"])),
+        catalog_router.CatalogPatchIn(active=False),
+        _mock_request(), _user(), db_session,
+    )
+    assert patched["active"] is False
+    # Still listed on the Catalogs page...
+    rows = catalog_router.list_catalogs(_user(), db_session)
+    assert any(r["id"] == catalog["id"] for r in rows)
+    # ...but its items leave the picker.
+    after = catalog_router.list_all_catalog_items(_user(), db_session)
+    assert after["total"] == 0
+
+    catalog_router.patch_catalog(
+        UUID(str(catalog["id"])),
+        catalog_router.CatalogPatchIn(active=True),
+        _mock_request(), _user(), db_session,
+    )
+    assert catalog_router.list_all_catalog_items(_user(), db_session)["total"] == 1
+
+
+def test_patch_catalog_404_for_missing(db_session: Session):
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.patch_catalog(
+            UUID(int=0), catalog_router.CatalogPatchIn(active=False),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 404
+
+
+def test_patch_catalog_refuses_virtual(db_session: Session):
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.patch_catalog(
+            UUID(VIRTUAL_CHI_DOORS_ID), catalog_router.CatalogPatchIn(active=False),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_new_catalog_defaults_active_true(db_session: Session):
+    catalog = _create_catalog(db_session, name="Fresh")
+    assert catalog["active"] is True
+
+
+# ── #55: first-class vendor field ───────────────────────────────────────────
+
+def test_add_item_persists_vendor(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(db_session, str(catalog["id"]), vendor="Midwest Wholesale Doors")
+    assert item["vendor"] == "Midwest Wholesale Doors"
+
+
+def test_patch_item_updates_vendor(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(db_session, str(catalog["id"]))
+    patched = catalog_router.patch_catalog_item(
+        UUID(str(catalog["id"])), UUID(str(item["id"])),
+        CatalogItemPatchIn(vendor="Acme Supply"),
+        _mock_request(), _user(), db_session,
+    )
+    assert patched["vendor"] == "Acme Supply"
+    # Blanking clears it.
+    cleared = catalog_router.patch_catalog_item(
+        UUID(str(catalog["id"])), UUID(str(item["id"])),
+        CatalogItemPatchIn(vendor="   "),
+        _mock_request(), _user(), db_session,
+    )
+    assert cleared["vendor"] is None
+
+
+def test_bulk_import_maps_vendor_and_supplier_alias(db_session: Session):
+    catalog = _create_catalog(db_session)
+    catalog_router.bulk_import_catalog_items(
+        UUID(str(catalog["id"])),
+        CatalogImportIn(format="json", items=[
+            {"name": "A", "cost": 1, "vendor": "VendorCo"},
+            {"name": "B", "cost": 1, "supplier": "SupplierCo"},  # alias
+        ]),
+        _mock_request(), _user(), db_session,
+    )
+    listing = catalog_router.list_catalog_items(
+        UUID(str(catalog["id"])), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    by_name = {i["name"]: i["vendor"] for i in listing["items"]}
+    assert by_name["A"] == "VendorCo"
+    assert by_name["B"] == "SupplierCo"
+
+
+# ── #57: QB catalog sync gate ───────────────────────────────────────────────
+
+def _set_catalog_sync(db_session, enabled: bool):
+    from gdx_dispatch.models.tenant_models import AppSettings
+    row = db_session.query(AppSettings).first()
+    if row is None:
+        row = AppSettings(integrations={})
+        db_session.add(row)
+    row.integrations = {"quickbooks_catalog_sync": enabled}
+    db_session.commit()
+
+
+def test_qb_pull_blocked_when_catalog_sync_disabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPullIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, False)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.qb_pull_sync(
+            UUID(str(catalog["id"])),
+            QBSyncPullIn(items=[{"sku": "X", "name": "X", "cost": 1}]),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_qb_pull_allowed_when_catalog_sync_enabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPullIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, True)
+    res = catalog_router.qb_pull_sync(
+        UUID(str(catalog["id"])),
+        QBSyncPullIn(items=[{"sku": "X", "name": "Widget", "cost": 10}]),
+        _mock_request(), _user(), db_session,
+    )
+    assert res["created"] == 1
+
+
+def test_qb_push_blocked_when_catalog_sync_disabled(db_session: Session):
+    from gdx_dispatch.routers.catalog import QBSyncPushIn
+    catalog = _create_catalog(db_session)
+    _set_catalog_sync(db_session, False)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.qb_push_sync(
+            UUID(str(catalog["id"])), QBSyncPushIn(),
+            _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_catalog_sync_defaults_off(db_session: Session):
+    # No AppSettings row at all → helper reports disabled (safe default).
+    from gdx_dispatch.routers.settings import quickbooks_catalog_sync_enabled
+    assert quickbooks_catalog_sync_enabled(db_session) is False

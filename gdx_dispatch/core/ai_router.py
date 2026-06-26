@@ -578,7 +578,7 @@ async def dispatch_optimize(
                 """
                 SELECT id, full_name, field_skills, route_start_lat, route_start_lng
                 FROM users
-                WHERE company_id = :tid AND role = 'tech' AND active = true AND deleted_at IS NULL
+                WHERE company_id = :tid AND role IN ('technician', 'tech') AND active = true AND deleted_at IS NULL
                 """
             ),
             {"tid": tenant_id},

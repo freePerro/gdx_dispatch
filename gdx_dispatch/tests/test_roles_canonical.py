@@ -72,3 +72,21 @@ def test_aliases_resolve_to_canonical_constants():
     }
     for target in R.ROLE_ALIASES.values():
         assert target in valid, f"alias target {target!r} is not a canonical constant"
+
+
+# ── #45: write paths normalize users.role to ONE canonical (long) vocabulary ──
+
+def test_user_write_models_canonicalize_role():
+    from gdx_dispatch.routers.users import InviteIn, RoleChangeIn, UserCreateIn
+    pw = "CorrectHorse1!"
+    # Short input → long canonical on every user-write model.
+    assert UserCreateIn(email="a@b.co", name="X", password=pw, role="tech").role == "technician"
+    assert UserCreateIn(email="a@b.co", name="X", password=pw, role="dispatch").role == "dispatcher"
+    assert RoleChangeIn(role="tech").role == "technician"
+    assert InviteIn(email="a@b.co", name="X", role="dispatch").role == "dispatcher"
+    # Long input passes through unchanged (idempotent).
+    assert UserCreateIn(email="a@b.co", name="X", password=pw, role="technician").role == "technician"
+    assert RoleChangeIn(role="dispatcher").role == "dispatcher"
+    # admin/owner/sales identical in both vocabularies.
+    for r in ("admin", "owner", "sales"):
+        assert UserCreateIn(email="a@b.co", name="X", password=pw, role=r).role == r

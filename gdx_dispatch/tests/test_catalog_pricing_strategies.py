@@ -188,3 +188,193 @@ def test_bad_pricing_config_kind_rejected():
     with pytest.raises(ValueError):
         CatalogCreateIn(name="x", pricing_strategy="manual",
                         pricing_config={"kind": "rocket", "params": {}})
+
+
+# ── #54: QB pull and AI import apply the strategy too ───────────────────────
+
+def test_qb_pull_applies_strategy(db_session):
+    # QB sync pull priced cost-only rows at retail=cost; now it routes through
+    # the catalog strategy like the form/CSV paths.
+    cat = _make_catalog(db_session, "keystone")
+    catalog_obj = catalog_router._get_catalog_or_404(UUID(cat["id"]), db_session)
+    action = catalog_router._upsert_qb_item(
+        catalog_obj, {"sku": "QB1", "name": "QB Widget", "cost": 100}, db_session,
+    )
+    db_session.commit()
+    assert action == "created"
+    listing = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    assert listing["items"][0]["price"] == pytest.approx(200.0)  # not 100
+
+
+class _FakeUpload:
+    """Minimal UploadFile stand-in: async .read() yielding the given bytes."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self.filename = "sheet.txt"
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def test_ai_import_applies_strategy(db_session, monkeypatch):
+    import asyncio
+
+    import gdx_dispatch.core.ai_router as ai_router
+
+    cat = _make_catalog(db_session, "keystone")
+
+    class _FakeRouter:
+        async def generate(self, **_kw):
+            return '[{"sku": "AI1", "name": "AI Widget", "cost": 100}]'
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _FakeRouter())
+    asyncio.run(catalog_router.ai_import_catalog(
+        UUID(cat["id"]), _mock_request(),
+        file=_FakeUpload(b"AI Widget 100"), user=_user(), db=db_session,
+    ))
+    listing = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    assert listing["items"][0]["price"] == pytest.approx(200.0)  # not 100
+
+
+# ── #52: AI import chunking / PDF / partial handling ────────────────────────
+
+def test_chunk_text_splits_on_line_boundaries():
+    text = "".join(f"line{i} value\n" for i in range(2000))
+    chunks = catalog_router._chunk_text_for_ai(text, max_chars=500)
+    assert len(chunks) > 1
+    assert "".join(chunks) == text          # lossless
+    assert all(len(c) <= 500 + 20 for c in chunks)  # ~bounded (one line of slack)
+
+
+def test_parse_ai_json_array_tolerates_fences_and_prose():
+    p = catalog_router._parse_ai_json_array
+    assert p('```json\n[{"name":"A"}]\n```') == [{"name": "A"}]
+    assert p('Here are the parts:\n[{"name":"B"}]\nDone.') == [{"name": "B"}]
+    import pytest as _pytest
+    with _pytest.raises(Exception):
+        p('{"name":"not a list"}')
+
+
+def test_ai_import_paginates_large_sheet(db_session, monkeypatch):
+    # A sheet large enough to span multiple chunks → one model call per chunk,
+    # items accumulated across calls (no truncation).
+    import asyncio
+
+    import gdx_dispatch.core.ai_router as ai_router
+    cat = _make_catalog(db_session, "keystone")
+    big_text = "".join(f"PART-{i}, Widget {i}, 10\n" for i in range(3000))  # > 12KB → multi-chunk
+
+    calls = {"n": 0}
+
+    class _Router:
+        async def generate(self, **_kw):
+            calls["n"] += 1
+            return f'[{{"sku":"AI-{calls["n"]}","name":"Chunk {calls["n"]} Item","cost":100}}]'
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _Router())
+
+    class _Up:
+        filename = "sheet.txt"
+        async def read(self):
+            return big_text.encode()
+
+    res = asyncio.run(catalog_router.ai_import_catalog(
+        UUID(cat["id"]), _mock_request(), file=_Up(), user=_user(), db=db_session,
+    ))
+    assert calls["n"] > 1                 # paginated
+    assert res["chunks"] == calls["n"]
+    assert res["imported"] == calls["n"]  # one item per chunk accumulated
+    assert res["partial"] is False
+
+
+def test_ai_import_partial_when_a_chunk_fails(db_session, monkeypatch):
+    import asyncio
+
+    import gdx_dispatch.core.ai_router as ai_router
+    cat = _make_catalog(db_session, "manual")
+    big_text = "".join(f"PART-{i}, Widget {i}, 10\n" for i in range(3000))
+
+    state = {"n": 0}
+
+    class _Router:
+        async def generate(self, **_kw):
+            state["n"] += 1
+            if state["n"] == 1:
+                return "this is not json at all"   # first chunk fails to parse
+            return '[{"sku":"OK","name":"Good","cost":5}]'
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _Router())
+
+    class _Up:
+        filename = "sheet.txt"
+        async def read(self):
+            return big_text.encode()
+
+    res = asyncio.run(catalog_router.ai_import_catalog(
+        UUID(cat["id"]), _mock_request(), file=_Up(), user=_user(), db=db_session,
+    ))
+    assert res["failed_chunks"] >= 1
+    assert res["partial"] is True
+    assert res["imported"] >= 1            # surviving chunks still imported
+
+
+def test_extract_import_text_reads_pdf(db_session):
+    # Server-side PDF extraction via pypdf (#52).
+    pytest.importorskip("pypdf")
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=200, height=200)
+    buf = BytesIO()
+    w.write(buf)
+    pdf_bytes = buf.getvalue()
+    assert pdf_bytes[:5] == b"%PDF-"
+    # Blank page extracts to empty/near-empty text but must not raise.
+    out = catalog_router._extract_import_text(pdf_bytes, "sheet.pdf")
+    assert isinstance(out, str)
+
+
+def test_parse_ai_json_array_reads_router_content_key():
+    # AIRouter.generate() returns {"content": "..."} — the parser MUST read
+    # that key (reading "text" returned "" → 502 on every real upload).
+    p = catalog_router._parse_ai_json_array
+    assert p({"content": '[{"name":"A","cost":1}]', "model": "x"}) == [{"name": "A", "cost": 1}]
+    # 'text' kept as a tolerant fallback for direct-string callers.
+    assert p({"text": '[{"name":"B"}]'}) == [{"name": "B"}]
+
+
+def test_ai_import_uses_router_dict_response(db_session, monkeypatch):
+    # End-to-end with the REAL generate() return shape (a dict with "content"),
+    # not a bare string — the shape production actually produces.
+    import asyncio
+
+    import gdx_dispatch.core.ai_router as ai_router
+    cat = _make_catalog(db_session, "keystone")
+
+    class _Router:
+        async def generate(self, **_kw):
+            return {"content": '[{"sku":"R1","name":"Real Widget","cost":100}]',
+                    "model": "test", "tokens_used": 1}
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _Router())
+
+    class _Up:
+        filename = "sheet.txt"
+        async def read(self):
+            return b"Real Widget 100"
+
+    res = asyncio.run(catalog_router.ai_import_catalog(
+        UUID(cat["id"]), _mock_request(), file=_Up(), user=_user(), db=db_session,
+    ))
+    assert res["imported"] == 1
+    assert res["failed_chunks"] == 0
+    listing = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    assert listing["items"][0]["price"] == pytest.approx(200.0)  # strategy applied

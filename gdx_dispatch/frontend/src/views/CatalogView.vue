@@ -11,6 +11,13 @@
           <Button label="AI Import" icon="pi pi-sparkles" severity="success" data-testid="ai-import-btn"
             :disabled="!selectedCatalog" @click="showAiImportDialog = true" />
           <Button v-if="selectedCatalog" label="Sync QBO" icon="pi pi-sync" severity="info" @click="syncQbo" :loading="syncing" />
+          <Button v-if="selectedCatalog && !selectedCatalog.read_only"
+            :label="selectedCatalog.active === false ? 'Activate' : 'Deactivate'"
+            :icon="selectedCatalog.active === false ? 'pi pi-eye' : 'pi pi-eye-slash'"
+            severity="warning" outlined data-testid="toggle-catalog-active-btn"
+            @click="toggleCatalogActive" :loading="togglingActive" />
+          <Button v-if="selectedCatalog && !selectedCatalog.read_only" label="Delete Catalog" icon="pi pi-trash"
+            severity="danger" outlined data-testid="delete-catalog-btn" @click="confirmDeleteCatalog" :loading="deletingCatalog" />
         </template>
       </Toolbar>
 
@@ -19,14 +26,26 @@
 
       <template v-if="!isLoading && !loadError">
         <!-- Catalog picker row — one button per catalog. Type label shows
-             which product class each catalog holds (Parts/Doors/etc). -->
+             which product class each catalog holds (Parts/Doors/etc). The
+             active-state filter keeps deactivated catalogs out of the way. -->
+        <div v-if="catalogs.length" class="catalog-filter-row">
+          <SelectButton v-model="catalogFilter" :options="catalogFilterOptions"
+            option-label="label" option-value="value" :allow-empty="false"
+            size="small" data-testid="catalog-active-filter" />
+        </div>
         <div class="catalog-tabs">
-          <Button v-for="cat in catalogs" :key="cat.id"
-            :label="`${cat.name} · ${classLabel(cat)}`"
+          <Button v-for="cat in visibleCatalogs" :key="cat.id"
+            :label="`${cat.name} · ${classLabel(cat)}${cat.active === false ? ' · Inactive' : ''}`"
             :severity="selectedCatalog?.id === cat.id ? undefined : 'secondary'"
+            :outlined="cat.active === false"
             size="small"
             @click="selectCatalog(cat)"
             :data-testid="`catalog-${cat.id}`" />
+        </div>
+
+        <div v-if="catalogs.length && !visibleCatalogs.length" class="muted" data-testid="catalog-filter-empty"
+          style="padding:1rem 0;">
+          No {{ catalogFilter }} catalogs. Switch the filter to see others.
         </div>
 
         <div v-if="!catalogs.length" class="empty-state">
@@ -207,10 +226,11 @@
       <!-- AI Import Dialog -->
       <Dialog v-model:visible="showAiImportDialog" header="AI Import — Extract Parts from Any File" modal :style="{width: '600px'}">
         <p class="muted">
-          Upload any file (CSV, TXT, extracted PDF text, vendor quote) and AI will extract the parts
-          into your catalog. Supports CHI, Clopay, Amarr, Wayne Dalton price sheets and more.
+          Upload any file (PDF, CSV, TXT, vendor quote) and AI will extract the parts
+          into your catalog. PDFs are read server-side. Supports CHI, Clopay, Amarr,
+          Wayne Dalton price sheets and more — multi-page sheets are paginated automatically.
         </p>
-        <FileUpload mode="basic" accept=".csv,.txt,.json,text/*" :maxFileSize="5000000"
+        <FileUpload mode="basic" accept=".csv,.txt,.json,.pdf,text/*,application/pdf" :maxFileSize="20000000"
           @select="onAiFileSelect" :auto="false" chooseLabel="Choose File" data-testid="ai-file-select" />
         <div v-if="aiFile" class="muted" style="margin-top:0.5rem;">
           Selected: {{ aiFile.name }} ({{ (aiFile.size / 1024).toFixed(1) }} KB)
@@ -218,6 +238,10 @@
         <div v-if="aiImportResult" class="ai-result">
           <h4>AI Extraction Complete</h4>
           <p><strong>{{ aiImportResult.imported }}</strong> parts imported of <strong>{{ aiImportResult.total_extracted }}</strong> extracted.</p>
+          <Message v-if="aiImportResult.partial" severity="warn" :closable="false" data-testid="ai-partial-warn">
+            Partial import: {{ aiImportResult.failed_chunks }} of {{ aiImportResult.chunks }} page-chunks
+            failed to parse. Some parts may be missing — re-run on a cleaner/smaller file if needed.
+          </Message>
           <div v-if="aiImportResult.sample?.length" class="sample-parts">
             <strong>Sample:</strong>
             <div v-for="(part, i) in aiImportResult.sample" :key="i" class="sample-part">
@@ -235,7 +259,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import {
   PRODUCT_CLASS_OPTIONS,
@@ -251,6 +275,7 @@ import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
+import SelectButton from "primevue/selectbutton";
 import FileUpload from "primevue/fileupload";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
@@ -270,6 +295,14 @@ const isLoading = ref(true);
 const loadError = ref("");
 const pricingStatus = ref(null);
 const searchQuery = ref("");
+// #50 follow-up — filter the catalog tab row by active state. Default to
+// 'active' so deactivated catalogs don't clutter the picker.
+const catalogFilter = ref("active");
+const catalogFilterOptions = [
+  { label: "Active", value: "active" },
+  { label: "Inactive", value: "inactive" },
+  { label: "All", value: "all" },
+];
 
 const showNewCatalog = ref(false);
 const showItemDialog = ref(false);
@@ -280,6 +313,8 @@ const creating = ref(false);
 const savingItem = ref(false);
 const importing = ref(false);
 const syncing = ref(false);
+const deletingCatalog = ref(false);
+const togglingActive = ref(false);
 const importFile = ref(null);
 const aiFile = ref(null);
 const aiImporting = ref(false);
@@ -407,13 +442,32 @@ const filteredItems = computed(() => {
   );
 });
 
+// Catalog tabs filtered by the active-state control. Virtual catalogs
+// (read_only) have no `active` flag — treat them as active so they never hide.
+const visibleCatalogs = computed(() => {
+  if (catalogFilter.value === "all") return catalogs.value;
+  const wantActive = catalogFilter.value === "active";
+  return catalogs.value.filter((c) => (c.active !== false) === wantActive);
+});
+
+// When the filter hides the selected catalog, jump to the first visible one so
+// the items table never shows a tab-less catalog.
+watch(catalogFilter, () => {
+  const visible = visibleCatalogs.value;
+  if (!visible.length) return;
+  if (!selectedCatalog.value || !visible.some((c) => c.id === selectedCatalog.value.id)) {
+    selectCatalog(visible[0]);
+  }
+});
+
 async function loadCatalogs() {
   isLoading.value = true;
   try {
     const data = await api.get("/api/catalogs");
     catalogs.value = Array.isArray(data) ? data : data?.items || [];
-    if (catalogs.value.length > 0 && !selectedCatalog.value) {
-      await selectCatalog(catalogs.value[0]);
+    if (!selectedCatalog.value) {
+      const first = visibleCatalogs.value[0] || catalogs.value[0];
+      if (first) await selectCatalog(first);
     }
   } catch (e) {
     loadError.value = e.message || "Failed to load catalogs";
@@ -525,6 +579,38 @@ async function confirmDeleteItem(item) {
   await selectCatalog(selectedCatalog.value);
 }
 
+async function toggleCatalogActive() {
+  const cat = selectedCatalog.value;
+  if (!cat) return;
+  togglingActive.value = true;
+  try {
+    const updated = await api.patch(`/api/catalogs/${cat.id}`, { active: cat.active === false });
+    Object.assign(cat, updated);
+    const idx = catalogs.value.findIndex((c) => c.id === cat.id);
+    if (idx >= 0) catalogs.value[idx] = { ...catalogs.value[idx], ...updated };
+  } finally {
+    togglingActive.value = false;
+  }
+}
+
+async function confirmDeleteCatalog() {
+  const cat = selectedCatalog.value;
+  if (!cat) return;
+  if (!(await confirmAsync({
+    header: 'Delete catalog',
+    message: `Delete catalog "${cat.name}" and hide all its items from the pickers? An admin can restore it.`,
+  }))) return;
+  deletingCatalog.value = true;
+  try {
+    await api.delete(`/api/catalogs/${cat.id}`);
+    catalogs.value = catalogs.value.filter((c) => c.id !== cat.id);
+    selectedCatalog.value = null;
+    if (catalogs.value.length) await selectCatalog(catalogs.value[0]);
+  } finally {
+    deletingCatalog.value = false;
+  }
+}
+
 function onFileSelect(event) {
   importFile.value = event.files[0];
 }
@@ -584,7 +670,8 @@ onMounted(loadCatalogs);
 
 <style scoped>
 .page-title { margin: 0; }
-.catalog-tabs { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
+.catalog-filter-row { margin: 1rem 0 0.25rem; }
+.catalog-tabs { display: flex; gap: 0.5rem; margin: 0.5rem 0 1rem; flex-wrap: wrap; }
 .items-section { margin-top: 1rem; }
 .items-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; }
 .items-header h3 { margin: 0; }

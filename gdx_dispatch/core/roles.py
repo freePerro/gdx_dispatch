@@ -2,7 +2,10 @@
 
 The same role has historically been spelled multiple ways:
 
-  * DB (``users.role``) stores SHORT legacy forms: ``"tech"``, ``"dispatch"``.
+  * DB (``users.role``) now stores LONG canonical forms (``"technician"``,
+    ``"dispatcher"``) — both write paths normalize on write and migration 009
+    backfilled legacy short rows (#45). Old short rows (``"tech"``/``"dispatch"``)
+    may still exist on un-migrated tenants.
   * RBAC catalog (:data:`core.permissions.BUILTIN_ROLES`) and ``tenant_roles.name``
     use LONG forms: ``"technician"``, ``"dispatcher"``.
   * Superadmin has appeared as ``"super_admin"`` / ``"superadmin"`` / ``"super-admin"``.
@@ -11,9 +14,10 @@ Every IN-MEMORY role comparison should normalize first via :func:`normalize_role
 so callers never special-case variants. Canonical = the LONG RBAC form (matches
 BUILTIN_ROLES keys).
 
-IMPORTANT: SQL that filters ``users.role`` or ``tenant_roles.name`` must still use
-that column's STORED form (short for users.role, long for tenant_roles.name) —
-normalize in Python, not in the query. See the wiki "Role naming conventions".
+IMPORTANT: SQL that filters ``users.role`` or ``tenant_roles.name`` uses the LONG
+form, but include the legacy short spelling defensively in role-filter SQL
+(``role IN ('technician','tech')``) for any un-migrated row — normalize in Python,
+not in the query. See the wiki "Role naming conventions".
 
 This module is dependency-free (no imports from permissions/models) so anything
 can import it without cycles.

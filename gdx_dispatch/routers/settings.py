@@ -30,7 +30,7 @@ router = APIRouter(
     dependencies=[Depends(require_role("admin", "owner", "superadmin"))],
 )
 
-_ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "twilio")
+_ALLOWED_INTEGRATIONS = ("quickbooks", "stripe", "twilio", "quickbooks_catalog_sync")
 _MODULE_KEY_RE = re.compile(r"^[a-z0-9_-]+$")
 
 
@@ -79,6 +79,16 @@ def _require_admin(current_user: dict[str, Any]) -> None:
 def _canonical_integrations(value: dict[str, Any] | None) -> dict[str, bool]:
     current = value if isinstance(value, dict) else {}
     return {key: bool(current.get(key, False)) for key in _ALLOWED_INTEGRATIONS}
+
+
+def quickbooks_catalog_sync_enabled(db: Session) -> bool:
+    """#57 — operator gate for QB *catalog* sync (pull/push). Defaults OFF: the
+    prod QB catalog data is untrusted, and nothing should repopulate it unless an
+    admin explicitly turns this on in Admin → Integration Settings. Distinct from
+    `integrations.quickbooks` (which gates QB invoicing/banking)."""
+    row = db.query(AppSettings).first()
+    integrations = _canonical_integrations(row.integrations if row else None)
+    return bool(integrations.get("quickbooks_catalog_sync", False))
 
 
 def _ensure_settings(db: Session) -> AppSettings:

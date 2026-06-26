@@ -3540,19 +3540,24 @@ def mobile_update_job_status(
         "completed_at": _job_obj.completed_at.isoformat() if _job_obj.completed_at else None,
     }
 
-    # Audit log — fire-and-forget, don't block on failure
+    # Audit log — write synchronously on the request's session (#20).
+    # This used to fire a DETACHED `create_task(log_audit_event(db, ...))` on
+    # the request-scoped session. Depends(get_db) closes that session when the
+    # handler returns, so the detached task committed on a closed/disposed
+    # SQLite connection — a use-after-free that surfaced as the flaky native
+    # SIGSEGV in the pytest harness (anyio worker thread vs. fdatasync teardown).
+    # The sync variant commits within the request, so it's both crash-safe and
+    # actually durable. This is also a sync handler — there was no reliable loop
+    # to schedule the coroutine on anyway.
     try:
-        import asyncio as _asyncio
-        _asyncio.get_event_loop_policy().get_event_loop().create_task(
-            log_audit_event(
-                db,
-                tenant_id=tenant_id,
-                user_id=user_id or "mobile-tech",
-                action="job_status_mobile_update",
-                entity_type="job",
-                entity_id=job_id,
-                details={"from": current_stage, "to": status, "tech": user_id},
-            )
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id or "mobile-tech",
+            action="job_status_mobile_update",
+            entity_type="job",
+            entity_id=job_id,
+            details={"from": current_stage, "to": status, "tech": user_id},
         )
     except Exception:
         log.exception("mobile_status_audit_failed")

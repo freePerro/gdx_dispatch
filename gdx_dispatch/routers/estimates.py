@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
-from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Job
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Job, JobPartNeeded
 from gdx_dispatch.modules.estimates_features import require_line_margin_override_allowed
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
@@ -1390,6 +1390,52 @@ def _holding_area_id_by_name(db: Session, name: str) -> str | None:
         return None
 
 
+def _copy_estimate_lines_to_job(estimate, new_job, db: Session) -> int:
+    """Copy each estimate line onto the job as a parts-needed row (#56).
+
+    Receiving, the field tech, and invoicing read job_parts_needed, so the
+    agreed parts/labor must land there — not just on the estimate. The full
+    captured spec stays on the linked estimate line; a readable summary
+    (category, unit price, scalar line_metadata) rides along in notes.
+    ponytail: job_parts_needed has no JSON column — add one if the captured
+    spec ever needs to be queryable on the job side.
+    """
+    lines = db.execute(
+        select(EstimateLine)
+        .where(EstimateLine.estimate_id == estimate.id)
+        .order_by(EstimateLine.sort_order)
+    ).scalars().all()
+    now = utcnow()
+    copied = 0
+    for line in lines:
+        md = line.line_metadata if isinstance(line.line_metadata, dict) else {}
+        note_bits: list[str] = []
+        if line.category:
+            note_bits.append(str(line.category))
+        if line.unit_price:
+            note_bits.append(f"${_to_float(line.unit_price):.2f} ea")
+        spec = "; ".join(
+            f"{k}={v}" for k, v in md.items() if not isinstance(v, (dict, list))
+        )
+        if spec:
+            note_bits.append(spec)
+        db.add(JobPartNeeded(
+            id=str(uuid4()),
+            company_id=str(new_job.company_id or estimate.company_id or ""),
+            job_id=str(new_job.id),
+            part_name=(line.description or "Item")[:200],
+            quantity=int(line.quantity or 1),
+            supplier=(str(md.get("vendor") or md.get("supplier") or "")[:200] or None),
+            sku=(str(md.get("sku") or "")[:64] or None),
+            status="needed",
+            notes=(" • ".join(note_bits) or None),
+            created_at=now,
+            updated_at=now,
+        ))
+        copied += 1
+    return copied
+
+
 def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     """Create a Job linked to this estimate. Idempotent — caller guards.
 
@@ -1420,6 +1466,8 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     db.add(new_job)
     db.flush()
 
+    copied_lines = _copy_estimate_lines_to_job(estimate, new_job, db)
+
     estimate.job_id = new_job.id
     estimate.updated_at = utcnow()
     db.commit()
@@ -1437,7 +1485,7 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
         action="job_created_from_estimate",
         entity_type="job",
         entity_id=str(new_job.id),
-        details={"estimate_id": str(estimate.id), "title": new_job.title},
+        details={"estimate_id": str(estimate.id), "title": new_job.title, "lines_copied": copied_lines},
     )
     db.commit()
     return new_job

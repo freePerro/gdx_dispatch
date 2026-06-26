@@ -71,7 +71,10 @@ def test_get_settings_defaults(db_session: Session):
     assert data["timezone"] == "America/New_York"
     assert data["enabled_modules"] == []
     assert data["notification_preferences"] == {}
-    assert data["integrations"] == {"quickbooks": False, "stripe": False, "twilio": False}
+    assert data["integrations"] == {
+        "quickbooks": False, "stripe": False, "twilio": False,
+        "quickbooks_catalog_sync": False,  # #57
+    }
 
 
 def test_patch_settings_creates_row(db_session: Session):
@@ -185,7 +188,10 @@ def test_get_integrations_returns_only_active(db_session: Session):
         db=db_session,
     )
     data = settings_router.list_integrations(current_user=_admin(), db=db_session)
-    assert data["integrations"] == {"quickbooks": True, "stripe": False, "twilio": True}
+    assert data["integrations"] == {
+        "quickbooks": True, "stripe": False, "twilio": True,
+        "quickbooks_catalog_sync": False,  # #57 — absent from patch → defaults off
+    }
     assert set(data["active_integrations"]) == {"quickbooks", "twilio"}
 
 

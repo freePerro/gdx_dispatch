@@ -12,6 +12,8 @@
 const SPINE_COLUMNS = [
   { field: 'sku', header: 'SKU', sortable: true, style: 'width:140px' },
   { field: 'name', header: 'Name', sortable: true },
+  // #55 — first-class vendor on every catalog table.
+  { field: 'vendor', header: 'Vendor', sortable: true, style: 'width:140px' },
 ];
 
 const SPINE_PRICE_COLUMNS = [
@@ -23,6 +25,7 @@ const SPINE_FIELDS = [
   { name: 'sku', label: 'SKU', type: 'text', section: 'identity' },
   { name: 'name', label: 'Name', type: 'text', required: true, section: 'identity' },
   { name: 'description', label: 'Description', type: 'textarea', section: 'identity', fullWidth: true },
+  { name: 'vendor', label: 'Vendor', type: 'text', section: 'identity' },  // #55
   { name: 'cost', label: 'Cost', type: 'currency', section: 'pricing' },
   { name: 'price', label: 'Retail Price', type: 'currency', section: 'pricing' },
 ];
@@ -164,6 +167,7 @@ export function emptyItemForClass(key) {
     sku: '',
     name: '',
     description: '',
+    vendor: '',
     cost: 0,
     price: 0,
     category: '',

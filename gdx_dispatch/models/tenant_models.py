@@ -681,6 +681,10 @@ class CustomCatalog(Base):
     # contributed by a Catalog Pack, so pricing runs in-core with no pack code.
     pricing_strategy: Mapped[str] = mapped_column(String(40), nullable=False, default="manual", server_default="manual")
     pricing_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    # #50 — whole-catalog enable/disable. Inactive catalogs stay on the Catalogs
+    # page (with a badge) but their items leave the estimate/billing pickers.
+    # Distinct from deleted_at (remove): active=False is "temporarily hide".
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -701,6 +705,9 @@ class CustomCatalogItem(Base):
     cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     category: Mapped[str] = mapped_column(String(120), nullable=True)
+    # #55 — first-class vendor/supplier the item came from. Mirrors
+    # InventoryItem.supplier; queryable (unlike stashing it in attributes).
+    vendor: Mapped[str] = mapped_column(String(200), nullable=True)
     # Sprint 1.0.5 — pricing-engine label (doors/openers/parts/labor/other).
     # Independent of the free-form `category` field above.
     pricing_category: Mapped[str] = mapped_column(String(40), nullable=True, index=True)

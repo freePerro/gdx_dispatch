@@ -1,0 +1,16 @@
+# pyproject.toml — GDX Dispatch
+#
+# Lint/format live in ruff.toml; the build is Docker-based (no [build-system]
+# here). This file currently carries only the mypy baseline (#48).
+
+[tool.mypy]
+# The SQLAlchemy plugin teaches mypy that `Mapped[X]` columns assign/read as X,
+# which clears the bulk of the false-positive `assignment` errors on ORM rows
+# (e.g. `row.col = Decimal(...)`). See issue #48.
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+ignore_missing_imports = true
+# Non-blocking baseline: mypy is hardening, not a gate. A ~145-error backlog of
+# pre-existing typing noise remains (issue #48) to be cleared incrementally; do
+# NOT wire mypy into CI as a required check until it's green-ish.
+warn_unused_ignores = false
+check_untyped_defs = false

@@ -20,6 +20,7 @@ from gdx_dispatch.routers import catalog as catalog_router
 from gdx_dispatch.routers.catalog import (
     DEFAULT_PRICING_SETTINGS,
     CatalogCreateIn,
+    CatalogImportIn,
     CatalogItemCreateIn,
     CatalogItemPatchIn,
 )
@@ -214,3 +215,82 @@ def test_parts_item_has_empty_attributes(db_session):
         _mock_request(), _user(), db_session,
     )
     assert item["attributes"] == {}
+
+
+# ── #53: bulk + AI import preserve custom attributes ────────────────────────
+
+def _list_attrs(db, catalog_id):
+    listing = catalog_router.list_catalog_items(
+        UUID(catalog_id), search=None, page=1, per_page=50, _=_user(), db=db,
+    )
+    return {i["name"]: i["attributes"] for i in listing["items"]}
+
+
+def test_bulk_import_preserves_nested_attributes(db_session):
+    catalog = _make_custom_catalog(db_session)
+    res = catalog_router.bulk_import_catalog_items(
+        UUID(catalog["id"]),
+        CatalogImportIn(format="json", items=[
+            {"name": "AC-A", "cost": 100,
+             "attributes": {"tonnage": "3", "refrigerant": "R-410A", "bogus": "x"}},
+        ]),
+        _mock_request(), _user(), db_session,
+    )
+    assert res["imported"] == 1
+    attrs = _list_attrs(db_session, catalog["id"])["AC-A"]
+    assert attrs["tonnage"] == 3.0
+    assert attrs["refrigerant"] == "R-410A"
+    assert "bogus" not in attrs
+
+
+def test_bulk_import_folds_flat_columns_into_attributes(db_session):
+    # CSV-style flat columns named after schema fields land in attributes too.
+    catalog = _make_custom_catalog(db_session)
+    catalog_router.bulk_import_catalog_items(
+        UUID(catalog["id"]),
+        CatalogImportIn(format="json", items=[
+            {"name": "AC-B", "cost": 100, "seer": "16", "energy_star": 1},
+        ]),
+        _mock_request(), _user(), db_session,
+    )
+    attrs = _list_attrs(db_session, catalog["id"])["AC-B"]
+    assert attrs["seer"] == 16.0
+    assert attrs["energy_star"] is True
+
+
+def test_ai_import_preserves_attributes(db_session, monkeypatch):
+    import asyncio
+    import gdx_dispatch.core.ai_router as ai_router
+
+    catalog = _make_custom_catalog(db_session)
+
+    class _Upload:
+        filename = "sheet.txt"
+        async def read(self):
+            return b"AC unit 3 ton"
+
+    class _Router:
+        async def generate(self, **_kw):
+            return '[{"name": "AC-C", "cost": 100, "attributes": {"tonnage": 4, "refrigerant": "R-32"}}]'
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _Router())
+    asyncio.run(catalog_router.ai_import_catalog(
+        UUID(catalog["id"]), _mock_request(), file=_Upload(), user=_user(), db=db_session,
+    ))
+    attrs = _list_attrs(db_session, catalog["id"])["AC-C"]
+    assert attrs["tonnage"] == 4.0
+    assert attrs["refrigerant"] == "R-32"
+
+
+def test_bulk_import_parts_catalog_has_no_attributes(db_session):
+    # Non-custom catalogs ignore attributes (no field_schema).
+    parts = catalog_router.create_catalog(
+        CatalogCreateIn(name="Parts", source_system="manual", product_class="parts"),
+        _mock_request(), _user(), db_session,
+    )
+    catalog_router.bulk_import_catalog_items(
+        UUID(parts["id"]),
+        CatalogImportIn(format="json", items=[{"name": "Spring", "cost": 5, "attributes": {"x": 1}}]),
+        _mock_request(), _user(), db_session,
+    )
+    assert _list_attrs(db_session, parts["id"])["Spring"] == {}

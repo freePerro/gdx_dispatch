@@ -43,7 +43,7 @@ SELECT u.id,
 FROM users u
 WHERE u.company_id = :tid
   AND u.deleted_at IS NULL
-  AND u.role = 'tech'
+  AND u.role IN ('technician', 'tech')
 ORDER BY u.name ASC
 """
 
