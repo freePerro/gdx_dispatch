@@ -48,6 +48,20 @@ Your dashboard shows key metrics: revenue, active jobs, overdue invoices, and up
 3. Jobs update in real-time via WebSocket
 4. Use the date picker to view different days
 
+### Catalogs
+
+Catalogs hold the products and services you sell.
+
+1. Click **Catalogs** in the sidebar
+2. Click **+ New Catalog** and choose a type:
+   - **Parts** — SKUs, accessories, miscellaneous
+   - **Doors** — garage doors with full install specs
+   - **Custom…** — define your own fields for any industry (HVAC, electrical, …)
+3. For **Custom…**, add your fields (label + type) before creating
+4. Add items, or bulk-load with **Import CSV** / **AI Import**
+
+See [Custom Catalogs](CUSTOM_CATALOGS.md) for the full guide to custom types.
+
 ## Tips
 
 - **Ctrl+K** — Global search across jobs, customers, invoices
