@@ -188,3 +188,54 @@ def test_bad_pricing_config_kind_rejected():
     with pytest.raises(ValueError):
         CatalogCreateIn(name="x", pricing_strategy="manual",
                         pricing_config={"kind": "rocket", "params": {}})
+
+
+# ── #54: QB pull and AI import apply the strategy too ───────────────────────
+
+def test_qb_pull_applies_strategy(db_session):
+    # QB sync pull priced cost-only rows at retail=cost; now it routes through
+    # the catalog strategy like the form/CSV paths.
+    cat = _make_catalog(db_session, "keystone")
+    catalog_obj = catalog_router._get_catalog_or_404(UUID(cat["id"]), db_session)
+    action = catalog_router._upsert_qb_item(
+        catalog_obj, {"sku": "QB1", "name": "QB Widget", "cost": 100}, db_session,
+    )
+    db_session.commit()
+    assert action == "created"
+    listing = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    assert listing["items"][0]["price"] == pytest.approx(200.0)  # not 100
+
+
+class _FakeUpload:
+    """Minimal UploadFile stand-in: async .read() yielding the given bytes."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self.filename = "sheet.txt"
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def test_ai_import_applies_strategy(db_session, monkeypatch):
+    import asyncio
+
+    import gdx_dispatch.core.ai_router as ai_router
+
+    cat = _make_catalog(db_session, "keystone")
+
+    class _FakeRouter:
+        async def generate(self, **_kw):
+            return '[{"sku": "AI1", "name": "AI Widget", "cost": 100}]'
+
+    monkeypatch.setattr(ai_router, "get_ai_router", lambda: _FakeRouter())
+    asyncio.run(catalog_router.ai_import_catalog(
+        UUID(cat["id"]), _mock_request(),
+        file=_FakeUpload(b"AI Widget 100"), user=_user(), db=db_session,
+    ))
+    listing = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    assert listing["items"][0]["price"] == pytest.approx(200.0)  # not 100

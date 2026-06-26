@@ -1383,7 +1383,8 @@ def bulk_import_catalog_items(
     return {"imported": imported, "failed": 0}
 
 
-def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> str:
+def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Session) -> str:
+    catalog_id = catalog.id
     qb_item_id = str(raw.get("qb_item_id") or "").strip() or None
     sku = str(raw.get("sku") or "").strip() or None
 
@@ -1412,7 +1413,7 @@ def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> st
             name=str(raw.get("name") or "").strip() or "QB Item",
             description=str(raw.get("description") or "").strip() or None,
             cost=_money(float(raw.get("cost") or 0)),
-            price=_money(float(raw.get("price") or raw.get("cost") or 0)),
+            price=_money(_retail_for(catalog, raw.get("cost"), raw.get("price"))),
             category=str(raw.get("category") or "").strip() or None,
             active=bool(raw.get("active", True)),
             qb_item_id=qb_item_id,
@@ -1424,7 +1425,7 @@ def _upsert_qb_item(catalog_id: UUID, raw: dict[str, object], db: Session) -> st
     match.name = str(raw.get("name") or match.name)
     match.description = str(raw.get("description") or "").strip() or match.description
     match.cost = _money(float(raw.get("cost") or match.cost or 0))
-    match.price = _money(float(raw.get("price") or match.price or 0))
+    match.price = _money(_retail_for(catalog, raw.get("cost") or match.cost, raw.get("price")) or match.price or 0)
     match.category = str(raw.get("category") or "").strip() or match.category
     match.active = bool(raw.get("active", match.active))
     if qb_item_id:
@@ -1448,7 +1449,7 @@ async def ai_import_catalog(
     """
     from gdx_dispatch.core.ai_router import AITask, get_ai_router
 
-    _get_catalog_or_404(catalog_id, db)
+    catalog = _get_catalog_or_404(catalog_id, db)
 
     content_bytes = await file.read()
     try:
@@ -1519,7 +1520,7 @@ JSON array:"""
                 name=item.name,
                 description=item.description,
                 cost=_money(item.cost),
-                price=_money(item.price if item.price is not None else item.cost),
+                price=_money(_retail_for(catalog, item.cost, item.price)),
                 category=item.category,
                 active=True,
             )
@@ -1558,11 +1559,11 @@ def qb_pull_sync(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
-    _get_catalog_or_404(catalog_id, db)
+    catalog = _get_catalog_or_404(catalog_id, db)
     created = 0
     updated = 0
     for raw in payload.items:
-        action = _upsert_qb_item(catalog_id, raw, db)
+        action = _upsert_qb_item(catalog, raw, db)
         if action == "created":
             created += 1
         else:
