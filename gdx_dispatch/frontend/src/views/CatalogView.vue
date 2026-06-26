@@ -26,15 +26,26 @@
 
       <template v-if="!isLoading && !loadError">
         <!-- Catalog picker row — one button per catalog. Type label shows
-             which product class each catalog holds (Parts/Doors/etc). -->
+             which product class each catalog holds (Parts/Doors/etc). The
+             active-state filter keeps deactivated catalogs out of the way. -->
+        <div v-if="catalogs.length" class="catalog-filter-row">
+          <SelectButton v-model="catalogFilter" :options="catalogFilterOptions"
+            option-label="label" option-value="value" :allow-empty="false"
+            size="small" data-testid="catalog-active-filter" />
+        </div>
         <div class="catalog-tabs">
-          <Button v-for="cat in catalogs" :key="cat.id"
+          <Button v-for="cat in visibleCatalogs" :key="cat.id"
             :label="`${cat.name} · ${classLabel(cat)}${cat.active === false ? ' · Inactive' : ''}`"
             :severity="selectedCatalog?.id === cat.id ? undefined : 'secondary'"
             :outlined="cat.active === false"
             size="small"
             @click="selectCatalog(cat)"
             :data-testid="`catalog-${cat.id}`" />
+        </div>
+
+        <div v-if="catalogs.length && !visibleCatalogs.length" class="muted" data-testid="catalog-filter-empty"
+          style="padding:1rem 0;">
+          No {{ catalogFilter }} catalogs. Switch the filter to see others.
         </div>
 
         <div v-if="!catalogs.length" class="empty-state">
@@ -248,7 +259,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import {
   PRODUCT_CLASS_OPTIONS,
@@ -264,6 +275,7 @@ import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
+import SelectButton from "primevue/selectbutton";
 import FileUpload from "primevue/fileupload";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
@@ -283,6 +295,14 @@ const isLoading = ref(true);
 const loadError = ref("");
 const pricingStatus = ref(null);
 const searchQuery = ref("");
+// #50 follow-up — filter the catalog tab row by active state. Default to
+// 'active' so deactivated catalogs don't clutter the picker.
+const catalogFilter = ref("active");
+const catalogFilterOptions = [
+  { label: "Active", value: "active" },
+  { label: "Inactive", value: "inactive" },
+  { label: "All", value: "all" },
+];
 
 const showNewCatalog = ref(false);
 const showItemDialog = ref(false);
@@ -422,13 +442,32 @@ const filteredItems = computed(() => {
   );
 });
 
+// Catalog tabs filtered by the active-state control. Virtual catalogs
+// (read_only) have no `active` flag — treat them as active so they never hide.
+const visibleCatalogs = computed(() => {
+  if (catalogFilter.value === "all") return catalogs.value;
+  const wantActive = catalogFilter.value === "active";
+  return catalogs.value.filter((c) => (c.active !== false) === wantActive);
+});
+
+// When the filter hides the selected catalog, jump to the first visible one so
+// the items table never shows a tab-less catalog.
+watch(catalogFilter, () => {
+  const visible = visibleCatalogs.value;
+  if (!visible.length) return;
+  if (!selectedCatalog.value || !visible.some((c) => c.id === selectedCatalog.value.id)) {
+    selectCatalog(visible[0]);
+  }
+});
+
 async function loadCatalogs() {
   isLoading.value = true;
   try {
     const data = await api.get("/api/catalogs");
     catalogs.value = Array.isArray(data) ? data : data?.items || [];
-    if (catalogs.value.length > 0 && !selectedCatalog.value) {
-      await selectCatalog(catalogs.value[0]);
+    if (!selectedCatalog.value) {
+      const first = visibleCatalogs.value[0] || catalogs.value[0];
+      if (first) await selectCatalog(first);
     }
   } catch (e) {
     loadError.value = e.message || "Failed to load catalogs";
@@ -631,7 +670,8 @@ onMounted(loadCatalogs);
 
 <style scoped>
 .page-title { margin: 0; }
-.catalog-tabs { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
+.catalog-filter-row { margin: 1rem 0 0.25rem; }
+.catalog-tabs { display: flex; gap: 0.5rem; margin: 0.5rem 0 1rem; flex-wrap: wrap; }
 .items-section { margin-top: 1rem; }
 .items-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; }
 .items-header h3 { margin: 0; }

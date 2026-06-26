@@ -38,6 +38,12 @@ const stubs = {
   Column: { template: '<div />' },
   Dialog: { props: ['visible'], template: "<div v-if='visible'><slot /></div>" },
   Select: { template: '<select />' },
+  SelectButton: {
+    props: ['modelValue', 'options'],
+    emits: ['update:modelValue'],
+    template: `<div class="select-button"><button v-for="o in options" :key="o.value"
+      :data-opt="o.value" @click="$emit('update:modelValue', o.value)">{{ o.label }}</button></div>`,
+  },
   FileUpload: { template: '<div />' },
   InputNumber: { template: '<input type="number" />' },
   InputText: { template: '<input />' },
@@ -152,5 +158,48 @@ describe('CatalogView pricing-status banner', () => {
     const w = mount(CatalogView, { global: { stubs, plugins: [router] } });
     await flushPromises();
     expect(w.find('[data-testid="catalog-pricing-warn"]').exists()).toBe(false);
+  });
+});
+
+describe('CatalogView active/inactive filter', () => {
+  let router;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset();
+    router = makeRouter();
+    apiGetMock.mockImplementation((url) => {
+      if (url === '/api/catalogs') {
+        return Promise.resolve([
+          { id: 'cat-on', name: 'Active Cat', product_class: 'parts', active: true },
+          { id: 'cat-off', name: 'Old Cat', product_class: 'parts', active: false },
+        ]);
+      }
+      if (url.startsWith('/api/catalogs/')) return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows only active catalogs by default, and all when toggled', async () => {
+    const w = mount(CatalogView, { global: { stubs, plugins: [router] } });
+    await flushPromises();
+
+    // Default = active: only the active catalog tab is rendered.
+    expect(w.find('[data-testid="catalog-cat-on"]').exists()).toBe(true);
+    expect(w.find('[data-testid="catalog-cat-off"]').exists()).toBe(false);
+
+    // Switch the filter to "All" → both tabs render.
+    await w.find('[data-testid="catalog-active-filter"] [data-opt="all"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="catalog-cat-on"]').exists()).toBe(true);
+    expect(w.find('[data-testid="catalog-cat-off"]').exists()).toBe(true);
+
+    // Switch to "Inactive" → only the inactive one.
+    await w.find('[data-testid="catalog-active-filter"] [data-opt="inactive"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="catalog-cat-on"]').exists()).toBe(false);
+    expect(w.find('[data-testid="catalog-cat-off"]').exists()).toBe(true);
   });
 });
