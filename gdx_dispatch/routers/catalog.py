@@ -880,6 +880,39 @@ def create_catalog(
     return _serialize_catalog(row)
 
 
+@router.delete("/api/catalogs/{catalog_id}", response_model=None)
+def delete_catalog(
+    catalog_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """Soft-delete a catalog (#49). Sets deleted_at; list/get/all-items already
+    filter deleted_at IS NULL, so the catalog and its items leave the pickers.
+    Items keep their own rows (filtered via the catalog join). Virtual CHI
+    catalogs are feed-backed and cannot be deleted.
+    """
+    if str(catalog_id) in VIRTUAL_CATALOG_IDS:
+        raise HTTPException(status_code=409, detail="Virtual catalogs cannot be deleted")
+    row = _get_catalog_or_404(catalog_id, db)
+    row.deleted_at = utcnow()
+    db.commit()
+
+    tenant_id, user_id = _audit_ids(user, request)
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="catalog_deleted",
+        entity_type="catalog",
+        entity_id=str(row.id),
+        details={"name": row.name, "soft_delete": True},
+        request=request,
+    )
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/api/catalogs/{catalog_id}", response_model=None)
 def get_catalog(
     catalog_id: UUID,

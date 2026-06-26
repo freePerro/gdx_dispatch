@@ -342,3 +342,36 @@ def test_virtual_catalog_response_shape_includes_price_source(db_session: Sessio
         assert item["price_source"] in (None, "catalog", "computed"), (
             f"unexpected price_source value: {item['price_source']!r}"
         )
+
+
+def test_delete_catalog_soft_deletes_and_hides_from_list(db_session: Session):
+    # #49 — deleting a catalog removes it from the list and its items from the
+    # pickers, but it's a soft delete (deleted_at set, rows kept).
+    catalog = _create_catalog(db_session, name="Throwaway")
+    _create_item(db_session, str(catalog["id"]))
+
+    res = catalog_router.delete_catalog(
+        UUID(str(catalog["id"])), _mock_request(), _user(), db_session,
+    )
+    assert res["deleted"] is True
+
+    rows = catalog_router.list_catalogs(_user(), db_session)
+    assert all(r["id"] != catalog["id"] for r in rows)
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.get_catalog(UUID(str(catalog["id"])), _user(), db_session)
+    assert exc.value.status_code == 404
+
+
+def test_delete_catalog_404_for_missing(db_session: Session):
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.delete_catalog(UUID(int=0), _mock_request(), _user(), db_session)
+    assert exc.value.status_code == 404
+
+
+def test_delete_catalog_refuses_virtual(db_session: Session):
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID
+    with pytest.raises(HTTPException) as exc:
+        catalog_router.delete_catalog(
+            UUID(VIRTUAL_CHI_DOORS_ID), _mock_request(), _user(), db_session,
+        )
+    assert exc.value.status_code == 409

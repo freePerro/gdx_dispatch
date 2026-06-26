@@ -11,6 +11,8 @@
           <Button label="AI Import" icon="pi pi-sparkles" severity="success" data-testid="ai-import-btn"
             :disabled="!selectedCatalog" @click="showAiImportDialog = true" />
           <Button v-if="selectedCatalog" label="Sync QBO" icon="pi pi-sync" severity="info" @click="syncQbo" :loading="syncing" />
+          <Button v-if="selectedCatalog && !selectedCatalog.read_only" label="Delete Catalog" icon="pi pi-trash"
+            severity="danger" outlined data-testid="delete-catalog-btn" @click="confirmDeleteCatalog" :loading="deletingCatalog" />
         </template>
       </Toolbar>
 
@@ -280,6 +282,7 @@ const creating = ref(false);
 const savingItem = ref(false);
 const importing = ref(false);
 const syncing = ref(false);
+const deletingCatalog = ref(false);
 const importFile = ref(null);
 const aiFile = ref(null);
 const aiImporting = ref(false);
@@ -523,6 +526,24 @@ async function confirmDeleteItem(item) {
   if (!(await confirmAsync({ header: 'Confirm', message: `Delete "${item.name}"?` }))) return;
   await api.delete(`/api/catalogs/${selectedCatalog.value.id}/items/${item.id}`);
   await selectCatalog(selectedCatalog.value);
+}
+
+async function confirmDeleteCatalog() {
+  const cat = selectedCatalog.value;
+  if (!cat) return;
+  if (!(await confirmAsync({
+    header: 'Delete catalog',
+    message: `Delete catalog "${cat.name}" and hide all its items from the pickers? An admin can restore it.`,
+  }))) return;
+  deletingCatalog.value = true;
+  try {
+    await api.delete(`/api/catalogs/${cat.id}`);
+    catalogs.value = catalogs.value.filter((c) => c.id !== cat.id);
+    selectedCatalog.value = null;
+    if (catalogs.value.length) await selectCatalog(catalogs.value[0]);
+  } finally {
+    deletingCatalog.value = false;
+  }
 }
 
 function onFileSelect(event) {
