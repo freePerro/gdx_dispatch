@@ -16,6 +16,7 @@ from gdx_dispatch.routers import catalog as catalog_router
 from gdx_dispatch.routers.catalog import (
     DEFAULT_PRICING_SETTINGS,
     CatalogCreateIn,
+    CatalogImportIn,
     CatalogItemCreateIn,
     CatalogItemPatchIn,
     PricingSettingsPatchIn,
@@ -429,3 +430,47 @@ def test_patch_catalog_refuses_virtual(db_session: Session):
 def test_new_catalog_defaults_active_true(db_session: Session):
     catalog = _create_catalog(db_session, name="Fresh")
     assert catalog["active"] is True
+
+
+# ── #55: first-class vendor field ───────────────────────────────────────────
+
+def test_add_item_persists_vendor(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(db_session, str(catalog["id"]), vendor="Midwest Wholesale Doors")
+    assert item["vendor"] == "Midwest Wholesale Doors"
+
+
+def test_patch_item_updates_vendor(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(db_session, str(catalog["id"]))
+    patched = catalog_router.patch_catalog_item(
+        UUID(str(catalog["id"])), UUID(str(item["id"])),
+        CatalogItemPatchIn(vendor="Acme Supply"),
+        _mock_request(), _user(), db_session,
+    )
+    assert patched["vendor"] == "Acme Supply"
+    # Blanking clears it.
+    cleared = catalog_router.patch_catalog_item(
+        UUID(str(catalog["id"])), UUID(str(item["id"])),
+        CatalogItemPatchIn(vendor="   "),
+        _mock_request(), _user(), db_session,
+    )
+    assert cleared["vendor"] is None
+
+
+def test_bulk_import_maps_vendor_and_supplier_alias(db_session: Session):
+    catalog = _create_catalog(db_session)
+    catalog_router.bulk_import_catalog_items(
+        UUID(str(catalog["id"])),
+        CatalogImportIn(format="json", items=[
+            {"name": "A", "cost": 1, "vendor": "VendorCo"},
+            {"name": "B", "cost": 1, "supplier": "SupplierCo"},  # alias
+        ]),
+        _mock_request(), _user(), db_session,
+    )
+    listing = catalog_router.list_catalog_items(
+        UUID(str(catalog["id"])), search=None, page=1, per_page=25, _=_user(), db=db_session,
+    )
+    by_name = {i["name"]: i["vendor"] for i in listing["items"]}
+    assert by_name["A"] == "VendorCo"
+    assert by_name["B"] == "SupplierCo"

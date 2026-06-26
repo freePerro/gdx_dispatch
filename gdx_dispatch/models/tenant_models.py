@@ -705,6 +705,9 @@ class CustomCatalogItem(Base):
     cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     category: Mapped[str] = mapped_column(String(120), nullable=True)
+    # #55 — first-class vendor/supplier the item came from. Mirrors
+    # InventoryItem.supplier; queryable (unlike stashing it in attributes).
+    vendor: Mapped[str] = mapped_column(String(200), nullable=True)
     # Sprint 1.0.5 — pricing-engine label (doors/openers/parts/labor/other).
     # Independent of the free-form `category` field above.
     pricing_category: Mapped[str] = mapped_column(String(40), nullable=True, index=True)

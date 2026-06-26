@@ -393,6 +393,7 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "cost": _to_float(item.cost),
         "price": _to_float(item.price),
         "category": item.category,
+        "vendor": getattr(item, "vendor", None),
         "pricing_category": item.pricing_category,
         "product_class": product_class,
         "active": bool(item.active),
@@ -615,6 +616,7 @@ class CatalogItemCreateIn(BaseModel):
     unit_price: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     category: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, max_length=200)  # #55
     # Engine pricing bucket (doors/openers/parts/labor/other). Optional —
     # when omitted it's derived from category/product_class at write time so
     # estimate lines never fall through to the $0 manual path. See
@@ -647,6 +649,7 @@ class CatalogItemPatchIn(BaseModel):
     cost: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     category: str | None = Field(default=None, max_length=120)
+    vendor: str | None = Field(default=None, max_length=200)  # #55
     active: bool | None = None
     qb_item_id: str | None = Field(default=None, max_length=120)
     spec: dict[str, object] | None = None
@@ -1052,6 +1055,7 @@ def add_catalog_item(
         cost=_money(payload.cost),
         price=_money(effective_price),
         category=payload.category.strip() if payload.category else None,
+        vendor=payload.vendor.strip() if payload.vendor else None,
         pricing_category=_derive_pricing_category(
             payload.pricing_category, payload.category, product_class,
             _valid_pricing_categories(db),
@@ -1317,6 +1321,12 @@ def patch_catalog_item(
             if isinstance(updates["category"], str) and updates["category"].strip()
             else None
         )
+    if "vendor" in updates:
+        row.vendor = (
+            updates["vendor"].strip()
+            if isinstance(updates["vendor"], str) and updates["vendor"].strip()
+            else None
+        )
     if "active" in updates and updates["active"] is not None:
         row.active = bool(updates["active"])
     if "qb_item_id" in updates:
@@ -1411,6 +1421,7 @@ def _normalize_import_item(raw: dict[str, object]) -> CatalogItemCreateIn:
         cost=float(raw.get("cost") or 0),
         price=float(raw.get("price")) if raw.get("price") not in (None, "") else None,
         category=str(raw.get("category") or "").strip() or None,
+        vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
         pricing_category=str(raw.get("pricing_category") or "").strip() or None,
         active=bool(raw.get("active", True)),
         qb_item_id=str(raw.get("qb_item_id") or "").strip() or None,
@@ -1449,6 +1460,7 @@ def bulk_import_catalog_items(
             # import of cost-only rows prices identically to the Add form.
             price=_money(_retail_for(catalog, item.cost, item.price)),
             category=item.category,
+            vendor=item.vendor,
             pricing_category=_derive_pricing_category(
                 item.pricing_category, item.category, product_class, valid_categories
             ),
@@ -1511,6 +1523,7 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
             cost=_money(float(raw.get("cost") or 0)),
             price=_money(_retail_for(catalog, raw.get("cost"), raw.get("price"))),
             category=str(raw.get("category") or "").strip() or None,
+            vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
             active=bool(raw.get("active", True)),
             qb_item_id=qb_item_id,
         )
@@ -1619,6 +1632,7 @@ JSON array:"""
                 cost=_money(item.cost),
                 price=_money(_retail_for(catalog, item.cost, item.price)),
                 category=item.category,
+                vendor=item.vendor,
                 product_class=product_class,
                 active=True,
             )
