@@ -53,6 +53,19 @@ class PluginManifest:
                       "browser" — a streamed headless browser the operator drives
                       (e.g. to log into a no-API site). "" / () = no elevated
                       capability, installs silently like any core module.
+      catalog_types   ADR-015 Catalog Pack — types this plugin contributes as
+                      DATA, each {key, label, field_schema:[...],
+                      pricing_strategy:{id,label,kind,params}}. The core catalog
+                      surfaces them in the New Catalog dialog; creating one copies
+                      its schema + pricing onto the catalog, so the type is
+                      self-contained and needs no pack code at run time.
+      pricing_strategies declarative pricing strategies ({id,label,kind,params})
+                      a pack registers, e.g. duration-rounded labor. Code-free
+                      (kind ∈ manual|multiplier|markup|margin) so they evaluate in
+                      the core process without importing the pack (ADR-013).
+      importers       reserved (ADR-015 Slice 3) — data-source importers a pack
+                      offers, each {id, label}. Surfaced for discovery; wiring is
+                      a later step.
     """
 
     key: str
@@ -63,6 +76,9 @@ class PluginManifest:
     migrations_path: str | None = None
     ui: Any = None
     permissions: tuple[str, ...] = ()
+    catalog_types: tuple = ()
+    pricing_strategies: tuple = ()
+    importers: tuple = ()
 
     def __post_init__(self) -> None:
         # Fail loud at declaration time — a malformed key would otherwise surface
@@ -78,3 +94,13 @@ class PluginManifest:
         unknown = set(self.permissions) - KNOWN_PERMISSIONS
         if unknown:
             raise ValueError(f"PluginManifest.permissions unknown: {sorted(unknown)}")
+        # ADR-015 — minimal shape checks so a malformed pack fails at declaration,
+        # not at New Catalog time. Kept stdlib-only (no schema lib).
+        for ct in self.catalog_types:
+            if not isinstance(ct, dict) or not ct.get("key") or not ct.get("label"):
+                raise ValueError(f"catalog_type needs key+label: {ct!r}")
+            if not isinstance(ct.get("field_schema", []), list):
+                raise ValueError(f"catalog_type.field_schema must be a list: {ct!r}")
+        for ps in self.pricing_strategies:
+            if not isinstance(ps, dict) or not ps.get("id") or not ps.get("kind"):
+                raise ValueError(f"pricing_strategy needs id+kind: {ps!r}")

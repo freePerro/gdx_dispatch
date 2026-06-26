@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
+import httpx
 from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal
 from io import StringIO
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.models.pricing_engine import PricingTierSet
 from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, DoorSpec
 from gdx_dispatch.routers.auth import get_current_user
@@ -64,8 +67,17 @@ ALLOWED_SOURCES = {"manual", "chi", "qb"}
 # Sprint typed-catalogs — Class Table Inheritance product classes.
 # 'parts' is the legacy default; 'door' has a DoorSpec table; the rest are
 # placeholders for the scaffolder to fill in (opener_specs, spring_specs, …).
-PRODUCT_CLASSES = {"parts", "door", "opener", "spring", "track", "remote", "labor"}
+# ADR-015 — 'custom' is the no-code escape hatch: the catalog carries its own
+# `field_schema` and items store values in `attributes` (JSON), so any industry
+# can define a catalog type with no migration or deploy.
+PRODUCT_CLASSES = {"parts", "door", "opener", "spring", "track", "remote", "labor", "custom"}
 PRODUCT_CLASSES_WITH_SPEC = {"door"}
+
+# ADR-015 — field types a custom catalog may declare. Maps 1:1 to a frontend
+# input component; keep in sync with frontend/src/catalog/types.js FIELD_INPUTS.
+CUSTOM_FIELD_TYPES = {"text", "textarea", "number", "currency", "checkbox", "select", "date"}
+# Field names must be safe JSON keys / dotted-path segments (no prototype walk).
+_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 # Door spec field whitelist — keep in sync with DoorSpec model. The scaffolder
 # regenerates this list when new spec tables are added.
@@ -339,6 +351,12 @@ def _serialize_catalog(catalog: CustomCatalog) -> dict[str, object]:
         "source": source,
         "source_system": source,
         "product_class": product_class,
+        # ADR-015 — drives the dynamic form/table for custom catalogs; empty for
+        # built-in classes (which the frontend registry covers).
+        "field_schema": getattr(catalog, "field_schema", None) or [],
+        # ADR-015 Slice 2 — pricing strategy applied to items saved without a price.
+        "pricing_strategy": getattr(catalog, "pricing_strategy", None) or "manual",
+        "pricing_config": getattr(catalog, "pricing_config", None) or {},
         "created_at": catalog.created_at.isoformat() if catalog.created_at else None,
         "updated_at": catalog.updated_at.isoformat() if catalog.updated_at else None,
     }
@@ -379,6 +397,8 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "qb_item_id": item.qb_item_id,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        # ADR-015 — user-defined field values for custom catalogs; {} otherwise.
+        "attributes": getattr(item, "attributes", None) or {},
     }
     if product_class == "door":
         out["spec"] = _serialize_door_spec(getattr(item, "door_spec", None))
@@ -417,12 +437,123 @@ def _validate_source(value: str) -> str:
     return source
 
 
+# ---------------------------------------------------------------------------
+# ADR-015 — custom catalog field schema. A 'custom' catalog declares its own
+# fields as data; we validate the schema on create and coerce item values
+# against it on write. No per-type SQL table, no migration, no deploy.
+# ---------------------------------------------------------------------------
+
+def _validate_field_schema(schema: list[dict] | None) -> list[dict]:
+    """Clean + validate a custom catalog's field definitions.
+
+    Each entry: {name, label, type[, section, required, options]}. `name` must be
+    a safe slug (unique within the catalog); `type` must be a known input type;
+    `select` requires a non-empty `options` list. Returns the normalized list.
+    Raises ValueError (→ 422) on any malformed entry.
+    """
+    if not schema:
+        raise ValueError("a custom catalog needs at least one field")
+    if len(schema) > 50:
+        raise ValueError("a custom catalog supports at most 50 fields")
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for raw in schema:
+        if not isinstance(raw, dict):
+            raise ValueError("each field must be an object")
+        name = str(raw.get("name", "")).strip().lower()
+        if not _FIELD_NAME_RE.match(name):
+            raise ValueError(
+                f"field name {name!r} must start with a letter and use only "
+                "lowercase letters, digits, or underscores (max 40 chars)"
+            )
+        if name in seen:
+            raise ValueError(f"duplicate field name {name!r}")
+        seen.add(name)
+        ftype = str(raw.get("type", "text")).strip().lower()
+        if ftype not in CUSTOM_FIELD_TYPES:
+            raise ValueError(
+                f"field type {ftype!r} must be one of {sorted(CUSTOM_FIELD_TYPES)}"
+            )
+        label = str(raw.get("label", "")).strip() or name.replace("_", " ").title()
+        entry: dict[str, object] = {
+            "name": name,
+            "label": label[:80],
+            "type": ftype,
+            "section": str(raw.get("section", "attributes")).strip()[:40] or "attributes",
+            "required": bool(raw.get("required", False)),
+        }
+        if ftype == "select":
+            options = [str(o).strip() for o in (raw.get("options") or []) if str(o).strip()]
+            if not options:
+                raise ValueError(f"select field {name!r} needs at least one option")
+            entry["options"] = options[:100]
+        cleaned.append(entry)
+    return cleaned
+
+
+def _retail_for(catalog: "CustomCatalog", cost, price) -> float:
+    """ADR-015 Slice 2 — resolve an item's retail price.
+
+    An explicit non-zero price always wins. Otherwise the catalog's pricing
+    strategy computes from cost ('manual'/no-cost → fall back to the entered
+    price, else cost). Shared by single-add and bulk-import so the same item
+    prices identically no matter how it's created.
+    """
+    if price:
+        return float(price)
+    if cost:
+        computed = pricing_strategies.compute_price(
+            getattr(catalog, "pricing_strategy", None),
+            cost,
+            config=getattr(catalog, "pricing_config", None),
+        )
+        if computed is not None:
+            return float(computed)
+    return float(price if price is not None else (cost or 0))
+
+
+def _coerce_attributes(schema: list[dict], raw: dict | None) -> dict:
+    """Project arbitrary client input onto the catalog's declared fields.
+
+    Unknown keys are dropped (defense, not a 400 — keeps older clients working);
+    each known value is coerced to its field type. Missing keys are simply absent.
+    """
+    if not raw or not isinstance(raw, dict):
+        return {}
+    by_name = {f["name"]: f for f in (schema or [])}
+    out: dict[str, object] = {}
+    for name, field in by_name.items():
+        if name not in raw:
+            continue
+        value = raw[name]
+        if value is None or value == "":
+            continue
+        ftype = field["type"]
+        try:
+            if ftype in ("number", "currency"):
+                out[name] = float(value)
+            elif ftype == "checkbox":
+                out[name] = bool(value)
+            else:
+                out[name] = str(value)
+        except (TypeError, ValueError):
+            # Skip an uncastable value rather than 500 — the UI validates too.
+            continue
+    return out
+
+
 class CatalogCreateIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(min_length=1, max_length=200)
     source: str = Field(default="manual", min_length=1, max_length=60, alias="source_system")
     product_class: str = Field(default="parts", max_length=40)
+    # ADR-015 — required when product_class='custom', ignored otherwise.
+    field_schema: list[dict] | None = None
+    # ADR-015 Slice 2 — pricing strategy id (default 'manual'); pricing_config is
+    # a declarative {kind, params} spec, set when creating from a Catalog Pack type.
+    pricing_strategy: str = Field(default="manual", max_length=40)
+    pricing_config: dict | None = None
 
     @field_validator("name")
     @classmethod
@@ -445,6 +576,34 @@ class CatalogCreateIn(BaseModel):
             raise ValueError(f"product_class must be one of {sorted(PRODUCT_CLASSES)}")
         return v
 
+    @model_validator(mode="after")
+    def _validate_schema_for_class(self) -> "CatalogCreateIn":
+        # Custom catalogs must declare a valid field schema; built-in classes
+        # carry none (they use the frontend registry / typed spec tables).
+        if self.product_class == "custom":
+            self.field_schema = _validate_field_schema(self.field_schema)
+        else:
+            self.field_schema = []
+        # ADR-015 Slice 2 — pricing strategy. A pack type may bring a declarative
+        # spec (pricing_config with a kind); otherwise the id must be known.
+        self.pricing_strategy = (self.pricing_strategy or "manual").strip().lower()
+        if self.pricing_config and self.pricing_config.get("kind"):
+            # Self-contained declarative spec (built-in or pack) — validate the kind.
+            kind = self.pricing_config["kind"]
+            if kind not in pricing_strategies.KNOWN_KINDS:
+                raise ValueError(
+                    f"pricing_config.kind must be one of {sorted(pricing_strategies.KNOWN_KINDS)}"
+                )
+        elif not pricing_strategies.is_builtin(self.pricing_strategy):
+            # A non-built-in id (pack strategy) MUST travel with its declarative
+            # spec — we don't resolve it from the in-memory pack registry, which
+            # is populated lazily and differs per worker process.
+            raise ValueError(
+                f"pricing_strategy {self.pricing_strategy!r} requires a pricing_config "
+                "with a 'kind' (pack strategies carry their own spec)"
+            )
+        return self
+
 
 class CatalogItemCreateIn(BaseModel):
     sku: str | None = Field(default=None, max_length=100)
@@ -466,6 +625,9 @@ class CatalogItemCreateIn(BaseModel):
     # (or its peer for other classes); unknown keys are ignored, not 400'd,
     # so older clients can keep posting basic items unchanged.
     spec: dict[str, object] | None = None
+    # ADR-015 — values for a 'custom' catalog's user-defined fields, keyed by
+    # field_schema name. Coerced + filtered against the catalog schema on write.
+    attributes: dict[str, object] | None = None
 
     @field_validator("name")
     @classmethod
@@ -486,6 +648,7 @@ class CatalogItemPatchIn(BaseModel):
     active: bool | None = None
     qb_item_id: str | None = Field(default=None, max_length=120)
     spec: dict[str, object] | None = None
+    attributes: dict[str, object] | None = None
 
     @field_validator("name")
     @classmethod
@@ -600,6 +763,70 @@ def list_pricing_categories(
     return sorted(_valid_pricing_categories(db))
 
 
+@router.get("/api/catalogs/pricing-strategies", response_model=None)
+def list_pricing_strategies(_: dict = Depends(get_current_user)) -> list[dict[str, object]]:
+    """ADR-015 Slice 2 — pricing strategies for the New Catalog dialog. Built-in
+    plus any registered by a Catalog Pack."""
+    return pricing_strategies.list_strategies()
+
+
+def _register_pack_strategy_safe(ps: dict) -> None:
+    """Register a pack's declarative strategy into the core registry, ignoring
+    collisions/bad shapes (best-effort; the spec is also copied onto catalogs)."""
+    if ps.get("id") and ps.get("kind"):
+        try:
+            pricing_strategies.register_pack_strategy(
+                ps["id"], ps.get("label", ps["id"]), ps["kind"], ps.get("params")
+            )
+        except ValueError:
+            pass
+
+
+@router.get("/api/catalogs/pack-types", response_model=None)
+def list_pack_catalog_types(_: dict = Depends(get_current_user)) -> list[dict[str, object]]:
+    """ADR-015 Slice 3 — catalog types contributed by installed Catalog Packs.
+
+    Fetched from the plugin-host (`GET /api/plugins`). A pack's type is DATA
+    (field_schema + a declarative pricing strategy); the New Catalog dialog lists
+    these and, on create, copies the schema + pricing onto the catalog so it is
+    self-contained — no pack code runs in core at pricing time (ADR-013).
+    Resilient: if the plugin-host is unreachable, returns [] (packs are optional).
+    """
+    from gdx_dispatch.routers.plugins_proxy import _plugin_host_url
+
+    out: list[dict[str, object]] = []
+    try:
+        resp = httpx.get(f"{_plugin_host_url()}/api/plugins", timeout=3.0)
+        resp.raise_for_status()
+        plugins = resp.json()
+    except Exception as exc:  # noqa: BLE001 — plugin-host down/absent is non-fatal
+        # Packs are optional; don't break the catalog page. Log so a real
+        # plugin-host outage is visible rather than silently showing no packs.
+        log.warning("pack-types: plugin-host unreachable (%s): %s", type(exc).__name__, str(exc)[:200])
+        return out
+    for p in plugins:
+        for ps in (p.get("pricing_strategies") or []):
+            _register_pack_strategy_safe(ps)
+        for ct in (p.get("catalog_types") or []):
+            if not ct.get("key") or not ct.get("label"):
+                continue
+            ps = ct.get("pricing_strategy") or {}
+            _register_pack_strategy_safe(ps)
+            config = (
+                {"kind": ps["kind"], "params": ps.get("params") or {}}
+                if ps.get("kind") else {}
+            )
+            out.append({
+                "key": ct["key"],
+                "label": ct["label"],
+                "plugin": p.get("key"),
+                "field_schema": ct.get("field_schema") or [],
+                "pricing_strategy": ps.get("id") or "manual",
+                "pricing_config": config,
+            })
+    return out
+
+
 @router.get("/api/catalogs", response_model=None)
 def list_catalogs(_: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict[str, object]]:
     # Sprint typed-catalogs follow-up — surface manufacturer feed tables
@@ -626,6 +853,9 @@ def create_catalog(
         name=payload.name,
         source_system=payload.source,
         product_class=payload.product_class,
+        field_schema=payload.field_schema or [],
+        pricing_strategy=payload.pricing_strategy or "manual",
+        pricing_config=payload.pricing_config or {},
     )
     db.add(row)
     db.commit()
@@ -728,15 +958,16 @@ def add_catalog_item(
     from gdx_dispatch.modules.catalog_policy import enforce_save_pricing, require_description_or_422
     require_description_or_422(tenant_id_for_policy, payload.description)
 
-    # F-75 / 2026-04-29 — tenant may block zero-price saves and/or
-    # auto-inactivate zero-priced items (so they don't appear in pickers).
-    effective_price = payload.price if payload.price is not None else payload.cost
+    catalog = _get_catalog_or_404(catalog_id, db)
+    product_class = (catalog.product_class or "parts").strip().lower()
+
+    # ADR-015 Slice 2 — apply the catalog's pricing strategy when no price was
+    # entered. The zero-price policy gate (F-75) sees the FINAL price, so a
+    # strategy-computed non-zero retail correctly stays active.
+    effective_price = _retail_for(catalog, payload.cost, payload.price)
     active_after_policy = enforce_save_pricing(
         tenant_id_for_policy, price=effective_price
     )
-
-    catalog = _get_catalog_or_404(catalog_id, db)
-    product_class = (catalog.product_class or "parts").strip().lower()
 
     row = CustomCatalogItem(
         catalog_id=catalog_id,
@@ -754,6 +985,9 @@ def add_catalog_item(
         active=payload.active and active_after_policy,
         qb_item_id=payload.qb_item_id.strip() if payload.qb_item_id else None,
     )
+    # ADR-015 — coerce custom-field values against the catalog's declared schema.
+    if product_class == "custom":
+        row.attributes = _coerce_attributes(catalog.field_schema or [], payload.attributes)
     db.add(row)
     db.flush()
 
@@ -1024,6 +1258,12 @@ def patch_catalog_item(
             if field in spec_payload:
                 setattr(spec, field, spec_payload[field])
 
+    # ADR-015 — merge custom-field values, coerced against the catalog schema.
+    if "attributes" in updates and (row.product_class or "parts").lower() == "custom":
+        coerced = _coerce_attributes(row.catalog.field_schema or [], updates.get("attributes"))
+        merged = {**(row.attributes or {}), **coerced}
+        row.attributes = merged
+
     db.commit()
     db.refresh(row)
 
@@ -1112,7 +1352,9 @@ def bulk_import_catalog_items(
             name=item.name,
             description=item.description,
             cost=_money(item.cost),
-            price=_money(item.price if item.price is not None else item.cost),
+            # ADR-015 Slice 2 — same pricing strategy as single-add, so a CSV/JSON
+            # import of cost-only rows prices identically to the Add form.
+            price=_money(_retail_for(catalog, item.cost, item.price)),
             category=item.category,
             pricing_category=_derive_pricing_category(
                 item.pricing_category, item.category, product_class, valid_categories

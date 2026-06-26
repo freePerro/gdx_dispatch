@@ -44,7 +44,11 @@ def create_plugin_host(plugins=None) -> FastAPI:
     def list_plugins():
         return [
             {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui,
-             "permissions": list(getattr(p, "permissions", ()))}
+             "permissions": list(getattr(p, "permissions", ())),
+             # ADR-015 Catalog Pack contributions — DATA the core catalog reads.
+             "catalog_types": list(getattr(p, "catalog_types", ())),
+             "pricing_strategies": list(getattr(p, "pricing_strategies", ())),
+             "importers": list(getattr(p, "importers", ()))}
             for p in catalog.values()
         ]
 

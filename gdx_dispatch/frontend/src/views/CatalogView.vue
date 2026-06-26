@@ -22,7 +22,7 @@
              which product class each catalog holds (Parts/Doors/etc). -->
         <div class="catalog-tabs">
           <Button v-for="cat in catalogs" :key="cat.id"
-            :label="`${cat.name} · ${classLabel(cat.product_class)}`"
+            :label="`${cat.name} · ${classLabel(cat)}`"
             :severity="selectedCatalog?.id === cat.id ? undefined : 'secondary'"
             size="small"
             @click="selectCatalog(cat)"
@@ -50,10 +50,10 @@
             <router-link to="/margin-tiers" class="pricing-warn-link">Configure margin tiers</router-link>
           </Message>
           <div class="items-header">
-            <h3>{{ selectedCatalog.name }} — {{ items.length }} {{ classLabel(selectedCatalog.product_class).toLowerCase() }}</h3>
+            <h3>{{ selectedCatalog.name }} — {{ items.length }} {{ classLabel(selectedCatalog).toLowerCase() }}</h3>
             <div style="display:flex; gap:0.5rem;">
               <InputText v-model="searchQuery" placeholder="Search..." data-testid="catalog-search" />
-              <Button :label="`+ Add ${singularLabel(selectedCatalog.product_class)}`" icon="pi pi-plus" @click="openAddItem" />
+              <Button :label="`+ Add ${singularLabel(selectedCatalog)}`" icon="pi pi-plus" @click="openAddItem" />
             </div>
           </div>
 
@@ -63,7 +63,7 @@
             <template #empty>
               <div class="empty-state">
                 <p>No items in this catalog yet.</p>
-                <Button :label="`+ Add First ${singularLabel(selectedCatalog.product_class)}`" @click="openAddItem" />
+                <Button :label="`+ Add First ${singularLabel(selectedCatalog)}`" @click="openAddItem" />
               </div>
             </template>
             <Column v-for="col in tableColumns" :key="col.field"
@@ -106,9 +106,39 @@
           <label>Catalog Name</label>
           <InputText v-model="newCatalogForm.name" placeholder="e.g., Custom Doors 2026" data-testid="new-catalog-name" class="w-full" />
         </div>
+
+        <!-- ADR-015 — custom catalog field builder. Only shown for the "Custom…" type. -->
+        <div v-if="isCustomNew" class="form-field custom-fields" data-testid="custom-field-builder">
+          <label>Fields</label>
+          <small class="muted">Define the columns this catalog tracks. Name, SKU, cost &amp; price are always included.</small>
+          <div v-for="(f, idx) in customFields" :key="idx" class="custom-field-row">
+            <InputText v-model="f.label" placeholder="Field label (e.g. Tonnage)"
+              :data-testid="`custom-field-label-${idx}`" class="cf-label" />
+            <Select v-model="f.type" :options="fieldTypeOptions" option-label="label" option-value="value" class="cf-type" />
+            <InputText v-if="f.type === 'select'" v-model="f.optionsText"
+              placeholder="Options, comma-separated" class="cf-options" />
+            <label class="cf-required"><Checkbox v-model="f.required" :binary="true" /> Required</label>
+            <Button icon="pi pi-times" severity="danger" text aria-label="Remove field" @click="removeCustomField(idx)" />
+          </div>
+          <Button label="+ Add Field" size="small" severity="secondary" text
+            data-testid="add-custom-field" @click="addCustomField" />
+        </div>
         <div class="form-field">
           <label>Source System</label>
           <Select v-model="newCatalogForm.source" :options="sourceOptions" placeholder="Select source" class="w-full" />
+        </div>
+
+        <!-- ADR-015 Slice 2 — pricing strategy. Applied when an item is saved
+             with no price. Pack types bring their own pricing, so hidden then. -->
+        <div v-if="showPricingPicker" class="form-field">
+          <label>Pricing</label>
+          <Select v-model="newCatalogForm.pricing_strategy" :options="pricingStrategies"
+            option-label="label" option-value="id" placeholder="Pricing strategy"
+            data-testid="new-catalog-pricing" class="w-full" />
+          <small class="muted">How retail is computed from cost when you leave an item's price blank.</small>
+        </div>
+        <div v-else class="form-field">
+          <small class="muted">Pricing for this type is set by the Catalog Pack.</small>
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="showNewCatalog = false" />
@@ -118,7 +148,7 @@
 
       <!-- Item Dialog — fields rendered from the registry per product_class -->
       <Dialog v-model:visible="showItemDialog"
-        :header="editingItem ? `Edit ${singularLabel(selectedCatalog?.product_class)}` : `Add ${singularLabel(selectedCatalog?.product_class)}`"
+        :header="editingItem ? `Edit ${singularLabel(selectedCatalog)}` : `Add ${singularLabel(selectedCatalog)}`"
         modal :style="{width: '720px'}">
         <div class="form-grid">
           <div v-for="field in formFields" :key="field.name"
@@ -139,6 +169,16 @@
               :modelValue="readField(itemForm, field.name)"
               @update:modelValue="(v) => writeField(itemForm, field.name, v)"
               mode="currency" currency="USD" class="w-full" />
+            <Select v-else-if="field.type === 'select'" :options="field.options || []"
+              :modelValue="readField(itemForm, field.name)"
+              @update:modelValue="(v) => writeField(itemForm, field.name, v)"
+              placeholder="Choose…" class="w-full" />
+            <Checkbox v-else-if="field.type === 'checkbox'" :binary="true"
+              :modelValue="readField(itemForm, field.name)"
+              @update:modelValue="(v) => writeField(itemForm, field.name, v)" />
+            <input v-else-if="field.type === 'date'" type="date" class="w-full native-date"
+              :value="readField(itemForm, field.name)"
+              @input="(e) => writeField(itemForm, field.name, e.target.value)" />
             <InputText v-else
               :modelValue="readField(itemForm, field.name)"
               @update:modelValue="(v) => writeField(itemForm, field.name, v)" class="w-full" />
@@ -198,14 +238,15 @@
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import {
-  PRODUCT_CLASSES,
   PRODUCT_CLASS_OPTIONS,
-  getProductClass,
-  emptyItemForClass,
+  getCatalogClass,
+  emptyItemForCatalog,
+  createPayloadFromPackType,
   readField,
   writeField,
 } from "../catalog/types.js";
 import Button from "primevue/button";
+import Checkbox from "primevue/checkbox";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
@@ -244,36 +285,117 @@ const aiFile = ref(null);
 const aiImporting = ref(false);
 const aiImportResult = ref(null);
 
-const productClassOptions = PRODUCT_CLASS_OPTIONS;
+// ADR-015 Slice 2/3 — pricing strategies + pack-contributed catalog types,
+// loaded from the API on mount.
+const pricingStrategies = ref([]);
+const packTypes = ref([]);
 
-function classLabel(key) {
-  return getProductClass(key).label;
+// Type dropdown = built-ins + Custom… + one entry per installed pack type.
+const productClassOptions = computed(() => [
+  ...PRODUCT_CLASS_OPTIONS,
+  ...packTypes.value.map((t) => ({
+    label: `${t.label} (Pack)`,
+    value: `pack:${t.key}`,
+    description: `From the ${t.plugin} Catalog Pack — fields and pricing are predefined.`,
+  })),
+]);
+
+// ADR-015 — field types offered in the custom-catalog builder.
+const fieldTypeOptions = [
+  { label: "Text", value: "text" },
+  { label: "Long text", value: "textarea" },
+  { label: "Number", value: "number" },
+  { label: "Currency", value: "currency" },
+  { label: "Yes/No", value: "checkbox" },
+  { label: "Dropdown", value: "select" },
+  { label: "Date", value: "date" },
+];
+
+// classLabel/singularLabel take a catalog object so custom catalogs resolve to
+// their own field_schema-derived label rather than the static registry.
+function classLabel(cat) {
+  return getCatalogClass(cat).label;
 }
 
-function singularLabel(key) {
-  const label = getProductClass(key).label;
+function singularLabel(cat) {
+  const klass = getCatalogClass(cat);
+  if (klass.singular) return klass.singular;
+  const label = klass.label;
   // 'Parts' → 'Part', 'Doors' → 'Door'
-  return label.endsWith('s') ? label.slice(0, -1) : label;
+  return label.endsWith("s") ? label.slice(0, -1) : label;
 }
 
-const selectedClassDescription = computed(
-  () => getProductClass(newCatalogForm.value.product_class).description
-);
+const isCustomNew = computed(() => newCatalogForm.value.product_class === "custom");
+const isPackNew = computed(() => String(newCatalogForm.value.product_class).startsWith("pack:"));
+// Pack types bring their own pricing; the picker is for built-in/custom catalogs.
+const showPricingPicker = computed(() => !isPackNew.value);
+
+const selectedClassDescription = computed(() => {
+  const opt = productClassOptions.value.find(
+    (o) => o.value === newCatalogForm.value.product_class
+  );
+  return opt ? opt.description : "";
+});
 
 const formFields = computed(() => {
   if (!selectedCatalog.value) return [];
-  return getProductClass(selectedCatalog.value.product_class).formFields;
+  return getCatalogClass(selectedCatalog.value).formFields;
 });
 
 const tableColumns = computed(() => {
   if (!selectedCatalog.value) return [];
-  return getProductClass(selectedCatalog.value.product_class).tableColumns;
+  return getCatalogClass(selectedCatalog.value).tableColumns;
 });
 
 const sourceOptions = ["manual", "chi", "qb"];
 
-const newCatalogForm = ref({ name: "", source: "manual", product_class: "parts" });
-const itemForm = ref(emptyItemForClass("parts"));
+const newCatalogForm = ref({ name: "", source: "manual", product_class: "parts", pricing_strategy: "manual" });
+// Builder rows for a custom catalog: { label, type, required, optionsText }.
+const customFields = ref([]);
+const itemForm = ref(emptyItemForCatalog({ product_class: "parts" }));
+
+function addCustomField() {
+  customFields.value.push({ label: "", type: "text", required: false, optionsText: "" });
+}
+
+function removeCustomField(idx) {
+  customFields.value.splice(idx, 1);
+}
+
+// label → safe schema name (matches backend _FIELD_NAME_RE).
+function slugifyFieldName(label) {
+  let s = (label || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+  if (!s) s = "field";
+  if (!/^[a-z]/.test(s)) s = `f_${s}`.slice(0, 40);
+  return s;
+}
+
+// Build the backend field_schema from the builder rows, ensuring unique names.
+function buildFieldSchema() {
+  const seen = new Set();
+  return customFields.value
+    .filter((f) => (f.label || "").trim())
+    .map((f) => {
+      let name = slugifyFieldName(f.label);
+      let n = name;
+      let i = 2;
+      while (seen.has(n)) n = `${name}_${i++}`.slice(0, 40);
+      seen.add(n);
+      const entry = { name: n, label: f.label.trim(), type: f.type, required: !!f.required };
+      if (f.type === "select") {
+        entry.options = (f.optionsText || "")
+          .split(",")
+          .map((o) => o.trim())
+          .filter(Boolean);
+      }
+      return entry;
+    });
+}
 
 const filteredItems = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
@@ -298,6 +420,10 @@ async function loadCatalogs() {
   } finally {
     isLoading.value = false;
   }
+  // ADR-015 — pricing strategies (Slice 2) + installed pack types (Slice 3).
+  // Non-fatal: a missing plugin-host just means no pack types.
+  try { pricingStrategies.value = await api.get("/api/catalogs/pricing-strategies") || []; } catch { /* noop */ }
+  try { packTypes.value = await api.get("/api/catalogs/pack-types") || []; } catch { /* noop */ }
 }
 
 async function selectCatalog(catalog) {
@@ -323,13 +449,38 @@ async function selectCatalog(catalog) {
 
 async function createCatalog() {
   if (!newCatalogForm.value.name) return;
+  let payload;
+  if (isPackNew.value) {
+    // Pack type: expand the template into a self-contained custom catalog.
+    const key = newCatalogForm.value.product_class.slice("pack:".length);
+    const packType = packTypes.value.find((t) => t.key === key);
+    if (!packType) {
+      loadError.value = "That Catalog Pack type is no longer available.";
+      return;
+    }
+    payload = createPayloadFromPackType(newCatalogForm.value.name, newCatalogForm.value.source, packType);
+  } else {
+    payload = { ...newCatalogForm.value };
+    if (isCustomNew.value) {
+      payload.field_schema = buildFieldSchema();
+      if (!payload.field_schema.length) {
+        loadError.value = "Add at least one field for a custom catalog.";
+        return;
+      }
+    }
+    // Attach the chosen strategy's declarative spec so pricing is self-contained
+    // (pack strategies picked here must carry their {kind,params}; built-ins too).
+    const strat = pricingStrategies.value.find((s) => s.id === payload.pricing_strategy);
+    if (strat) payload.pricing_config = { kind: strat.kind, params: strat.params || {} };
+  }
   creating.value = true;
   try {
-    const created = await api.post("/api/catalogs", newCatalogForm.value);
+    const created = await api.post("/api/catalogs", payload);
     catalogs.value.push(created);
     await selectCatalog(created);
     showNewCatalog.value = false;
-    newCatalogForm.value = { name: "", source: "manual", product_class: "parts" };
+    newCatalogForm.value = { name: "", source: "manual", product_class: "parts", pricing_strategy: "manual" };
+    customFields.value = [];
   } catch (err) {
     console.error('create_catalog_failed', err?.message || err);
   } finally {
@@ -339,7 +490,7 @@ async function createCatalog() {
 
 function openAddItem() {
   editingItem.value = null;
-  itemForm.value = emptyItemForClass(selectedCatalog.value?.product_class || "parts");
+  itemForm.value = emptyItemForCatalog(selectedCatalog.value || { product_class: "parts" });
   showItemDialog.value = true;
 }
 
@@ -347,9 +498,9 @@ function editItem(item) {
   editingItem.value = item;
   // Deep-copy to avoid mutating the row in place before save.
   itemForm.value = JSON.parse(JSON.stringify(item));
-  if (selectedCatalog.value && getProductClass(selectedCatalog.value.product_class).defaultSpec !== null) {
-    if (!itemForm.value.spec) itemForm.value.spec = {};
-  }
+  const klass = getCatalogClass(selectedCatalog.value);
+  if (klass.defaultSpec !== null && !itemForm.value.spec) itemForm.value.spec = {};
+  if (klass.isCustom && !itemForm.value.attributes) itemForm.value.attributes = {};
   showItemDialog.value = true;
 }
 
@@ -448,6 +599,15 @@ onMounted(loadCatalogs);
 .empty-state h3 { margin: 1rem 0 0.5rem; color: var(--text-color); }
 
 .muted { color: var(--p-text-muted-color); }
+
+/* ADR-015 — custom catalog field builder */
+.custom-fields { gap: 0.5rem; }
+.custom-field-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.custom-field-row .cf-label { flex: 1 1 140px; }
+.custom-field-row .cf-type { flex: 0 0 130px; }
+.custom-field-row .cf-options { flex: 1 1 160px; }
+.custom-field-row .cf-required { display: flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; white-space: nowrap; }
+.native-date { padding: 0.5rem 0.75rem; border: 1px solid var(--p-inputtext-border-color, #cbd5e1); border-radius: 6px; background: var(--p-inputtext-background, #fff); color: inherit; }
 .inline-error { color: #ef4444; padding: 0.5rem; }
 .spinner-wrap { display: flex; justify-content: center; padding: 3rem; }
 

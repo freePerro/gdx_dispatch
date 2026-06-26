@@ -670,6 +670,17 @@ class CustomCatalog(Base):
     # catalogs working unchanged; 'door' / 'opener' / 'spring' / 'track' /
     # 'remote' / 'labor' enable Class Table Inheritance lookups.
     product_class: Mapped[str] = mapped_column(String(40), nullable=False, default="parts", server_default="parts", index=True)
+    # ADR-015 — no-code custom catalog types. When product_class='custom' this
+    # holds the ordered field definitions ({name,label,type,section,required,
+    # options}) the UI renders from; built-in classes leave it empty and use the
+    # frontend registry / typed spec tables instead.
+    field_schema: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    # ADR-015 Slice 2 — pluggable pricing. `pricing_strategy` is the strategy id
+    # ('manual' default = keep entered price); `pricing_config` holds a
+    # self-contained declarative spec ({kind, params}) when the strategy was
+    # contributed by a Catalog Pack, so pricing runs in-core with no pack code.
+    pricing_strategy: Mapped[str] = mapped_column(String(40), nullable=False, default="manual", server_default="manual")
+    pricing_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -697,6 +708,10 @@ class CustomCatalogItem(Base):
     # Mirrors parent CustomCatalog.product_class for fast filtered queries
     # without join. Kept in sync at write time by the catalog router.
     product_class: Mapped[str] = mapped_column(String(40), nullable=False, default="parts", server_default="parts", index=True)
+    # ADR-015 — values for a custom catalog's user-defined fields, keyed by the
+    # field_schema `name`. Empty for built-in classes (which use typed columns /
+    # the door_spec table).
+    attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     qb_item_id: Mapped[str] = mapped_column(String(120), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
