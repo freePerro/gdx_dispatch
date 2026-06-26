@@ -400,6 +400,9 @@ class EstimateLinePatchIn(BaseModel):
     # Sentinel to clear an override; set this true to set margin_pct_override
     # back to NULL (Pydantic can't distinguish "set to None" from "not set").
     clear_margin_override: bool = False
+    # Reorder support — line position in the estimate. Persisted via the generic
+    # setattr path below; read-back sorts by (sort_order, created_at, id).
+    sort_order: int | None = Field(default=None, ge=0, le=99999)
 
     @field_validator("description")
     @classmethod

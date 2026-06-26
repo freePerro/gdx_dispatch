@@ -154,9 +154,19 @@
                   <span class="col-action"></span>
                 </div>
                 <div v-for="(item, idx) in form.line_items" :key="idx" class="line-item-row">
-                  <Button icon="pi pi-trash" aria-label="Delete line" severity="danger" text size="small" class="col-action"
-                    @click="removeLineAt(idx)"
-                    data-testid="est-line-delete" />
+                  <span class="col-action line-controls">
+                    <span class="line-reorder">
+                      <Button icon="pi pi-chevron-up" aria-label="Move line up" text size="small"
+                        :disabled="idx === 0" @click="moveLine(idx, -1)"
+                        :data-testid="`est-line-up-${idx}`" />
+                      <Button icon="pi pi-chevron-down" aria-label="Move line down" text size="small"
+                        :disabled="idx === form.line_items.length - 1" @click="moveLine(idx, 1)"
+                        :data-testid="`est-line-down-${idx}`" />
+                    </span>
+                    <Button icon="pi pi-trash" aria-label="Delete line" severity="danger" text size="small"
+                      @click="removeLineAt(idx)"
+                      data-testid="est-line-delete" />
+                  </span>
                   <Select v-model="item.category" :options="lineCategories" placeholder="Category"
                     class="col-cat" :data-testid="`est-line-cat-${idx}`"
                     @change="recomputeSell(item)" />
@@ -706,6 +716,9 @@ function defaultLineItem() {
     // the Labor matrix.
     labor_price_item_id: null,
     estimated_man_hours: null,
+    // Reorder position; renumbered on move, sent on autosave PATCH. New lines
+    // leave it null → server assigns max+1 on POST.
+    sort_order: null,
   };
 }
 
@@ -1422,9 +1435,10 @@ async function fetchEstimate() {
       // changes later.
       _tax_rate_was_null: data.tax_rate == null && data.taxRate == null,
       line_items: lineSrc.length
-        ? lineSrc.map((li) => ({
+        ? lineSrc.map((li, i) => ({
             ...defaultLineItem(),
             id: li.id,  // preserve server line id for future PATCH support
+            sort_order: li.sort_order ?? (i + 1),  // for reorder up/down
             category: li.category || "Other",
             description: li.description || "",
             quantity: toNum(li.quantity ?? 1),
@@ -1653,6 +1667,19 @@ function removeLineAt(idx) {
   }
 }
 
+function moveLine(idx, dir) {
+  // dir: -1 = up, +1 = down. Swap in place, then renumber sort_order to match
+  // the visual order so the autosave PATCH persists it (read-back sorts by it).
+  const items = form.value.line_items;
+  const j = idx + dir;
+  if (j < 0 || j >= items.length) return;
+  const [moved] = items.splice(idx, 1);
+  items.splice(j, 0, moved);
+  items.forEach((li, i) => { li.sort_order = i + 1; });
+  // The deep watcher autosaves; nudge it so order persists promptly.
+  _scheduleFlush();
+}
+
 function _lineHasContent(li) {
   // Only POST a line once it has a description and a non-zero price. Keeps
   // empty placeholder rows out of the database.
@@ -1710,6 +1737,9 @@ function _linePatchPayload(li) {
     unit_price: li.unit_price,
     cost: isLaborMatrix ? null : (li.cost ?? null),
   };
+  if (Number.isFinite(Number(li.sort_order))) {
+    payload.sort_order = Number(li.sort_order);
+  }
   if (estimateFeatures.value.estimates_allow_line_margin_override) {
     if (li._marginUserEdited
         && Number.isFinite(Number(li.margin_pct_override))
@@ -2277,11 +2307,17 @@ onUnmounted(() => {
 .line-item-header,
 .line-item-row {
   display: grid;
-  grid-template-columns: 36px 120px minmax(160px, 1fr) 70px 110px 110px 80px 90px 36px;
+  grid-template-columns: 64px 120px minmax(160px, 1fr) 70px 110px 110px 80px 90px 36px;
   gap: 0.5rem;
   align-items: center;
-  min-width: 812px;
+  min-width: 840px;
 }
+
+/* Reorder + delete controls share the first column. */
+.line-controls { display: flex; align-items: center; justify-content: center; gap: 1px; }
+.line-reorder { display: flex; flex-direction: column; }
+.line-reorder :deep(.p-button) { width: 1.4rem; height: 1.05rem; padding: 0; }
+.line-reorder :deep(.p-button .p-button-icon) { font-size: 0.7rem; }
 
 .line-item-header {
   font-size: 0.75rem;
