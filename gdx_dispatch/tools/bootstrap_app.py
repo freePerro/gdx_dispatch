@@ -50,6 +50,24 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
+def create_orm_tables() -> None:
+    """Create the ORM-managed tenant-plane tables (idempotent; checkfirst).
+
+    #41 — this MUST run BEFORE `alembic upgrade head` on a fresh DB so any
+    migration that ALTERs a non-baseline (ORM-managed) table finds it present.
+    The squashed baseline only creates the disjoint control-plane tables, so
+    create_all-first does not collide with migration 001. Safe to call again
+    inside main() (checkfirst makes it a no-op once tables exist).
+    """
+    import gdx_dispatch.models  # noqa: F401 — register every model on the metadata
+
+    from gdx_dispatch.core.audit import TenantBase
+    from gdx_dispatch.core.database import engine
+
+    log.info("Ensuring ORM-managed tenant tables exist (create_all)…")
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+
+
 def main() -> int:
     if os.getenv("GDX_SKIP_BOOTSTRAP", "").strip() == "1":
         log.info("GDX_SKIP_BOOTSTRAP=1 — skipping first-run bootstrap.")
@@ -60,14 +78,14 @@ def main() -> int:
     import gdx_dispatch.models  # noqa: F401
 
     from gdx_dispatch.control.models import Tenant
-    from gdx_dispatch.core.audit import TenantBase
-    from gdx_dispatch.core.database import SessionLocal, engine
+    from gdx_dispatch.core.database import SessionLocal
     from gdx_dispatch.core.tenant import single_tenant
     from gdx_dispatch.models.tenant_models import Company, User
 
     # ── 1. Tenant-plane tables (ORM-managed; alembic doesn't create these) ──
-    log.info("Ensuring ORM-managed tenant tables exist (create_all)…")
-    TenantBase.metadata.create_all(engine, checkfirst=True)
+    # Idempotent — the entrypoint already ran this before alembic (#41), but a
+    # bare `python -m bootstrap_app` (e.g. local dev) still needs it here.
+    create_orm_tables()
 
     tenant = single_tenant()
     tenant_id = str(tenant["id"])

@@ -21,6 +21,15 @@ fi
 if [ "${GDX_SKIP_MIGRATIONS:-}" = "1" ]; then
     echo "[entrypoint] GDX_SKIP_MIGRATIONS=1 — skipping alembic upgrade."
 else
+    # #41 — create the ORM-managed (tenant-plane) tables BEFORE alembic, so any
+    # migration that ALTERs a non-baseline table finds it present on a fresh DB.
+    # The squashed baseline only creates the disjoint control-plane tables, so
+    # this does not collide with migration 001.
+    if [ "${GDX_SKIP_BOOTSTRAP:-}" != "1" ]; then
+        echo "[entrypoint] Pre-migration: ensuring ORM tables exist (create_all)…"
+        python -c "from gdx_dispatch.tools.bootstrap_app import create_orm_tables; create_orm_tables()"
+    fi
+
     echo "[entrypoint] Running database migrations (alembic upgrade head)…"
     # script_location in alembic.ini is relative ('migrations'), so run from
     # the directory that contains it.
