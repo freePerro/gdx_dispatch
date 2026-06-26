@@ -30,6 +30,15 @@ router = APIRouter(
     dependencies=[Depends(require_permission("settings.write"))],
 )
 
+# Read-only admin probes (informational, no mutation) live here so a
+# settings.read user — e.g. the version badge on a read-only surface — can
+# call them without tripping the settings.write wall and logging a 403.
+read_router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin-ops"],
+    dependencies=[Depends(require_permission("settings.read"))],
+)
+
 
 # Admin-tier roles, matching require_role(...) usage across the other routers.
 # `owner` outranks `admin` in RBAC_HIERARCHY, so gating on role == "admin" alone
@@ -540,8 +549,8 @@ def _ver_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:3]) if nums else ()
 
 
-@router.get("/update-check")
-async def update_check(_: dict = Depends(_require_admin)) -> dict:
+@read_router.get("/update-check")
+async def update_check(_: dict = Depends(require_permission("settings.read"))) -> dict:
     """Compare the running release (APP_VERSION) against the latest GitHub release.
 
     Self-hosted boxes use this to know an update exists; they apply it with

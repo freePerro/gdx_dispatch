@@ -3,6 +3,12 @@
 *.env
 .env.lab
 .env.bak.*
+# Playwright storageState / captured login sessions (live credentials)
+chi_session.json
+*.session.json
+*storage_state*.json
+# CHI HubX pricing plugin — kept out of the repo (proprietary integration)
+plugins/gdx-plugin-chi-pricing/
 
 # Database files
 *.db
