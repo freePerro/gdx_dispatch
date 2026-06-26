@@ -1542,6 +1542,98 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
     return "updated"
 
 
+def _extract_import_text(content_bytes: bytes, filename: str | None) -> str:
+    """Decode an uploaded price sheet to text (#52).
+
+    Handles real PDFs server-side via pypdf so operators can upload the actual
+    sheet instead of pre-extracting it; everything else is treated as UTF-8 text
+    (CSV/TXT/JSON).
+    """
+    is_pdf = content_bytes[:5] == b"%PDF-" or (filename or "").lower().endswith(".pdf")
+    if is_pdf:
+        try:
+            from io import BytesIO
+
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(content_bytes))
+            return "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not extract text from the PDF: {exc}. Try exporting it as CSV/text.",
+            ) from None
+    return content_bytes.decode("utf-8", errors="replace")
+
+
+def _chunk_text_for_ai(text: str, max_chars: int = 12000) -> list[str]:
+    """Split on line boundaries into <= max_chars chunks (#52).
+
+    A multi-page sheet (~130 items) overflows a single model call's output
+    budget, truncating the JSON. Paginating the input keeps each model call's
+    output well under its token cap.
+    """
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in text.splitlines(keepends=True):
+        if cur_len + len(line) > max_chars and cur:
+            chunks.append("".join(cur))
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += len(line)
+    if cur:
+        chunks.append("".join(cur))
+    return chunks or [""]
+
+
+def _parse_ai_json_array(ai_response: object) -> list:
+    """Pull a JSON array out of a model response, tolerant of code fences and
+    surrounding prose (grabs the outermost [...] span). Raises ValueError on
+    failure so the caller can count it as a failed chunk."""
+    import json as _json
+    import re as _re
+    # AIRouter.generate() returns {"content": ...} (NOT "text"); accept a raw
+    # string too for callers/mocks that hand back the text directly.
+    if isinstance(ai_response, str):
+        text = ai_response
+    else:
+        d = ai_response or {}
+        text = d.get("content") or d.get("text", "")
+    text = _re.sub(r"^```(?:json)?\s*", "", str(text).strip())
+    text = _re.sub(r"\s*```$", "", text)
+    start, end = text.find("["), text.rfind("]")
+    if start != -1 and end > start:
+        text = text[start:end + 1]
+    data = _json.loads(text)
+    if not isinstance(data, list):
+        raise ValueError("AI did not return a JSON array")
+    return data
+
+
+def _ai_import_prompt(chunk_text: str) -> str:
+    return f"""You are parsing a parts catalog for a garage door company. Extract all parts from the text below and return a JSON array.
+
+For each part, extract:
+- sku (or generate one from name if missing)
+- name (required)
+- description
+- cost (unit cost as number)
+- price (retail price as number, can be same as cost if not given)
+- category
+- vendor (manufacturer)
+- manufacturer_part_number
+
+Return ONLY a valid JSON array, no prose. Example:
+[{{"sku":"SPR-001","name":"Torsion Spring 2\\" 0.243","description":"Right wind","cost":45.00,"price":89.00,"category":"Springs","vendor":"CHI","manufacturer_part_number":"TS-0243R"}}]
+
+Text to parse:
+---
+{chunk_text}
+---
+
+JSON array:"""
+
+
 @router.post("/api/catalogs/{catalog_id}/ai-import", response_model=None)
 async def ai_import_catalog(
     catalog_id: UUID,
@@ -1561,62 +1653,43 @@ async def ai_import_catalog(
     catalog = _get_catalog_or_404(catalog_id, db)
 
     content_bytes = await file.read()
-    try:
-        text_content = content_bytes.decode("utf-8", errors="replace")[:50000]  # Cap at 50KB
-    except Exception:
-        log.exception("ai_import_catalog_failed extra_context=%s", "unknown")
-        raise HTTPException(status_code=422, detail="Could not read file as text. Upload CSV, TXT, or extracted PDF text.") from None
+    # Cap at 200KB of text — enough for multi-page sheets, bounded for safety.
+    text_content = _extract_import_text(content_bytes, file.filename)[:200000]
+    if not text_content.strip():
+        raise HTTPException(status_code=422, detail="No readable text found in the upload.")
 
     tenant_id, _ = _audit_ids(user, request)
-    prompt = f"""You are parsing a parts catalog for a garage door company. Extract all parts from the text below and return a JSON array.
 
-For each part, extract:
-- sku (or generate one from name if missing)
-- name (required)
-- description
-- cost (unit cost as number)
-- price (retail price as number, can be same as cost if not given)
-- category
-- vendor (manufacturer)
-- manufacturer_part_number
+    # #52 — paginate large sheets so the model's JSON output never truncates.
+    # Each chunk is parsed independently; a chunk that fails is counted, not
+    # fatal, so a single bad page doesn't zero the whole import.
+    chunks = _chunk_text_for_ai(text_content)
+    extracted_items: list = []
+    failed_chunks = 0
+    for chunk in chunks:
+        try:
+            ai_response = await get_ai_router().generate(
+                task=AITask.GENERAL,
+                prompt=_ai_import_prompt(chunk),
+                tenant_id=tenant_id,
+                max_tokens=8192,
+                temperature=0.1,
+            )
+            extracted_items.extend(_parse_ai_json_array(ai_response))
+        except Exception:
+            log.exception("ai_import_chunk_failed")
+            failed_chunks += 1
+            continue
 
-Return ONLY a valid JSON array, no prose. Example:
-[{{"sku":"SPR-001","name":"Torsion Spring 2\" 0.243","description":"Right wind","cost":45.00,"price":89.00,"category":"Springs","vendor":"CHI","manufacturer_part_number":"TS-0243R"}}]
-
-Text to parse:
----
-{text_content}
----
-
-JSON array:"""
-
-    try:
-        ai_response = await get_ai_router().generate(
-            task=AITask.GENERAL,
-            prompt=prompt,
-            tenant_id=tenant_id,
-            max_tokens=4096,
-            temperature=0.1,
+    if not extracted_items:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"AI extraction returned no usable items "
+                f"({failed_chunks}/{len(chunks)} chunk(s) failed). "
+                "Try a smaller or cleaner file."
+            ),
         )
-    except Exception as exc:
-        log.exception("ai_import_catalog_failed extra_context=%s", exc)
-        raise HTTPException(status_code=500, detail=f"AI extraction failed: {exc}") from None
-
-    # Parse the JSON response
-    import json as _json
-    import re as _re
-    text = ai_response if isinstance(ai_response, str) else ai_response.get("text", "")
-    # Strip markdown code fences if present
-    text = _re.sub(r"^```(?:json)?\s*", "", text.strip())
-    text = _re.sub(r"\s*```$", "", text)
-    try:
-        extracted_items = _json.loads(text)
-    except Exception:
-        log.exception("ai_import_catalog_failed extra_context=%s", "unknown")
-        raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {text[:200]}") from None
-
-    if not isinstance(extracted_items, list):
-        raise HTTPException(status_code=500, detail="AI did not return a JSON array")
 
     # Import the extracted items
     product_class = (catalog.product_class or "parts").strip().lower()
@@ -1655,13 +1728,24 @@ JSON array:"""
         action="catalog_ai_imported",
         entity_type="catalog",
         entity_id=str(catalog_id),
-        details={"imported": imported, "total_extracted": len(extracted_items), "filename": file.filename},
+        details={
+            "imported": imported,
+            "total_extracted": len(extracted_items),
+            "chunks": len(chunks),
+            "failed_chunks": failed_chunks,
+            "filename": file.filename,
+        },
         request=request,
     )
     db.commit()
     return {
         "imported": imported,
         "total_extracted": len(extracted_items),
+        # #52 — surface partial extraction so the UI can warn instead of
+        # silently importing a truncated catalog.
+        "chunks": len(chunks),
+        "failed_chunks": failed_chunks,
+        "partial": failed_chunks > 0,
         "sample": extracted_items[:3] if extracted_items else [],
     }
 

@@ -215,10 +215,11 @@
       <!-- AI Import Dialog -->
       <Dialog v-model:visible="showAiImportDialog" header="AI Import — Extract Parts from Any File" modal :style="{width: '600px'}">
         <p class="muted">
-          Upload any file (CSV, TXT, extracted PDF text, vendor quote) and AI will extract the parts
-          into your catalog. Supports CHI, Clopay, Amarr, Wayne Dalton price sheets and more.
+          Upload any file (PDF, CSV, TXT, vendor quote) and AI will extract the parts
+          into your catalog. PDFs are read server-side. Supports CHI, Clopay, Amarr,
+          Wayne Dalton price sheets and more — multi-page sheets are paginated automatically.
         </p>
-        <FileUpload mode="basic" accept=".csv,.txt,.json,text/*" :maxFileSize="5000000"
+        <FileUpload mode="basic" accept=".csv,.txt,.json,.pdf,text/*,application/pdf" :maxFileSize="20000000"
           @select="onAiFileSelect" :auto="false" chooseLabel="Choose File" data-testid="ai-file-select" />
         <div v-if="aiFile" class="muted" style="margin-top:0.5rem;">
           Selected: {{ aiFile.name }} ({{ (aiFile.size / 1024).toFixed(1) }} KB)
@@ -226,6 +227,10 @@
         <div v-if="aiImportResult" class="ai-result">
           <h4>AI Extraction Complete</h4>
           <p><strong>{{ aiImportResult.imported }}</strong> parts imported of <strong>{{ aiImportResult.total_extracted }}</strong> extracted.</p>
+          <Message v-if="aiImportResult.partial" severity="warn" :closable="false" data-testid="ai-partial-warn">
+            Partial import: {{ aiImportResult.failed_chunks }} of {{ aiImportResult.chunks }} page-chunks
+            failed to parse. Some parts may be missing — re-run on a cleaner/smaller file if needed.
+          </Message>
           <div v-if="aiImportResult.sample?.length" class="sample-parts">
             <strong>Sample:</strong>
             <div v-for="(part, i) in aiImportResult.sample" :key="i" class="sample-part">
