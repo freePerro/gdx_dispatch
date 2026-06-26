@@ -98,7 +98,7 @@ def dashboard(
 
     with contextlib.suppress(Exception):
         stats["technicians"] = tenant_db.execute(
-            text("SELECT COUNT(*) FROM users WHERE role = 'technician' AND active = 1")
+            text("SELECT COUNT(*) FROM users WHERE role IN ('technician', 'tech') AND active = 1")
         ).scalar() or 0
 
     # Recent jobs (last 5)
@@ -307,7 +307,10 @@ async def team_invite(
 ) -> RedirectResponse:
     _require_auth(request)
 
-    # Validate role
+    # #45 — canonicalize to the long form so users.role holds ONE vocabulary
+    # regardless of write path (accepts 'tech'/'dispatch' input too).
+    from gdx_dispatch.core.roles import normalize_role
+    role = normalize_role(role)
     valid_roles = {"admin", "dispatcher", "technician", "viewer"}
     if role not in valid_roles:
         raise HTTPException(status_code=422, detail=f"Invalid role: {role}")

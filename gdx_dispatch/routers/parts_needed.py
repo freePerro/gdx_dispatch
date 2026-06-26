@@ -192,7 +192,7 @@ def add_part_needed(
             recipients = db.execute(
                 text(
                     "SELECT DISTINCT id FROM users "
-                    "WHERE role IN ('dispatcher', 'admin', 'owner') "
+                    "WHERE role IN ('dispatcher', 'dispatch', 'admin', 'owner') "
                     "  AND (deleted_at IS NULL) "
                     "  AND (active IS NULL OR active = :t)"
                 ),

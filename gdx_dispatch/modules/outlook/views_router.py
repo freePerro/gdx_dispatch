@@ -128,7 +128,7 @@ def _load_tech_emails(tenant_db: Session) -> set[str]:
         from gdx_dispatch.models.tenant_models import User
         rows = (
             tenant_db.query(User)
-            .filter(User.role == "technician", User.deleted_at.is_(None))
+            .filter(User.role.in_(["technician", "tech"]), User.deleted_at.is_(None))
             .all()
         )
         return {r.email.lower().strip() for r in rows if r.email}

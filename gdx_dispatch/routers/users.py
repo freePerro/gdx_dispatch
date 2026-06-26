@@ -10,7 +10,9 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from gdx_dispatch.core.roles import normalize_role
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -35,14 +37,25 @@ router = APIRouter(
     dependencies=[Depends(bind_tenant_context), Depends(require_module("jobs"))],
 )
 
-VALID_ROLES = ("admin", "dispatch", "tech", "sales", "owner")
+# #45 — canonical (long) forms stored in users.role. The write paths accept
+# either spelling on input (frontend still posts short) and normalize to the
+# canonical form below before persisting, so users.role only ever holds ONE
+# vocabulary. See core/roles.normalize_role and docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md.
+VALID_ROLES = ("admin", "dispatcher", "technician", "sales", "owner")
+# Input pattern accepts both spellings; the validator canonicalizes.
+_ROLE_INPUT_PATTERN = r"^(admin|owner|sales|dispatch|dispatcher|tech|technician)$"
 
 
 class UserCreateIn(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(min_length=1, max_length=200)
     password: str = Field(min_length=8, max_length=128)
-    role: str = Field(default="dispatch", pattern=r"^(admin|dispatch|tech|sales|owner)$")
+    role: str = Field(default="dispatcher", pattern=_ROLE_INPUT_PATTERN)
+
+    @field_validator("role")
+    @classmethod
+    def _canon_role(cls, v: str) -> str:
+        return normalize_role(v)
 
 
 class UserPatchIn(BaseModel):
@@ -71,7 +84,12 @@ class SelfPasswordChangeIn(BaseModel):
 
 
 class RoleChangeIn(BaseModel):
-    role: str = Field(pattern=r"^(admin|dispatch|tech|sales|owner)$")
+    role: str = Field(pattern=_ROLE_INPUT_PATTERN)
+
+    @field_validator("role")
+    @classmethod
+    def _canon_role(cls, v: str) -> str:
+        return normalize_role(v)
 
 
 class PasswordResetIn(BaseModel):
@@ -81,7 +99,12 @@ class PasswordResetIn(BaseModel):
 class InviteIn(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(min_length=1, max_length=200)
-    role: str = Field(default="dispatch", pattern=r"^(admin|dispatch|tech|sales|owner)$")
+    role: str = Field(default="dispatcher", pattern=_ROLE_INPUT_PATTERN)
+
+    @field_validator("role")
+    @classmethod
+    def _canon_role(cls, v: str) -> str:
+        return normalize_role(v)
 
 
 # Categorical reasons for an admin/owner-initiated lockout. Captured in the

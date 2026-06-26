@@ -12,15 +12,19 @@ touching role strings or adding a nav module. Companion to
 
 The same role has been spelled multiple ways:
 
-| Concept | SHORT (legacy, stored in `users.role`) | LONG (canonical, RBAC catalog) |
+| Concept | SHORT (legacy) | LONG (canonical) |
 |---|---|---|
 | Field technician | `tech` | `technician` |
 | Shop-floor coordinator | `dispatch` | `dispatcher` |
 | Platform superadmin | — | `super_admin` (also seen: `superadmin`, `super-admin`) |
 
-`users.role` stores the SHORT legacy form. `BUILTIN_ROLES` keys and
-`tenant_roles.name` use the LONG form. JWTs carry whatever `users.role` holds.
-This used to force every comparison to special-case both spellings.
+**As of #45, `users.role` stores the LONG (canonical) form.** Both user-write
+paths (`routers/users.py`, `core/tenant_ui.py`) normalize input through
+`normalize_role` before persisting, and migration `009_canon_user_roles`
+backfilled the remaining short rows. `BUILTIN_ROLES` keys and `tenant_roles.name`
+already use the LONG form. JWTs carry whatever `users.role` holds (now long).
+Legacy short rows may still surface from un-migrated tenants, so read sites must
+still normalize — see the SQL note below.
 
 ### The rule
 
@@ -62,27 +66,23 @@ normalize in Python, never in the query:
 
 | Column | Stored form | Example |
 |---|---|---|
-| `users.role` | SHORT | `WHERE u.role = 'tech'` |
+| `users.role` | LONG (since #45) | `WHERE u.role IN ('technician','tech')` |
 | `tenant_roles.name` | LONG | `WHERE r.name IN ('dispatcher','admin','owner')` |
 
-If you need to compare a role you read from the DB against a canonical constant,
-normalize it in Python after the fetch.
+`users.role` is now LONG, but include the legacy short form in role-filter SQL
+(`IN ('technician','tech')`) as belt-and-suspenders: an un-migrated tenant or a
+row written by an old client could still be short. If you compare a role you read
+from the DB against a canonical constant, normalize it in Python after the fetch.
 
-### ⚠️ Known inconsistency — two user-write vocabularies (TODO)
+### Resolved — one user-write vocabulary (#45)
 
-`users.role` is written in **two different vocabularies** depending on the path:
-
-| Write path | Vocabulary it validates/writes |
-|---|---|
-| `routers/users.py` (`VALID_ROLES`) | SHORT: `admin, dispatch, tech, sales, owner` |
-| `core/tenant_ui.py` (`/team/invite`) | LONG: `admin, dispatcher, technician, viewer` |
-
-So a `users.role` row can legitimately be **either** `'tech'` **or** `'technician'`
-(and `'dispatch'` or `'dispatcher'`) depending on how the user was created. This is
-why every comparison MUST normalize — a raw `role !== 'tech'` check silently treats
-a long-form `'technician'` user as a non-tech. The real fix is to pick ONE write
-vocabulary (or normalize on write); until then, `normalize_role` / `isTechnician`
-at every read site is load-bearing, not optional.
+`users.role` used to be written in two vocabularies (`routers/users.py` wrote
+SHORT, `core/tenant_ui.py` wrote LONG), so a row could be `'tech'` **or**
+`'technician'`. As of #45 both write paths run the role through
+`normalize_role` before persisting (canonical = LONG), and migration
+`009_canon_user_roles` backfilled existing short rows. Reads should still
+normalize (`normalize_role` / `isTechnician`) — defense for any un-migrated
+legacy row — but the column is now single-vocabulary by construction.
 
 ---
 
