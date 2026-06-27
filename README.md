@@ -5,15 +5,6 @@ service business — scheduling and dispatch, jobs and work orders,
 estimates and proposals, invoicing, inventory, payroll, and customer records.
 FastAPI backend, Vue 3 single-page frontend.
 
-## Stack
-
-- **Backend** — FastAPI (Python 3.11+), SQLAlchemy 2, served by Uvicorn
-- **Frontend** — Vue 3 + PrimeVue, built with Vite
-- **Database** — PostgreSQL 16, schema managed by Alembic
-- **Cache / broker** — Redis 7
-- **Background jobs** — Celery (priority queues + beat scheduler)
-- **Telemetry** — Sentry + OpenTelemetry (optional)
-
 ## Features
 
 The platform spans the full field-service workflow, organized as feature
@@ -32,6 +23,15 @@ under [`gdx_dispatch/routers/`](gdx_dispatch/routers/):
 
 Access is **permission-driven** with role canonicalization — see
 [`docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md`](gdx_dispatch/docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md).
+
+## Stack
+
+- **Backend** — FastAPI (Python 3.11+), SQLAlchemy 2, served by Uvicorn
+- **Frontend** — Vue 3 + PrimeVue, built with Vite
+- **Database** — PostgreSQL 16, schema managed by Alembic
+- **Cache / broker** — Redis 7
+- **Background jobs** — Celery (priority queues + beat scheduler)
+- **Telemetry** — Sentry + OpenTelemetry (optional)
 
 ## Project structure
 
