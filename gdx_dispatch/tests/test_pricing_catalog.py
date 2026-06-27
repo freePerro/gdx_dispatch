@@ -213,7 +213,21 @@ def test_bulk_import_csv(db_session: Session):
     assert result["imported"] == 2
 
 
+def _enable_qb_catalog_sync(db: Session) -> None:
+    # #57 gated qb_pull/push behind quickbooks_catalog_sync (default OFF); these
+    # tests exercise the sync paths, so turn it on first.
+    from gdx_dispatch.models.tenant_models import AppSettings
+    row = db.query(AppSettings).first()
+    if row is None:
+        row = AppSettings(integrations={"quickbooks_catalog_sync": True})
+        db.add(row)
+    else:
+        row.integrations = {**(row.integrations or {}), "quickbooks_catalog_sync": True}
+    db.commit()
+
+
 def test_qb_item_link(db_session: Session):
+    _enable_qb_catalog_sync(db_session)
     catalog = _create_catalog(db_session, source="qb")
     created = _create_item(db_session, str(catalog["id"]), qb_item_id="QB-101")
     assert created["qb_item_id"] == "QB-101"
@@ -251,6 +265,7 @@ def test_qb_item_link(db_session: Session):
 
 
 def test_qb_pull_creates_new_item(db_session: Session):
+    _enable_qb_catalog_sync(db_session)
     catalog = _create_catalog(db_session, source="qb")
     pull_result = catalog_router.qb_pull_sync(
         UUID(str(catalog["id"])),

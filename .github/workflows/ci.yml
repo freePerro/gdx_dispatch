@@ -115,17 +115,16 @@ jobs:
           # Don't write .pyc in CI — pure overhead for a throwaway runner.
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          # EXPERIMENT (2026-06-27): dropping `--forked`. It ran each test in its
-          # own subprocess to contain the #20 native SIGSEGV (an anyio/TestClient
-          # worker thread racing teardown). PR #19 + the #20 mobile-transition fix
-          # removed the two known contributors, and per-test forking measured ~4x
-          # slower locally (20.8s -> 83.6s on 150 tests). Running in-process to
-          # see if the crash is actually gone; `--durations` surfaces the next
-          # slow tests, and the legacy plugins are disabled (small win). If a
-          # shard exits 139 again, restore `--forked` (or mark only the offending
-          # TestClient teardown tests with @pytest.mark.forked).
+          # --forked (pytest-forked) runs each test in its own subprocess to
+          # contain the #20 native SIGSEGV (an anyio/TestClient worker thread
+          # racing teardown). Measured ~4x slower than in-process, but a
+          # 2026-06-27 experiment (PR #60) dropping it segfaulted shard 1
+          # (exit 139) — the residual crash is NOT gone, so forking stays.
+          # Faster path requires fully fixing #20 (then drop --forked) or marking
+          # only the crash-prone TestClient teardown tests @pytest.mark.forked.
+          # The env tweaks below + --durations are kept (safe, surface slow tests).
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-            --splits 7 --group ${{ matrix.group }} --tb=short -q \
+            --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
             -p no:nose -p no:pastebin -p no:doctest --durations=15
 
   build:
