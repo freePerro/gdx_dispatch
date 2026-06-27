@@ -1,7 +1,7 @@
 # GDX Dispatch
 
-A single-tenant, self-hosted **field-service management platform** for a
-garage-door service business — scheduling and dispatch, jobs and work orders,
+A single-tenant, self-hosted **field-service management platform** for
+service business — scheduling and dispatch, jobs and work orders,
 estimates and proposals, invoicing, inventory, payroll, and customer records.
 FastAPI backend, Vue 3 single-page frontend.
 
