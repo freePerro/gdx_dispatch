@@ -19,25 +19,19 @@ A2 **landed** 2026-06-27 (`_coerce_uuid` deduped into
 2026-06-27 (both dead routers deleted; see below). A1 verified still pending as
 of 2026-06-27 (stub tools present) — tracked in its own PR.
 
-### A1. Delete 4 stub MCP tools (product-surface change, 46 → 42 tools)
+### A1. Delete 4 stub MCP tools — ✅ DONE (2026-06-27), 46 → 42 tools
 
-Files:
+Deleted `customer_lookup.py` (`customer.lookup`), `invoice_query.py`
+(`invoice.query`), `event_emit.py` (`event.emit`), `job_create.py`
+(`job.create`) plus their four `test_mcp_tools_*` unit tests, and removed the
+matching entries from `core/mcp_tools/__init__.py` (imports + docstring).
 
-- `gdx_dispatch/core/mcp_tools/customer_lookup.py`  (`customer.lookup`)
-- `gdx_dispatch/core/mcp_tools/invoice_query.py`    (`invoice.query`)
-- `gdx_dispatch/core/mcp_tools/event_emit.py`       (`event.emit`)
-- `gdx_dispatch/core/mcp_tools/job_create.py`       (`job.create`)
-
-Why: handlers return `{"_stub": True}` / `{"_staged": True}` and are superseded
-by fuller tools (`customers.detail`, `invoices.list`, real `job` create path).
-Only their own unit tests reference them.
-
-Caveat: these are LIVE, AI-callable MCP tools (part of the registered 46). An
-agent instructed to call `customer.lookup` by name would fail after removal.
-Confirm no saved prompt / agent config / frontend references the names before
-deleting. Also remove the matching `from . import customer_lookup, ...` entries
-in `core/mcp_tools/__init__.py` and the dead-stub `if db is None:` branches in
-any surviving tool. ~257 lines + tests.
+Pre-deletion reference sweep: the four tool-name strings appear elsewhere only
+as test fixtures / docstring examples (each builds its own `ToolDescriptor`) —
+no frontend, config, or saved-prompt invokes the live tools. No surviving tool
+had an `if db is None:` dead-stub branch. Verified: app-import registers 42
+tools (was 46), the four names are gone, ruff clean. `EXPECTED_MIN_TOOLS = 35`
+floor still satisfied.
 
 ### A2. Dedup `_coerce_uuid` across ~22 mcp_tools files — ✅ DONE (2026-06-27)
 
