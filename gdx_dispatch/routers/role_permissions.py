@@ -678,6 +678,24 @@ def assign_role(
         raise HTTPException(status_code=409, detail="Assignment conflict") from None
     db.refresh(assignment)
 
+    # Keep users.role in sync with a builtin-role assignment. The permission
+    # resolver prefers the assignment, and the JWT carries users.role; if the
+    # two drift apart for admin/owner, the user is silently downgraded to the
+    # lower set (an owner stuck on admin perms, 2026-06-26). change_role already
+    # syncs both directions — assign_role must too. (Custom roles leave
+    # users.role alone; the snapshot drives their perms.)
+    if role.name in BUILTIN_ROLES:
+        from gdx_dispatch.models.tenant_models import User as _User
+        try:
+            target = db.execute(select(_User).where(_User.id == UUID(str(user_id)))).scalar_one_or_none()
+        except (ValueError, AttributeError):
+            target = None
+        if target is not None and (target.role or "") != role.name:
+            target.role = role.name
+            target.updated_at = utcnow()
+            db.commit()
+            log.info("assign_role synced users.role=%s for user=%s", role.name, user_id)
+
     _audit(
         db, tenant_id=tenant_id, user=user,
         action="user_role_assigned",
