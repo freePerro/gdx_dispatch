@@ -112,17 +112,20 @@ jobs:
           # gdx_dispatch/tests/serial/ are included — pytest-split assigns
           # each to a shard and runs it in that shard's single process.
           PYTEST_DISABLE_SPLIT_GUARD: "1"
+          # Don't write .pyc in CI — pure overhead for a throwaway runner.
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          # --forked (pytest-forked) runs each test in its own subprocess. A
-          # residual non-deterministic native SIGSEGV (issue #20 — an anyio /
-          # TestClient worker thread races teardown, then faulthandler crashes
-          # dumping the torn thread) only manifests after cross-test state
-          # accumulates in one long-lived process. Per-test forking resets that
-          # state, so the crash can't build up or take down the whole shard,
-          # and any real test failure surfaces normally instead of being masked
-          # by the crash. Slower than in-process, but correct and deterministic.
+          # --forked (pytest-forked) runs each test in its own subprocess to
+          # contain the #20 native SIGSEGV (an anyio/TestClient worker thread
+          # racing teardown). Measured ~4x slower than in-process, but a
+          # 2026-06-27 experiment (PR #60) dropping it segfaulted shard 1
+          # (exit 139) — the residual crash is NOT gone, so forking stays.
+          # Faster path requires fully fixing #20 (then drop --forked) or marking
+          # only the crash-prone TestClient teardown tests @pytest.mark.forked.
+          # The env tweaks below + --durations are kept (safe, surface slow tests).
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-            --splits 7 --group ${{ matrix.group }} --forked --tb=short -q
+            --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
+            -p no:nose -p no:pastebin -p no:doctest --durations=15
 
   build:
     runs-on: ubuntu-latest
