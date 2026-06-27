@@ -229,7 +229,8 @@ green; frontend production build clean.
   declarative pack strategies.
 - Creating a catalog from a pack type **copies** its `field_schema` + pricing onto the catalog →
   self-contained, no pack code in core at pricing time (ADR-013 isolation preserved).
-- Reference pack `plugins/gdx-plugin-hvac/` (data-only: HVAC type + 40%-markup strategy).
+- Reference pack `gdx-plugin-hvac` (data-only: HVAC type + 40%-markup strategy); lives in the
+  [gdx_dispatch_plugins](https://github.com/freePerro/gdx_dispatch_plugins) repo.
 - Frontend: pack types listed as "… (Pack)"; create expands the template.
 - Tests: `tests/test_catalog_packs.py` + `frontend/src/catalog/__tests__/types.spec.js`.
 
