@@ -1,6 +1,8 @@
 """
-Tests for gdx_dispatch/modules/locations — multi-location tenant support.
-10 tests covering CRUD, technician assignment, tenant isolation, and auth guard.
+Tests for gdx_dispatch/modules/locations models — multi-location tenant support.
+9 model tests (CRUD, technician assignment, tenant isolation) plus an auth-guard
+test against the live ``core/locations.py`` router (the unmounted
+``modules/locations/router.py`` duplicate was deleted; its models.py is kept).
 """
 from __future__ import annotations
 
@@ -205,8 +207,14 @@ def test_primary_location_flag(loc_db):
 
 
 def test_location_requires_auth():
-    """Router dependency chain includes get_current_tenant_user on all routes."""
-    from gdx_dispatch.modules.locations.router import router as loc_router
+    """The live locations router guards every route with get_current_user.
+
+    Targets the mounted router (``core/locations.py``, mounted at app.py:769),
+    not the deleted ``modules/locations/router.py`` duplicate this test used to
+    inspect — so the auth-guard assertion now covers the router that actually
+    serves traffic.
+    """
+    from gdx_dispatch.core.locations import router as loc_router
     from gdx_dispatch.routers.auth import get_current_user
 
     # Collect all dependency callables across every route

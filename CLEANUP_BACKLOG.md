@@ -15,8 +15,9 @@ note about checking that named files still exist.
 ## Part A — Cleanup backlog
 
 A2 **landed** 2026-06-27 (`_coerce_uuid` deduped into
-`core/mcp_tools/_helpers.py:coerce_uuid`, 22 copies removed). A1 and A3 verified
-still pending as of 2026-06-27 (stub tools present, both dead routers present).
+`core/mcp_tools/_helpers.py:coerce_uuid`, 22 copies removed). A3 **landed**
+2026-06-27 (both dead routers deleted; see below). A1 verified still pending as
+of 2026-06-27 (stub tools present) — tracked in its own PR.
 
 ### A1. Delete 4 stub MCP tools — ✅ DONE (2026-06-27), 46 → 42 tools
 
@@ -41,23 +42,23 @@ Landed: unified helper now lives in `core/mcp_tools/_helpers.py` as the public
 `from uuid import UUID` imports dropped where no longer used. Verified via
 app-import (46 MCP tools still register) + 51 tool tests green.
 
-### A3. Delete `modules/locations` + `modules/notifications` routers (needs test surgery)
+### A3. Delete `modules/locations` + `modules/notifications` routers — ✅ DONE (2026-06-27)
 
-Files:
+Deleted both unmounted router duplicates; kept each module's `models.py`. Test
+surgery resolved by comparing each dead router against its live counterpart:
 
-- `gdx_dispatch/modules/locations/router.py`     (live: `core/locations.py`, mounted app.py:779)
-- `gdx_dispatch/modules/notifications/router.py`  (live: `routers/notifications.py`, mounted app.py:480)
+- **locations** — live `core/locations.py` (mounted app.py:769) guards every
+  route with `get_current_user` and already has `test_locations.py` coverage.
+  `test_22_locations.py`'s 9 model tests are untouched; its lone router test
+  (`test_location_requires_auth`) was **rewritten** to inspect the live router.
+- **notifications** — live `routers/notifications.py` exposes a *different* API
+  (settings / templates / send / history / count), NOT the dead router's
+  `/devices`, `/preferences`, `/read-all`, `/unread-count`. No 1:1 rewrite
+  target, so `test_28_notifications.py` was **deleted** wholesale.
 
-Both are unmounted duplicates. NOT a clean delete:
-
-- `test_22_locations.py` — 9 tests exercise `modules.locations.models` (kept) plus
-  one (`test_location_requires_auth`) that imports the dead router.
-- `test_28_notifications.py` — all tests build a FastAPI app from the dead
-  `modules.notifications.router` and hit it via TestClient.
-
-Keep each module's `models.py` (ORM-registered). Either rewrite the tests
-against the live routers or delete the router-specific tests. Verify the live
-routers cover the same behavior first. ~480 lines.
+Follow-up (out of scope): the kept `modules/notifications/models.py` (still
+ORM-registered in `models/__init__.py`) now has no test coverage, and the live
+`routers/notifications.py` has none either — worth a dedicated test ticket.
 
 ## Part B — Inline code TODOs
 
