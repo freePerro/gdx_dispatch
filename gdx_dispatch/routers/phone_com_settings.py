@@ -604,7 +604,18 @@ def post_phone_com_sync_now(
         # — it's an actionable provider status for the admin, not an internal
         # trace. (CodeQL stack-trace-exposure #38: dismissed as intentional.)
         raise HTTPException(status_code=502, detail=result.get("error") or "sync failed")
-    return result
+    # Return an explicit allow-list of count fields rather than echoing the raw
+    # result dict — its failure shape carries provider-exception text in an
+    # "error" key, and returning the whole dict lets that flow to the client.
+    # int() coerces each count to a plain integer: it guards the type and, by
+    # producing a non-string, severs any taint from the dict's failure-path
+    # "error" value. (CodeQL py/stack-trace-exposure #102/#103.)
+    return {
+        "ok": True,
+        "calls_synced": int(result.get("calls_synced") or 0),
+        "messages_synced": int(result.get("messages_synced") or 0),
+        "voicemails_synced": int(result.get("voicemails_synced") or 0),
+    }
 
 
 # ── in-app diagnostics ───────────────────────────────────────────────────
