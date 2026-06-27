@@ -14,10 +14,9 @@ note about checking that named files still exist.
 
 ## Part A — Cleanup backlog
 
-A2 **landed** 2026-06-27 (`_coerce_uuid` deduped into
-`core/mcp_tools/_helpers.py:coerce_uuid`, 22 copies removed). A3 **landed**
-2026-06-27 (both dead routers deleted; see below). A1 verified still pending as
-of 2026-06-27 (stub tools present) — tracked in its own PR.
+All three items **landed** 2026-06-27 (A1 stub-tool deletion, A2 `_coerce_uuid`
+dedup, A3 dead-router deletion — PRs #70, #69, #72 merged to main). Part A is
+complete; the per-item ✅ DONE notes below are kept as a record.
 
 ### A1. Delete 4 stub MCP tools — ✅ DONE (2026-06-27), 46 → 42 tools
 
