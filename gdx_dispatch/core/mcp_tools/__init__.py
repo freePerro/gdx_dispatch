@@ -7,11 +7,7 @@ import time.
 
 Tools shipped in the alpha set
 ------------------------------
-* ``customer.lookup``  — read:customer, internal
-* ``job.create``       — write:job, internal (write-scope)
 * ``pat.rotate``       — admin:pat, restricted, approval_required
-* ``invoice.query``    — read:invoice, internal
-* ``event.emit``       — emit:event, internal
 * ``customers.list``   — read:customer, internal
 
 Handlers are thin: they enforce the capability gate via
@@ -37,7 +33,6 @@ from gdx_dispatch.core.mcp_tools import (  # noqa: F401
     catalog_get_item,
     catalog_list,
     catalog_update_item,
-    customer_lookup,
     customers_lifetime,
     documents_bulk_move,
     documents_create_folder,
@@ -60,14 +55,11 @@ from gdx_dispatch.core.mcp_tools import (  # noqa: F401
     estimates_get,
     estimates_list,
     estimates_update_line,
-    event_emit,
     get_customer_detail,
     get_job_detail,
-    invoice_query,
     invoices_aging,
     invoices_create_draft,
     invoices_void,
-    job_create,
     jobs_update_status,
     list_customers,
     list_invoices,
