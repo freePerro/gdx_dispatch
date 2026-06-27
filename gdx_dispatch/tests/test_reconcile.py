@@ -25,6 +25,8 @@ def test_pip_install_failure_returns_false_not_raises(monkeypatch):
 
 def test_reconcile_installs_each_desired(monkeypatch):
     monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
     monkeypatch.setattr(rec, "desired_packages", lambda db: [("foo", "1.0"), ("bar", None)])
     calls = []
     monkeypatch.setattr(rec, "pip_install", lambda spec: calls.append(spec) or True)
@@ -35,6 +37,8 @@ def test_reconcile_installs_each_desired(monkeypatch):
 
 def test_reconcile_skips_failed_install(monkeypatch):
     monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
     monkeypatch.setattr(rec, "desired_packages", lambda db: [("good", None), ("bad", None)])
     monkeypatch.setattr(rec, "pip_install", lambda spec: spec == "good")
     out = rec.reconcile(db=object())
