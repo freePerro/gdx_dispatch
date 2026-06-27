@@ -607,12 +607,14 @@ def post_phone_com_sync_now(
     # Return an explicit allow-list of count fields rather than echoing the raw
     # result dict — its failure shape carries provider-exception text in an
     # "error" key, and returning the whole dict lets that flow to the client.
-    # (CodeQL py/stack-trace-exposure #102.)
+    # int() coerces each count to a plain integer: it guards the type and, by
+    # producing a non-string, severs any taint from the dict's failure-path
+    # "error" value. (CodeQL py/stack-trace-exposure #102/#103.)
     return {
         "ok": True,
-        "calls_synced": result.get("calls_synced", 0),
-        "messages_synced": result.get("messages_synced", 0),
-        "voicemails_synced": result.get("voicemails_synced", 0),
+        "calls_synced": int(result.get("calls_synced") or 0),
+        "messages_synced": int(result.get("messages_synced") or 0),
+        "voicemails_synced": int(result.get("voicemails_synced") or 0),
     }
 
 
