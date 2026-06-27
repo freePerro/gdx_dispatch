@@ -55,9 +55,13 @@ surgery resolved by comparing each dead router against its live counterpart:
   `/devices`, `/preferences`, `/read-all`, `/unread-count`. No 1:1 rewrite
   target, so `test_28_notifications.py` was **deleted** wholesale.
 
-Follow-up (out of scope): the kept `modules/notifications/models.py` (still
-ORM-registered in `models/__init__.py`) now has no test coverage, and the live
-`routers/notifications.py` has none either — worth a dedicated test ticket.
+Follow-up — ✅ DONE (2026-06-27): `tests/test_notifications.py` now covers both
+the kept `modules/notifications/models.py` (8 direct-ORM tests: CRUD, defaults,
+tenant isolation, `DeviceToken.token` unique constraint) and the live
+`routers/notifications.py` (15 functional `TestClient` tests: settings get/patch,
+template seed/create/validation, send happy-path/manual-override/404/422 channel,
+history pagination, in-app count/list/mark-read with user+broadcast scoping, and
+the `require_module("communications")` gate). 23 tests, green.
 
 ## Part B — Inline code TODOs
 
