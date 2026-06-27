@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from sqlalchemy import desc, select
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="documents.list",
@@ -36,15 +35,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if not raw:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -60,19 +50,19 @@ async def handler(
     capped = max(1, min(int(limit or 50), 200))
     stmt = select(Document)
 
-    f_uuid = _coerce_uuid(folder_id)
+    f_uuid = coerce_uuid(folder_id)
     if folder_id and f_uuid is None:
         return {"documents": [], "truncated": False, "error": "invalid folder_id"}
     if f_uuid is not None:
         stmt = stmt.where(Document.folder_id == f_uuid)
 
-    c_uuid = _coerce_uuid(customer_id)
+    c_uuid = coerce_uuid(customer_id)
     if customer_id and c_uuid is None:
         return {"documents": [], "truncated": False, "error": "invalid customer_id"}
     if c_uuid is not None:
         stmt = stmt.where(Document.customer_id == c_uuid)
 
-    j_uuid = _coerce_uuid(job_id)
+    j_uuid = coerce_uuid(job_id)
     if job_id and j_uuid is None:
         return {"documents": [], "truncated": False, "error": "invalid job_id"}
     if j_uuid is not None:

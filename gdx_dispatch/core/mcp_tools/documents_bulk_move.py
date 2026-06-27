@@ -6,7 +6,7 @@ from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 MAX_IDS = 500
 
@@ -53,15 +53,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -82,7 +73,7 @@ async def handler(
     dids: list[UUID] = []
     invalid: list[str] = []
     for raw in document_ids:
-        u = _coerce_uuid(raw)
+        u = coerce_uuid(raw)
         if u is None:
             invalid.append(str(raw))
         else:
@@ -93,7 +84,7 @@ async def handler(
     fid: UUID | None = None
     target_name: str | None = None
     if folder_id is not None:
-        fid = _coerce_uuid(folder_id)
+        fid = coerce_uuid(folder_id)
         if fid is None:
             return {"error": "invalid folder_id"}
         folder = db.get(DocumentFolder, fid)
