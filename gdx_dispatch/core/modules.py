@@ -372,39 +372,8 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
     tenant_id = str(tenant.get("id") or "")
     user_id = _user_id_from(user)
 
-    # 1. Load both the snapshot AND the assigned role's name (so we can
-    # tell whether the explicit assignment IS to the admin/owner role).
-    snapshot_perms: set[str] | None = None
-    assigned_role_name: str = ""
-    if tenant_id and user_id:
-        try:
-            from sqlalchemy import select as _select
-            row = db.execute(
-                _select(TenantRole.permissions, TenantRole.name)
-                .join(
-                    UserRoleAssignment,
-                    UserRoleAssignment.role_id == TenantRole.id,
-                )
-                .where(
-                    UserRoleAssignment.company_id == tenant_id,
-                    UserRoleAssignment.user_id == user_id,
-                    TenantRole.deleted_at.is_(None),
-                )
-                .limit(1)
-            ).first()
-            if row:
-                raw_perms = row[0]
-                assigned_role_name = (row[1] or "").lower()
-                try:
-                    perms_list = _json.loads(raw_perms) if isinstance(raw_perms, str) else (raw_perms or [])
-                except (ValueError, TypeError):
-                    perms_list = []
-                snapshot_perms = set(perms_list)
-        except SQLAlchemyError:
-            logging.getLogger(__name__).exception("permission_lookup_failed tenant=%s user=%s", tenant_id, user_id)
-            db.rollback()
-
-    # 2. DB-truth role lookup — never trust the JWT `role` claim alone.
+    # 1. DB-truth role lookup FIRST — never trust the JWT `role` claim alone,
+    # and we need it to pick the right assignment when a user has more than one.
     db_role: str = ""
     if user_id:
         try:
@@ -421,6 +390,58 @@ def _load_user_permissions(db: Session, request: Request, user: dict) -> set[str
             db_role = ""
 
     legacy_role = (db_role or str(user.get("role") or "")).lower()
+
+    # 2. Load the snapshot AND the assigned role's name. When a user has several
+    # assignments, PREFER the one whose role name matches users.role — that makes
+    # the resolution deterministic and keeps a stale assignment from shadowing
+    # the intended role (the owner-stuck-on-admin drift, 2026-06-26).
+    snapshot_perms: set[str] | None = None
+    assigned_role_name: str = ""
+    if tenant_id and user_id:
+        try:
+            from sqlalchemy import case as _case
+            from sqlalchemy import func as _func
+            from sqlalchemy import select as _select
+            row = db.execute(
+                _select(TenantRole.permissions, TenantRole.name)
+                .join(
+                    UserRoleAssignment,
+                    UserRoleAssignment.role_id == TenantRole.id,
+                )
+                .where(
+                    UserRoleAssignment.company_id == tenant_id,
+                    UserRoleAssignment.user_id == user_id,
+                    TenantRole.deleted_at.is_(None),
+                )
+                .order_by(_case((_func.lower(TenantRole.name) == legacy_role, 0), else_=1))
+                .limit(1)
+            ).first()
+            if row:
+                raw_perms = row[0]
+                assigned_role_name = (row[1] or "").lower()
+                try:
+                    perms_list = _json.loads(raw_perms) if isinstance(raw_perms, str) else (raw_perms or [])
+                except (ValueError, TypeError):
+                    perms_list = []
+                snapshot_perms = set(perms_list)
+        except SQLAlchemyError:
+            logging.getLogger(__name__).exception("permission_lookup_failed tenant=%s user=%s", tenant_id, user_id)
+            db.rollback()
+
+    # Drift signal: an admin/owner whose assignment doesn't match users.role is
+    # silently resolved to the assignment's (lower) perms below. Log it loudly so
+    # it's diagnosable instead of a silent downgrade.
+    if (
+        snapshot_perms is not None
+        and legacy_role in ("admin", "owner")
+        and assigned_role_name
+        and assigned_role_name != legacy_role
+    ):
+        logging.getLogger(__name__).warning(
+            "role_assignment_drift user=%s users.role=%s assignment=%s — resolving to the "
+            "assignment's perms; align the assignment (RBAC UI) or use change_role",
+            user_id, legacy_role, assigned_role_name,
+        )
 
     # 3. Admin/owner with a matching assignment → BUILTIN only (snapshot
     # ignored). This is the S97 fix: a stale snapshot from signup can't
