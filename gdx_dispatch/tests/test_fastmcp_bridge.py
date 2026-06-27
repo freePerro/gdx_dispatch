@@ -20,12 +20,34 @@ from gdx_dispatch.core.mcp_fastmcp_bridge import (
     _make_wrapper,
     bridge_registry_to_fastmcp,
 )
-from gdx_dispatch.core.mcp_registry import list_tools
+from gdx_dispatch.core.mcp_registry import (
+    clear_registry,
+    list_tools,
+    repopulate_from_cache,
+)
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
 
 # 35 tool modules on disk; sprint plan promised "the full toolset reaches
 # claude.ai". The __init__.py side-effect import must register all 35.
 EXPECTED_MIN_TOOLS = 35
+
+
+@pytest.fixture(autouse=True)
+def _registered_toolset() -> None:
+    """Guarantee the real on-disk toolset is registered before each test.
+
+    Sibling test files (test_mcp_registry, test_mcp_invoke, test_blast_radius)
+    call ``clear_registry()`` in their own autouse teardown, emptying the
+    process-global registry. When pytest runs one of those files before this one
+    in the same process, these tests — which read the registry directly via
+    ``list_tools()`` rather than through ``build_mcp_subapp`` — would otherwise
+    see an empty registry and fail with ``BridgeRegistrationError``. Rebuild the
+    precondition from the cached submodule objects (which survive in
+    ``sys.modules``), mirroring the production self-heal in
+    ``mcp_mount.build_mcp_subapp``. Order-independent by construction.
+    """
+    clear_registry()
+    repopulate_from_cache()
 
 
 def _fresh_mcp() -> FastMCP:
