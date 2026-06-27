@@ -138,7 +138,8 @@ process (see below).
 A **Catalog Pack** is an installable plugin ([ADR-013](decisions/ADR-013-third-party-module-plugins.md))
 that contributes one or more catalog types — fields *and* pricing — as **data**, so
 a whole industry vertical is shareable across companies. The reference pack
-(`plugins/gdx-plugin-hvac/`) adds an "HVAC Units" type with a 40%-markup strategy.
+(`gdx-plugin-hvac`, in the [gdx_dispatch_plugins](https://github.com/freePerro/gdx_dispatch_plugins)
+repo) adds an "HVAC Units" type with a 40%-markup strategy.
 
 How it works:
 

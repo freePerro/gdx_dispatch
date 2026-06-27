@@ -217,7 +217,8 @@ All six design steps landed, plus deployment + app wiring:
 4. ✅ `discover_plugins()` + mount/migration phases (`create_all`; per-plugin Alembic when a
    plugin needs schema *changes*).
 5. ✅ `plugin_registry` table + in-app install/reconcile on the `/plugins` volume.
-6. ✅ Reference plugin (`gdx-plugin-example`).
+6. ✅ Reference plugin (`gdx-plugin-example`) — since extracted to the
+   [gdx_dispatch_plugins](https://github.com/freePerro/gdx_dispatch_plugins) repo.
 
 **Deployment (compose).** `plugin-host` is a service that reuses the app image with a different
 command (`uvicorn gdx_dispatch.plugin_host.main:app`), shares the `*app-env` anchor, skips
