@@ -1,31 +1,68 @@
 # GDX Dispatch
 
-A single-tenant, self-hosted **field-service dispatch platform** — scheduling,
-job and work-order management, estimates, invoicing, and customer records for a
-garage-door service business. FastAPI backend, Vue 3 single-page frontend.
+A single-tenant, self-hosted **field-service management platform** for a
+garage-door service business — scheduling and dispatch, jobs and work orders,
+estimates and proposals, invoicing, inventory, payroll, and customer records.
+FastAPI backend, Vue 3 single-page frontend.
 
 ## Stack
 
-- **Backend** — FastAPI (Python 3.11+), SQLAlchemy, served by Uvicorn
+- **Backend** — FastAPI (Python 3.11+), SQLAlchemy 2, served by Uvicorn
 - **Frontend** — Vue 3 + PrimeVue, built with Vite
-- **Database** — PostgreSQL 16
+- **Database** — PostgreSQL 16, schema managed by Alembic
 - **Cache / broker** — Redis 7
 - **Background jobs** — Celery (priority queues + beat scheduler)
-- **Telemetry** — Sentry (optional)
+- **Telemetry** — Sentry + OpenTelemetry (optional)
+
+## Features
+
+The platform spans the full field-service workflow, organized as feature
+modules under [`gdx_dispatch/modules/`](gdx_dispatch/modules/) and HTTP routes
+under [`gdx_dispatch/routers/`](gdx_dispatch/routers/):
+
+- **Dispatch & scheduling** — appointments, GPS dispatch, service areas, fleet
+- **Sales** — estimates, proposals, change orders, catalogs & pricing
+- **Operations** — work orders, inventory, purchase orders, equipment, timeclock
+- **Finance** — invoicing, payroll, commissions, tax, QuickBooks sync, vendor statements
+- **Customer engagement** — customer portal, campaigns, communications, notifications
+- **Telephony & email** — Phone.com (click-to-call, MMS) and Outlook integrations
+- **AI assists** — AI estimates, communication drafting, health scoring, forecasting
+- **Plugins** — operator-installable modules run in a sandboxed plugin-host
+  container ([`gdx_dispatch/plugin_host/`](gdx_dispatch/plugin_host/), ADR-013)
+
+Access is **permission-driven** with role canonicalization — see
+[`docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md`](gdx_dispatch/docs/ROLE_AND_NAV_NAMING_CONVENTIONS.md).
 
 ## Project structure
 
+The application package is `gdx_dispatch/`; the inner `gdx_dispatch/gdx_dispatch/`
+directory holds the Python source.
+
 ```
-gdx_dispatch/
-├── app.py            FastAPI application factory
-├── main.py           ASGI entrypoint  (uvicorn gdx_dispatch.main:app)
-├── routers/          HTTP API routes
-├── models/           SQLAlchemy ORM models
-├── core/             Celery app and shared services
-├── frontend/         Vue 3 + PrimeVue SPA (Vite)
-├── tests/            pytest suite
-├── docker/           Docker Compose stacks + Dockerfile
-└── requirements.txt  Python dependencies
+gdx_dispatch/                  repo root
+├── gdx_dispatch/              application package
+│   ├── app.py                 FastAPI application factory
+│   ├── main.py                ASGI entrypoint  (uvicorn gdx_dispatch.main:app)
+│   ├── celery_app.py          Celery app (workers + beat)
+│   ├── routers/               HTTP API routes
+│   ├── api/                   public API router
+│   ├── modules/               feature modules (quickbooks, payroll, inventory, …)
+│   ├── models/                SQLAlchemy ORM models
+│   ├── services/              domain services (pricing engine, …)
+│   ├── core/                  shared services, settings, auth helpers
+│   ├── control/               control-plane models
+│   ├── integrations/          third-party integration glue
+│   ├── plugin_host/           sandboxed plugin runtime (separate container)
+│   ├── plugin_api/            stable API surface exposed to plugins
+│   ├── tasks/                 Celery task definitions
+│   ├── migrations/            Alembic migrations (+ squashed baseline)
+│   ├── frontend/              Vue 3 + PrimeVue SPA (Vite)
+│   ├── docs/                  developer, admin, and runbook guides
+│   ├── docker/                Docker Compose stacks + Dockerfiles
+│   ├── tests/                 pytest suite
+│   └── requirements.txt       Python dependencies
+├── docs/                      ops & runbook docs
+└── pyproject.toml
 ```
 
 The Vue frontend lives in [`gdx_dispatch/frontend/`](gdx_dispatch/frontend/),
@@ -138,9 +175,12 @@ cd gdx_dispatch/frontend && npx vitest run
 
 ## Documentation
 
-Additional guides live under [`docs/`](docs/) and
-[`gdx_dispatch/docs/`](gdx_dispatch/docs/) — see `CONTRIBUTING.md`,
-`DEVELOPER_GUIDE.md`, and `ADMIN_GUIDE.md` to get started.
+Developer and admin guides live under
+[`gdx_dispatch/docs/`](gdx_dispatch/docs/) — start with
+[`CONTRIBUTING.md`](gdx_dispatch/docs/CONTRIBUTING.md),
+[`DEVELOPER_GUIDE.md`](gdx_dispatch/docs/DEVELOPER_GUIDE.md), and
+[`ADMIN_GUIDE.md`](gdx_dispatch/docs/ADMIN_GUIDE.md). Operations runbooks live
+under [`docs/`](docs/).
 
 ## License
 
