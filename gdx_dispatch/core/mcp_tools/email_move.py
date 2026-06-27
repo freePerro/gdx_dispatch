@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="email.move",
@@ -44,13 +43,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str) -> UUID | None:
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -63,7 +55,7 @@ async def handler(
 
     from gdx_dispatch.modules.outlook.models import OutlookFolder, OutlookMessage
 
-    mid = _coerce_uuid(message_id)
+    mid = coerce_uuid(message_id)
     if mid is None:
         return {"error": "invalid message_id"}
 

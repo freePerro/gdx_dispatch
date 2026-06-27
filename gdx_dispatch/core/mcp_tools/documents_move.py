@@ -6,7 +6,7 @@ from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="documents.move",
@@ -39,15 +39,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -57,13 +48,13 @@ async def handler(
 ) -> dict[str, Any]:
     from gdx_dispatch.models.tenant_models import Document, DocumentFolder
 
-    did = _coerce_uuid(document_id)
+    did = coerce_uuid(document_id)
     if did is None:
         return {"error": "invalid document_id"}
 
     fid: UUID | None = None
     if folder_id is not None:
-        fid = _coerce_uuid(folder_id)
+        fid = coerce_uuid(folder_id)
         if fid is None:
             return {"error": "invalid folder_id"}
 

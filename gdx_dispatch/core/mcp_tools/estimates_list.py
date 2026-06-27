@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 _VALID_STATUSES = {"draft", "sent", "accepted", "declined", "rejected", "expired"}
 
@@ -43,15 +43,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -67,7 +58,7 @@ async def handler(
 
     cid: UUID | None = None
     if customer_id is not None:
-        cid = _coerce_uuid(customer_id)
+        cid = coerce_uuid(customer_id)
         if cid is None:
             return {"error": "invalid customer_id"}
 

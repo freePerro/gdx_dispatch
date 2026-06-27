@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="documents.rename",
@@ -41,13 +40,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str) -> UUID | None:
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -63,7 +55,7 @@ async def handler(
     if not new_name or not new_name.strip():
         return {"error": "new_name must not be empty"}
 
-    did = _coerce_uuid(document_id)
+    did = coerce_uuid(document_id)
     if did is None:
         return {"error": "invalid document_id"}
 

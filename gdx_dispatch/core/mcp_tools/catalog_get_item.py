@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="catalog.get_item",
@@ -31,15 +30,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -48,7 +38,7 @@ async def handler(
 ) -> dict[str, Any]:
     from gdx_dispatch.models.tenant_models import CustomCatalogItem
 
-    iid = _coerce_uuid(item_id)
+    iid = coerce_uuid(item_id)
     if iid is None:
         return {"error": "invalid item_id"}
 

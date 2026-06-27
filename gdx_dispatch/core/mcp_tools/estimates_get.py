@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="estimates.get",
@@ -31,15 +30,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 async def handler(
     principal: Any,
     db: Any,
@@ -48,7 +38,7 @@ async def handler(
 ) -> dict[str, Any]:
     from gdx_dispatch.modules.proposals.models import Estimate
 
-    eid = _coerce_uuid(estimate_id)
+    eid = coerce_uuid(estimate_id)
     if eid is None:
         return {"error": "invalid estimate_id"}
 

@@ -4,11 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
-from uuid import UUID
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="documents.summarize",
@@ -48,13 +47,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str) -> UUID | None:
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 def _upload_dir() -> Path:
     return Path(os.getenv("UPLOAD_DIR", "/app/uploads/"))
 
@@ -68,7 +60,7 @@ async def handler(
     from gdx_dispatch.core.document_text import extract_text
     from gdx_dispatch.models.tenant_models import Document
 
-    did = _coerce_uuid(document_id)
+    did = coerce_uuid(document_id)
     if did is None:
         return {"error": "invalid document_id"}
 

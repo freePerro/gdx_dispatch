@@ -14,8 +14,9 @@ note about checking that named files still exist.
 
 ## Part A — Cleanup backlog
 
-All three verified still pending as of 2026-06-27 (stub tools present, no
-`_helpers.py`, 22 `_coerce_uuid` copies, both dead routers present).
+A2 **landed** 2026-06-27 (`_coerce_uuid` deduped into
+`core/mcp_tools/_helpers.py:coerce_uuid`, 22 copies removed). A1 and A3 verified
+still pending as of 2026-06-27 (stub tools present, both dead routers present).
 
 ### A1. Delete 4 stub MCP tools (product-surface change, 46 → 42 tools)
 
@@ -37,13 +38,14 @@ deleting. Also remove the matching `from . import customer_lookup, ...` entries
 in `core/mcp_tools/__init__.py` and the dead-stub `if db is None:` branches in
 any surviving tool. ~257 lines + tests.
 
-### A2. Dedup `_coerce_uuid` across ~22 mcp_tools files (~140 lines)
+### A2. Dedup `_coerce_uuid` across ~22 mcp_tools files — ✅ DONE (2026-06-27)
 
-The same 6–8 line UUID-coercion helper is copy-pasted byte-for-byte into 22
-files under `gdx_dispatch/core/mcp_tools/` (catalog_*, documents_*, estimates_*,
-email_*, etc). Move one copy to a shared `core/mcp_tools/_helpers.py` (or
-`mcp_registry`) and import it. Mechanical but touches 22 files — do it as its
-own commit, run app-import + the mcp tool tests after. **Safest item to start.**
+Landed: unified helper now lives in `core/mcp_tools/_helpers.py` as the public
+`coerce_uuid` (a behavioral superset of the three prior variants — accepts
+`None`/empty, returns `None` on any invalid input). All 22 per-module
+`_coerce_uuid` defs removed and call sites point at the shared helper; orphaned
+`from uuid import UUID` imports dropped where no longer used. Verified via
+app-import (46 MCP tools still register) + 51 tool tests green.
 
 ### A3. Delete `modules/locations` + `modules/notifications` routers (needs test surgery)
 

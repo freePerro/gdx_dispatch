@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
-
+from gdx_dispatch.core.mcp_tools._helpers import coerce_uuid
 
 DESCRIPTOR = ToolDescriptor(
     name="estimates.create_draft",
@@ -45,15 +45,6 @@ DESCRIPTOR = ToolDescriptor(
 )
 
 
-def _coerce_uuid(raw: str | None) -> UUID | None:
-    if raw is None:
-        return None
-    try:
-        return UUID(str(raw))
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
 def _next_estimate_number(db: Any) -> str:
     from gdx_dispatch.modules.proposals.models import Estimate
 
@@ -76,7 +67,7 @@ async def handler(
     from gdx_dispatch.models.tenant_models import Customer, Job
     from gdx_dispatch.modules.proposals.models import Estimate
 
-    cid = _coerce_uuid(customer_id)
+    cid = coerce_uuid(customer_id)
     if cid is None:
         return {"error": "invalid customer_id"}
 
@@ -86,7 +77,7 @@ async def handler(
 
     jid: UUID | None = None
     if job_id is not None:
-        jid = _coerce_uuid(job_id)
+        jid = coerce_uuid(job_id)
         if jid is None:
             return {"error": "invalid job_id"}
         job = db.get(Job, jid)
