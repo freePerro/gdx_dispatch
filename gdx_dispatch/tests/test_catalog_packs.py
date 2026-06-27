@@ -171,12 +171,7 @@ def test_create_from_pack_type_is_self_contained_and_prices(db_session):
     assert item["price"] == pytest.approx(1400.0)
     assert item["attributes"]["refrigerant"] == "R-410A"
 
-
-# ── the real reference pack (if importable) ────────────────────────────────
-
-def test_reference_hvac_pack_manifest_shape():
-    pkg = pytest.importorskip("gdx_plugin_hvac")
-    m = pkg.manifest
-    assert m.key == "hvac"
-    assert m.catalog_types[0]["key"] == "hvac_unit"
-    assert m.pricing_strategies[0]["kind"] == "markup"
+# The real reference pack's manifest-shape contract moved with the pack to the
+# gdx_dispatch_plugins repo (gdx-plugin-hvac/tests/test_manifest_shape.py); it
+# only ever ran there via importorskip anyway. The _FAKE_PLUGINS tests above
+# still cover core's *consumption* of pack data.
