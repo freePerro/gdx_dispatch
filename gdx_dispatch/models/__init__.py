@@ -78,6 +78,7 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     NotificationSettings,
     NotificationTemplate,
     OnboardingState,
+    OverheadObligation,
     Payment,
     PaymentReminder,
     PdfTemplate,

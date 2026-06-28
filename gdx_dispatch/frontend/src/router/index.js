@@ -39,6 +39,7 @@ const ForecastingView = () => import('../views/ForecastingView.vue');
 const RecurringStreamsView = () => import('../views/RecurringStreamsView.vue');
 const MonthlyBudgetView = () => import('../views/MonthlyBudgetView.vue');
 const SpendingTrendsView = () => import('../views/SpendingTrendsView.vue');
+const OverheadView = () => import('../views/OverheadView.vue');
 const LoyaltyView = () => import('../views/LoyaltyView.vue');
 const ReportsView = () => import('../views/ReportsView.vue');
 const DocumentsView = () => import('../views/DocumentsView.vue');
@@ -175,6 +176,7 @@ const routes = [
   { path: '/forecasting/recurring', name: 'recurring-streams', component: RecurringStreamsView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/budget', name: 'budget', component: MonthlyBudgetView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/spending-trends', name: 'spending-trends', component: SpendingTrendsView, meta: { requiresPermission: 'accounting.read' } },
+  { path: '/overhead', name: 'overhead', component: OverheadView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/collections', name: 'collections', component: CollectionsView, meta: { requiresPermission: 'invoices.read_all' } },
   { path: '/exports', name: 'exports', component: ExportsView },
   { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'invoices.read_all' } },

@@ -2923,6 +2923,91 @@ class MonthlyBudget(Base):
     )
 
 
+class OverheadObligation(Base):
+    """A recurring fixed/overhead cash obligation the business pays to stay open.
+
+    ADR-016 — an owned, human-curated register (NOT a fusion of qb_pnl_monthly +
+    the forecasting RecurringStream; that fusion was rejected because the two
+    sources share no join key and mix accrual with cash). It drives a forward,
+    month-by-month overhead projection: an obligation with an ``end_date`` or a
+    fixed ``term_total_occurrences`` stops contributing after it ends, so a loan
+    paying off makes the projected total step *down* — the headline feature.
+
+    Cash-basis throughout ("what you pay"): the full payment is modelled, not the
+    P&L principal/interest split. This is an outflow projection, NOT runway —
+    runway needs a forward inflow side, which is deliberately out of scope here.
+
+    Completeness is checked elsewhere against the bank-transaction feed (real
+    cash-out), never against P&L. ``source`` records how a row arrived; a
+    stream-detected row is only ever a *hint* the user confirms.
+    """
+    __tablename__ = "overhead_obligations"
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    # 'loan' | 'insurance' | 'rent' | 'lease' | 'utilities' | 'subscription'
+    # | 'payroll' | 'tax' | 'other' (free-ish; validated app-side, not a DB enum
+    # so categories can grow without a migration)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    vendor_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("vendors.id"), nullable=True
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"))
+    # Billing frequency. The projection normalizes EVERY cadence to a
+    # monthly-equivalent (annual / 12, weekly * 52/12, …) so the chart is a
+    # smooth "what's my monthly overhead", not lumpy cash-clearing spikes.
+    cadence: Mapped[str] = mapped_column(
+        Enum(
+            "weekly", "biweekly", "monthly", "quarterly", "semiannual", "annual",
+            name="overhead_cadence",
+        ),
+        nullable=False,
+        default="monthly",
+    )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Payoff / termination. NULL = open-ended. This is what makes a loan drop
+    # out of the projection after its final month.
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Alternative to end_date: a fixed number of payments from start_date (e.g. a
+    # 36-payment loan). The service derives an effective end from it.
+    term_total_occurrences: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Future step-changes (renewals / escalations): JSON list of
+    # {"effective_date": "YYYY-MM-DD", "amount": "123.45"}. The latest change
+    # effective on/before a projected month overrides ``amount`` for that month.
+    scheduled_changes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 'fixed' | 'variable' — variable is flagged so a later slice can project it
+    # as a run-rate / seasonal index; v1 treats both as flat (labelled as such).
+    cost_type: Mapped[str] = mapped_column(String(20), nullable=False, default="fixed")
+    # True when ``amount`` is an estimate (e.g. a payroll run-rate) rather than a
+    # known contractual commitment — surfaced in the UI, never silently trusted.
+    is_estimate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 'manual' | 'seeded_from_stream' | 'qb'
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    # Soft reference to the forecasting RecurringStream this was seeded from
+    # (Slice 2). NO FK — recurring_streams lives in the forecasting module and we
+    # stay decoupled (mirrors the qb_account_id soft-ref on MonthlyBudget). Used
+    # to stop re-suggesting a stream the user already confirmed into the register.
+    # No migration: this table is built by create_all and ships in the same PR as
+    # the table itself, so the column is part of the initial create (Slice 1 added
+    # no migration for the same reason). A standalone ALTER would have collided
+    # with the unmerged vendor-PII migration 010 (both children of 009).
+    source_stream_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_overhead_obligations_company", "company_id"),
+        Index("ix_overhead_obligations_active", "company_id", "active", "deleted_at"),
+    )
+
+
 class Company(Base):
     """Tenant's own company record — referenced by payments and Stripe."""
     __tablename__ = "companies"
