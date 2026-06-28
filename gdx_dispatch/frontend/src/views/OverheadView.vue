@@ -24,9 +24,9 @@
       renewals. Completeness depends on what's entered here; variable costs are projected flat.
     </Message>
 
-    <div v-if="o.listError.value || o.projectionError.value" class="error-banner">
+    <Message v-if="o.listError.value || o.projectionError.value" severity="error" :closable="false" class="scope-note">
       {{ o.listError.value || o.projectionError.value }}
-    </div>
+    </Message>
 
     <!-- KPI cards -->
     <div class="kpi-row">
@@ -403,25 +403,22 @@ onMounted(() => {
 .view-heading { font-size: 1.4rem; margin: 0; }
 .filter-select { min-width: 9rem; }
 .scope-note { margin: 1rem 0; }
-.error-banner {
-  background: var(--p-red-50, #fef2f2);
-  color: var(--p-red-700, #b91c1c);
-  border: 1px solid var(--p-red-200, #fecaca);
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  margin-bottom: 1rem;
-}
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .kpi-value { font-size: 1.8rem; font-weight: 700; }
 .kpi-sub { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
+/* Status colors: dark enough on a light card, with brighter shades for the dark
+   theme (data-theme="dark" on <html>) so they don't sink into the background. */
 .kpi-sub.down { color: #15803d; }
 .kpi-sub.up { color: #b91c1c; }
+:global([data-theme='dark'] .overhead-view .kpi-sub.down) { color: #4ade80; }
+:global([data-theme='dark'] .overhead-view .kpi-sub.up) { color: #f87171; }
 .panel { margin-bottom: 1rem; }
 .chart-wrap { height: 340px; }
 .muted { color: var(--p-text-muted-color, #6b7280); padding: 2rem 0; text-align: center; }
 .stepdowns { list-style: none; padding: 0; margin: 1rem 0 0; }
 .stepdowns li { padding: 0.35rem 0; display: flex; gap: 0.5rem; align-items: center; }
 .stepdowns .pi-arrow-down { color: #15803d; }
+:global([data-theme='dark'] .overhead-view .stepdowns .pi-arrow-down) { color: #4ade80; }
 .form-grid { display: flex; flex-direction: column; gap: 0.75rem; }
 .row { display: grid; grid-template-columns: 11rem 1fr; align-items: center; gap: 0.75rem; }
 .row.check { grid-template-columns: auto 1fr; }
