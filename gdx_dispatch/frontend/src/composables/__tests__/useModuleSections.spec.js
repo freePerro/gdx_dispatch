@@ -53,16 +53,20 @@ const OLD_MODULE_PERM = {
   server_errors: 'settings.write', admin_db: 'settings.write', settings: 'settings.read',
 };
 
-// The 19 approved reveals (see migration decision: "Reveal them"). Each is a
+// The 21 approved reveals (see migration decision: "Reveal them"). Each is a
 // role that already holds the API permission but the old Set hid the nav.
+// overhead (ADR-016) is accounting.read-gated like budget/spending_trends, so it
+// reveals to the same roles (accounting, viewer).
 const APPROVED_REVEALS = new Set([
   'dispatcher:labor_matrix', 'dispatcher:vendor_statements',
   'technician:labor_matrix',
   'sales:labor_matrix', 'sales:vendor_statements',
   'accounting:expenses', 'accounting:payroll', 'accounting:labor_matrix',
   'accounting:vendor_statements', 'accounting:budget', 'accounting:spending_trends',
+  'accounting:overhead',
   'viewer:expenses', 'viewer:payroll', 'viewer:labor_matrix', 'viewer:vendor_statements',
   'viewer:budget', 'viewer:spending_trends', 'viewer:users', 'viewer:settings',
+  'viewer:overhead',
 ]);
 
 const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'accounting', 'viewer'];
