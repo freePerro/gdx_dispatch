@@ -17,6 +17,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
+from gdx_dispatch.modules.forecasting import accuracy as forecast_accuracy
 from gdx_dispatch.modules.forecasting import observed_recurring
 from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
 from gdx_dispatch.modules.forecasting import service as forecast_service
@@ -114,6 +115,65 @@ def get_revenue_forecast(
     if window is not None and (window < 1 or window > 365):
         raise HTTPException(status_code=400, detail="window must be between 1 and 365 days")
     return forecast_service.revenue_projection(db, window_days=window)
+
+
+# ─── Accuracy measurement loop (Stage A) ───────────────────────────────────
+# See docs/forecasting-accuracy-roadmap.md. capture + reconcile are writes
+# meant to run on a daily schedule (Celery beat); exposed as admin endpoints
+# here so the loop can be driven/inspected before the cron wiring lands.
+# accuracy returns a per-bucket calibration table, NOT a single MAPE.
+
+
+@router.post("/forecast/snapshots", dependencies=[Depends(require_role("admin", "owner"))])
+def capture_forecast_snapshot(
+    request: FastAPIRequest,
+    window: int | None = None,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _tenant_id(request, current_user)
+    if window is not None and (window < 1 or window > 365):
+        raise HTTPException(status_code=400, detail="window must be between 1 and 365 days")
+    snap = forecast_accuracy.capture_snapshot(db, window_days=window)
+    return forecast_accuracy.snapshot_dict(snap)
+
+
+@router.post("/forecast/snapshots/reconcile", dependencies=[Depends(require_role("admin", "owner"))])
+def reconcile_forecast_snapshots(
+    request: FastAPIRequest,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _tenant_id(request, current_user)
+    reconciled = forecast_accuracy.reconcile_due_snapshots(db)
+    return {"reconciled": len(reconciled), "snapshots": [forecast_accuracy.snapshot_dict(s) for s in reconciled]}
+
+
+@router.get("/forecast/accuracy")
+def get_forecast_accuracy(
+    request: FastAPIRequest,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _tenant_id(request, current_user)
+    return forecast_accuracy.accuracy_summary(db)
+
+
+@router.get("/forecast/snapshots")
+def list_forecast_snapshots(
+    request: FastAPIRequest,
+    limit: int = 50,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _tenant_id(request, current_user)
+    limit = max(1, min(limit, 200))
+    rows = db.execute(
+        select(forecast_accuracy.ForecastSnapshot)
+        .order_by(forecast_accuracy.ForecastSnapshot.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    return {"snapshots": [forecast_accuracy.snapshot_dict(s) for s in rows]}
 
 
 @router.post("/quickbooks/sync/recurring-transactions")
