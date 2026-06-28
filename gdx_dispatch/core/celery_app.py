@@ -33,6 +33,7 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.core.reconciliation_tasks",
             "gdx_dispatch.modules.outlook.tasks",
             "gdx_dispatch.modules.phone_com.tasks",
+            "gdx_dispatch.modules.forecasting.tasks",
         ],
     )
     app.conf.update(
@@ -72,6 +73,7 @@ celery_app = create_celery()
 from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.campaigns import tasks as _campaign_tasks  # noqa: E402,F401
+from gdx_dispatch.modules.forecasting import tasks as _forecasting_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.outlook import tasks as _outlook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.phone_com import tasks as _phone_com_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401

@@ -16,10 +16,11 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Payment
-from gdx_dispatch.modules.forecasting import accuracy
+from gdx_dispatch.modules.forecasting import accuracy, calibration
 from gdx_dispatch.modules.forecasting.models import (
     SNAPSHOT_STATUS_PENDING,
     SNAPSHOT_STATUS_RECONCILED,
+    ForecastSnapshot,
 )
 
 AS_OF = date(2026, 6, 1)
@@ -240,3 +241,44 @@ def test_summary_empty_when_nothing_reconciled(session):
     assert summary["window_days"] is None
     assert summary["buckets"]["0_30"]["observed_window_rate"] is None
     assert summary["buckets"]["0_30"]["assumed_lifetime_rate"] is None
+
+
+def test_end_to_end_real_capture_reconcile_feeds_calibration(session):
+    # The REAL chain (not hand-built bucket_results): capture freezes the
+    # population, an actual payment lands in the window, reconcile measures it,
+    # and calibration reads the result back out.
+    inv = _seed_invoice(session, balance_due=1000, due_date=AS_OF - timedelta(days=10))
+    accuracy.capture_snapshot(session, window_days=30, today=AS_OF)
+    _pay(session, inv.id, amount=400, payment_date=AS_OF + timedelta(days=7))
+    accuracy.reconcile_due_snapshots(session, today=AS_OF + timedelta(days=31))
+
+    # min_snapshots=1 so one real snapshot is enough to assert the chain.
+    rates = calibration.calibrated_window_rates(session, 30, AS_OF + timedelta(days=31), min_snapshots=1)
+    info = rates["0_30"]
+    assert info["calibrated"] is True
+    assert info["rate"] == pytest.approx(0.40)  # 400 collected / 1000 face, measured end-to-end
+
+
+def test_prune_removes_old_reconciled_only(session):
+    # Old reconciled snapshot → pruned; recent reconciled → kept; pending →
+    # never pruned however old.
+    old = _reconciled_snap(session, as_of=AS_OF - timedelta(days=200), status=SNAPSHOT_STATUS_RECONCILED)
+    recent = _reconciled_snap(session, as_of=AS_OF - timedelta(days=10), status=SNAPSHOT_STATUS_RECONCILED)
+    old_pending = _reconciled_snap(session, as_of=AS_OF - timedelta(days=300), status=SNAPSHOT_STATUS_PENDING)
+
+    pruned = accuracy.prune_reconciled_snapshots(session, today=AS_OF, retention_days=180)
+    assert pruned == 1
+    remaining = {s.id for s in session.query(ForecastSnapshot).all()}
+    assert old.id not in remaining
+    assert recent.id in remaining
+    assert old_pending.id in remaining  # pending is never pruned
+
+
+def _reconciled_snap(db, *, as_of, status):
+    snap = ForecastSnapshot(
+        as_of=as_of, window_days=30, horizon_end=as_of + timedelta(days=30),
+        open_ar_face=0, status=status, bucket_results={},
+    )
+    db.add(snap)
+    db.commit()
+    return snap

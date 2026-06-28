@@ -151,7 +151,18 @@ def _ar_reference_date(inv: Invoice) -> date:
     return date.today()
 
 
-def _open_ar_projection(db: Session, settings: ForecastSettings, today: date) -> dict[str, Any]:
+def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, window_days: int) -> dict[str, Any]:
+    """Expected collection from open AR.
+
+    Stage B: each bucket's rate is the *calibrated within-window* rate measured
+    by the Stage-A loop when enough evidence exists (calibrated_window_rates),
+    otherwise the configured rate as a prior. `rate_source` records which was
+    used per bucket so the forecast is transparent about what it has learned vs.
+    what is still a default. With no reconciled snapshots every bucket falls back
+    to the configured rate, so behaviour is unchanged until calibration kicks in.
+    """
+    from gdx_dispatch.modules.forecasting.calibration import calibrated_window_rates
+
     invoices = db.execute(
         select(Invoice).where(
             Invoice.status.in_(("sent", "overdue")),
@@ -159,24 +170,34 @@ def _open_ar_projection(db: Session, settings: ForecastSettings, today: date) ->
         )
     ).scalars().all()
 
-    buckets = {
-        "0_30": {"open_total": 0.0, "expected_total": 0.0, "invoice_count": 0},
-        "31_60": {"open_total": 0.0, "expected_total": 0.0, "invoice_count": 0},
-        "61_90": {"open_total": 0.0, "expected_total": 0.0, "invoice_count": 0},
-        "90_plus": {"open_total": 0.0, "expected_total": 0.0, "invoice_count": 0},
-    }
+    calibrated = calibrated_window_rates(db, window_days, today)
+
+    def _rate_for(bucket: str) -> tuple[float, str]:
+        info = calibrated.get(bucket) or {}
+        if info.get("calibrated") and info.get("rate") is not None:
+            return float(info["rate"]), "calibrated"
+        return _bucket_rate(settings, bucket), "configured"
+
+    buckets = {}
+    for b in ("0_30", "31_60", "61_90", "90_plus"):
+        rate_used, rate_source = _rate_for(b)
+        buckets[b] = {
+            "open_total": 0.0, "expected_total": 0.0, "invoice_count": 0,
+            "rate_used": rate_used, "rate_source": rate_source,
+        }
     for inv in invoices:
         ref = _ar_reference_date(inv)
         age = (today - ref).days
         bucket = _ar_aging_bucket(max(0, age))
         amount = float(inv.balance_due or 0)
-        rate = _bucket_rate(settings, bucket)
+        rate = buckets[bucket]["rate_used"]
         buckets[bucket]["open_total"] += amount
         buckets[bucket]["expected_total"] += amount * rate
         buckets[bucket]["invoice_count"] += 1
     return {
         "open_total": sum(b["open_total"] for b in buckets.values()),
         "expected_total": sum(b["expected_total"] for b in buckets.values()),
+        "uses_calibration": any(b["rate_source"] == "calibrated" for b in buckets.values()),
         "by_bucket": buckets,
     }
 
@@ -404,7 +425,7 @@ def revenue_projection(db: Session, window_days: int | None = None, today: date 
     if today is None:
         today = date.today()
 
-    ar = _open_ar_projection(db, settings, today)
+    ar = _open_ar_projection(db, settings, today, window_days)
     scheduled = _scheduled_jobs_projection(db, settings, today, window_days)
     if settings.include_recurring:
         qbo = _qbo_template_projection(db, today, window_days)

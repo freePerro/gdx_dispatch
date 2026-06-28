@@ -79,10 +79,14 @@ window-calibrated rates.
   inflating the rate above 100%; the floor stops a refund/credit-memo (net
   negative window) producing a negative rate that would poison Stage B.
 
-### Operationalize
+### Operationalize  ✅ wired
 
-Wire `capture_snapshot` and `reconcile_due_snapshots` to daily Celery beat tasks.
-(Prototype exposes them as admin endpoints; cron wiring is a follow-up.)
+A daily Celery beat task `forecasting-measurement-tick-daily` (05:00 UTC) fires
+`advance_forecast_measurement_dispatcher` → `advance_forecast_measurement_task`,
+which captures today's snapshot and reconciles any matured ones per tenant
+(`modules/forecasting/tasks.py`). The admin endpoints remain for manual
+drive/inspection. (`forecasting.tasks` is now registered in the celery `include`
+list + explicit import — previously it was only registered transitively.)
 
 `ForecastSnapshot`/`ForecastSnapshotInvoice` are TenantBase, built by
 `create_orm_tables()` at startup before alembic (the #41 pattern) — no migration
@@ -103,9 +107,46 @@ resulting window-bounded forecast hits a target error on real data.
 
 ## Later stages
 
-### Stage B — Calibrate rates from the tenant's own history
-Replace the hard-coded `DEFAULT_COLLECT_*` with the **window-calibrated** rates
-that Stage A measures (per bucket, per tenant). Self-tunes as snapshots accrue.
+### Stage B — Calibrate rates from the tenant's own history  ✅ implemented
+
+`calibration.py` aggregates reconciled snapshots into a per-bucket **window**
+collection rate (face-weighted observed rate) and the AR projection
+(`_open_ar_projection`) uses it in place of the configured prior, **per bucket**,
+once a cold-start threshold is met (`CALIBRATION_MIN_SNAPSHOTS`, default 3
+reconciled snapshots *at the matching window*). Until then a bucket falls back
+to its configured rate, so behaviour is unchanged with no data and self-tunes as
+snapshots accrue. Each bucket's `rate_source` (`calibrated`|`configured`) is
+surfaced in the forecast output, and `GET /api/forecast/calibration` shows the
+calibrated rate next to the prior. Computed live from snapshots — no persisted
+calibration state (nothing to drift), and **no new table** (the configured rates
+in `ForecastSettings` are untouched, so no ALTER per the caveat above).
+
+Window matching is enforced: a rate measured over a 30-day window only
+calibrates a 30-day forecast; mismatched windows fall back to the prior.
+
+**Storage + staleness:** calibration only reads reconciled snapshots whose
+`as_of` is within `CALIBRATION_LOOKBACK_DAYS` (180), and the daily task prunes
+reconciled snapshots older than that (`accuracy.prune_reconciled_snapshots`) so
+neither snapshot table grows without bound and an old collection regime can't
+dominate forever.
+
+**Known statistical limitations (honest, not hidden):**
+- Daily snapshots over the same open AR are *correlated*, so `sample_size`
+  counts closed windows, not independent samples — the effective N is lower
+  than the count. `CALIBRATION_MIN_SNAPSHOTS` gates on "enough closed windows,"
+  not statistical power.
+- A long-unpaid invoice recurs across many daily snapshots, all showing "not
+  collected," so persistent non-payers are over-weighted and the face-weighted
+  rate is biased *down*. A **cohort** rate (fraction of invoices *entering* a
+  bucket that pay in-window) removes this and is the right Stage C refinement.
+These are acceptable for a self-correcting prior that's clearly labelled
+`rate_source` per bucket; they are not acceptable to hide.
+
+Semantics note (audit-aware): calibrated buckets make the AR component a genuine
+*within-window* expectation; uncalibrated buckets use the configured rate as a
+*prior*. The output's per-bucket `rate_source` makes the mix explicit. The
+configured rate and calibrated rate are reported side by side but never
+differenced.
 
 ### Stage C — Per-customer / per-stage granularity
 - **AR:** per-customer average days-to-pay (no ML); cohort fallback for new

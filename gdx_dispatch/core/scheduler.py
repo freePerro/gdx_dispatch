@@ -138,4 +138,14 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=4, minute=45),  # 04:45 UTC nightly
             "options": {"queue": "priority:low"},
         },
+        "forecasting-measurement-tick-daily": {
+            # Stage A measurement loop (docs/forecasting-accuracy-roadmap.md).
+            # Daily tick: capture today's forecast snapshot + reconcile any
+            # snapshots whose window has closed. Feeds Stage B rate calibration.
+            # Runs after the recurring detector so the day's forecast inputs are
+            # settled first.
+            "task": "gdx_dispatch.modules.forecasting.tasks.advance_forecast_measurement_dispatcher",
+            "schedule": crontab(hour=5, minute=0),  # 05:00 UTC nightly
+            "options": {"queue": "priority:low"},
+        },
     }

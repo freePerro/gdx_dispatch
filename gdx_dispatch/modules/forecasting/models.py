@@ -47,10 +47,15 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-# Industry-default AR collection probabilities by aging bucket. Tenants
-# can override any of these via the settings endpoint. Numbers come from
-# the AR-aging benchmark research: healthy SMBs see 0-30 collect at
-# ~95%, 31-60 at ~80%, 61-90 at ~60%, 90+ at ~30%.
+# Per-bucket AR collection-rate PRIORS, used by the windowed revenue forecast
+# until Stage B calibration replaces them with measured within-window rates
+# (modules/forecasting/calibration.py). These are the forecast's best guess for
+# "fraction of this bucket's open AR collected within the forecast window" —
+# i.e. window rates, the same horizon the calibrated rates measure, so the AR
+# total stays one consistent horizon whether a bucket is calibrated or not.
+# Seeded from AR-aging benchmarks; conservative for aged buckets (a 90+ prior of
+# 0.30 over-states a 30-day window and will be corrected once calibrated).
+# Tenants can override any of these via the settings endpoint.
 DEFAULT_COLLECT_0_30 = 0.95
 DEFAULT_COLLECT_31_60 = 0.80
 DEFAULT_COLLECT_61_90 = 0.60

@@ -162,6 +162,31 @@ def reconcile_due_snapshots(db: Session, today: date | None = None) -> list[Fore
     return [reconcile_snapshot(db, s) for s in due]
 
 
+def prune_reconciled_snapshots(db: Session, today: date | None = None, retention_days: int = 180) -> int:
+    """Delete reconciled snapshots older than the retention window (child rows
+    cascade). Daily capture would otherwise grow both snapshot tables without
+    bound — one header + one child row per open invoice, every day, forever.
+    Retention is kept ≥ the calibration lookback so pruning never removes data
+    the calibration still uses. Returns the number of snapshots deleted.
+
+    Pending snapshots are never pruned, however old: an un-reconciled snapshot
+    is still owed a reconciliation (e.g. the task was down past its horizon).
+    """
+    if today is None:
+        today = date.today()
+    cutoff = today - timedelta(days=retention_days)
+    stale = db.execute(
+        select(ForecastSnapshot).where(
+            ForecastSnapshot.status == SNAPSHOT_STATUS_RECONCILED,
+            ForecastSnapshot.as_of < cutoff,
+        )
+    ).scalars().all()
+    for s in stale:
+        db.delete(s)  # cascade removes ForecastSnapshotInvoice children
+    db.commit()
+    return len(stale)
+
+
 def _pending_count(db: Session) -> int:
     return int(
         db.execute(

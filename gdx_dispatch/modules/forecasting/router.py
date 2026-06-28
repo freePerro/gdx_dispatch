@@ -18,6 +18,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
 from gdx_dispatch.modules.forecasting import accuracy as forecast_accuracy
+from gdx_dispatch.modules.forecasting import calibration as forecast_calibration
 from gdx_dispatch.modules.forecasting import observed_recurring
 from gdx_dispatch.modules.forecasting import qb_recurring as qb_recurring_helper
 from gdx_dispatch.modules.forecasting import service as forecast_service
@@ -157,6 +158,23 @@ def get_forecast_accuracy(
 ) -> dict[str, Any]:
     _tenant_id(request, current_user)
     return forecast_accuracy.accuracy_summary(db)
+
+
+@router.get("/forecast/calibration")
+def get_forecast_calibration(
+    request: FastAPIRequest,
+    window: int | None = None,
+    current_user: dict[str, str] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Stage B: per-bucket calibrated within-window collection rate vs. the
+    configured prior, and which the forecast is currently using."""
+    _tenant_id(request, current_user)
+    if window is not None and (window < 1 or window > 365):
+        raise HTTPException(status_code=400, detail="window must be between 1 and 365 days")
+    settings = forecast_service.get_or_create_settings(db)
+    window_days = window if window is not None else int(settings.default_window_days)
+    return forecast_calibration.calibration_status(db, settings, window_days, _date.today())
 
 
 @router.get("/forecast/snapshots")
