@@ -1,6 +1,6 @@
 // Runs once before all tests. Logs in, ensures the lab tenant has at least
-// one of each entity type that param routes need, and writes both a
-// storageState.json (Playwright auth) and a fixtures.json (param IDs).
+// one of each entity type that param routes need, and writes a fixtures.json
+// (token + param IDs) that e2e/_fixtures.js reads to prime auth per-test.
 import fs from 'node:fs';
 import path from 'node:path';
 import { request as pwRequest } from '@playwright/test';
@@ -15,7 +15,6 @@ const PASSWORD = process.env.E2E_PASSWORD || 'changeme';
 // existing data skip.
 const READ_ONLY = process.env.E2E_READ_ONLY === '1';
 
-const STORAGE_PATH = path.resolve('e2e/.state/storageState.json');
 const FIXTURES_PATH = path.resolve('e2e/.state/fixtures.json');
 
 async function login(ctx) {
@@ -62,7 +61,7 @@ async function ensure(ctx, token, listUrl, postUrl, body) {
 }
 
 export default async function globalSetup() {
-  fs.mkdirSync(path.dirname(STORAGE_PATH), { recursive: true });
+  fs.mkdirSync(path.dirname(FIXTURES_PATH), { recursive: true });
   const ctx = await pwRequest.newContext({ baseURL: BASE });
   const token = await login(ctx);
 
@@ -104,22 +103,9 @@ export default async function globalSetup() {
     { customer_id: customerId, total: 100, status: 'draft' },
   );
 
-  // Build a Playwright storageState that primes localStorage with the JWT
-  // exactly the way the SPA's auth store expects it.
-  const storageState = {
-    cookies: [],
-    origins: [
-      {
-        origin: BASE,
-        localStorage: [
-          { name: 'access_token', value: token },
-          { name: 'tenant_id', value: TENANT },
-        ],
-      },
-    ],
-  };
-  fs.writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
-
+  // Auth is primed per-test in e2e/_fixtures.js, which writes the SPA's actual
+  // sessionStorage keys (gdx_access_token / gdx_tenant_slug) via addInitScript.
+  // We only persist the token + param IDs here for that fixture to read.
   const fixtures = {
     token,
     tenant: TENANT,
