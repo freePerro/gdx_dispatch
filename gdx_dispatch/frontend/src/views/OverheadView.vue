@@ -55,6 +55,31 @@
       </Card>
     </div>
 
+    <!-- Bank-detected suggestions (Slice 2) -->
+    <Card v-if="visibleSuggestions.length" class="panel suggest-panel">
+      <template #title>
+        <span><i class="pi pi-sparkles" /> Suggested from bank activity</span>
+      </template>
+      <template #content>
+        <p class="muted-left">
+          Recurring debits we detected that aren't tracked yet. Amount is an estimate from
+          the detected range — confirm and set the payoff/end date (only you know it).
+        </p>
+        <div v-for="s in visibleSuggestions" :key="s.stream_id" class="suggest-row">
+          <div class="suggest-main">
+            <strong>{{ s.label || s.payee_pattern }}</strong>
+            <Tag :value="s.suggested_category" severity="secondary" class="ml" />
+            <span class="muted"> ~{{ money(s.suggested_amount) }} / {{ s.cadence }}</span>
+            <span v-if="s.occurrences_seen" class="muted"> · seen {{ s.occurrences_seen }}×</span>
+          </div>
+          <div class="suggest-actions">
+            <Button label="Add" icon="pi pi-plus" size="small" @click="addFromSuggestion(s)" />
+            <Button label="Dismiss" text size="small" severity="secondary" @click="dismissSuggestion(s)" />
+          </div>
+        </div>
+      </template>
+    </Card>
+
     <!-- Projection chart -->
     <Card class="panel">
       <template #title>Projected monthly overhead</template>
@@ -308,6 +333,7 @@ function emptyForm() {
     is_estimate: false,
     notes: '',
     scheduled_changes: [],
+    source_stream_id: null,
   };
 }
 
@@ -315,6 +341,31 @@ const canSave = computed(() => form.label.trim().length > 0 && Number(form.amoun
 
 function openCreate() {
   Object.assign(form, emptyForm());
+  editingId.value = null;
+  dialogOpen.value = true;
+}
+
+// ── suggestions (Slice 2) ──
+const dismissed = ref(new Set());
+const visibleSuggestions = computed(
+  () => o.suggestions.value.filter((s) => !dismissed.value.has(s.stream_id)),
+);
+function dismissSuggestion(s) {
+  // Local-only hide for this session; it'll reappear next visit unless added.
+  dismissed.value = new Set([...dismissed.value, s.stream_id]);
+}
+function addFromSuggestion(s) {
+  Object.assign(form, emptyForm(), {
+    label: s.label || s.payee_pattern,
+    category: s.suggested_category || 'other',
+    amount: Number(s.suggested_amount),
+    cadence: s.cadence || 'monthly',
+    // Preserve the detected start so term math is right; fall back to today.
+    start_date: s.start_date || new Date().toISOString().slice(0, 10),
+    end_date: s.term_end_date || '',
+    term_total_occurrences: s.term_total_occurrences || null,
+    source_stream_id: s.stream_id,
+  });
   editingId.value = null;
   dialogOpen.value = true;
 }
@@ -360,6 +411,7 @@ function buildPayload() {
   };
   if (form.end_date) payload.end_date = form.end_date;
   if (form.term_total_occurrences) payload.term_total_occurrences = Number(form.term_total_occurrences);
+  if (form.source_stream_id) payload.source_stream_id = form.source_stream_id;
   const changes = (form.scheduled_changes || []).filter((c) => c.effective_date && c.amount != null);
   if (changes.length) {
     payload.scheduled_changes = changes.map((c) => ({
@@ -413,6 +465,15 @@ onMounted(() => {
 :global([data-theme='dark'] .overhead-view .kpi-sub.down) { color: #4ade80; }
 :global([data-theme='dark'] .overhead-view .kpi-sub.up) { color: #f87171; }
 .panel { margin-bottom: 1rem; }
+.suggest-panel .pi-sparkles { margin-right: 0.4rem; }
+.muted-left { color: var(--p-text-muted-color, #6b7280); margin: 0 0 0.75rem; font-size: 0.9rem; }
+.suggest-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 1rem; padding: 0.5rem 0;
+  border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+}
+.suggest-main { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.suggest-actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
 .chart-wrap { height: 340px; }
 .muted { color: var(--p-text-muted-color, #6b7280); padding: 2rem 0; text-align: center; }
 .stepdowns { list-style: none; padding: 0; margin: 1rem 0 0; }

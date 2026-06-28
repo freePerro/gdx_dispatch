@@ -23,6 +23,9 @@ export function useOverhead(injectedApi) {
   const projectionError = ref(null);
   const horizonMonths = ref(12);
 
+  const suggestions = ref([]);
+  const suggestionsLoading = ref(false);
+
   async function loadList() {
     listLoading.value = true;
     listError.value = null;
@@ -54,8 +57,22 @@ export function useOverhead(injectedApi) {
     }
   }
 
+  async function loadSuggestions() {
+    suggestionsLoading.value = true;
+    try {
+      const data = await api.get('/api/overhead/suggestions');
+      suggestions.value = data.suggestions || [];
+    } catch (_) {
+      // Suggestions are a non-critical hint (and depend on the experimental
+      // forecasting data); never let them block the page.
+      suggestions.value = [];
+    } finally {
+      suggestionsLoading.value = false;
+    }
+  }
+
   async function refreshAll() {
-    await Promise.all([loadList(), loadProjection()]);
+    await Promise.all([loadList(), loadProjection(), loadSuggestions()]);
   }
 
   async function createObligation(payload) {
@@ -85,8 +102,11 @@ export function useOverhead(injectedApi) {
     projectionLoading,
     projectionError,
     horizonMonths,
+    suggestions,
+    suggestionsLoading,
     loadList,
     loadProjection,
+    loadSuggestions,
     refreshAll,
     createObligation,
     updateObligation,

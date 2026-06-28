@@ -2983,6 +2983,15 @@ class OverheadObligation(Base):
     is_estimate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 'manual' | 'seeded_from_stream' | 'qb'
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    # Soft reference to the forecasting RecurringStream this was seeded from
+    # (Slice 2). NO FK — recurring_streams lives in the forecasting module and we
+    # stay decoupled (mirrors the qb_account_id soft-ref on MonthlyBudget). Used
+    # to stop re-suggesting a stream the user already confirmed into the register.
+    # No migration: this table is built by create_all and ships in the same PR as
+    # the table itself, so the column is part of the initial create (Slice 1 added
+    # no migration for the same reason). A standalone ALTER would have collided
+    # with the unmerged vendor-PII migration 010 (both children of 009).
+    source_stream_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

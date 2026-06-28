@@ -47,6 +47,28 @@ CATEGORIES = [
 ]
 MAX_HORIZON_MONTHS = 36
 
+# Keyword → category, checked in order (first match wins). Only a starting guess
+# for a stream-seeded suggestion; the user can change it before saving.
+_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("payroll", ("payroll", "gusto", "adp", "paychex", "wage", "salary")),
+    ("insurance", ("insurance", "insur", "policy", "geico", "allstate", "statefarm", "state farm", "liberty mutual", "progressive")),
+    ("loan", ("loan", "lienholder", "ally financ", "capital one auto", "lending", "note payment")),
+    ("tax", ("tax", "irs", "franchise tax", "dept of revenue", "department of revenue")),
+    ("utilities", ("electric", "utility", "utilit", "water", "sewer", "energy", "pg&e", "edison", "power co")),
+    ("rent", ("rent", "landlord", "property mgmt", "property management", "leasing office")),
+    ("lease", ("lease", "leasing")),
+    ("subscription", ("subscription", "software", "saas", "adobe", "microsoft", "google", "zoom", "quickbooks", "verizon", "at&t", "comcast", "phone.com", "internet")),
+]
+
+
+def _guess_category(*texts: str | None) -> str:
+    """Best-effort category from a payee/label string. Defaults to 'other'."""
+    blob = " ".join(t for t in texts if t).lower()
+    for category, keywords in _CATEGORY_KEYWORDS:
+        if any(kw in blob for kw in keywords):
+            return category
+    return "other"
+
 
 def _tenant_id(request: Request) -> str:
     t = getattr(request.state, "tenant", None) or {}
@@ -81,6 +103,9 @@ class ObligationIn(BaseModel):
     cost_type: str = Field(default="fixed")
     is_estimate: bool = False
     notes: str | None = Field(default=None, max_length=2000)
+    # Slice 2: set when the obligation is confirmed from a bank-detected
+    # RecurringStream suggestion. Flips source to 'seeded_from_stream'.
+    source_stream_id: UUID | None = None
 
     @field_validator("cadence")
     @classmethod
@@ -160,6 +185,7 @@ def _obligation_to_dict(ob: OverheadObligation) -> dict[str, Any]:
         "cost_type": ob.cost_type,
         "is_estimate": bool(ob.is_estimate),
         "source": ob.source,
+        "source_stream_id": str(ob.source_stream_id) if ob.source_stream_id else None,
         "active": bool(ob.active),
         "notes": ob.notes,
         "created_at": _to_iso(ob.created_at),
@@ -259,6 +285,75 @@ def get_projection(
     return result
 
 
+@router.get("/suggestions", dependencies=[Depends(require_permission("accounting.read"))])
+def list_suggestions(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Bank-detected recurring outflows (forecasting RecurringStream) that aren't
+    yet tracked as overhead — surfaced as DRAFT suggestions to confirm.
+
+    A hint only (ADR-016 Slice 2): amount is the midpoint of the detector's
+    tolerance window and the category is a keyword guess; the user confirms and
+    sets the payoff/end date (which the detector can't know). Streams already
+    confirmed into the register are excluded via source_stream_id.
+    """
+    tenant_id = _tenant_id(request)
+    # Lazy import keeps this router decoupled from the experimental forecasting
+    # module at import time (we only reach into it for this read).
+    from gdx_dispatch.modules.forecasting.models import (
+        STREAM_STATUS_ACTIVE,
+        STREAM_STATUS_SUGGESTED,
+        RecurringStream,
+    )
+
+    linked = {
+        sid
+        for sid in db.execute(
+            select(OverheadObligation.source_stream_id).where(
+                OverheadObligation.company_id == tenant_id,
+                OverheadObligation.source_stream_id.isnot(None),
+                OverheadObligation.deleted_at.is_(None),
+            )
+        ).scalars().all()
+    }
+
+    streams = db.execute(
+        select(RecurringStream).where(
+            RecurringStream.status.in_([STREAM_STATUS_SUGGESTED, STREAM_STATUS_ACTIVE]),
+            RecurringStream.deleted_at.is_(None),
+        ).order_by(RecurringStream.payee_pattern)
+    ).scalars().all()
+
+    suggestions: list[dict[str, Any]] = []
+    for s in streams:
+        if s.id in linked:
+            continue
+        mid = (Decimal(str(s.amount_min)) + Decimal(str(s.amount_max))) / 2
+        suggestions.append({
+            "stream_id": str(s.id),
+            "label": s.label,
+            "payee_pattern": s.payee_pattern,
+            "suggested_amount": str(mid.quantize(Decimal("0.01"))),
+            "amount_min": str(s.amount_min),
+            "amount_max": str(s.amount_max),
+            "cadence": s.cadence,
+            "suggested_category": _guess_category(s.label, s.payee_pattern, s.account_name),
+            "status": s.status,
+            "occurrences_seen": s.occurrences_seen,
+            # Carry the timeline so a confirmed obligation starts when the stream
+            # actually started (not "today") — otherwise a termed loan seen N
+            # times would project N already-paid occurrences into the future.
+            "start_date": _to_iso(s.start_date or s.last_observed_date),
+            "next_expected_date": _to_iso(s.next_expected_date),
+            "last_observed_date": _to_iso(s.last_observed_date),
+            "term_end_date": _to_iso(s.term_end_date),
+            "term_total_occurrences": s.term_total_occurrences,
+        })
+
+    return {"suggestions": suggestions, "count": len(suggestions)}
+
+
 @router.post("", status_code=201, dependencies=[Depends(require_permission("accounting.write"))])
 def create_obligation(
     payload: ObligationIn,
@@ -269,6 +364,16 @@ def create_obligation(
     tenant_id = _tenant_id(request)
     if payload.end_date and payload.end_date < payload.start_date:
         raise HTTPException(400, "end_date cannot be before start_date")
+    if payload.source_stream_id is not None:
+        already = db.execute(
+            select(OverheadObligation.id).where(
+                OverheadObligation.company_id == tenant_id,
+                OverheadObligation.source_stream_id == payload.source_stream_id,
+                OverheadObligation.deleted_at.is_(None),
+            )
+        ).first()
+        if already:
+            raise HTTPException(409, "this recurring payment is already tracked as overhead")
     ob = OverheadObligation(
         id=uuid4(),
         company_id=tenant_id,
@@ -283,7 +388,8 @@ def create_obligation(
         scheduled_changes=_changes_to_json(payload.scheduled_changes),
         cost_type=payload.cost_type,
         is_estimate=payload.is_estimate,
-        source="manual",
+        source="seeded_from_stream" if payload.source_stream_id else "manual",
+        source_stream_id=payload.source_stream_id,
         notes=payload.notes,
     )
     db.add(ob)

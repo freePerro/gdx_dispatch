@@ -48,6 +48,17 @@ const PROJECTION = {
   disclaimer: 'Outflow only — this is overhead you must pay, not runway.',
 };
 
+const SUGGESTIONS = {
+  count: 1,
+  suggestions: [
+    { stream_id: 's1', label: 'ACME Insurance', payee_pattern: 'ACME INSURANCE',
+      suggested_amount: '190.00', amount_min: '180.00', amount_max: '200.00',
+      cadence: 'monthly', suggested_category: 'insurance', status: 'active',
+      occurrences_seen: 6, next_expected_date: '2026-07-15', term_end_date: null,
+      term_total_occurrences: null },
+  ],
+};
+
 const stubs = {
   Toolbar: { template: '<div><slot name="start" /><slot name="end" /></div>' },
   Card: { template: '<div><slot name="title" /><slot name="content" /></div>' },
@@ -67,7 +78,11 @@ const stubs = {
 describe('OverheadView', () => {
   beforeEach(() => {
     apiGet.mockReset();
-    apiGet.mockImplementation((url) => Promise.resolve(url.includes('projection') ? PROJECTION : LIST));
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/suggestions')) return Promise.resolve(SUGGESTIONS);
+      if (url.includes('projection')) return Promise.resolve(PROJECTION);
+      return Promise.resolve(LIST);
+    });
   });
 
   it('renders the current monthly overhead total', async () => {
@@ -100,5 +115,24 @@ describe('OverheadView', () => {
     const wrapper = mount(OverheadView, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text().toLowerCase()).toContain('outflow');
+  });
+
+  it('renders bank-detected suggestions', async () => {
+    const wrapper = mount(OverheadView, { global: { stubs } });
+    await flushPromises();
+    expect(apiGet.mock.calls.some(([u]) => u.includes('/suggestions'))).toBe(true);
+    expect(wrapper.text()).toContain('Suggested from bank activity');
+    expect(wrapper.text()).toContain('ACME Insurance');
+    expect(wrapper.text()).toContain('$190.00');
+  });
+
+  it('dismissing a suggestion hides it', async () => {
+    const wrapper = mount(OverheadView, { global: { stubs } });
+    await flushPromises();
+    const dismiss = wrapper.findAll('button').find((b) => b.text() === 'Dismiss');
+    expect(dismiss).toBeTruthy();
+    await dismiss.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('ACME Insurance');
   });
 });
