@@ -27,6 +27,13 @@ STREAM_STATUS_PAID_OFF = "paid_off"
 STREAM_STATUS_CANCELLED = "cancelled"
 STREAM_STATUS_EXPIRED = "expired"
 
+# Forecast-snapshot lifecycle (Stage A measurement loop)
+SNAPSHOT_STATUS_PENDING = "pending"
+SNAPSHOT_STATUS_RECONCILED = "reconciled"
+
+# AR aging buckets, in order. Mirrors service._ar_aging_bucket boundaries.
+AR_BUCKETS = ("0_30", "31_60", "61_90", "90_plus")
+
 # Cadence options — covers everything from weekly utilities to annual policies
 CADENCE_WEEKLY = "weekly"
 CADENCE_BIWEEKLY = "biweekly"
@@ -212,4 +219,87 @@ class RecurringStreamHit(TenantBase):
         # stream; without this a cron retry inflates occurrences_seen and a
         # 36-payment loan falsely declares paid_off early.
         UniqueConstraint("stream_id", "qb_txn_id", name="uq_recurring_stream_hit_txn"),
+    )
+
+
+class ForecastSnapshot(TenantBase):
+    """A point-in-time capture of the open-AR population, scored later against
+    actual collections to measure *within-window collection realization*
+    (Stage A — see docs/forecasting-accuracy-roadmap.md).
+
+    What this measures (and what it deliberately does NOT):
+      The headline AR projection multiplies open balance by a *lifetime*
+      collection rate (95/80/60/30% — "this fraction will EVENTUALLY pay") and
+      ignores the window. Comparing that lifetime number to cash that lands in
+      a 30-day window is a horizon mismatch, not forecast error — an early
+      design did exactly that and an adversarial audit rejected it. So this
+      loop does not score the lifetime number. Instead, per aging bucket, it
+      records the fraction of snapshotted AR that is actually collected WITHIN
+      the window — the empirical within-window rate. That is the dimensionally
+      coherent quantity, and it is exactly the input Stage B needs to replace
+      the hard-coded lifetime defaults with window-calibrated rates.
+
+    The invoice population at `as_of` is stored in child rows
+    (ForecastSnapshotInvoice) rather than a JSON id blob, so a tenant with
+    thousands of open invoices doesn't balloon a single column.
+    """
+
+    __tablename__ = "forecast_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+
+    as_of: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_end: Mapped[date] = mapped_column(Date, nullable=False)  # as_of + window_days
+
+    open_ar_face: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    # The lifetime per-bucket rates in effect at capture, {bucket: rate}. Kept
+    # for the calibration comparison; NOT the thing being scored.
+    assumed_rates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=SNAPSHOT_STATUS_PENDING, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    # Reconciliation — null until the window closes and the scorer runs.
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Per-bucket results, {bucket: {face, collected_in_window, observed_window_rate, assumed_lifetime_rate}}.
+    bucket_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    invoices: Mapped[list["ForecastSnapshotInvoice"]] = relationship(
+        "ForecastSnapshotInvoice", back_populates="snapshot", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_forecast_snapshots_status_horizon", "status", "horizon_end"),
+        CheckConstraint("window_days > 0", name="ck_forecast_snapshots_window_pos"),
+    )
+
+
+class ForecastSnapshotInvoice(TenantBase):
+    """One open invoice captured in a ForecastSnapshot, with the aging bucket
+    and face value it had AT snapshot time.
+
+    `invoice_id` is not a hard FK — like RecurringStreamHit.qb_txn_id, we
+    tolerate the source invoice being repaved/deleted without dropping the
+    historical measurement. `face_at_snapshot` is frozen so reconciliation
+    measures collection against the balance that was actually open then, not
+    whatever the invoice looks like later.
+    """
+
+    __tablename__ = "forecast_snapshot_invoices"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    snapshot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("forecast_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    bucket: Mapped[str] = mapped_column(String(10), nullable=False)
+    face_at_snapshot: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+
+    snapshot: Mapped["ForecastSnapshot"] = relationship("ForecastSnapshot", back_populates="invoices")
+
+    __table_args__ = (
+        Index("ix_forecast_snapshot_invoices_snap_bucket", "snapshot_id", "bucket"),
+        # A given invoice appears at most once per snapshot.
+        UniqueConstraint("snapshot_id", "invoice_id", name="uq_forecast_snapshot_invoice"),
     )
