@@ -8,45 +8,49 @@
 
       <div class="exports-grid">
         <Card v-for="entity in exportEntities" :key="entity.key" class="export-card">
-          <div>
-            <h3>{{ entity.label }}</h3>
-            <p class="muted">Download a CSV copy of {{ entity.label.toLowerCase() }}.</p>
-          </div>
-          <Button
-            :label="`Download ${entity.label}`"
-            icon="pi pi-download"
-            :loading="downloading[entity.key]"
-            @click="downloadEntity(entity.key)"
-            class="w-full"
-          />
+          <template #content>
+            <div>
+              <h3>{{ entity.label }}</h3>
+              <p class="muted">Download a CSV copy of {{ entity.label.toLowerCase() }}.</p>
+            </div>
+            <Button
+              :label="`Download ${entity.label}`"
+              icon="pi pi-download"
+              :loading="downloading[entity.key]"
+              @click="downloadEntity(entity.key)"
+              class="w-full"
+            />
+          </template>
         </Card>
       </div>
 
       <Card class="export-all-card">
-        <div class="card-title">
-          <div>
-            <h3>Export all</h3>
-            <p class="muted">Bundle multiple datasets into a single JSON package.</p>
+        <template #content>
+          <div class="card-title">
+            <div>
+              <h3>Export all</h3>
+              <p class="muted">Bundle multiple datasets into a single JSON package.</p>
+            </div>
           </div>
-        </div>
-        <div class="export-all-controls">
-          <MultiSelect
-            v-model="selectedEntities"
-            :options="entityOptions"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="Select entities"
-            display="chip"
-            class="multi-select"
-          />
-          <Button
-            label="Download JSON package"
-            icon="pi pi-cloud-download"
-            :loading="exportingAll"
-            @click="downloadAll"
-            class="w-full"
-          />
-        </div>
+          <div class="export-all-controls">
+            <MultiSelect
+              v-model="selectedEntities"
+              :options="entityOptions"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Select entities"
+              display="chip"
+              class="multi-select"
+            />
+            <Button
+              label="Download JSON package"
+              icon="pi pi-cloud-download"
+              :loading="exportingAll"
+              @click="downloadAll"
+              class="w-full"
+            />
+          </div>
+        </template>
       </Card>
     </section>
 </template>
@@ -172,17 +176,21 @@ async function downloadAll() {
   margin-bottom: 1rem;
 }
 
+/* Card content now lives in PrimeVue's #content slot (.p-card-content), so the
+   flex layout must target that wrapper, not the host .p-card — and the host
+   must NOT add its own padding on top of PrimeVue's body padding. */
 .export-card {
-  padding: 1.25rem;
+  min-height: 160px;
+}
+.export-card :deep(.p-card-body),
+.export-card :deep(.p-card-content) {
+  height: 100%;
+}
+.export-card :deep(.p-card-content) {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  min-height: 160px;
   justify-content: space-between;
-}
-
-.export-all-card {
-  padding: 1.25rem;
 }
 
 .export-all-controls {

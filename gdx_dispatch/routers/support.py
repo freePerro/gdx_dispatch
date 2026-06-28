@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
@@ -79,6 +80,30 @@ def _resolve_user(user: dict[str, Any]) -> tuple[str, str | None]:
     return email, str(uid) if uid else None
 
 
+# cc_support_tickets lives in the CONTROL PLANE (provisioned by the Command
+# Center's own alembic, migration 064_cc_support_tickets) — this app never
+# creates it. On a DB where the CC migrations haven't run, the table is absent,
+# so every support query errors. Detect *only that one case* and degrade
+# gracefully instead of surfacing a raw 500 / "Database schema error".
+
+
+def _is_missing_table(exc: Exception) -> bool:
+    """True ONLY for a missing TABLE — never a missing column or other schema
+    drift.
+
+    A generic substring scan for "does not exist" is too broad: Postgres reports
+    a missing column as ``column "x" does not exist`` (UndefinedColumn), and
+    swallowing that would silently serve an empty list to a tenant who actually
+    has tickets. So classify by the precise signal — SQLSTATE 42P01
+    (UndefinedTable; 42703 is UndefinedColumn) on Postgres, or "no such table"
+    on sqlite — not free text.
+    """
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "pgcode", None) == "42P01":  # psycopg2 UndefinedTable
+        return True
+    return "no such table" in str(orig or exc).lower()  # sqlite
+
+
 def _create_ticket(
     db: Session,
     *,
@@ -89,25 +114,35 @@ def _create_ticket(
     opened_by_user_id: str | None,
 ) -> str:
     """INSERT into cc_support_tickets and return the new ticket id."""
-    new_row = db.execute(
-        sa_text(
-            "INSERT INTO cc_support_tickets "
-            "(tenant_id, opened_by_email, opened_by_user_id, "
-            " subject, body, category, priority) "
-            "VALUES (:tid, :email, :uid, :subject, :body, :cat, :prio) "
-            "RETURNING id"
-        ),
-        {
-            "tid": tenant_id,
-            "email": opened_by_email,
-            "uid": opened_by_user_id,
-            "subject": payload.subject,
-            "body": payload.body,
-            "cat": category,
-            "prio": payload.priority,
-        },
-    ).first()
-    db.commit()
+    try:
+        new_row = db.execute(
+            sa_text(
+                "INSERT INTO cc_support_tickets "
+                "(tenant_id, opened_by_email, opened_by_user_id, "
+                " subject, body, category, priority) "
+                "VALUES (:tid, :email, :uid, :subject, :body, :cat, :prio) "
+                "RETURNING id"
+            ),
+            {
+                "tid": tenant_id,
+                "email": opened_by_email,
+                "uid": opened_by_user_id,
+                "subject": payload.subject,
+                "body": payload.body,
+                "cat": category,
+                "prio": payload.priority,
+            },
+        ).first()
+        db.commit()
+    except (ProgrammingError, OperationalError) as exc:
+        db.rollback()
+        if _is_missing_table(exc):
+            log.warning("support submit — cc_support_tickets unavailable (control plane not provisioned)")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Support ticketing is temporarily unavailable. Please try again later.",
+            ) from exc
+        raise
     return str(new_row.id)
 
 
@@ -202,7 +237,19 @@ def list_my_tickets(
         f"ORDER BY created_at DESC "
         f"LIMIT :limit"
     )
-    rows = db.execute(sa_text(sql), params).all()
+    try:
+        rows = db.execute(sa_text(sql), params).all()
+    except (ProgrammingError, OperationalError) as exc:
+        db.rollback()
+        if _is_missing_table(exc):
+            # Control-plane table absent on this DB — show an empty list rather
+            # than a 500 so the feedback page still renders.
+            log.warning(
+                "support my-list — cc_support_tickets unavailable; returning empty (tenant=%s)",
+                tenant_id,
+            )
+            return MyTicketsResponse(items=[])
+        raise
 
     items = [
         MyTicketRow(
