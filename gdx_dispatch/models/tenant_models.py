@@ -111,6 +111,14 @@ class AppSettings(Base):
     qb_accounting_method: Mapped[str] = mapped_column(
         String(20), nullable=False, default="Accrual", server_default="Accrual"
     )
+    # Operator debug toggle (UI-audit follow-up, 2026-06-28). When ON, handled
+    # errors that are normally swallowed — e.g. the cc_support_tickets control-
+    # plane table being absent — are ALSO recorded to the server-error sink so
+    # they appear on the Server Errors page. OFF by default so the log stays
+    # clean of expected, gracefully-handled conditions.
+    debug_logging_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow

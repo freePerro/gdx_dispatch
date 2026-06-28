@@ -90,7 +90,11 @@ def _query_efficiency(
                 ja.job_id,
                 ja.tech_id
             FROM job_assignments ja
-            JOIN closed_in_window c ON c.job_id = ja.job_id
+            -- job_assignments.job_id is VARCHAR while job_closeouts/jobs use
+            -- UUID, so this join must cast both sides to TEXT (same as the
+            -- technicians join below) or Postgres errors with
+            -- "operator does not exist: uuid = character varying".
+            JOIN closed_in_window c ON CAST(c.job_id AS TEXT) = CAST(ja.job_id AS TEXT)
             WHERE ja.deleted_at IS NULL
             ORDER BY ja.job_id, ja.is_lead DESC, ja.assigned_at ASC
         )
@@ -101,7 +105,7 @@ def _query_efficiency(
             SUM(c.hours_worked)                                             AS actual_hours,
             COUNT(*)                                                        AS job_count
         FROM closed_in_window c
-        LEFT JOIN lead_for_job lfj ON lfj.job_id = c.job_id
+        LEFT JOIN lead_for_job lfj ON CAST(lfj.job_id AS TEXT) = CAST(c.job_id AS TEXT)
         LEFT JOIN technicians t
                ON CAST(t.id AS TEXT) = CAST(COALESCE(lfj.tech_id, c.assigned_to) AS TEXT)
               AND t.deleted_at IS NULL
