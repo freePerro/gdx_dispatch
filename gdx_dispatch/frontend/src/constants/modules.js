@@ -87,10 +87,21 @@ export const MODULE_CATEGORIES = [
       { key: 'pricing', label: 'Pricing', icon: 'pi pi-tags', to: '/pricing', type: 'Invoices', permission: 'nav.admin' },
       { key: 'labor_matrix', label: 'Labor Matrix', icon: 'pi pi-wrench', to: '/labor-matrix', type: 'Invoices', permission: 'pricing.labor_matrix.read' },
       { key: 'vendor_statements', label: 'Vendor Statements', icon: 'pi pi-file-import', to: '/vendor-statements', type: 'Invoices', permission: 'vendor_statements.read' },
-      { key: 'reports', label: 'Reports', icon: 'pi pi-chart-bar', to: '/reports', type: 'Invoices', permission: 'nav.office' },
-      { key: 'variance_report', label: 'Variance Report', icon: 'pi pi-chart-bar', to: '/variance-report', type: 'Invoices', permission: 'nav.admin' },
       { key: 'exports', label: 'Exports', icon: 'pi pi-download', to: '/exports', type: 'Invoices', permission: 'nav.admin' },
       { key: 'quickbooks', label: 'QuickBooks', icon: 'pi pi-plug', to: '/quickbooks', type: 'Invoices', permission: 'nav.admin' },
+    ],
+  },
+  {
+    // Experimental: features still being validated (e.g. Forecasting's accuracy
+    // loop — see docs/forecasting-accuracy-roadmap.md). Grouped here so the
+    // "still proving itself" status is explicit in the nav rather than implied
+    // by per-item gating. Each item keeps its own permission.
+    key: 'experimental',
+    label: 'Experimental',
+    icon: 'pi pi-sparkles',
+    modules: [
+      { key: 'reports', label: 'Reports', icon: 'pi pi-chart-bar', to: '/reports', type: 'Invoices', permission: 'nav.office' },
+      { key: 'variance_report', label: 'Variance Report', icon: 'pi pi-chart-bar', to: '/variance-report', type: 'Invoices', permission: 'nav.admin' },
       { key: 'forecasting', label: 'Forecasting', icon: 'pi pi-chart-line', to: '/forecasting', type: 'Invoices', permission: 'nav.admin' },
       { key: 'budget', label: 'Budget', icon: 'pi pi-calculator', to: '/budget', type: 'Invoices', permission: 'accounting.read' },
       { key: 'spending_trends', label: 'Spending Trends', icon: 'pi pi-chart-line', to: '/spending-trends', type: 'Invoices', permission: 'accounting.read' },
