@@ -105,12 +105,18 @@ already happened in `app.py`. Status below was re-verified against `app.py`
 - **Phone.com contact PATCH (Phase 2)** — `modules/phone_com/push_contacts.py:12`.
   Create path shipped; updating an already-pushed contact (PATCH) + per-tenant
   work cap are the Phase-2 follow-up.
-
-> Removed 2026-06-27 (verified shipped): **Audit Log Viewer (SS-28)** — component
-> **is** routed at `/admin/audit-log` (`frontend/src/router/index.js:283`) and
-> backend endpoints exist (`routers/admin_ops.py:414` GET, `routers/audit.py:108`
-> list + `:118` CSV export, plus `core/audit_dashboard.py`). The in-file TODOs at
-> `AuditLogViewer.vue:4,7,266` are now stale — see B4.
+- **Audit Log Viewer (SS-28)** — `frontend/src/views/AuditLogViewer.vue`. The
+  view **is** routed at `/admin/audit-log` (`frontend/src/router/index.js:283`)
+  — that part is done. But the backend contract does **not** match: the view
+  fetches `/api/admin/audit-log?limit=&offset=` and reads
+  `{ total, offset, limit, rows[], chain_integrity }`, while the live endpoint
+  (`routers/admin_ops.py:get_audit_log`) takes `page`/`page_size` and returns
+  `{ page, page_size, total, items[] }` with no `chain_integrity`. Until one
+  side is reconciled the table won't render real data. Also: server-side
+  full-result CSV export (`/api/admin/audit-log.csv`) is not built — `exportCsv()`
+  only dumps the current page client-side. (Initial 2026-06-27 sweep wrongly
+  marked this "shipped" on the strength of route + endpoint *existence*; the
+  shape/param mismatch was caught on closer read.)
 
 ### B3. Test placeholders (intentional — assert 404 until implemented)
 
@@ -123,18 +129,20 @@ lands, flip the expected status and drop the `# TODO: implement` comment.
   placeholder** (`:189`). The three `/api/ai/quote-generate|history|feedback`
   endpoints are now implemented (asserts flipped to `!= 404` at `:68,:136,:152`).
 
-### B4. Stale source TODO comments to delete (work already done)
+### B4. Stale source TODO comments — ✅ DELETED 2026-06-27
 
-These `TODO` comments describe integration that has since landed. Deleting them
-keeps the next backlog sweep from re-listing finished work:
+These `TODO` comments described integration that had since landed. All removed
+this pass:
 
 - `routers/api_metadata.py:16` — "main.py must include_router" → done in `app.py:2032`.
 - `core/middleware/api_versioning.py:17-19` + bottom block — "main.py must
   add_middleware" → done in `app.py:1401`.
 - `core/mcp_invoke.py:31` — "swap `_dummy_log_execution`" → done (`_real_log_execution`).
+  (The sibling `emit_event`/SS-23 bullet was **kept** — still genuine future work.)
 - `core/mcp_tools/__init__.py:18` — "import on app start" → done in `app.py:2062`.
-- `frontend/src/views/AuditLogViewer.vue:4,7,266` — "mount in router / build
-  backend / csv export" → all three shipped.
+- `frontend/src/views/AuditLogViewer.vue:4` — router-mount TODO only. The
+  `:7` (backend shape) and `:266` (server CSV) TODOs were **kept and corrected**,
+  not deleted — that work is real (see B2 Audit Log Viewer).
 
 ## Reference
 
