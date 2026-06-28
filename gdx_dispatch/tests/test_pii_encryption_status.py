@@ -21,11 +21,11 @@ from gdx_dispatch.core import pii
 
 
 def test_known_encrypted_columns_today():
-    """The post-S122-9 slice 3 inventory. Three columns now use
-    ``EncryptedString``: webhook + integration secrets (slice 2) plus
-    ``customers.address`` (slice 3). ``customers.{name,email,phone}``
-    stay plaintext for substring-LIKE search support; they re-encrypt
-    when D-S122-9-customer-search-encryption lands a search architecture.
+    """The encrypted-column inventory. webhook + integration secrets (slice 2),
+    ``customers.address`` (slice 3), and ``vendors.{account_number,tax_id}``
+    (vendor-PII). ``customers.{name,email,phone}`` stay plaintext for
+    substring-LIKE search support; they re-encrypt when
+    D-S122-9-customer-search-encryption lands a search architecture.
     """
     status = pii.encryption_status()
     observed = {(c.table, c.column) for c in status.columns}
@@ -33,6 +33,8 @@ def test_known_encrypted_columns_today():
         ("webhook_endpoints", "secret"),
         ("integration_configs", "secret"),
         ("customers", "address"),
+        ("vendors", "account_number"),
+        ("vendors", "tax_id"),
     }
     assert observed == expected, (
         f"Encrypted-column inventory drift. "

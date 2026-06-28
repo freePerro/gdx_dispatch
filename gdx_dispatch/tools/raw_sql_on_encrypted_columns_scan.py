@@ -82,6 +82,7 @@ SKIP_DIR_PARTS = {
 # Tool files that legitimately touch the raw bytes during transition windows.
 SKIP_FILE_NAMES = {
     "encrypt_qb_token_store_rows.py",
+    "encrypt_vendor_pii_rows.py",
     "encrypt_tenants_db_url_rows.py",
     "encrypt_customer_pii_rows.py",
     "rollback_encryption_to_plaintext.py",

@@ -43,7 +43,11 @@ else:
 class EncryptedString(TypeDecorator[str]):
     """Fernet-encrypted TEXT column, opt-in per model.
 
-    Live model consumers: NONE as of 2026-05-12 / S122-1c.
+    Live model consumers (canonical inventory pinned by
+    tests/test_pii_encryption_status.py): ``customers.address``,
+    ``webhook_endpoints.secret``, ``integration_configs.secret``, and
+    ``vendors.{account_number,tax_id}``. The "NONE" era below is history — the
+    columns were re-adopted in later slices once reads/writes were ORM-only.
 
     The three previous consumers (``Customer.{name,email,phone,address}``,
     ``WebhookEndpoint.secret``, ``IntegrationConfig.secret``) were all
