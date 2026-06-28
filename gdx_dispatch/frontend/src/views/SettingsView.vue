@@ -474,6 +474,29 @@
             </template>
           </Card>
 
+          <Card data-testid="debug-logging-card" style="margin-bottom:1rem">
+            <template #title>Debug logging</template>
+            <template #content>
+              <div style="display:flex; align-items:center; gap:0.75rem;">
+                <ToggleSwitch v-model="debugLoggingEnabled" inputId="debug-logging" data-testid="debug-logging-toggle" />
+                <div>
+                  <strong>Record handled server errors</strong>
+                  <div class="muted">
+                    When on, errors that are normally handled silently — like the
+                    support / <code>cc_support_tickets</code> integration being unavailable —
+                    are also written to the
+                    <RouterLink to="/server-errors">Server Errors</RouterLink> log (grouped by
+                    type) so you can confirm whether an integration is failing. Leave off for
+                    normal operation.
+                  </div>
+                </div>
+              </div>
+              <div style="margin-top:0.85rem;">
+                <Button label="Save" icon="pi pi-save" :loading="debugLoggingSaving" @click="saveDebugLogging" data-testid="debug-logging-save" />
+              </div>
+            </template>
+          </Card>
+
           <Card>
             <template #title>Estimates</template>
             <template #content>
@@ -1672,6 +1695,31 @@ async function saveIdleTimeout() {
   }
 }
 
+// ── Debug logging (operator toggle; surfaces swallowed server errors) ──
+const debugLoggingEnabled = ref(false);
+const debugLoggingSaving = ref(false);
+async function loadDebugLogging() {
+  try {
+    const s = await api.get("/api/settings");
+    debugLoggingEnabled.value = !!s?.debug_logging_enabled;
+  } catch (_e) { /* leave default off */ }
+}
+async function saveDebugLogging() {
+  debugLoggingSaving.value = true;
+  try {
+    const s = await api.patch(
+      "/api/settings",
+      { debug_logging_enabled: debugLoggingEnabled.value },
+      { successMessage: debugLoggingEnabled.value
+          ? "Debug logging on — handled server errors now appear in Server Errors."
+          : "Debug logging off." },
+    );
+    if (s && typeof s.debug_logging_enabled === "boolean") debugLoggingEnabled.value = s.debug_logging_enabled;
+  } finally {
+    debugLoggingSaving.value = false;
+  }
+}
+
 async function loadEstimatesFeatures() {
   try {
     const p = await api.get("/api/estimates-features");
@@ -2010,7 +2058,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging()]);
 });
 
 onBeforeUnmount(() => {

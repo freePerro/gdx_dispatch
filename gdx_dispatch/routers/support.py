@@ -28,6 +28,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import AppSettings
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -104,7 +105,42 @@ def _is_missing_table(exc: Exception) -> bool:
     return "no such table" in str(orig or exc).lower()  # sqlite
 
 
+def _debug_logging_enabled(db: Session) -> bool:
+    """Operator debug toggle (app_settings.debug_logging_enabled). Best-effort."""
+    try:
+        row = db.query(AppSettings).first()
+        return bool(getattr(row, "debug_logging_enabled", False)) if row else False
+    except Exception:
+        return False
+
+
+def _record_when_debug(db: Session, request: Request, exc: Exception) -> None:
+    """When debug logging is on, surface an otherwise-swallowed error on the
+    Server Errors page so operators can monitor cc_support_tickets health.
+
+    Both the flag read and the sink write are best-effort — diagnostics must
+    never turn a handled condition back into a failure.
+    """
+    if not _debug_logging_enabled(db):
+        return
+    try:
+        from gdx_dispatch.modules.error_sink import record_server_error
+
+        # 503, not 500: the support subsystem is unavailable, not crashed. The
+        # GET still returns 200 (empty) to the client — recording 500 would
+        # falsely imply an unhandled failure; 503 reads as "support down".
+        record_server_error(
+            request=request,
+            exc=exc,
+            status_code=503,
+            request_id=getattr(getattr(request, "state", None), "request_id", None),
+        )
+    except Exception:  # pragma: no cover - diagnostics must not raise
+        log.exception("support — failed to record debug error to server sink")
+
+
 def _create_ticket(
+    request: Request,
     db: Session,
     *,
     tenant_id: str,
@@ -138,6 +174,7 @@ def _create_ticket(
         db.rollback()
         if _is_missing_table(exc):
             log.warning("support submit — cc_support_tickets unavailable (control plane not provisioned)")
+            _record_when_debug(db, request, exc)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Support ticketing is temporarily unavailable. Please try again later.",
@@ -161,6 +198,7 @@ def submit_bug(
     tenant_id = _resolve_tenant_id(request)
     email, uid = _resolve_user(user)
     ticket_id = _create_ticket(
+        request,
         db,
         tenant_id=tenant_id,
         category="bug",
@@ -194,6 +232,7 @@ def submit_feature(
     tenant_id = _resolve_tenant_id(request)
     email, uid = _resolve_user(user)
     ticket_id = _create_ticket(
+        request,
         db,
         tenant_id=tenant_id,
         category="feature",
@@ -248,6 +287,7 @@ def list_my_tickets(
                 "support my-list — cc_support_tickets unavailable; returning empty (tenant=%s)",
                 tenant_id,
             )
+            _record_when_debug(db, request, exc)
             return MyTicketsResponse(items=[])
         raise
 

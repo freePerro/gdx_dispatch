@@ -54,6 +54,9 @@ class SettingsPatchIn(BaseModel):
     # Sprint monthly-budget-history (2026-05-24) — Cash vs Accrual basis
     # for the QBO ProfitAndLoss report that drives budget actuals.
     qb_accounting_method: str | None = Field(default=None, pattern="^(Cash|Accrual)$")
+    # UI-audit follow-up — operator debug toggle. When ON, handled errors that
+    # are normally swallowed are also recorded to the Server Errors log.
+    debug_logging_enabled: bool | None = None
 
 
 class BrandingPatchIn(BaseModel):
@@ -136,6 +139,7 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "qb_accounting_method": (
             row.qb_accounting_method if getattr(row, "qb_accounting_method", None) else "Accrual"
         ),
+        "debug_logging_enabled": bool(getattr(row, "debug_logging_enabled", False)),
     }
 
 
@@ -185,7 +189,7 @@ def patch_settings(
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color",
         "default_shift_start", "default_shift_end", "default_workdays",
-        "qb_accounting_method",
+        "qb_accounting_method", "debug_logging_enabled",
     ):
         if key in updates:
             setattr(row, key, updates[key])
