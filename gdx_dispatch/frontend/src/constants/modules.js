@@ -105,6 +105,7 @@ export const MODULE_CATEGORIES = [
       { key: 'forecasting', label: 'Forecasting', icon: 'pi pi-chart-line', to: '/forecasting', type: 'Invoices', permission: 'nav.admin' },
       { key: 'budget', label: 'Budget', icon: 'pi pi-calculator', to: '/budget', type: 'Invoices', permission: 'accounting.read' },
       { key: 'spending_trends', label: 'Spending Trends', icon: 'pi pi-chart-line', to: '/spending-trends', type: 'Invoices', permission: 'accounting.read' },
+      { key: 'overhead', label: 'Overhead', icon: 'pi pi-calculator', to: '/overhead', type: 'Invoices', permission: 'accounting.read' },
     ],
   },
   {

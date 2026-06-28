@@ -207,6 +207,12 @@ except Exception:
     budgets_router = APIRouter(prefix="/api/budgets", tags=["budgets"])
 
 try:
+    from gdx_dispatch.routers import overhead as overhead_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: overhead_router")
+    overhead_router = APIRouter(prefix="/api/overhead", tags=["overhead"])
+
+try:
     from gdx_dispatch.routers import automations as automations_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: automations_router")
@@ -1541,6 +1547,7 @@ def create_app() -> FastAPI:
     app.include_router(labor_router.router if hasattr(labor_router, "router") else labor_router)
     app.include_router(tech_efficiency_router.router if hasattr(tech_efficiency_router, "router") else tech_efficiency_router)
     app.include_router(budgets_router.router if hasattr(budgets_router, "router") else budgets_router)
+    app.include_router(overhead_router.router if hasattr(overhead_router, "router") else overhead_router)
     app.include_router(automations_router.router if hasattr(automations_router, "router") else automations_router)
     app.include_router(warranties_router.router if hasattr(warranties_router, "router") else warranties_router)
     app.include_router(catalog_router.router if hasattr(catalog_router, "router") else catalog_router)
