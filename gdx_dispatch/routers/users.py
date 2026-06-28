@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from gdx_dispatch.core.roles import normalize_role
+from gdx_dispatch.core.roles import is_role_admin_actor, normalize_role
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -404,6 +404,38 @@ def _sync_user_role_assignment(db: Session, tenant_id: str, user_id: str, legacy
         )
 
 
+def _assert_not_last_owner(db: Session, tenant_id: str, target: User, *, action: str) -> None:
+    """Block an action that would remove the tenant's final owner/superadmin.
+
+    Owner-tier (owner + superadmin, per core/roles.ROLE_ADMIN_ACTORS) is the
+    only tier that can grant the admin/owner role, so zeroing it out locks the
+    tenant out of all owner-only administration with no in-app recovery. The
+    genesis owner is seeded out-of-band by tools/bootstrap_app.py and never
+    through this surface, so this guard can never deadlock first-run.
+
+    No-op unless `target` is itself owner-tier AND is the last active,
+    non-deleted owner-tier account. A locked-out owner (active=False) does not
+    count as a remaining owner — you can't lock/delete your way down to only
+    disabled owners.
+    """
+    if not is_role_admin_actor(target.role):
+        return  # target isn't owner-tier — nothing to protect
+    remaining = db.execute(
+        select(User.role).where(
+            User.company_id == tenant_id,
+            User.id != target.id,
+            User.deleted_at.is_(None),
+            User.active.isnot(False),
+        )
+    ).scalars().all()
+    if any(is_role_admin_actor(r) for r in remaining):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=f"Cannot {action} the last owner — promote another user to owner first",
+    )
+
+
 @router.post("/{user_id}/role", response_model=None, dependencies=[Depends(require_permission("users.write"))])
 def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     tid = _tenant_id(request)
@@ -412,6 +444,11 @@ def change_role(user_id: str, payload: RoleChangeIn, request: Request, user: dic
         raise HTTPException(status_code=400, detail="Cannot change your own role")
     old_role = u.role or "user"
     assert_can_assign_role(user, payload.role, old_role)
+    # Last-owner guard: a demotion off the owner tier must leave at least one
+    # other owner/superadmin standing (owner→admin/superadmin stays owner-tier
+    # and is exempt).
+    if is_role_admin_actor(old_role) and not is_role_admin_actor(payload.role):
+        _assert_not_last_owner(db, tid, u, action="demote")
     u.role = payload.role
     u.updated_at = utcnow()
     _sync_user_role_assignment(db, tid, user_id, payload.role)
@@ -485,6 +522,10 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
         raise HTTPException(status_code=400, detail="Cannot lock yourself out")
     if (u.role or "").lower() == "owner":
         raise HTTPException(status_code=400, detail="Owners cannot be locked out")
+    # Owners are already fully blocked above; this additionally stops locking
+    # out the last superadmin (also owner-tier) from leaving the tenant with
+    # no usable owner-tier login.
+    _assert_not_last_owner(db, tid, u, action="lock out")
     if u.active is False:
         raise HTTPException(status_code=409, detail="User is already locked out")
     u.active = False
@@ -613,6 +654,7 @@ def delete_user(user_id: str, request: Request, user: dict = Depends(get_current
     u = _get_user_or_404(db, tid, user_id)
     if _user_id(user) == user_id:
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    _assert_not_last_owner(db, tid, u, action="delete")
     now = utcnow()
     u.deleted_at = now
     u.updated_at = now

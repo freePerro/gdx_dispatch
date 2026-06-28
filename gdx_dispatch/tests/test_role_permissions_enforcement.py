@@ -255,3 +255,110 @@ def test_assert_can_assign_role(actor_role, target, current, expect_denied):
         assert ei.value.status_code == 403
     else:
         assert_can_assign_role({"role": actor_role}, target, current)  # no raise
+
+
+# --- Last-owner guard (delete / demote / lockout must not zero out owners) ---
+# Owner-tier = owner + superadmin (core/roles.ROLE_ADMIN_ACTORS). The genesis
+# owner is seeded out-of-band by tools/bootstrap_app.py, so this guard can
+# never deadlock first-run; it only blocks the LAST live owner-tier account
+# from being removed through the API.
+
+_OWNER_TENANT = "tenant-lastowner"
+
+
+@pytest.fixture()
+def owner_db():
+    """In-memory tenant DB with a users table for the last-owner guard tests."""
+    from gdx_dispatch.models.tenant_models import User  # noqa: F401 — register on metadata
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        yield db
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def _add_user(db, *, role, active=True, deleted=False, email=None):
+    from datetime import datetime, timezone
+
+    from gdx_dispatch.models.tenant_models import User
+
+    uid = uuid4()
+    # The soft-delete timestamp value is irrelevant — the guard only checks
+    # deleted_at IS NULL.
+    db.add(User(
+        id=uid,
+        email=email or f"{role}-{uid}@x.test",
+        role=role,
+        active=active,
+        company_id=_OWNER_TENANT,
+        deleted_at=datetime.now(timezone.utc) if deleted else None,
+    ))
+    db.commit()
+    return db.get(User, uid)
+
+
+def test_last_owner_guard_blocks_when_sole_owner(owner_db):
+    """Removing the only owner (rest are technicians) is blocked."""
+    from fastapi import HTTPException
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    sole = _add_user(owner_db, role="owner")
+    _add_user(owner_db, role="technician")
+    with pytest.raises(HTTPException) as ei:
+        _assert_not_last_owner(owner_db, _OWNER_TENANT, sole, action="delete")
+    assert ei.value.status_code == 400
+
+
+def test_last_owner_guard_allows_when_second_owner_exists(owner_db):
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    o1 = _add_user(owner_db, role="owner")
+    _add_user(owner_db, role="owner")
+    _assert_not_last_owner(owner_db, _OWNER_TENANT, o1, action="delete")  # no raise
+
+
+def test_last_owner_guard_counts_superadmin_as_owner_tier(owner_db):
+    """A lone superadmin satisfies the invariant — the last owner may go."""
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    o1 = _add_user(owner_db, role="owner")
+    _add_user(owner_db, role="super_admin")
+    _assert_not_last_owner(owner_db, _OWNER_TENANT, o1, action="delete")  # no raise
+
+
+def test_last_owner_guard_ignores_locked_out_owner(owner_db):
+    """A locked-out (active=False) owner does not count as a remaining owner."""
+    from fastapi import HTTPException
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    active_owner = _add_user(owner_db, role="owner", active=True)
+    _add_user(owner_db, role="owner", active=False)  # locked out — doesn't count
+    with pytest.raises(HTTPException) as ei:
+        _assert_not_last_owner(owner_db, _OWNER_TENANT, active_owner, action="lock out")
+    assert ei.value.status_code == 400
+
+
+def test_last_owner_guard_ignores_soft_deleted_owner(owner_db):
+    from fastapi import HTTPException
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    live_owner = _add_user(owner_db, role="owner")
+    _add_user(owner_db, role="owner", deleted=True)  # tombstoned — doesn't count
+    with pytest.raises(HTTPException) as ei:
+        _assert_not_last_owner(owner_db, _OWNER_TENANT, live_owner, action="delete")
+    assert ei.value.status_code == 400
+
+
+def test_last_owner_guard_noop_for_non_owner_target(owner_db):
+    """Deleting a technician is never blocked, even with zero owners present."""
+    from gdx_dispatch.routers.users import _assert_not_last_owner
+
+    tech = _add_user(owner_db, role="technician")
+    _assert_not_last_owner(owner_db, _OWNER_TENANT, tech, action="delete")  # no raise

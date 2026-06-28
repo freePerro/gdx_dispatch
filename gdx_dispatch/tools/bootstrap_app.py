@@ -108,35 +108,61 @@ def main() -> int:
             log.info("Company row already present (id=%s).", tenant_id)
 
         # ── 4. Initial admin user ──
+        # Only a LIVE (non-tombstoned) row blocks re-seeding. The existence
+        # check deliberately filters deleted_at IS NULL so that if a tenant
+        # ever loses its last owner out-of-band (direct DB edit, migration
+        # mishap), a restart restores a working owner login. The last-owner
+        # guard in routers/users.py makes this unreachable through the API,
+        # so this is purely a recovery backstop.
         admin_email = os.getenv("GDX_ADMIN_EMAIL", "admin@example.com").strip().lower()
-        existing = db.execute(select(User).where(User.email == admin_email)).scalars().first()
-        if existing is None:
+        live = db.execute(
+            select(User).where(User.email == admin_email, User.deleted_at.is_(None))
+        ).scalars().first()
+        if live is not None:
+            db.commit()
+            log.info("Admin user already present (%s) — leaving it untouched.", admin_email)
+        else:
             admin_password = os.getenv("GDX_ADMIN_PASSWORD") or secrets.token_urlsafe(12)
             generated = "GDX_ADMIN_PASSWORD" not in os.environ
-            db.add(
-                User(
-                    id=str(uuid4()),
-                    email=admin_email,
-                    username="admin",
-                    full_name="Administrator",
-                    password_hash=_hash_password(admin_password),
-                    # 'owner' resolves to the WILDCARD permission set
-                    # (BUILTIN_ROLES["owner"]), so the bootstrap account has
-                    # full access to everything — including billing and any
-                    # permission an endpoint requires that isn't in the catalog
-                    # (e.g. dispatch.read). The first account on a self-hosted
-                    # single-tenant deploy owns the whole tenant.
-                    role="owner",
-                    company_id=tenant_id,
-                    active=True,
-                    must_change_password=True,
+            # If a soft-deleted row with this email survives, revive it in
+            # place rather than inserting a duplicate-email row.
+            tombstoned = db.execute(
+                select(User).where(User.email == admin_email)
+            ).scalars().first()
+            # 'owner' resolves to the WILDCARD permission set
+            # (BUILTIN_ROLES["owner"]), so the bootstrap account has full
+            # access to everything — including billing and any permission an
+            # endpoint requires that isn't in the catalog (e.g. dispatch.read).
+            # The first account on a self-hosted single-tenant deploy owns the
+            # whole tenant.
+            if tombstoned is not None:
+                tombstoned.deleted_at = None
+                tombstoned.active = True
+                tombstoned.role = "owner"
+                tombstoned.password_hash = _hash_password(admin_password)
+                tombstoned.must_change_password = True
+                revived = True
+            else:
+                db.add(
+                    User(
+                        id=str(uuid4()),
+                        email=admin_email,
+                        username="admin",
+                        full_name="Administrator",
+                        password_hash=_hash_password(admin_password),
+                        role="owner",
+                        company_id=tenant_id,
+                        active=True,
+                        must_change_password=True,
+                    )
                 )
-            )
+                revived = False
             db.commit()
+            title = "initial admin account created" if not revived else "owner account restored"
             banner = (
                 "\n"
                 "════════════════════════════════════════════════════════════\n"
-                "  GDX Dispatch — initial admin account created\n"
+                f"  GDX Dispatch — {title}\n"
                 f"    email:    {admin_email}\n"
                 f"    password: {admin_password}\n"
                 "  You MUST change this password on first login.\n"
@@ -145,9 +171,6 @@ def main() -> int:
                 banner += "  (password taken from GDX_ADMIN_PASSWORD)\n"
             banner += "════════════════════════════════════════════════════════════"
             log.warning(banner)
-        else:
-            db.commit()
-            log.info("Admin user already present (%s) — leaving it untouched.", admin_email)
 
     log.info("Bootstrap complete.")
     return 0
