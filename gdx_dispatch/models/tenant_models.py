@@ -1075,7 +1075,14 @@ class Vendor(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
-    account_number: Mapped[str] = mapped_column(String(100), nullable=True)
+    # PII-at-rest (S122 pattern, mirrors Customer.address): a vendor's bank
+    # ``account_number`` and ``tax_id`` (EIN/SSN-equivalent) are encrypted via
+    # the EncryptedString TypeDecorator. Safe here because every read/write of
+    # ``vendors`` goes through the ORM — no raw SQL touches the table (pinned by
+    # tools/raw_sql_on_encrypted_columns_scan.py and the invariant in
+    # tests/test_pii_typedecorator_raw_sql.py). Neither column is searched/
+    # filtered (the router serializes only), so no HashColumn is needed.
+    account_number: Mapped[str] = mapped_column(EncryptedString, nullable=True)
     contact_name: Mapped[str] = mapped_column(String(200), nullable=True)
     phone: Mapped[str] = mapped_column(String(30), nullable=True)
     email: Mapped[str] = mapped_column(String(200), nullable=True)
@@ -1086,7 +1093,7 @@ class Vendor(Base):
     zip: Mapped[str] = mapped_column(String(20), nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     payment_terms: Mapped[str] = mapped_column(String(60), nullable=True)
-    tax_id: Mapped[str] = mapped_column(String(50), nullable=True)
+    tax_id: Mapped[str] = mapped_column(EncryptedString, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     qb_vendor_id: Mapped[str] = mapped_column(String(120), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
