@@ -9,8 +9,10 @@ Single source of truth for outstanding work markers in the repo. Two parts:
   live as `TODO` comments in the source. Listed here so there's one place to
   look. Delete each entry as it lands.
 
-Last refreshed 2026-06-27. Verify file paths before acting — see the recall
-note about checking that named files still exist.
+Last refreshed 2026-06-27 (Part B re-verified against `app.py` — four items were
+stale and removed/corrected; see B4 for the matching source-comment cleanup).
+Verify file paths before acting — see the recall note about checking that named
+files still exist.
 
 ## Part A — Cleanup backlog
 
@@ -68,23 +70,33 @@ the `require_module("communications")` gate). 23 tests, green.
 Grouped by kind. These are `TODO` comments in source, surfaced here for
 visibility. Each links back to the line that owns the work.
 
+**App assembly lives in `gdx_dispatch/app.py`, not `gdx_dispatch/main.py`** —
+several inline TODOs say "main.py must mount X at integration time" but the wiring
+already happened in `app.py`. Status below was re-verified against `app.py`
+2026-06-27; the source comments are stale and listed in B4 for deletion.
+
 ### B1. Unwired-by-design (additive readiness — waiting on a flag / sprint merge)
 
-These modules exist and are tested but are intentionally NOT mounted in
-`gdx_dispatch/main.py` until the owning sprint integrates. No action unless the
-feature is being turned on.
-
 - **SPIFFE (SS-32)** — `core/spiffe/__init__.py:10`, `core/middleware/spiffe_auth_middleware.py:36`.
-  Mount middleware (BEFORE the SS-7 auth middleware) + include `routers.spiffe_admin`
-  when the SPIFFE-enabled flag flips.
-- **MCP registry / invoke (SS-19)** — `core/mcp_registry.py:7`, `core/mcp_tools/__init__.py:22`,
-  `core/mcp_invoke.py:29`. Register the `routers/mcp_registry.py` router in main.py;
-  ensure the mcp_tools package is imported on app start; swap `_dummy_log_execution`
-  for the real SQLAlchemy writer once the SS-19 migration lands (shape is stable).
-- **API metadata (SS-25)** — `routers/api_metadata.py:16`. `main.py` must
-  `include_router(api_metadata.router)` at integration time (no auto-mount).
-- **API versioning** — `core/middleware/api_versioning.py:19`. Self-referential
-  TODO at the bottom of the module; resolve when versioning is switched on.
+  **Dormant — not in use.** The code exists (SPIFFE-ID/SVID verification, SPIRE
+  trust-bundle fetcher, capability map, additive auth middleware, admin router)
+  and is tested, but nothing runs at request time. An activation hook exists at
+  `app.py:1408` gated on `SPIFFE_ENABLE`; that var is **unset** in prod (`app.env`)
+  and absent from every repo env/compose file, so the middleware takes the `else`
+  branch (`ss32_spiffe_middleware_disabled`) and is never added. `routers.spiffe_admin`
+  is never included either. To turn on: set `SPIFFE_ENABLE=1`, include the
+  `spiffe_admin` router, and stand up a SPIRE deployment to issue the SVIDs.
+  Until then every request authenticates the existing Bearer/JWT way.
+- **MCP registry router (SS-19)** — `core/mcp_registry.py:7`. Remaining work:
+  register `routers/mcp_registry.py` in `app.py` (NOT mounted). The other two
+  former sub-tasks are **done**: `mcp_tools` is side-effect-imported at app start
+  (`app.py:2062`) and `_real_log_execution` replaced the dummy writer
+  (`mcp_invoke.py:310`).
+
+> Removed 2026-06-27 (verified live, were never genuinely unwired):
+> **API metadata (SS-25)** — `api_metadata.router` is mounted via the `_ss_routers`
+> loop at `app.py:2032`. **API versioning (SS-25)** — `APIVersioningMiddleware` is
+> added at `app.py:1401`. Both have green tests.
 
 ### B2. Real deferred features (genuine future work)
 
@@ -93,19 +105,44 @@ feature is being turned on.
 - **Phone.com contact PATCH (Phase 2)** — `modules/phone_com/push_contacts.py:12`.
   Create path shipped; updating an already-pushed contact (PATCH) + per-tenant
   work cap are the Phase-2 follow-up.
-- **Audit Log Viewer (SS-28)** — `frontend/src/views/AuditLogViewer.vue:4,7,266`.
-  Component not routed (mount at `/admin/audit-log`, gate behind tenant-admin
-  cap); backend `/api/admin/audit-log` and `.csv` export not built. Expected
-  shape: `{ total, offset, limit, rows[], chain_integrity: {valid, break_at} }`.
+- **Audit Log Viewer (SS-28)** — `frontend/src/views/AuditLogViewer.vue`. The
+  view **is** routed at `/admin/audit-log` (`frontend/src/router/index.js:283`)
+  — that part is done. But the backend contract does **not** match: the view
+  fetches `/api/admin/audit-log?limit=&offset=` and reads
+  `{ total, offset, limit, rows[], chain_integrity }`, while the live endpoint
+  (`routers/admin_ops.py:get_audit_log`) takes `page`/`page_size` and returns
+  `{ page, page_size, total, items[] }` with no `chain_integrity`. Until one
+  side is reconciled the table won't render real data. Also: server-side
+  full-result CSV export (`/api/admin/audit-log.csv`) is not built — `exportCsv()`
+  only dumps the current page client-side. (Initial 2026-06-27 sweep wrongly
+  marked this "shipped" on the strength of route + endpoint *existence*; the
+  shape/param mismatch was caught on closer read.)
 
 ### B3. Test placeholders (intentional — assert 404 until implemented)
 
 Not bugs — these tests pin endpoints as not-yet-implemented. When the feature
 lands, flip the expected status and drop the `# TODO: implement` comment.
 
-- `tests/test_40_ai_quote.py` — `/api/ai/quote-generate|history|feedback`, `/api/catalog/items`.
 - `tests/test_39_tax_settings.py` — tax settings / jurisdictions / rate lookup /
-  tax-exempt / sales-tax report.
+  tax-exempt / sales-tax report. All 4 endpoints still 404 (unchanged).
+- `tests/test_40_ai_quote.py` — **only `/api/catalog/items` is still a 404
+  placeholder** (`:189`). The three `/api/ai/quote-generate|history|feedback`
+  endpoints are now implemented (asserts flipped to `!= 404` at `:68,:136,:152`).
+
+### B4. Stale source TODO comments — ✅ DELETED 2026-06-27
+
+These `TODO` comments described integration that had since landed. All removed
+this pass:
+
+- `routers/api_metadata.py:16` — "main.py must include_router" → done in `app.py:2032`.
+- `core/middleware/api_versioning.py:17-19` + bottom block — "main.py must
+  add_middleware" → done in `app.py:1401`.
+- `core/mcp_invoke.py:31` — "swap `_dummy_log_execution`" → done (`_real_log_execution`).
+  (The sibling `emit_event`/SS-23 bullet was **kept** — still genuine future work.)
+- `core/mcp_tools/__init__.py:18` — "import on app start" → done in `app.py:2062`.
+- `frontend/src/views/AuditLogViewer.vue:4` — router-mount TODO only. The
+  `:7` (backend shape) and `:266` (server CSV) TODOs were **kept and corrected**,
+  not deleted — that work is real (see B2 Audit Log Viewer).
 
 ## Reference
 

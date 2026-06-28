@@ -1,12 +1,14 @@
 <!--
   SS-28 slice F — tenant-admin Audit Log Viewer.
 
-  TODO: mount in gdx/frontend/src/router/index.js at path
-    /admin/audit-log once SS-28 integration lands. Gate route behind
-    tenant-admin capability check (same gate as TenantAdminApiKeys).
-  TODO: backend /api/admin/audit-log (see
-    gdx/routers/consumer_audit.py) is expected to return the shape
-    { total, offset, limit, rows[], chain_integrity: {valid, break_at} }.
+  Routed at /admin/audit-log (src/router/index.js).
+
+  TODO: backend contract mismatch — this view sends
+    /api/admin/audit-log?limit=&offset=& and reads
+    { total, offset, limit, rows[], chain_integrity: {valid, break_at} },
+    but the live endpoint (routers/admin_ops.py:get_audit_log) takes
+    page/page_size and returns { page, page_size, total, items[] } with no
+    chain_integrity. Reconcile one side before this renders real data.
 
   Plain-HTML controls + a fetch call. Avoids PrimeVue / router /
   toast deps so the view is standalone-testable and so integration

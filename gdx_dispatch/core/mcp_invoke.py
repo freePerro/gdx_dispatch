@@ -28,8 +28,6 @@ inputs are valid by observing which error fires — a classic info leak.
 
 TODO
 ----------------
-* Swap the ``_dummy_log_execution`` stub with the real SQLAlchemy
-  writer once the SS-19 migration lands. The shape is stable.
 * Wire ``emit_event`` for ``gdx.mcp.tool_called.v1`` once the SS-23
   event-bus module is integrated.
 """
