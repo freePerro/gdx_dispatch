@@ -9,6 +9,8 @@ chi_session.json
 *storage_state*.json
 # CHI HubX pricing plugin — kept out of the repo (proprietary integration)
 plugins/gdx-plugin-chi-pricing/
+# Public demo (gdxdispatch.com) — private deployment infra, lives on the VPS only
+gdx_dispatch/docker/demo/
 
 # Database files
 *.db
