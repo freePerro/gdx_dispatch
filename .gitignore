@@ -3,6 +3,9 @@
 *.env
 .env.lab
 .env.bak.*
+# Demo instance secrets (the .example template IS committed)
+.env.demo
+gdx_dispatch/docker/demo/.env.demo
 # Playwright storageState / captured login sessions (live credentials)
 chi_session.json
 *.session.json

@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GDX Dispatch — PUBLIC DEMO stack (gdxdispatch.com)
+#
+# A fully ISOLATED second instance of the app for a public, shared-login demo.
+# It shares NOTHING with production (project `gdx`): its own database, its own
+# Redis, its own volumes, its own network. Nothing a demo visitor does can reach
+# real customer data.
+#
+# Deploy (from repo root on the VPS):
+#   docker compose -p gdx-demo --env-file gdx_dispatch/docker/demo/.env.demo \
+#     -f gdx_dispatch/docker/demo/docker-compose.demo.yml up -d
+#
+# Containers: gdx-demo-db-1, gdx-demo-redis-1, gdx-demo-app-1
+# App is published on 127.0.0.1:8003 (prod owns 8002). nginx routes
+# gdxdispatch.com -> gdx-demo-app-1:8000 over the gdx-demo_default network.
+#
+# Design choices:
+#  * Standalone file (NOT layered on docker-compose.yml) — layering would inherit
+#    the production `external: true` db/uploads volumes and risk touching prod
+#    data. This file references only demo-scoped, managed volumes.
+#  * No Celery / no plugin-host: a demo needs no background side-effects, and a
+#    smaller surface is fewer things to neuter. The nightly reset handles state.
+#  * db/redis volumes are MANAGED (not external) so the nightly reset can wipe &
+#    restore them deterministically. `down -v` is SAFE here (demo data only).
+#  * ALL outbound-integration credentials are intentionally OMITTED in .env.demo
+#    (Stripe / QuickBooks / SMTP / Phone.com / Microsoft-Outlook). The app gates
+#    each on a non-empty env var, so absence = no-op. See demo/README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-demo-env: &demo-env
+  DATABASE_URL: postgresql://gdx:${DB_PASSWORD:?set DB_PASSWORD in .env.demo}@db:5432/gdx
+  # Single-tenant collapse: control plane == app DB. /health probes this; the
+  # app hard-fails at boot without it.
+  CONTROL_DATABASE_URL: postgresql://gdx:${DB_PASSWORD:?set DB_PASSWORD in .env.demo}@db:5432/gdx
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.demo}
+  # JWT signing — fresh demo keys, NEVER shared with prod.
+  RS_PRIVATE_KEY: ${RS_PRIVATE_KEY:-}
+  RS_PUBLIC_KEY: ${RS_PUBLIC_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:-}
+  # Encryption — fresh demo keys.
+  FERNET_KEY: ${FERNET_KEY:-}
+  GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
+  MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
+  # GDX_ENV is set explicitly in .env.demo (see notes there re: boot gate).
+  GDX_ENV: ${GDX_ENV:-dev}
+  # Demo tenant identity (distinct from prod).
+  GDX_TENANT_ID: ${GDX_TENANT_ID:-}
+  GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
+  GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-demo}
+  GDX_TENANT_NAME: ${GDX_TENANT_NAME:-Demo Garage Doors}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gdx
+      POSTGRES_USER: gdx
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env.demo}
+    volumes:
+      - demo_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gdx -d gdx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    image: ghcr.io/freeperro/gdx_dispatch:${APP_VERSION:-1.5.1}
+    pull_policy: always
+    environment:
+      <<: *demo-env
+      APP_VERSION: ${APP_VERSION:-1.5.1}
+      ENVIRONMENT: demo
+      GDX_BASE_URL: ${GDX_BASE_URL:-https://gdxdispatch.com}
+      # Bootstrap a known admin on first boot; the seed script then clears
+      # must_change_password so the shared demo login works directly.
+      GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-demo@gdxdispatch.com}
+      GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:?set GDX_ADMIN_PASSWORD in .env.demo}
+      # ── Outbound integrations: intentionally UNSET (neutered). ──
+      # Listing them here as explicit empties documents the intent and prevents
+      # accidental inheritance from a host environment.
+      STRIPE_SECRET_KEY: ""
+      STRIPE_PUBLISHABLE_KEY: ""
+      STRIPE_WEBHOOK_SECRET: ""
+      QB_CLIENT_ID: ""
+      QB_CLIENT_SECRET: ""
+      QB_WEBHOOK_VERIFIER_TOKEN: ""
+      QB_ENVIRONMENT: "sandbox"
+      PLATFORM_SMTP_PASS: ""
+      GDX_MICROSOFT_SECRET_KEY: ""
+      POWER_APPS_CLIENT_ID: ""
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      SENTRY_DSN: ""
+    ports:
+      - "127.0.0.1:8003:8000"
+    volumes:
+      - demo_uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  # MANAGED (not external) — the nightly reset is allowed to wipe these.
+  demo_db_data:
+  demo_uploads:
