@@ -136,13 +136,18 @@ def test_healthy_plugin_still_served_when_another_is_stale():
     assert c.get("/api/plugins/demo/ping").status_code == 503     # stale one withheld
 
 
-def _patch_boot(monkeypatch, *, reconcile_fn, discovered, desired=None, create_all=None):
+def _patch_boot(monkeypatch, *, reconcile_fn, discovered, desired=None, create_all=None,
+                stale=None):
     """Wire up main.build_app's collaborators for a boot-resilience test."""
     import gdx_dispatch.plugin_host.main as main
     monkeypatch.setattr(main, "reconcile", reconcile_fn)
     monkeypatch.setattr(main, "discover_with_dists", lambda: discovered)
     monkeypatch.setattr(main, "desired_versions", lambda db: desired or {})
     monkeypatch.setattr(main, "SessionLocal", lambda: _FakeDB())
+    # detect_stale's logic is covered in test_reconcile against real dist-info;
+    # here we inject the verdict so build_app wiring is tested without the FS.
+    monkeypatch.setattr(main, "detect_stale",
+                        lambda desired_, discovered_, target=None: dict(stale or {}))
     monkeypatch.setattr(main.PluginBase.metadata, "create_all",
                         create_all or (lambda **k: None))
     monkeypatch.setattr(main, "reconcile_plugin_columns", lambda *a, **k: None)
@@ -189,13 +194,13 @@ def test_build_app_degrades_on_schema_failure_but_still_serves(monkeypatch):
 
 
 def test_build_app_withholds_stale_plugin_detected_at_boot(monkeypatch):
-    # End-to-end: desired 0.2.0 but the installed dist is 0.1.0 → build_app must
-    # withhold the plugin (fail closed) and report it stale on /ready.
+    # End-to-end wiring: when detect_stale flags a plugin, build_app must withhold
+    # it (fail closed) and report it stale on /ready.
     from gdx_dispatch.plugin_host.reconcile import ReconcileResult
 
     main = _patch_boot(monkeypatch, reconcile_fn=lambda: ReconcileResult([], []),
                        discovered=[(_demo_plugin(), "demo_dist", "0.1.0")],
-                       desired={"demo_dist": "0.2.0"})
+                       stale={"demo": {"installed": "0.1.0", "desired": "0.2.0"}})
     c = TestClient(main.build_app())
     assert c.get("/api/plugins").json() == []           # withheld from catalog
     assert c.get("/api/plugins/demo/ping").status_code == 503
