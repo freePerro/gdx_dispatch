@@ -13,6 +13,20 @@
         <InputText id="cfd-name" v-model="form.name" data-testid="customer-name-input" class="w-full" />
       </div>
 
+      <!-- Non-blocking duplicate hint. Fires on a debounced lookup as the
+           user types name/phone/email. The user can still save — it may be a
+           different person who shares a name. -->
+      <div v-if="duplicateMatch" class="dup-warning" data-testid="customer-dup-warning">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        <span>
+          Possible duplicate of
+          <strong>{{ duplicateMatch.customer.name }}</strong>
+          <template v-if="duplicateMatch.customer.phone"> · {{ duplicateMatch.customer.phone }}</template>
+          <template v-else-if="duplicateMatch.customer.email"> · {{ duplicateMatch.customer.email }}</template>
+          (matched on {{ duplicateMatch.on }}). Save anyway if this is a different customer.
+        </span>
+      </div>
+
       <div class="form-row">
         <div class="form-field">
           <label for="cfd-phone">Phone</label>
@@ -97,9 +111,11 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useApi } from "../composables/useApi";
+import { findDuplicateMatch, lookupTerms } from "../utils/customerMatch";
 import Button from "primevue/button";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
@@ -114,6 +130,9 @@ const props = defineProps({
 const emit = defineEmits(["update:visible", "saved"]);
 
 const api = useApiWithToast();
+// Silent client for the background duplicate lookup — suppresses error toasts
+// so a transient blip mid-typing never nags the user.
+const lookupApi = useApi();
 const toast = useToast();
 
 const customerTypeOptions = [
@@ -174,6 +193,63 @@ const form = ref(emptyForm());
 const error = ref("");
 const saving = ref(false);
 
+// At-entry duplicate detection. { customer, on } or null.
+const duplicateMatch = ref(null);
+let _dupTimer = null;
+// Monotonic token so an earlier slow lookup that resolves out of order can't
+// overwrite a newer one's result (TOCTOU on duplicateMatch).
+let _dupSeq = 0;
+
+function scheduleDuplicateCheck() {
+  clearTimeout(_dupTimer);
+  _dupTimer = setTimeout(runDuplicateCheck, 400);
+}
+
+function unwrapList(res) {
+  return Array.isArray(res) ? res : res?.items || res?.data || [];
+}
+
+async function runDuplicateCheck() {
+  const candidate = {
+    name: form.value.name,
+    phone: form.value.phone,
+    email: form.value.email,
+  };
+  // Query every present identifier (phone/email/name) and merge the pools — a
+  // single "best" term would miss a dupe keyed on a different field than the
+  // one we picked.
+  const terms = lookupTerms(candidate);
+  if (!terms.length) {
+    duplicateMatch.value = null;
+    return;
+  }
+  const seq = ++_dupSeq;
+  try {
+    const pools = await Promise.all(
+      terms.map((t) =>
+        lookupApi
+          .get(`/api/customers?q=${encodeURIComponent(t)}&per_page=20`, { suppressErrorToast: true })
+          .then(unwrapList)
+          .catch(() => []),
+      ),
+    );
+    if (seq !== _dupSeq) return; // superseded by a newer keystroke
+    const byId = new Map();
+    for (const pool of pools) {
+      for (const c of pool) {
+        if (c && c.id != null) byId.set(String(c.id), c);
+      }
+    }
+    // excludeId so editing an existing customer never flags itself.
+    duplicateMatch.value = findDuplicateMatch(candidate, [...byId.values()], {
+      excludeId: form.value.id,
+    });
+  } catch {
+    // Network/permission blip — fail open (no warning), never block entry.
+    if (seq === _dupSeq) duplicateMatch.value = null;
+  }
+}
+
 const isEditMode = computed(() => props.mode === "edit");
 
 // Repopulate the form each time the dialog opens — closed-then-reopened
@@ -185,10 +261,22 @@ watch(
     if (isVisible) {
       form.value = formFromCustomer(props.customer);
       error.value = "";
+      duplicateMatch.value = null;
+      clearTimeout(_dupTimer);
     }
   },
   { immediate: true },
 );
+
+// Re-check for duplicates (debounced) as the user edits identity fields.
+watch(
+  () => [form.value.name, form.value.phone, form.value.email],
+  () => {
+    if (props.visible) scheduleDuplicateCheck();
+  },
+);
+
+onBeforeUnmount(() => clearTimeout(_dupTimer));
 
 function cancel() {
   emit("update:visible", false);
@@ -260,6 +348,29 @@ async function submitForm() {
   color: #b42318;
   margin: 0.5rem 0;
   font-size: 0.9rem;
+}
+.dup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  background: var(--p-amber-50, #fffbeb);
+  border: 1px solid var(--p-amber-200, #fde68a);
+  color: var(--p-amber-700, #b45309);
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+.dup-warning .pi {
+  margin-top: 0.1rem;
+}
+/* Dark mode: the amber-50 background is a light island in the dark dialog.
+   Use a translucent amber tint + brighter text so the warning reads on a dark
+   surface (matches the banner-warning treatment in MobileTimeclockView). */
+[data-theme="dark"] .dup-warning {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fcd34d;
 }
 .w-full {
   width: 100%;

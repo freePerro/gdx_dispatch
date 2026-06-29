@@ -246,13 +246,24 @@ async def list_customers(
         ]
         if q:
             qpat = f"%{q.lower()}%"
-            base_filters.append(
-                or_(
-                    _func.lower(Customer.name).like(qpat),
-                    _func.lower(Customer.email).like(qpat),
-                    _func.lower(Customer.phone).like(qpat),
-                )
-            )
+            clauses = [
+                _func.lower(Customer.name).like(qpat),
+                _func.lower(Customer.email).like(qpat),
+                _func.lower(Customer.phone).like(qpat),
+            ]
+            # Phone is stored free-form ("(555) 123-4567"); the at-entry dedup
+            # UI queries with digits only ("5551234567"). A plain LIKE on the
+            # raw column never matches a formatted number, so also compare a
+            # separator-stripped phone. Chained replace() is portable to both
+            # sqlite (tests) and Postgres (prod) — regexp_replace is PG-only.
+            # /audit feat/daily-ux-improvements caught the silent phone miss.
+            q_digits = "".join(ch for ch in q if ch.isdigit())
+            if len(q_digits) >= 7:
+                stripped_phone = Customer.phone
+                for sep in (" ", "-", "(", ")", ".", "+"):
+                    stripped_phone = _func.replace(stripped_phone, sep, "")
+                clauses.append(stripped_phone.like(f"%{q_digits}%"))
+            base_filters.append(or_(*clauses))
 
         total = (
             db.query(_func.count(Customer.id))
