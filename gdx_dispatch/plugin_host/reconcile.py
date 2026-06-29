@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import NamedTuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -27,6 +28,21 @@ from gdx_dispatch.core.database import SessionLocal
 log = logging.getLogger(__name__)
 
 INSTALL_DIR = os.getenv("PLUGIN_INSTALL_DIR", "/plugins")
+
+# Hard bound on a single pip invocation. plugin-host has NO network egress in
+# production, so a spec whose deps aren't already vendored will never resolve —
+# without this it hangs uvicorn's import of main:app for minutes, taking the
+# whole plugin surface down (the 2026-06-29 deploy outage). Fail fast instead.
+PIP_TIMEOUT_S = int(os.getenv("PLUGIN_PIP_TIMEOUT", "60"))
+
+
+class ReconcileResult(NamedTuple):
+    """Outcome of a reconcile pass. `installed` are specs newly pip-installed
+    this boot; `failed` are desired specs that neither were already present nor
+    installed cleanly — the caller surfaces these so a half-loaded host is loud,
+    not silent."""
+    installed: list[str]
+    failed: list[str]
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS plugin_registry (
@@ -62,6 +78,72 @@ def safe_artifact_name(filename: str) -> str | None:
     Strips any directory part first so an upload can't traverse paths."""
     base = os.path.basename((filename or "").strip())
     return base if _SAFE_NAME.match(base) else None
+
+
+def _canon(name: str) -> str:
+    """PEP 503-ish canonical form: runs of -_. collapse to one _, lowercased.
+    `gdx-plugin-chi-pricing` and `gdx_plugin_chi_pricing` both -> the same key,
+    so a registry package name and a wheel's distribution name compare equal."""
+    return re.sub(r"[-_.]+", "_", (name or "")).lower()
+
+
+def _versions_equal(a: str, b: str) -> bool:
+    """PEP 440-aware version equality. pip writes the *normalized* version into
+    dist-info (`1.0-1` -> `1.0.post1`, `v1.2` -> `1.2`), so a raw string compare
+    against a registry/filename version would spuriously miss and reinstall every
+    boot. Fall back to a literal compare only if either side won't parse."""
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:  # pragma: no cover - packaging ships with pip
+        return a == b
+    try:
+        return Version(a) == Version(b)
+    except InvalidVersion:
+        return a == b
+
+
+def artifact_name_version(filename: str) -> tuple[str | None, str | None]:
+    """(distribution, version) parsed from a wheel/sdist basename, else
+    (None, None). Wheel grammar is `{dist}-{version}(-{build})?-{py}-{abi}-{plat}.whl`
+    and sdist is `{dist}-{version}.tar.gz`; in both the first two dash-fields are
+    distribution and version."""
+    base = os.path.basename(filename or "")
+    for ext in (".whl", ".tar.gz"):
+        if base.endswith(ext):
+            parts = base[: -len(ext)].split("-")
+            return (parts[0], parts[1]) if len(parts) >= 2 else (None, None)
+    return None, None
+
+
+def installed_version(distribution: str | None, target: str = INSTALL_DIR) -> str | None:
+    """Installed version of `distribution` in the target volume, or None. Reads
+    dist-info via importlib.metadata (scoped to the volume) so name + version
+    follow exactly how pip wrote them — no hand-rolled dist-info path parsing."""
+    if not distribution:
+        return None
+    from importlib.metadata import distributions
+
+    want = _canon(distribution)
+    try:
+        for dist in distributions(path=[target]):
+            if _canon(dist.metadata["Name"]) == want:
+                return dist.version
+    except Exception:  # unreadable target / metadata — treat as not installed
+        return None
+    return None
+
+
+def is_installed(distribution: str | None, version: str | None,
+                 target: str = INSTALL_DIR) -> bool:
+    """True if `distribution`==`version` is already installed in the target
+    volume. This is what makes reconcile idempotent: the /plugins volume persists
+    across restarts, so a plugin installed on a prior boot must NOT be reinstalled
+    — reinstalling re-resolves its deps against PyPI, which the network-isolated
+    host can't reach (the 2026-06-29 outage)."""
+    if not distribution or not version:
+        return False
+    cur = installed_version(distribution, target)
+    return cur is not None and _versions_equal(cur, version)
 
 
 def ensure_registry_table(db: Session) -> None:
@@ -104,6 +186,10 @@ def install_artifact(
     if safe is None:
         log.error("refusing unsafe artifact filename: %r", filename)
         return False
+    dist, ver = artifact_name_version(safe)
+    if is_installed(dist, ver, target):
+        log.info("artifact %s already installed (%s %s) — skipping reinstall", safe, dist, ver)
+        return True
     if expected_sha256 and hashlib.sha256(content).hexdigest() != expected_sha256:
         log.error("artifact %s sha256 mismatch — refusing to install", safe)
         return False
@@ -117,38 +203,71 @@ def install_artifact(
 
 def pip_install(spec: str, target: str = INSTALL_DIR) -> bool:
     """Install one spec into the target dir. Returns True on success, logs on
-    failure (never raises — one bad package must not abort the whole boot)."""
-    cmd = [sys.executable, "-m", "pip", "install", "--target", target, "--upgrade", spec]
+    failure (never raises — one bad package must not abort the whole boot).
+
+    Boot-safety against the network-isolated host comes from is_installed()
+    skipping the already-present steady state entirely; this function only runs
+    when an install is genuinely needed. `--retries 0` + `--timeout 10` + a
+    wall-clock subprocess timeout ensure that when the index is unreachable (a
+    new/changed plugin whose deps aren't vendored) pip FAILS in seconds rather
+    than hanging boot for minutes (the 2026-06-29 outage). `--upgrade` is
+    deliberately omitted: it forces an index check, and an offline host can't
+    satisfy it anyway — a version change needs network at install time."""
+    cmd = [sys.executable, "-m", "pip", "install", "--target", target,
+           "--retries", "0", "--timeout", "10", spec]
     log.info("plugin reconcile: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=PIP_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        log.error(
+            "pip install timed out after %ss for %s — plugin-host has no network "
+            "egress, so any dependency not already vendored in %s cannot resolve",
+            PIP_TIMEOUT_S, spec, target,
+        )
+        return False
     if result.returncode != 0:
         log.error("pip install failed for %s: %s", spec, (result.stderr or "")[-500:])
         return False
     return True
 
 
-def reconcile(db: Session | None = None) -> list[str]:
-    """Install every registry package into the volume; return the specs installed.
-    Adds the install dir to sys.path so freshly-installed plugins are importable
-    in this process."""
+def reconcile(db: Session | None = None) -> ReconcileResult:
+    """Bring the volume in line with desired-state (registry packages + uploaded
+    artifacts) and report what installed vs. what failed. Already-present versions
+    are skipped (the volume persists across restarts), so the steady state needs
+    no network. Adds the install dir to sys.path so freshly-installed plugins are
+    importable in this process."""
     own = db is None
     db = db or SessionLocal()
     installed: list[str] = []
+    failed: list[str] = []
     try:
         ensure_registry_table(db)
         ensure_artifact_table(db)
         for package, version in desired_packages(db):
             spec = f"{package}=={version}" if version else package
+            if version and is_installed(package, version):
+                log.info("registry package %s already installed — skipping", spec)
+                continue
             if pip_install(spec):
                 installed.append(spec)
+            else:
+                failed.append(spec)
         # Uploaded private plugins (not on any index). Verify the stored digest
         # before installing — a corrupted/tampered row won't be executed.
         for filename, sha256, content in desired_artifacts(db):
             if install_artifact(filename, content, expected_sha256=sha256):
                 installed.append(filename)
+            else:
+                failed.append(filename)
     finally:
         if own:
             db.close()
     if INSTALL_DIR not in sys.path:
         sys.path.insert(0, INSTALL_DIR)
-    return installed
+    if failed:
+        log.error("plugin reconcile finished with %d failed spec(s): %s",
+                  len(failed), ", ".join(failed))
+    return ReconcileResult(installed=installed, failed=failed)

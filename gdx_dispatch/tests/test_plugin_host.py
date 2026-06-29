@@ -68,6 +68,19 @@ def test_health_reflects_mounted_plugin():
     assert c.get("/health").json()["plugins"] == ["demo"]
 
 
+def test_health_is_503_degraded_when_a_desired_plugin_failed_to_install():
+    # A desired plugin that didn't install must read as unhealthy, not masquerade
+    # as a healthy host serving a partial catalog (2026-06-29 outage).
+    c = TestClient(create_plugin_host(plugins=[_demo_plugin()],
+                                      degraded=["gdx-plugin-chi-pricing==0.1.2"]))
+    r = c.get("/health")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "degraded"
+    assert body["plugins"] == ["demo"]
+    assert body["missing"] == ["gdx-plugin-chi-pricing==0.1.2"]
+
+
 def test_restart_endpoint_schedules_sigterm_without_dying(monkeypatch):
     # The route schedules a SIGTERM via threading.Timer; patch Timer so the
     # test process is NOT actually killed, and assert it responds + arms it.

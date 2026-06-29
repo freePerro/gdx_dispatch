@@ -23,8 +23,9 @@ from gdx_dispatch.plugin_host.reconcile import reconcile
 from gdx_dispatch.plugin_host.schema_reconcile import reconcile_plugin_columns
 
 # 0. reconcile: pip-install any registry packages into the /plugins volume and
-#    put it on sys.path (no-op when the registry is empty).
-reconcile()
+#    put it on sys.path (no-op when the registry is empty / already satisfied).
+#    Idempotent + fail-fast so a network-isolated host never hangs boot here.
+_reconcile = reconcile()
 
 # 1. discover (imports plugin packages, registering models on PluginBase)
 _plugins = discover_plugins()
@@ -37,5 +38,6 @@ PluginBase.metadata.create_all(bind=engine)
 #     outage, 2026-06-26). Plugin-layer twin of core issue #41.
 reconcile_plugin_columns(engine, PluginBase.metadata)
 
-# 3. build the app with the already-discovered plugins
-app = create_plugin_host(plugins=_plugins)
+# 3. build the app with the already-discovered plugins. Surface any reconcile
+#    failures through /health so a desired-but-missing plugin reads as unhealthy.
+app = create_plugin_host(plugins=_plugins, degraded=_reconcile.failed)

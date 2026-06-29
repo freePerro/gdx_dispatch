@@ -20,24 +20,37 @@ import signal
 import threading
 
 from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.responses import JSONResponse
 
 from gdx_dispatch.plugin_api.discovery import discover_plugins
 
 log = logging.getLogger(__name__)
 
 
-def create_plugin_host(plugins=None) -> FastAPI:
+def create_plugin_host(plugins=None, degraded=None) -> FastAPI:
     """Build the plugin-host app. `plugins` is injectable for tests; in
-    production it defaults to live entry-point discovery."""
+    production it defaults to live entry-point discovery. `degraded` is the list
+    of desired specs that failed to install this boot (from reconcile) — when
+    non-empty the host reports unhealthy so the failure is loud, not silent."""
     if plugins is None:
         plugins = discover_plugins()
     catalog = {p.key: p for p in plugins}
+    degraded = list(degraded or [])
 
     app = FastAPI(title="GDX Plugin Host")
 
     # --- reserved host routes (registered first so plugins can't shadow them) ---
     @app.get("/health")
     def health():
+        # 503 on degraded so the Docker healthcheck (`curl -sf`) flips the
+        # container to unhealthy — a desired plugin that didn't install must not
+        # masquerade as a healthy host serving a partial catalog.
+        if degraded:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "degraded", "plugins": sorted(catalog),
+                         "missing": sorted(degraded)},
+            )
         return {"status": "ok", "plugins": sorted(catalog)}
 
     @app.get("/api/plugins")
