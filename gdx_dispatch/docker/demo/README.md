@@ -20,7 +20,18 @@ nightly from a golden snapshot.
 - `gen-keys.sh` — generates fresh demo-only secrets.
 - `seed_demo.py` — one-time believable-dataset seed + clears the forced password change.
 - `reset-demo.sh` — nightly golden-snapshot restore (cron).
-- `nginx-gdxdispatch.conf` — the vhost to add to the live nginx config.
+- `nginx-gdxdispatch.conf` — the vhost to add to the live nginx config (includes the `location = /` landing block).
+- `landing/index.html` — the marketing/auto-login page served at the root.
+
+## Landing page
+The bare `/login` screen is a confusing front door, so nginx serves a static branded page at
+**`location = /` only** (the SPA still owns `/login`, `/dashboard`, `/api/*`, `/assets/*`). It explains
+the demo, shows the credentials, and a one-click **"Enter the demo"** button POSTs `/auth/login` and seeds
+the SPA's sessionStorage (`gdx_access_token` + `gdx_user` + `gdx_tenant_slug`), then redirects to
+`/dashboard` (falls back to `/login` on any error). The file is served from
+`/var/www/gdx/landing/gdxdemo/index.html` — a **directory** bind-mount into gdx-nginx, so edits go live
+with **no nginx restart** (only `nginx.conf` edits need the restart). ⚠️ The demo password is hardcoded in
+this file twice (visible `<code>` + JS `DEMO_PASSWORD`) — keep it in sync if you rotate the login.
 
 ## Integration neutering (why it's safe for strangers)
 Every outbound side-effect is gated on a non-empty env var; we leave them empty,
@@ -56,32 +67,40 @@ docker compose -p gdx-demo --env-file ./.env.demo -f ./docker-compose.demo.yml u
 until curl -sf http://127.0.0.1:8003/health >/dev/null; do sleep 3; done
 
 # 3. Seed the believable dataset + clear the forced password change.
-#    The 1.5.1 image predates these files, so copy the script in, then run it
-#    (it imports gdx_dispatch.* which IS in the image).
+#    The image predates these files, so copy the script in, then run it with
+#    PYTHONPATH=/app (else ModuleNotFoundError: gdx_dispatch).
 docker cp ./seed_demo.py gdx-demo-app-1:/tmp/seed_demo.py
-docker exec -i gdx-demo-app-1 python /tmp/seed_demo.py
+docker exec -e PYTHONPATH=/app -w /app -i gdx-demo-app-1 python /tmp/seed_demo.py
 
 # 4. Capture the golden snapshot (the nightly reset restores this).
 docker exec gdx-demo-db-1 pg_dump -U gdx -d gdx | gzip > ./golden.sql.gz
 
-# 5. nginx: carve gdxdispatch.com out of the vanity-redirect block and add the
-#    demo vhost. Edit the LIVE config:
-#      /var/www/gdx/infra/nginx.conf
+# 5. Landing page: drop it where gdx-nginx can serve it (dir-mounted, no restart).
+mkdir -p /var/www/gdx/landing/gdxdemo
+cp ./landing/index.html /var/www/gdx/landing/gdxdemo/index.html
+
+# 6. nginx: carve gdxdispatch.com out of the vanity-redirect block and add the
+#    demo vhost. Edit the LIVE config /var/www/gdx/infra/nginx.conf:
 #    - remove `gdxdispatch.com www.gdxdispatch.com` from the "Vanity domains" server_name
-#    - append the contents of nginx-gdxdispatch.conf
-#    Give the proxy a leg into the demo network, then reload:
+#    - append the contents of nginx-gdxdispatch.conf (incl. the `location = /` landing block)
+#    Give the proxy a leg into the demo network:
 docker network connect gdx-demo_default gdx-nginx
-docker exec gdx-nginx nginx -t && docker exec gdx-nginx nginx -s reload
+#    ⚠️ nginx.conf is a SINGLE-FILE bind mount — editing changes the inode and
+#    `nginx -s reload` reads STALE content. Validate in a throwaway, then RESTART:
+docker run --rm -v /var/www/gdx/infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+  -v /etc/letsencrypt:/etc/letsencrypt:ro nginx:alpine nginx -t
+docker restart gdx-nginx
 
-# 6. DNS: in Cloudflare, point gdxdispatch.com (and www) at the VPS origin,
-#    proxied (orange cloud), exactly like gdx.teamgaragedoor.com. Cloudflare is
-#    in Full mode, so the origin's *.teamgaragedoor.com cert is accepted.
+# 7. DNS: already done — gdxdispatch.com is on Cloudflare (proxied) and already
+#    reaches the origin. (If re-pointing: A record to the VPS, orange cloud.
+#    Cloudflare is in Full mode, so the *.teamgaragedoor.com origin cert is accepted.)
 
-# 7. Install the nightly reset cron.
+# 8. Install the nightly reset cron.
 ( crontab -l 2>/dev/null; echo "0 8 * * * /var/www/gdx_dispatch/gdx_dispatch/docker/demo/reset-demo.sh >> /var/log/gdx-demo-reset.log 2>&1" ) | crontab -
 ```
 
-Visit https://gdxdispatch.com → log in with `GDX_ADMIN_EMAIL` / `GDX_ADMIN_PASSWORD`.
+Visit https://gdxdispatch.com → the landing page → "Enter the demo" (one-click), or log in with
+`GDX_ADMIN_EMAIL` / `GDX_ADMIN_PASSWORD`.
 
 ## Updating the demo to a new release
 ```bash
