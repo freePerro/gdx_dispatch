@@ -18,7 +18,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -172,6 +172,50 @@ def desired_artifacts(db: Session) -> list[tuple[str, str, bytes]]:
         text("SELECT filename, sha256, content FROM plugin_artifact ORDER BY filename")
     ).fetchall()
     return [(r[0], r[1], bytes(r[2])) for r in rows]
+
+
+def desired_artifact_names(db: Session) -> list[str]:
+    """Just the filenames (no blobs) — for cheap desired-version lookups."""
+    rows = db.execute(
+        text("SELECT filename FROM plugin_artifact ORDER BY filename")
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def desired_versions(db: Session) -> dict[str, str]:
+    """{canonical distribution name: desired version} across registry packages
+    and uploaded artifacts — the operator's intended version per plugin dist.
+    Used to detect a STALE loaded plugin (installed version != desired)."""
+    out: dict[str, str] = {}
+    for package, version in desired_packages(db):
+        if version:
+            out[_canon(package)] = version
+    for filename in desired_artifact_names(db):
+        dist, ver = artifact_name_version(filename)
+        if dist and ver:
+            out[_canon(dist)] = ver
+    return out
+
+
+def detect_stale(
+    desired: dict[str, str],
+    discovered: list[tuple[Any, str | None, str | None]],
+) -> dict[str, dict[str, str]]:
+    """Which loaded plugins are at the WRONG version. `discovered` is
+    [(manifest, dist_name, dist_version)]. Returns {plugin_key: {installed,
+    desired}} for any plugin whose installed dist version != the operator's
+    desired version — these get their LIVE endpoints withheld (fail closed) so a
+    stale build can't serve over the proxy (2026-06-29 follow-up).
+
+    Best-effort by nature: a plugin whose entry point has no resolvable
+    distribution (dist_name None) or no desired version recorded is NOT flagged —
+    detection needs both a known installed version and a known desired one."""
+    stale: dict[str, dict[str, str]] = {}
+    for manifest, dist_name, dist_ver in discovered:
+        want = desired.get(_canon(dist_name)) if dist_name else None
+        if want and dist_ver and not _versions_equal(dist_ver, want):
+            stale[manifest.key] = {"installed": dist_ver, "desired": want}
+    return stale
 
 
 def install_artifact(

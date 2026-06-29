@@ -148,10 +148,13 @@ services:
       app:
         condition: service_healthy
     healthcheck:
-      # A bad plugin can wedge boot (import or create_all failure). Without this,
-      # a crash-loop is invisible — compose reports the container "up" between
-      # restarts. /health is served before plugin routers mount.
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      # Probe /ready (readiness), not /health (liveness): /ready 503s when a
+      # desired plugin failed to install or loaded STALE and was withheld, so the
+      # container flips "unhealthy" and the degradation is visible in `docker ps`.
+      # (restart: unless-stopped reacts to container EXIT, not healthcheck status,
+      # so an unhealthy-but-serving host is surfaced, never crash-looped — correct
+      # for a deterministic missing-dependency on a no-egress host.)
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

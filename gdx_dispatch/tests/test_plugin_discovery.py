@@ -111,6 +111,31 @@ def test_load_skips_one_that_raises_without_killing_others():
     assert [m.key for m in out] == ["ok"]  # boom skipped, ok still loads
 
 
+# --- discover_with_dists (pairs each manifest with its distribution version) ---
+
+class _FakeDist:
+    def __init__(self, name, version):
+        self.name = name
+        self.version = version
+
+
+def test_discover_with_dists_pairs_manifest_to_installed_version(monkeypatch):
+    import importlib.metadata as md
+
+    from gdx_dispatch.plugin_api import discovery
+
+    ep_ok = _FakeEP("chi", _manifest(key="chipricing", requires=""))
+    ep_ok.dist = _FakeDist("gdx-plugin-chi-pricing", "0.1.2")
+    ep_gated = _FakeEP("old", _manifest(key="old", requires="gdx>=99"))
+    ep_gated.dist = _FakeDist("old", "1.0")
+
+    monkeypatch.setattr(md, "entry_points", lambda group: [ep_ok, ep_gated])
+    out = discovery.discover_with_dists(current_version="1.5.0")
+    # gated plugin dropped (compat); survivor carries its installed dist version
+    assert [(m.key, n, v) for m, n, v in out] == [
+        ("chipricing", "gdx-plugin-chi-pricing", "0.1.2")]
+
+
 if __name__ == "__main__":
     import sys
 

@@ -129,6 +129,40 @@ def test_reconcile_reports_failed_specs(monkeypatch):
     assert out.failed == ["bad"]  # surfaced, not silently dropped
 
 
+def test_desired_versions_merges_registry_and_artifacts(monkeypatch):
+    monkeypatch.setattr(rec, "desired_packages",
+                        lambda db: [("gdx-plugin-foo", "1.2"), ("nover", None)])
+    monkeypatch.setattr(rec, "desired_artifact_names",
+                        lambda db: ["gdx_plugin_chi_pricing-0.1.2-py3-none-any.whl"])
+    out = rec.desired_versions(db=object())
+    # canonical keys; unversioned registry rows skipped; artifact version parsed
+    assert out["gdx_plugin_foo"] == "1.2"
+    assert out["gdx_plugin_chi_pricing"] == "0.1.2"
+    assert "nover" not in out
+
+
+class _M:
+    def __init__(self, key):
+        self.key = key
+
+
+def test_detect_stale_flags_wrong_version_only():
+    desired = {"gdx_plugin_chi_pricing": "0.2.0", "other": "1.0"}
+    discovered = [
+        (_M("chipricing"), "gdx-plugin-chi-pricing", "0.1.2"),  # 0.1.2 != 0.2.0 → stale
+        (_M("other"), "other", "1.0"),                          # matches → fine
+        (_M("untracked"), "untracked", "9.9"),                  # no desired → fine
+    ]
+    stale = rec.detect_stale(desired, discovered)
+    assert stale == {"chipricing": {"installed": "0.1.2", "desired": "0.2.0"}}
+
+
+def test_detect_stale_uses_pep440_equality_so_no_false_positive():
+    desired = {"demo": "1.0-1"}
+    discovered = [(_M("demo"), "demo", "1.0.post1")]  # same version, normalized
+    assert rec.detect_stale(desired, discovered) == {}
+
+
 def test_install_artifact_skips_when_already_installed(monkeypatch):
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: True)
     called = []
