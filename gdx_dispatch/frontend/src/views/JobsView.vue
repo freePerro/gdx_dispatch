@@ -452,6 +452,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useListPrefs } from "../composables/useListPrefs";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -490,6 +491,19 @@ const globalTotal = ref(0);
 const globalStatusCounts = ref({});
 const searchQuery = ref("");
 const activeStatus = ref("All");
+// Persist the chosen status tab + search across reloads (and across the
+// "Back to Jobs" buttons on JobDetailView, which hard-push /jobs). Valid set
+// mirrors statusTabs; a stale/removed status falls back to "All" so the list
+// never silently filters to empty.
+const JOB_STATUS_KEYS = ["All", "Service Call", "Estimate", "Scheduled", "In Progress", "Complete"];
+useListPrefs(
+  "jobs",
+  { activeStatus, searchQuery },
+  {
+    activeStatus: { default: "All", valid: (v) => JOB_STATUS_KEYS.includes(v) },
+    searchQuery: { default: "", valid: (v) => typeof v === "string" },
+  },
+);
 const isLoading = ref(false);
 // Track whether the first fetch resolved so we can suppress the tab-count
 // badges during the initial ~300ms load (else every tab flashes "0").

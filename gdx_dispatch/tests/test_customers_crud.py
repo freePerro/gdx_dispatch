@@ -301,6 +301,28 @@ async def test_list_customers_search_and_pagination(tenant_db_session):
     assert len(page_out.items) == 1
 
 
+async def test_list_customers_digits_query_matches_formatted_phone(tenant_db_session):
+    # Regression (feat/daily-ux-improvements): the at-entry dedup UI queries
+    # /api/customers with a digits-only phone ("5551234567"), but phones are
+    # stored free-form ("(555) 123-4567"). A plain LIKE on the raw column never
+    # matched, so the phone dedup check was silently dead. list_customers now
+    # also compares a separator-stripped phone.
+    _seed_customer(tenant_db_session, name="Formatted Phone", phone="(555) 123-4567")
+    _seed_customer(tenant_db_session, name="Other", phone="555-999-0000")
+
+    digits = await list_customers(
+        request=_mock_request(), q="5551234567", page=1, per_page=50, _={}, db=tenant_db_session
+    )
+    assert digits.total == 1
+    assert digits.items[0].name == "Formatted Phone"
+
+    # A non-matching digit string still returns nothing (no false positives).
+    none_out = await list_customers(
+        request=_mock_request(), q="5550000001", page=1, per_page=50, _={}, db=tenant_db_session
+    )
+    assert none_out.total == 0
+
+
 async def test_search_endpoint_matches_name_phone_email(tenant_db_session):
     _seed_customer(tenant_db_session, name="Martha", email="martha@example.com", phone="555-0100")
     _seed_customer(tenant_db_session, name="Nora", email="nora@example.com", phone="555-0200")

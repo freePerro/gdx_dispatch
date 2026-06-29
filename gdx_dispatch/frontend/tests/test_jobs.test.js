@@ -114,6 +114,11 @@ const sampleCustomers = [{ id: 10, name: "Acme Facilities" }];
 
 describe("JobsView", () => {
   beforeEach(() => {
+    // JobsView now persists the status tab + search to localStorage
+    // (useListPrefs). jsdom shares localStorage across tests in a file, so
+    // clear it between tests — otherwise an earlier test's status filter
+    // bleeds into the next mount's restored state.
+    localStorage.clear();
     setActivePinia(createPinia());
     getMock.mockReset();
     postMock.mockReset();

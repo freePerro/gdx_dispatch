@@ -324,6 +324,7 @@ import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { openAuthedFile } from "../composables/useAuthedFile";
+import { useListPrefs } from "../composables/useListPrefs";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Card from "primevue/card";
@@ -604,6 +605,27 @@ const statusTabs = [
   { label: "Paid", value: "Paid" },
   { label: "Overdue", value: "Overdue" },
 ];
+
+// Persist status tab + search + date preset across reloads. Validators guard
+// against stale storage: a status no longer in statusTabs (future rename) or a
+// removed date preset falls back to its default instead of silently filtering
+// the list to empty. "custom" is intentionally excluded from the valid preset
+// set — customRange holds Date objects we don't persist, so a restored
+// "custom" would show the picker with an empty range (no filter); fall back to
+// "all" instead. Placed after statusTabs so the validator can reference it.
+const BILLING_STATUS_KEYS = statusTabs.map((t) => t.value);
+const BILLING_DATE_PRESET_KEYS = datePresetOptions
+  .map((o) => o.value)
+  .filter((v) => v !== "custom");
+useListPrefs(
+  "billing",
+  { activeStatus, searchQuery, datePreset },
+  {
+    activeStatus: { default: "All", valid: (v) => BILLING_STATUS_KEYS.includes(v) },
+    searchQuery: { default: "", valid: (v) => typeof v === "string" },
+    datePreset: { default: "all", valid: (v) => BILLING_DATE_PRESET_KEYS.includes(v) },
+  },
+);
 
 const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
 

@@ -624,6 +624,7 @@
 </template>
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+import { usePollingRefresh } from '../composables/usePollingRefresh';
 import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useToast } from 'primevue/usetoast';
@@ -705,6 +706,24 @@ const viewOptions = [
   { label: 'Week', value: 'week' },
 ];
 const refreshing = ref(false);
+// Count of in-flight board-mutating PATCHes (optimistic assigns/moves). The
+// drag flag is cleared the instant the card is dropped, but the optimistic
+// write + PATCH happen *after* that — and several paths don't refetch. Auto-
+// refresh polling must stay paused across that whole window or a poll lands
+// stale server rows on top of the user's move and visibly reverts it. Every
+// optimistic mutation routes through withBoardWrite so the guard is uniform
+// (drag-assign, holding-area move/release, timeline reschedule, duration+assign).
+// /audit (feat/daily-ux-improvements) caught the drag-assign case AND that the
+// first fix missed the other four mutation paths.
+const pendingWrites = ref(0);
+async function withBoardWrite(fn) {
+  pendingWrites.value += 1;
+  try {
+    return await fn();
+  } finally {
+    pendingWrites.value -= 1;
+  }
+}
 const draggingJobId = ref(null);
 const dragOverTechId = ref(null);
 const jobs = ref([]);
@@ -1222,14 +1241,18 @@ async function confirmDurationPrompt(skip = false) {
   // Skip = assign without recording a duration (card stays "?h"). Confirm =
   // PATCH duration first so the column total reflects it; the assignment
   // PATCH follows. Pass {skipPrompt:true} so we don't re-enter the prompt.
-  if (!skip && Number.isFinite(hours) && hours > 0) {
-    try {
-      await api.patch(`/api/jobs/${jobId}`, { scheduled_duration_hours: hours });
-    } catch (_e) {
-      // api composable surfaces the toast; fall through and still try to assign.
+  await withBoardWrite(async () => {
+    if (!skip && Number.isFinite(hours) && hours > 0) {
+      try {
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_duration_hours: hours });
+      } catch (_e) {
+        // api composable surfaces the toast; fall through and still try to assign.
+      }
     }
-  }
-  await _doAssignJob(jobId, techId, scheduledAt);
+    // _doAssignJob nests withBoardWrite (counter, so nesting is fine) — keeps
+    // the veto held across the duration PATCH + the assign PATCH as one unit.
+    await _doAssignJob(jobId, techId, scheduledAt);
+  });
 }
 
 async function assignJob(jobId, techId, scheduledAt = null) {
@@ -1254,6 +1277,12 @@ async function assignJob(jobId, techId, scheduledAt = null) {
 }
 
 async function _doAssignJob(jobId, techId, scheduledAt = null) {
+  // Hold the poll veto for the entire optimistic-write + PATCH lifecycle so a
+  // background refresh can't overwrite the move before the server confirms.
+  return withBoardWrite(() => _doAssignJobInner(jobId, techId, scheduledAt));
+}
+
+async function _doAssignJobInner(jobId, techId, scheduledAt = null) {
   const jobIndex = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   const sourceJob = jobIndex >= 0 ? jobs.value[jobIndex] : null;
   const laneJob = scheduledUnassigned.value.find((j) => String(j.id) === String(jobId));
@@ -1338,12 +1367,14 @@ async function onTimelinePlace({ jobId, techId, startISO }) {
   if (sameTech && hasDuration) {
     const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
     const prev = jobs.value[idx].scheduled_at;
-    jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO };
-    try {
-      await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO });
-    } catch {
-      jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev };
-    }
+    await withBoardWrite(async () => {
+      jobs.value[idx] = { ...jobs.value[idx], scheduled_at: startISO };
+      try {
+        await api.patch(`/api/jobs/${jobId}`, { scheduled_at: startISO });
+      } catch {
+        jobs.value[idx] = { ...jobs.value[idx], scheduled_at: prev };
+      }
+    });
     return;
   }
   await assignJob(jobId, techId, startISO);
@@ -1367,7 +1398,7 @@ function confirmAssign() {
 
 // --- API ---
 
-async function fetchTechnicians() {
+async function fetchTechnicians({ keepOnError = false } = {}) {
   try {
     const data = await api.get('/api/technicians');
     const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
@@ -1376,7 +1407,7 @@ async function fetchTechnicians() {
     // hidden) tech still surfaces on the board instead of vanishing.
     technicians.value = rows.map(normalizeTech);
   } catch {
-    technicians.value = [];
+    if (!keepOnError) technicians.value = [];
   }
 }
 
@@ -1404,21 +1435,21 @@ async function loadSkillOptions() {
   }
 }
 
-async function fetchJobs() {
+async function fetchJobs({ keepOnError = false } = {}) {
   try {
     const data = await api.get(`/api/jobs?date=${selectedDateStr.value}`);
     const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
     jobs.value = rows.map(normalizeJob);
   } catch {
-    jobs.value = [];
+    if (!keepOnError) jobs.value = [];
   }
 }
 
-async function fetchHoldingAreas() {
+async function fetchHoldingAreas({ keepOnError = false } = {}) {
   try {
     const res = await api.get("/api/holding-areas");
     holdingAreas.value = Array.isArray(res) ? res : [];
-  } catch { holdingAreas.value = []; }
+  } catch { if (!keepOnError) holdingAreas.value = []; }
 }
 
 async function loadDispatchSettings() {
@@ -1428,7 +1459,7 @@ async function loadDispatchSettings() {
   } catch (_e) { /* defaults stay off */ }
 }
 
-async function fetchScheduledUnassigned() {
+async function fetchScheduledUnassigned({ keepOnError = false } = {}) {
   if (!dispatchSettings.value.dispatch_show_unassigned_lane) {
     scheduledUnassigned.value = [];
     return;
@@ -1436,7 +1467,7 @@ async function fetchScheduledUnassigned() {
   try {
     const res = await api.get("/api/dispatch/scheduled-unassigned");
     scheduledUnassigned.value = Array.isArray(res?.items) ? res.items : [];
-  } catch { scheduledUnassigned.value = []; }
+  } catch { if (!keepOnError) scheduledUnassigned.value = []; }
 }
 
 function isOverdue(job) {
@@ -1481,20 +1512,24 @@ async function moveToHoldingArea(event, areaId) {
   if (!jobId) return;
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   if (idx === -1) return;
-  jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null };
   draggingJobId.value = null;
-  try {
-    await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
-  } catch { await refreshBoard(); }
+  await withBoardWrite(async () => {
+    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null };
+    try {
+      await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
+    } catch { await refreshBoard(); }
+  });
 }
 
 async function releaseFromHoldingArea(jobId) {
   const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
   if (idx === -1) return;
-  jobs.value[idx] = { ...jobs.value[idx], holding_area_id: null };
-  try {
-    await api.patch(`/api/jobs/${jobId}`, { holding_area_id: null });
-  } catch { await refreshBoard(); }
+  await withBoardWrite(async () => {
+    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: null };
+    try {
+      await api.patch(`/api/jobs/${jobId}`, { holding_area_id: null });
+    } catch { await refreshBoard(); }
+  });
 }
 
 async function deleteHoldingArea(areaId) {
@@ -1574,6 +1609,36 @@ async function refreshBoard() {
     refreshing.value = false;
   }
 }
+
+// Background board auto-refresh so the dispatcher sees new/changed jobs and
+// tech assignments without clicking Refresh. Deliberately does NOT toggle
+// `refreshing` (which drives the manual button's spinner) — otherwise the
+// button would flash a spinner every poll. Skips loadSkillOptions (static
+// within a session) and guards its own overlap. keepOnError keeps the last
+// good board on a transient API blip instead of blanking it unattended.
+let autoPolling = false;
+async function pollBoard() {
+  if (autoPolling) return;
+  autoPolling = true;
+  try {
+    await Promise.all([
+      fetchTechnicians({ keepOnError: true }),
+      fetchJobs({ keepOnError: true }),
+      fetchHoldingAreas({ keepOnError: true }),
+      fetchScheduledUnassigned({ keepOnError: true }),
+    ]);
+  } finally {
+    autoPolling = false;
+  }
+}
+
+// Pause polling mid-drag AND across the optimistic-assign PATCH window
+// (pendingWrites), plus while a manual refresh is in flight. usePollingRefresh
+// also skips ticks when the tab is hidden and refreshes on tab re-focus.
+usePollingRefresh(pollBoard, {
+  intervalMs: 45_000,
+  isPaused: () => refreshing.value || draggingJobId.value != null || pendingWrites.value > 0,
+});
 
 // Sprint 5 / S5-C2 — live tech locations (table view; map widget is a follow-up).
 const liveTechs = ref([]);
