@@ -80,6 +80,27 @@ def discover_plugins(current_version: str | None = None) -> list[PluginManifest]
     """Find all installed, compatible plugins via the gdx.modules entry-point group."""
     from importlib.metadata import entry_points
 
-    cv = current_version or os.getenv("APP_VERSION", "0")
+    cv: str = current_version or os.getenv("APP_VERSION", "0")
     eps = entry_points(group=ENTRY_POINT_GROUP)
     return load_manifests(eps, cv)
+
+
+def discover_with_dists(
+    current_version: str | None = None,
+) -> list[tuple[PluginManifest, str | None, str | None]]:
+    """Like discover_plugins, but each manifest is paired with the distribution
+    that provides it: `(manifest, dist_name, dist_version)`. The installed version
+    lets the host detect a STALE plugin (loaded version != operator's desired
+    version) and fail closed. Each entry point is validated through load_manifests
+    so the same skip-on-bad/compat rules apply."""
+    from importlib.metadata import entry_points
+
+    cv: str = current_version or os.getenv("APP_VERSION", "0")
+    out: list[tuple[PluginManifest, str | None, str | None]] = []
+    for ep in entry_points(group=ENTRY_POINT_GROUP):
+        manifests = load_manifests([ep], cv)
+        if not manifests:
+            continue
+        dist = getattr(ep, "dist", None)
+        out.append((manifests[0], getattr(dist, "name", None), getattr(dist, "version", None)))
+    return out
