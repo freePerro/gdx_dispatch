@@ -16,6 +16,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import Any, NamedTuple
@@ -115,35 +116,90 @@ def artifact_name_version(filename: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def installed_version(distribution: str | None, target: str = INSTALL_DIR) -> str | None:
-    """Installed version of `distribution` in the target volume, or None. Reads
-    dist-info via importlib.metadata (scoped to the volume) so name + version
-    follow exactly how pip wrote them — no hand-rolled dist-info path parsing."""
+def installed_versions(distribution: str | None, target: str = INSTALL_DIR) -> set[str]:
+    """ALL versions of `distribution` with a dist-info in the target volume.
+
+    Returns a set, not one value, because `pip install --target` does NOT remove
+    a prior version's dist-info — the volume accumulates them (prod had chi-pricing
+    0.1.0 + 0.1.1 + 0.1.2 dist-info side by side after two upgrades). Reading "the
+    first one" silently picked the OLDEST and made a current install look stale
+    (2026-06-29 follow-up). Read via importlib.metadata so names/versions match
+    exactly how pip wrote them."""
     if not distribution:
-        return None
+        return set()
     from importlib.metadata import distributions
 
     want = _canon(distribution)
+    out: set[str] = set()
     try:
         for dist in distributions(path=[target]):
             if _canon(dist.metadata["Name"]) == want:
-                return dist.version
+                out.add(dist.version)
     except Exception:  # unreadable target / metadata — treat as not installed
+        return set()
+    return out
+
+
+def effective_version(distribution: str | None, target: str = INSTALL_DIR) -> str | None:
+    """The version whose CODE is actually importable from the volume, or None.
+
+    `pip install --target` overwrites the single package dir in place but leaves
+    each version's dist-info behind, so when several accumulate, the LAST install
+    is the one whose code is on disk. Installs are monotonic upgrades, so we take
+    the highest version (PEP 440 order) as the running one — strictly better than
+    reading "the first dist-info" (which picked the OLDEST and caused the v1.5.1
+    false-stale). ASSUMES dist-info reflects code: a partial install that wrote
+    newer metadata over older code would read high — `prune_other_versions` keeps
+    the volume single-version so this stays unambiguous in steady state."""
+    vers = installed_versions(distribution, target)
+    if not vers:
         return None
-    return None
+    try:
+        from packaging.version import Version
+        return max(vers, key=Version)
+    except Exception:  # pragma: no cover - packaging ships with pip
+        return max(vers)
 
 
 def is_installed(distribution: str | None, version: str | None,
                  target: str = INSTALL_DIR) -> bool:
-    """True if `distribution`==`version` is already installed in the target
-    volume. This is what makes reconcile idempotent: the /plugins volume persists
-    across restarts, so a plugin installed on a prior boot must NOT be reinstalled
-    — reinstalling re-resolves its deps against PyPI, which the network-isolated
-    host can't reach (the 2026-06-29 outage)."""
+    """True if the running (effective) version of `distribution` equals `version`.
+    This is what makes reconcile idempotent: the /plugins volume persists across
+    restarts, so a plugin already installed at the desired version must NOT be
+    reinstalled — reinstalling re-resolves its deps against PyPI, which the
+    network-isolated host can't reach (the 2026-06-29 outage). Comparing the
+    EFFECTIVE (highest) version, not mere dist-info membership, so accumulated old
+    metadata can't make a present version look absent NOR a stale one look fresh."""
     if not distribution or not version:
         return False
-    cur = installed_version(distribution, target)
-    return cur is not None and _versions_equal(cur, version)
+    eff = effective_version(distribution, target)
+    return eff is not None and _versions_equal(eff, version)
+
+
+def prune_other_versions(distribution: str | None, keep_version: str | None,
+                         target: str = INSTALL_DIR) -> list[str]:
+    """Delete dist-info dirs for `distribution` whose version != keep_version, and
+    return the names removed. This is the root-cause fix for the cruft pip --target
+    leaves behind: without it the volume keeps every past version's metadata, which
+    makes version detection ambiguous. Call ONLY once keep_version is confirmed
+    present, so a working install's metadata is never deleted out from under it."""
+    removed: list[str] = []
+    if not distribution or not keep_version:
+        return removed
+    want = _canon(distribution)
+    try:
+        entries = os.listdir(target)
+    except FileNotFoundError:
+        return removed
+    for entry in entries:
+        if not entry.endswith(".dist-info"):
+            continue
+        name, ver = artifact_name_version(entry[: -len(".dist-info")] + ".whl")
+        if name and _canon(name) == want and ver and not _versions_equal(ver, keep_version):
+            shutil.rmtree(os.path.join(target, entry), ignore_errors=True)
+            removed.append(entry)
+            log.info("pruned stale dist-info %s (keeping %s %s)", entry, distribution, keep_version)
+    return removed
 
 
 def ensure_registry_table(db: Session) -> None:
@@ -200,21 +256,33 @@ def desired_versions(db: Session) -> dict[str, str]:
 def detect_stale(
     desired: dict[str, str],
     discovered: list[tuple[Any, str | None, str | None]],
+    target: str = INSTALL_DIR,
 ) -> dict[str, dict[str, str]]:
     """Which loaded plugins are at the WRONG version. `discovered` is
     [(manifest, dist_name, dist_version)]. Returns {plugin_key: {installed,
-    desired}} for any plugin whose installed dist version != the operator's
+    desired}} for any plugin whose EFFECTIVE installed version != the operator's
     desired version — these get their LIVE endpoints withheld (fail closed) so a
     stale build can't serve over the proxy (2026-06-29 follow-up).
 
-    Best-effort by nature: a plugin whose entry point has no resolvable
-    distribution (dist_name None) or no desired version recorded is NOT flagged —
-    detection needs both a known installed version and a known desired one."""
+    Compares the effective (highest-on-disk) version, not the single dist_version
+    off the entry point (ambiguous when dist-info accumulates) and not mere
+    membership (which would let a stale version masquerade as fresh). Best-effort:
+    a plugin whose entry point has no resolvable distribution or no desired version
+    recorded is NOT flagged — detection needs both."""
     stale: dict[str, dict[str, str]] = {}
-    for manifest, dist_name, dist_ver in discovered:
+    seen: set[str] = set()
+    for manifest, dist_name, _dist_ver in discovered:
+        if manifest.key in seen:
+            continue
+        seen.add(manifest.key)
         want = desired.get(_canon(dist_name)) if dist_name else None
-        if want and dist_ver and not _versions_equal(dist_ver, want):
-            stale[manifest.key] = {"installed": dist_ver, "desired": want}
+        if not want:
+            continue
+        if not is_installed(dist_name, want, target):
+            stale[manifest.key] = {
+                "installed": effective_version(dist_name, target) or "unknown",
+                "desired": want,
+            }
     return stale
 
 
@@ -233,6 +301,9 @@ def install_artifact(
     dist, ver = artifact_name_version(safe)
     if is_installed(dist, ver, target):
         log.info("artifact %s already installed (%s %s) — skipping reinstall", safe, dist, ver)
+        # Confirmed present → it's safe to clean any older dist-info cruft left by
+        # past --target upgrades (the duplicate-dist-info bug, 2026-06-29 v1.5.1).
+        prune_other_versions(dist, ver, target)
         return True
     if expected_sha256 and hashlib.sha256(content).hexdigest() != expected_sha256:
         log.error("artifact %s sha256 mismatch — refusing to install", safe)
@@ -242,7 +313,12 @@ def install_artifact(
     path = os.path.join(staged_dir, safe)
     with open(path, "wb") as fh:
         fh.write(content)
-    return pip_install(path, target=target)
+    ok = pip_install(path, target=target)
+    if ok:
+        # Only prune AFTER a successful install — never delete a working version's
+        # metadata because a new install failed (offline host).
+        prune_other_versions(dist, ver, target)
+    return ok
 
 
 def pip_install(spec: str, target: str = INSTALL_DIR) -> bool:
@@ -294,9 +370,12 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
             spec = f"{package}=={version}" if version else package
             if version and is_installed(package, version):
                 log.info("registry package %s already installed — skipping", spec)
+                prune_other_versions(package, version, target=INSTALL_DIR)
                 continue
             if pip_install(spec):
                 installed.append(spec)
+                if version:
+                    prune_other_versions(package, version, target=INSTALL_DIR)
             else:
                 failed.append(spec)
         # Uploaded private plugins (not on any index). Verify the stored digest

@@ -88,6 +88,54 @@ def test_is_installed_false_when_target_missing():
     assert rec.is_installed("x", "1.0", target="/no/such/dir") is False
 
 
+def test_effective_version_is_highest_despite_accumulated_dist_info(tmp_path):
+    # The prod failure: --target upgrades leave OLD dist-info behind, and the code
+    # dir is whatever the LAST (highest) install wrote. effective_version must be
+    # that highest version, NOT the first/oldest dist-info found.
+    _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", "0.1.0")
+    _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", "0.1.1")
+    _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", "0.1.2")
+    assert rec.installed_versions("gdx_plugin_chi_pricing", target=str(tmp_path)) == {
+        "0.1.0", "0.1.1", "0.1.2"}
+    assert rec.effective_version("gdx-plugin-chi-pricing", target=str(tmp_path)) == "0.1.2"
+    # is_installed tracks the EFFECTIVE (running) version, not membership:
+    assert rec.is_installed("gdx-plugin-chi-pricing", "0.1.2", target=str(tmp_path))
+    assert not rec.is_installed("gdx-plugin-chi-pricing", "0.1.0", target=str(tmp_path))
+    assert not rec.is_installed("gdx-plugin-chi-pricing", "0.9.9", target=str(tmp_path))
+
+
+def test_prune_other_versions_removes_only_non_kept(tmp_path):
+    for v in ("0.1.0", "0.1.1", "0.1.2"):
+        _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", v)
+    _make_dist_info(tmp_path, "unrelated", "9.9")  # must be untouched
+    removed = rec.prune_other_versions("gdx-plugin-chi-pricing", "0.1.2", target=str(tmp_path))
+    assert sorted(removed) == [
+        "gdx_plugin_chi_pricing-0.1.0.dist-info", "gdx_plugin_chi_pricing-0.1.1.dist-info"]
+    assert rec.installed_versions("gdx_plugin_chi_pricing", target=str(tmp_path)) == {"0.1.2"}
+    assert rec.installed_versions("unrelated", target=str(tmp_path)) == {"9.9"}
+
+
+def test_prune_keeps_pep440_equivalent(tmp_path):
+    _make_dist_info(tmp_path, "demo", "1.0.post1")
+    # keep_version given in non-normalized form must NOT delete its own dist-info
+    assert rec.prune_other_versions("demo", "1.0-1", target=str(tmp_path)) == []
+    assert rec.installed_versions("demo", target=str(tmp_path)) == {"1.0.post1"}
+
+
+def test_prune_leaves_package_code_and_kept_metadata_intact(tmp_path):
+    # Prune must not break the working plugin: the importable package dir and the
+    # kept version's dist-info survive; only other-version dist-info is removed.
+    pkg = tmp_path / "gdx_plugin_chi_pricing"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("VALUE = 42\n")
+    for v in ("0.1.0", "0.1.1", "0.1.2"):
+        _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", v)
+    rec.prune_other_versions("gdx_plugin_chi_pricing", "0.1.2", target=str(tmp_path))
+    assert (pkg / "__init__.py").read_text() == "VALUE = 42\n"          # code untouched
+    assert (tmp_path / "gdx_plugin_chi_pricing-0.1.2.dist-info").is_dir()  # kept metadata
+    assert rec.installed_versions("gdx_plugin_chi_pricing", target=str(tmp_path)) == {"0.1.2"}
+
+
 def test_reconcile_installs_each_desired(monkeypatch):
     monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
     monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
@@ -146,27 +194,46 @@ class _M:
         self.key = key
 
 
-def test_detect_stale_flags_wrong_version_only():
+def test_detect_stale_flags_when_desired_version_absent_from_volume(tmp_path):
+    # detect_stale reads the VOLUME (membership), not the entry point's version.
+    _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", "0.1.2")  # only 0.1.2 present
+    _make_dist_info(tmp_path, "other", "1.0")
     desired = {"gdx_plugin_chi_pricing": "0.2.0", "other": "1.0"}
     discovered = [
-        (_M("chipricing"), "gdx-plugin-chi-pricing", "0.1.2"),  # 0.1.2 != 0.2.0 → stale
-        (_M("other"), "other", "1.0"),                          # matches → fine
+        (_M("chipricing"), "gdx-plugin-chi-pricing", "0.1.2"),  # desired 0.2.0 absent → stale
+        (_M("other"), "other", "1.0"),                          # 1.0 present → fine
         (_M("untracked"), "untracked", "9.9"),                  # no desired → fine
     ]
-    stale = rec.detect_stale(desired, discovered)
+    stale = rec.detect_stale(desired, discovered, target=str(tmp_path))
     assert stale == {"chipricing": {"installed": "0.1.2", "desired": "0.2.0"}}
 
 
-def test_detect_stale_uses_pep440_equality_so_no_false_positive():
-    desired = {"demo": "1.0-1"}
-    discovered = [(_M("demo"), "demo", "1.0.post1")]  # same version, normalized
-    assert rec.detect_stale(desired, discovered) == {}
+def test_detect_stale_not_flagged_when_desired_is_effective_despite_cruft(tmp_path):
+    # The exact prod false-positive: 0.1.0/0.1.1/0.1.2 all present, desired 0.1.2.
+    # effective (highest) == desired → NOT stale, even though the entry point below
+    # reports the oldest version. This is the regression test for the v1.5.1 bug.
+    for v in ("0.1.0", "0.1.1", "0.1.2"):
+        _make_dist_info(tmp_path, "gdx_plugin_chi_pricing", v)
+    desired = {"gdx_plugin_chi_pricing": "0.1.2"}
+    discovered = [(_M("chipricing"), "gdx-plugin-chi-pricing", "0.1.0")]  # ep reports oldest
+    assert rec.detect_stale(desired, discovered, target=str(tmp_path)) == {}
 
 
-def test_install_artifact_skips_when_already_installed(monkeypatch):
+def test_detect_stale_uses_pep440_equality_so_no_false_positive(tmp_path):
+    _make_dist_info(tmp_path, "demo", "1.0.post1")
+    desired = {"demo": "1.0-1"}  # same version, non-normalized
+    discovered = [(_M("demo"), "demo", "1.0.post1")]
+    assert rec.detect_stale(desired, discovered, target=str(tmp_path)) == {}
+
+
+def test_install_artifact_skips_when_already_installed_and_prunes(monkeypatch):
     monkeypatch.setattr(rec, "is_installed", lambda *a, **k: True)
     called = []
+    pruned = []
     monkeypatch.setattr(rec, "pip_install", lambda *a, **k: called.append(a) or True)
+    monkeypatch.setattr(rec, "prune_other_versions",
+                        lambda d, v, target=rec.INSTALL_DIR: pruned.append((d, v)))
     ok = rec.install_artifact("gdx_plugin_chi_pricing-0.1.2-py3-none-any.whl", b"bytes")
     assert ok is True
     assert called == []  # already present → no write, no pip, no network
+    assert pruned == [("gdx_plugin_chi_pricing", "0.1.2")]  # cruft pruned on skip
