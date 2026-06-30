@@ -82,12 +82,14 @@
               @click.stop="quickStatus(data, 'open')"
             />
             <Button
+              v-tooltip="'Edit'"
               icon="pi pi-pencil" aria-label="Edit"
               text
               size="small"
               @click.stop="openEdit(data)"
             />
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               severity="danger"
               text

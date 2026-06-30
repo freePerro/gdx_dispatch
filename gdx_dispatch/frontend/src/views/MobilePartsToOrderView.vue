@@ -3,7 +3,7 @@
       <header class="mobile-page-head">
         <div class="head-row">
           <h1>Parts to Order</h1>
-          <Button icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchPending" data-test="mp-refresh" />
+          <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchPending" data-test="mp-refresh" />
         </div>
         <SelectButton
           v-model="filter"

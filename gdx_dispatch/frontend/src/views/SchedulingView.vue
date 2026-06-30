@@ -18,6 +18,7 @@
 
       <div class="week-controls" data-testid="scheduling-week-nav">
         <Button
+          v-tooltip="'Previous week'"
           icon="pi pi-angle-left"
           class="p-button-text"
           severity="secondary"
@@ -27,6 +28,7 @@
         />
         <span class="week-controls__label">{{ weekLabel }}</span>
         <Button
+          v-tooltip="'Next week'"
           icon="pi pi-angle-right"
           class="p-button-text"
           severity="secondary"

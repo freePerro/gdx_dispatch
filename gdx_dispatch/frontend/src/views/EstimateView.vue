@@ -156,14 +156,14 @@
                 <div v-for="(item, idx) in form.line_items" :key="idx" class="line-item-row">
                   <span class="col-action line-controls">
                     <span class="line-reorder">
-                      <Button icon="pi pi-chevron-up" aria-label="Move line up" text size="small"
+                      <Button v-tooltip="'Move line up'" icon="pi pi-chevron-up" aria-label="Move line up" text size="small"
                         :disabled="idx === 0" @click="moveLine(idx, -1)"
                         :data-testid="`est-line-up-${idx}`" />
-                      <Button icon="pi pi-chevron-down" aria-label="Move line down" text size="small"
+                      <Button v-tooltip="'Move line down'" icon="pi pi-chevron-down" aria-label="Move line down" text size="small"
                         :disabled="idx === form.line_items.length - 1" @click="moveLine(idx, 1)"
                         :data-testid="`est-line-down-${idx}`" />
                     </span>
-                    <Button icon="pi pi-trash" aria-label="Delete line" severity="danger" text size="small"
+                    <Button v-tooltip="'Delete line'" icon="pi pi-trash" aria-label="Delete line" severity="danger" text size="small"
                       @click="removeLineAt(idx)"
                       data-testid="est-line-delete" />
                   </span>
@@ -189,8 +189,7 @@
                     @update:modelValue="onMarginOverrideChange(item)" />
                   <span v-else class="col-margin line-margin-display">{{ marginDisplay(item) }}</span>
                   <span class="col-total line-total-display">{{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}</span>
-                  <Button icon="pi pi-bookmark" aria-label="Save to catalog" text size="small" class="col-action"
-                    title="Save this line to the catalog"
+                  <Button v-tooltip="'Save this line to the catalog'" icon="pi pi-bookmark" aria-label="Save to catalog" text size="small" class="col-action"
                     :data-testid="`save-to-catalog-${idx}`"
                     @click="openSaveToCatalog(item)" />
                 </div>
@@ -281,6 +280,8 @@
                     <small class="muted">{{ formatBytes(att.file_size) }} · {{ att.uploaded_by || 'unknown' }}</small>
                   </div>
                   <Button
+                    v-tooltip="'Delete'"
+                    aria-label="Delete"
                     icon="pi pi-trash"
                     severity="danger"
                     text

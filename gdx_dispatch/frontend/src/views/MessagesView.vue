@@ -77,7 +77,7 @@
               <Column header="Sent" :body="formatDateCell" />
               <Column header="Actions" style="width:120px">
                 <template #body="{ data }">
-                  <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="deleteMessage(data)" />
+                  <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="deleteMessage(data)" />
                 </template>
               </Column>
             </DataTable>

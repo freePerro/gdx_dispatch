@@ -44,8 +44,8 @@
         <Column field="sort_order" header="Sort Order" style="width:120px" />
         <Column header="Actions" style="width:160px">
           <template #body="slotProps">
-            <Button icon="pi pi-pencil" aria-label="Edit" text size="small" class="mr-1" @click.stop="openEdit(slotProps.data)" />
-            <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(slotProps.data)" />
+            <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" class="mr-1" @click.stop="openEdit(slotProps.data)" />
+            <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(slotProps.data)" />
           </template>
         </Column>
       </DataTable>

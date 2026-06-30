@@ -14,6 +14,7 @@
       <div v-else-if="definition && state" class="game-player-view__panel">
         <header class="game-player-view__header">
           <Button
+            v-tooltip="'Back to catalog'"
             icon="pi pi-arrow-left"
             text
             aria-label="Back to catalog"

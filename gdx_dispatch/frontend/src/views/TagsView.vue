@@ -29,8 +29,9 @@
             <div class="tag-meta">
               <span>Created {{ tag.created_at?.split('T')[0] || '—' }}</span>
               <div class="tag-actions">
-                <Button icon="pi pi-pencil" aria-label="Edit" class="p-button-text" text size="small" @click.stop="openEdit(tag)" />
+                <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" class="p-button-text" text size="small" @click.stop="openEdit(tag)" />
                 <Button
+                  v-tooltip="'Delete'"
                   icon="pi pi-trash" aria-label="Delete"
                   class="p-button-text"
                   severity="danger"

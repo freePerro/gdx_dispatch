@@ -104,8 +104,8 @@
             </Column>
             <Column header="Actions" style="width:110px">
               <template #body="{ data }">
-                <Button icon="pi pi-pencil" aria-label="Edit" text size="small" @click="editItem(data)" />
-                <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click="confirmDeleteItem(data)" />
+                <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click="editItem(data)" />
+                <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click="confirmDeleteItem(data)" />
               </template>
             </Column>
           </DataTable>
@@ -137,7 +137,7 @@
             <InputText v-if="f.type === 'select'" v-model="f.optionsText"
               placeholder="Options, comma-separated" class="cf-options" />
             <label class="cf-required"><Checkbox v-model="f.required" :binary="true" /> Required</label>
-            <Button icon="pi pi-times" severity="danger" text aria-label="Remove field" @click="removeCustomField(idx)" />
+            <Button v-tooltip="'Remove field'" icon="pi pi-times" severity="danger" text aria-label="Remove field" @click="removeCustomField(idx)" />
           </div>
           <Button label="+ Add Field" size="small" severity="secondary" text
             data-testid="add-custom-field" @click="addCustomField" />

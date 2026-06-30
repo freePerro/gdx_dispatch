@@ -111,7 +111,7 @@
           <Column field="label" header="Label">
             <template #body="{ data }">
               {{ data.label }}
-              <Tag v-if="data.is_estimate" value="est" severity="warn" class="ml" />
+              <Tag v-if="data.is_estimate" v-tooltip="'Estimate'" value="est" severity="warn" class="ml" />
             </template>
           </Column>
           <Column field="category" header="Category">
@@ -128,8 +128,8 @@
           </Column>
           <Column header="" style="width: 100px">
             <template #body="{ data }">
-              <Button icon="pi pi-pencil" text rounded @click="openEdit(data)" aria-label="Edit" />
-              <Button icon="pi pi-trash" text rounded severity="danger" @click="onDelete(data)" aria-label="Delete" />
+              <Button v-tooltip="'Edit'" icon="pi pi-pencil" text rounded @click="openEdit(data)" aria-label="Edit" />
+              <Button v-tooltip="'Delete'" icon="pi pi-trash" text rounded severity="danger" @click="onDelete(data)" aria-label="Delete" />
             </template>
           </Column>
         </DataTable>
@@ -188,7 +188,7 @@
           <div v-for="(c, i) in form.scheduled_changes" :key="i" class="change-row">
             <input type="date" v-model="c.effective_date" class="date-input" />
             <InputNumber v-model="c.amount" mode="currency" currency="USD" :min="0" />
-            <Button icon="pi pi-times" text rounded severity="danger" @click="removeChange(i)" aria-label="Remove" />
+            <Button v-tooltip="'Remove'" icon="pi pi-times" text rounded severity="danger" @click="removeChange(i)" aria-label="Remove" />
           </div>
         </div>
       </div>

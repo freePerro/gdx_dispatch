@@ -18,6 +18,7 @@
     <section class="audit-log-viewer view-card" data-testid="audit-log-viewer">
     <header class="header view-heading-row">
       <Button
+        v-tooltip="'Back'"
         icon="pi pi-arrow-left"
         aria-label="Back"
         text

@@ -50,8 +50,8 @@
               v-tooltip="'Approve'" @click.stop="approveCo(data)" />
             <Button v-if="data.status === 'pending_approval'" icon="pi pi-times" aria-label="Remove" severity="danger" text size="small"
               v-tooltip="'Decline'" @click.stop="declineCo(data)" />
-            <Button icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openEdit(data)" />
-            <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(data)" />
+            <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openEdit(data)" />
+            <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(data)" />
           </template>
         </Column>
       </DataTable>

@@ -3,7 +3,7 @@
       <header class="mobile-page-head">
         <div class="head-row">
           <h1>Billing</h1>
-          <Button icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchInvoices" data-test="mb-refresh" />
+          <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchInvoices" data-test="mb-refresh" />
         </div>
 
         <!-- Compact money KPI strip — parity with desktop /billing. -->

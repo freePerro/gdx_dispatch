@@ -59,6 +59,7 @@
           <td class="count-col">{{ row.count }}</td>
           <td class="action-col">
             <Button
+              v-tooltip="'Sync'"
               icon="pi pi-sync"
               size="small"
               severity="secondary"

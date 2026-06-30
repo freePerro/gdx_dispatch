@@ -3,6 +3,7 @@
     type="button"
     class="p-button-text help-btn"
     aria-label="Open help"
+    v-tooltip="'Open help'"
     data-tour="help-button"
     data-test="topbar-help"
     @click="openHelp"

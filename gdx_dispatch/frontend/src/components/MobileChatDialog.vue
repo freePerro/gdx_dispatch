@@ -191,6 +191,7 @@ function isMine(m) {
         />
         <Button
           icon="pi pi-send"
+          v-tooltip="'Send'"
           :loading="sending"
           :disabled="!draft.trim()"
           @click="sendText"

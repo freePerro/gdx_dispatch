@@ -60,6 +60,7 @@
         <Column header="" :style="{ width: '80px' }">
           <template #body="{ data }">
             <Button icon="pi pi-trash" severity="danger" text size="small"
+                    v-tooltip="`Remove ${data.filename}`"
                     :aria-label="`Remove ${data.filename}`" @click="removeArtifact(data)" />
           </template>
         </Column>
@@ -76,6 +77,7 @@
         <Column header="" :style="{ width: '80px' }">
           <template #body="{ data }">
             <Button icon="pi pi-trash" severity="danger" text size="small"
+                    v-tooltip="`Remove ${data.package}`"
                     :aria-label="`Remove ${data.package}`" @click="remove(data)" />
           </template>
         </Column>

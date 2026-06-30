@@ -78,9 +78,10 @@
             />
             <a
               v-if="data.from_number"
+              v-tooltip="'Call back'"
               :href="`tel:${data.from_number}`"
               class="action-icon"
-              title="Call back"
+              aria-label="Call back"
             >📞</a>
           </template>
         </Column>

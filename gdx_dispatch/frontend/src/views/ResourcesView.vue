@@ -54,9 +54,11 @@
         <Column header="Actions" style="width:120px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Download'"
               icon="pi pi-download"
               text
               size="small"
+              aria-label="Download"
               data-testid="resource-download-btn"
               @click.stop="downloadResource(data)"
             />

@@ -16,10 +16,10 @@
         <div class="title-row">
           <span><i class="pi pi-chart-line" /> Profit</span>
           <Button v-if="!collapsed" icon="pi pi-chevron-right" text size="small"
-            aria-label="Collapse" data-testid="profit-panel-collapse"
+            aria-label="Collapse" v-tooltip="'Collapse'" data-testid="profit-panel-collapse"
             @click="collapsed = true" />
           <Button v-else icon="pi pi-chevron-left" text size="small"
-            aria-label="Expand" data-testid="profit-panel-expand"
+            aria-label="Expand" v-tooltip="'Expand'" data-testid="profit-panel-expand"
             @click="collapsed = false" />
         </div>
       </template>

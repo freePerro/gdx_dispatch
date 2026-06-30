@@ -140,7 +140,8 @@
                   v-if="data.latitude && data.longitude"
                   class="pi pi-map-marker"
                   style="color: #4caf50; cursor: pointer"
-                  :title="`${data.latitude}, ${data.longitude}`"
+                  v-tooltip="`${data.latitude}, ${data.longitude}`"
+                  :aria-label="`${data.latitude}, ${data.longitude}`"
                   @click="openGpsDialog(data)"
                 ></i>
                 <span v-else style="color: #9e9e9e">--</span>

@@ -28,7 +28,7 @@
       </Column>
       <Column header="" style="width: 80px">
         <template #body="{ index }">
-          <Button icon="pi pi-trash" text size="small" severity="danger"
+          <Button v-tooltip="'Delete'" icon="pi pi-trash" text size="small" severity="danger"
             :data-testid="`vol-remove-${index}`"
             @click="removeRow(index)" />
         </template>
