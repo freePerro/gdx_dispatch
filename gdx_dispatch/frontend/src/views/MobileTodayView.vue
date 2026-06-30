@@ -382,6 +382,14 @@ function multiTechTooltip(job) {
 const expandedJobId = ref(null)
 const partsByJob = ref({})         // job_id -> array of parts
 const partsLoading = ref({})        // job_id -> bool
+
+// ── Install / equipment at the site (read-only) ──────────────────────
+// Surfaces the customer's installed equipment (door + opener specs) on the
+// job card so a tech on an install/service call sees the unit details. Reuses
+// GET /api/customers/{id}/equipment (gated on the equipment_tracking module).
+const equipExpandedJobId = ref(null)
+const equipByCustomer = ref({})     // customer_id -> array of equipment
+const equipLoading = ref({})        // customer_id -> bool
 const partsModalOpen = ref(false)
 const partsModalJobId = ref(null)
 const partsModalEditingId = ref(null)  // when set, modal is in "edit" mode
@@ -622,6 +630,47 @@ async function loadParts(jobId) {
     })
   } finally {
     partsLoading.value = { ...partsLoading.value, [jobId]: false }
+  }
+}
+
+const EQUIP_TYPE_LABELS = {
+  garage_door: 'Garage door',
+  opener: 'Opener',
+  gate: 'Gate',
+  other: 'Equipment',
+}
+function equipTypeLabel(t) {
+  return EQUIP_TYPE_LABELS[t] || 'Equipment'
+}
+function equipTitle(e) {
+  const parts = [e.manufacturer, e.model].filter(Boolean).join(' ')
+  return parts || equipTypeLabel(e.equipment_type)
+}
+
+async function toggleEquipment(job) {
+  const cid = job.customer?.id
+  if (!cid) return
+  if (equipExpandedJobId.value === job.id) {
+    equipExpandedJobId.value = null
+    return
+  }
+  equipExpandedJobId.value = job.id
+  if (!equipByCustomer.value[cid]) {
+    await loadEquipment(cid)
+  }
+}
+
+async function loadEquipment(customerId) {
+  equipLoading.value = { ...equipLoading.value, [customerId]: true }
+  try {
+    const r = await api.get(`/api/customers/${customerId}/equipment`)
+    const list = Array.isArray(r) ? r : r?.items || r?.data || []
+    equipByCustomer.value = { ...equipByCustomer.value, [customerId]: list }
+  } catch {
+    // Equipment tracking is an optional module — fail quietly (show "none").
+    equipByCustomer.value = { ...equipByCustomer.value, [customerId]: [] }
+  } finally {
+    equipLoading.value = { ...equipLoading.value, [customerId]: false }
   }
 }
 
@@ -1187,6 +1236,49 @@ function replayTour() {
             <div v-else class="muted">No parts requested for this job yet.</div>
           </div>
 
+          <div
+            class="job-parts-row"
+            @click="toggleEquipment(job)"
+            :data-testid="`equipment-summary-${job.id}`"
+          >
+            <i class="pi pi-box" />
+            <span>Install &amp; equipment</span>
+            <i :class="['pi', equipExpandedJobId === job.id ? 'pi-chevron-up' : 'pi-chevron-down']" />
+          </div>
+
+          <div
+            v-if="equipExpandedJobId === job.id"
+            class="job-parts-panel"
+            :data-testid="`equipment-panel-${job.id}`"
+          >
+            <div v-if="equipLoading[job.customer?.id]" class="muted">Loading…</div>
+            <ul v-else-if="(equipByCustomer[job.customer?.id] || []).length" class="job-parts-list">
+              <li
+                v-for="e in equipByCustomer[job.customer?.id]"
+                :key="e.id"
+                class="job-parts-item"
+              >
+                <div class="job-parts-line">
+                  <Tag
+                    :value="equipTypeLabel(e.equipment_type)"
+                    :severity="e.equipment_type === 'garage_door' ? 'info' : 'secondary'"
+                  />
+                  <strong>{{ equipTitle(e) }}</strong>
+                </div>
+                <div
+                  v-if="e.serial_number || e.installation_date || e.warranty_expires_on"
+                  class="job-parts-meta"
+                >
+                  <span v-if="e.serial_number">S/N {{ e.serial_number }}</span>
+                  <span v-if="e.installation_date">Installed {{ e.installation_date }}</span>
+                  <span v-if="e.warranty_expires_on">Warranty → {{ e.warranty_expires_on }}</span>
+                </div>
+                <div v-if="e.notes" class="job-equip-notes">{{ e.notes }}</div>
+              </li>
+            </ul>
+            <div v-else class="muted">No install/equipment on file for this site.</div>
+          </div>
+
           <div class="job-actions">
             <Button
               v-if="job.dispatch_status === 'assigned' || job.dispatch_status === 'unassigned' || !job.dispatch_status"
@@ -1715,6 +1807,12 @@ function replayTour() {
 }
 .job-parts-actions {
   margin-top: 0.15rem;
+}
+.job-equip-notes {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color, #6b7280);
+  margin-top: 0.2rem;
+  line-height: 1.4;
 }
 .muted {
   color: var(--p-text-muted-color, #6b7280);
