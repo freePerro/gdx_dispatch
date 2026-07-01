@@ -69,11 +69,34 @@
           <form
             v-if="screen.create"
             class="plugin-screen__create"
-            @submit.prevent="onCreate"
+            @submit.prevent="onCreate(screen)"
           >
             <span v-for="f in screen.create.fields" :key="f.name" class="p-field">
               <label :for="`pf-${f.name}`">{{ f.label }}</label>
-              <InputText :id="`pf-${f.name}`" v-model="formState[f.name]" :required="f.required" />
+              <!-- select: options from the plugin's (validated) options_endpoint;
+                   dependent selects refetch when a field they depend on changes. -->
+              <Select
+                v-if="f.type === 'select'"
+                :inputId="`pf-${f.name}`"
+                v-model="formState[f.name]"
+                :options="fieldOptions[`${i}:${f.name}`] || []"
+                optionLabel="label"
+                optionValue="value"
+                :filter="!!f.filter"
+                showClear
+                :placeholder="f.label"
+                size="small"
+                @change="onFieldChange(i, f)"
+              />
+              <InputNumber
+                v-else-if="f.type === 'number'"
+                :inputId="`pf-${f.name}`"
+                v-model="formState[f.name]"
+                :min="f.min ?? 0"
+                showButtons
+                size="small"
+              />
+              <InputText v-else :id="`pf-${f.name}`" v-model="formState[f.name]" :required="f.required" />
             </span>
             <Button type="submit" label="Add" size="small" />
           </form>
@@ -120,6 +143,7 @@ import TabPanels from 'primevue/tabpanels';
 import TabPanel from 'primevue/tabpanel';
 import Dialog from 'primevue/dialog';
 import Select from 'primevue/select';
+import InputNumber from 'primevue/inputnumber';
 import BrowserStream from './BrowserStream.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { usePluginScreen } from '../composables/usePluginScreen';
@@ -127,8 +151,10 @@ import { usePluginScreen } from '../composables/usePluginScreen';
 const props = defineProps({ pluginKey: { type: String, required: true } });
 
 const api = useApiWithToast();
-const { screens, rows, loading, error, load, create } = usePluginScreen(props.pluginKey, api);
+const { screens, rows, rowsFor, loading, error, load, create, fetchOptions } = usePluginScreen(props.pluginKey, api);
 const formState = reactive({});
+// Select/autocomplete options per create field, keyed `${screenIndex}:${fieldName}`.
+const fieldOptions = reactive({});
 const settingsFields = ref([]);   // [{ name, on }]
 const savingSettings = ref(false);
 const activeTab = ref('0');       // index of the open tab (string, PrimeVue Tabs)
@@ -142,10 +168,11 @@ function _hasFolders(screen) {
   return Array.isArray(screen.columns) && screen.columns.some((c) => c.field === 'folder');
 }
 function _filteredRows(screen) {
+  const list = rowsFor(screen);
   if (_hasFolders(screen) && listFolder.value) {
-    return (rows.value || []).filter((r) => r.folder === listFolder.value);
+    return list.filter((r) => r.folder === listFolder.value);
   }
-  return rows.value;
+  return list;
 }
 
 // Row detail dialog (captured-quote "show everything").
@@ -188,9 +215,51 @@ async function onRowClick(screen, e) {
   }
 }
 
-async function onCreate() {
-  await create({ ...formState });
-  for (const k of Object.keys(formState)) delete formState[k];
+async function onCreate(screen) {
+  // Send only this form's declared fields, then clear them (each create form
+  // has its own field set; forms must not leak values into one another).
+  const names = (screen?.create?.fields || []).map((f) => f.name);
+  const values = Object.fromEntries(names.map((n) => [n, formState[n]]));
+  await create(values, screen);
+  for (const n of names) delete formState[n];
+  applyFieldDefaults(screen);
+}
+
+// ── create-form field types (select / number) ──────────────────────────────
+function applyFieldDefaults(screen) {
+  for (const f of screen?.create?.fields || []) {
+    if (f.default !== undefined && formState[f.name] === undefined) formState[f.name] = f.default;
+  }
+}
+
+async function loadFieldOptions(si, field) {
+  const opts = await fetchOptions(field, formState);
+  if (opts !== null) fieldOptions[`${si}:${field.name}`] = opts;  // null = superseded
+}
+
+// A select changed: clear + refetch any field in the same form that depends on it.
+function onFieldChange(si, field, screen) {
+  const scr = screen || screens.value[si];
+  for (const dep of scr?.create?.fields || []) {
+    if (Array.isArray(dep.depends_on) && dep.depends_on.includes(field.name)) {
+      formState[dep.name] = undefined;
+      loadFieldOptions(si, dep);
+    }
+  }
+}
+
+// Initial option load for create fields with a static/independent source.
+function initCreateForms() {
+  screens.value.forEach((screen, si) => {
+    if (!screen?.create?.fields) return;
+    applyFieldDefaults(screen);
+    for (const f of screen.create.fields) {
+      if ((f.type === 'select' || f.type === 'autocomplete')
+          && f.options_endpoint && !f.depends_on) {
+        loadFieldOptions(si, f);
+      }
+    }
+  });
 }
 
 async function loadSettings(screen) {
@@ -210,6 +279,7 @@ async function saveSettings(screen) {
 
 onMounted(async () => {
   await load();
+  initCreateForms();
   const s = screens.value.find((x) => x.type === 'settings');
   if (s?.endpoint) await loadSettings(s);
 });
