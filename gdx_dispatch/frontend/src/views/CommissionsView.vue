@@ -57,7 +57,7 @@
           <Column field="effective_date" header="Effective Date" sortable />
           <Column header="Actions" style="width: 6rem">
             <template #body="{ data }">
-              <Button icon="pi pi-pencil" aria-label="Edit" class="p-button-rounded p-button-text" data-testid="edit-rate-btn" @click="openEditDialog(data)" />
+              <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" class="p-button-rounded p-button-text" data-testid="edit-rate-btn" @click="openEditDialog(data)" />
             </template>
           </Column>
         </DataTable>

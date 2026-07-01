@@ -52,7 +52,7 @@
                     @click="markThreadRead"
                     data-test="pc-mark-thread-read"
                   />
-                  <Button icon="pi pi-times" text rounded severity="secondary" @click="closeThread" />
+                  <Button v-tooltip="'Close'" icon="pi pi-times" text rounded severity="secondary" aria-label="Close" @click="closeThread" />
                 </div>
               </div>
             </template>

@@ -12,7 +12,7 @@
               data-testid="mobile-estimates-new-btn"
               @click="createEstimate"
             />
-            <Button icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchEstimates" data-test="me-refresh" />
+            <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchEstimates" data-test="me-refresh" />
           </div>
         </div>
         <SelectButton

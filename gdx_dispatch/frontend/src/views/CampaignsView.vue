@@ -72,8 +72,8 @@
           <Column header="Actions" style="width: 8rem">
             <template #body="{ data }">
               <div class="action-btns">
-                <Button icon="pi pi-pencil" aria-label="Edit" severity="secondary" size="small" text @click="editCampaign(data)" />
-                <Button icon="pi pi-trash" aria-label="Delete" severity="danger" size="small" text
+                <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" severity="secondary" size="small" text @click="editCampaign(data)" />
+                <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" size="small" text
                   @click="confirmDelete(data)" data-testid="delete-campaign" />
               </div>
             </template>

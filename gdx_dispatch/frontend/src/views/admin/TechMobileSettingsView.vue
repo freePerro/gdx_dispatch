@@ -381,6 +381,7 @@ onMounted(async () => {
                   <div v-if="tag.description" class="tag-desc">{{ tag.description }}</div>
                 </div>
                 <Button
+                  v-tooltip="'Edit'"
                   icon="pi pi-pencil"
                   text
                   rounded
@@ -388,6 +389,7 @@ onMounted(async () => {
                   @click="openEditTag(tag)"
                 />
                 <Button
+                  v-tooltip="'Delete'"
                   icon="pi pi-trash"
                   text
                   rounded

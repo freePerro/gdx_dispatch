@@ -279,7 +279,7 @@
               class="flex-1"
               @keyup.enter="sendMessage"
             />
-            <Button icon="pi pi-send" :disabled="!newMessage.trim()" @click="sendMessage" />
+            <Button v-tooltip="'Send'" icon="pi pi-send" aria-label="Send" :disabled="!newMessage.trim()" @click="sendMessage" />
           </div>
         </template>
       </Dialog>

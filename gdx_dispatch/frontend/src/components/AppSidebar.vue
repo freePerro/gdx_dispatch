@@ -28,7 +28,7 @@
         :class="{ collapsed }"
         @click="$emit('toggle-collapse')"
         :aria-label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
-        :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+        v-tooltip.right="collapsed ? 'Expand sidebar' : 'Collapse sidebar'"
       />
     </div>
 
@@ -80,6 +80,7 @@
           v-if="filterText"
           class="search-clear"
           aria-label="Clear search"
+          v-tooltip="'Clear search'"
           @click="filterText = ''"
           data-testid="sidebar-search-clear"
         >
@@ -108,7 +109,7 @@
             class="fav-toggle"
             :class="{ active: isFavorite(m.to) }"
             :aria-label="isFavorite(m.to) ? `Unfavorite ${m.label}` : `Favorite ${m.label}`"
-            :title="isFavorite(m.to) ? 'Remove from favorites' : 'Add to favorites'"
+            v-tooltip="isFavorite(m.to) ? 'Remove from favorites' : 'Add to favorites'"
             @click.stop.prevent="toggleFavorite(m.to, m.label, m.icon)"
           >
             <i :class="isFavorite(m.to) ? 'pi pi-star-fill' : 'pi pi-star'" />
@@ -136,7 +137,7 @@
           <button
             class="fav-toggle active"
             :aria-label="`Unfavorite ${m.label}`"
-            title="Remove from favorites"
+            v-tooltip="'Remove from favorites'"
             @click.stop.prevent="toggleFavorite(m.to, m.label, m.icon)"
           >
             <i class="pi pi-star-fill" />
@@ -164,7 +165,7 @@
               class="fav-toggle"
               :class="{ active: isFavorite(item.to) }"
               :aria-label="isFavorite(item.to) ? `Unfavorite ${item.label}` : `Favorite ${item.label}`"
-              :title="isFavorite(item.to) ? 'Remove from favorites' : 'Add to favorites'"
+              v-tooltip="isFavorite(item.to) ? 'Remove from favorites' : 'Add to favorites'"
               @click.stop.prevent="toggleFavorite(item.to, item.label, item.icon)"
             >
               <i :class="isFavorite(item.to) ? 'pi pi-star-fill' : 'pi pi-star'" />
@@ -185,7 +186,8 @@
         :to="module.to"
         class="icon-item"
         :class="{ active: isActiveRoute(module.to) }"
-        :title="module.label"
+        v-tooltip.right="module.label"
+        :aria-label="module.label"
         @click="handleItemClick"
       >
         <i :class="module.icon" aria-hidden="true" />
@@ -198,7 +200,7 @@
       :class="{ collapsed }"
       data-tour="tour-replay"
       data-test="sidebar-tour-replay"
-      :title="collapsed ? 'Take the tour' : ''"
+      v-tooltip.right="collapsed ? 'Take the tour' : ''"
       @click="launchTour"
     >
       <i class="pi pi-compass" aria-hidden="true" />

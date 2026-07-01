@@ -90,6 +90,7 @@
         <Column header="Actions" style="width: 100px; text-align: center">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Edit'"
               icon="pi pi-pencil" aria-label="Edit"
               text
               rounded
@@ -98,6 +99,7 @@
               @click.stop="openEditDialog(data)"
             />
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               text
               rounded

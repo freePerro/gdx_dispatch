@@ -39,10 +39,10 @@
           </Column>
           <Column header="Actions" :style="{ width: '250px' }">
             <template #body="{ data }">
-              <Button icon="pi pi-bolt" severity="info" text size="small" @click.stop="testSubscription(data)" :loading="testing === data.id" />
-              <Button icon="pi pi-history" severity="secondary" text size="small" @click.stop="openDeliveries(data)" />
-              <Button icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openEdit(data)" />
-              <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(data)" />
+              <Button v-tooltip="'Test'" aria-label="Test" icon="pi pi-bolt" severity="info" text size="small" @click.stop="testSubscription(data)" :loading="testing === data.id" />
+              <Button v-tooltip="'Delivery history'" aria-label="Delivery history" icon="pi pi-history" severity="secondary" text size="small" @click.stop="openDeliveries(data)" />
+              <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openEdit(data)" />
+              <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="confirmDelete(data)" />
             </template>
           </Column>
         </DataTable>
@@ -87,7 +87,7 @@
       <Drawer v-model:visible="deliveryDrawerVisible" position="right" :style="{ width: '420px' }">
         <div class="drawer-header">
           <h3>Delivery history</h3>
-          <Button icon="pi pi-times" aria-label="Remove" class="p-button-text" @click="deliveryDrawerVisible = false" />
+          <Button v-tooltip="'Close'" icon="pi pi-times" aria-label="Remove" class="p-button-text" @click="deliveryDrawerVisible = false" />
         </div>
         <div v-if="deliveryLoading" class="spinner-wrap">
           <ProgressSpinner />

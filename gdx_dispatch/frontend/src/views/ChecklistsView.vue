@@ -33,7 +33,7 @@
               <Column header="Created" :body="formatTemplateDate" />
               <Column header="Actions" style="width:140px">
                 <template #body="{ data }">
-                  <Button icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openTemplateDialog(data)" />
+                  <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openTemplateDialog(data)" />
                 </template>
               </Column>
             </DataTable>
@@ -108,7 +108,7 @@
             <label>New Item</label>
             <div class="item-input">
               <InputText v-model="newItemText" placeholder="Type item text" class="w-full" @keyup.enter="addDialogItem" />
-              <Button icon="pi pi-plus" class="p-button-text" @click.prevent="addDialogItem" />
+              <Button v-tooltip="'Add item'" aria-label="Add item" icon="pi pi-plus" class="p-button-text" @click.prevent="addDialogItem" />
             </div>
           </div>
           <OrderList
@@ -120,7 +120,7 @@
             <template #item="slotProps">
               <div class="order-row">
                 <span>{{ slotProps.item }}</span>
-                <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="removeDialogItem(slotProps.index)" />
+                <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="removeDialogItem(slotProps.index)" />
               </div>
             </template>
           </OrderList>

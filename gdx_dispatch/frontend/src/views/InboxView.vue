@@ -527,7 +527,7 @@ onMounted(async () => {
       <div class="header-actions">
         <Button label="New" icon="pi pi-pencil" data-test="inbox-new" size="small" @click="startNewCompose" />
         <Button label="New folder" icon="pi pi-folder-plus" outlined size="small" @click="promptNewFolder(null)" />
-        <Button icon="pi pi-refresh" outlined size="small" aria-label="Refresh" @click="fetchFolders().then(() => fetchMessages())" />
+        <Button v-tooltip="'Refresh'" icon="pi pi-refresh" outlined size="small" aria-label="Refresh" @click="fetchFolders().then(() => fetchMessages())" />
       </div>
     </div>
 
@@ -553,7 +553,7 @@ onMounted(async () => {
             <i :class="f.well_known_name && SYSTEM_ICONS[f.well_known_name] || 'pi pi-folder'" />
             <span class="folder-name">{{ f.display_name }}</span>
             <span v-if="f.unread_count" class="unread-badge">{{ f.unread_count }}</span>
-            <span class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click="toggleFolderMenu($event, f)">⋯</span>
+            <span v-tooltip="'Folder actions'" class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click="toggleFolderMenu($event, f)">⋯</span>
           </button>
         </div>
 
@@ -572,7 +572,7 @@ onMounted(async () => {
             <i :class="SYSTEM_ICONS[f.well_known_name] || 'pi pi-folder'" />
             <span class="folder-name">{{ f.display_name }}</span>
             <span v-if="f.unread_count" class="unread-badge">{{ f.unread_count }}</span>
-            <span class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click="toggleFolderMenu($event, f)">⋯</span>
+            <span v-tooltip="'Folder actions'" class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click="toggleFolderMenu($event, f)">⋯</span>
           </button>
         </div>
 
@@ -594,7 +594,7 @@ onMounted(async () => {
                 <span class="color-dot" :style="{ background: colorHexFor(node.data) }" />
                 <span class="folder-name">{{ node.label }}</span>
                 <span v-if="node.data.unread_count" class="unread-badge">{{ node.data.unread_count }}</span>
-                <span class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click.stop="toggleFolderMenu($event, node.data)">⋯</span>
+                <span v-tooltip="'Folder actions'" class="folder-menu-trigger" data-test="folder-menu-trigger" aria-label="Folder actions" @click.stop="toggleFolderMenu($event, node.data)">⋯</span>
               </span>
             </template>
           </Tree>
@@ -620,7 +620,7 @@ onMounted(async () => {
           <div class="row-top">
             <span class="row-from">{{ m.from_address || '(no sender)' }}</span>
             <span class="row-when muted">{{ fmtDate(m.received_at || m.sent_at) }}</span>
-            <span class="msg-menu-trigger" data-test="msg-menu-trigger" aria-label="Message actions" @click="toggleMessageMenu($event, m)">⋯</span>
+            <span v-tooltip="'Message actions'" class="msg-menu-trigger" data-test="msg-menu-trigger" aria-label="Message actions" @click="toggleMessageMenu($event, m)">⋯</span>
           </div>
           <div class="row-subject">{{ m.subject || '(no subject)' }}</div>
           <div class="row-preview muted">{{ m.body_preview || '(no preview)' }}</div>
@@ -700,7 +700,8 @@ onMounted(async () => {
           :key="c.name"
           class="color-swatch"
           :style="{ background: c.hex }"
-          :title="c.name"
+          v-tooltip="c.name"
+          :aria-label="c.name"
           @click="setColor(c.key)"
         >
           <i v-if="c.key === null" class="pi pi-times" />

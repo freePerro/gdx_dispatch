@@ -68,11 +68,12 @@
         <Column header="" style="width: 100px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Open PDF'"
               icon="pi pi-file-pdf"
               text
               rounded
               severity="secondary"
-              title="Open PDF"
+              aria-label="Open PDF"
               @click.stop="openPdf(data)"
               data-test="pc-fax-open-pdf"
             />

@@ -6,6 +6,7 @@
         <div class="toolbar-controls">
           <div class="date-controls">
             <Button
+              v-tooltip="'Previous day'"
               icon="pi pi-angle-left"
               aria-label="Previous day"
               class="p-button-text"
@@ -23,6 +24,7 @@
               class="dispatch-calendar"
             />
             <Button
+              v-tooltip="'Next day'"
               icon="pi pi-angle-right"
               aria-label="Next day"
               class="p-button-text"
@@ -59,6 +61,7 @@
           />
           <div class="toolbar-actions">
           <Button
+            v-tooltip="'Refresh dispatch board'"
             icon="pi pi-refresh"
             aria-label="Refresh dispatch board"
             severity="secondary"
@@ -114,6 +117,7 @@
         <div class="dispatch-map-panel-header">
           <h3>Technician map (latest locations)</h3>
           <Button
+            v-tooltip="'Refresh technician map'"
             icon="pi pi-refresh"
             aria-label="Refresh technician map"
             class="p-button-text"
@@ -348,7 +352,7 @@
                 <div class="holding-area-title">
                   <span :style="{ color: area.color }">{{ area.name }}</span>
                   <Tag v-if="getHoldingAreaJobs(area.id).length" :value="String(getHoldingAreaJobs(area.id).length)" severity="info" rounded />
-                  <Button icon="pi pi-trash" aria-label="Delete" text size="small" severity="danger"
+                  <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" text size="small" severity="danger"
                     @click="deleteHoldingArea(area.id)" />
                 </div>
                 <div v-if="getHoldingAreaJobs(area.id).length" class="holding-area-total" :data-testid="`holding-area-total-${area.id}`">

@@ -52,7 +52,7 @@
         <Column field="source" header="Source" />
         <Column header="">
           <template #body="{ data }">
-            <Button icon="pi pi-trash" severity="danger" text @click="del(data.id)" />
+            <Button v-tooltip="'Delete'" icon="pi pi-trash" severity="danger" text @click="del(data.id)" />
           </template>
         </Column>
       </DataTable>

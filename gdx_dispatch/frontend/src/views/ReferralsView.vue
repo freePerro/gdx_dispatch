@@ -67,6 +67,7 @@
         <Column header="Actions" style="width:120px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Edit'"
               icon="pi pi-pencil" aria-label="Edit"
               text
               size="small"

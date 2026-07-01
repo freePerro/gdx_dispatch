@@ -397,6 +397,7 @@ watch(open, async (v) => {
               text
               size="small"
               aria-label="Clear customer"
+              v-tooltip="'Clear customer'"
               @click="clearCustomer"
             />
           </div>
@@ -566,6 +567,7 @@ watch(open, async (v) => {
             />
             <Button
               icon="pi pi-times"
+              v-tooltip="'Remove part'"
               text
               severity="danger"
               size="small"

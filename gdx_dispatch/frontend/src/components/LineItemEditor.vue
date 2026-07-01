@@ -116,6 +116,7 @@
         <Button
           icon="pi pi-trash"
           aria-label="Delete line"
+          v-tooltip="'Delete line'"
           severity="danger"
           text
           size="small"
@@ -199,7 +200,7 @@
         <Button
           icon="pi pi-clone"
           aria-label="Duplicate line"
-          title="Duplicate line"
+          v-tooltip="'Duplicate line'"
           text
           size="small"
           class="col-action"

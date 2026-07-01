@@ -10,6 +10,7 @@
           icon="pi pi-bars"
           class="p-button-text"
           aria-label="Open navigation"
+          v-tooltip="'Open navigation'"
           @click="$emit('toggle-navigation')"
         />
         <div class="company-name">{{ branding.company_name || 'Operations Console' }}</div>
@@ -73,7 +74,7 @@
           class="p-button-text mobile-launch-btn"
           :class="{ 'is-mobile-viewport': isMobileViewport }"
           :aria-label="isMobileViewport ? 'Open mobile field view' : 'Open mobile field view (preview)'"
-          :title="`Mobile field view${isMobileViewport ? '' : ' (preview)'}`"
+          v-tooltip="`Mobile field view${isMobileViewport ? '' : ' (preview)'}`"
           data-test="mobile-launch"
           @click="goToMobile"
         >
@@ -85,6 +86,7 @@
           type="button"
           class="p-button-text ai-assistant-btn"
           aria-label="Open AI Assistant"
+          v-tooltip="'Open AI Assistant'"
           data-test="ai-assistant-launcher"
           @click="aiDialogVisible = true"
         >
@@ -108,6 +110,7 @@
           type="button"
           class="p-button-text theme-toggle-btn"
           :aria-label="themeIcon === 'pi-sun' ? 'Switch to light mode' : 'Switch to dark mode'"
+          v-tooltip="themeIcon === 'pi-sun' ? 'Switch to light mode' : 'Switch to dark mode'"
           @click="theme.toggleColorMode()"
         >
           <i :class="['pi', themeIcon]" aria-hidden="true" />
@@ -120,6 +123,7 @@
           class="p-button-text notification-btn"
           :class="{ 'has-flash': notificationFlash }"
           aria-label="Notifications"
+          v-tooltip="'Notifications'"
           @click="$emit('show-notifications')"
         >
           <i class="pi pi-bell" aria-hidden="true" />
@@ -131,7 +135,7 @@
           />
         </Button>
 
-        <Button type="button" class="p-button-text avatar-btn" @click="toggleUserMenu" aria-label="User menu">
+        <Button type="button" class="p-button-text avatar-btn" @click="toggleUserMenu" aria-label="User menu" v-tooltip="'User menu'">
           <Avatar
             :label="avatarLabel"
             shape="circle"

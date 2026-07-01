@@ -164,7 +164,7 @@
         <template #footer>
           <div class="msg-input-row">
             <InputText v-model="newMessage" placeholder="Type a message..." class="flex-1" @keyup.enter="sendMessage" />
-            <Button icon="pi pi-send" @click="sendMessage" :disabled="!newMessage.trim()" />
+            <Button v-tooltip="'Send'" icon="pi pi-send" aria-label="Send" @click="sendMessage" :disabled="!newMessage.trim()" />
           </div>
         </template>
       </Dialog>

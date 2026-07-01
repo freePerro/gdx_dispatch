@@ -94,6 +94,7 @@
         <Column header="Actions" style="width:120px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'View'"
               icon="pi pi-eye"
               text
               size="small"
