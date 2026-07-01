@@ -13,15 +13,17 @@ def _mock_request(tenant_id="test-tenant"):
     r = MagicMock()
     r.state.tenant = {"id": tenant_id}
     r.client.host = "127.0.0.1"
+    r.base_url = "http://testserver/"
     return r
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import Customer, Document, Invoice, Job
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
+from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.routers import portal as portal_router
 from uuid import uuid4
 
@@ -36,6 +38,7 @@ def tenant_db_session():
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     TenantBase.metadata.create_all(bind=engine, checkfirst=True)
+    AppSettings.__table__.create(bind=engine, checkfirst=True)
     Customer.__table__.create(bind=engine, checkfirst=True)
     CustomerUser.__table__.create(bind=engine, checkfirst=True)
     Job.__table__.create(bind=engine, checkfirst=True)
@@ -137,15 +140,20 @@ def test_module_gate_requires_customer_portal():
     assert require_module("customer_portal") in dep_calls
 
 
-def test_login_sends_email(tenant_db_session, monkeypatch):
-    seeded = _seed_customer_data(tenant_db_session)
-
+def _fake_email_capture(monkeypatch):
     sent: list[dict] = []
 
-    def _fake_send(to_email: str, magic_link: str) -> None:
-        sent.append({"to": to_email, "link": magic_link})
+    def _fake_send(db, tenant_id, to_email, magic_link, **kwargs):
+        sent.append({"to": to_email, "link": magic_link, "tenant_id": tenant_id, **kwargs})
+        return True, None
 
     monkeypatch.setattr(portal_router, "send_portal_magic_link_email", _fake_send)
+    return sent
+
+
+def test_login_sends_email(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
 
     body = portal_router.portal_login(
         payload=portal_router.PortalLoginIn(email=seeded["user_a_email"]),
@@ -155,6 +163,9 @@ def test_login_sends_email(tenant_db_session, monkeypatch):
     assert body["ok"] is True
     assert len(sent) == 1
     assert sent[0]["to"] == seeded["user_a_email"]
+    # The emailed link must land on the SPA portal page, not a bare API route.
+    assert "/customer-portal?token=" in sent[0]["link"]
+    assert sent[0]["link"].startswith("http://testserver")
 
 
 def test_verify_valid_token_returns_jwt(tenant_db_session):
@@ -329,3 +340,264 @@ def test_get_current_customer_accepts_valid_customer_jwt(tenant_db_session):
     principal = portal_router.get_current_portal_customer(token=token, db=tenant_db_session)
     assert principal.role == "customer"
     assert principal.customer_id == seeded["customer_a_id"]
+
+
+# ---------------------------------------------------------------------------
+# Estimates (customer-facing)
+# ---------------------------------------------------------------------------
+
+def _seed_estimate(db, customer_id, status="sent", number=None):
+    est = Estimate(
+        customer_id=customer_id,
+        estimate_number=number or f"EST-{uuid4().hex[:8]}",
+        label="New garage door",
+        total=1500,
+        status=status,
+        public_token=uuid4().hex,
+        company_id="tenant-test",
+    )
+    db.add(est)
+    db.commit()
+    db.refresh(est)
+    return est
+
+
+def test_estimates_show_only_customer_visible_statuses(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="draft")
+    _seed_estimate(tenant_db_session, seeded["customer_b_id"], status="sent")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    rows = portal_router.portal_estimates(principal=principal, db=tenant_db_session)
+    assert [row["id"] for row in rows] == [str(sent.id)]
+    assert rows[0]["status"] == "sent"
+
+
+def test_estimate_accept_marks_accepted(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_accept(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert body["status"] == "accepted"
+    assert body["accepted_at"] is not None
+
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_accept(
+            estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+        )
+    assert getattr(exc.value, "status_code", None) == 409
+
+
+def test_estimate_decline_records_reason(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_decline(
+        estimate_id=est.id,
+        request=_mock_request(),
+        payload=portal_router.DeclineEstimateIn(reason="Too expensive"),
+        principal=principal,
+        db=tenant_db_session,
+    )
+    assert body["status"] == "declined"
+    tenant_db_session.refresh(est)
+    assert est.declined_reason == "Too expensive"
+
+
+def test_estimate_accept_cannot_cross_customers(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est_b = _seed_estimate(tenant_db_session, seeded["customer_b_id"], status="sent")
+    principal_a = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_accept(
+            estimate_id=est_b.id, request=_mock_request(), principal=principal_a, db=tenant_db_session
+        )
+    assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_context_returns_company_and_customer(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    tenant_db_session.add(
+        AppSettings(company_name="Garage Door Xperts", phone="(218) 555-0100", email="office@gdx.test", address="123 Main St")
+    )
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_context(principal=principal, db=tenant_db_session)
+    assert body["company"]["name"] == "Garage Door Xperts"
+    assert body["company"]["phone"] == "(218) 555-0100"
+    assert body["customer"]["name"] == "Customer A"
+
+
+# ---------------------------------------------------------------------------
+# Staff management (/api/portal)
+# ---------------------------------------------------------------------------
+
+_STAFF = {"sub": "staff-user-1"}
+
+
+def test_admin_list_reports_portal_state(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    no_portal = Customer(name="Customer C", email="c@example.com", company_id="tenant-test")
+    tenant_db_session.add(no_portal)
+    tenant_db_session.commit()
+
+    entries = portal_router.portal_admin_list(_=_STAFF, db=tenant_db_session)
+    by_id = {e["id"]: e for e in entries}
+    assert by_id[str(seeded["customer_a_id"])]["portal_enabled"] is True
+    assert by_id[str(no_portal.id)]["portal_enabled"] is False
+    assert by_id[str(no_portal.id)]["email"] == "c@example.com"
+
+
+def test_admin_toggle_disable_and_reenable(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+
+    body = portal_router.portal_admin_toggle(
+        customer_id=seeded["customer_a_id"],
+        payload=portal_router.PortalToggleIn(portal_enabled=False),
+        request=_mock_request(),
+        staff=_STAFF,
+        db=tenant_db_session,
+    )
+    assert body["portal_enabled"] is False
+    user = tenant_db_session.get(CustomerUser, seeded["user_a_id"])
+    assert user.is_active is False
+
+    body = portal_router.portal_admin_toggle(
+        customer_id=seeded["customer_a_id"],
+        payload=portal_router.PortalToggleIn(portal_enabled=True),
+        request=_mock_request(),
+        staff=_STAFF,
+        db=tenant_db_session,
+    )
+    assert body["portal_enabled"] is True
+    tenant_db_session.refresh(user)
+    assert user.is_active is True
+
+
+def test_admin_toggle_enable_requires_email(tenant_db_session):
+    _seed_customer_data(tenant_db_session)
+    no_email = Customer(name="No Email", company_id="tenant-test")
+    tenant_db_session.add(no_email)
+    tenant_db_session.commit()
+
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_admin_toggle(
+            customer_id=no_email.id,
+            payload=portal_router.PortalToggleIn(portal_enabled=True),
+            request=_mock_request(),
+            staff=_STAFF,
+            db=tenant_db_session,
+        )
+    assert getattr(exc.value, "status_code", None) == 400
+
+
+def test_admin_invite_creates_user_and_link(tenant_db_session, monkeypatch):
+    _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
+    newcomer = Customer(name="Newcomer", email="new@example.com", company_id="tenant-test")
+    tenant_db_session.add(newcomer)
+    tenant_db_session.commit()
+
+    body = portal_router.portal_admin_invite(
+        payload=portal_router.PortalInviteIn(customer_id=newcomer.id),
+        request=_mock_request(),
+        staff=_STAFF,
+        db=tenant_db_session,
+    )
+    assert body["ok"] is True
+    assert body["invite_sent"] is True
+    assert "/customer-portal?token=" in body["magic_link"]
+    assert len(sent) == 1
+
+    user = tenant_db_session.execute(
+        select(CustomerUser).where(CustomerUser.customer_id == newcomer.id)
+    ).scalar_one()
+    assert user.is_active is True
+    assert user.portal_token is not None
+    # Invite links get the long TTL, not the 15-minute login TTL.
+    expires_at = portal_router._normalize_dt(user.portal_token_expires_at)
+    assert expires_at - datetime.now(UTC) > timedelta(days=1)
+
+    # The emailed token must round-trip through verify.
+    payload = portal_router.portal_verify(token=user.portal_token, request=_mock_request(), db=tenant_db_session)
+    assert payload["token_type"] == "bearer"
+
+
+def test_login_does_not_clobber_pending_invite(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    sent = _fake_email_capture(monkeypatch)
+
+    user = tenant_db_session.get(CustomerUser, seeded["user_a_id"])
+    user.portal_token = "pending-invite-token"
+    user.portal_token_expires_at = datetime.now(UTC) + timedelta(days=5)
+    tenant_db_session.commit()
+
+    portal_router.portal_login(
+        payload=portal_router.PortalLoginIn(email=seeded["user_a_email"]),
+        request=_mock_request(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(user)
+    # The public login endpoint must re-send the still-valid invite token,
+    # not rotate it out from under the customer.
+    assert user.portal_token == "pending-invite-token"
+    assert "pending-invite-token" in sent[0]["link"]
+
+
+def test_login_survives_duplicate_emails(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    _fake_email_capture(monkeypatch)
+    dup = CustomerUser(customer_id=seeded["customer_b_id"], email=seeded["user_a_email"], is_active=True)
+    tenant_db_session.add(dup)
+    tenant_db_session.commit()
+
+    body = portal_router.portal_login(
+        payload=portal_router.PortalLoginIn(email=seeded["user_a_email"]),
+        request=_mock_request(),
+        db=tenant_db_session,
+    )
+    assert body["ok"] is True
+
+
+def test_login_send_failure_still_returns_ok(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+
+    def _fake_send_fail(db, tenant_id, to_email, magic_link, **kwargs):
+        return False, "smtp_not_configured"
+
+    monkeypatch.setattr(portal_router, "send_portal_magic_link_email", _fake_send_fail)
+
+    body = portal_router.portal_login(
+        payload=portal_router.PortalLoginIn(email=seeded["user_a_email"]),
+        request=_mock_request(),
+        db=tenant_db_session,
+    )
+    # Anti-enumeration: the caller can't learn whether delivery worked.
+    assert body["ok"] is True
+
+
+def test_admin_toggle_disable_deactivates_duplicates(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    dup = CustomerUser(customer_id=seeded["customer_a_id"], email="a2@example.com", is_active=True, portal_token="tok")
+    tenant_db_session.add(dup)
+    tenant_db_session.commit()
+
+    portal_router.portal_admin_toggle(
+        customer_id=seeded["customer_a_id"],
+        payload=portal_router.PortalToggleIn(portal_enabled=False),
+        request=_mock_request(),
+        staff=_STAFF,
+        db=tenant_db_session,
+    )
+    rows = tenant_db_session.execute(
+        select(CustomerUser).where(CustomerUser.customer_id == seeded["customer_a_id"])
+    ).scalars().all()
+    assert len(rows) == 2
+    assert all(row.is_active is False and row.portal_token is None for row in rows)

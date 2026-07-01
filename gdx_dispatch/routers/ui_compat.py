@@ -379,20 +379,8 @@ def run_payroll_current(_: dict = Depends(get_current_user)) -> dict:
 
 
 # ── Portal management ─────────────────────────────────────────────────────
-
-@router.get("/api/portal", response_model=None)
-def list_portal_customers(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.patch("/api/portal/{entry_id}", response_model=None)
-def update_portal_entry(entry_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
-
-
-@router.post("/api/portal/invite", response_model=None)
-def send_portal_invite(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "invite_sent": True}
+# /api/portal (list/toggle/invite) graduated from stubs to real endpoints in
+# gdx_dispatch/routers/portal.py (staff_router).
 
 
 # ── Pricing (list + create + update index) ────────────────────────────────
