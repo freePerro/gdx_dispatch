@@ -368,6 +368,7 @@
               <Column header="" style="width:100px">
                 <template #body="{ data: part }">
                   <Button
+                    v-tooltip="'Delete part'"
                     icon="pi pi-trash"
                     severity="danger"
                     text

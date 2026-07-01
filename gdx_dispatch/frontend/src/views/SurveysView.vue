@@ -44,8 +44,8 @@
                 :loading="sendingTemplateId === slotProps.data.id"
                 @click="sendTemplate(slotProps.data.id)"
               />
-              <Button icon="pi pi-pencil" aria-label="Edit" text size="small" class="mr-1" @click.stop="openEditTemplate(slotProps.data)" />
-              <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="deleteTemplate(slotProps.data)" />
+              <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" class="mr-1" @click.stop="openEditTemplate(slotProps.data)" />
+              <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small" @click.stop="deleteTemplate(slotProps.data)" />
             </template>
           </Column>
         </DataTable>

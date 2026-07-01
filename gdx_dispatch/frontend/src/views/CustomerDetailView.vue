@@ -10,7 +10,7 @@
       <!-- Header with customer info and actions -->
       <div class="detail-header">
         <div class="header-left">
-          <Button icon="pi pi-arrow-left" aria-label="Back to customers" text rounded @click="$router.push('/customers')" data-testid="back-btn" />
+          <Button v-tooltip="'Back to customers'" icon="pi pi-arrow-left" aria-label="Back to customers" text rounded @click="$router.push('/customers')" data-testid="back-btn" />
           <h2>{{ customer.name }}</h2>
           <Tag :value="customer.customer_type || 'Residential'" :severity="customer.customer_type === 'Commercial' ? 'warning' : 'info'" />
         </div>
@@ -185,7 +185,7 @@
               :data-testid="`primary-toggle-${loc.id}`"
               @change="value => updatePrimaryAddress(loc, value)"
             />
-            <Button icon="pi pi-pencil" aria-label="Edit" text rounded size="small" @click="editLocation(loc)" :data-testid="`edit-location-${loc.id}`" />
+            <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text rounded size="small" @click="editLocation(loc)" :data-testid="`edit-location-${loc.id}`" />
           </div>
         </div>
       </div>

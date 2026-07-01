@@ -2,6 +2,7 @@
     <section class="mobile-customer-detail">
       <header class="mobile-page-head">
         <Button
+          v-tooltip="'Back'"
           icon="pi pi-arrow-left"
           aria-label="Back"
           text
@@ -19,6 +20,7 @@
           />
         </div>
         <Button
+          v-tooltip="'Edit'"
           icon="pi pi-pencil"
           aria-label="Edit"
           text

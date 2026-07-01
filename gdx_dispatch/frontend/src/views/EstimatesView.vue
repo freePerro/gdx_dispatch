@@ -82,24 +82,27 @@
           <template #body="{ data }">
             <Button
               v-if="data.status === 'Draft'"
+              v-tooltip="'Send to customer'"
+              aria-label="Send to customer"
               icon="pi pi-send"
               text
               size="small"
-              title="Send to customer"
               :data-testid="`send-estimate-${data.id}`"
               @click.stop="sendEstimate(data)"
             />
             <Button
               v-if="data.status === 'Accepted'"
+              v-tooltip="'Convert to Job'"
+              aria-label="Convert to Job"
               icon="pi pi-briefcase"
               text
               size="small"
-              title="Convert to Job"
               severity="success"
               :data-testid="`convert-estimate-${data.id}`"
               @click.stop="convertToJob(data)"
             />
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               severity="danger"
               text
@@ -113,9 +116,9 @@
 
       <!-- Pagination -->
       <div class="pagination-bar" v-if="totalPages > 1">
-        <Button icon="pi pi-angle-left" severity="secondary" text :disabled="currentPage <= 1" @click="currentPage--" />
+        <Button v-tooltip="'Previous page'" aria-label="Previous page" icon="pi pi-angle-left" severity="secondary" text :disabled="currentPage <= 1" @click="currentPage--" />
         <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
-        <Button icon="pi pi-angle-right" severity="secondary" text :disabled="currentPage >= totalPages" @click="currentPage++" />
+        <Button v-tooltip="'Next page'" aria-label="Next page" icon="pi pi-angle-right" severity="secondary" text :disabled="currentPage >= totalPages" @click="currentPage++" />
       </div>
 
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 mounts one globally. -->

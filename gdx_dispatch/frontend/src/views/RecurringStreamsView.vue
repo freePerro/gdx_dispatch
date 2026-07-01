@@ -3,6 +3,7 @@
     <Toolbar>
       <template #start>
         <Button
+          v-tooltip="'Back to Forecasting'"
           icon="pi pi-arrow-left"
           severity="secondary"
           text

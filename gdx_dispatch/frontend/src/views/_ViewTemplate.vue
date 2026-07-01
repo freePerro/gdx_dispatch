@@ -85,6 +85,8 @@
         <Column header="" style="width: 100px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Edit'"
+              aria-label="Edit"
               icon="pi pi-pencil"
               text
               rounded

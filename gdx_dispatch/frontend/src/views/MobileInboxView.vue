@@ -5,7 +5,7 @@
           <h1>Inbox</h1>
           <div class="head-actions">
             <Button label="Compose" icon="pi pi-pencil" size="small" @click="startCompose" data-test="mi-compose" />
-            <Button icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchMessages" data-test="mi-refresh" />
+            <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchMessages" data-test="mi-refresh" />
           </div>
         </div>
       </header>

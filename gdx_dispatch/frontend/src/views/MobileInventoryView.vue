@@ -3,7 +3,7 @@
       <header class="mobile-page-head">
         <div class="head-row">
           <h1>Inventory</h1>
-          <Button icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchParts" data-test="mi-refresh" />
+          <Button v-tooltip="'Refresh'" icon="pi pi-refresh" aria-label="Refresh" text size="small" :loading="loading" @click="fetchParts" data-test="mi-refresh" />
         </div>
         <InputText v-model="searchQuery" placeholder="Search SKU or name…" class="search-input" @input="onSearch" data-test="mi-search" />
       </header>
@@ -33,7 +33,7 @@
             <span v-if="p.sku" class="meta-item"><i class="pi pi-tag" /> {{ p.sku }}</span>
             <span v-if="p.location" class="meta-item"><i class="pi pi-map-marker" /> {{ p.location }}</span>
             <span v-if="p.unit_cost != null" class="meta-item"><i class="pi pi-dollar" /> {{ Number(p.unit_cost).toFixed(2) }}</span>
-            <span v-if="isLowStock(p)" class="pill pill-warn">LOW</span>
+            <span v-if="isLowStock(p)" v-tooltip="'Low stock — at or below reorder point'" class="pill pill-warn">LOW</span>
           </div>
         </li>
       </ol>

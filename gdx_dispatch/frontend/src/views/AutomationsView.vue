@@ -57,6 +57,7 @@
           <template #body="{ data }">
             <Button
               :data-testid="`automation-edit-${data.id}`"
+              v-tooltip="'Edit'"
               icon="pi pi-pencil" aria-label="Edit"
               text
               size="small"

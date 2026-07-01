@@ -1007,6 +1007,7 @@ function replayTour() {
           @click="enablePush"
         />
         <Button
+          v-tooltip="'Dismiss'"
           icon="pi pi-times"
           text
           rounded
@@ -1047,6 +1048,7 @@ function replayTour() {
               :allowEmpty="false"
             />
             <Button
+              v-tooltip="'Reorder'"
               v-if="view === VIEW_LIST && jobs.length > 1"
               icon="pi pi-sort-alt"
               text
@@ -1054,12 +1056,14 @@ function replayTour() {
               @click="enterReorderMode"
             />
             <Button
+              v-tooltip="'Replay tour'"
               icon="pi pi-question-circle"
               text
               aria-label="Replay tour"
               @click="replayTour"
             />
             <Button
+              v-tooltip="'Refresh'"
               icon="pi pi-refresh"
               text
               :loading="refreshing"
@@ -1119,6 +1123,7 @@ function replayTour() {
             </div>
             <div v-if="reorderMode" class="reorder-controls">
               <Button
+                v-tooltip="'Move up'"
                 icon="pi pi-arrow-up"
                 text
                 rounded
@@ -1128,6 +1133,7 @@ function replayTour() {
                 @click="moveJob(idx, -1)"
               />
               <Button
+                v-tooltip="'Move down'"
                 icon="pi pi-arrow-down"
                 text
                 rounded

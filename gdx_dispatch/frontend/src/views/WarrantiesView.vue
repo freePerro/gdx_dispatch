@@ -36,6 +36,7 @@
         <Column header="Actions">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Edit'"
               icon="pi pi-pencil" aria-label="Edit"
               text
               size="small"
@@ -44,6 +45,7 @@
               data-testid="warranties-edit"
             />
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               severity="danger"
               text

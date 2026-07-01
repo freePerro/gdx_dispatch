@@ -70,6 +70,8 @@
         <Column header="" style="width: 80px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'View details'"
+              aria-label="View details"
               icon="pi pi-arrow-right"
               text
               rounded

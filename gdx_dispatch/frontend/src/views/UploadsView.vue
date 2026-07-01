@@ -49,6 +49,7 @@
         <Column header="Actions" style="width:160px">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               severity="danger"
               text

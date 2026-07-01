@@ -320,6 +320,7 @@ watch(open, async (v) => {
             />
             <Button
               icon="pi pi-times"
+              v-tooltip="'Remove part'"
               text
               severity="danger"
               size="small"

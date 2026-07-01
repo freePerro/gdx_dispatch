@@ -51,8 +51,8 @@
           <template #body="{ data }">
             <Button v-if="data.status === 'sent'" icon="pi pi-check" severity="success" text size="small"
               v-tooltip="'Receive'" @click.stop="receivePo(data)" />
-            <Button icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openDetail(data)" />
-            <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small"
+            <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openDetail(data)" />
+            <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small"
               v-if="data.status !== 'received'" @click.stop="confirmDelete(data)" />
           </template>
         </Column>
@@ -115,7 +115,7 @@
           </Column>
           <Column style="width:50px">
             <template #body="{ index }">
-              <Button icon="pi pi-times" aria-label="Remove" text severity="danger" size="small" @click="removeLine(index)" />
+              <Button v-tooltip="'Remove'" icon="pi pi-times" aria-label="Remove" text severity="danger" size="small" @click="removeLine(index)" />
             </template>
           </Column>
         </DataTable>

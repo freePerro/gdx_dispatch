@@ -119,25 +119,27 @@
           <template #body="{ data }">
             <Button
               v-if="customerNumber(data)"
+              v-tooltip="`Call ${customerNumber(data)} — rings your extension first`"
               icon="pi pi-phone"
               text
               rounded
               severity="success"
               size="small"
-              :title="`Call ${customerNumber(data)} — rings your extension first`"
+              :aria-label="`Call ${customerNumber(data)} — rings your extension first`"
               @click.stop="originateCall(data)"
               data-test="pc-click-to-call"
             />
-            <i v-if="data.has_recording" class="pi pi-microphone action-icon" title="has recording" />
-            <i v-if="data.has_voicemail" class="pi pi-envelope action-icon" title="has voicemail" />
+            <i v-if="data.has_recording" v-tooltip="'has recording'" class="pi pi-microphone action-icon" aria-label="has recording" />
+            <i v-if="data.has_voicemail" v-tooltip="'has voicemail'" class="pi pi-envelope action-icon" aria-label="has voicemail" />
             <Button
               v-if="data.direction === 'in' && data.from_number"
+              v-tooltip="`Block ${data.from_number}`"
               icon="pi pi-ban"
               text
               rounded
               severity="danger"
               size="small"
-              :title="`Block ${data.from_number}`"
+              :aria-label="`Block ${data.from_number}`"
               @click.stop="blockCallerNumber(data)"
               data-test="pc-block-caller"
             />

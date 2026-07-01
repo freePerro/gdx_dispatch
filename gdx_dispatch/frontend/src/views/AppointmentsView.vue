@@ -16,11 +16,11 @@
             />
             <Button
               v-if="hasRange"
+              v-tooltip="'Clear range'"
               icon="pi pi-times" aria-label="Remove"
               size="small"
               severity="secondary"
               class="range-clear"
-              title="Clear range"
               @click="clearDateRange"
             />
             <Button label="+ New Appointment" icon="pi pi-plus" @click="openCreate" />
@@ -107,6 +107,7 @@
               />
               <Button
                 v-if="data.status !== 'completed' && data.status !== 'cancelled'"
+                v-tooltip="'Cancel'"
                 icon="pi pi-ban"
                 severity="danger"
                 text

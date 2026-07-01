@@ -199,14 +199,15 @@
       <Column header="" style="width: 140px">
         <template #body="{ data: row }">
           <Button
+            v-tooltip="row.is_locked ? 'Unlock' : 'Lock'"
             :icon="row.is_locked ? 'pi pi-lock' : 'pi pi-lock-open'"
             text rounded
             :severity="row.is_locked ? 'warn' : 'secondary'"
-            :title="row.is_locked ? 'Unlock' : 'Lock'"
+            :aria-label="row.is_locked ? 'Unlock' : 'Lock'"
             @click="onToggleLock(row)"
           />
-          <Button icon="pi pi-pencil" text rounded severity="secondary" title="Edit" @click="openEditDialog(row)" />
-          <Button icon="pi pi-trash" text rounded severity="danger" title="Delete" :disabled="row.is_locked" @click="onDelete(row)" />
+          <Button v-tooltip="'Edit'" icon="pi pi-pencil" text rounded severity="secondary" aria-label="Edit" @click="openEditDialog(row)" />
+          <Button v-tooltip="'Delete'" icon="pi pi-trash" text rounded severity="danger" aria-label="Delete" :disabled="row.is_locked" @click="onDelete(row)" />
         </template>
       </Column>
     </DataTable>

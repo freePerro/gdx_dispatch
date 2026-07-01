@@ -80,6 +80,7 @@
         <span v-if="dateRange[0] || dateRange[1]" class="date-range-summary" data-testid="billing-date-summary">
           {{ formatDate(dateRange[0]) || '…' }} → {{ formatDate(dateRange[1]) || '…' }}
           <Button
+            v-tooltip="'Clear date filter'"
             icon="pi pi-times"
             text
             rounded
@@ -227,7 +228,7 @@
               <Button icon="pi pi-pencil" aria-label="Edit" severity="secondary" text size="small"
                 v-tooltip="'Edit'" @click.stop="editInvoice(data)" />
               <Button icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small"
-                :data-testid="`delete-invoice-${data.id}`" @click.stop="confirmDelete(data)" />
+                v-tooltip="'Delete'" :data-testid="`delete-invoice-${data.id}`" @click.stop="confirmDelete(data)" />
             </div>
           </template>
         </Column>
@@ -236,6 +237,7 @@
       <!-- Pagination -->
       <div class="pagination-bar" v-if="totalPages > 1">
         <Button
+          v-tooltip="'Previous page'"
           icon="pi pi-angle-left"
           severity="secondary"
           text
@@ -244,6 +246,7 @@
         />
         <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
         <Button
+          v-tooltip="'Next page'"
           icon="pi pi-angle-right"
           severity="secondary"
           text

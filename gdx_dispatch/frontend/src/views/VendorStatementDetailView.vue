@@ -3,6 +3,8 @@
       <Toolbar>
         <template #start>
           <Button
+            v-tooltip="'Back'"
+            aria-label="Back"
             icon="pi pi-arrow-left"
             severity="secondary"
             text

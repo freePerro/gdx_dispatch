@@ -36,7 +36,7 @@
             <InputText v-model="newFolderName" size="small"
               :placeholder="selectedFolder ? `New folder under &quot;${selectedFolder.name}&quot;` : 'Folder name'"
               @keyup.enter="createFolder" @keyup.esc="isCreatingFolder = false" autofocus data-testid="new-folder-input" />
-            <Button icon="pi pi-check" text size="small" @click="createFolder" />
+            <Button v-tooltip="'Create folder'" aria-label="Create folder" icon="pi pi-check" text size="small" @click="createFolder" />
           </div>
           <Button v-else
             :label="selectedFolder ? `New under ${selectedFolder.name}` : 'New Folder'"
@@ -182,6 +182,8 @@
         <Column header="Actions" :style="{ width: '100px', textAlign: 'center' }">
           <template #body="{ data }">
             <Button
+              v-tooltip="'Download'"
+              aria-label="Download"
               icon="pi pi-download"
               text
               rounded
@@ -190,6 +192,7 @@
               @click="downloadDocument(data)"
             />
             <Button
+              v-tooltip="'Delete'"
               icon="pi pi-trash" aria-label="Delete"
               severity="danger"
               text
@@ -263,6 +266,7 @@
                 <small>{{ formatSize(uploadForm.file.size) }}</small>
               </div>
               <Button
+                v-tooltip="'Remove'"
                 icon="pi pi-times" aria-label="Remove"
                 text
                 rounded

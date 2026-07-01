@@ -449,6 +449,7 @@ onUnmounted(() => {
           </div>
           <Button
             v-else-if="activeTab === 'threads'"
+            v-tooltip="'Refresh'"
             icon="pi pi-refresh"
             aria-label="Refresh"
             text
@@ -459,6 +460,7 @@ onUnmounted(() => {
           />
           <Button
             v-else-if="activeTab === 'live'"
+            v-tooltip="'Refresh'"
             icon="pi pi-refresh"
             aria-label="Refresh"
             text
@@ -482,14 +484,14 @@ onUnmounted(() => {
       <!-- BOARD ────────────────────────────────────────────────── -->
       <template v-if="activeTab === 'board'">
         <div class="date-pill" data-test="md-date-pill">
-          <button type="button" class="date-btn" @click="shiftDay(-1)" aria-label="Previous day">
+          <button type="button" class="date-btn" v-tooltip="'Previous day'" @click="shiftDay(-1)" aria-label="Previous day">
             <i class="pi pi-chevron-left" />
           </button>
           <button type="button" class="date-current" :class="{ 'is-today': isToday }" @click="goToday">
             {{ dateLabel }}
             <span v-if="!isToday" class="date-iso">{{ selectedDateStr }}</span>
           </button>
-          <button type="button" class="date-btn" @click="shiftDay(1)" aria-label="Next day">
+          <button type="button" class="date-btn" v-tooltip="'Next day'" @click="shiftDay(1)" aria-label="Next day">
             <i class="pi pi-chevron-right" />
           </button>
         </div>

@@ -146,14 +146,14 @@
                     <i v-if="a.is_lead" class="pi pi-star-fill" title="Lead tech" />
                     <span class="assignment-name">{{ techLabel(a.tech_id) }}</span>
                     <Button v-if="!a.is_lead && patchable"
+                      v-tooltip="'Make lead'"
                       icon="pi pi-star" text size="small"
-                      title="Make lead"
                       :aria-label="`Make ${techLabel(a.tech_id)} the lead tech`"
                       :data-testid="`assignment-make-lead-${a.tech_id}`"
                       @click="setLead(a.tech_id)" />
                     <Button v-if="patchable"
+                      v-tooltip="`Remove ${techLabel(a.tech_id)}`"
                       icon="pi pi-times" text size="small" severity="danger"
-                      :title="`Remove ${techLabel(a.tech_id)}`"
                       :aria-label="`Remove ${techLabel(a.tech_id)} from this job`"
                       :data-testid="`assignment-remove-${a.id}`"
                       @click="removeAssignment(a.id)" />
@@ -374,6 +374,7 @@
               <div class="diagnosis-header">
                 <strong>{{ diag.service_type.replace(/_/g, ' ') }}</strong>
                 <Button
+                  v-tooltip="`Delete diagnosis ${diag.service_type}`"
                   icon="pi pi-trash"
                   :aria-label="`Delete diagnosis ${diag.service_type}`"
                   severity="secondary"
@@ -453,7 +454,7 @@
                 <Tag :value="haz.severity.toUpperCase()" :severity="hazardSeverityColor(haz.severity)" />
                 <Tag v-if="haz.applies_to_customer" value="STICKY" severity="warn" />
                 <span class="muted">{{ formatDate(haz.created_at) }}</span>
-                <Button icon="pi pi-trash" aria-label="Delete hazard" text severity="secondary" @click="deleteHazard(haz)" />
+                <Button v-tooltip="'Delete hazard'" icon="pi pi-trash" aria-label="Delete hazard" text severity="secondary" @click="deleteHazard(haz)" />
               </div>
               <p style="white-space:pre-wrap;">{{ haz.description }}</p>
               <a v-if="haz.photo_url" :href="haz.photo_url" target="_blank">View photo</a>
@@ -494,7 +495,7 @@
             </Column>
             <Column header="">
               <template #body="{ data }">
-                <Button icon="pi pi-trash" aria-label="Delete receipt" text severity="secondary" @click="deleteReceipt(data)" />
+                <Button v-tooltip="'Delete receipt'" icon="pi pi-trash" aria-label="Delete receipt" text severity="secondary" @click="deleteReceipt(data)" />
               </template>
             </Column>
           </DataTable>
@@ -548,7 +549,7 @@
               <div class="photo-meta">
                 <p class="photo-name">{{ doc.original_name }}</p>
                 <p class="photo-date">{{ formatDateTime(doc.created_at) }}</p>
-                <Button icon="pi pi-download" aria-label="Download document" text @click="downloadDocument(doc.id)" />
+                <Button v-tooltip="'Download document'" icon="pi pi-download" aria-label="Download document" text @click="downloadDocument(doc.id)" />
               </div>
             </div>
           </div>
@@ -563,7 +564,7 @@
           </div>
           <div v-if="signatureDoc" class="signature-preview">
             <p class="muted">Signature captured on {{ formatDateTime(signatureDoc.created_at) }}</p>
-            <Button icon="pi pi-download" aria-label="Download signature" text @click="downloadDocument(signatureDoc.id)" />
+            <Button v-tooltip="'Download signature'" icon="pi pi-download" aria-label="Download signature" text @click="downloadDocument(signatureDoc.id)" />
           </div>
           <p v-else class="muted">No signature captured yet.</p>
         </div>
@@ -633,7 +634,7 @@
             <Column field="valid_until" header="Valid" />
             <Column header="Actions">
               <template #body="{ data }">
-                <Button icon="pi pi-external-link" aria-label="Open estimate" text size="small" @click="openEstimate(data.id)" />
+                <Button v-tooltip="'Open estimate'" icon="pi pi-external-link" aria-label="Open estimate" text size="small" @click="openEstimate(data.id)" />
               </template>
             </Column>
           </DataTable>
@@ -651,7 +652,7 @@
             <Column field="due_date" header="Due" />
             <Column header="Actions">
               <template #body="{ data }">
-                <Button icon="pi pi-external-link" aria-label="Open invoice" text size="small" @click="openInvoice(data.id)" />
+                <Button v-tooltip="'Open invoice'" icon="pi pi-external-link" aria-label="Open invoice" text size="small" @click="openInvoice(data.id)" />
               </template>
             </Column>
           </DataTable>
