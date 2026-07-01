@@ -254,3 +254,69 @@ as one live sequence). **Known follow-up (when real plugins exist):** a bad plug
 fine but fails `metadata.create_all` is unguarded (per-plugin *import* is already skipped in
 `load_manifests`); add a failure-count / quarantine so it can't crash-loop. Not built now — no
 third-party plugins exist yet, and the healthcheck surfaces a wedge.
+
+## Addendum (2026-06-30) — richer declarative UI vocabulary
+
+Decision #1 (no third-party JS; host renders the manifest with its own PrimeVue) is
+**unchanged and reaffirmed**. Building the first real full-stack plugin showed the *manifest vocabulary* — not the model — was the
+limit: create forms could only render text inputs, and the host only rendered one
+`list` screen. Both were widened. Module Federation / plugin-shipped browser code
+stays **rejected** — the widening is still pure declaration.
+
+**Multiple list screens.** `usePluginScreen` now keeps rows **per** `list` screen
+(keyed by endpoint) and routes each create form to *its* screen's create endpoint.
+A plugin can declare several tables (e.g. a data list + an editable-settings list)
+without them sharing rows or mis-posting. `rows` stays a back-compat computed
+(first list) for existing single-list callers.
+
+**Typed create fields.** A `create.fields[]` entry carries a `type`:
+- `text` (default) → InputText, as before.
+- `number` → InputNumber; honors `default`, `min`.
+- `select` → PrimeVue Select. Options are static (`options: [{value,label}]`) or
+  fetched from a plugin `options_endpoint`. `filter: true` gives client-side
+  typeahead. `depends_on: ["otherField"]` makes the field **clear + refetch** its
+  options when a field it depends on changes (e.g. a size list keyed on the chosen
+  model — `"/api/plugins/<key>/sizes?model={model}"`).
+- `autocomplete` — **reserved**, not implemented (a filterable `select` covers our
+  ~600-option case; add server-side typeahead only when a list is too big to ship).
+
+**Security invariant for manifest-named endpoints (important).** The host fetches a
+plugin-declared endpoint (`options_endpoint`, and existing `endpoint`s) **with the
+logged-in user's session**. So a manifest string is an instruction to the host's
+authed client, and is constrained accordingly, all in `usePluginScreen`:
+1. **Same-plugin only** — refuse any endpoint not prefixed `/api/plugins/<thisKey>/`.
+   Blocks a manifest from steering the host's authed fetch at another plugin's
+   namespace, a core route, or an absolute (off-site) URL. (This also hardens the
+   pre-existing `screen.endpoint` fetch, which was previously unvalidated.)
+2. **Encoded interpolation** — `{field}` bindings are `encodeURIComponent`'d before
+   substitution (no query/path injection via a field value).
+3. **Race-guarded** — a superseded dependent-options response is dropped, so fast
+   model→model changes can't leave stale sizes shown.
+
+The component (`PluginScreen.vue`) carries **no** security logic — it's all in the
+composable, unit-tested (namespace rejection, encoding, race-drop).
+
+**Explicitly deferred (YAGNI / avoid speculative generality):**
+- **`compute_endpoint` / live totals** — a preview-as-you-type protocol (its own
+  debounce/race/error surface). Not built; server round-trip per keystroke is the
+  cost, and the dropdowns already remove the typo/invalid-size failure modes.
+- **General component-tree SDUI** (a plugin composing arbitrary host components in
+  JSON). Powerful but a real subsystem: a per-component prop allow-list (PrimeVue
+  passthrough/`pt` and HTML-rendering props are injection sinks), a binding/event
+  model, and a re-audit tax on every PrimeVue upgrade. **Do not build from one
+  plugin** — let the shape emerge from ≥3 real plugins, then its own ADR.
+- If a plugin ever genuinely needs bespoke interactive UI, the safe path is a
+  **sandboxed iframe** webview (postMessage bridge, `frame-ancestors` CSP) — the
+  ADR-014 streamed-browser is for *external* no-API sites, not plugin-authored UI —
+  **never** Module Federation.
+
+**Defense-in-depth note (pre-install scan).** A static scan of a plugin *package*
+before install (banned imports, `eval`/`subprocess`/egress, unpinned deps,
+obfuscation — reuse `bandit`/`pip-audit`/`semgrep`) is worth adding as a gate,
+most valuable on the **backend** package where the plugin actually executes Python.
+It is a **complement** to isolation, not a substitute: static analysis can't prove
+absence of malice (runtime fetch-and-exec defeats it), so it never replaces the
+no-browser-JS + scoped-DB-role + require_module model.
+
+**Where:** `frontend/src/composables/usePluginScreen.js`,
+`frontend/src/components/PluginScreen.vue`. First consumer: an internal estimator plugin (dependent dropdowns + a number field).
