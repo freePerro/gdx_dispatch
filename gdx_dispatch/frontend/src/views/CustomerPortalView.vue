@@ -247,19 +247,20 @@ onMounted(init);
 </script>
 
 <style scoped>
-.portal-wrapper { min-height: 100vh; background: #f3f4f6; color: #1e293b; }
-.portal-header { background: white; padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; }
+/* PrimeVue v4 --p-* tokens flip with data-theme; the --surface-* names do not exist here. */
+.portal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
+.portal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }
 .logo-container { display: flex; align-items: center; gap: 0.75rem; }
-.company-name { font-size: 1.25rem; font-weight: 700; color: #1e293b; }
+.company-name { font-size: 1.25rem; font-weight: 700; color: var(--p-text-color, #1e293b); }
 .portal-content { max-width: 900px; margin: 0 auto; padding: 1rem; }
 .loading-wrap { display: flex; justify-content: center; padding: 3rem; }
-.empty-msg { text-align: center; padding: 2rem; color: #6b7280; }
+.empty-msg { text-align: center; padding: 2rem; color: var(--p-text-muted-color, #6b7280); }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
 .portal-card { transition: transform 0.15s; }
 .portal-card:hover { transform: translateY(-2px); }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
 .amount { font-size: 1.5rem; font-weight: 700; color: var(--p-primary-color); margin: 0.5rem 0; }
-.meta { font-size: 0.85rem; color: #6b7280; }
+.meta { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .action-row { display: flex; gap: 0.5rem; }
 .contact-list { display: flex; flex-direction: column; gap: 1rem; }
 .contact-list div { display: flex; align-items: center; gap: 0.75rem; }
