@@ -224,7 +224,7 @@
           size="small"
           severity="info"
           data-testid="line-add-catalog-btn"
-          @click="openCatalogPicker"
+          @click="showCatalogPicker = true"
         />
       </div>
       <div class="line-items-subtotal" data-testid="line-items-subtotal">
@@ -232,52 +232,8 @@
       </div>
     </div>
 
-    <!-- Catalog Picker Dialog -->
-    <Dialog
-      v-model:visible="showCatalogPicker"
-      header="Add from Catalog"
-      modal
-      :style="{ width: '700px' }"
-      data-testid="line-catalog-picker"
-    >
-      <InputText
-        v-model="catalogSearch"
-        placeholder="Search catalog…"
-        class="w-full"
-        data-testid="line-catalog-search"
-        style="margin-bottom: 1rem"
-      />
-      <div v-if="catalogLoading" class="muted">Loading catalog…</div>
-      <DataTable
-        v-else
-        responsiveLayout="scroll"
-        :value="filteredCatalogItems"
-        :paginator="filteredCatalogItems.length > 10"
-        :rows="10"
-        selectionMode="multiple"
-        v-model:selection="selectedCatalogItems"
-        dataKey="id"
-        stripedRows
-        data-testid="line-catalog-table"
-      >
-        <Column selectionMode="multiple" style="width: 3rem" />
-        <Column field="name" header="Item" sortable />
-        <Column field="category" header="Category" style="width: 120px" />
-        <Column header="Price" style="width: 100px">
-          <template #body="{ data }">{{ currency(data.price) }}</template>
-        </Column>
-      </DataTable>
-      <template #footer>
-        <Button label="Cancel" severity="secondary" @click="showCatalogPicker = false" />
-        <Button
-          :label="`Add ${selectedCatalogItems.length} item${selectedCatalogItems.length !== 1 ? 's' : ''}`"
-          icon="pi pi-plus"
-          :disabled="!selectedCatalogItems.length"
-          data-testid="line-catalog-add"
-          @click="addFromCatalog"
-        />
-      </template>
-    </Dialog>
+    <!-- Shared catalog picker (one tab per real catalog) -->
+    <CatalogPickerDialog v-model:visible="showCatalogPicker" @add="addFromCatalog" />
   </div>
 </template>
 
@@ -287,9 +243,7 @@ import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
 import Select from 'primevue/select';
-import Dialog from 'primevue/dialog';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
+import CatalogPickerDialog from './CatalogPickerDialog.vue';
 import { useApi } from '../composables/useApi';
 
 const props = defineProps({
@@ -670,86 +624,16 @@ async function addSelectedParts() {
 // Catalog picker
 // ---------------------------------------------------------------------------
 
+// Catalog picking is handled by the shared <CatalogPickerDialog>, which shows
+// one tab per real catalog. We only own the open/close flag and turn the items
+// it emits into invoice line rows.
 const showCatalogPicker = ref(false);
-const catalogSearch = ref('');
-const catalogItems = ref([]);
-const selectedCatalogItems = ref([]);
-const catalogLoaded = ref(false);
-const catalogLoading = ref(false);
 
-const filteredCatalogItems = computed(() => {
-  const q = catalogSearch.value.trim().toLowerCase();
-  if (!q) return catalogItems.value;
-  return catalogItems.value.filter((it) =>
-    [it.name, it.description, it.sku, it.category]
-      .filter(Boolean)
-      .some((v) => String(v).toLowerCase().includes(q)),
-  );
-});
-
-async function openCatalogPicker() {
-  selectedCatalogItems.value = [];
-  catalogSearch.value = '';
-  showCatalogPicker.value = true;
-  if (catalogLoaded.value) return;
-  catalogLoading.value = true;
-  try {
-    // D-S122-catalog-n-plus-one: single-shot aggregator. Returns active items
-    // across every custom catalog the tenant owns in one query. Falls back
-    // to the N+1 pattern if the aggregator endpoint is unavailable.
-    const agg = await api.get('/api/catalogs/all-items', { suppressErrorToast: true });
-    const rows = Array.isArray(agg) ? agg : agg?.items || [];
-    if (rows.length || agg?.total === 0) {
-      catalogItems.value = rows.map((it) => ({
-        id: it.id,
-        name: it.name || '',
-        sku: it.sku || '',
-        description: it.description_display || it.description || it.name || '',
-        category: it.category || it.pricing_category || '',
-        pricing_category: it.pricing_category || '',
-        cost: Number(it.cost || 0),
-        price: Number(it.price || 0),
-      }));
-      catalogLoaded.value = true;
-      return;
-    }
-    // Legacy fan-out path (kept for tenants on older backends).
-    const list = await api.get(props.catalogEndpoint, { suppressErrorToast: true });
-    const catalogs = Array.isArray(list) ? list : list?.data || list?.items || [];
-    const items = [];
-    for (const cat of catalogs) {
-      try {
-        const itemsRes = await api.get(`/api/catalogs/${cat.id}/items`, { suppressErrorToast: true });
-        const rs = Array.isArray(itemsRes) ? itemsRes : itemsRes?.data || itemsRes?.items || [];
-        for (const it of rs) {
-          if (it.active === false || it.deleted_at) continue;
-          items.push({
-            id: it.id,
-            name: it.name || '',
-            sku: it.sku || '',
-            description: it.description_display || it.description || it.name || '',
-            category: it.category || it.pricing_category || '',
-            pricing_category: it.pricing_category || '',
-            cost: Number(it.cost || 0),
-            price: Number(it.price || 0),
-          });
-        }
-      } catch (e) { /* skip a single failed catalog */ }
-    }
-    catalogItems.value = items;
-    catalogLoaded.value = true;
-  } catch (e) {
-    catalogItems.value = [];
-  } finally {
-    catalogLoading.value = false;
-  }
-}
-
-function addFromCatalog() {
+function addFromCatalog(items) {
   const lines = localLines.value;
   const onlyEmpty = lines.length === 1 && !lines[0].description && !toNum(lines[0].unit_price);
   if (onlyEmpty) lines.splice(0, 1);
-  for (const item of selectedCatalogItems.value) {
+  for (const item of items) {
     lines.push({
       description: item.description || item.name,
       quantity: 1,
@@ -764,8 +648,6 @@ function addFromCatalog() {
       ...(props.showMargin ? { margin_pct_override: null } : {}),
     });
   }
-  selectedCatalogItems.value = [];
-  showCatalogPicker.value = false;
   emitLines();
 }
 </script>
