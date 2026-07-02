@@ -222,6 +222,46 @@ def test_get_costing_for_missing_job(client: TestClient):
     assert data["margin_percent"] == 0.0
 
 
+def test_parts_for_job_sums_via_parts_join():
+    """Regression: `_parts_for_job` joins `parts` for the name and totals with
+    `unit_cost_at_time`.
+
+    Guards the prod bug where the raw query referenced job_parts columns that
+    never existed (part_name/quantity/unit_cost/deleted_at) — the broad except
+    swallowed the UndefinedColumn and every job's parts cost silently read $0.
+    Also pins that costing uses the captured cost, not the part's current price.
+    """
+    from decimal import Decimal
+
+    from gdx_dispatch.modules.inventory.models import JobPart, Part
+    from gdx_dispatch.routers.job_costing import _parts_for_job
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    db = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    job_id = uuid4()
+    part = Part(
+        sku="SPR-1", name="Torsion Spring",
+        unit_cost=Decimal("10.00"), unit_price=Decimal("25.00"),
+    )
+    db.add(part)
+    db.flush()
+    db.add(JobPart(job_id=job_id, part_id=part.id, qty_used=3, unit_cost_at_time=Decimal("12.50")))
+    db.commit()
+
+    result = _parts_for_job(db, job_id)
+    # 3 × 12.50 = 37.50 — uses unit_cost_at_time, NOT part.unit_cost (10.00 → 30.00)
+    assert result["total"] == 37.5
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["name"] == "Torsion Spring"
+    assert item["qty"] == 3.0
+    assert item["unit_cost"] == 12.5
+    db.close()
+
+
 # ---------------------------------------------------------------------------
 # Patch / update
 # ---------------------------------------------------------------------------

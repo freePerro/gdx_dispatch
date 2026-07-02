@@ -22,18 +22,20 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     request_id = getattr(request.state, "request_id", "unknown") if hasattr(request, "state") else "unknown"
 
     if isinstance(exc, HTTPException):
-        # Sink server-side failures plus 403 Forbidden. 403 ("permission
-        # denied") is captured even though it's a 4xx because it signals a
-        # real user hitting an authorization wall — admins need to see these
-        # in the Server Logs page. Other 4xx are NOT sinked: 401 is pure
-        # token-refresh/expiry noise (hundreds/hour) and 400/404/422 are
-        # client validation noise. 503 is excluded because in this codebase
-        # it's the convention for "feature not configured" (Google/Microsoft
-        # SSO, legacy /api/superadmin, /legacy/billing — all 503 by design
-        # when the relevant env var is absent). Real DB-down 503s come
-        # through the non-HTTPException branch below (OperationalError →
-        # 503) and remain logged.
-        if (exc.status_code >= 500 and exc.status_code != 503) or exc.status_code == 403:
+        # Sink server-side failures only (5xx, excluding 503). 4xx are NOT
+        # sinked: they are expected client-side outcomes, not server errors.
+        # In particular 403 ("permission denied") was previously recorded on
+        # the theory it flagged auth misconfig, but in practice it is dominated
+        # by ordinary RBAC denials (a role correctly hitting an endpoint it
+        # can't use) — it was the single largest source of Server-Errors-page
+        # noise. 401 is token-refresh/expiry noise (hundreds/hour) and
+        # 400/404/422 are client validation noise. 503 is excluded because in
+        # this codebase it's the convention for "feature not configured"
+        # (Google/Microsoft SSO, legacy /api/superadmin, /legacy/billing — all
+        # 503 by design when the relevant env var is absent). Real DB-down
+        # 503s come through the non-HTTPException branch below
+        # (OperationalError → 503) and remain logged.
+        if exc.status_code >= 500 and exc.status_code != 503:
             _sink(request, exc, exc.status_code, request_id)
         return JSONResponse(
             status_code=exc.status_code,

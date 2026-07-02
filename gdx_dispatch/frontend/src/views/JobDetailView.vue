@@ -852,6 +852,7 @@ import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency,
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
+import { estimateStatusSeverity } from "../utils/statusSeverity";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";
