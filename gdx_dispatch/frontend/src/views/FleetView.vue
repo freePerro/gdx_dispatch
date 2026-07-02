@@ -22,6 +22,11 @@
         striped-rows
         @row-click="onRowClick"
       >
+        <template #empty>
+          <EmptyState icon="pi pi-truck" title="No vehicles yet"
+            message="Add your work trucks and vans to track service dates, mileage, and drivers."
+            action-label="New Vehicle" @action="openCreateDialog" />
+        </template>
         <Column header="Vehicle" sortable>
           <template #body="{ data }">{{ [data.year, data.make, data.model].filter(Boolean).join(' ') || data.vehicle_name || '-' }}</template>
         </Column>
@@ -114,6 +119,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

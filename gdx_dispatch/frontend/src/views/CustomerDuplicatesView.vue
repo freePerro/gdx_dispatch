@@ -140,6 +140,7 @@
 import { onMounted, ref, reactive } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Card from "primevue/card";
 import Checkbox from "primevue/checkbox";
@@ -218,15 +219,6 @@ async function doMerge() {
   } finally {
     merging.value = null;
     pendingMerge.value = null;
-  }
-}
-
-function formatDate(iso) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString();
-  } catch {
-    return iso;
   }
 }
 

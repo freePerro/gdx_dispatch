@@ -40,19 +40,19 @@
         <Column field="tech_user_id" header="Tech (user_id)" />
         <Column field="hours_paid" header="Hours" />
         <Column header="Gross">
-          <template #body="{ data }">${{ Number(data.gross_pay).toFixed(2) }}</template>
+          <template #body="{ data }">{{ formatMoney(Number(data.gross_pay) || 0) }}</template>
         </Column>
         <Column header="Effective rate">
           <template #body="{ data }">
             <span v-if="Number(data.hours_paid) > 0">
-              ${{ (Number(data.gross_pay) / Number(data.hours_paid)).toFixed(2) }}/hr
+              {{ formatMoney(Number(data.gross_pay) / Number(data.hours_paid)) }}/hr
             </span>
           </template>
         </Column>
         <Column field="source" header="Source" />
         <Column header="">
           <template #body="{ data }">
-            <Button v-tooltip="'Delete'" icon="pi pi-trash" severity="danger" text @click="del(data.id)" />
+            <Button v-tooltip="'Delete'" aria-label="Delete" icon="pi pi-trash" severity="danger" text @click="del(data.id)" />
           </template>
         </Column>
       </DataTable>
@@ -89,6 +89,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 import { useApiWithToast as useApi } from "../../composables/useApiWithToast";
+import { formatDate as fmtDate, formatMoney } from "../../composables/useFormatters";
 import Button from "primevue/button";
 import Calendar from "primevue/calendar";
 import Column from "primevue/column";
@@ -117,10 +118,11 @@ const canSave = computed(() =>
   form.hours_paid != null && form.gross_pay != null,
 );
 
+// Thin wrapper over the shared formatter: keeps the PG "YYYY-MM-DD hh:mm"
+// space→T normalization (Safari can't parse the space form).
 function formatDate(v) {
   if (!v) return "—";
-  const d = new Date(typeof v === "string" ? v.replace(" ", "T") : v);
-  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleDateString();
+  return fmtDate(typeof v === "string" ? v.replace(" ", "T") : v);
 }
 
 async function fetchEntries() {

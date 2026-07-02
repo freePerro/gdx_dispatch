@@ -318,6 +318,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { formatMoney, formatPercent, formatDateTime as fmtDateTime } from "../composables/useFormatters";
 import { useAuthStore } from "../stores/auth";
 import { normalizeRole } from "../constants/roles";
 import { useToast } from "primevue/usetoast";
@@ -503,16 +504,7 @@ function toNumber(value) {
 }
 
 function formatCurrency(value) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(toNumber(value));
-}
-
-function formatPercent(value) {
-  const v = toNumber(value);
-  return `${(v * 100).toFixed(1)}%`;
+  return formatMoney(toNumber(value), { digits: 0 });
 }
 
 function toTrendMeta(value) {
@@ -589,15 +581,10 @@ const kpis = computed(() => {
 });
 
 function formatTimestamp(value) {
-  if (!value) return "Updated recently";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Updated recently";
-  return parsed.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
+  const formatted = fmtDateTime(value, {
+    options: { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
   });
+  return formatted === "—" ? "Updated recently" : formatted;
 }
 
 function mapActivity(job) {

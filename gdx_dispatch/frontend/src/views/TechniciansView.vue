@@ -47,7 +47,7 @@
           </template>
         </Column>
         <Column field="hourly_rate" header="Rate" sortable style="width:120px">
-          <template #body="{ data }">${{ Number(data.hourly_rate || 0).toFixed(2) }}/hr</template>
+          <template #body="{ data }">{{ formatCurrency(data.hourly_rate || 0) }}/hr</template>
         </Column>
         <Column field="active" header="Status" style="width:100px">
           <template #body="{ data }">
@@ -116,6 +116,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatMoney as formatCurrency } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
 import Chips from "primevue/chips";

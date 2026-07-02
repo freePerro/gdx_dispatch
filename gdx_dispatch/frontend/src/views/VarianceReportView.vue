@@ -94,6 +94,7 @@ import DatePicker from "primevue/datepicker";
 import Tag from "primevue/tag";
 import EmptyState from "../components/EmptyState.vue";
 import { useApi } from "../composables/useApi";
+import { formatMoney as currency, formatPercent } from "../composables/useFormatters";
 
 const toast = useToast();
 const api = useApi();
@@ -105,12 +106,8 @@ const now = new Date();
 const startDate = ref(new Date(now.getFullYear(), now.getMonth() - 1, 1));
 const endDate = ref(new Date());
 
-function currency(v) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(v) || 0);
-}
 function formatPct(v) {
-  if (v == null) return "0.0%";
-  return `${Number(v).toFixed(1)}%`;
+  return formatPercent(v ?? 0, { digits: 1, whole: true });
 }
 function fmtDate(d) {
   if (!d) return "";

@@ -239,6 +239,7 @@ import Dialog from 'primevue/dialog';
 import ProgressSpinner from 'primevue/progressspinner';
 import { useApi } from '../composables/useApi';
 import { useBudgetAnomalies } from '../composables/useBudgetAnomalies';
+import { formatMoney } from '../composables/useFormatters';
 
 Chart.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
 
@@ -338,9 +339,7 @@ const chartOptions = computed(() => ({
     tooltip: {
       callbacks: {
         label(ctx) {
-          const val = ctx.parsed.y;
-          const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-          return `${ctx.dataset.label}: ${fmt.format(val)}`;
+          return `${ctx.dataset.label}: ${money(ctx.parsed.y)}`;
         },
       },
     },
@@ -350,7 +349,7 @@ const chartOptions = computed(() => ({
       beginAtZero: true,
       ticks: {
         callback(value) {
-          return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
+          return money(value);
         },
       },
     },
@@ -379,7 +378,7 @@ const accountRows = computed(() => {
 });
 
 function money(v) {
-  return Number(v ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  return formatMoney(v ?? 0, { digits: 0 });
 }
 function relativeTime(iso) {
   const t = new Date(iso).getTime();

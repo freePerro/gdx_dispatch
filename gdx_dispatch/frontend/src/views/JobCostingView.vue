@@ -663,6 +663,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatMoney as formatCurrency, formatPercent as fmtPercent } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -853,14 +854,8 @@ const categoryOptions = computed(() => {
     .map((value) => ({ label: value, value }));
 });
 
-function formatCurrency(value) {
-  if (value === undefined || value === null) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value));
-}
-
 function formatPercent(value) {
-  if (value === undefined || value === null) return '—';
-  return `${Number(value).toFixed(2)}%`;
+  return fmtPercent(value, { whole: true, digits: 2 });
 }
 
 function marginSeverity(value) {

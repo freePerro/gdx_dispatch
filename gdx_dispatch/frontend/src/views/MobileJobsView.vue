@@ -35,7 +35,18 @@
       <div v-else-if="visibleJobs.length === 0" class="state-msg">
         <i class="pi pi-briefcase empty-icon" />
         <div class="empty-title">{{ emptyTitle }}</div>
-        <div class="empty-help">Pull to refresh or check with dispatch.</div>
+        <!-- 2026-07-01 UX audit: text said "Pull to refresh" but no pull gesture
+             exists anywhere — give the empty state a real refresh button. -->
+        <div class="empty-help">Refresh to check for new jobs, or check with dispatch.</div>
+        <Button
+          label="Refresh"
+          icon="pi pi-refresh"
+          size="small"
+          outlined
+          :loading="loading"
+          data-testid="mobile-jobs-refresh-btn"
+          @click="load"
+        />
       </div>
 
       <ol v-else class="job-list">

@@ -80,6 +80,13 @@
         striped-rows
         data-testid="sso-logs"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-lock"
+            title="No sign-in events"
+            message="SSO login activity will be logged here once users sign in."
+          />
+        </template>
         <Column field="timestamp" header="Timestamp" style="width:170px">
           <template #body="{ data }">{{ formatTimestamp(data.timestamp) }}</template>
         </Column>
@@ -95,6 +102,7 @@
           <template #body="{ data }">
             <Button
               v-tooltip="'View'"
+              aria-label="View"
               icon="pi pi-eye"
               text
               size="small"
@@ -123,6 +131,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

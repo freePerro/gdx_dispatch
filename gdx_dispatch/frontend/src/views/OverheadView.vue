@@ -222,6 +222,7 @@ import Tag from 'primevue/tag';
 import Message from 'primevue/message';
 
 import { useOverhead } from '../composables/useOverhead';
+import { formatMoney as money, formatDate } from '../composables/useFormatters';
 
 Chart.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend, Filler);
 
@@ -239,16 +240,7 @@ function onHorizonChange() {
   o.loadProjection();
 }
 
-// ── formatters ──
-function money(n) {
-  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(n));
-}
-function formatDate(s) {
-  if (!s) return '';
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? s : new Date(t).toLocaleDateString();
-}
+// ── formatters ── (money/formatDate come from useFormatters)
 function formatMonth(label) {
   // label is "YYYY-MM"
   const [y, m] = String(label).split('-').map(Number);
@@ -298,8 +290,7 @@ const chartOptions = computed(() => ({
     tooltip: {
       callbacks: {
         label(ctx) {
-          const fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-          return fmt.format(ctx.parsed.y);
+          return money(ctx.parsed.y, { digits: 0 });
         },
       },
     },
@@ -308,7 +299,7 @@ const chartOptions = computed(() => ({
     y: {
       beginAtZero: true,
       ticks: {
-        callback: (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v),
+        callback: (v) => money(v, { digits: 0 }),
       },
     },
   },

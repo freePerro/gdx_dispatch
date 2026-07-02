@@ -147,6 +147,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -216,13 +217,6 @@ function tabLabel(tab) {
 function tabLabelWithCount(tab) {
   const count = tabCounts.value[tab] || 0;
   return `${tabLabel(tab)}${count ? ` (${count})` : ''}`;
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleDateString();
 }
 
 function customerLabel(member) {

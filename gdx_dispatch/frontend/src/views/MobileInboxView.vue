@@ -19,7 +19,7 @@
       <div v-else-if="!messages.length" class="state-msg">
         <i class="pi pi-inbox empty-icon" />
         <div class="empty-title">Inbox is empty</div>
-        <div class="empty-help">Pull to refresh or compose a new message.</div>
+        <div class="empty-help">Tap refresh above, or compose a new message.</div>
       </div>
 
       <ol v-else class="card-list">

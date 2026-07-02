@@ -65,7 +65,7 @@
         <Column field="vendor" header="Vendor" />
         <Column field="category" header="Category" />
         <Column field="amount" header="Amount" style="width:140px" sortable>
-          <template #body="{ data }">${{ formatCurrency(data.amount) }}</template>
+          <template #body="{ data }">{{ formatMoney(data.amount) }}</template>
         </Column>
         <Column header="Job" style="width:200px">
           <template #body="{ data }">{{ jobLabel(data) }}</template>
@@ -199,6 +199,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatMoney } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -277,19 +278,6 @@ function tabLabelWithCount(status) {
 function capitalize(s) {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleDateString();
-}
-
-function formatCurrency(value) {
-  const number = Number(value);
-  if (Number.isNaN(number)) return '0.00';
-  return number.toFixed(2);
 }
 
 function jobLabel(expense) {

@@ -73,6 +73,13 @@
         striped-rows
         class="clickable-row"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-star"
+            title="No reviews yet"
+            message="Customer reviews from Google, Yelp, and Facebook will land in this inbox."
+          />
+        </template>
         <Column field="source" header="Source">
           <template #body="{ data }">{{ sourceLabel(data.source) }}</template>
         </Column>
@@ -156,6 +163,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatTimestamp } from '../utils/formatTimestamp';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import Column from 'primevue/column';

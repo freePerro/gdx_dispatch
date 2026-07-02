@@ -12,6 +12,14 @@
           />
         </template>
         <template #end>
+          <Button
+            label="Export"
+            icon="pi pi-download"
+            aria-label="Export CSV"
+            text
+            data-testid="jobs-export-btn"
+            @click="exportJobs"
+          />
           <Button label="+ New Job" icon="pi pi-plus" data-testid="new-job-btn" @click="openCreateDialog" />
         </template>
       </Toolbar>
@@ -52,9 +60,11 @@
         
       >
         <template #empty>
-          <div class="empty-message">
-            {{ searchQuery || activeStatus !== 'All' ? 'No matching jobs. Try clearing your filters.' : 'No jobs yet. Click "+ New Job" to create one.' }}
-          </div>
+          <EmptyState
+            icon="pi pi-briefcase"
+            :title="searchQuery || activeStatus !== 'All' ? 'No jobs match your filters' : 'No jobs yet'"
+            :message="searchQuery || activeStatus !== 'All' ? 'Try clearing your search or status filter.' : 'Click &quot;+ New Job&quot; to create one.'"
+          />
         </template>
         <Column field="jobNumber" header="Job #" sortable style="width: 110px">
           <template #body="{ data }">
@@ -455,6 +465,8 @@ import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
+import { formatDate } from "../composables/useFormatters";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -464,6 +476,7 @@ import Select from "primevue/select";
 import MultiSelect from "primevue/multiselect";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
+import EmptyState from "../components/EmptyState.vue";
 import JobStateChip from "../components/JobStateChip.vue";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
@@ -740,14 +753,23 @@ function setStatusFilter(key) {
   activeStatus.value = activeStatus.value === key ? "All" : key;
 }
 
-function formatDate(dateStr) {
-  if (!dateStr) return "";
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  } catch {
-    return dateStr;
-  }
+// CSV export — dumps the CURRENTLY FILTERED rows (status tab + search
+// applied), matching the visible table columns.
+const { exportCsv } = useTableExport();
+function exportJobs() {
+  exportCsv(
+    filteredJobs.value,
+    [
+      { field: "jobNumber", header: "Job #" },
+      { field: "customer", header: "Customer" },
+      { field: "title", header: "Title" },
+      { field: "status", header: "Status" },
+      { field: "scheduledDate", header: "Scheduled Date" },
+      { field: "tech", header: "Tech" },
+      { field: "priority", header: "Priority" },
+    ],
+    "jobs",
+  );
 }
 
 function formatDateForApi(value) {

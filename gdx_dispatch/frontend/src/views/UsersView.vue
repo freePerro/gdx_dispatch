@@ -589,6 +589,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDateTime } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Dialog from 'primevue/dialog';
@@ -724,15 +725,6 @@ const canSubmitLockout = computed(() =>
 function formatReason(reasonKey) {
   const found = lockoutReasons.find((r) => r.value === reasonKey);
   return found ? found.label : (reasonKey || 'Unknown');
-}
-
-function formatDateTime(iso) {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
 }
 
 function emptyCreateForm() {

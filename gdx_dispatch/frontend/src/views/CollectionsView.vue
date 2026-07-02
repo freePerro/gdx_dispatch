@@ -214,6 +214,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatMoney as formatCurrency } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -316,11 +317,6 @@ function statusSeverity(value) {
   }[normalized] || 'secondary';
 }
 
-function formatCurrency(value) {
-  if (typeof value !== 'number') return '—';
-  return `$${value.toFixed(2)}`;
-}
-
 function toNum(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
@@ -366,11 +362,6 @@ function exportCollectionsCsv() {
       life: 3000,
     });
   }
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  return value.split('T')[0];
 }
 
 async function loadCollections() {

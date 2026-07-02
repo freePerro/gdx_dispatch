@@ -28,6 +28,8 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { usePermission } from '../composables/usePermission'
+import { useDirtyDialog } from '../composables/useDirtyDialog'
+import FormField from './FormField.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -336,13 +338,44 @@ function _resetForm() {
   parts.value = []
 }
 
+// Unsaved-changes guard — Esc / the header X are disabled while dirty, and
+// Cancel prompts before discarding typed-in work (2026-07-01 UX audit).
+// Getter mirrors every user-editable field; part rows are mapped to their
+// plain fields so the internal _searchTimer/_searchSeq scratch never leaks
+// into the JSON snapshot comparison.
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(
+  () => ({
+    newCustomer: newCustomer.value,
+    customerSearch: customerSearch.value,
+    selectedCustomerId: selectedCustomer.value?.id ?? null,
+    newCust: { ...newCust },
+    job: { ...job },
+    parts: parts.value.map((p) => ({
+      part_name: p.part_name,
+      sku: p.sku,
+      quantity: p.quantity,
+      urgency: p.urgency,
+      notes: p.notes,
+    })),
+  }),
+  { message: 'Discard this new job?' }
+)
+
+function requestCancel() {
+  if (!confirmDiscard()) return
+  open.value = false
+}
+
+// immediate: the dialog can be mounted already-visible; the pristine
+// snapshot must exist before the first user keystroke either way.
 watch(open, async (v) => {
   if (v) {
     _resetForm()
+    snapshot()
     await nextTick()
     titleInput.value?.$el?.focus?.()
   }
-})
+}, { immediate: true })
 </script>
 
 <template>
@@ -350,6 +383,8 @@ watch(open, async (v) => {
     v-model:visible="open"
     header="New job"
     modal
+    :closable="!isDirty"
+    :close-on-escape="!isDirty"
     :style="{ width: '95vw', maxWidth: '560px' }"
     :breakpoints="{ '768px': '100vw' }"
     data-testid="mobile-job-new-dialog"
@@ -407,16 +442,16 @@ watch(open, async (v) => {
         </div>
 
         <div v-else class="form-stack">
-          <div class="form-field">
-            <label>Name *</label>
-            <InputText
-              v-model="newCust.name"
-              class="w-full"
-              data-testid="mjn-newcust-name"
-              autocomplete="off"
-            />
-          </div>
+          <FormField
+            v-model="newCust.name"
+            label="Name"
+            required
+            autocomplete="off"
+            data-testid="mjn-newcust-name"
+          />
           <div class="form-row">
+            <!-- Phone stays raw: FormField has no inputmode pass-through and
+                 losing inputmode="tel" would cost techs the phone keypad. -->
             <div class="form-field">
               <label>Phone</label>
               <InputText
@@ -426,24 +461,18 @@ watch(open, async (v) => {
                 data-testid="mjn-newcust-phone"
               />
             </div>
-            <div class="form-field">
-              <label>Email</label>
-              <InputText
-                v-model="newCust.email"
-                type="email"
-                class="w-full"
-                data-testid="mjn-newcust-email"
-              />
-            </div>
-          </div>
-          <div class="form-field">
-            <label>Address</label>
-            <InputText
-              v-model="newCust.address"
-              class="w-full"
-              data-testid="mjn-newcust-address"
+            <FormField
+              v-model="newCust.email"
+              label="Email"
+              type="email"
+              data-testid="mjn-newcust-email"
             />
           </div>
+          <FormField
+            v-model="newCust.address"
+            label="Address"
+            data-testid="mjn-newcust-address"
+          />
         </div>
         <!--
           Sprint customer-multi-location (2026-05-21) — only render at
@@ -568,6 +597,7 @@ watch(open, async (v) => {
             <Button
               icon="pi pi-times"
               v-tooltip="'Remove part'"
+              aria-label="Remove part"
               text
               severity="danger"
               size="small"
@@ -581,7 +611,7 @@ watch(open, async (v) => {
     </form>
 
     <template #footer>
-      <Button label="Cancel" text severity="secondary" @click="open = false" />
+      <Button label="Cancel" text severity="secondary" data-testid="mjn-cancel" @click="requestCancel" />
       <Button
         label="Create job"
         icon="pi pi-check"

@@ -23,6 +23,11 @@
         striped-rows
         @row-click="onRowClick"
       >
+        <template #empty>
+          <EmptyState icon="pi pi-wrench" title="No equipment yet"
+            message="Track customer doors, openers, and parts to see warranty and service history at a glance."
+            action-label="New Equipment" @action="openCreateDialog" />
+        </template>
         <Column field="name" header="Name" sortable />
         <Column field="make" header="Make" />
         <Column field="model" header="Model" />
@@ -125,6 +130,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";

@@ -101,6 +101,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDateTime as formatTimestamp } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -161,15 +162,6 @@ const lastRefreshLabel = computed(() => {
 function formatCoordinate(value) {
   if (value === null || value === undefined) return "—";
   return Number(value).toFixed(5);
-}
-
-function formatTimestamp(value) {
-  if (!value) return "—";
-  try {
-    return new Date(value).toLocaleString();
-  } catch (error) {
-    return value;
-  }
 }
 
 function formatDate(value) {

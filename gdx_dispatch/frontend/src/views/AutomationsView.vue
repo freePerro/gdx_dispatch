@@ -142,6 +142,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -206,11 +207,6 @@ function statusSeverity(value) {
     inactive: 'warning',
     paused: 'info',
   }[value] || 'secondary';
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  return value.split('T')[0];
 }
 
 async function loadAutomations() {

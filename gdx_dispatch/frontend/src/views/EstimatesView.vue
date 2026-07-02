@@ -15,6 +15,14 @@
           />
         </span>
         <Button
+          label="Export"
+          icon="pi pi-download"
+          aria-label="Export CSV"
+          text
+          data-testid="estimates-export-btn"
+          @click="exportEstimates"
+        />
+        <Button
           label="Create Estimate"
           icon="pi pi-plus"
           data-testid="create-estimate-btn"
@@ -49,7 +57,13 @@
         @sort="onSort"
         @row-click="onRowClick"
       >
-        <template #empty>{{ searchQuery || activeStatus !== 'All' ? 'No matching estimates. Try clearing your filters.' : 'No estimates yet. Click "Create Estimate" to start.' }}</template>
+        <template #empty>
+          <EmptyState
+            icon="pi pi-file-edit"
+            :title="searchQuery || activeStatus !== 'All' ? 'No estimates match your filters' : 'No estimates yet'"
+            :message="searchQuery || activeStatus !== 'All' ? 'Try clearing your search or status filter.' : 'Click &quot;Create Estimate&quot; to start.'"
+          />
+        </template>
         <Column field="estimate_number" header="Estimate #" sortable>
           <template #body="{ data }">
             <span class="link-text">{{ data.estimate_number }}</span>
@@ -129,19 +143,23 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
+import { formatDate, formatMoney } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
 import Toast from "primevue/toast";
+import EmptyState from "../components/EmptyState.vue";
 
 const router = useRouter();
 const api = useApi();
-const confirm = useConfirm();
+const { confirmDestructive } = useDestructiveConfirm();
 const toast = useToast();
 
 // --- State ---
@@ -172,6 +190,19 @@ const statusTabs = [
   { label: "Accepted", value: "Accepted" },
   { label: "Declined", value: "Declined" },
 ];
+
+// Persist status tab + search across reloads (JobsView/BillingView pattern).
+// Validator guards against stale storage: a status no longer in statusTabs
+// falls back to "All" instead of silently filtering the list to empty.
+const ESTIMATE_STATUS_KEYS = statusTabs.map((t) => t.value);
+useListPrefs(
+  "estimates",
+  { activeStatus, searchQuery },
+  {
+    activeStatus: { default: "All", valid: (v) => ESTIMATE_STATUS_KEYS.includes(v) },
+    searchQuery: { default: "", valid: (v) => typeof v === "string" },
+  },
+);
 
 // --- Computed ---
 const filteredEstimates = computed(() => {
@@ -215,6 +246,24 @@ const paginatedEstimates = computed(() => {
   return sortedEstimates.value.slice(start, start + perPage);
 });
 
+// CSV export — dumps the CURRENTLY FILTERED rows (status tab + search
+// applied, in the table's sort order, all pages), matching visible columns.
+const { exportCsv } = useTableExport();
+function exportEstimates() {
+  exportCsv(
+    sortedEstimates.value,
+    [
+      { field: "estimate_number", header: "Estimate #" },
+      { field: "label", header: "Job Name" },
+      { field: "customer_name", header: "Customer" },
+      { field: "total_amount", header: "Total" },
+      { field: "status", header: "Status" },
+      { field: "created_at", header: "Created" },
+    ],
+    "estimates",
+  );
+}
+
 
 // --- Helpers ---
 function capitalize(s) {
@@ -228,12 +277,7 @@ function toNum(v) {
 }
 
 function currency(amount) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(amount));
-}
-
-function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return formatMoney(toNum(amount));
 }
 
 function statusSeverity(status) {
@@ -315,11 +359,10 @@ async function convertToJob(est) {
 }
 
 function confirmDelete(est) {
-  confirm.require({
+  confirmDestructive({
     message: `Delete estimate ${est.estimate_number}? This cannot be undone.`,
     header: "Confirm Delete",
-    icon: "pi pi-exclamation-triangle",
-    acceptClass: "p-button-danger",
+    acceptLabel: "Delete",
     accept: () => deleteEstimate(est),
   });
 }

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useApi } from '../composables/useApi'
+import { formatDateTime as fmtDate } from '../composables/useFormatters'
 import Tree from 'primevue/tree'
 import ContextMenu from 'primevue/contextmenu'
 import Menu from 'primevue/menu'
@@ -485,13 +486,6 @@ async function moveMessage() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
-
-function fmtDate(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
-}
 
 function colorHexFor(folder) {
   const c = PRESET_COLORS.find(p => p.key === folder.color)

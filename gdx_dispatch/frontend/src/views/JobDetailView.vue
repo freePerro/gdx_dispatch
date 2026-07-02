@@ -94,7 +94,7 @@
             </div>
             <div class="detail-row">
               <span>Scheduled</span>
-              <strong>{{ formatDate(job.scheduled_at) || 'Not scheduled' }}</strong>
+              <strong>{{ job.scheduled_at ? formatDate(job.scheduled_at) : 'Not scheduled' }}</strong>
             </div>
             <div class="detail-row">
               <span>Priority</span>
@@ -299,7 +299,7 @@
           >
             <Column field="scheduled_at" header="Date">
               <template #body="{ data }">
-                {{ data.scheduled_at ? new Date(data.scheduled_at).toLocaleDateString() : '—' }}
+                {{ formatDate(data.scheduled_at) }}
               </template>
             </Column>
             <Column field="job_number" header="Job #" />
@@ -479,7 +479,7 @@
             <Column field="vendor" header="Vendor" />
             <Column field="amount" header="Amount">
               <template #body="{ data }">
-                {{ data.amount != null ? `$${Number(data.amount).toFixed(2)}` : '—' }}
+                {{ formatMoney(data.amount) }}
               </template>
             </Column>
             <Column field="created_at" header="When">
@@ -682,7 +682,7 @@
                 <template #body="{ data }">{{ data.quantity }}</template>
               </Column>
               <Column header="Price" style="width:100px;text-align:right">
-                <template #body="{ data }">${{ data.unit_price?.toFixed(2) }}</template>
+                <template #body="{ data }">{{ formatMoney(data.unit_price) }}</template>
               </Column>
             </DataTable>
           </div>
@@ -848,6 +848,7 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
@@ -1031,30 +1032,13 @@ function stageSeverity(stage) {
 
 const noteVisibilityLabel = (vis) => (vis === "external" ? "External" : "Internal");
 
-function formatDate(value) {
-  if (!value) return "";
-  return new Date(value).toLocaleDateString();
-}
-
-function formatDateTime(value) {
-  if (!value) return "—";
-  return new Date(value).toLocaleString();
-}
-
 function formatHours(minutes) {
   if (minutes == null) return "—";
   return `${(Number(minutes) / 60).toFixed(2)} h`;
 }
 
-function formatCurrency(value) {
-  const num = Number(value);
-  if (Number.isNaN(num)) return "—";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(num);
-}
-
 function formatPercent(value) {
-  if (value == null) return "—";
-  return `${Number(value).toFixed(1)}%`;
+  return fmtPercent(value, { whole: true });
 }
 
 function formatPhone(raw) {

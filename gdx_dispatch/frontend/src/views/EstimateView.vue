@@ -587,11 +587,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
-import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate, formatMoney, formatPercent } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -608,13 +608,12 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
-const { confirmAsync } = useDestructiveConfirm();
+const { confirmDestructive, confirmAsync } = useDestructiveConfirm();
 
 const router = useRouter();
 const route = useRoute();
 const api = useApiWithToast();
 const apiRaw = useApi();
-const confirm = useConfirm();
 const toast = useToast();
 
 const loading = ref(true);
@@ -800,8 +799,8 @@ function marginDisplay(item) {
   const sell = Number(item.unit_price);
   if (!cost || !sell || sell <= 0) return "—";
   const margin = (sell - cost) / sell;
-  if (margin < 0) return `${(margin * 100).toFixed(1)}% (loss)`;
-  return `${(margin * 100).toFixed(1)}%`;
+  if (margin < 0) return `${formatPercent(margin)} (loss)`;
+  return formatPercent(margin);
 }
 
 async function loadPricingTiers() {
@@ -1105,11 +1104,10 @@ async function submitSaveToCatalog() {
       cost: Number(saveCatalogForm.value.cost),
       pricing_category: saveCatalogForm.value.pricing_category,
     }, { successMessage: null });
-    const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
     toast.add({
       severity: "success",
       summary: "Saved to catalog",
-      detail: `${result.name} — sells at ${fmt.format(result.price)} (cost ${fmt.format(result.cost)})`,
+      detail: `${result.name} — sells at ${formatMoney(result.price)} (cost ${formatMoney(result.cost)})`,
       life: 5000,
     });
     saveCatalogOpen.value = false;
@@ -1176,12 +1174,7 @@ function toNum(v) {
 }
 
 function currency(amount) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(amount));
-}
-
-function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return formatMoney(toNum(amount));
 }
 
 function statusSeverity(status) {
@@ -2069,9 +2062,9 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
 // 2026-05-12 audit — Accept / Decline / Convert all commit state changes
 // that downstream surfaces (customer portal, scheduling, billing) read
 // immediately. One-click misses on the button row used to flip an estimate
-// without a chance to back out. Gate behind confirm.require().
+// without a chance to back out. Gate behind confirmDestructive().
 function acceptEstimate() {
-  confirm.require({
+  confirmDestructive({
     message: `Mark ${estimate.value?.label || "this estimate"} as Accepted? The customer-portal view flips immediately.`,
     header: "Accept Estimate",
     icon: "pi pi-check",
@@ -2093,7 +2086,7 @@ async function doAcceptEstimate() {
 }
 
 function declineEstimate() {
-  confirm.require({
+  confirmDestructive({
     message: `Mark ${estimate.value?.label || "this estimate"} as Declined? The customer-portal view flips immediately.`,
     header: "Decline Estimate",
     icon: "pi pi-times",
@@ -2115,7 +2108,7 @@ async function doDeclineEstimate() {
 }
 
 function convertToJob() {
-  confirm.require({
+  confirmDestructive({
     message: `Convert ${estimate.value?.label || "this estimate"} into a new job? This creates a job record and navigates away.`,
     header: "Convert to Job",
     icon: "pi pi-briefcase",
@@ -2152,10 +2145,13 @@ function copyPublicLink() {
 
 function duplicateEstimate() {
   const sourceNumber = estimate.value?.estimate_number || "this estimate";
-  confirm.require({
+  confirmDestructive({
     message: `Create a new draft estimate from ${sourceNumber}? The duplicate copies the customer, jobsite address, line items, and notes. It starts unattached to a job — edit jobsite or lines before sending.`,
     header: "Duplicate Estimate",
     icon: "pi pi-copy",
+    // Not a delete — keep the accept button primary, not the wrapper's
+    // danger default.
+    acceptClass: "p-button-primary",
     acceptLabel: "Duplicate",
     rejectLabel: "Cancel",
     accept: () => doDuplicateEstimate(),

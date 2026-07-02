@@ -2,7 +2,8 @@
     <section class="appointments-view view-card">
       <Toolbar>
         <template #start>
-          <h2 class="page-title">Appointments</h2>
+          <h2 class="page-title">Appointment Confirmations</h2>
+          <p class="page-subtitle">Confirm upcoming visit dates with customers</p>
         </template>
         <template #end>
           <div class="toolbar-actions">
@@ -108,6 +109,7 @@
               <Button
                 v-if="data.status !== 'completed' && data.status !== 'cancelled'"
                 v-tooltip="'Cancel'"
+                aria-label="Cancel appointment"
                 icon="pi pi-ban"
                 severity="danger"
                 text
@@ -216,6 +218,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDateTime as fmtDateTime } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -353,17 +356,7 @@ function statusSeverity(status) {
 }
 
 function formatDateTime(value) {
-  if (!value) return '—';
-  try {
-    return new Date(value).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  } catch {
-    return value;
-  }
+  return fmtDateTime(value, { options: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } });
 }
 
 function techLabel(appointment) {
@@ -568,6 +561,12 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.page-subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--p-text-muted-color);
+  font-size: 0.85rem;
+}
+
 .appointments-view {
   max-width: 1300px;
 }

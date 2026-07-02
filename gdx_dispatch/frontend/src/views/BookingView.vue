@@ -38,10 +38,16 @@
         paginator
         :rows="20"
         striped-rows
-        :empty-message="emptyMessage"
         @row-click="openEdit($event.data)"
-        
+
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-calendar-plus"
+            title="No booking slots"
+            message="Online booking requests will show up here as customers schedule service."
+          />
+        </template>
         <Column header="Date" style="width: 130px">
           <template #body="{ data }">{{ formatDate(data.date) }}</template>
         </Column>
@@ -154,6 +160,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -289,8 +296,6 @@ function cancelSlot() {
   form.value.status = 'cancelled';
   submitSlot({ status: 'cancelled' }, { successMessage: 'Slot cancelled' });
 }
-
-const emptyMessage = 'No booking slots found';
 
 onMounted(loadSlots);
 </script>

@@ -359,6 +359,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDateTime as formatTimestamp, formatPercent as fmtPercent } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Tab from 'primevue/tab';
 import TabList from 'primevue/tablist';
@@ -376,9 +377,9 @@ import DatePicker from 'primevue/datepicker';
 import Tag from 'primevue/tag';
 import Paginator from 'primevue/paginator';
 import ProgressSpinner from 'primevue/progressspinner';
-import { useConfirm } from 'primevue/useconfirm';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 
-const confirmService = useConfirm();
+const { confirmDestructive } = useDestructiveConfirm();
 const api = useApiWithToast();
 const activeTab = ref('email');
 
@@ -442,21 +443,7 @@ const humanize = (value) => {
     .join(' ');
 };
 
-const formatTimestamp = (value) => {
-  if (!value) return '—';
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
-};
-
-const formatRate = (value) => {
-  if (value === null || value === undefined || value === '') {
-    return '—';
-  }
-  return `${value}%`;
-};
+const formatRate = (value) => fmtPercent(value, { whole: true, digits: 2 });
 
 const truncate = (value) => {
   if (!value) return '—';
@@ -608,11 +595,9 @@ const toggleJurisdictionActive = async (jurisdiction) => {
 };
 
 const deleteJurisdiction = (jurisdiction) => {
-  confirmService.require({
+  confirmDestructive({
     message: `Delete jurisdiction "${jurisdiction.name || jurisdiction.id}"? This cannot be undone.`,
     header: 'Confirm Delete',
-    icon: 'pi pi-exclamation-triangle',
-    acceptClass: 'p-button-danger',
     accept: async () => {
       deletingJurisdictionId.value = jurisdiction.id;
       try {

@@ -5,7 +5,11 @@
         <Button label="Save Template" icon="pi pi-save" data-testid="save-btn" @click="saveTemplate" />
       </div>
 
-      <div class="editor-layout">
+      <div v-if="loading" class="spinner-wrap" data-testid="pdf-editor-loading">
+        <ProgressSpinner />
+      </div>
+
+      <div v-else class="editor-layout">
         <!-- Left Sidebar -->
         <div class="sidebar">
           <div class="form-field">
@@ -133,6 +137,7 @@ import { ref, computed, onMounted } from "vue";
 import { useToast } from "primevue/usetoast";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
+import ProgressSpinner from "primevue/progressspinner";
 import Select from "primevue/select";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
@@ -142,6 +147,7 @@ const api = useApi();
 
 const selectedType = ref("estimate");
 const selectedBlock = ref(null);
+const loading = ref(true);
 const config = ref({
   brand_color: "#0057a8",
   font_family: "Helvetica",
@@ -175,12 +181,15 @@ function formatName(type) {
 }
 
 async function loadTemplate() {
+  loading.value = true;
   try {
     const data = await api.get(`/api/pdf-templates/${selectedType.value}`);
     config.value = data;
     selectedBlock.value = null;
   } catch (e) {
     toast.add({ severity: "error", summary: "Error", detail: "Failed to load template", life: 4000 });
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -216,18 +225,22 @@ onMounted(() => {
 .block-label { flex: 1; font-size: 0.85rem; }
 .block-settings { padding: 0.75rem; background: var(--surface-ground); border-radius: 6px; }
 
+.spinner-wrap { display: flex; justify-content: center; margin: 2rem 0; }
+
 .preview-area { flex: 1; background: var(--p-content-border-color); border-radius: 8px; padding: 2rem; display: flex; justify-content: center; overflow: auto; }
-.pdf-page { width: 210mm; min-height: 297mm; background: white; padding: 20mm; box-shadow: 0 4px 16px rgba(0,0,0,0.15); border-radius: 2px; }
+/* Everything inside .pdf-page simulates the printed white page, so its greys
+   stay hard-coded regardless of app theme. */
+.pdf-page { width: 210mm; min-height: 297mm; background: white; color: #1f2937; padding: 20mm; box-shadow: 0 4px 16px rgba(0,0,0,0.15); border-radius: 2px; } /* printed-page preview: intentionally light (fixed dark ink so dark-theme text doesn't inherit white-on-white) */
 .pdf-header { text-align: center; padding-bottom: 0.5rem; border-bottom: 3px solid; margin-bottom: 1rem; font-weight: 600; }
-.pdf-footer { text-align: center; margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid #ccc; font-size: 0.8rem; color: #666; }
-.pdf-block { padding: 0.75rem; margin: 0.5rem 0; border: 1px dashed #ddd; border-radius: 4px; cursor: pointer; position: relative; }
+.pdf-footer { text-align: center; margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid #ccc; font-size: 0.8rem; color: #666; } /* printed-page preview: intentionally light */
+.pdf-block { padding: 0.75rem; margin: 0.5rem 0; border: 1px dashed #ddd; border-radius: 4px; cursor: pointer; position: relative; } /* printed-page preview: intentionally light */
 .pdf-block.selected { border-color: var(--p-primary-color); background: rgba(0, 87, 168, 0.03); }
-.pdf-block:hover { border-color: #aaa; }
-.block-type-label { position: absolute; top: -0.5rem; left: 0.5rem; background: white; padding: 0 0.3rem; font-size: 0.65rem; color: #999; text-transform: uppercase; }
+.pdf-block:hover { border-color: #aaa; } /* printed-page preview: intentionally light */
+.block-type-label { position: absolute; top: -0.5rem; left: 0.5rem; background: white; padding: 0 0.3rem; font-size: 0.65rem; color: #999; text-transform: uppercase; } /* printed-page preview: intentionally light */
 .preview-items table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.preview-items th, .preview-items td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; text-align: left; }
-.preview-items th { font-weight: 600; border-bottom: 2px solid #ccc; }
+.preview-items th, .preview-items td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; text-align: left; } /* printed-page preview: intentionally light */
+.preview-items th { font-weight: 600; border-bottom: 2px solid #ccc; } /* printed-page preview: intentionally light */
 .preview-totals { text-align: right; font-size: 0.9rem; }
 .preview-signature { margin-top: 2rem; }
-.preview-logo { display: flex; align-items: center; gap: 0.5rem; color: #999; }
+.preview-logo { display: flex; align-items: center; gap: 0.5rem; color: #999; } /* printed-page preview: intentionally light */
 </style>

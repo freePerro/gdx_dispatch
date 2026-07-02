@@ -7,6 +7,14 @@
         </p>
       </header>
 
+      <div class="game-catalog-view__banner" data-testid="games-future-release-banner">
+        <i class="pi pi-sparkles" aria-hidden="true" />
+        <div>
+          <strong>Future Release — coming soon.</strong>
+          A way to motivate everyone to do their job correctly. Game Theory for motivation.
+        </div>
+      </div>
+
       <div v-if="loading" class="game-catalog-view__loading">
         <ProgressSpinner />
       </div>
@@ -157,19 +165,35 @@ onMounted(loadCatalog);
 .game-catalog-view__header h1 {
   margin: 0 0 0.25rem 0;
   font-size: 1.75rem;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 .game-catalog-view__subtitle {
   margin: 0;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 0.9375rem;
+}
+.game-catalog-view__banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  border-radius: 0.5rem;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+.game-catalog-view__banner i {
+  color: var(--color-warning-500);
+  font-size: 1.1rem;
 }
 .game-catalog-view__loading,
 .game-catalog-view__error {
   display: flex;
   justify-content: center;
   padding: 3rem 1rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .game-catalog-view__grid {
   display: grid;
@@ -178,8 +202,8 @@ onMounted(loadCatalog);
 }
 
 .game-card {
-  background: white;
-  border: 1px solid #e2e8f0;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.75rem;
   padding: 1rem 1.25rem 1.25rem;
   display: flex;
@@ -201,7 +225,7 @@ onMounted(loadCatalog);
 }
 .game-card--coming-soon {
   opacity: 0.65;
-  background: #f8fafc;
+  background: var(--surface-elevated);
 }
 .game-card__icon {
   font-size: 2.5rem;
@@ -219,11 +243,11 @@ onMounted(loadCatalog);
 .game-card__name {
   margin: 0;
   font-size: 1.0625rem;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 .game-card__publisher {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
   padding: 0.125rem 0.5rem;
   border-radius: 9999px;
   font-size: 0.6875rem;
@@ -233,12 +257,12 @@ onMounted(loadCatalog);
 .game-card__description {
   margin: 0.25rem 0;
   font-size: 0.875rem;
-  color: #475569;
+  color: var(--text-secondary);
   line-height: 1.4;
 }
 .game-card__actor-type {
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   margin-top: 0.5rem;
 }
 .game-card__play {

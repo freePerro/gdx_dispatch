@@ -29,8 +29,14 @@
             :value="liveTechs"
             striped-rows
             responsiveLayout="scroll"
-            emptyMessage="No live techs"
           >
+            <template #empty>
+              <EmptyState
+                icon="pi pi-map-marker"
+                title="No live technicians"
+                message="Positions appear here when technicians share GPS from the mobile app."
+              />
+            </template>
             <Column field="tech_id" header="Tech ID" />
             <Column field="lat" header="Lat" :body="({ data }) => formatCoordinate(data.lat)" />
             <Column field="lng" header="Lng" :body="({ data }) => formatCoordinate(data.lng)" />
@@ -78,8 +84,14 @@
               :value="historyEntries"
               striped-rows
               responsiveLayout="scroll"
-              emptyMessage="No location points for the chosen day"
             >
+              <template #empty>
+                <EmptyState
+                  icon="pi pi-map"
+                  title="No location points"
+                  message="No GPS history was recorded for this technician on the chosen day."
+                />
+              </template>
               <Column
                 field="recorded_at"
                 header="Timestamp"
@@ -113,6 +125,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDateTime as formatTimestamp, formatNumber as fmtNumber, formatTime } from "../composables/useFormatters";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -147,14 +161,11 @@ const historyTechOptions = computed(() =>
   }))
 );
 
-const lastRefreshLabel = computed(() => {
-  if (!lastRefresh.value) return "—";
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(lastRefresh.value);
-});
+const lastRefreshLabel = computed(() =>
+  formatTime(lastRefresh.value, {
+    options: { hour: "2-digit", minute: "2-digit", second: "2-digit" },
+  })
+);
 
 function formatCoordinate(value) {
   if (value === null || value === undefined) return "—";
@@ -162,14 +173,7 @@ function formatCoordinate(value) {
 }
 
 function formatNumber(value, digits = 1) {
-  if (value === null || value === undefined) return "—";
-  return Number(value).toFixed(digits);
-}
-
-function formatTimestamp(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return date.toLocaleString();
+  return fmtNumber(value, { digits });
 }
 
 async function loadLiveTechs() {

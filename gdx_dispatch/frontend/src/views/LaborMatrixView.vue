@@ -218,6 +218,7 @@ import Textarea from 'primevue/textarea';
 import Toolbar from 'primevue/toolbar';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { formatMoney as formatCurrency } from '../composables/useFormatters';
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApiWithToast();
@@ -285,11 +286,6 @@ function emptyForm() {
     active: true,
     sort_order: 0,
   };
-}
-
-function formatCurrency(n) {
-  if (n == null) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
 }
 
 async function fetchItems() {

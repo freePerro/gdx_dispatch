@@ -5,6 +5,7 @@
           <h2 class="page-title">Change Orders</h2>
         </template>
         <template #end>
+          <Button icon="pi pi-download" label="Export" aria-label="Export CSV" text size="small" @click="exportRows" />
           <Button label="+ New Change Order" icon="pi pi-plus" @click="openCreate" />
         </template>
       </Toolbar>
@@ -20,33 +21,28 @@
 
       <DataTable
         class="clickable-rows"
-      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" striped-rows
+      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" :rowsPerPageOptions="[10, 20, 50, 100]" striped-rows
         @row-click="openEdit($event.data)" >
         <template #empty>
-          <div class="empty-state">
-            <i class="pi pi-file-edit" style="font-size:3rem; color:#64748b;"></i>
-            <h3>No Change Orders</h3>
-            <p>Create a change order when job scope or price changes mid-job.</p>
-            <Button label="+ Create First" @click="openCreate" />
-          </div>
+          <EmptyState icon="pi pi-file-edit" title="No Change Orders" message="Create a change order when job scope or price changes mid-job." actionLabel="+ Create First" @action="openCreate" />
         </template>
-        <Column field="co_number" header="CO #" style="width:120px" />
-        <Column field="customer_name" header="Customer" />
-        <Column field="title" header="Description" />
+        <Column field="co_number" header="CO #" sortable style="width:120px" />
+        <Column field="customer_name" header="Customer" sortable />
+        <Column field="title" header="Description" sortable />
         <Column field="amount" header="Amount" sortable style="width:130px">
-          <template #body="{ data }">${{ Number(data.amount || 0).toFixed(2) }}</template>
+          <template #body="{ data }">{{ formatMoney(data.amount || 0) }}</template>
         </Column>
         <Column field="status" header="Status" sortable style="width:160px">
           <template #body="{ data }">
             <Tag :value="data.status?.replace('_', ' ')" :severity="statusSeverity(data.status)" />
           </template>
         </Column>
-        <Column field="created_at" header="Created" style="width:130px">
+        <Column field="created_at" header="Created" sortable style="width:130px">
           <template #body="{ data }">{{ data.created_at?.split('T')[0] || '—' }}</template>
         </Column>
         <Column header="Actions" style="width:160px">
           <template #body="{ data }">
-            <Button v-if="data.status === 'pending_approval'" icon="pi pi-check" severity="success" text size="small"
+            <Button v-if="data.status === 'pending_approval'" icon="pi pi-check" aria-label="Approve" severity="success" text size="small"
               v-tooltip="'Approve'" @click.stop="approveCo(data)" />
             <Button v-if="data.status === 'pending_approval'" icon="pi pi-times" aria-label="Remove" severity="danger" text size="small"
               v-tooltip="'Decline'" @click.stop="declineCo(data)" />
@@ -57,33 +53,18 @@
       </DataTable>
 
       <Dialog v-model:visible="showDialog" :header="editingCo ? `Edit ${editingCo.co_number}` : 'New Change Order'"
-        modal :style="{width: '600px'}">
+        modal :style="{width: '600px'}" :closable="!isDirty" :close-on-escape="!isDirty">
         <div class="form-grid">
           <div class="form-field">
             <label>Job</label>
             <Select v-model="form.job_id" :options="jobs" optionLabel="label" optionValue="id"
               placeholder="Select job" filter showClear @change="onJobSelect" class="w-full" />
           </div>
-          <div class="form-field">
-            <label>Status</label>
-            <Select v-model="form.status" :options="statusOptions" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Customer Name</label>
-            <InputText v-model="form.customer_name" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Title *</label>
-            <InputText v-model="form.title" placeholder="Additional outlet install" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Description / Scope Change</label>
-            <Textarea v-model="form.description" rows="3" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Reason</label>
-            <Select v-model="form.reason" :options="reasonOptions" class="w-full" />
-          </div>
+          <FormField v-model="form.status" label="Status" as="select" :options="statusOptions" />
+          <FormField v-model="form.customer_name" label="Customer Name" class="full-width" />
+          <FormField v-model="form.title" label="Title" required placeholder="Additional outlet install" class="full-width" />
+          <FormField v-model="form.description" label="Description / Scope Change" as="textarea" :rows="3" class="full-width" />
+          <FormField v-model="form.reason" label="Reason" as="select" :options="reasonOptions" />
           <!-- D-S122-change-orders-create-flow — line-item editor.
                Total auto-computes from lines; the flat amount field is the
                sum (kept for legacy list-page rendering). -->
@@ -95,12 +76,12 @@
             />
             <div class="totals-row">
               <strong>Total:</strong>
-              <strong>${{ lineSubtotal.toFixed(2) }}</strong>
+              <strong>{{ formatMoney(lineSubtotal) }}</strong>
             </div>
           </div>
         </div>
         <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showDialog = false" />
+          <Button label="Cancel" severity="secondary" @click="cancelDialog" />
           <Button :label="editingCo ? 'Save' : 'Create'" icon="pi pi-check" @click="saveCo" :loading="saving" />
         </template>
       </Dialog>
@@ -110,16 +91,19 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatMoney } from "../composables/useFormatters";
+import EmptyState from "../components/EmptyState.vue";
+import FormField from "../components/FormField.vue";
+import { useDirtyDialog } from "../composables/useDirtyDialog";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
-import InputNumber from "primevue/inputnumber";
-import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
-import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 import LineItemEditor from "../components/LineItemEditor.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
@@ -135,8 +119,17 @@ const showDialog = ref(false);
 const editingCo = ref(null);
 const saving = ref(false);
 
-const statusOptions = ["draft", "pending_approval", "approved", "declined", "completed"];
-const reasonOptions = ["customer_request", "scope_added", "damage_found", "code_compliance", "material_change", "other"];
+useListPrefs(
+  "change-orders",
+  { statusFilter },
+  { statusFilter: { default: "all", valid: (v) => ["all", "draft", "pending_approval", "approved", "declined", "completed"].includes(v) } },
+);
+
+// {label,value} shape for FormField's Select wrapper.
+const statusOptions = ["draft", "pending_approval", "approved", "declined", "completed"]
+  .map((v) => ({ label: v.replace(/_/g, " "), value: v }));
+const reasonOptions = ["customer_request", "scope_added", "damage_found", "code_compliance", "material_change", "other"]
+  .map((v) => ({ label: v.replace(/_/g, " "), value: v }));
 
 const emptyForm = () => ({
   job_id: null, customer_id: null, customer_name: "",
@@ -147,6 +140,20 @@ const emptyForm = () => ({
   line_items: [{ description: '', quantity: 1, unit_price: 0 }],
 });
 const form = ref(emptyForm());
+
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
+const { exportCsv } = useTableExport();
+
+function exportRows() {
+  exportCsv(filtered.value, [
+    { field: "co_number", header: "CO #" },
+    { field: "customer_name", header: "Customer" },
+    { field: "title", header: "Description" },
+    { field: "amount", header: "Amount" },
+    { field: "status", header: "Status" },
+    { field: "created_at", header: "Created" },
+  ], "change-orders");
+}
 
 const lineSubtotal = computed(() =>
   (form.value.line_items || []).reduce(
@@ -208,13 +215,19 @@ function onJobSelect() {
 function openCreate() {
   editingCo.value = null;
   form.value = emptyForm();
+  snapshot();
   showDialog.value = true;
 }
 
 function openEdit(co) {
   editingCo.value = co;
   form.value = { ...co };
+  snapshot();
   showDialog.value = true;
+}
+
+function cancelDialog() {
+  if (confirmDiscard()) showDialog.value = false;
 }
 
 async function saveCo() {
@@ -282,7 +295,5 @@ onMounted(async () => {
 .full-width { grid-column: 1 / -1; }
 .w-full { width: 100%; }
 .clickable-row { cursor: pointer; }
-.empty-state { text-align: center; padding: 3rem; color: var(--p-text-muted-color); }
-.empty-state h3 { margin: 1rem 0 0.5rem; color: var(--text-color); }
 .spinner-wrap { display: flex; justify-content: center; padding: 3rem; }
 </style>

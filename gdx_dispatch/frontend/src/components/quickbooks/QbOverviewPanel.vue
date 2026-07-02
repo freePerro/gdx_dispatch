@@ -60,6 +60,7 @@
           <td class="action-col">
             <Button
               v-tooltip="'Sync'"
+              :aria-label="`Sync ${row.label}`"
               icon="pi pi-sync"
               size="small"
               severity="secondary"

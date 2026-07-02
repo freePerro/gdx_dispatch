@@ -128,6 +128,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useApi } from '../composables/useApi'
+import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
@@ -177,13 +178,6 @@ const hasProfileChanges = computed(() => {
     (form.route_start_address || '') !== (me.value.route_start_address || '')
   )
 })
-
-function formatDateTime(iso) {
-  if (!iso) return '—'
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
-}
 
 function flashSuccess(msg) {
   successMsg.value = msg

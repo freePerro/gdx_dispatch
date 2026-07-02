@@ -12,6 +12,7 @@
  *  - Customer search debounces and hits /api/customers/search.
  *  - Part SKU autocomplete hits /api/parts-needed/sku-suggest.
  *  - Emits "created" with the new job and resets state on success.
+ *  - Dirty form → Cancel asks for confirmation; clean form doesn't.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -56,6 +57,12 @@ const stubs = {
     props: ['modelValue'],
     emits: ['update:modelValue', 'input'],
     template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value); $emit(\'input\', $event)" />',
+    inheritAttrs: false,
+  },
+  FormField: {
+    props: ['modelValue', 'label', 'required', 'type', 'as', 'rows', 'placeholder', 'autocomplete'],
+    emits: ['update:modelValue'],
+    template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
     inheritAttrs: false,
   },
   Textarea: {
@@ -283,6 +290,30 @@ describe('MobileJobNewDialog', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="mjn-add-part"]').exists()).toBe(false);
+  });
+
+  it('dirty form: Cancel asks before discarding; clean form closes silently', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      const wrapper = mountDialog();
+      await flushPromises();
+
+      // Clean → closes without prompting.
+      await wrapper.find('[data-testid="mjn-cancel"]').trigger('click');
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(wrapper.emitted('update:visible').at(-1)).toEqual([false]);
+
+      // Re-open, dirty it, decline the confirm → stays open.
+      await wrapper.setProps({ visible: true });
+      await setInput(wrapper, 'mjn-job-title', 'Replace springs');
+      await wrapper.find('[data-testid="mjn-cancel"]').trigger('click');
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      // Last visibility event is still the earlier close; no new close emitted.
+      const events = wrapper.emitted('update:visible');
+      expect(events.filter((e) => e[0] === false)).toHaveLength(1);
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 
   it('SKU autocomplete pulls suggestions from /api/parts-needed/sku-suggest', async () => {

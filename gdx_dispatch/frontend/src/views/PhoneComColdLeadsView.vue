@@ -99,6 +99,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useApi } from '../composables/useApi'
 import { isCnamJunk } from '../utils/phoneComLabels'
+import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import DataTable from 'primevue/datatable'
@@ -124,13 +125,6 @@ const durationOptions = [
   { label: '30s+', value: 30 },
   { label: '1m+', value: 60 },
 ]
-
-function formatDateTime(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
-}
 
 function callerLabel(item) {
   const cnam = item.caller_cnam

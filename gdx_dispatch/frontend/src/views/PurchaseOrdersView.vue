@@ -5,6 +5,7 @@
           <h2 class="page-title">Purchase Orders</h2>
         </template>
         <template #end>
+          <Button icon="pi pi-download" label="Export" aria-label="Export CSV" text size="small" @click="exportRows" />
           <Button label="+ New PO" icon="pi pi-plus" data-testid="new-po-btn" @click="openCreate" />
         </template>
       </Toolbar>
@@ -21,22 +22,17 @@
 
       <DataTable
         class="clickable-rows"
-      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" striped-rows
+      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" :rowsPerPageOptions="[10, 20, 50, 100]" striped-rows
         data-testid="pos-table" @row-click="openDetail($event.data)" >
         <template #empty>
-          <div class="empty-state">
-            <i class="pi pi-inbox" style="font-size:3rem; color:#64748b;"></i>
-            <h3>No Purchase Orders</h3>
-            <p>Create a PO to order parts from a vendor.</p>
-            <Button label="+ Create First PO" @click="openCreate" />
-          </div>
+          <EmptyState icon="pi pi-inbox" title="No Purchase Orders" message="Create a PO to order parts from a vendor." actionLabel="+ Create First PO" @action="openCreate" />
         </template>
         <Column field="po_number" header="PO #" sortable style="width:130px" />
         <Column field="vendor_name" header="Vendor" sortable />
         <Column field="order_date" header="Order Date" sortable style="width:130px">
           <template #body="{ data }">{{ data.order_date || '—' }}</template>
         </Column>
-        <Column field="expected_date" header="Expected" style="width:130px">
+        <Column field="expected_date" header="Expected" sortable style="width:130px">
           <template #body="{ data }">{{ data.expected_date || '—' }}</template>
         </Column>
         <Column field="status" header="Status" sortable style="width:120px">
@@ -45,11 +41,11 @@
           </template>
         </Column>
         <Column field="total" header="Total" sortable style="width:120px">
-          <template #body="{ data }">${{ Number(data.total || 0).toFixed(2) }}</template>
+          <template #body="{ data }">{{ formatCurrency(data.total || 0) }}</template>
         </Column>
         <Column header="Actions" style="width:130px">
           <template #body="{ data }">
-            <Button v-if="data.status === 'sent'" icon="pi pi-check" severity="success" text size="small"
+            <Button v-if="data.status === 'sent'" icon="pi pi-check" aria-label="Receive" severity="success" text size="small"
               v-tooltip="'Receive'" @click.stop="receivePo(data)" />
             <Button v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit" text size="small" @click.stop="openDetail(data)" />
             <Button v-tooltip="'Delete'" icon="pi pi-trash" aria-label="Delete" severity="danger" text size="small"
@@ -60,17 +56,14 @@
 
       <!-- Create/Edit Dialog -->
       <Dialog v-model:visible="showDialog" :header="editingPo ? `Edit ${editingPo.po_number}` : 'New Purchase Order'"
-        modal :style="{width: '800px'}">
+        modal :style="{width: '800px'}" :closable="!isDirty" :close-on-escape="!isDirty">
         <div class="form-grid">
           <div class="form-field">
             <label>Vendor *</label>
             <Select v-model="form.vendor_id" :options="vendors" optionLabel="name" optionValue="id"
               placeholder="Select vendor" filter showClear @change="onVendorSelect" class="w-full" />
           </div>
-          <div class="form-field">
-            <label>Status</label>
-            <Select v-model="form.status" :options="['draft', 'sent']" class="w-full" />
-          </div>
+          <FormField v-model="form.status" label="Status" as="select" :options="poStatusOptions" />
           <div class="form-field">
             <label>Order Date</label>
             <DatePicker v-model="form.order_date" dateFormat="yy-mm-dd" class="w-full" />
@@ -79,10 +72,7 @@
             <label>Expected Date</label>
             <DatePicker v-model="form.expected_date" dateFormat="yy-mm-dd" class="w-full" />
           </div>
-          <div class="form-field full-width">
-            <label>Notes</label>
-            <Textarea v-model="form.notes" rows="2" class="w-full" />
-          </div>
+          <FormField v-model="form.notes" label="Notes" as="textarea" :rows="2" class="full-width" />
         </div>
 
         <h3 style="margin-top:1.5rem;">Line Items</h3>
@@ -110,7 +100,7 @@
           </Column>
           <Column header="Total" style="width:110px">
             <template #body="{ data }">
-              ${{ ((Number(data.unit_cost || 0)) * (Number(data.quantity_ordered || 0))).toFixed(2) }}
+              {{ formatCurrency(Number(data.unit_cost || 0) * Number(data.quantity_ordered || 0)) }}
             </template>
           </Column>
           <Column style="width:50px">
@@ -132,12 +122,12 @@
           </div>
           <div class="total-display">
             <label>Total</label>
-            <div class="total-amount">${{ calculatedTotal.toFixed(2) }}</div>
+            <div class="total-amount">{{ formatCurrency(calculatedTotal) }}</div>
           </div>
         </div>
 
         <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showDialog = false" />
+          <Button label="Cancel" severity="secondary" @click="cancelDialog" />
           <Button :label="editingPo ? 'Save' : 'Create'" icon="pi pi-check" @click="savePo" :loading="saving" />
         </template>
       </Dialog>
@@ -147,6 +137,12 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatMoney as formatCurrency } from "../composables/useFormatters";
+import EmptyState from "../components/EmptyState.vue";
+import FormField from "../components/FormField.vue";
+import { useDirtyDialog } from "../composables/useDirtyDialog";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -157,7 +153,6 @@ import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
-import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
@@ -172,6 +167,15 @@ const showDialog = ref(false);
 const editingPo = ref(null);
 const saving = ref(false);
 
+useListPrefs(
+  "purchase-orders",
+  { statusFilter },
+  { statusFilter: { default: "all", valid: (v) => ["all", "draft", "sent", "received", "cancelled"].includes(v) } },
+);
+
+// {label,value} shape for FormField's Select wrapper.
+const poStatusOptions = ["draft", "sent"].map((s) => ({ label: s, value: s }));
+
 const emptyLine = () => ({ description: "", sku: "", quantity_ordered: 1, unit_cost: 0 });
 const emptyForm = () => ({
   vendor_id: null, vendor_name: "", status: "draft",
@@ -179,6 +183,20 @@ const emptyForm = () => ({
   tax: 0, shipping: 0, lines: [emptyLine()],
 });
 const form = ref(emptyForm());
+
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
+const { exportCsv } = useTableExport();
+
+function exportRows() {
+  exportCsv(filtered.value, [
+    { field: "po_number", header: "PO #" },
+    { field: "vendor_name", header: "Vendor" },
+    { field: "order_date", header: "Order Date" },
+    { field: "expected_date", header: "Expected" },
+    { field: "status", header: "Status" },
+    { field: "total", header: "Total" },
+  ], "purchase-orders");
+}
 
 const counts = computed(() => {
   const c = { all: pos.value.length, draft: 0, sent: 0, received: 0, cancelled: 0 };
@@ -231,7 +249,12 @@ function onVendorSelect() {
 function openCreate() {
   editingPo.value = null;
   form.value = emptyForm();
+  snapshot();
   showDialog.value = true;
+}
+
+function cancelDialog() {
+  if (confirmDiscard()) showDialog.value = false;
 }
 
 function openDetail(po) {
@@ -243,6 +266,7 @@ function openDetail(po) {
     notes: po.notes, tax: po.tax, shipping: po.shipping,
     lines: po.lines?.length ? [...po.lines] : [emptyLine()],
   };
+  snapshot();
   showDialog.value = true;
 }
 
@@ -313,7 +337,5 @@ onMounted(async () => {
 .total-display label { font-size: 0.72rem; text-transform: uppercase; }
 .total-amount { font-size: 1.5rem; font-weight: 700; color: var(--p-primary-color); }
 
-.empty-state { text-align: center; padding: 3rem; color: var(--p-text-muted-color); }
-.empty-state h3 { margin: 1rem 0 0.5rem; color: var(--text-color); }
 .spinner-wrap { display: flex; justify-content: center; padding: 3rem; }
 </style>

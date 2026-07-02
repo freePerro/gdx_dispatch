@@ -78,6 +78,7 @@
 <script setup>
 import { onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDateTime } from '../composables/useFormatters';
 import Toolbar from 'primevue/toolbar';
 import Button from 'primevue/button';
 import DataTable from 'primevue/datatable';
@@ -99,11 +100,6 @@ const resolving = ref(false);
 const resolveGroup = ref(false);
 
 const statusTabs = ['open', 'resolved', 'all'];
-
-function formatDateTime(value) {
-  if (!value) return '—';
-  try { return new Date(value).toLocaleString(); } catch { return value; }
-}
 
 async function loadErrors() {
   loading.value = true;

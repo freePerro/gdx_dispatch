@@ -1087,6 +1087,7 @@ import MarginTiersPanel from "../components/MarginTiersPanel.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { getIdleTimeoutMin, setIdleTimeoutMin } from "../composables/useIdleLogout";
 import { useQBSync } from "../composables/useQBSync";
+import { formatDateTime } from "../composables/useFormatters";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -1410,7 +1411,7 @@ async function loadIntegrations() {
     if (qbStatus?.connected) {
       integrations.quickbooks = {
         connected: true,
-        lastSync: qbStatus.last_sync_at ? new Date(qbStatus.last_sync_at).toLocaleString() : null,
+        lastSync: qbStatus.last_sync_at ? formatDateTime(qbStatus.last_sync_at) : null,
         // S122-13: surface refresh-token health so the UI can prompt the
         // user to reconnect instead of letting sync silently fail.
         needsReconnect: Boolean(qbStatus.needs_reconnect),
@@ -2049,9 +2050,8 @@ async function saveNumbering() {
 }
 
 function formatDate(value) {
-  if (!value) return "";
-  const d = new Date(typeof value === "string" ? value.replace(" ", "T") : value);
-  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+  // PG timestamptz serializes space-separated; normalize before parsing.
+  return formatDateTime(typeof value === "string" ? value.replace(" ", "T") : value);
 }
 
 // ── Init ──

@@ -129,6 +129,7 @@
 import { ref, onMounted } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApi } from "../composables/useApi";
+import { formatDate } from "../composables/useFormatters";
 import Toolbar from "primevue/toolbar";
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
@@ -216,8 +217,7 @@ async function submit() {
 }
 
 function shortDate(iso) {
-  if (!iso) return "";
-  return new Date(iso).toLocaleDateString();
+  return formatDate(iso);
 }
 
 function statusSeverity(status) {

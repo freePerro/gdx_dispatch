@@ -65,10 +65,16 @@
         striped-rows
         responsive-layout="scroll"
         
-        :empty-message="'No audit entries yet'"
         data-testid="admin-ops-table"
         @row-click="openDetails($event.data)"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-history"
+            title="No audit entries yet"
+            message="Administrative actions are logged here as they happen."
+          />
+        </template>
         <Column field="action" header="Action" />
         <Column field="target" header="Target" />
         <Column field="performed_by" header="Performed By" />
@@ -122,6 +128,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatDateTime } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import Select from 'primevue/select';
@@ -185,19 +193,6 @@ function tabToLabel(tab) {
 
 function formatStatus(status) {
   return status?.replace('_', ' ') || 'Unknown';
-}
-
-function formatDate(value) {
-  return value ? value.split('T')[0] : '—';
-}
-
-function formatDateTime(value) {
-  if (!value) return '—';
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
 }
 
 async function loadEntries() {

@@ -79,6 +79,13 @@
               data-testid="quickbooks-table"
               @row-click="openEventDialog"
             >
+              <template #empty>
+                <EmptyState
+                  icon="pi pi-sync"
+                  title="No sync events yet"
+                  message="QuickBooks sync activity will be logged here after your first sync."
+                />
+              </template>
               <Column header="Timestamp" :style="{ minWidth: '180px' }">
                 <template #body="{ data }">{{ formatDateTime(data.timestamp) }}</template>
               </Column>
@@ -198,6 +205,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import EmptyState from '../components/EmptyState.vue';
 import QbOverviewPanel from '../components/quickbooks/QbOverviewPanel.vue';
 import QbAccountsPanel from '../components/quickbooks/QbAccountsPanel.vue';
 import QbBankingPanel from '../components/quickbooks/QbBankingPanel.vue';
@@ -205,6 +213,7 @@ import QbSyncScheduleSelect from '../components/quickbooks/QbSyncScheduleSelect.
 import QbReconciliationPanel from '../components/quickbooks/QbReconciliationPanel.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useQBSync } from '../composables/useQBSync';
+import { formatDateTime } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -278,12 +287,6 @@ const tabLabel = (tab) => {
   const label = tab.charAt(0).toUpperCase() + tab.slice(1);
   const suffix = counts.value[tab] ? ` (${counts.value[tab]})` : '';
   return `${label}${suffix}`;
-};
-
-const formatDateTime = (value) => {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 };
 
 const loadQuickbooks = async () => {

@@ -188,7 +188,7 @@
       <Column header="Variance %" style="width: 110px">
         <template #body="{ data: row }">
           <span v-if="row.variance_pct === null">—</span>
-          <span v-else :class="varianceCellClass(row.variance)">{{ row.variance_pct.toFixed(0) }}%</span>
+          <span v-else :class="varianceCellClass(row.variance)">{{ formatPercent(row.variance_pct, { digits: 0, whole: true }) }}</span>
         </template>
       </Column>
       <Column header="Source" style="width: 110px">
@@ -335,6 +335,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useBudget } from '../composables/useBudget';
+import { formatMoney as money, formatDateTime as formatExact, formatPercent } from '../composables/useFormatters';
 import Toolbar from 'primevue/toolbar';
 import Button from 'primevue/button';
 import Select from 'primevue/select';
@@ -438,11 +439,6 @@ function lineTypeSeverity(t) {
   if (t === 'variable') return 'warn';
   if (t === 'percent_of_revenue') return 'success';
   return 'secondary';
-}
-
-function money(v) {
-  const n = Number(v ?? 0);
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 }
 
 const noPnlCacheYet = computed(() =>
@@ -641,16 +637,6 @@ function relativeTime(iso) {
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
-function formatExact(iso) {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-    });
-  } catch { return iso; }
-}
-
 onMounted(async () => {
   await Promise.all([load(), loadAccountingMethod()]);
 });

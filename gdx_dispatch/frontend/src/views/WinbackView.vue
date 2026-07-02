@@ -122,6 +122,13 @@
           :selection="selectedFollowups"
           @selection-change="onFollowupSelectionChange"
         >
+          <template #empty>
+            <EmptyState
+              icon="pi pi-check-square"
+              title="No follow-ups"
+              message="Follow-up tasks from winback campaigns will queue up here."
+            />
+          </template>
           <Column selectionMode="multiple" style="width:3rem" />
           <Column field="entity_type" header="Type" />
           <Column field="entity_id" header="Entity" />
@@ -220,6 +227,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';

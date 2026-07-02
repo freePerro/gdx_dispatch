@@ -26,7 +26,9 @@ const apiPost = vi.fn();
 const toastAdd = vi.fn();
 
 vi.mock('../../composables/useApi', () => ({
-  useApi: () => ({ get: apiGet, post: apiPost }),
+  // Closeout submits via the offline queue since the 2026-07-01 UX audit;
+  // the same mock fn backs both so payload assertions stay unchanged.
+  useApi: () => ({ get: apiGet, post: apiPost, postQueued: apiPost }),
 }));
 vi.mock('primevue/usetoast', () => ({
   useToast: () => ({ add: toastAdd }),
@@ -120,6 +122,8 @@ describe('MobileJobCloseoutDialog', () => {
         notes: 'No issues.',
         signed_by: 'Eric W',
       }),
+      // Offline-queue metadata (actionType/resourceId) rides along.
+      expect.objectContaining({ actionType: 'job.closeout' }),
     );
     // Success toast surfaces the Ready-for-Billing handoff.
     const successToast = toastAdd.mock.calls.find((c) => c[0]?.severity === 'success');

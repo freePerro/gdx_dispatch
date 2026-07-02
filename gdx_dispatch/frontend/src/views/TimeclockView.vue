@@ -43,7 +43,7 @@
 
             <!-- GPS indicator -->
             <div class="gps-indicator" data-testid="gps-indicator">
-              <i :class="gpsAvailable ? 'pi pi-map-marker' : 'pi pi-times-circle'" :style="{ color: gpsAvailable ? '#4caf50' : '#9e9e9e' }"></i>
+              <i :class="gpsAvailable ? 'pi pi-map-marker' : 'pi pi-times-circle'" :style="{ color: gpsAvailable ? 'var(--color-success-500)' : 'var(--text-muted)' }"></i>
               {{ gpsStatusText }}
             </div>
 
@@ -139,12 +139,12 @@
                 <i
                   v-if="data.latitude && data.longitude"
                   class="pi pi-map-marker"
-                  style="color: #4caf50; cursor: pointer"
+                  style="color: var(--color-success-500); cursor: pointer"
                   v-tooltip="`${data.latitude}, ${data.longitude}`"
                   :aria-label="`${data.latitude}, ${data.longitude}`"
                   @click="openGpsDialog(data)"
                 ></i>
-                <span v-else style="color: #9e9e9e">--</span>
+                <span v-else style="color: var(--text-muted)">--</span>
               </template>
             </Column>
           </DataTable>
@@ -170,7 +170,7 @@
             <p v-if="onShift" class="muted small">Clock out before submitting.</p>
           </div>
           <div v-else-if="todaySubmitted" class="eod-submitted" data-testid="day-submitted">
-            <i class="pi pi-check-circle" style="color: #4caf50"></i>
+            <i class="pi pi-check-circle" style="color: var(--color-success-500)"></i>
             Submitted to payroll for review.
           </div>
         </template>

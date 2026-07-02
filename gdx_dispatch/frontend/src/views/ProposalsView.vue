@@ -318,6 +318,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { openAuthedFile } from '../composables/useAuthedFile';
+import { formatMoney as formatCurrency } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -524,11 +525,6 @@ function labelForStatus(status) {
 
 function displayStatus(status) {
   return status ? status.replace('_', ' ') : '—';
-}
-
-function formatCurrency(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  return `$${Number(value).toFixed(2)}`;
 }
 
 function formatDate(value) {

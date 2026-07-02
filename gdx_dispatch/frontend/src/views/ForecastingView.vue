@@ -81,7 +81,7 @@
             <template #body="{ data }">{{ money(data.open_total) }}</template>
           </Column>
           <Column header="Rate" style="width: 90px">
-            <template #body="{ data }">{{ (data.rate * 100).toFixed(0) }}%</template>
+            <template #body="{ data }">{{ formatPercent(data.rate, { digits: 0 }) }}</template>
           </Column>
           <Column header="Expected" style="width: 140px">
             <template #body="{ data }">{{ money(data.expected_total) }}</template>
@@ -277,6 +277,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useForecasting } from '../composables/useForecasting'
+import { formatDate, formatMoney as money, formatPercent } from '../composables/useFormatters'
 import { useRecurringStreams } from '../composables/useRecurringStreams'
 
 import Toolbar from 'primevue/toolbar'
@@ -348,18 +349,6 @@ const arBucketRows = computed(() => {
     ...buckets[key],
   }))
 })
-
-function money(n) {
-  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(n))
-}
-
-function formatDate(s) {
-  if (!s) return ''
-  const t = Date.parse(s)
-  if (Number.isNaN(t)) return s
-  return new Date(t).toLocaleDateString()
-}
 
 function frequencyLabel(row) {
   if (!row?.interval_type) return ''

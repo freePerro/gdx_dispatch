@@ -1,10 +1,17 @@
 <template>
     <section class="documents-view">
       <div class="folder-panel">
-        <div class="folder-list">
+        <!-- role="tree": FolderTreeNode rows are role="treeitem" (2026-07-01
+             a11y audit) and need a tree ancestor to be a valid structure. -->
+        <div class="folder-list" role="tree" aria-label="Document folders">
           <div
             class="folder-item folder-item--all"
             :class="{ active: !selectedFolder, 'drop-target': rootDropActive }"
+            role="treeitem"
+            :aria-selected="!selectedFolder"
+            tabindex="0"
+            @keydown.enter="selectFolder(null)"
+            @keydown.space.prevent="selectFolder(null)"
             @click="selectFolder(null)"
             @dragover.prevent="onRootDragOver"
             @dragenter.prevent="onRootDragEnter"
@@ -589,6 +596,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import FolderTreeNode from '../components/FolderTreeNode.vue';
 import { useApi } from '../composables/useApi';
+import { formatDate as fmtDate } from '../composables/useFormatters';
 import { ensureFolderPath, folderSegmentsFromFile } from '../composables/useFolderPath';
 import { createAuthedBlobUrl, openAuthedFile } from '../composables/useAuthedFile';
 import { useAuthStore } from '../stores/auth';
@@ -749,17 +757,7 @@ function formatSize(bytes) {
 }
 
 function formatDate(doc) {
-  const dateStr = doc.created_at || doc.uploaded_at;
-  if (!dateStr) return '-';
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  } catch {
-    return dateStr.split('T')[0] || '-';
-  }
+  return fmtDate(doc.created_at || doc.uploaded_at);
 }
 
 function formatMimeShort(doc) {

@@ -52,7 +52,7 @@
       </Column>
       <Column header="" style="width: 80px">
         <template #body="{ index }">
-          <Button v-tooltip="'Delete'" icon="pi pi-trash" text size="small" severity="danger"
+          <Button v-tooltip="'Delete'" aria-label="Delete" icon="pi pi-trash" text size="small" severity="danger"
             :data-testid="`tier-remove-${index}`"
             @click="removeRow(index)" />
         </template>
