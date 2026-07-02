@@ -207,6 +207,17 @@ try:
 except ImportError:
     pass
 try:
+    # 2026-07-02 — GL ledger (Phase 1 core): chart of accounts + append-only
+    # journal. Tables built by create_all; integrity triggers in migration 012.
+    from gdx_dispatch.modules.ledger.models import (  # noqa: F401
+        GlAccount,
+        GlJournalEntry,
+        GlJournalLine,
+        GlPeriodLock,
+    )
+except ImportError:
+    pass
+try:
     from gdx_dispatch.modules.gps_dispatch.models import DispatchRoute  # noqa: F401
 except ImportError:
     pass
