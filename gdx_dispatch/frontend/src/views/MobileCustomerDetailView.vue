@@ -353,6 +353,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { estimateStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
 
 import InputText from 'primevue/inputtext'
@@ -416,15 +417,6 @@ function jobStatusSeverity(s) {
   if (['scheduled', 'in_progress', 'active'].includes(k)) return 'info'
   if (['unscheduled', 'pending'].includes(k)) return 'warning'
   if (['canceled', 'cancelled', 'voided'].includes(k)) return 'danger'
-  return 'secondary'
-}
-
-function estimateStatusSeverity(s) {
-  const k = String(s || '').toLowerCase()
-  if (['accepted', 'approved'].includes(k)) return 'success'
-  if (['sent', 'pending'].includes(k)) return 'info'
-  if (['draft'].includes(k)) return 'warning'
-  if (['rejected', 'declined'].includes(k)) return 'danger'
   return 'secondary'
 }
 

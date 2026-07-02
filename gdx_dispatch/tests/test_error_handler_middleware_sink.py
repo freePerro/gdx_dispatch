@@ -98,21 +98,22 @@ def test_middleware_503_is_not_sinked(captured) -> None:
     assert captured == [], "503 must be excluded from the sink"
 
 
-# --- global_exception_handler: 403 "permission denied" visibility ----------
+# --- global_exception_handler: 4xx HTTPExceptions stay OUT of the sink -------
 # A 403 is an HTTPException raised by an authz dependency (require_role etc.).
-# It must be recorded so admins can see authorization failures on the Server
-# Logs page — but 401/404/etc. must stay out to avoid token-refresh noise.
+# It is an expected client-side outcome (ordinary RBAC denial), NOT a server
+# error, so it must NOT be recorded — it was previously the single largest
+# source of Server-Errors-page noise. Only 5xx (excluding 503) are sinked.
 
 def _handle_http(status_code: int):
     exc = HTTPException(status_code=status_code, detail="nope")
     return asyncio.run(global_exception_handler(_fake_request(), exc))
 
 
-def test_handler_403_is_sinked(captured) -> None:
-    """403 permission-denied MUST reach the sink → visible in Server Logs."""
+def test_handler_403_is_not_sinked(captured) -> None:
+    """403 is an expected RBAC denial, not a server error — must NOT be sinked."""
     resp = _handle_http(403)
     assert resp.status_code == 403
-    assert len(captured) == 1 and captured[0]["status_code"] == 403
+    assert captured == [], "403 permission-denied is noise, must stay out of the sink"
 
 
 def test_handler_401_is_not_sinked(captured) -> None:

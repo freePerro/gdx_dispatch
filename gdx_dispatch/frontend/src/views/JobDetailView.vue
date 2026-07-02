@@ -851,6 +851,7 @@ import { useApiWithToast } from "../composables/useApiWithToast";
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
+import { estimateStatusSeverity } from "../utils/statusSeverity";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";

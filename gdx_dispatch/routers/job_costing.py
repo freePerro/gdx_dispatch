@@ -211,19 +211,24 @@ def _labor_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
 
 
 def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
-    """Sum job_parts rows for job. Columns vary across schemas — best-effort."""
+    """Sum a job's consumed parts, joining `parts` for the display name.
+
+    Cost is `job_parts.unit_cost_at_time` (captured when the part was consumed),
+    never the part's current `unit_cost` — job costing must not retroactively
+    re-price. Matches the ORM (JobPart/Part), like `_labor_for_job` /
+    `_invoiced_for_job`.
+    """
+    from sqlalchemy import select as _sel
+
+    from gdx_dispatch.modules.inventory.models import JobPart, Part
+
     items: list[dict[str, Any]] = []
     total = Decimal("0")
     try:
         rows = db.execute(
-            text(
-                "SELECT COALESCE(part_name, description, 'Part') AS name, "
-                "COALESCE(quantity, 1) AS qty, "
-                "COALESCE(unit_cost, unit_price, 0) AS unit_cost "
-                "FROM job_parts "
-                "WHERE job_id = :jid AND deleted_at IS NULL"
-            ),
-            {"jid": str(job_id)},
+            _sel(Part.name, JobPart.qty_used, JobPart.unit_cost_at_time)
+            .join(Part, Part.id == JobPart.part_id)
+            .where(JobPart.job_id == job_id)
         ).fetchall()
     except OperationalError:
         log.exception("job_parts_query_failed job_id=%s", job_id)
