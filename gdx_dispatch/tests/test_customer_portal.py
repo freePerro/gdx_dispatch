@@ -440,6 +440,50 @@ def test_estimate_detail_includes_lines_and_totals(tenant_db_session):
     assert getattr(exc.value, "status_code", None) == 404
 
 
+def test_estimate_detail_lists_only_renderable_image_attachments(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    photo = Document(filename="stored-door.png", original_name="door.png", file_size=10, content_type="image/png", estimate_id=est.id)
+    pdf = Document(filename="stored-spec.pdf", original_name="spec.pdf", file_size=10, content_type="application/pdf", estimate_id=est.id)
+    # HEIC passes the staff upload allow-list but browsers can't render it —
+    # it must not be advertised to the portal.
+    heic = Document(filename="stored-photo.heic", original_name="photo.heic", file_size=10, content_type="image/heic", estimate_id=est.id)
+    tenant_db_session.add_all([photo, pdf, heic])
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    assert [img["original_name"] for img in body["images"]] == ["door.png"]
+    assert body["images"][0]["url"] == f"/portal/estimates/{est.id}/attachments/{photo.id}"
+
+
+def test_estimate_attachment_streams_image_and_isolates_customers(tenant_db_session, monkeypatch, tmp_path):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    file_dir = tmp_path / "test-tenant" / "estimate" / str(est.id)
+    file_dir.mkdir(parents=True)
+    (file_dir / "stored-door.png").write_bytes(b"\x89PNG fake")
+
+    photo = Document(filename="stored-door.png", original_name="door.png", file_size=9, content_type="image/png", estimate_id=est.id)
+    tenant_db_session.add(photo)
+    tenant_db_session.commit()
+
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+    resp = portal_router.portal_estimate_attachment(
+        estimate_id=est.id, document_id=photo.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert resp.path == str(file_dir / "stored-door.png")
+    assert resp.media_type == "image/png"
+
+    principal_b = _principal(seeded["user_b_id"], seeded["customer_b_id"])
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_attachment(
+            estimate_id=est.id, document_id=photo.id, request=_mock_request(), principal=principal_b, db=tenant_db_session
+        )
+    assert getattr(exc.value, "status_code", None) == 404
+
+
 def test_estimate_detail_degraded_totals_are_flagged(tenant_db_session, monkeypatch):
     seeded = _seed_customer_data(tenant_db_session)
     est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])

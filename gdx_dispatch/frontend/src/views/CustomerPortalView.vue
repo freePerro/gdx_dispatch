@@ -117,6 +117,11 @@
             <p v-if="detail.description" class="meta">{{ detail.description }}</p>
             <p v-if="detail.jobsite_address" class="meta"><i class="pi pi-map-marker" /> {{ detail.jobsite_address }}</p>
 
+            <div v-if="detailImages.length" class="detail-images" data-testid="estimate-images">
+              <Image v-for="img in detailImages" :key="img.id" :src="img.src" :alt="img.name" preview
+                     image-style="height: 120px; border-radius: 6px; object-fit: cover" />
+            </div>
+
             <DataTable :value="detail.lines" class="detail-lines" data-testid="estimate-lines-table">
               <template #empty>No line items.</template>
               <Column field="description" header="Item" />
@@ -148,7 +153,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted } from "vue";
+import { reactive, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
@@ -156,6 +161,7 @@ import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
+import Image from "primevue/image";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import ProgressSpinner from "primevue/progressspinner";
@@ -182,6 +188,7 @@ const actionBusy = reactive({});
 const detail = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
+const detailImages = ref([]);
 const requestEmail = ref("");
 const requestSending = ref(false);
 const requestSent = ref(false);
@@ -291,11 +298,38 @@ async function estimateAction(id, action, successMsg) {
 const acceptEstimate = (id) => estimateAction(id, "accept", "Estimate accepted");
 const declineEstimate = (id) => estimateAction(id, "decline", "Estimate declined");
 
+function clearDetailImages() {
+  detailImages.value.forEach((img) => URL.revokeObjectURL(img.src));
+  detailImages.value = [];
+}
+
+async function loadDetailImages(images) {
+  // <img src> can't carry the Bearer header — pull each image as an
+  // authenticated blob and hand the dialog object URLs instead.
+  const loaded = await Promise.all(
+    (images || []).map(async (img) => {
+      try {
+        const res = await fetch(img.url, { headers: { Authorization: `Bearer ${jwt.value}` } });
+        if (!res.ok) return null;
+        return { id: img.id, name: img.original_name, src: URL.createObjectURL(await res.blob()) };
+      } catch { return null; }
+    })
+  );
+  detailImages.value = loaded.filter(Boolean);
+}
+
+// Free the blob object URLs whenever the dialog closes, not just on reopen.
+watch(detailVisible, (open) => { if (!open) clearDetailImages(); });
+
 async function openEstimate(id) {
   detailVisible.value = true;
   detailLoading.value = true;
+  clearDetailImages();
   try {
     detail.value = await authedFetch(`/portal/estimates/${id}`);
+    // Not awaited: the dialog renders immediately and photos pop in as
+    // their blobs arrive, instead of holding the spinner on big images.
+    loadDetailImages(detail.value.images);
   } catch (e) {
     detailVisible.value = false;
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
@@ -334,6 +368,7 @@ onMounted(init);
 .portal-card:hover { transform: translateY(-2px); }
 .view-hint { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
 .detail-body { display: flex; flex-direction: column; gap: 0.75rem; }
+.detail-images { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .detail-status-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .totals-block { margin-left: auto; min-width: 240px; display: flex; flex-direction: column; gap: 0.35rem; }
 .totals-row { display: flex; justify-content: space-between; font-size: 0.95rem; }

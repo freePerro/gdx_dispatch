@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import jwt
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError as JWTError
 from pydantic import BaseModel, Field
@@ -32,6 +33,10 @@ MAGIC_LINK_TTL_MINUTES = 15
 INVITE_LINK_TTL_DAYS = 7
 # Statuses a customer may see. Drafts stay internal until staff hits Send.
 CUSTOMER_VISIBLE_ESTIMATE_STATUSES = ("sent", "accepted", "declined", "expired")
+# Browser-renderable image types only. Staff uploads also allow HEIC/HEIF
+# (tech iPhone photos) but Chrome/Firefox can't decode those — advertising
+# them to the portal would show broken thumbnails.
+PORTAL_RENDERABLE_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 ALG = "HS256"
 SIGN_KEY = os.getenv("JWT_SECRET", "dev-secret")
 VERIFY_KEY = SIGN_KEY
@@ -653,7 +658,61 @@ def portal_estimate_detail(
         }
         for line in lines
     ]
+
+    # Image attachments only (door photos/renderings staff attach to the
+    # estimate) — PDFs and other docs stay staff-side for now.
+    images = db.execute(
+        select(Document)
+        .where(Document.estimate_id == estimate.id, Document.deleted_at.is_(None))
+        .order_by(Document.uploaded_at.desc())
+    ).scalars().all()
+    body["images"] = [
+        {
+            "id": str(doc.id),
+            "original_name": doc.original_name,
+            "content_type": doc.content_type,
+            "url": f"/portal/estimates/{estimate.id}/attachments/{doc.id}",
+        }
+        for doc in images
+        if (doc.content_type or "").lower() in PORTAL_RENDERABLE_IMAGE_TYPES
+    ]
     return body
+
+
+@router.get("/estimates/{estimate_id}/attachments/{document_id}", response_model=None)
+def portal_estimate_attachment(
+    estimate_id: UUID,
+    document_id: UUID,
+    request: Request,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Serve an image attached to the customer's own estimate. Mirrors the
+    staff download route's realpath guard; images only — a customer link
+    must never become a generic file-serving oracle."""
+    estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
+    doc = db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.estimate_id == estimate.id,
+            Document.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not doc or (doc.content_type or "").lower() not in PORTAL_RENDERABLE_IMAGE_TYPES:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    from gdx_dispatch.routers.estimates import _attachment_dir
+
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
+    base = str(_attachment_dir(tenant_id, str(estimate.id)))
+    fullpath = os.path.realpath(os.path.join(base, doc.filename))
+    if not fullpath.startswith(base + os.sep) or not os.path.isfile(fullpath):
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(
+        path=fullpath,
+        media_type=doc.content_type or "application/octet-stream",
+        filename=doc.original_name,
+    )
 
 
 def _get_customer_estimate_or_404(estimate_id: UUID, principal: PortalPrincipal, db: Session) -> Estimate:
