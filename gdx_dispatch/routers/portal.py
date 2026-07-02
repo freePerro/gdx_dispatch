@@ -23,7 +23,7 @@ from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
-from gdx_dispatch.modules.proposals.models import Estimate
+from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
 
@@ -556,15 +556,41 @@ def portal_context(
     }
 
 
-def _serialize_portal_estimate(estimate: Estimate, db: Session) -> dict[str, Any]:
+def _portal_estimate_totals(estimate: Estimate, db: Session) -> dict[str, Any]:
+    """Tax-inclusive totals with a LOUD degraded flag. When the totals engine
+    fails, the customer sees the pre-tax subtotal — tax_unavailable=True lets
+    the UI say so instead of presenting it as the final number."""
     from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 
     try:
         totals = compute_estimate_totals(estimate, db)
-        grand_total = totals["total"]
+        return {
+            "subtotal": totals["subtotal"],
+            "discount": totals["discount"],
+            "tax": totals["tax"],
+            "tax_rate_pct": totals["tax_rate_pct"],
+            "total": totals["total"],
+            "tax_unavailable": False,
+        }
     except Exception:
         log.exception("portal_estimate_totals_failed estimate=%s", estimate.id)
-        grand_total = float(estimate.total or 0)
+        subtotal = float(estimate.total or 0)
+        return {
+            "subtotal": subtotal,
+            "discount": 0.0,
+            "tax": 0.0,
+            "tax_rate_pct": 0.0,
+            "total": subtotal,
+            "tax_unavailable": True,
+        }
+
+
+def _serialize_portal_estimate(
+    estimate: Estimate, db: Session, totals: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if totals is None:
+        totals = _portal_estimate_totals(estimate, db)
+    grand_total = totals["total"]
     return {
         "id": str(estimate.id),
         "estimate_number": estimate.estimate_number,
@@ -595,6 +621,39 @@ def portal_estimates(
         .order_by(Estimate.created_at.desc())
     ).scalars()
     return [_serialize_portal_estimate(row, db) for row in rows]
+
+
+@router.get("/estimates/{estimate_id}", response_model=None)
+def portal_estimate_detail(
+    estimate_id: UUID,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
+    # Compute once and thread through — card total and breakdown total must
+    # never disagree within one response.
+    totals = _portal_estimate_totals(estimate, db)
+    body = _serialize_portal_estimate(estimate, db, totals)
+    body["jobsite_address"] = estimate.jobsite_address
+    body["declined_reason"] = estimate.declined_reason
+    body["totals"] = totals
+
+    lines = db.execute(
+        select(EstimateLine)
+        .where(EstimateLine.estimate_id == estimate.id)
+        .order_by(EstimateLine.sort_order)
+    ).scalars().all()
+    body["lines"] = [
+        {
+            "id": str(line.id),
+            "description": line.description,
+            "quantity": float(line.quantity or 0),
+            "unit_price": float(line.unit_price or 0),
+            "line_total": float(line.line_total or 0),
+        }
+        for line in lines
+    ]
+    return body
 
 
 def _get_customer_estimate_or_404(estimate_id: UUID, principal: PortalPrincipal, db: Session) -> Estimate:

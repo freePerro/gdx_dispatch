@@ -37,7 +37,7 @@
           <TabPanel value="estimates">
             <div v-if="!estimates.length" class="empty-msg">No estimates available.</div>
             <div v-else class="card-grid">
-              <Card v-for="est in estimates" :key="est.id" class="portal-card" data-testid="estimate-card">
+              <Card v-for="est in estimates" :key="est.id" class="portal-card clickable" data-testid="estimate-card" @click="openEstimate(est.id)">
                 <template #title>
                   <div class="card-title-row">
                     <span>{{ est.label || est.estimate_number }}</span>
@@ -49,11 +49,12 @@
                   <p v-if="est.description" class="meta">{{ est.description }}</p>
                   <p class="meta">Sent: {{ formatDate(est.sent_at || est.created_at) }}</p>
                   <p v-if="est.valid_until" class="meta">Valid until: {{ formatDate(est.valid_until) }}</p>
+                  <p class="meta view-hint"><i class="pi pi-eye" /> View details</p>
                 </template>
                 <template #footer>
                   <div v-if="est.status === 'sent'" class="action-row">
-                    <Button label="Accept" icon="pi pi-check" severity="success" class="flex-1" :loading="actionBusy[est.id]" @click="acceptEstimate(est.id)" data-testid="accept-btn" />
-                    <Button label="Decline" icon="pi pi-times" severity="danger" outlined class="flex-1" :loading="actionBusy[est.id]" @click="declineEstimate(est.id)" data-testid="decline-btn" />
+                    <Button label="Accept" icon="pi pi-check" severity="success" class="flex-1" :loading="actionBusy[est.id]" @click.stop="acceptEstimate(est.id)" data-testid="accept-btn" />
+                    <Button label="Decline" icon="pi pi-times" severity="danger" outlined class="flex-1" :loading="actionBusy[est.id]" @click.stop="declineEstimate(est.id)" data-testid="decline-btn" />
                   </div>
                 </template>
               </Card>
@@ -98,6 +99,49 @@
           </TabPanel>
           </TabPanels>
         </Tabs>
+
+        <Dialog
+          v-model:visible="detailVisible"
+          :header="detail ? (detail.label || detail.estimate_number) : 'Estimate'"
+          :modal="true"
+          :style="{ width: 'min(640px, 94vw)' }"
+          data-testid="estimate-detail-dialog"
+        >
+          <div v-if="detailLoading" class="loading-wrap"><ProgressSpinner /></div>
+          <div v-else-if="detail" class="detail-body">
+            <div class="detail-status-row">
+              <Tag :value="detail.status" :severity="statusSeverity(detail.status)" />
+              <span class="meta">Sent: {{ formatDate(detail.sent_at || detail.created_at) }}</span>
+              <span v-if="detail.valid_until" class="meta">Valid until: {{ formatDate(detail.valid_until) }}</span>
+            </div>
+            <p v-if="detail.description" class="meta">{{ detail.description }}</p>
+            <p v-if="detail.jobsite_address" class="meta"><i class="pi pi-map-marker" /> {{ detail.jobsite_address }}</p>
+
+            <DataTable :value="detail.lines" class="detail-lines" data-testid="estimate-lines-table">
+              <template #empty>No line items.</template>
+              <Column field="description" header="Item" />
+              <Column field="quantity" header="Qty" :style="{ width: '70px' }" />
+              <Column field="unit_price" header="Price" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
+              <Column field="line_total" header="Total" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
+            </DataTable>
+
+            <div class="totals-block" v-if="detail.totals" data-testid="estimate-totals">
+              <div class="totals-row"><span>Subtotal</span><span>{{ currency(detail.totals.subtotal) }}</span></div>
+              <div class="totals-row" v-if="detail.totals.discount"><span>Discount</span><span>-{{ currency(detail.totals.discount) }}</span></div>
+              <div class="totals-row" v-if="detail.totals.tax"><span>Tax ({{ detail.totals.tax_rate_pct }}%)</span><span>{{ currency(detail.totals.tax) }}</span></div>
+              <div class="totals-row grand"><span>Total</span><span>{{ currency(detail.totals.total) }}</span></div>
+              <p v-if="detail.totals.tax_unavailable" class="meta" data-testid="tax-unavailable-note">
+                <i class="pi pi-info-circle" /> Tax could not be calculated — the final total may differ.
+              </p>
+            </div>
+
+            <div v-if="detail.status === 'sent'" class="action-row detail-actions">
+              <Button label="Accept" icon="pi pi-check" severity="success" class="flex-1" :loading="actionBusy[detail.id]" @click="acceptFromDetail" data-testid="detail-accept-btn" />
+              <Button label="Decline" icon="pi pi-times" severity="danger" outlined class="flex-1" :loading="actionBusy[detail.id]" @click="declineFromDetail" data-testid="detail-decline-btn" />
+            </div>
+            <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
+          </div>
+        </Dialog>
       </div>
     </main>
   </div>
@@ -111,6 +155,7 @@ import Button from "primevue/button";
 import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
+import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import ProgressSpinner from "primevue/progressspinner";
@@ -134,6 +179,9 @@ const estimates = ref([]);
 const invoices = ref([]);
 const jobs = ref([]);
 const actionBusy = reactive({});
+const detail = ref(null);
+const detailVisible = ref(false);
+const detailLoading = ref(false);
 const requestEmail = ref("");
 const requestSending = ref(false);
 const requestSent = ref(false);
@@ -243,6 +291,31 @@ async function estimateAction(id, action, successMsg) {
 const acceptEstimate = (id) => estimateAction(id, "accept", "Estimate accepted");
 const declineEstimate = (id) => estimateAction(id, "decline", "Estimate declined");
 
+async function openEstimate(id) {
+  detailVisible.value = true;
+  detailLoading.value = true;
+  try {
+    detail.value = await authedFetch(`/portal/estimates/${id}`);
+  } catch (e) {
+    detailVisible.value = false;
+    if (e?.auth) { error.value = "Your portal session has expired."; return; }
+    toast.add({ severity: "error", summary: "Error", detail: "Could not load estimate", life: 4000 });
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+async function actFromDetail(action, successMsg) {
+  if (!detail.value) return;
+  const id = detail.value.id;
+  await estimateAction(id, action, successMsg);
+  // Refresh the open dialog so the status/actions reflect the change.
+  try { detail.value = await authedFetch(`/portal/estimates/${id}`); } catch { detailVisible.value = false; }
+}
+
+const acceptFromDetail = () => actFromDetail("accept", "Estimate accepted");
+const declineFromDetail = () => actFromDetail("decline", "Estimate declined");
+
 onMounted(init);
 </script>
 
@@ -257,7 +330,15 @@ onMounted(init);
 .empty-msg { text-align: center; padding: 2rem; color: var(--p-text-muted-color, #6b7280); }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
 .portal-card { transition: transform 0.15s; }
+.portal-card.clickable { cursor: pointer; }
 .portal-card:hover { transform: translateY(-2px); }
+.view-hint { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
+.detail-body { display: flex; flex-direction: column; gap: 0.75rem; }
+.detail-status-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.totals-block { margin-left: auto; min-width: 240px; display: flex; flex-direction: column; gap: 0.35rem; }
+.totals-row { display: flex; justify-content: space-between; font-size: 0.95rem; }
+.totals-row.grand { font-weight: 700; font-size: 1.1rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb); padding-top: 0.35rem; color: var(--p-primary-color); }
+.detail-actions { margin-top: 0.25rem; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
 .amount { font-size: 1.5rem; font-weight: 700; color: var(--p-primary-color); margin: 0.5rem 0; }
 .meta { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }

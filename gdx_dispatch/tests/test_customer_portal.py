@@ -23,7 +23,7 @@ from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
-from gdx_dispatch.modules.proposals.models import Estimate
+from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers import portal as portal_router
 from uuid import uuid4
 
@@ -407,6 +407,55 @@ def test_estimate_decline_records_reason(tenant_db_session):
     assert body["status"] == "declined"
     tenant_db_session.refresh(est)
     assert est.declined_reason == "Too expensive"
+
+
+def _seed_estimate_with_lines(db, customer_id, status="sent"):
+    est = _seed_estimate(db, customer_id, status=status)
+    db.add_all([
+        EstimateLine(estimate_id=est.id, description="16x7 insulated door", quantity=1, unit_price=2450, line_total=2450, sort_order=1, company_id="tenant-test"),
+        EstimateLine(estimate_id=est.id, description="Haul away", quantity=1, unit_price=150, line_total=150, sort_order=2, company_id="tenant-test"),
+    ])
+    est.total = 2600
+    db.commit()
+    db.refresh(est)
+    return est
+
+
+def test_estimate_detail_includes_lines_and_totals(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    assert [line["description"] for line in body["lines"]] == ["16x7 insulated door", "Haul away"]
+    assert body["totals"]["subtotal"] == 2600.0
+    assert body["totals"]["tax_unavailable"] is False
+    # Card total and breakdown total come from one computation — must agree.
+    assert body["total"] == body["totals"]["total"]
+    assert body["totals"]["total"] == pytest.approx(2600.0 + body["totals"]["tax"] - body["totals"]["discount"])
+
+    principal_b = _principal(seeded["user_b_id"], seeded["customer_b_id"])
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal_b, db=tenant_db_session)
+    assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_estimate_detail_degraded_totals_are_flagged(tenant_db_session, monkeypatch):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("tax engine down")
+
+    monkeypatch.setattr("gdx_dispatch.modules.proposals.totals.compute_estimate_totals", _boom)
+
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    # Degraded path: pre-tax subtotal shown, but flagged so the UI can say
+    # "final total may differ" instead of presenting it as authoritative.
+    assert body["totals"]["tax_unavailable"] is True
+    assert body["totals"]["total"] == 2600.0
+    assert body["total"] == body["totals"]["total"]
 
 
 def test_estimate_accept_cannot_cross_customers(tenant_db_session):
