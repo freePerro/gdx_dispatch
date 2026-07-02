@@ -13,9 +13,10 @@ Strategy — UPSERT by (company_id, name):
 - If row missing: insert fresh.
 - Custom (non-builtin) roles are LEFT ALONE; admin reviews them at /role-permissions.
 
-Banner: writes/updates `tenant_feature_flags.role_permissions_reset_pending = 1`
-so the role-permissions banner endpoint shows "your permissions were reset"
-until an admin acknowledges.
+(The "permissions were reset" banner this tool used to raise via a per-tenant
+TenantFeatureFlag was removed with the multi-tenant `provisioning` package in
+the single-tenant cleanup, 2026-06-22 — see gl-program-design / single-tenant
+notes. The banner write is gone; this tool now only backfills the roles.)
 
 Usage:
     python gdx_dispatch/tools/backfill_role_permissions.py --tenant gdx --dry-run
@@ -76,12 +77,11 @@ def _resolve_db_urls(tenant: str | None, url: str | None, all_tenants: bool) -> 
 
 
 def backfill_one(slug: str, db_url: str, *, dry_run: bool) -> dict[str, int]:
-    """Reset builtin roles + raise the banner flag for one tenant."""
+    """Reset builtin roles to the canonical seed for one tenant DB."""
     from gdx_dispatch.models.tenant_models import TenantRole
-    from gdx_dispatch.provisioning.models import TenantFeatureFlag
 
     eng = create_engine(db_url, future=True)
-    counts = {"upserted": 0, "inserted": 0, "updated": 0, "banner_set": 0, "banner_skipped": 0}
+    counts = {"upserted": 0, "inserted": 0, "updated": 0}
     try:
         with Session(eng, future=True) as db:
             # Tenant DB stores company_id as the tenant slug in practice for some
@@ -127,39 +127,7 @@ def backfill_one(slug: str, db_url: str, *, dry_run: bool) -> dict[str, int]:
                 counts["upserted"] += 1
 
             if not dry_run:
-                # Commit the role upserts BEFORE the banner write. If the banner
-                # path fails (e.g. pre-existing tenant DB without the
-                # tenant_feature_flags table), the role data still lands.
                 db.commit()
-
-            # Banner flag — non-essential. Older tenant DBs may not have the
-            # tenant_feature_flags table at all; swallow that and continue.
-            try:
-                flag = db.execute(
-                    select(TenantFeatureFlag).where(
-                        TenantFeatureFlag.flag_key == "role_permissions_reset_pending"
-                    )
-                ).scalar_one_or_none()
-                if flag is None:
-                    counts["banner_set"] = 1
-                    if not dry_run:
-                        db.add(
-                            TenantFeatureFlag(
-                                flag_key="role_permissions_reset_pending",
-                                rollout_pct=1,
-                            )
-                        )
-                        db.commit()
-                elif flag.rollout_pct != 1:
-                    counts["banner_set"] = 1
-                    if not dry_run:
-                        flag.rollout_pct = 1
-                        db.commit()
-            except Exception as e:
-                if not dry_run:
-                    db.rollback()
-                log.warning("banner_write_skipped tenant=%s reason=%s", slug, e.__class__.__name__)
-                counts["banner_skipped"] = 1
     finally:
         eng.dispose()
     return counts
@@ -174,8 +142,7 @@ def run(targets: Iterable[tuple[str, str]], *, dry_run: bool) -> int:
             print(
                 f"backfill_role_permissions {mode} tenant={slug} "
                 f"upserted={c['upserted']} inserted={c['inserted']} "
-                f"updated={c['updated']} banner_set={c['banner_set']} "
-                f"banner_skipped={c.get('banner_skipped', 0)}"
+                f"updated={c['updated']}"
             )
         except Exception as e:
             log.exception("backfill_failed tenant=%s", slug)
