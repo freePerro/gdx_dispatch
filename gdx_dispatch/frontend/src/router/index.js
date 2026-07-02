@@ -134,7 +134,8 @@ const PerformanceView = () => import('../views/PerformanceView.vue');
 const AuditLogViewer = () => import('../views/AuditLogViewer.vue');
 
 
-const routes = [
+// Exported for the nav↔route coverage spec (router/__tests__).
+export const routes = [
   { path: '/', redirect: '/dashboard' },
   // `noShell: true` keeps these routes out of the AppLayout shell mounted
   // by App.vue. Login/signup/portal pages render their own full-screen
@@ -191,8 +192,10 @@ const routes = [
   { path: '/timeclock', name: 'timeclock', component: TimeclockView },
   { path: '/equipment', name: 'equipment', component: EquipmentView },
   { path: '/communications', name: 'communications', component: CommunicationsView },
-  // /voice → /phone-com (deduped 2026-04-29). Bookmark redirect.
-  { path: '/voice', redirect: '/phone-com' },
+  // /voice → Phone.com (deduped 2026-04-29). Bookmark redirect.
+  // 2026-07-01 UX audit: pointed at `/phone-com`, which is not a route — old
+  // bookmarks landed on the 404 catch-all. Redirect to the calls view.
+  { path: '/voice', redirect: '/phone-com/calls' },
   { path: '/segments', name: 'segments', component: SegmentsView },
   // /inbound-comms → /communications (deduped 2026-04-29). Bookmark redirect.
   { path: '/inbound-comms', redirect: '/communications' },

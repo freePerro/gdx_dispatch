@@ -18,8 +18,12 @@ export const MODULE_CATEGORIES = [
       // Field tier (ungated — every role, no permission needed): jobs, timeclock, photos.
       { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/jobs', type: 'Jobs' },
       { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/dispatch', type: 'Jobs', permission: 'nav.office' },
-      { key: 'scheduling', label: 'Scheduling', icon: 'pi pi-calendar', to: '/scheduling', type: 'Operations', permission: 'nav.office' },
-      { key: 'appointments', label: 'Appointments', icon: 'pi pi-calendar-plus', to: '/appointments', type: 'Jobs', permission: 'nav.office' },
+      // 2026-07-01 UX audit: "Scheduling" vs "Appointments" were conflated (both
+      // touch job assignment). Renamed + given distinct icons + descriptions:
+      // Team Scheduling = reassign jobs across techs; Appointment Confirmations =
+      // confirm visit dates with customers.
+      { key: 'scheduling', label: 'Team Scheduling', icon: 'pi pi-calendar', to: '/scheduling', type: 'Operations', permission: 'nav.office', description: 'Reassign and reschedule jobs across technicians' },
+      { key: 'appointments', label: 'Appointment Confirmations', icon: 'pi pi-calendar-clock', to: '/appointments', type: 'Jobs', permission: 'nav.office', description: 'Confirm upcoming visit dates with customers' },
       { key: 'tasks', label: 'Tasks', icon: 'pi pi-list', to: '/tasks', type: 'Operations', permission: 'nav.office' },
       { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/planner', type: 'Operations', permission: 'nav.office' },
       { key: 'checklists', label: 'Checklists', icon: 'pi pi-check-square', to: '/checklists', type: 'Operations', permission: 'nav.office' },
@@ -46,11 +50,15 @@ export const MODULE_CATEGORIES = [
       { key: 'customers', label: 'Customers', icon: 'pi pi-users', to: '/customers', type: 'Customers', permission: 'nav.office' },
       { key: 'customer_portal', label: 'Customer Portal', icon: 'pi pi-id-card', to: '/portal', type: 'Customers', permission: 'nav.office' },
       // Field tier (ungated): communications, inbox.
-      { key: 'communications', label: 'Communications', icon: 'pi pi-comments', to: '/communications', type: 'Customers' },
-      { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations' },
-      { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office' },
-      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office' },
-      { key: 'phone_com_faxes', label: 'Phone.com Faxes', icon: 'pi pi-file-pdf', to: '/phone-com/faxes', type: 'Customers', requires: 'phone_com', permission: 'nav.office' },
+      // 2026-07-01 UX audit: four messaging destinations are genuinely different
+      // channels (different backends) but the labels didn't say so — descriptions
+      // disambiguate in the sidebar tooltip.
+      { key: 'communications', label: 'Communications', icon: 'pi pi-comments', to: '/communications', type: 'Customers', description: 'Built-in SMS & email threads with customers' },
+      { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations', description: 'Outlook-synced email inbox' },
+      { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Call log from the Phone.com line' },
+      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'SMS threads on the Phone.com line (separate from built-in Communications)' },
+      { key: 'phone_com_cold_leads', label: 'Phone.com Cold Leads', icon: 'pi pi-user-plus', to: '/phone-com/cold-leads', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Missed/unreturned callers to follow up on' },
+      { key: 'phone_com_faxes', label: 'Phone.com Faxes', icon: 'pi pi-file-pdf', to: '/phone-com/faxes', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Faxes received on the Phone.com line' },
       { key: 'reviews', label: 'Reviews', icon: 'pi pi-star', to: '/reviews', type: 'Customers', permission: 'nav.office' },
       { key: 'referrals', label: 'Referrals', icon: 'pi pi-share-alt', to: '/referrals', type: 'Customers', permission: 'nav.office' },
       { key: 'surveys', label: 'Surveys', icon: 'pi pi-comments', to: '/surveys', type: 'Customers', permission: 'nav.office' },
@@ -71,24 +79,41 @@ export const MODULE_CATEGORIES = [
       { key: 'signatures', label: 'Signatures', icon: 'pi pi-pencil', to: '/signatures', type: 'Jobs', permission: 'nav.office' },
     ],
   },
+  // 2026-07-01 UX audit: "Financials" was one flat 13-item category with no
+  // hierarchy (invoicing vs accounting vs payroll unmapped). Split into three.
+  // Module keys are unchanged, so tenant enablement grants keep working.
   {
-    key: 'financials',
-    label: 'Financials',
+    key: 'invoicing',
+    label: 'Invoicing',
     icon: 'pi pi-dollar',
     modules: [
       { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all' },
       { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read' },
-      { key: 'expenses', label: 'Expenses', icon: 'pi pi-wallet', to: '/expenses', type: 'Invoices', permission: 'accounting.read' },
       { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all' },
       { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'invoices.read_all' },
-      { key: 'payroll', label: 'Payroll', icon: 'pi pi-money-bill', to: '/payroll', type: 'Invoices', permission: 'payroll.read' },
-      { key: 'commissions', label: 'Commissions', icon: 'pi pi-percentage', to: '/commissions', type: 'Invoices', permission: 'nav.admin' },
+    ],
+  },
+  {
+    key: 'accounting',
+    label: 'Accounting',
+    icon: 'pi pi-calculator',
+    modules: [
+      { key: 'expenses', label: 'Expenses', icon: 'pi pi-wallet', to: '/expenses', type: 'Invoices', permission: 'accounting.read' },
       { key: 'job_costing', label: 'Job Costing', icon: 'pi pi-chart-line', to: '/job-costing', type: 'Invoices', permission: 'nav.admin' },
       { key: 'pricing', label: 'Pricing', icon: 'pi pi-tags', to: '/pricing', type: 'Invoices', permission: 'nav.admin' },
       { key: 'labor_matrix', label: 'Labor Matrix', icon: 'pi pi-wrench', to: '/labor-matrix', type: 'Invoices', permission: 'pricing.labor_matrix.read' },
       { key: 'vendor_statements', label: 'Vendor Statements', icon: 'pi pi-file-import', to: '/vendor-statements', type: 'Invoices', permission: 'vendor_statements.read' },
       { key: 'exports', label: 'Exports', icon: 'pi pi-download', to: '/exports', type: 'Invoices', permission: 'nav.admin' },
       { key: 'quickbooks', label: 'QuickBooks', icon: 'pi pi-plug', to: '/quickbooks', type: 'Invoices', permission: 'nav.admin' },
+    ],
+  },
+  {
+    key: 'payroll_comp',
+    label: 'Payroll',
+    icon: 'pi pi-money-bill',
+    modules: [
+      { key: 'payroll', label: 'Payroll', icon: 'pi pi-money-bill', to: '/payroll', type: 'Invoices', permission: 'payroll.read' },
+      { key: 'commissions', label: 'Commissions', icon: 'pi pi-percentage', to: '/commissions', type: 'Invoices', permission: 'nav.admin' },
     ],
   },
   {
@@ -106,6 +131,17 @@ export const MODULE_CATEGORIES = [
       { key: 'budget', label: 'Budget', icon: 'pi pi-calculator', to: '/budget', type: 'Invoices', permission: 'accounting.read' },
       { key: 'spending_trends', label: 'Spending Trends', icon: 'pi pi-chart-line', to: '/spending-trends', type: 'Invoices', permission: 'accounting.read' },
       { key: 'overhead', label: 'Overhead', icon: 'pi pi-calculator', to: '/overhead', type: 'Invoices', permission: 'accounting.read' },
+      // 2026-07-01: /admin/games was an orphan route (reachable only by URL).
+      // Surfaced here per Doug — future release, gamified motivation.
+      {
+        key: 'games',
+        label: 'Games — Future Release',
+        icon: 'pi pi-trophy',
+        to: '/admin/games',
+        type: 'Operations',
+        permission: 'nav.admin',
+        description: 'Coming soon: a way to motivate everyone to do their job correctly. Game Theory for motivation.',
+      },
     ],
   },
   {
@@ -160,7 +196,12 @@ export const MODULE_CATEGORIES = [
       { key: 'admin_ops', label: 'Admin Operations', icon: 'pi pi-server', to: '/admin-ops', type: 'Admin', permission: 'settings.write' },
       { key: 'server_errors', label: 'Server Logs', icon: 'pi pi-exclamation-triangle', to: '/server-errors', type: 'Admin', permission: 'settings.write' },
       { key: 'admin_db', label: 'Database', icon: 'pi pi-database', to: '/admin/database', type: 'Admin', permission: 'settings.write' },
-      { key: 'payroll', label: 'Payroll', icon: 'pi pi-wallet', to: '/admin/payroll', type: 'Admin', permission: 'payroll.read' },
+      // 2026-07-01 UX audit: key was 'payroll', colliding with the Payroll
+      // category's module (two entries, one enablement key). Renamed key +
+      // label so both can be granted/labeled independently.
+      { key: 'admin_payroll', label: 'Payroll Admin', icon: 'pi pi-wallet', to: '/admin/payroll', type: 'Admin', permission: 'payroll.read', description: 'Payroll entries & configuration (admin)' },
+      // 2026-07-01 UX audit: /feedback was an orphan route (no nav entry).
+      { key: 'feedback_portal', label: 'Feedback Portal', icon: 'pi pi-comment', to: '/feedback', type: 'Admin', permission: 'nav.admin', description: 'Review feedback and bug reports submitted in-app' },
       { key: 'settings', label: 'Settings', icon: 'pi pi-cog', to: '/settings', type: 'Customers', permission: 'settings.read' },
     ],
   },

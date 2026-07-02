@@ -2,7 +2,8 @@
     <section class="view-card scheduling-view">
       <Toolbar>
         <template #start>
-          <h2 class="page-title">Scheduling</h2>
+          <h2 class="page-title">Team Scheduling</h2>
+          <p class="page-subtitle">Reassign and reschedule jobs across technicians</p>
         </template>
         <template #end>
           <Button
@@ -19,6 +20,7 @@
       <div class="week-controls" data-testid="scheduling-week-nav">
         <Button
           v-tooltip="'Previous week'"
+          aria-label="Previous week"
           icon="pi pi-angle-left"
           class="p-button-text"
           severity="secondary"
@@ -29,6 +31,7 @@
         <span class="week-controls__label">{{ weekLabel }}</span>
         <Button
           v-tooltip="'Next week'"
+          aria-label="Next week"
           icon="pi pi-angle-right"
           class="p-button-text"
           severity="secondary"
@@ -103,6 +106,15 @@
         
         @row-click="openDialog($event.data)"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-calendar"
+            title="No schedule entries"
+            message="Nothing is scheduled for this week and filter — assign a job to get started."
+            action-label="Reschedule / Assign"
+            @action="openDialog()"
+          />
+        </template>
         <Column field="technician_name" header="Technician" />
         <Column field="date" header="Date">
           <template #body="{ data }">
@@ -225,6 +237,8 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate as formatShortDate } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import Column from 'primevue/column';
@@ -379,7 +393,7 @@ function formatDate(value) {
 
 function formatMonthDay(date) {
   if (!date) return '';
-  return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return formatShortDate(date, { options: { month: 'short', day: 'numeric' } });
 }
 
 function addDays(date, days) {
@@ -485,6 +499,12 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.page-subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--p-text-muted-color);
+  font-size: 0.85rem;
+}
+
 .scheduling-view {
   display: flex;
   flex-direction: column;
