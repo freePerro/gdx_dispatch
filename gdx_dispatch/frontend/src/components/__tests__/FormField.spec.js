@@ -55,4 +55,16 @@ describe('FormField', () => {
     const w = mountField({ label: 'Notes', as: 'textarea', modelValue: '' });
     expect(w.find('textarea').exists()).toBe(true);
   });
+
+  it('forwards fall-through attrs (data-testid, inputmode) to the inner input', () => {
+    const w = mount(FormField, {
+      props: { modelValue: '', label: 'Phone' },
+      attrs: { 'data-testid': 'cust-phone', inputmode: 'tel' },
+    });
+    const input = w.find('input');
+    expect(input.attributes('data-testid')).toBe('cust-phone');
+    expect(input.attributes('inputmode')).toBe('tel');
+    // The wrapper div must NOT swallow them.
+    expect(w.find('.form-field').attributes('data-testid')).toBeUndefined();
+  });
 });

@@ -130,6 +130,57 @@ describe('TechTimelineColumn', () => {
     expect(bBlock.classes()).toContain('job-block--overlap');
   });
 
+  it('exposes job blocks as keyboard-focusable buttons with an aria-label', () => {
+    const sel = new Date(2026, 4, 21);
+    const job = {
+      id: 'k1', customer_name: 'Acme',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 2,
+    };
+    const w = mountColumn({ jobs: [job], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-k1"]');
+    expect(block.attributes('role')).toBe('button');
+    expect(block.attributes('tabindex')).toBe('0');
+    expect(block.attributes('aria-label')).toContain('Acme');
+    expect(block.attributes('aria-label')).toContain('2h');
+  });
+
+  it('emits open-drawer on Enter and Space just like click', async () => {
+    const sel = new Date(2026, 4, 21);
+    const job = {
+      id: 'k2', customer_name: 'Beta',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 1,
+    };
+    const w = mountColumn({ jobs: [job], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-k2"]');
+    await block.trigger('keydown', { key: 'Enter' });
+    expect(w.emitted('open-drawer')).toHaveLength(1);
+    expect(w.emitted('open-drawer')[0][0].id).toBe('k2');
+    await block.trigger('keydown', { key: ' ' });
+    expect(w.emitted('open-drawer')).toHaveLength(2);
+    // Same payload as the click path.
+    await block.trigger('click');
+    expect(w.emitted('open-drawer')).toHaveLength(3);
+    expect(w.emitted('open-drawer')[2][0]).toBe(w.emitted('open-drawer')[0][0]);
+  });
+
+  it('exposes tray chips as keyboard-focusable buttons that open the drawer', async () => {
+    const sel = new Date(2026, 4, 21);
+    const trayJob = {
+      id: 'k3', customer_name: 'Gamma',
+      scheduled_at: new Date(2026, 4, 21, 0, 0).toISOString(),
+      effective_duration_hours: 2,
+    };
+    const w = mountColumn({ jobs: [trayJob], selectedDate: sel });
+    const chip = w.find('[data-testid="tray-job-k3"]');
+    expect(chip.attributes('role')).toBe('button');
+    expect(chip.attributes('tabindex')).toBe('0');
+    expect(chip.attributes('aria-label')).toContain('Gamma');
+    await chip.trigger('keydown', { key: 'Enter' });
+    expect(w.emitted('open-drawer')[0][0].id).toBe('k3');
+  });
+
   it('marks a block that overflows the shift end with the overflow class', () => {
     const sel = new Date(2026, 4, 21);
     // 16:00 + 2h = 18:00 — shift ends at 17:00, so 1h overflow.

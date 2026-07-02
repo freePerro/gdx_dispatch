@@ -30,15 +30,22 @@
       >
         <div class="tray-label">Unscheduled today</div>
         <div v-if="trayJobs.length" class="tray-chips">
+          <!-- Keyboard a11y covers activation (open drawer) only; drag-and-drop
+               placement has no keyboard path yet — known limitation. -->
           <div
             v-for="job in trayJobs"
             :key="job.id"
             class="tray-chip"
+            role="button"
+            tabindex="0"
+            :aria-label="trayAriaLabel(job)"
             draggable="true"
             :data-testid="`tray-job-${job.id}`"
             @dragstart="onJobDragStart(job, $event)"
             @dragend="emit('job-drag-end')"
             @click="$emit('open-drawer', job)"
+            @keydown.enter="$emit('open-drawer', job)"
+            @keydown.space.prevent="$emit('open-drawer', job)"
           >
             <span class="tray-customer">{{ displayCustomer(job) }}</span>
             <span class="tray-dur">{{ formatDuration(job.effective_duration_hours) }}</span>
@@ -100,10 +107,15 @@
               width: block.widthPct + '%',
             }"
             :data-testid="`timeline-job-${block.id}`"
+            role="button"
+            tabindex="0"
+            :aria-label="blockAriaLabel(block)"
             draggable="true"
             @dragstart="onJobDragStart(block.job, $event)"
             @dragend="emit('job-drag-end')"
             @click="$emit('open-drawer', block.job)"
+            @keydown.enter="$emit('open-drawer', block.job)"
+            @keydown.space.prevent="$emit('open-drawer', block.job)"
           >
             <div class="block-customer">{{ displayCustomer(block.job) }}</div>
             <div class="block-meta">
@@ -291,6 +303,14 @@ function displayCustomer(job) {
   if (typeof job.customer === 'object') return job.customer?.name || job.title || 'Job';
   return job.customer_name || job.customer || job.title || 'Job';
 }
+// Screen-reader labels for the keyboard-activatable job targets. Keyboard
+// covers open-drawer only; drag placement stays mouse-only (known limitation).
+function blockAriaLabel(block) {
+  return `Open job: ${displayCustomer(block.job)}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}`;
+}
+function trayAriaLabel(job) {
+  return `Open job: ${displayCustomer(job)}, unscheduled, ${formatDuration(job.effective_duration_hours)}`;
+}
 
 // Drop coordinate → snapped ISO timestamp on selectedDate.
 function dropYToISO(clientY, bodyEl) {
@@ -389,6 +409,10 @@ defineExpose({ dropYToISO });
   max-width: 100%;
 }
 .tray-chip:active { cursor: grabbing; }
+.tray-chip:focus-visible {
+  outline: 2px solid var(--interactive-primary);
+  outline-offset: 2px;
+}
 .tray-customer { font-weight: 500; }
 .tray-dur { color: var(--p-text-muted-color, #6b7280); font-size: 0.7rem; }
 .tray-empty {
@@ -471,6 +495,10 @@ defineExpose({ dropYToISO });
   box-sizing: border-box;
 }
 .job-block:active { cursor: grabbing; }
+.job-block:focus-visible {
+  outline: 2px solid var(--interactive-primary);
+  outline-offset: 2px;
+}
 .job-block--overlap {
   outline: 2px solid var(--p-red-500, #ef4444);
   outline-offset: -2px;
