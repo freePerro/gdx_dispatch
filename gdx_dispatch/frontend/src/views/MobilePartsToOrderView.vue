@@ -135,8 +135,16 @@ async function fetchPending() {
 async function updateStatus(p, status) {
   savingId.value = p.id
   try {
-    await api.patch(`/api/parts-needed/${p.id}/status`, { status })
-    toast.add({ severity: 'success', summary: `Marked ${status}`, life: 2000 })
+    // 2026-07-01 UX audit: offline-queued (see useOfflineSync) — a status
+    // flip tapped in a dead zone replays on reconnect instead of erroring.
+    const r = await api.patchQueued(`/api/parts-needed/${p.id}/status`, { status }, {
+      actionType: 'parts.status', resourceId: String(p.id),
+    })
+    if (r?.queued) {
+      toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Will sync when you reconnect.', life: 3000 })
+    } else {
+      toast.add({ severity: 'success', summary: `Marked ${status}`, life: 2000 })
+    }
     p.status = status
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Update failed', detail: err.message, life: 4000 })
@@ -205,11 +213,11 @@ onMounted(fetchPending)
 }
 
 .part-card.prio-critical {
-  border-left: 3px solid #dc2626;
+  border-left: 3px solid var(--color-danger-500);
 }
 
 .part-card.prio-high {
-  border-left: 3px solid #f59e0b;
+  border-left: 3px solid var(--color-warning-500);
 }
 
 .part-row {
@@ -263,13 +271,15 @@ onMounted(fetchPending)
 }
 
 .pill-danger {
-  background: #dc2626;
-  color: #fff;
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  color: var(--color-danger-500);
 }
 
 .pill-warn {
-  background: #f59e0b;
-  color: #1f2937;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-500);
 }
 
 .state-msg {
