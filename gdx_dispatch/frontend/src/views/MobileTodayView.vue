@@ -5,6 +5,7 @@ import MobileQuoteBuilderDialog from '../components/MobileQuoteBuilderDialog.vue
 import MobileCustomerQuoteDialog from '../components/MobileCustomerQuoteDialog.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
+import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
@@ -193,8 +194,12 @@ async function saveReorder() {
   }
   reorderSaving.value = true
   try {
-    const result = await api.post('/api/mobile/today/reorder', { appointment_ids: ids })
-    if (result?.changed) {
+    const result = await api.postQueued('/api/mobile/today/reorder', { appointment_ids: ids }, {
+      actionType: 'today.reorder',
+    })
+    if (result?.queued) {
+      toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Reorder will sync when you reconnect.', life: 4000 })
+    } else if (result?.changed) {
       toast.add({ severity: 'success', summary: 'Route reordered', life: 2500 })
       await load(true)
     } else {
@@ -215,19 +220,33 @@ async function saveReorder() {
 }
 
 // S1-A4 — "On my way" → flips dispatch_status to en_route.
+// 2026-07-01 UX audit: status flips go through the offline queue
+// (postQueued) — in a dead zone the tap is persisted to IndexedDB and
+// replayed (Idempotency-Key dedup) instead of erroring into a toast.
 async function onMyWay(job) {
   advancing.value = { ...advancing.value, [job.id]: true }
   try {
-    await api.post(`/api/mobile/jobs/${job.id}/en-route`, {})
-    job.dispatch_status = 'en_route'
-    toast.add({
-      severity: 'success',
-      summary: 'On my way',
-      detail: `Dispatch notified — ${job.customer?.name || 'job'}`,
-      life: 2500,
+    const r = await api.postQueued(`/api/mobile/jobs/${job.id}/en-route`, {}, {
+      actionType: 'job.en_route', resourceId: String(job.id),
     })
-    // Refresh quietly to pick up any state dispatch changed.
-    load(true)
+    job.dispatch_status = 'en_route'
+    if (r?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Saved offline',
+        detail: 'No signal — dispatch will be notified when you reconnect.',
+        life: 4000,
+      })
+    } else {
+      toast.add({
+        severity: 'success',
+        summary: 'On my way',
+        detail: `Dispatch notified — ${job.customer?.name || 'job'}`,
+        life: 2500,
+      })
+      // Refresh quietly to pick up any state dispatch changed.
+      load(true)
+    }
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -262,15 +281,26 @@ async function imHere(job) {
     }
   } catch { /* swallow */ }
   try {
-    await api.post(`/api/mobile/jobs/${job.id}/arrived`, geo)
-    job.dispatch_status = 'on_site'
-    toast.add({
-      severity: 'success',
-      summary: "I'm here",
-      detail: `Clocked in at ${job.customer?.name || 'job'}`,
-      life: 2500,
+    const r = await api.postQueued(`/api/mobile/jobs/${job.id}/arrived`, geo, {
+      actionType: 'job.arrived', resourceId: String(job.id),
     })
-    load(true)
+    job.dispatch_status = 'on_site'
+    if (r?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Saved offline',
+        detail: 'No signal — your arrival will sync when you reconnect.',
+        life: 4000,
+      })
+    } else {
+      toast.add({
+        severity: 'success',
+        summary: "I'm here",
+        detail: `Clocked in at ${job.customer?.name || 'job'}`,
+        life: 2500,
+      })
+      load(true)
+    }
   } catch (err) {
     toast.add({
       severity: 'error',
@@ -492,6 +522,14 @@ const chatDialogJob = ref(null)
 function openChat(job) {
   chatDialogJob.value = job
   chatDialogOpen.value = true
+}
+
+// 2026-07-01 UX audit — field change orders (see MobileChangeOrderDialog).
+const changeOrderOpen = ref(false)
+const changeOrderJob = ref(null)
+function openChangeOrder(job) {
+  changeOrderJob.value = job
+  changeOrderOpen.value = true
 }
 const partsSubmitting = ref(false)
 
@@ -1081,7 +1119,7 @@ function replayTour() {
       <div v-else-if="emptyState" class="empty">
         <i class="pi pi-calendar-times empty-icon" />
         <div class="empty-title">Nothing scheduled today</div>
-        <div class="empty-help">Pull to refresh, or check with dispatch.</div>
+        <div class="empty-help">Tap refresh above, or check with dispatch.</div>
       </div>
 
       <div v-else-if="view === VIEW_MAP" class="map-wrap">
@@ -1341,6 +1379,18 @@ function replayTour() {
               severity="success"
               @click="ensureJobQuotesLoaded(job).then(() => openInvoice(job))"
             />
+            <!-- 2026-07-01 UX audit — field change orders. Visible once the
+                 tech is on site (that's when extra scope gets discovered);
+                 posts the office's normal CO pipeline as pending_approval. -->
+            <Button
+              v-if="['on_site','done'].includes(job.dispatch_status)"
+              label="Change order"
+              icon="pi pi-file-plus"
+              severity="secondary"
+              outlined
+              data-testid="mtv-change-order-btn"
+              @click="openChangeOrder(job)"
+            />
             <!-- Phase 4.1 — Per-job chat with dispatch. Available any time
                  the job has any active state (assigned through done). -->
             <Button
@@ -1365,6 +1415,16 @@ function replayTour() {
       :job-title="closeoutJob?.title || closeoutJob?.customer?.name || ''"
       :customer-name="closeoutJob?.customer?.name || ''"
       @closed-out="onCloseoutDone"
+    />
+
+    <!-- 2026-07-01 UX audit — field change-order request (tech → office
+         pending_approval pipeline). See components/MobileChangeOrderDialog. -->
+    <MobileChangeOrderDialog
+      v-model:visible="changeOrderOpen"
+      :job-id="changeOrderJob?.id || ''"
+      :job-title="changeOrderJob?.title || changeOrderJob?.customer?.name || ''"
+      :customer-id="changeOrderJob?.customer?.id || null"
+      :customer-name="changeOrderJob?.customer?.name || ''"
     />
 
     <Dialog

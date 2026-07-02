@@ -34,6 +34,15 @@
         
         @row-click="($event) => openEdit($event.data)"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-box"
+            title="No equipment tracked yet"
+            message="Add company tools and equipment to track assignments, locations, and service dates."
+            action-label="Add Equipment"
+            @action="openCreate"
+          />
+        </template>
         <Column field="name" header="Name" />
         <Column field="serial" header="Serial" />
         <Column field="status" header="Status">
@@ -103,6 +112,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import DataTable from 'primevue/datatable';

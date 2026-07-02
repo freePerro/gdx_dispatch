@@ -198,13 +198,28 @@ async function submit() {
   }
 
   try {
-    const created = await api.post(`/api/jobs/${props.jobId}/closeout`, payload)
-    toast.add({
-      severity: 'success',
-      summary: 'Job closed out',
-      detail: 'Moved to Ready for Billing — review and invoice it from /billing.',
-      life: 5000,
+    // 2026-07-01 UX audit: closeout goes through the offline queue. In a
+    // dead zone the whole payload (signature PNG included) persists to
+    // IndexedDB and replays with an Idempotency-Key on reconnect — the
+    // tech's 5 minutes of data entry survives the signal drop.
+    const created = await api.postQueued(`/api/jobs/${props.jobId}/closeout`, payload, {
+      actionType: 'job.closeout', resourceId: String(props.jobId),
     })
+    if (created?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Saved offline',
+        detail: 'No signal — the closeout is stored on this phone and will submit automatically when you reconnect.',
+        life: 6000,
+      })
+    } else {
+      toast.add({
+        severity: 'success',
+        summary: 'Job closed out',
+        detail: 'Moved to Ready for Billing — review and invoice it from /billing.',
+        life: 5000,
+      })
+    }
     emit('closed-out', created)
     _resetForm()
     open.value = false
@@ -235,6 +250,23 @@ async function submit() {
   }
 }
 
+// 2026-07-01 UX audit: with real work in the form (parts rows, hours, a
+// drawn signature, notes), tapping the header X or Escape used to discard
+// everything silently. Dirty → the X and Escape are disabled; Cancel asks.
+const isDirty = computed(() =>
+  parts.value.length > 0 ||
+  Number(hours.value) > 0 ||
+  notes.value.trim() !== '' ||
+  sigDrawn.value
+)
+
+function requestCancel() {
+  if (isDirty.value && !window.confirm('Discard this closeout? Parts, hours, and the signature will be lost.')) {
+    return
+  }
+  open.value = false
+}
+
 function _resetForm() {
   parts.value = []
   hours.value = 0
@@ -262,6 +294,8 @@ watch(open, async (v) => {
     v-model:visible="open"
     :header="`Close out — ${jobTitle || 'Job'}`"
     modal
+    :closable="!isDirty"
+    :close-on-escape="!isDirty"
     :style="{ width: '95vw', maxWidth: '560px' }"
     :breakpoints="{ '768px': '100vw' }"
     data-testid="mobile-job-closeout-dialog"
@@ -321,6 +355,7 @@ watch(open, async (v) => {
             <Button
               icon="pi pi-times"
               v-tooltip="'Remove part'"
+              aria-label="Remove part"
               text
               severity="danger"
               size="small"
@@ -397,7 +432,7 @@ watch(open, async (v) => {
     </form>
 
     <template #footer>
-      <Button label="Cancel" text severity="secondary" @click="open = false" />
+      <Button label="Cancel" text severity="secondary" data-testid="mjco-cancel" @click="requestCancel" />
       <Button
         label="Close out"
         icon="pi pi-check"

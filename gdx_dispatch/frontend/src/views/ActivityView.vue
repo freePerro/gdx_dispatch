@@ -105,6 +105,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate as fmtDate, formatDateTime as fmtDateTime } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -156,13 +157,10 @@ const filteredActivity = computed(() => {
 });
 
 function formatDate(value, includeTime = false) {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
   if (includeTime) {
-    return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return fmtDateTime(value, { options: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } });
   }
-  return date.toLocaleDateString();
+  return fmtDate(value);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

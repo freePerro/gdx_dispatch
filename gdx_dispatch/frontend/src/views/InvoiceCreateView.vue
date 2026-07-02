@@ -185,6 +185,7 @@ import Textarea from 'primevue/textarea';
 import Divider from 'primevue/divider';
 import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
+import { formatMoney as currency } from '../composables/useFormatters';
 import LineItemEditor from '../components/LineItemEditor.vue';
 
 const route = useRoute();
@@ -251,10 +252,6 @@ const jobOptions = computed(() => {
 function toNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-function currency(v) {
-  return `$${toNum(v).toFixed(2)}`;
 }
 
 const subtotal = computed(() =>

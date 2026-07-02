@@ -126,6 +126,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useApi } from '../composables/useApi'
+import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
@@ -191,13 +192,6 @@ function _revokeMedia() {
     if (url && url.startsWith('blob:')) URL.revokeObjectURL(url)
   }
   mediaBlobs.value = {}
-}
-
-function formatDateTime(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
 }
 
 const fetchThreads = async () => {

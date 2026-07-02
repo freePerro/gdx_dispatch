@@ -124,6 +124,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { formatDate } from '../utils/dates'
+import { formatMoney as formatCurrency } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import DataTable from 'primevue/datatable'
@@ -147,13 +148,6 @@ const classificationOptions = [
   { label: 'Inventory', value: 'inventory' },
   { label: 'Unknown', value: 'unknown' },
 ]
-
-function formatCurrency(value) {
-  if (value === null || value === undefined || value === '') return ''
-  const n = Number(value)
-  if (Number.isNaN(n)) return value
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
 
 function statusSeverity(s) {
   const k = String(s || '').toLowerCase()

@@ -33,6 +33,7 @@
       :aria-invalid="!!error"
       :aria-describedby="error ? `${fieldId}-error` : undefined"
       class="w-full"
+      v-bind="attrs"
       @update:model-value="$emit('update:modelValue', $event)"
     />
 
@@ -48,6 +49,7 @@
       :aria-invalid="!!error"
       :aria-describedby="error ? `${fieldId}-error` : undefined"
       class="w-full"
+      v-bind="attrs"
       @update:model-value="$emit('update:modelValue', $event)"
     />
 
@@ -66,6 +68,7 @@
       :aria-invalid="!!error"
       :aria-describedby="error ? `${fieldId}-error` : undefined"
       class="w-full"
+      v-bind="attrs"
       @update:model-value="$emit('update:modelValue', $event)"
     />
 
@@ -77,7 +80,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, useAttrs } from 'vue';
 import InputText from 'primevue/inputtext';
 import Textarea from 'primevue/textarea';
 import Select from 'primevue/select';
@@ -111,6 +114,12 @@ const props = defineProps({
 });
 
 defineEmits(['update:modelValue']);
+
+// 2026-07-01: fall-through attrs (data-testid, inputmode, step, …) belong
+// on the inner control, not the wrapper div — e2e specs .fill() by
+// data-testid and mobile forms need inputmode for the right keyboard.
+defineOptions({ inheritAttrs: false });
+const attrs = useAttrs();
 
 let _autoIdCounter = 0;
 const fieldId = computed(() => {

@@ -248,6 +248,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatMoney as formatCurrency } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -335,11 +336,6 @@ function statusLabel(status) {
 
 function statusSeverity(status) {
   return { active: 'success', expired: 'warning', cancelled: 'danger' }[status] || 'secondary';
-}
-
-function formatCurrency(value) {
-  if (value === undefined || value === null || value === '') return '—';
-  return `$${Number(value).toFixed(2)}`;
 }
 
 function formatDate(value) {

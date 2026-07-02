@@ -333,30 +333,8 @@
 
       <div v-if="loading" class="loading-spinner"><p>Loading estimate...</p></div>
 
-      <!-- Catalog Picker Dialog -->
-      <Dialog v-model:visible="showCatalogPicker" header="Add from Catalog" modal
-        :style="{ width: '700px' }" data-testid="catalog-picker-dialog">
-        <InputText v-model="catalogSearch" placeholder="Search parts, materials, services..."
-          class="w-full" data-testid="catalog-search" style="margin-bottom: 1rem" />
-        <DataTable
-      responsiveLayout="scroll" :value="filteredCatalogItems" :paginator="filteredCatalogItems.length > 10" :rows="10"
-          selectionMode="multiple" v-model:selection="selectedCatalogItems"
-          dataKey="id" stripedRows data-testid="catalog-table">
-          <Column selectionMode="multiple" style="width: 3rem" />
-          <Column field="name" header="Item" sortable />
-          <Column field="category" header="Category" sortable style="width: 120px" />
-          <Column header="Price" style="width: 100px">
-            <template #body="{ data }">{{ currency(data.unit_price) }}</template>
-          </Column>
-          <Column field="supplier_name" header="Supplier" style="width: 130px" />
-        </DataTable>
-        <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showCatalogPicker = false" />
-          <Button :label="`Add ${selectedCatalogItems.length} Item${selectedCatalogItems.length !== 1 ? 's' : ''}`"
-            icon="pi pi-plus" :disabled="!selectedCatalogItems.length"
-            @click="addFromCatalog" data-testid="catalog-add-btn" />
-        </template>
-      </Dialog>
+      <!-- Shared catalog picker (one tab per real catalog) -->
+      <CatalogPickerDialog v-model:visible="showCatalogPicker" @add="addFromCatalog" />
 
       <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Captured-item picker
            for an installed estimate_source plugin (e.g. CHI pricing). Inert unless
@@ -587,11 +565,12 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
-import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
+import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate, formatMoney, formatPercent } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -608,13 +587,12 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
-const { confirmAsync } = useDestructiveConfirm();
+const { confirmDestructive, confirmAsync } = useDestructiveConfirm();
 
 const router = useRouter();
 const route = useRoute();
 const api = useApiWithToast();
 const apiRaw = useApi();
-const confirm = useConfirm();
 const toast = useToast();
 
 const loading = ref(true);
@@ -800,8 +778,8 @@ function marginDisplay(item) {
   const sell = Number(item.unit_price);
   if (!cost || !sell || sell <= 0) return "—";
   const margin = (sell - cost) / sell;
-  if (margin < 0) return `${(margin * 100).toFixed(1)}% (loss)`;
-  return `${(margin * 100).toFixed(1)}%`;
+  if (margin < 0) return `${formatPercent(margin)} (loss)`;
+  return formatPercent(margin);
 }
 
 async function loadPricingTiers() {
@@ -956,38 +934,7 @@ async function _attachCapturedImage(dataUrl, item) {
       detail: "The line and spec were saved; the photo upload failed.", life: 4000 });
   }
 }
-const catalogItems = ref([]);
-const catalogSearch = ref("");
-const selectedCatalogItems = ref([]);
 const aiSuggesting = ref(false);
-
-const _BUILT_IN_PARTS = [
-  { id: "bi-1", name: "Torsion Spring Replacement", category: "Springs", unit_price: 185, supplier_name: "Standard" },
-  { id: "bi-2", name: "Extension Spring Replacement (pair)", category: "Springs", unit_price: 150, supplier_name: "Standard" },
-  { id: "bi-3", name: "Belt Drive Opener Installation", category: "Openers", unit_price: 450, supplier_name: "Standard" },
-  { id: "bi-4", name: "Chain Drive Opener Installation", category: "Openers", unit_price: 350, supplier_name: "Standard" },
-  { id: "bi-5", name: "Lift Cable & Drum Replacement", category: "Parts", unit_price: 45, supplier_name: "Standard" },
-  { id: "bi-6", name: "Nylon Roller Replacement (set of 12)", category: "Parts", unit_price: 120, supplier_name: "Standard" },
-  { id: "bi-7", name: "Door Panel/Section Replacement", category: "Doors", unit_price: 350, supplier_name: "Standard" },
-  { id: "bi-8", name: "Bottom Seal / Weatherstrip", category: "Parts", unit_price: 65, supplier_name: "Standard" },
-  { id: "bi-9", name: "Safety Sensor Replacement", category: "Parts", unit_price: 75, supplier_name: "Standard" },
-  { id: "bi-10", name: "Track Repair / Realignment", category: "Parts", unit_price: 125, supplier_name: "Standard" },
-  { id: "bi-11", name: "New Garage Door Installation", category: "Doors", unit_price: 1200, supplier_name: "Standard" },
-  { id: "bi-12", name: "Tune-Up & Maintenance", category: "Labor", unit_price: 95, supplier_name: "Standard" },
-  { id: "bi-13", name: "Service Call / Diagnostic", category: "Labor", unit_price: 85, supplier_name: "Standard" },
-  { id: "bi-14", name: "Emergency / After-Hours Fee", category: "Labor", unit_price: 150, supplier_name: "Standard" },
-  { id: "bi-15", name: "Wireless Keypad / Remote", category: "Parts", unit_price: 55, supplier_name: "Standard" },
-  { id: "bi-16", name: "Door Insulation Kit", category: "Doors", unit_price: 200, supplier_name: "Standard" },
-  { id: "bi-17", name: "Commercial Door Service", category: "Labor", unit_price: 500, supplier_name: "Standard" },
-];
-
-const filteredCatalogItems = computed(() => {
-  const q = catalogSearch.value.toLowerCase();
-  return catalogItems.value.filter((i) =>
-    !q || i.name.toLowerCase().includes(q) || (i.category || "").toLowerCase().includes(q)
-      || (i.supplier_name || "").toLowerCase().includes(q)
-  );
-});
 
 // --- Labor matrix picker (S97 slice 5) ---
 // Reads tenant's flat-rate labor rows from /api/labor-pricing/items?active=true
@@ -1105,11 +1052,10 @@ async function submitSaveToCatalog() {
       cost: Number(saveCatalogForm.value.cost),
       pricing_category: saveCatalogForm.value.pricing_category,
     }, { successMessage: null });
-    const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
     toast.add({
       severity: "success",
       summary: "Saved to catalog",
-      detail: `${result.name} — sells at ${fmt.format(result.price)} (cost ${fmt.format(result.cost)})`,
+      detail: `${result.name} — sells at ${formatMoney(result.price)} (cost ${formatMoney(result.cost)})`,
       life: 5000,
     });
     saveCatalogOpen.value = false;
@@ -1176,12 +1122,7 @@ function toNum(v) {
 }
 
 function currency(amount) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(amount));
-}
-
-function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return formatMoney(toNum(amount));
 }
 
 function statusSeverity(status) {
@@ -1254,49 +1195,10 @@ const canCreate = computed(() =>
   form.value.line_items.some((li) => li.description && li.unit_price > 0)
 );
 
-async function loadCatalog() {
-  try {
-    const [supplierRes, doorsRes, partsRes, customRes] = await Promise.allSettled([
-      api.get("/api/supplier/catalog"),
-      api.get("/api/catalog/doors?page_size=100"),
-      api.get("/api/catalog/parts?page_size=100"),
-      api.get("/api/catalogs/all-items"),
-    ]);
-    const supplier = supplierRes.status === "fulfilled"
-      ? (Array.isArray(supplierRes.value) ? supplierRes.value : supplierRes.value?.items || [])
-      : [];
-    const doors = doorsRes.status === "fulfilled" ? (doorsRes.value?.items || []) : [];
-    const parts = partsRes.status === "fulfilled" ? (partsRes.value?.items || []) : [];
-    // The tenant's own custom + imported catalogs (custom_catalog_items). These
-    // carry cost + a stored pricing_category so the engine marks them up.
-    const custom = customRes.status === "fulfilled" ? (customRes.value?.items || []) : [];
-    catalogItems.value = [
-      ...custom.map((c) => ({
-        id: c.id, name: c.name, category: c.category || "Parts",
-        unit_price: c.price || 0, cost: c.cost ?? null,
-        pricing_category: c.pricing_category || null,
-        supplier_name: "My Catalog", sku: c.sku,
-      })),
-      ..._BUILT_IN_PARTS,
-      ...supplier.map((s, i) => ({ ...s, id: s.id || `sup-${i}`, supplier_name: s.supplier_name || "Supplier" })),
-      ...doors.map((d) => ({
-        id: d.id, name: `${d.brand || "CHI"} ${d.model_number || ""} ${d.door_type || "Door"} ${d.width || ""}x${d.height || ""}`.trim(),
-        category: "Doors", unit_price: d.sell_price || d.cost || 0, cost: d.cost ?? null,
-        pricing_category: "doors", supplier_name: d.brand || "CHI", sku: d.sku,
-      })),
-      ...parts.map((p) => ({
-        id: p.id, name: p.name, category: p.part_type || "Parts",
-        unit_price: p.sell_price || p.cost || 0, cost: p.cost ?? null,
-        supplier_name: p.brand || "CHI", sku: p.sku,
-      })),
-    ];
-  } catch {
-    catalogItems.value = [..._BUILT_IN_PARTS];
-  }
-}
-
-function addFromCatalog() {
-  for (const item of selectedCatalogItems.value) {
+// Items come from the shared <CatalogPickerDialog>, normalized to
+// { name, description, category, cost, price, pricing_category }.
+function addFromCatalog(items) {
+  for (const item of items) {
     const cost = Number(item.cost) > 0 ? Number(item.cost) : null;
     const pc = cost ? (item.pricing_category || categoryToPricingCategory(item.category)) : null;
     // Display category drives the dropdown; derive from the canonical pricing
@@ -1308,9 +1210,9 @@ function addFromCatalog() {
     const line = {
       ...defaultLineItem(),
       category: displayCat,
-      description: item.name,
+      description: item.description || item.name,
       quantity: 1,
-      unit_price: item.unit_price || 0,
+      unit_price: Number(item.price) || 0,
       // Carry cost + pricing bucket so the tier engine computes the marked-up
       // sell. Without these the line posts at the catalog price (zero markup).
       cost,
@@ -1321,8 +1223,6 @@ function addFromCatalog() {
     // backend engine will persist on save (instead of displaying raw cost).
     if (cost) recomputeSell(line);
   }
-  selectedCatalogItems.value = [];
-  showCatalogPicker.value = false;
 }
 
 async function aiSuggestLines() {
@@ -2069,9 +1969,9 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
 // 2026-05-12 audit — Accept / Decline / Convert all commit state changes
 // that downstream surfaces (customer portal, scheduling, billing) read
 // immediately. One-click misses on the button row used to flip an estimate
-// without a chance to back out. Gate behind confirm.require().
+// without a chance to back out. Gate behind confirmDestructive().
 function acceptEstimate() {
-  confirm.require({
+  confirmDestructive({
     message: `Mark ${estimate.value?.label || "this estimate"} as Accepted? The customer-portal view flips immediately.`,
     header: "Accept Estimate",
     icon: "pi pi-check",
@@ -2093,7 +1993,7 @@ async function doAcceptEstimate() {
 }
 
 function declineEstimate() {
-  confirm.require({
+  confirmDestructive({
     message: `Mark ${estimate.value?.label || "this estimate"} as Declined? The customer-portal view flips immediately.`,
     header: "Decline Estimate",
     icon: "pi pi-times",
@@ -2115,7 +2015,7 @@ async function doDeclineEstimate() {
 }
 
 function convertToJob() {
-  confirm.require({
+  confirmDestructive({
     message: `Convert ${estimate.value?.label || "this estimate"} into a new job? This creates a job record and navigates away.`,
     header: "Convert to Job",
     icon: "pi pi-briefcase",
@@ -2152,10 +2052,13 @@ function copyPublicLink() {
 
 function duplicateEstimate() {
   const sourceNumber = estimate.value?.estimate_number || "this estimate";
-  confirm.require({
+  confirmDestructive({
     message: `Create a new draft estimate from ${sourceNumber}? The duplicate copies the customer, jobsite address, line items, and notes. It starts unattached to a job — edit jobsite or lines before sending.`,
     header: "Duplicate Estimate",
     icon: "pi pi-copy",
+    // Not a delete — keep the accept button primary, not the wrapper's
+    // danger default.
+    acceptClass: "p-button-primary",
     acceptLabel: "Duplicate",
     rejectLabel: "Cancel",
     accept: () => doDuplicateEstimate(),
@@ -2183,7 +2086,6 @@ onMounted(async () => {
   // but be polite — clear if Vue tears us down.
   _autosaveTickInterval = setInterval(() => { _autosaveTick.value++; }, 10000);
   await loadCustomers();
-  loadCatalog();
   loadPricingTiers();
   loadPricingSettings();
   loadPricingCategories();

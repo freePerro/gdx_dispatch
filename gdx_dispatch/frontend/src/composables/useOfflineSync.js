@@ -85,7 +85,13 @@ export async function queueAction(method, url, body = null, opts = {}) {
       // Successful path returns parsed JSON or null.
       return result
     } catch (e) {
-      // Network failed: row stays pending; surface a stub so the caller
+      // 4xx (validation/authz) is a real answer, not an outage: the row is
+      // already marked FAILED and will never be replayed, so returning the
+      // "queued" stub here would tell the caller a dead request was saved.
+      // Rethrow so the caller's error path runs. (409 never reaches here —
+      // _drainOne treats it as synced.)
+      if (e?.status && e.status >= 400 && e.status < 500) throw e
+      // Network / 5xx: row stays pending; surface a stub so the caller
       // can finish optimistically.
       return { queued: true, idempotency_key }
     }
@@ -156,9 +162,10 @@ async function _drainOne(entry) {
   // Other 4xx — client error. Retrying won't help; flag as failed.
   if (resp.status >= 400 && resp.status < 500) {
     let detail = `HTTP ${resp.status}`
+    let parsedBody = null
     try {
-      const body = await resp.json()
-      detail = body.detail || body.error || detail
+      parsedBody = await resp.json()
+      detail = parsedBody.detail || parsedBody.error || detail
     } catch {}
     await db.sync_queue.update(entry.id, {
       status: QUEUE_STATUS.FAILED,
@@ -169,6 +176,9 @@ async function _drainOne(entry) {
     await _refreshPendingCount()
     const e = new Error(detail)
     e.status = resp.status
+    // Callers key richer UX off the response body (e.g. closeout's
+    // `missing` checklist) — keep parity with useApi's error shape.
+    e.body = parsedBody
     throw e
   }
 

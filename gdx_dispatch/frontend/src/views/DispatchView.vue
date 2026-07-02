@@ -619,7 +619,7 @@
                 >{{ t.lat.toFixed(5) }}, {{ t.lng.toFixed(5) }}</a>
               </td>
               <td>{{ t.accuracy_m != null ? `±${Math.round(t.accuracy_m)}m` : '—' }}</td>
-              <td>{{ new Date(t.recorded_at).toLocaleTimeString() }}</td>
+              <td>{{ formatTime(t.recorded_at, { options: { hour: 'numeric', minute: '2-digit', second: '2-digit' } }) }}</td>
             </tr>
           </tbody>
         </table>
@@ -631,6 +631,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { usePollingRefresh } from '../composables/usePollingRefresh';
 import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatTime, formatDateTime } from '../composables/useFormatters';
 import { useToast } from 'primevue/usetoast';
 import Avatar from 'primevue/avatar';
 import Badge from 'primevue/badge';
@@ -1063,12 +1064,7 @@ function formatLatLng(lat, lng) {
 }
 
 function formatTimestamp(value) {
-  if (!value) return '—';
-  try {
-    return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch {
-  return String(value);
-}
+  return formatTime(value, { options: { hour: '2-digit', minute: '2-digit' } });
 }
 
 // --- UI helpers & controls ---
@@ -1500,9 +1496,7 @@ const sortedScheduledUnassigned = computed(() => {
 
 function formatScheduled(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatDateTime(iso, { options: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } });
 }
 
 function getHoldingAreaJobs(areaId) {

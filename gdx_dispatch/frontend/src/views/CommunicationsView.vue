@@ -256,6 +256,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatDateTime } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -472,13 +473,6 @@ function toTime(value) {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
-function formatDateTime(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString();
-}
-
 function formatRelativeTime(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -493,7 +487,7 @@ function formatRelativeTime(value) {
   if (diffHours < 24) return `${diffHours}h`;
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `${diffDays}d`;
-  return date.toLocaleDateString();
+  return formatDate(date);
 }
 
 function channelLabel(channel) {

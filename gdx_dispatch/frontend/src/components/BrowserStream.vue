@@ -111,9 +111,9 @@ onBeforeUnmount(disconnect);
 <style scoped>
 .browser-stream__bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
 .browser-stream__dot { width: 10px; height: 10px; border-radius: 50%; }
-.browser-stream__dot.is-on { background: #22c55e; }
-.browser-stream__dot.is-off { background: #f59e0b; }
-.browser-stream__error { color: #ef4444; }
+.browser-stream__dot.is-on { background: var(--color-success-500); }
+.browser-stream__dot.is-off { background: var(--color-warning-500); }
+.browser-stream__error { color: var(--color-danger-500); }
 .browser-stream__screen {
   width: 100%; max-width: 1280px; aspect-ratio: 1280 / 800;
   border: 1px solid var(--surface-border, #ccc); background: #000;

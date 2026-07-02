@@ -70,7 +70,11 @@ const APPROVED_REVEALS = new Set([
 ]);
 
 const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'accounting', 'viewer'];
-const MODULES = flattenModules();
+// Modules added AFTER the Set→permission migration (2026-07-01 UX audit nav
+// pass: orphan routes surfaced + admin payroll key de-duped). The old Sets
+// predate them, so they're out of scope for migration parity.
+const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games']);
+const MODULES = flattenModules().filter((m) => !POST_MIGRATION_KEYS.has(m.key));
 
 function canonical(role) {
   const r = String(role || '').toLowerCase();

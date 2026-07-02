@@ -34,6 +34,15 @@
         
         @row-click="($event) => openEdit($event.data)"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-clone"
+            title="No job templates yet"
+            message="Templates pre-fill duration, price, and line items so new jobs take seconds to book."
+            action-label="New Template"
+            @action="openCreate"
+          />
+        </template>
         <Column field="name" header="Name" />
         <Column field="service_type" header="Service Type">
           <template #body="{ data }">{{ titleFromService(data.service_type) }}</template>
@@ -42,7 +51,7 @@
           <template #body="{ data }">{{ data.default_duration ?? '—' }}</template>
         </Column>
         <Column field="default_price" header="Default Price">
-          <template #body="{ data }">${{ Number(data.default_price || 0).toFixed(2) }}</template>
+          <template #body="{ data }">{{ formatMoney(data.default_price || 0) }}</template>
         </Column>
         <Column header="Line Items" style="width:160px">
           <template #body="{ data }">{{ lineItemCount(data) }}</template>
@@ -102,6 +111,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatMoney } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import DataTable from 'primevue/datatable';
@@ -156,11 +167,6 @@ function lineItemCount(template) {
   if (typeof template.line_items_count === 'number') return template.line_items_count;
   if (Array.isArray(template.line_items)) return template.line_items.length;
   return 0;
-}
-
-function formatDate(value) {
-  if (!value) return '—';
-  return value.split('T')[0];
 }
 
 function resetForm() {

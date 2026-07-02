@@ -145,6 +145,7 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import { useApi } from '../composables/useApi'
+import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import DataTable from 'primevue/datatable'
@@ -175,13 +176,6 @@ const detailVisible = ref(false)
 const pdfBlobUrl = ref(null)
 const pdfLoading = ref(false)
 const pdfError = ref(null)
-
-function formatDateTime(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
-}
 
 function prettyStatus(s) {
   if (!s) return '—'

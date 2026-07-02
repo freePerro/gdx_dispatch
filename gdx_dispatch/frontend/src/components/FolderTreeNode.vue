@@ -5,8 +5,13 @@
       :class="{ active: selectedId === node.id, 'drop-target': isDropTarget }"
       :style="{ paddingLeft: `${0.4 + depth * 0.9}rem` }"
       :title="node.name"
+      role="treeitem"
+      tabindex="0"
+      :aria-expanded="hasChildren ? expanded : undefined"
+      :aria-selected="selectedId === node.id"
       :draggable="canMove"
       @click="$emit('select', node)"
+      @keydown="onRowKeydown"
       @dragstart.stop="onDragStart"
       @dragover.prevent="onDragOver"
       @dragenter.prevent="onDragEnter"
@@ -35,7 +40,7 @@
         <i class="pi pi-trash"></i>
       </button>
     </div>
-    <div v-if="expanded && hasChildren" class="folder-children">
+    <div v-if="expanded && hasChildren" class="folder-children" role="group">
       <FolderTreeNode
         v-for="child in node.children"
         :key="child.id"
@@ -70,6 +75,22 @@ const expanded = ref(props.depth < 1);
 const isDropTarget = ref(false);
 
 const DRAG_MIME = 'application/x-gdx-folder-id';
+
+// Keyboard path for the row: Enter/Space select (same as click), ArrowRight
+// expands and ArrowLeft collapses via the same local `expanded` ref the
+// chevron button toggles. Drag-to-move stays mouse-only.
+function onRowKeydown(e) {
+  if (e.key === 'Enter') {
+    emit('select', props.node);
+  } else if (e.key === ' ') {
+    e.preventDefault();
+    emit('select', props.node);
+  } else if (e.key === 'ArrowRight') {
+    if (hasChildren.value && !expanded.value) expanded.value = true;
+  } else if (e.key === 'ArrowLeft') {
+    if (expanded.value) expanded.value = false;
+  }
+}
 
 function onDragStart(e) {
   if (!props.canMove) return;
@@ -123,6 +144,11 @@ function onDrop(e) {
 
 .folder-item:hover {
   background: var(--p-content-hover-background, rgba(255, 255, 255, 0.04));
+}
+
+.folder-item:focus-visible {
+  outline: 2px solid var(--interactive-primary);
+  outline-offset: 2px;
 }
 
 .folder-item.active {

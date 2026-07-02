@@ -35,6 +35,13 @@
             data-testid="pay-periods-table"
             @row-click="($event) => openDetail($event.data, 'period')"
           >
+            <template #empty>
+              <EmptyState
+                icon="pi pi-calendar"
+                title="No pay periods yet"
+                message="Run payroll for the current period to create the first one."
+              />
+            </template>
             <Column field="start" header="Start">
               <template #body="{ data }">{{ formatDate(data.start) }}</template>
             </Column>
@@ -50,7 +57,7 @@
               <template #body="{ data }">{{ data.total_hours ?? '—' }}</template>
             </Column>
             <Column field="total_gross" header="Total Gross">
-              <template #body="{ data }">${{ Number(data.total_gross || 0).toFixed(2) }}</template>
+              <template #body="{ data }">{{ formatCurrency(data.total_gross || 0) }}</template>
             </Column>
           </DataTable>
         </TabPanel>
@@ -68,15 +75,22 @@
             data-testid="pay-stubs-table"
             @row-click="($event) => openDetail($event.data, 'stub')"
           >
+            <template #empty>
+              <EmptyState
+                icon="pi pi-file"
+                title="No pay stubs yet"
+                message="Pay stubs appear here after payroll runs."
+              />
+            </template>
             <Column field="employee" header="Employee" />
             <Column field="hours" header="Hours">
               <template #body="{ data }">{{ data.hours ?? '—' }}</template>
             </Column>
             <Column field="gross" header="Gross">
-              <template #body="{ data }">${{ Number(data.gross || 0).toFixed(2) }}</template>
+              <template #body="{ data }">{{ formatCurrency(data.gross || 0) }}</template>
             </Column>
             <Column field="net" header="Net">
-              <template #body="{ data }">${{ Number(data.net || 0).toFixed(2) }}</template>
+              <template #body="{ data }">{{ formatCurrency(data.net || 0) }}</template>
             </Column>
             <Column field="period" header="Period" />
             <Column field="status" header="Status" style="width:120px">
@@ -107,6 +121,8 @@
 <script setup>
 import { onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatMoney as formatCurrency } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Toolbar from 'primevue/toolbar';
 import Button from 'primevue/button';
 import DataTable from 'primevue/datatable';

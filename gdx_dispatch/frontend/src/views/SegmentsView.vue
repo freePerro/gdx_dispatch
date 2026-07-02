@@ -80,6 +80,15 @@
         
         @row-click="openSegmentDialog($event.data)"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-users"
+            title="No segments yet"
+            message="Group customers by criteria to target campaigns and bulk actions."
+            action-label="New Segment"
+            @action="openSegmentDialog()"
+          />
+        </template>
         <Column field="name" header="Name" />
         <Column field="criteria_summary" header="Criteria">
           <template #body="{ data }">
@@ -378,6 +387,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useRouter } from 'vue-router';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
 import Chips from 'primevue/chips';

@@ -92,7 +92,7 @@
                 <span v-if="col.format === 'currency'">
                   <template v-if="readField(data, col.field) == null">—</template>
                   <template v-else>
-                    ${{ Number(readField(data, col.field)).toFixed(2) }}<span
+                    {{ formatMoney(readField(data, col.field)) }}<span
                       v-if="col.field === 'price' && data.price_source === 'computed'"
                       class="muted"
                       title="Retail computed from cost × tenant margin tier (no fixed catalog price set)"
@@ -261,6 +261,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatMoney } from "../composables/useFormatters";
 import {
   PRODUCT_CLASS_OPTIONS,
   getCatalogClass,

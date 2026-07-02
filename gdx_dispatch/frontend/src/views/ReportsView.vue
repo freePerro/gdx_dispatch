@@ -91,6 +91,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApi } from "../composables/useApi";
+import { applyChartTheme, chartThemeColors } from "../utils/chartTheme";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Card from "primevue/card";
@@ -133,14 +134,18 @@ const revenueChartData = computed(() => ({
   }],
 }));
 
-const barChartOptions = {
-  responsive: true,
-  plugins: { legend: { display: false }, title: { display: false } },
-  scales: {
-    x: { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } },
-    y: { ticks: { color: "#94a3b8", callback: (v) => "$" + v.toLocaleString() }, grid: { color: "#1e293b" }, beginAtZero: true },
-  },
-};
+// Computed (not a plain const) so the theme CSS vars are resolved when the
+// chart renders after mount, not at module evaluation.
+const barChartOptions = computed(() =>
+  applyChartTheme({
+    responsive: true,
+    plugins: { legend: { display: false }, title: { display: false } },
+    scales: {
+      x: {},
+      y: { ticks: { callback: (v) => "$" + v.toLocaleString() }, beginAtZero: true },
+    },
+  })
+);
 
 const jobStatusData = computed(() => {
   const labels = Object.keys(jobStatusCounts.value);
@@ -154,10 +159,12 @@ const jobStatusData = computed(() => {
   };
 });
 
-const pieChartOptions = {
+// Pie charts must not get scales.x/y injected (applyChartTheme would render
+// axes), so theme only the legend labels here.
+const pieChartOptions = computed(() => ({
   responsive: true,
-  plugins: { legend: { position: "bottom", labels: { color: "#94a3b8" } } },
-};
+  plugins: { legend: { position: "bottom", labels: { color: chartThemeColors().text } } },
+}));
 
 function formatCurrency(value) {
   return new Intl.NumberFormat("en-US", {

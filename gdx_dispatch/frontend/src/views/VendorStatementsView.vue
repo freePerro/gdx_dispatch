@@ -90,6 +90,7 @@ import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
 import { formatDate } from '../utils/dates'
+import { formatDateTime, formatMoney as formatCurrency } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import DataTable from 'primevue/datatable'
@@ -107,20 +108,6 @@ const items = ref([])
 const loading = ref(false)
 const error = ref(null)
 const duplicate = ref(null)
-
-function formatDateTime(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
-}
-
-function formatCurrency(value) {
-  if (value === null || value === undefined || value === '') return ''
-  const n = Number(value)
-  if (Number.isNaN(n)) return value
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
 
 function statusSeverity(s) {
   if (!s) return 'secondary'

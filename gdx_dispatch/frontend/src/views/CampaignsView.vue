@@ -44,6 +44,11 @@
       responsiveLayout="scroll" :value="filteredCampaigns" paginator :rows="10" data-testid="campaigns-table"
           striped-rows responsive-layout="scroll" :global-filter-fields="['name', 'type']"
           sort-field="created_at" :sort-order="-1">
+          <template #empty>
+            <EmptyState icon="pi pi-megaphone" title="No campaigns yet"
+              message="Create a campaign to reach customers by email or SMS."
+              action-label="New Campaign" @action="showCreate = true" />
+          </template>
           <Column field="name" header="Campaign" sortable>
             <template #body="{ data }">
               <span class="campaign-name" @click="editCampaign(data)">{{ data.name || data.title }}</span>
@@ -132,6 +137,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

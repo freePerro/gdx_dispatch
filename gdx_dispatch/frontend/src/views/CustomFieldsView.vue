@@ -23,6 +23,15 @@
         striped-rows
         class="custom-fields-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-sliders-h"
+            title="No custom fields yet"
+            message="Define extra fields to capture on customers and jobs."
+            action-label="New Field"
+            @action="openCreate"
+          />
+        </template>
         <template #groupheader="slotProps">
           <div class="group-header">
             <strong>{{ slotProps.data.entity_type === 'job' ? 'Job Fields' : 'Customer Fields' }}</strong>
@@ -98,6 +107,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -150,7 +160,7 @@ function normalizeFormPayload() {
   payload.sort_order = Number(payload.sort_order) || 0;
   if (form.value.field_type === 'select') {
     payload.options = optionsInput.value
-n      .split('\n')
+      .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
   } else {

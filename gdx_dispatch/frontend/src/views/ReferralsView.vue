@@ -138,6 +138,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatTimestamp } from "../utils/formatTimestamp";
+import { formatMoney as formatCurrency } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -202,11 +203,6 @@ function statusSeverity(status) {
     converted: "success",
     declined: "danger",
   }[status] || "secondary";
-}
-
-function formatCurrency(value) {
-  if (value == null || value === "") return "—";
-  return `$${Number(value).toFixed(2)}`;
 }
 
 // formatDate now delegates to the shared util so PG timestamptz strings

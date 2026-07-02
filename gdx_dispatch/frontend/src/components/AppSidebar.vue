@@ -156,6 +156,7 @@
             <router-link
               :to="item.to"
               class="menu-item menu-item-link"
+              v-tooltip.right="item.description || ''"
               @click="handleItemClick(item.to, item.label, item.icon)"
             >
               <i v-if="item.icon" :class="item.icon" aria-hidden="true" />
@@ -186,7 +187,7 @@
         :to="module.to"
         class="icon-item"
         :class="{ active: isActiveRoute(module.to) }"
-        v-tooltip.right="module.label"
+        v-tooltip.right="module.description ? `${module.label} — ${module.description}` : module.label"
         :aria-label="module.label"
         @click="handleItemClick"
       >
@@ -306,6 +307,7 @@ const panelItems = computed(() => {
       label: module.label,
       icon: module.icon,
       to: module.to,
+      description: module.description,
     })),
   }));
 });

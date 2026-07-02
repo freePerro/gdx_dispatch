@@ -73,15 +73,22 @@ function scrollToBottom() {
   }
 }
 
+// 2026-07-01 UX audit: chat sends are offline-queued. A queued send isn't
+// pushed into the thread (there's no server message row yet) — it appears
+// via the normal poll after the queue drains on reconnect.
 async function sendText() {
   const body = draft.value.trim()
   if (!body || !props.job?.id) return
   sending.value = true
   try {
-    const msg = await api.post(`/api/mobile/jobs/${props.job.id}/chat`, {
+    const msg = await api.postQueued(`/api/mobile/jobs/${props.job.id}/chat`, {
       kind: 'text', body,
-    })
-    messages.value.push(msg)
+    }, { actionType: 'job.chat', resourceId: String(props.job.id) })
+    if (msg?.queued) {
+      toast.add({ severity: 'warn', summary: 'Queued', detail: 'No signal — the message sends when you reconnect.', life: 3500 })
+    } else {
+      messages.value.push(msg)
+    }
     draft.value = ''
     nextTick(scrollToBottom)
   } catch (e) {
@@ -95,10 +102,14 @@ async function sendQuick(slug) {
   if (!props.job?.id) return
   sending.value = true
   try {
-    const msg = await api.post(`/api/mobile/jobs/${props.job.id}/chat`, {
+    const msg = await api.postQueued(`/api/mobile/jobs/${props.job.id}/chat`, {
       kind: 'quick_action', quick_action: slug,
-    })
-    messages.value.push(msg)
+    }, { actionType: 'job.chat', resourceId: String(props.job.id) })
+    if (msg?.queued) {
+      toast.add({ severity: 'warn', summary: 'Queued', detail: 'No signal — the message sends when you reconnect.', life: 3500 })
+    } else {
+      messages.value.push(msg)
+    }
     nextTick(scrollToBottom)
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Send failed', detail: e.message, life: 4000 })
@@ -192,6 +203,7 @@ function isMine(m) {
         <Button
           icon="pi pi-send"
           v-tooltip="'Send'"
+          aria-label="Send"
           :loading="sending"
           :disabled="!draft.trim()"
           @click="sendText"
@@ -220,11 +232,11 @@ function isMine(m) {
   max-width: 80%;
   padding: 0.5rem 0.75rem;
   border-radius: 0.6rem;
-  background: white;
+  background: var(--p-content-background, var(--surface-panel));
   border: 1px solid var(--p-content-border-color);
 }
-.chat-msg.is-mine { align-self: flex-end; background: #eff6ff; border-color: #bfdbfe; }
-.chat-msg.is-quick { background: #fef3c7; border-color: #fde68a; }
+.chat-msg.is-mine { align-self: flex-end; background: var(--interactive-primary-soft); border-color: var(--border-strong); }
+.chat-msg.is-quick { background: var(--color-warning-bg); border-color: var(--color-warning-border); }
 .chat-msg-meta { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.7rem; margin-bottom: 0.15rem; }
 .chat-msg-body { font-size: 0.9rem; line-height: 1.3; }
 

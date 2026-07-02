@@ -42,6 +42,15 @@
         class="clickable-row"
         data-testid="pricing-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-dollar"
+            title="No price book entries yet"
+            message="Build your price book so estimates and invoices pull consistent pricing."
+            action-label="Add Price Book Entry"
+            @action="openDialog()"
+          />
+        </template>
         <Column field="sku" header="SKU" :style="{ minWidth: '120px' }" />
         <Column field="name" header="Name" />
         <Column header="Category" :style="{ minWidth: '160px' }">
@@ -54,7 +63,7 @@
           <template #body="{ data }">{{ formatCurrency(data.cost) }}</template>
         </Column>
         <Column field="margin_pct" header="Margin" :style="{ width: '120px' }">
-          <template #body="{ data }">{{ formatPercent(data.margin_pct) }}</template>
+          <template #body="{ data }">{{ formatPercent(data.margin_pct, { digits: 2, whole: true }) }}</template>
         </Column>
         <Column header="Active" :style="{ width: '120px' }">
           <template #body="{ data }">
@@ -175,6 +184,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatMoney as formatCurrency, formatPercent } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -244,16 +255,6 @@ const tabLabel = (tab) => {
   const label = tab.charAt(0).toUpperCase() + tab.slice(1);
   const suffix = counts.value[tab] ? ` (${counts.value[tab]})` : '';
   return `${label}${suffix}`;
-};
-
-const formatCurrency = (value) => {
-  if (value == null) return '—';
-  return `$${Number(value).toFixed(2)}`;
-};
-
-const formatPercent = (value) => {
-  if (value == null) return '—';
-  return `${Number(value).toFixed(2)}%`;
 };
 
 const loadPricing = async () => {

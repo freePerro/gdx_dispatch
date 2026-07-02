@@ -7,6 +7,9 @@
       'mobile-sidebar-open': mobileSidebarOpen,
     }"
   >
+    <!-- 2026-07-01 a11y audit: keyboard/screen-reader users had to tab
+         through the whole sidebar on every page. Visible on focus only. -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <AppSidebar
       v-if="!isMobile"
       :collapsed="sidebarCollapsed"
@@ -42,7 +45,7 @@
              title; desktop uses the sidebar. Title is on each view. -->
       </div>
 
-      <main class="layout-content">
+      <main id="main-content" class="layout-content" tabindex="-1">
         <slot />
       </main>
     </div>
@@ -177,6 +180,27 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* Skip link: visually hidden until keyboard-focused. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0.75rem;
+  z-index: 3000;
+  padding: 0.5rem 1rem;
+  border-radius: 0 0 0.5rem 0.5rem;
+  background: var(--interactive-primary);
+  color: var(--color-bg-900);
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+.skip-link:focus-visible {
+  top: 0;
+}
+.layout-content:focus {
+  outline: none;
+}
+
 .app-layout {
   height: 100vh;
   display: grid;

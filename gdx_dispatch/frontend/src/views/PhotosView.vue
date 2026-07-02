@@ -86,6 +86,10 @@
           </div>
           <div class="form-field full-width">
             <label class="form-label">Photo file *</label>
+            <!-- No `capture` attribute on purpose: bare image inputs offer
+                 "Take Photo / Choose from Library" on phones; capture=
+                 "environment" would force camera-only and block library
+                 uploads (2026-07-01 audit follow-up — considered, rejected). -->
             <input type="file" accept="image/*" @change="onFileSelect" />
             <p class="hint" v-if="uploadForm.file">{{ uploadForm.file.name }}</p>
           </div>

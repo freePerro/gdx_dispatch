@@ -164,6 +164,57 @@ describe('FolderTreeNode', () => {
     expect(wrapper.emitted('move')).toBeFalsy();
   });
 
+  it('exposes the row as a focusable treeitem with aria-expanded on folders', () => {
+    const tree = makeNode('Top', [makeNode('Sub')]);
+    const wrapper = mount(FolderTreeNode, { props: { node: tree }, global: globalConfig });
+    const items = wrapper.findAll('.folder-item');
+    // Folder row: treeitem, tabbable, expanded by default at depth 0.
+    expect(items[0].attributes('role')).toBe('treeitem');
+    expect(items[0].attributes('tabindex')).toBe('0');
+    expect(items[0].attributes('aria-expanded')).toBe('true');
+    // Leaf row: no aria-expanded at all.
+    expect(items[1].attributes('aria-expanded')).toBeUndefined();
+  });
+
+  it('emits select on Enter and Space keydown like click', async () => {
+    const node = makeNode('KeyPick');
+    const wrapper = mount(FolderTreeNode, { props: { node }, global: globalConfig });
+    const item = wrapper.find('.folder-item');
+    await item.trigger('keydown', { key: 'Enter' });
+    expect(wrapper.emitted('select')).toHaveLength(1);
+    expect(wrapper.emitted('select')[0][0].name).toBe('KeyPick');
+    await item.trigger('keydown', { key: ' ' });
+    expect(wrapper.emitted('select')).toHaveLength(2);
+    // Same payload as the click path.
+    await item.trigger('click');
+    expect(wrapper.emitted('select')[2][0]).toBe(wrapper.emitted('select')[0][0]);
+  });
+
+  it('ArrowLeft collapses and ArrowRight expands a folder row', async () => {
+    const tree = makeNode('Top', [makeNode('Sub')]);
+    const wrapper = mount(FolderTreeNode, { props: { node: tree }, global: globalConfig });
+    const item = wrapper.find('.folder-item');
+    // Depth 0 starts expanded.
+    expect(wrapper.text()).toContain('Sub');
+    await item.trigger('keydown', { key: 'ArrowLeft' });
+    expect(wrapper.text()).not.toContain('Sub');
+    expect(item.attributes('aria-expanded')).toBe('false');
+    await item.trigger('keydown', { key: 'ArrowRight' });
+    expect(wrapper.text()).toContain('Sub');
+    expect(item.attributes('aria-expanded')).toBe('true');
+    // Arrow keys never emit select.
+    expect(wrapper.emitted('select')).toBeFalsy();
+  });
+
+  it('ArrowRight on a leaf row does nothing', async () => {
+    const node = makeNode('Leafy');
+    const wrapper = mount(FolderTreeNode, { props: { node }, global: globalConfig });
+    const item = wrapper.find('.folder-item');
+    await item.trigger('keydown', { key: 'ArrowRight' });
+    expect(item.attributes('aria-expanded')).toBeUndefined();
+    expect(wrapper.emitted('select')).toBeFalsy();
+  });
+
   it('propagates select events from nested children', async () => {
     const tree = makeNode('Top', [makeNode('Child', [], 'child-1')]);
     const wrapper = mount(FolderTreeNode, { props: { node: tree }, global: globalConfig });

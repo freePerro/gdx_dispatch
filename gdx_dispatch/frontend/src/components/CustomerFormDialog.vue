@@ -4,10 +4,16 @@
     :header="isEditMode ? 'Edit Customer' : 'Create Customer'"
     :style="{ width: '500px' }"
     modal
+    :closable="!isDirty"
+    :close-on-escape="!isDirty"
     data-testid="customer-form-dialog"
     @update:visible="$emit('update:visible', $event)"
   >
     <form class="dialog-form" @submit.prevent="submitForm">
+      <!-- name/phone/email/address stay raw label+InputText: their
+           data-testids are consumed as real <input> elements by e2e
+           (daily-ux-improvements) + unit specs, and FormField puts
+           fall-through attrs on its wrapper div, not the input. -->
       <div class="form-field">
         <label for="cfd-name">Full name *</label>
         <InputText id="cfd-name" v-model="form.name" data-testid="customer-name-input" class="w-full" />
@@ -50,42 +56,35 @@
         <Textarea id="cfd-address" v-model="form.address" rows="2" data-testid="customer-address-input" class="w-full" />
       </div>
 
-      <div class="form-field">
-        <label for="cfd-notes">Notes</label>
-        <Textarea
-          id="cfd-notes"
-          v-model="form.notes"
-          rows="3"
-          data-testid="customer-notes-input"
-          class="w-full"
-          placeholder="Billing instructions, referral context, or equipment notes"
-        />
-      </div>
+      <FormField
+        id="cfd-notes"
+        v-model="form.notes"
+        label="Notes"
+        as="textarea"
+        :rows="3"
+        data-testid="customer-notes-input"
+        placeholder="Billing instructions, referral context, or equipment notes"
+      />
 
-      <div class="form-field">
-        <label for="cfd-referral">Referral source</label>
-        <InputText
-          id="cfd-referral"
-          v-model="form.referral_source"
-          data-testid="customer-referral-input"
-          class="w-full"
-          placeholder="Referral partner or campaign"
-          maxlength="50"
-        />
-      </div>
+      <FormField
+        id="cfd-referral"
+        v-model="form.referral_source"
+        label="Referral source"
+        data-testid="customer-referral-input"
+        placeholder="Referral partner or campaign"
+        maxlength="50"
+      />
 
-      <div class="form-field">
-        <label for="cfd-type">Customer Type</label>
-        <Select
-          id="cfd-type"
-          v-model="form.customer_type"
-          :options="customerTypeOptions"
-          optionLabel="label"
-          optionValue="value"
-          data-testid="customer-type-dropdown"
-          class="w-full"
-        />
-      </div>
+      <FormField
+        id="cfd-type"
+        v-model="form.customer_type"
+        label="Customer Type"
+        as="select"
+        :options="customerTypeOptions"
+        optionLabel="label"
+        optionValue="value"
+        data-testid="customer-type-dropdown"
+      />
 
       <!-- Pre-2026-05-21 the dialog also rendered an Access notes textarea,
            a Tax exempt toggle, and a Send portal invite toggle. None of
@@ -98,7 +97,7 @@
       <div v-if="error" class="inline-error" data-testid="customer-form-error">{{ error }}</div>
 
       <div class="form-actions">
-        <Button type="button" label="Cancel" text @click="cancel" />
+        <Button type="button" label="Cancel" text data-testid="customer-cancel-btn" @click="cancel" />
         <Button
           type="submit"
           :label="isEditMode ? 'Save Changes' : 'Create Customer'"
@@ -115,12 +114,13 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useApi } from "../composables/useApi";
+import { useDirtyDialog } from "../composables/useDirtyDialog";
 import { findDuplicateMatch, lookupTerms } from "../utils/customerMatch";
 import Button from "primevue/button";
 import Dialog from "primevue/dialog";
-import Select from "primevue/select";
 import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";
+import FormField from "./FormField.vue";
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -193,6 +193,12 @@ const form = ref(emptyForm());
 const error = ref("");
 const saving = ref(false);
 
+// Unsaved-changes guard — Esc / the header X are disabled while dirty, and
+// Cancel prompts before discarding typed-in work (2026-07-01 UX audit).
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value, {
+  message: "Discard unsaved customer changes?",
+});
+
 // At-entry duplicate detection. { customer, on } or null.
 const duplicateMatch = ref(null);
 let _dupTimer = null;
@@ -263,6 +269,9 @@ watch(
       error.value = "";
       duplicateMatch.value = null;
       clearTimeout(_dupTimer);
+      // Pristine snapshot must exist before the first keystroke (the
+      // watcher is `immediate`, so this also covers mounting already-open).
+      snapshot();
     }
   },
   { immediate: true },
@@ -279,6 +288,7 @@ watch(
 onBeforeUnmount(() => clearTimeout(_dupTimer));
 
 function cancel() {
+  if (!confirmDiscard()) return;
   emit("update:visible", false);
 }
 

@@ -136,6 +136,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDateTime as formatDateValue } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -204,11 +205,6 @@ function templateItemCount(row) {
 
 function formatTemplateDate(row) {
   return formatDateValue(row.created_at);
-}
-
-function formatDateValue(value) {
-  if (!value) return '—';
-  return new Date(value).toLocaleString();
 }
 
 function openTemplateDialog(template = null) {

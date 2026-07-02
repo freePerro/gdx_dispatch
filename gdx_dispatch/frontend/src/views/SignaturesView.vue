@@ -31,6 +31,13 @@
             class="clickable-row"
             data-testid="signatures-table"
           >
+            <template #empty>
+              <EmptyState
+                icon="pi pi-pencil"
+                title="No signatures yet"
+                message="Signatures captured on proposals, completions, and consent forms will appear here."
+              />
+            </template>
             <Column header="Preview" style="width:100px">
               <template #body="{ data }">
                 <img
@@ -57,6 +64,7 @@
               <template #body="{ data }">
                 <Button
                   v-tooltip="'View'"
+                  aria-label="View"
                   icon="pi pi-eye"
                   text
                   size="small"
@@ -112,6 +120,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

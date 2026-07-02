@@ -84,13 +84,23 @@ describe('Phase 3 offline action queue', () => {
     expect(rows[0].last_error_code).toBe(409)
   })
 
-  it('marks 4xx (non-409) as failed without retry', async () => {
+  it('marks 4xx (non-409) as failed without retry AND rethrows to the caller', async () => {
+    // 2026-07-01 UX audit: queueAction used to swallow 4xx and hand back the
+    // "queued" stub — the caller believed a dead (never-retried) request was
+    // saved. It now rethrows with status + parsed body so error UX runs.
     const { queueAction, db, QUEUE_STATUS } = await freshSync()
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false, status: 400,
       json: async () => ({ detail: 'bad payload' }),
     })
-    await queueAction('POST', '/api/mobile/jobs/job-1/en-route', {})
+    let thrown = null
+    try {
+      await queueAction('POST', '/api/mobile/jobs/job-1/en-route', {})
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown?.status).toBe(400)
+    expect(thrown?.body?.detail).toBe('bad payload')
     const rows = await db.sync_queue.toArray()
     expect(rows[0].status).toBe(QUEUE_STATUS.FAILED)
     expect(rows[0].last_error).toBe('bad payload')

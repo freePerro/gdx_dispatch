@@ -71,7 +71,14 @@
             class="plugin-screen__create"
             @submit.prevent="onCreate(screen)"
           >
-            <span v-for="f in screen.create.fields" :key="f.name" class="p-field">
+            <!-- optional labeled measurement diagram: renders its fields on the
+                 picture; those fields are then skipped in the normal field list. -->
+            <MeasurementDiagram
+              v-if="screen.create.diagram === 'garage_opening'"
+              :state="formState"
+            />
+            <span v-for="f in screen.create.fields"
+                  v-show="isFieldVisible(i, f) && !_inDiagram(screen, f)" :key="f.name" class="p-field">
               <label :for="`pf-${f.name}`">{{ f.label }}</label>
               <!-- select: options from the plugin's (validated) options_endpoint;
                    dependent selects refetch when a field they depend on changes. -->
@@ -79,7 +86,7 @@
                 v-if="f.type === 'select'"
                 :inputId="`pf-${f.name}`"
                 v-model="formState[f.name]"
-                :options="fieldOptions[`${i}:${f.name}`] || []"
+                :options="fieldOptions[`${i}:${f.name}`] || f.options || []"
                 optionLabel="label"
                 optionValue="value"
                 :filter="!!f.filter"
@@ -145,6 +152,7 @@ import Dialog from 'primevue/dialog';
 import Select from 'primevue/select';
 import InputNumber from 'primevue/inputnumber';
 import BrowserStream from './BrowserStream.vue';
+import MeasurementDiagram from './MeasurementDiagram.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { usePluginScreen } from '../composables/usePluginScreen';
 
@@ -235,6 +243,30 @@ function applyFieldDefaults(screen) {
 async function loadFieldOptions(si, field) {
   const opts = await fetchOptions(field, formState);
   if (opts !== null) fieldOptions[`${si}:${field.name}`] = opts;  // null = superseded
+}
+
+// Progressive disclosure — an "order it step by step" workflow. A dependent
+// select is revealed only once it actually has options to offer (its plugin
+// endpoint returns [] until its prerequisites are met, e.g. a window design has
+// no options until a panel design is chosen; a size has none for a part). This
+// makes each choice unlock the next relevant one and hides fields that don't
+// apply to the current path. Base fields (no depends_on) are always shown.
+// Measurement fields rendered inside a diagram are skipped in the normal list.
+const _DIAGRAM_FIELDS = { garage_opening: ['opening_w', 'opening_h', 'ceiling'] };
+function _inDiagram(screen, f) {
+  const set = _DIAGRAM_FIELDS[screen?.create?.diagram];
+  return !!set && set.includes(f.name);
+}
+
+function isFieldVisible(si, f) {
+  const deps = Array.isArray(f.depends_on) ? f.depends_on : [];
+  if (!deps.length) return true;
+  if (f.type === 'select' && f.options_endpoint) {
+    const opts = fieldOptions[`${si}:${f.name}`];
+    return Array.isArray(opts) && opts.length > 0;
+  }
+  // dependent non-selects (e.g. an add-on qty) show once their deps are filled
+  return deps.every((d) => formState[d] !== undefined && formState[d] !== null && formState[d] !== '');
 }
 
 // A select changed: clear + refetch any field in the same form that depends on it.
