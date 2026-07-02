@@ -155,8 +155,8 @@
           </Column>
           <Column header="Margin" style="width: 90px">
             <template #body="{ data }">
-              <span v-if="data.margin_pct_override != null">{{ (data.margin_pct_override * 100).toFixed(1) }}%</span>
-              <span v-else-if="data.margin_pct_snapshot != null">{{ (data.margin_pct_snapshot * 100).toFixed(1) }}%<small class="muted"> tier</small></span>
+              <span v-if="data.margin_pct_override != null">{{ formatPercent(data.margin_pct_override) }}</span>
+              <span v-else-if="data.margin_pct_snapshot != null">{{ formatPercent(data.margin_pct_snapshot) }}<small class="muted"> tier</small></span>
               <span v-else style="opacity: 0.4">—</span>
             </template>
           </Column>
@@ -196,7 +196,7 @@
               data-testid="invoice-edit-tax-rate"
             />
             <small class="hint">
-              Tenant default: {{ tenantDefaultRatePct.toFixed(2) }}%.
+              Tenant default: {{ formatPercent(tenantDefaultRatePct, { digits: 2, whole: true }) }}.
               Leave 0 if every line is non-taxable.
             </small>
           </div>
@@ -228,7 +228,7 @@
               <strong>{{ currency(editTaxableSubtotal) }}</strong>
             </div>
             <div class="total-row">
-              <span>Tax ({{ editTaxRatePct.toFixed(2) }}%)</span>
+              <span>Tax ({{ formatPercent(editTaxRatePct, { digits: 2, whole: true }) }})</span>
               <strong>{{ currency(editTax) }}</strong>
             </div>
             <div class="total-row grand">
@@ -247,7 +247,7 @@
                 <strong>{{ currency(invoice.taxable_subtotal) }}</strong>
               </div>
               <div class="total-row">
-                <span>Tax<template v-if="invoice.tax_rate != null"> ({{ (invoice.tax_rate * 100).toFixed(2) }}%)</template></span>
+                <span>Tax<template v-if="invoice.tax_rate != null"> ({{ formatPercent(invoice.tax_rate, { digits: 2 }) }})</template></span>
                 <strong>{{ currency(invoice.tax_amount) }}</strong>
               </div>
             </template>
@@ -460,9 +460,10 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { formatDate, formatMoney, formatPercent } from "../composables/useFormatters";
+import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -481,7 +482,7 @@ import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 const api = useApi();
 const route = useRoute();
 const router = useRouter();
-const confirm = useConfirm();
+const { confirmDestructive } = useDestructiveConfirm();
 const toast = useToast();
 
 const loading = ref(true);
@@ -584,12 +585,7 @@ function lineTotal(item) {
 }
 
 function currency(value) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(value));
-}
-
-function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return formatMoney(toNum(value));
 }
 
 function statusSeverity(status) {
@@ -1073,11 +1069,9 @@ async function downloadPdf() {
 }
 
 function confirmDelete() {
-  confirm.require({
+  confirmDestructive({
     message: `Delete ${invoice.value.invoice_number}? This cannot be undone.`,
     header: "Confirm Delete",
-    icon: "pi pi-exclamation-triangle",
-    acceptClass: "p-button-danger",
     accept: async () => {
       try {
         await api.del(`/api/invoices/${route.params.id}`);
@@ -1098,7 +1092,7 @@ function pushToQuickbooks() {
   const totalLabel = invoice.value?.total != null
     ? currency(invoice.value.total)
     : "this invoice";
-  confirm.require({
+  confirmDestructive({
     message: `Push ${invoice.value?.invoice_number || "this invoice"} (${totalLabel}) to QuickBooks? A QB invoice will be created on the live realm.`,
     header: "Push to QuickBooks",
     icon: "pi pi-cloud-upload",

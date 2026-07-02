@@ -53,6 +53,15 @@
         class="clickable-row"
         data-testid="payments-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-credit-card"
+            title="No payments yet"
+            message="Payments show up here once invoices get paid, or you can record one manually."
+            action-label="Record Payment"
+            @action="openDialog"
+          />
+        </template>
         <Column
           field="date"
           header="Date"
@@ -189,6 +198,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate, formatMoney as formatCurrency } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import AutoComplete from 'primevue/autocomplete';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -267,18 +278,6 @@ function capitalize(s) {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
-
-const formatDate = (value) => {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
-};
-
-const formatCurrency = (value) => {
-  if (value == null) return '—';
-  // Use Intl so $1,997.22 has a thousands separator instead of $1997.22.
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value) || 0);
-};
 
 const sourceFilter = ref('all');
 

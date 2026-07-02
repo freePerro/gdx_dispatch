@@ -23,10 +23,18 @@
         :value="warranties"
         striped-rows
         responsiveLayout="scroll"
-        emptyMessage="No warranties"
         class="clickable-row"
         data-testid="warranties-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-shield"
+            title="No warranties yet"
+            message="Track product warranties by customer and job so expirations never sneak up."
+            action-label="New Warranty"
+            @action="openCreate"
+          />
+        </template>
         <Column field="product" header="Product" />
         <Column field="customer" header="Customer" />
         <Column field="job_id" header="Job" />
@@ -107,6 +115,7 @@
 <script setup>
 import { onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";

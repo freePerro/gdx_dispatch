@@ -245,6 +245,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatMoney as formatCurrency } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -335,11 +336,6 @@ function emptyEnrollment() {
     start_date: null,
     notes: '',
   };
-}
-
-function formatCurrency(value) {
-  if (value == null) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
 }
 
 function formatDate(value) {

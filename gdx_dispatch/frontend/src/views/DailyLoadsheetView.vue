@@ -57,6 +57,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApi } from "../composables/useApi";
+import { formatDate } from "../composables/useFormatters";
 import Checkbox from "primevue/checkbox";
 import DatePicker from "primevue/datepicker";
 import ProgressSpinner from "primevue/progressspinner";
@@ -71,7 +72,7 @@ const items = ref([]);
 
 const formattedDate = computed(() => {
   const d = selectedDate.value instanceof Date ? selectedDate.value : new Date(selectedDate.value);
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return formatDate(d, { options: { weekday: "long", month: "long", day: "numeric", year: "numeric" } });
 });
 
 const checkedCount = computed(() => items.value.filter((i) => i.checked).length);

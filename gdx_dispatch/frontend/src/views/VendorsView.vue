@@ -5,6 +5,7 @@
           <InputText v-model="searchQuery" placeholder="Search vendors..." data-testid="vendor-search" />
         </template>
         <template #end>
+          <Button icon="pi pi-download" label="Export" aria-label="Export CSV" text size="small" @click="exportRows" />
           <Button label="+ New Vendor" icon="pi pi-plus" data-testid="new-vendor-btn" @click="openCreate" />
         </template>
       </Toolbar>
@@ -14,22 +15,17 @@
 
       <DataTable
         class="clickable-rows"
-      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" striped-rows
+      responsiveLayout="scroll" v-if="!loading" :value="filtered" paginator :rows="20" :rowsPerPageOptions="[10, 20, 50, 100]" striped-rows
         data-testid="vendors-table" @row-click="openEdit($event.data)" >
         <template #empty>
-          <div class="empty-state">
-            <i class="pi pi-building" style="font-size:3rem; color:#64748b;"></i>
-            <h3>No Vendors Yet</h3>
-            <p>Add your suppliers to track purchase orders and catalogs.</p>
-            <Button label="+ Add First Vendor" @click="openCreate" />
-          </div>
+          <EmptyState icon="pi pi-building" title="No Vendors Yet" message="Add your suppliers to track purchase orders and catalogs." actionLabel="+ Add First Vendor" @action="openCreate" />
         </template>
         <Column field="name" header="Name" sortable />
-        <Column field="contact_name" header="Contact" />
-        <Column field="phone" header="Phone" />
-        <Column field="email" header="Email" />
-        <Column field="payment_terms" header="Terms" />
-        <Column field="active" header="Status" style="width:100px">
+        <Column field="contact_name" header="Contact" sortable />
+        <Column field="phone" header="Phone" sortable />
+        <Column field="email" header="Email" sortable />
+        <Column field="payment_terms" header="Terms" sortable />
+        <Column field="active" header="Status" sortable style="width:100px">
           <template #body="{ data }">
             <Tag :value="data.active ? 'Active' : 'Inactive'" :severity="data.active ? 'success' : 'secondary'" />
           </template>
@@ -43,60 +39,21 @@
       </DataTable>
 
       <!-- Dialog -->
-      <Dialog v-model:visible="showDialog" :header="editing ? 'Edit Vendor' : 'New Vendor'" modal :style="{width: '600px'}">
+      <Dialog v-model:visible="showDialog" :header="editing ? 'Edit Vendor' : 'New Vendor'" modal :style="{width: '600px'}" :closable="!isDirty" :close-on-escape="!isDirty">
         <div class="form-grid">
-          <div class="form-field full-width">
-            <label>Name *</label>
-            <InputText v-model="form.name" data-testid="vendor-name" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Account #</label>
-            <InputText v-model="form.account_number" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Payment Terms</label>
-            <Select v-model="form.payment_terms" :options="termOptions" placeholder="Net 30" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Contact Name</label>
-            <InputText v-model="form.contact_name" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Phone</label>
-            <InputText v-model="form.phone" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Email</label>
-            <InputText v-model="form.email" type="email" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Website</label>
-            <InputText v-model="form.website" placeholder="https://" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Address</label>
-            <InputText v-model="form.address" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>City</label>
-            <InputText v-model="form.city" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>State</label>
-            <InputText v-model="form.state" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Zip</label>
-            <InputText v-model="form.zip" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Tax ID</label>
-            <InputText v-model="form.tax_id" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Notes</label>
-            <Textarea v-model="form.notes" rows="2" class="w-full" />
-          </div>
+          <FormField v-model="form.name" label="Name" required class="full-width" data-testid="vendor-name" />
+          <FormField v-model="form.account_number" label="Account #" />
+          <FormField v-model="form.payment_terms" label="Payment Terms" as="select" :options="termOptions" placeholder="Net 30" />
+          <FormField v-model="form.contact_name" label="Contact Name" />
+          <FormField v-model="form.phone" label="Phone" />
+          <FormField v-model="form.email" label="Email" type="email" class="full-width" />
+          <FormField v-model="form.website" label="Website" placeholder="https://" class="full-width" />
+          <FormField v-model="form.address" label="Address" class="full-width" />
+          <FormField v-model="form.city" label="City" />
+          <FormField v-model="form.state" label="State" />
+          <FormField v-model="form.zip" label="Zip" />
+          <FormField v-model="form.tax_id" label="Tax ID" />
+          <FormField v-model="form.notes" label="Notes" as="textarea" :rows="2" class="full-width" />
           <div class="form-field">
             <div class="checkbox-row">
               <Checkbox v-model="form.active" :binary="true" inputId="vendor-active" />
@@ -105,7 +62,7 @@
           </div>
         </div>
         <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showDialog = false" />
+          <Button label="Cancel" severity="secondary" @click="cancelDialog" />
           <Button :label="editing ? 'Save' : 'Create'" icon="pi pi-check" @click="saveVendor" :loading="saving" />
         </template>
       </Dialog>
@@ -115,16 +72,19 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
+import FormField from "../components/FormField.vue";
+import { useDirtyDialog } from "../composables/useDirtyDialog";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
-import Select from "primevue/select";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
-import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
@@ -139,7 +99,15 @@ const showDialog = ref(false);
 const editing = ref(null);
 const saving = ref(false);
 
-const termOptions = ["Net 15", "Net 30", "Net 45", "Net 60", "COD", "Prepaid", "Due on Receipt"];
+useListPrefs(
+  "vendors",
+  { searchQuery },
+  { searchQuery: { default: "", valid: (v) => typeof v === "string" } },
+);
+
+// {label,value} shape for FormField's Select wrapper.
+const termOptions = ["Net 15", "Net 30", "Net 45", "Net 60", "COD", "Prepaid", "Due on Receipt"]
+  .map((t) => ({ label: t, value: t }));
 
 const emptyForm = () => ({
   name: "", account_number: "", contact_name: "", phone: "", email: "",
@@ -147,6 +115,20 @@ const emptyForm = () => ({
   payment_terms: "Net 30", tax_id: "", active: true,
 });
 const form = ref(emptyForm());
+
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
+const { exportCsv } = useTableExport();
+
+function exportRows() {
+  exportCsv(filtered.value, [
+    { field: "name", header: "Name" },
+    { field: "contact_name", header: "Contact" },
+    { field: "phone", header: "Phone" },
+    { field: "email", header: "Email" },
+    { field: "payment_terms", header: "Terms" },
+    { field: "active", header: "Active" },
+  ], "vendors");
+}
 
 const filtered = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
@@ -173,13 +155,19 @@ async function loadVendors() {
 function openCreate() {
   editing.value = null;
   form.value = emptyForm();
+  snapshot();
   showDialog.value = true;
 }
 
 function openEdit(vendor) {
   editing.value = vendor;
   form.value = { ...vendor };
+  snapshot();
   showDialog.value = true;
+}
+
+function cancelDialog() {
+  if (confirmDiscard()) showDialog.value = false;
 }
 
 async function saveVendor() {
@@ -217,8 +205,6 @@ onMounted(loadVendors);
 .w-full { width: 100%; }
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; padding-top: 1.5rem; }
 .clickable-row { cursor: pointer; }
-.empty-state { text-align: center; padding: 3rem; color: var(--p-text-muted-color); }
-.empty-state h3 { margin: 1rem 0 0.5rem; color: var(--text-color); }
 .inline-error { color: #ef4444; padding: 0.5rem; }
 .spinner-wrap { display: flex; justify-content: center; padding: 3rem; }
 </style>

@@ -91,6 +91,14 @@
           />
         </span>
         <Button
+          label="Export"
+          icon="pi pi-download"
+          aria-label="Export CSV"
+          text
+          data-testid="billing-export-btn"
+          @click="exportInvoices"
+        />
+        <Button
           label="Counter Sale"
           icon="pi pi-shopping-bag"
           severity="secondary"
@@ -155,7 +163,13 @@
         @sort="onSort"
         dataKey="id"
       >
-        <template #empty>{{ searchQuery || activeStatus !== 'All' ? 'No matching invoices. Try clearing your filters.' : 'No invoices yet. Click "Create Invoice" to start.' }}</template>
+        <template #empty>
+          <EmptyState
+            icon="pi pi-file"
+            :title="searchQuery || activeStatus !== 'All' ? 'No invoices match your filters' : 'No invoices yet'"
+            :message="searchQuery || activeStatus !== 'All' ? 'Try clearing your search, status, or date filter.' : 'Click &quot;Create Invoice&quot; to start.'"
+          />
+        </template>
         <Column headerStyle="width:3rem" bodyStyle="width:3rem">
           <template #header>
             <input
@@ -210,9 +224,9 @@
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
-              <Button v-if="data.status === 'Draft'" icon="pi pi-send" severity="info" text size="small"
+              <Button v-if="data.status === 'Draft'" icon="pi pi-send" aria-label="Send" severity="info" text size="small"
                 v-tooltip="'Send'" :data-testid="`send-invoice-${data.id}`" @click.stop="sendInvoice(data)" />
-              <Button icon="pi pi-file-pdf" severity="secondary" text size="small"
+              <Button icon="pi pi-file-pdf" aria-label="Download PDF" severity="secondary" text size="small"
                 v-tooltip="'Download PDF'" :data-testid="`pdf-invoice-${data.id}`" @click.stop="downloadPdf(data)" />
               <Button
                 v-if="data.status !== 'Paid'"
@@ -223,7 +237,7 @@
                 :data-testid="`pay-invoice-${data.id}`"
                 @click.stop="payInvoiceOnline(data)"
               />
-              <Button v-if="data.status !== 'Paid'" icon="pi pi-dollar" severity="success" text size="small"
+              <Button v-if="data.status !== 'Paid'" icon="pi pi-dollar" aria-label="Record Payment" severity="success" text size="small"
                 v-tooltip="'Record Payment'" :data-testid="`record-payment-${data.id}`" @click.stop="openPaymentDialog(data)" />
               <Button icon="pi pi-pencil" aria-label="Edit" severity="secondary" text size="small"
                 v-tooltip="'Edit'" @click.stop="editInvoice(data)" />
@@ -238,6 +252,7 @@
       <div class="pagination-bar" v-if="totalPages > 1">
         <Button
           v-tooltip="'Previous page'"
+          aria-label="Previous page"
           icon="pi pi-angle-left"
           severity="secondary"
           text
@@ -247,6 +262,7 @@
         <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
         <Button
           v-tooltip="'Next page'"
+          aria-label="Next page"
           icon="pi pi-angle-right"
           severity="secondary"
           text
@@ -323,11 +339,12 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
-import { useConfirm } from "primevue/useconfirm";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { formatDate, formatMoney as currency } from "../composables/useFormatters";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Card from "primevue/card";
@@ -340,13 +357,13 @@ import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
 import Toast from "primevue/toast";
+import EmptyState from "../components/EmptyState.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
-const { confirmAsync } = useDestructiveConfirm();
+const { confirmAsync, confirmDestructive } = useDestructiveConfirm();
 
 const router = useRouter();
 const route = useRoute();
 const api = useApi();
-const confirm = useConfirm();
 const toast = useToast();
 
 // --- State ---
@@ -692,6 +709,25 @@ const paginatedInvoices = computed(() => {
   return sortedInvoices.value.slice(start, start + perPage);
 });
 
+// CSV export — dumps the CURRENTLY FILTERED rows (status tab + search +
+// date range applied, in the table's sort order, all pages), matching the
+// visible columns. Sibling to bulkExport, which exports only the SELECTED
+// rows from the bulk-actions bar.
+const { exportCsv } = useTableExport();
+function exportInvoices() {
+  exportCsv(
+    sortedInvoices.value,
+    [
+      { field: "invoice_number", header: "Invoice #" },
+      { field: "customer_name", header: "Customer" },
+      { field: "total", header: "Amount" },
+      { field: "status", header: "Status" },
+      { field: "due_date", header: "Due Date" },
+    ],
+    "invoices",
+  );
+}
+
 // Selection helpers for the custom select column (replaces PrimeVue
 // selectionMode="multiple" which renders a header checkbox without id/name).
 const isSelected = (row) => selectedInvoices.value.some((r) => r.id === row.id);
@@ -777,15 +813,6 @@ function capitalize(s) {
 function toNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-function currency(amount) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(toNum(amount));
-}
-
-function formatDate(d) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 function statusSeverity(status) {
@@ -951,11 +978,10 @@ function editInvoice(inv) {
 }
 
 function confirmDelete(inv) {
-  confirm.require({
+  confirmDestructive({
     message: `Delete invoice ${inv.invoice_number}? This cannot be undone.`,
     header: "Confirm Delete",
-    icon: "pi pi-exclamation-triangle",
-    acceptClass: "p-button-danger",
+    acceptLabel: "Delete",
     accept: () => deleteInvoice(inv),
   });
 }

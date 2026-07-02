@@ -5,6 +5,7 @@
           <InputText v-model="searchQuery" placeholder="Search parts" data-testid="inventory-search" />
         </template>
         <template #end>
+          <Button icon="pi pi-download" label="Export" aria-label="Export CSV" text size="small" @click="exportRows" />
           <Button label="+ New Part" data-testid="new-part-btn" @click="openCreateDialog" />
         </template>
       </Toolbar>
@@ -21,51 +22,42 @@
         data-testid="inventory-datatable"
         striped-rows
         :paginator="true"
-        :rows="25"
-        :rowsPerPageOptions="[25, 50, 100]"
+        :rows="20"
+        :rowsPerPageOptions="[10, 20, 50, 100]"
         paginatorTemplate="FirstPageLink PrevPageLink CurrentPageReport NextPageLink LastPageLink RowsPerPageDropdown"
         currentPageReportTemplate="{first}–{last} of {totalRecords}"
         @row-click="onRowClick"
       >
         <template #empty>
-          <EmptyState icon="pi pi-box" title="No parts yet" message="Add your first inventory part or import from a vendor catalog." />
+          <EmptyState icon="pi pi-box" title="No parts yet" message="Add your first inventory part or import from a vendor catalog." actionLabel="+ New Part" @action="openCreateDialog" />
         </template>
         <Column field="part_name" header="Part Name" sortable>
           <template #body="{ data }">{{ data.part_name || data.name || '-' }}</template>
         </Column>
-        <Column field="sku" header="SKU" />
-        <Column field="quantity" header="Qty on Hand">
+        <Column field="sku" header="SKU" sortable />
+        <Column field="quantity" header="Qty on Hand" sortable>
           <template #body="{ data }">
             <span :class="{ 'low-stock': isLowStock(data) }">
               {{ data.quantity ?? data.quantity_on_hand ?? data.qty ?? '-' }}
             </span>
           </template>
         </Column>
-        <Column field="reorder_level" header="Reorder Level">
+        <Column field="reorder_level" header="Reorder Level" sortable>
           <template #body="{ data }">{{ data.reorder_level ?? data.reorder_point ?? '-' }}</template>
         </Column>
-        <Column field="unit_cost" header="Unit Cost">
-          <template #body="{ data }">{{ data.unit_cost != null ? '$' + Number(data.unit_cost).toFixed(2) : '-' }}</template>
+        <Column field="unit_cost" header="Unit Cost" sortable>
+          <template #body="{ data }">{{ formatMoney(data.unit_cost) }}</template>
         </Column>
-        <Column field="supplier" header="Supplier" />
+        <Column field="supplier" header="Supplier" sortable />
       </DataTable>
 
       <!-- Create / Edit Dialog -->
-      <Dialog v-model:visible="showFormDialog" :header="isEdit ? 'Edit Part' : 'Add Part'" data-testid="inventory-form-dialog" :style="{ width: '32rem' }">
+      <Dialog v-model:visible="showFormDialog" :header="isEdit ? 'Edit Part' : 'Add Part'" data-testid="inventory-form-dialog" :style="{ width: '32rem' }" :closable="!isDirty" :close-on-escape="!isDirty">
         <form class="dialog-form" @submit.prevent="submitForm">
-          <div class="form-field">
-            <label for="inv-name">Part Name *</label>
-            <InputText id="inv-name" v-model="form.part_name" data-testid="inv-name-input" />
-          </div>
+          <FormField id="inv-name" v-model="form.part_name" label="Part Name" required data-testid="inv-name-input" />
           <div class="form-row-2">
-            <div class="form-field">
-              <label for="inv-sku">SKU</label>
-              <InputText id="inv-sku" v-model="form.sku" data-testid="inv-sku-input" />
-            </div>
-            <div class="form-field">
-              <label for="inv-supplier">Supplier</label>
-              <InputText id="inv-supplier" v-model="form.supplier" data-testid="inv-supplier-input" />
-            </div>
+            <FormField id="inv-sku" v-model="form.sku" label="SKU" data-testid="inv-sku-input" />
+            <FormField id="inv-supplier" v-model="form.supplier" label="Supplier" data-testid="inv-supplier-input" />
           </div>
           <div class="form-row-3">
             <div class="form-field">
@@ -84,6 +76,7 @@
           <div v-if="formError" class="inline-error" data-testid="inv-form-error">{{ formError }}</div>
           <div class="form-actions">
             <Button v-if="isEdit" type="button" label="Delete" severity="danger" text data-testid="inv-delete-btn" @click="showDeleteDialog = true" />
+            <Button type="button" label="Cancel" severity="secondary" text data-testid="inv-cancel-btn" @click="cancelForm" />
             <Button type="submit" :label="isEdit ? 'Save' : 'Create'" :loading="saving" data-testid="inv-submit-btn" />
           </div>
         </form>
@@ -103,7 +96,12 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import EmptyState from "../components/EmptyState.vue";
+import FormField from "../components/FormField.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { formatMoney } from "../composables/useFormatters";
+import { useDirtyDialog } from "../composables/useDirtyDialog";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -126,6 +124,12 @@ const showFormDialog = ref(false);
 const showDeleteDialog = ref(false);
 const formMode = ref("create");
 
+useListPrefs(
+  "inventory",
+  { searchQuery },
+  { searchQuery: { default: "", valid: (v) => typeof v === "string" } },
+);
+
 const isEdit = computed(() => formMode.value === "edit");
 
 const defaultForm = () => ({
@@ -138,6 +142,28 @@ const defaultForm = () => ({
   supplier: "",
 });
 const form = ref(defaultForm());
+
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
+const { exportCsv } = useTableExport();
+
+function exportRows() {
+  const rows = filteredParts.value.map((p) => ({
+    part_name: p.part_name || p.name || "",
+    sku: p.sku || "",
+    quantity: p.quantity ?? p.quantity_on_hand ?? p.qty ?? "",
+    reorder_level: p.reorder_level ?? p.reorder_point ?? "",
+    unit_cost: p.unit_cost ?? "",
+    supplier: p.supplier || "",
+  }));
+  exportCsv(rows, [
+    { field: "part_name", header: "Part Name" },
+    { field: "sku", header: "SKU" },
+    { field: "quantity", header: "Qty on Hand" },
+    { field: "reorder_level", header: "Reorder Level" },
+    { field: "unit_cost", header: "Unit Cost" },
+    { field: "supplier", header: "Supplier" },
+  ], "inventory");
+}
 
 function isLowStock(item) {
   const qty = item.quantity ?? item.quantity_on_hand ?? item.qty ?? 0;
@@ -160,7 +186,12 @@ function openCreateDialog() {
   formMode.value = "create";
   form.value = defaultForm();
   formError.value = "";
+  snapshot();
   showFormDialog.value = true;
+}
+
+function cancelForm() {
+  if (confirmDiscard()) showFormDialog.value = false;
 }
 
 function onRowClick(event) {
@@ -177,6 +208,7 @@ function onRowClick(event) {
     unit_cost: p.unit_cost ?? 0,
     supplier: p.supplier || "",
   };
+  snapshot();
   showFormDialog.value = true;
 }
 

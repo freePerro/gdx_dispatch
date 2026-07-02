@@ -61,7 +61,7 @@
           <template #body="{ data }">{{ Number(data.customer_rating || 0).toFixed(1) }} / 5</template>
         </Column>
         <Column field="on_time_pct" header="On-Time %" sortable>
-          <template #body="{ data }">{{ Number(data.on_time_pct || 0).toFixed(0) }}%</template>
+          <template #body="{ data }">{{ formatPercent(data.on_time_pct || 0, { digits: 0, whole: true }) }}</template>
         </Column>
         <Column field="callbacks" header="Callbacks" sortable />
         <Column field="efficiency_score" header="Efficiency" sortable>
@@ -85,6 +85,7 @@ import DatePicker from "primevue/datepicker";
 import ProgressBar from "primevue/progressbar";
 import EmptyState from "../components/EmptyState.vue";
 import { useApi } from "../composables/useApi";
+import { formatMoney as currency, formatPercent } from "../composables/useFormatters";
 
 const toast = useToast();
 const api = useApi();
@@ -95,9 +96,6 @@ const now = new Date();
 const startDate = ref(new Date(now.getFullYear(), now.getMonth(), 1));
 const endDate = ref(new Date());
 
-function currency(v) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(v) || 0);
-}
 function fmtDate(d) {
   if (!d) return "";
   return d instanceof Date ? d.toISOString().slice(0, 10) : d;

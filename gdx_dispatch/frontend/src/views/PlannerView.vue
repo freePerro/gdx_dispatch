@@ -174,6 +174,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate, formatTime } from "../composables/useFormatters";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
@@ -253,7 +254,7 @@ const customerOptions = ref([]);
 
 const totalUnread = computed(() => threads.value.reduce((s, t) => s + (t.unread || 0), 0));
 
-function shortDate(d) { if (!d) return ""; try { return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }); } catch { return d; } }
+function shortDate(d) { return formatDate(d, { options: { month: "short", day: "numeric" } }); }
 
 // Resolve UUIDs on task cards to human-readable labels using the already-
 // loaded job/customer option lists. Returns empty string when the task has
@@ -269,7 +270,7 @@ function customerLabelFor(customerId) {
   const hit = customerOptions.value.find((o) => o.value === customerId);
   return hit ? hit.label : "";
 }
-function shortTime(d) { if (!d) return ""; try { return new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); } catch { return d; } }
+function shortTime(d) { return formatTime(d); }
 
 async function loadTasks() {
   tasksLoading.value = true;

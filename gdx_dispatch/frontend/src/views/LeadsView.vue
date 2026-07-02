@@ -6,6 +6,14 @@
           <p class="page-subtitle">Web-form and intake captures awaiting first contact. Existing-customer service inquiries live on the <router-link to="/jobs">Jobs board</router-link> as service calls.</p>
         </template>
         <template #end>
+          <Button
+            label="Export"
+            icon="pi pi-download"
+            aria-label="Export CSV"
+            text
+            data-testid="leads-export-btn"
+            @click="exportLeads"
+          />
           <Button v-if="canWrite" label="+ New Lead" icon="pi pi-plus" @click="openCreate" />
         </template>
       </Toolbar>
@@ -40,21 +48,23 @@
         dataKey="id"
         paginator
         :rows="20"
+        :rowsPerPageOptions="[10, 20, 50, 100]"
         striped-rows
         @row-click="openEdit($event.data)"
-        
+
       >
         <template #empty>
-          <div class="empty-state">
-            <i class="pi pi-users" style="font-size:3rem; color:#64748b;"></i>
-            <h3>No leads yet</h3>
-            <p>Use the button above to add a new prospect.</p>
-            <Button v-if="canWrite" label="+ Add Lead" icon="pi pi-plus" @click="openCreate" />
-          </div>
+          <EmptyState
+            icon="pi pi-users"
+            title="No leads yet"
+            message="Use the button above to add a new prospect."
+            :actionLabel="canWrite ? '+ Add Lead' : ''"
+            @action="openCreate"
+          />
         </template>
-        <Column field="name" header="Name" />
-        <Column field="email" header="Email" />
-        <Column field="stage" header="Stage" style="width:160px">
+        <Column field="name" header="Name" sortable />
+        <Column field="email" header="Email" sortable />
+        <Column field="stage" header="Stage" style="width:160px" sortable>
           <template #body="{ data }">
             <Badge :value="stageLabel(data.stage)" :severity="stageSeverity(data.stage)" />
           </template>
@@ -62,8 +72,8 @@
         <Column field="estimated_value" header="Estimated Value" style="width:140px" sortable>
           <template #body="{ data }">{{ formatCurrency(data.estimated_value) }}</template>
         </Column>
-        <Column field="source" header="Source" />
-        <Column field="created_at" header="Created" style="width:140px">
+        <Column field="source" header="Source" sortable />
+        <Column field="created_at" header="Created" style="width:140px" sortable>
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
         </Column>
         <Column header="Actions" style="width:280px">
@@ -118,23 +128,23 @@
       responsiveLayout="scroll" v-else :value="landingLeads" dataKey="id" paginator :rows="10" striped-rows
           class="landing-table" @row-click="openLanding($event.data)">
           <template #empty>
-            <div class="empty-state">
-              <i class="pi pi-inbox" style="font-size:3rem; color:#64748b;"></i>
-              <h3>No landing leads</h3>
-              <p>Lead-ready prospects will appear here after a web form submission.</p>
-            </div>
+            <EmptyState
+              icon="pi pi-inbox"
+              title="No landing leads"
+              message="Lead-ready prospects will appear here after a web form submission."
+            />
           </template>
-          <Column field="name" header="Name">
+          <Column field="name" header="Name" sortable>
             <template #body="{ data }">{{ data.name || '—' }}</template>
           </Column>
-          <Column field="email" header="Email">
+          <Column field="email" header="Email" sortable>
             <template #body="{ data }">{{ data.email || '—' }}</template>
           </Column>
-          <Column field="phone" header="Phone">
+          <Column field="phone" header="Phone" sortable>
             <template #body="{ data }">{{ data.phone || '—' }}</template>
           </Column>
-          <Column field="source" header="Source" />
-          <Column field="created_at" header="Submitted" style="width:140px">
+          <Column field="source" header="Source" sortable />
+          <Column field="created_at" header="Submitted" style="width:140px" sortable>
             <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
           </Column>
           <Column header="Actions" style="width:280px">
@@ -296,8 +306,11 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue';
-import { useConfirm } from 'primevue/useconfirm';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { useListPrefs } from '../composables/useListPrefs';
+import { useTableExport } from '../composables/useTableExport';
+import { formatMoney as formatCurrency, formatDate, formatDateTime } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -313,9 +326,10 @@ import Tabs from 'primevue/tabs';
 import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import Toolbar from 'primevue/toolbar';
+import EmptyState from '../components/EmptyState.vue';
 
 const api = useApiWithToast();
-const confirm = useConfirm();
+const { confirmDestructive } = useDestructiveConfirm();
 const auth = useAuthStore();
 
 // Mirror the backend require_permission gates on leads.py so we don't
@@ -354,6 +368,17 @@ const stageOptions = [
 const stageOrder = ['New', 'Contacted', 'Qualified', 'Quoted', 'Won'];
 const stageTabs = ['All', ...stageOptions.map((s) => s.value)];
 
+// Persist the chosen stage tab across reloads (JobsView/BillingView
+// pattern). A stale/renamed stage falls back to 'All' so the list never
+// silently filters to empty.
+useListPrefs(
+  'leads',
+  { stageFilter },
+  {
+    stageFilter: { default: 'All', valid: (v) => stageTabs.includes(v) },
+  },
+);
+
 const form = ref(emptyForm());
 
 const pipelineStages = [
@@ -369,6 +394,24 @@ const filteredLeads = computed(() => {
   if (stageFilter.value === 'All') return leads.value;
   return leads.value.filter((lead) => lead.stage === stageFilter.value);
 });
+
+// CSV export — dumps the CURRENTLY FILTERED rows (stage tab applied),
+// matching the visible table columns.
+const { exportCsv } = useTableExport();
+function exportLeads() {
+  exportCsv(
+    filteredLeads.value,
+    [
+      { field: 'name', header: 'Name' },
+      { field: 'email', header: 'Email' },
+      { field: 'stage', header: 'Stage' },
+      { field: 'estimated_value', header: 'Estimated Value' },
+      { field: 'source', header: 'Source' },
+      { field: 'created_at', header: 'Created' },
+    ],
+    'leads',
+  );
+}
 
 function tabLabel(value) {
   if (value === 'All') return 'All';
@@ -393,23 +436,6 @@ function stageSeverity(stage) {
 function capitalize(s) {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-}
-
-function formatCurrency(value) {
-  if (value === undefined || value === null || value === '') return '—';
-  const number = Number(value);
-  if (Number.isNaN(number)) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(number);
-}
-
-function formatDate(value) {
-  return value ? value.split('T')[0] : '—';
-}
-
-function formatDateTime(value) {
-  if (!value) return '—';
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
 function hasUtm(ll) {
@@ -566,7 +592,7 @@ async function convertLandingLead(landingLead) {
 
 function confirmDeleteLead(lead) {
   const who = lead.name || lead.email || 'this lead';
-  confirm.require({
+  confirmDestructive({
     header: 'Delete Lead',
     message: `Delete "${who}" from the sales pipeline?\n\nIt will be hidden from the leads list. This is a soft delete — the row stays in the database for audit.`,
     icon: 'pi pi-trash',
@@ -597,7 +623,7 @@ function confirmDeleteLanding(landingLead, reason) {
   const body = reason === 'spam'
     ? 'It will be hidden from the leads list and flagged in the audit log as spam.'
     : 'It will be hidden from the leads list. This is a soft delete — the row stays in the database for audit.';
-  confirm.require({
+  confirmDestructive({
     header: reason === 'spam' ? 'Mark as Spam' : 'Delete Landing Lead',
     message: `${headline}\n\n${body}`,
     icon: reason === 'spam' ? 'pi pi-times-circle' : 'pi pi-trash',
@@ -687,11 +713,6 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   margin-bottom: 1rem;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 2rem 0;
 }
 
 .form-grid {

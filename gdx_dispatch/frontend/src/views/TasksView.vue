@@ -5,6 +5,7 @@
           <h2 class="page-title">Tasks</h2>
         </template>
         <template #end>
+          <Button icon="pi pi-download" label="Export" aria-label="Export CSV" text size="small" @click="exportRows" />
           <Button label="+ New Task" icon="pi pi-plus" @click="openCreate" />
         </template>
       </Toolbar>
@@ -31,36 +32,32 @@
         :value="filteredTasks"
         paginator
         :rows="20"
+        :rowsPerPageOptions="[10, 20, 50, 100]"
         striped-rows
         responsive-layout="scroll"
-        @row-click="openEdit"
-        
+        @row-click="openEdit($event.data)"
+
       >
         <template #empty>
-          <div class="empty-state">
-            <i class="pi pi-tasks" style="font-size:3rem; color:#64748b;"></i>
-            <h3>No tasks yet</h3>
-            <p>Capture task work so you can track status, owners, and due dates.</p>
-            <Button label="+ Create First Task" @click="openCreate" />
-          </div>
+          <EmptyState icon="pi pi-tasks" title="No tasks yet" message="Capture task work so you can track status, owners, and due dates." actionLabel="+ Create First Task" @action="openCreate" />
         </template>
-        <Column field="title" header="Title" />
-        <Column field="priority" header="Priority" style="width:140px">
+        <Column field="title" header="Title" sortable />
+        <Column field="priority" header="Priority" sortable style="width:140px">
           <template #body="{ data }">
             <Tag :value="priorityLabel(data.priority)" :severity="prioritySeverity(data.priority)" />
           </template>
         </Column>
-        <Column field="status" header="Status" style="width:150px">
+        <Column field="status" header="Status" sortable style="width:150px">
           <template #body="{ data }">
             <Tag :value="statusLabel(data.status)" :severity="statusSeverity(data.status)" />
           </template>
         </Column>
-        <Column field="assigned_to" header="Assigned To" style="width:150px" />
-        <Column field="due_date" header="Due Date" style="width:130px">
+        <Column field="assigned_to" header="Assigned To" sortable style="width:150px" />
+        <Column field="due_date" header="Due Date" sortable style="width:130px">
           <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
         </Column>
-        <Column field="related_job_id" header="Job" style="width:100px" />
-        <Column field="related_customer_id" header="Customer" style="width:120px" />
+        <Column field="related_job_id" header="Job" sortable style="width:100px" />
+        <Column field="related_customer_id" header="Customer" sortable style="width:120px" />
         <Column header="Actions" style="width:180px">
           <template #body="{ data }">
             <Button
@@ -70,6 +67,7 @@
               text
               size="small"
               v-tooltip="'Mark complete'"
+              aria-label="Mark complete"
               @click.stop="quickStatus(data, 'completed')"
             />
             <Button
@@ -79,6 +77,7 @@
               text
               size="small"
               v-tooltip="'Reopen'"
+              aria-label="Reopen"
               @click.stop="quickStatus(data, 'open')"
             />
             <Button
@@ -105,28 +104,15 @@
         :header="dialogTitle"
         :style="{ width: '620px' }"
         modal
+        :closable="!isDirty"
+        :close-on-escape="!isDirty"
       >
         <div class="form-grid">
-          <div class="form-field full-width">
-            <label>Title *</label>
-            <InputText v-model="form.title" class="w-full" />
-          </div>
-          <div class="form-field full-width">
-            <label>Description</label>
-            <Textarea v-model="form.description" rows="3" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Priority</label>
-            <Select v-model="form.priority" :options="priorityOptions" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Status</label>
-            <Select v-model="form.status" :options="statusOptions" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Assigned To</label>
-            <InputText v-model="form.assigned_to" class="w-full" />
-          </div>
+          <FormField v-model="form.title" label="Title" required class="full-width" />
+          <FormField v-model="form.description" label="Description" as="textarea" :rows="3" class="full-width" />
+          <FormField v-model="form.priority" label="Priority" as="select" :options="priorityOptions" />
+          <FormField v-model="form.status" label="Status" as="select" :options="statusOptions" />
+          <FormField v-model="form.assigned_to" label="Assigned To" />
           <div class="form-field">
             <label>Due Date</label>
             <DatePicker v-model="form.due_date" class="w-full" showIcon />
@@ -141,7 +127,7 @@
           </div>
         </div>
         <template #footer>
-          <Button label="Cancel" severity="secondary" @click="showDialog = false" />
+          <Button label="Cancel" severity="secondary" @click="cancelDialog" />
           <Button :label="editingTask ? 'Save' : 'Create'" icon="pi pi-check" @click="saveTask" :loading="saving" />
         </template>
       </Dialog>
@@ -151,17 +137,20 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
+import FormField from '../components/FormField.vue';
+import { useDirtyDialog } from '../composables/useDirtyDialog';
+import { useListPrefs } from '../composables/useListPrefs';
+import { useTableExport } from '../composables/useTableExport';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
 import InputNumber from 'primevue/inputnumber';
-import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
-import Select from 'primevue/select';
 import Tag from 'primevue/tag';
-import Textarea from 'primevue/textarea';
 import Toolbar from 'primevue/toolbar';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
@@ -176,8 +165,30 @@ const editingTask = ref(null);
 const saving = ref(false);
 const form = ref(emptyForm());
 
-const priorityOptions = ['low', 'normal', 'high', 'urgent'];
-const statusOptions = ['open', 'in_progress', 'completed', 'cancelled'];
+useListPrefs(
+  'tasks',
+  { statusFilter },
+  { statusFilter: { default: 'open', valid: (v) => filterTabs.includes(v) } },
+);
+
+const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
+const { exportCsv } = useTableExport();
+
+function exportRows() {
+  exportCsv(filteredTasks.value, [
+    { field: 'title', header: 'Title' },
+    { field: 'priority', header: 'Priority' },
+    { field: 'status', header: 'Status' },
+    { field: 'assigned_to', header: 'Assigned To' },
+    { field: 'due_date', header: 'Due Date' },
+    { field: 'related_job_id', header: 'Job' },
+    { field: 'related_customer_id', header: 'Customer' },
+  ], 'tasks');
+}
+
+// {label,value} shape for FormField's Select wrapper.
+const priorityOptions = ['low', 'normal', 'high', 'urgent'].map((v) => ({ label: v, value: v }));
+const statusOptions = ['open', 'in_progress', 'completed', 'cancelled'].map((v) => ({ label: v.replace('_', ' '), value: v }));
 
 const dialogTitle = computed(() => (editingTask.value ? 'Edit Task' : 'New Task'));
 
@@ -216,13 +227,6 @@ function tabLabel(tab) {
 function tabLabelWithCount(tab) {
   const count = counts.value[tab] ?? 0;
   return `${tabLabel(tab)}${count ? ` (${count})` : ''}`;
-}
-
-function formatDate(date) {
-  if (!date) return '—';
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleDateString();
 }
 
 function priorityLabel(value) {
@@ -266,6 +270,7 @@ async function loadTasks() {
 function openCreate() {
   editingTask.value = null;
   form.value = emptyForm();
+  snapshot();
   showDialog.value = true;
 }
 
@@ -275,7 +280,12 @@ function openEdit(task) {
     ...task,
     due_date: task.due_date ? new Date(task.due_date) : null,
   };
+  snapshot();
   showDialog.value = true;
+}
+
+function cancelDialog() {
+  if (confirmDiscard()) showDialog.value = false;
 }
 
 async function saveTask() {
@@ -344,15 +354,6 @@ onMounted(() => {
 }
 .clickable-row {
   cursor: pointer;
-}
-.empty-state {
-  text-align: center;
-  padding: 3rem;
-  color: var(--p-text-muted-color);
-}
-.empty-state h3 {
-  margin: 1rem 0 0.5rem;
-  color: var(--text-color);
 }
 .spinner-wrap {
   display: flex;

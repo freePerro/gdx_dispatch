@@ -42,6 +42,15 @@
         class="clickable-row"
         data-testid="portal-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-globe"
+            title="No portal customers"
+            message="Invite customers to the portal so they can view invoices and pay online."
+            action-label="Send Portal Invite"
+            @action="openInviteDialog()"
+          />
+        </template>
         <Column header="Customer" :style="{ minWidth: '200px' }">
           <template #body="{ data }">{{ data.customer_name || data.customer }}</template>
         </Column>
@@ -123,6 +132,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { formatDate } from '../composables/useFormatters';
+import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -175,12 +186,6 @@ const tabLabel = (tab) => {
   const label = tab.charAt(0).toUpperCase() + tab.slice(1);
   const suffix = counts.value[tab] ? ` (${counts.value[tab]})` : '';
   return `${label}${suffix}`;
-};
-
-const formatDate = (value) => {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
 };
 
 const loadPortal = async () => {

@@ -38,6 +38,15 @@
         striped-rows
         data-testid="resources-table"
       >
+        <template #empty>
+          <EmptyState
+            icon="pi pi-folder-open"
+            title="No resources yet"
+            message="Upload manuals, spec sheets, and shared documents for the team."
+            action-label="Upload Resource"
+            @action="showDialog = true"
+          />
+        </template>
         <Column field="name" header="Name" />
         <Column field="category" header="Category" style="width:150px">
           <template #body="{ data }">
@@ -120,6 +129,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import EmptyState from "../components/EmptyState.vue";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

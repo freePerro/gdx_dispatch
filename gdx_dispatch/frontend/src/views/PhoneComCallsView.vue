@@ -242,6 +242,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { callerDisplay, friendlyStatus, prettyDirection, renderOwnNumber } from '../utils/phoneComLabels'
+import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
 import DataTable from 'primevue/datatable'
@@ -290,13 +291,6 @@ function statusSeverity(call) {
   if (s === 'Completed') return 'success'
   if (s === 'Missed' || s === 'Canceled') return 'danger'
   return 'secondary'
-}
-
-function formatDateTime(iso) {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  return new Date(t).toLocaleString()
 }
 
 function formatDuration(s) {

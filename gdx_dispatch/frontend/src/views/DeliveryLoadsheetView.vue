@@ -37,7 +37,7 @@
               <span v-if="stop.address" class="stop-address">{{ stop.address }}</span>
               <Tag :value="stop.status" :severity="stop.status === 'confirmed' ? 'success' : 'warning'" size="small" />
             </div>
-            <div class="stop-total">${{ stop.total_amount.toFixed(2) }}</div>
+            <div class="stop-total">{{ formatMoney(stop.total_amount) }}</div>
           </div>
 
           <div v-if="stop.notes" class="stop-notes">
@@ -63,6 +63,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApi } from "../composables/useApi";
+import { formatDate, formatMoney } from "../composables/useFormatters";
 import Checkbox from "primevue/checkbox";
 import DatePicker from "primevue/datepicker";
 import ProgressSpinner from "primevue/progressspinner";
@@ -76,7 +77,7 @@ const stops = ref([]);
 
 const formattedDate = computed(() => {
   const d = selectedDate.value instanceof Date ? selectedDate.value : new Date(selectedDate.value);
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return formatDate(d, { options: { weekday: "long", month: "long", day: "numeric", year: "numeric" } });
 });
 
 const totalItems = computed(() => stops.value.reduce((s, st) => s + st.items.length, 0));

@@ -153,6 +153,7 @@ import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import EmptyState from "../components/EmptyState.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { formatMoney, formatPercent } from "../composables/useFormatters";
 
 const toast = useToast();
 const api = useApi();
@@ -171,10 +172,10 @@ const endDate = ref(new Date());
 const form = ref({ user_id: "", parts_rate: 0, labor_rate: 0, bonus_threshold: 0, bonus_rate: 0 });
 
 function currency(v) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(v) || 0);
+  return formatMoney(Number(v) || 0);
 }
 function pct(v) {
-  return `${Number(v || 0).toFixed(1)}%`;
+  return formatPercent(Number(v) || 0, { whole: true });
 }
 function fmtDate(d) {
   if (!d) return "";

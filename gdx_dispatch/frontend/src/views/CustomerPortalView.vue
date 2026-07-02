@@ -99,6 +99,7 @@ import TabPanel from "primevue/tabpanel";
 import TabPanels from "primevue/tabpanels";
 import Tabs from "primevue/tabs";
 import Tag from "primevue/tag";
+import { formatDate, formatMoney } from "../composables/useFormatters";
 
 const route = useRoute();
 const toast = useToast();
@@ -110,8 +111,7 @@ const estimates = ref([]);
 const invoices = ref([]);
 const jobs = ref([]);
 
-function currency(v) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(v) || 0); }
-function formatDate(d) { return d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "-"; }
+function currency(v) { return formatMoney(Number(v) || 0); }
 function statusSeverity(s) {
   const map = { sent: "info", accepted: "success", paid: "success", declined: "danger", overdue: "danger", draft: "secondary", scheduled: "info", complete: "success" };
   return map[(s || "").toLowerCase()] || "secondary";

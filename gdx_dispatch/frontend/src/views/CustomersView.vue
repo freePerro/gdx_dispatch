@@ -17,6 +17,15 @@
         </template>
         <template #end>
           <Button
+            label="Export"
+            icon="pi pi-download"
+            aria-label="Export CSV"
+            text
+            data-testid="customers-export-btn"
+            class="mr-2"
+            @click="exportCustomers"
+          />
+          <Button
             label="Duplicates"
             icon="pi pi-clone"
             severity="secondary"
@@ -51,7 +60,11 @@
         class="customers-table"
       >
         <template #empty>
-          <div class="empty-message">No customers found.</div>
+          <EmptyState
+            icon="pi pi-users"
+            :title="searchQuery ? 'No customers match your search' : 'No customers yet'"
+            :message="searchQuery ? 'Try a different name, email, or phone.' : 'Click &quot;+ New Customer&quot; to add one.'"
+          />
         </template>
         <Column field="name" header="Name" sortable>
           <template #body="{ data }">
@@ -77,7 +90,7 @@
             <span v-else class="text-muted">—</span>
           </template>
         </Column>
-        <Column field="address" header="Address">
+        <Column field="address" header="Address" sortable>
           <template #body="{ data }">
             <span v-if="data.address">{{ data.address }}</span>
             <span v-else class="text-muted">—</span>
@@ -164,6 +177,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useListPrefs } from "../composables/useListPrefs";
+import { useTableExport } from "../composables/useTableExport";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -174,6 +189,7 @@ import Tag from "primevue/tag";
 import Toast from "primevue/toast";
 import Toolbar from "primevue/toolbar";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
+import EmptyState from "../components/EmptyState.vue";
 
 const api = useApiWithToast();
 const toast = useToast();
@@ -185,6 +201,16 @@ function goToDuplicates() {
 }
 
 const searchQuery = ref("");
+// Persist the search text across reloads (JobsView/BillingView pattern).
+// Restored before onMounted runs, so the initial fetchCustomers() already
+// applies the saved server-side `q` filter.
+useListPrefs(
+  "customers",
+  { searchQuery },
+  {
+    searchQuery: { default: "", valid: (v) => typeof v === "string" },
+  },
+);
 const customers = ref([]);
 const totalCustomers = ref(null);
 const isLoading = ref(false);
@@ -218,6 +244,23 @@ const filteredCustomers = computed(() => {
     (c.address || "").toLowerCase().includes(query)
   );
 });
+
+// CSV export — dumps the CURRENTLY FILTERED rows (search applied),
+// matching the visible table columns.
+const { exportCsv } = useTableExport();
+function exportCustomers() {
+  exportCsv(
+    filteredCustomers.value,
+    [
+      { field: "name", header: "Name" },
+      { field: "phone", header: "Phone" },
+      { field: "email", header: "Email" },
+      { field: "address", header: "Address" },
+      { field: "customer_type", header: "Type" },
+    ],
+    "customers",
+  );
+}
 
 function openCreateDialog() {
   formMode.value = "create";

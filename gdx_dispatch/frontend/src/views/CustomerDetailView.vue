@@ -61,7 +61,7 @@
             <div class="loyalty-metric">
               <div class="loyalty-label">Loyalty tier</div>
               <div v-if="loyaltyTier" class="loyalty-value tier-on" data-testid="customer-loyalty-tier">
-                {{ (loyaltyTier.discount_pct * 100).toFixed(1) }}% off
+                {{ formatPercent(loyaltyTier.discount_pct) }} off
               </div>
               <div v-else class="loyalty-value muted" data-testid="customer-loyalty-tier">
                 no tier
@@ -133,7 +133,7 @@
             <template #body="{ data }"><Tag :value="data.status" /></template>
           </Column>
           <Column field="total" header="Total">
-            <template #body="{ data }">${{ Number(data.total || 0).toFixed(2) }}</template>
+            <template #body="{ data }">{{ formatMoney(data.total || 0) }}</template>
           </Column>
           <Column field="valid_until" header="Valid Until">
             <template #body="{ data }">{{ formatDate(data.valid_until) }}</template>
@@ -152,7 +152,7 @@
             <template #body="{ data }"><Tag :value="data.status" /></template>
           </Column>
           <Column field="total" header="Total">
-            <template #body="{ data }">${{ Number(data.total || 0).toFixed(2) }}</template>
+            <template #body="{ data }">{{ formatMoney(data.total || 0) }}</template>
           </Column>
           <Column field="due_date" header="Due">
             <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
@@ -631,6 +631,7 @@ import { computed, ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatDate, formatDateTime, formatMoney, formatPercent } from "../composables/useFormatters";
 import { useAuthStore } from "../stores/auth";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -697,8 +698,8 @@ const loyaltyDisabledReason = computed(() => {
 });
 
 function formatCurrency(v) {
-  if (v == null || isNaN(v)) return '$0.00';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v);
+  // Keeps the legacy null/NaN → $0.00 behavior (shared formatMoney would show '—').
+  return formatMoney(Number(v) || 0);
 }
 // formatDateTime — declared further down in the existing util block, reused here.
 const activeTab = ref("Jobs");
@@ -763,30 +764,6 @@ const isSavingLocation = ref(false);
 
 function emptyLocation() {
   return { id: null, label: "", address: "", city: "", state: "", zip: "", notes: "", is_primary: false };
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return "";
-  try {
-    return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  } catch {
-    return dateStr;
-  }
-}
-
-function formatDateTime(value) {
-  if (!value) return "";
-  try {
-    return new Date(value).toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  } catch {
-    return value;
-  }
 }
 
 function toDatePayload(value) {
