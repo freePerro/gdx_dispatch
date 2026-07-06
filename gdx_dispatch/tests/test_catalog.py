@@ -529,3 +529,53 @@ def test_catalog_sync_defaults_off(db_session: Session):
     # No AppSettings row at all → helper reports disabled (safe default).
     from gdx_dispatch.routers.settings import quickbooks_catalog_sync_enabled
     assert quickbooks_catalog_sync_enabled(db_session) is False
+
+
+# --- description_display junk filtering ------------------------------------
+# Some imports stuffed the category name into the description column (part
+# L956W arrived with description "Accessories"), so lines added from the
+# picker read as the category instead of the part. A description equal to the
+# item's category or pricing bucket must fall back to the name.
+
+def test_description_display_falls_back_when_description_is_category(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(
+        db_session, str(catalog["id"]),
+        sku="L956W",
+        name="Wireless Multi-Function Control Panel",
+        description="Accessories",
+        category="Accessories",
+    )
+    assert item["description_display"] == "Wireless Multi-Function Control Panel"
+    # Raw column is untouched — only the display field filters the junk.
+    assert item["description"] == "Accessories"
+
+
+def test_description_display_falls_back_when_description_is_pricing_category(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(
+        db_session, str(catalog["id"]),
+        sku="P-1", name="Nylon Roller", description="Parts",
+        category="Hardware", pricing_category="parts",
+    )
+    assert item["description_display"] == "Nylon Roller"
+
+
+def test_description_display_keeps_real_descriptions(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(
+        db_session, str(catalog["id"]),
+        sku="SPR-2", name="Torsion Spring 2in",
+        description="2-inch torsion spring, 10k cycle",
+        category="parts",
+    )
+    assert item["description_display"] == "2-inch torsion spring, 10k cycle"
+
+
+def test_description_display_empty_description_still_falls_back_to_name(db_session: Session):
+    catalog = _create_catalog(db_session)
+    item = _create_item(
+        db_session, str(catalog["id"]),
+        sku="SPR-3", name="Extension Spring", description=None, category="parts",
+    )
+    assert item["description_display"] == "Extension Spring"
