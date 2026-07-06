@@ -30,16 +30,35 @@
       ref="screen"
       class="browser-stream__screen"
       :src="frameSrc || transparentPixel"
-      tabindex="0"
       draggable="false"
       alt="Remote browser"
-      @mousedown.prevent="(e) => mouse('mousedown', e, screen)"
+      @mousedown.prevent="(e) => { focusKeyboard(); mouse('mousedown', e, screen); }"
       @mouseup.prevent="(e) => mouse('mouseup', e, screen)"
       @mousemove.prevent="(e) => mouse('mousemove', e, screen)"
       @wheel.prevent="(e) => wheel(e, screen)"
-      @keydown.prevent="(e) => key('keydown', e)"
-      @keyup.prevent="(e) => key('keyup', e)"
+    />
+
+    <!-- All typing lands here, not on the <img>: only a real editable element
+         summons the phone's on-screen keyboard, so tapping the screen focuses
+         this visually-hidden input. Desktop keydowns are preventDefaulted and
+         sent as key/text events; soft-keyboard (IME) edits slip past keydown and
+         are mirrored to the remote page by diffing the input's value. -->
+    <input
+      ref="kbd"
+      class="browser-stream__kbd"
+      type="text"
+      autocomplete="off"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
+      aria-label="Remote browser keyboard input"
+      @keydown="(e) => key('keydown', e)"
+      @keyup="(e) => key('keyup', e)"
+      @input="(e) => imeInput(e, kbd)"
+      @compositionstart="compositionStart"
+      @compositionend="compositionEnd"
       @paste.prevent="(e) => paste(e)"
+      @focus="() => seedKeyboard(kbd)"
     />
   </div>
 </template>
@@ -72,11 +91,21 @@ const transparentPixel =
 
 const api = useApiWithToast();
 const screen = ref(null);
+const kbd = ref(null);
 const capturing = ref(false);
 const folder = ref('');
 const folderOptions = ref([]);
-const { frameSrc, connected, error, connect, mouse, wheel, key, paste, capturePage, disconnect } =
-  useBrowserStream();
+const {
+  frameSrc, connected, error, connect, mouse, wheel, key, paste,
+  imeInput, seedKeyboard, compositionStart, compositionEnd, capturePage, disconnect,
+} = useBrowserStream();
+
+// @mousedown.prevent suppresses the focus a press normally gives, so focus the
+// keyboard input explicitly — synchronously, inside the tap's event handler,
+// or mobile browsers refuse to open the on-screen keyboard.
+function focusKeyboard() {
+  if (kbd.value) kbd.value.focus();
+}
 
 async function loadFolders() {
   if (!props.foldersEndpoint) return;
@@ -109,7 +138,18 @@ onBeforeUnmount(disconnect);
 </script>
 
 <style scoped>
+.browser-stream { position: relative; }
 .browser-stream__bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+/* Focusable but invisible (display:none/visibility:hidden would kill focus, and
+   focus is what opens the phone keyboard). Kept on-screen — offscreen positions
+   make iOS scroll-jump on focus. 16px font stops iOS zooming on focus. */
+.browser-stream__kbd {
+  position: absolute; bottom: 0; left: 0;
+  width: 1px; height: 1px;
+  opacity: 0; border: 0; padding: 0;
+  font-size: 16px;
+  pointer-events: none;
+}
 .browser-stream__dot { width: 10px; height: 10px; border-radius: 50%; }
 .browser-stream__dot.is-on { background: var(--color-success-500); }
 .browser-stream__dot.is-off { background: var(--color-warning-500); }

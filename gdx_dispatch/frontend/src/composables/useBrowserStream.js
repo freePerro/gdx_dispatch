@@ -51,6 +51,26 @@ export function isPrintableKey(e) {
   return !!e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
 
+/** Pure: a keydown the on-screen keyboard's IME owns — no usable key value, so
+ * it must be handled by the input-value diff instead of a key event. */
+export function isImeKey(e) {
+  return !!e.isComposing || e.key === 'Unidentified' || e.key === 'Process' || e.keyCode === 229;
+}
+
+/** Pure: how an input's value changed — chars to delete, then text to insert.
+ * Mirrors soft-keyboard edits (typing, backspace, autocorrect replacing a word)
+ * into the remote page without needing per-key events. Unit-tested. */
+export function diffInput(prev, next) {
+  let i = 0;
+  const min = Math.min(prev.length, next.length);
+  while (i < min && prev[i] === next[i]) i++;
+  return { backspaces: prev.length - i, text: next.slice(i) };
+}
+
+// The hidden keyboard input is pre-seeded so Backspace always has something to
+// delete locally (an empty input swallows Backspace without firing any event).
+export const KBD_SEED = ' '.repeat(8);
+
 export function wsTicketUrl(ticket) {
   const scheme = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws';
   const host = typeof location !== 'undefined' ? location.host : 'localhost';
@@ -101,10 +121,6 @@ export function useBrowserStream() {
     const map = { mousedown: 'mousePressed', mouseup: 'mouseReleased', mousemove: 'mouseMoved' };
     const t = map[domType];
     if (!t || !el) return;
-    // The screen <img> uses @mousedown.prevent (to suppress drag/selection), which
-    // also suppresses the focus a click normally gives — so keydown wouldn't fire
-    // on it and typing wouldn't work. Focus it explicitly on press.
-    if (domType === 'mousedown' && typeof el.focus === 'function') el.focus();
     if (domType === 'mousedown') pressed = true;
     if (domType === 'mouseup') pressed = false;
     const { x, y } = mapCoords(el.getBoundingClientRect(), e.clientX, e.clientY);
@@ -127,6 +143,11 @@ export function useBrowserStream() {
   }
 
   function key(domType, e) {
+    // Soft-keyboard IMEs (phones) deliver unusable keydowns (keyCode 229,
+    // key "Unidentified") — let those edit the hidden input and reach us via
+    // imeInput's value diff instead of a key event.
+    if (isImeKey(e)) return;
+    if (e.preventDefault) e.preventDefault(); // handled here; keep it out of the input's value
     // Printable chars (no modifier) go via insertText so punctuation isn't
     // mis-mapped to a virtual key (the "." → VK_DELETE bug). Control keys
     // (Enter, Backspace, Tab, arrows, …) still need real key events.
@@ -135,6 +156,50 @@ export function useBrowserStream() {
       return;
     }
     send({ type: 'key', payload: keyPayload(domType, e) });
+  }
+
+  function sendControlKey(key, vkey) {
+    const payload = { key, code: key, windowsVirtualKeyCode: vkey };
+    send({ type: 'key', payload: { type: 'keyDown', ...payload } });
+    send({ type: 'key', payload: { type: 'keyUp', ...payload } });
+  }
+
+  // ---- Soft-keyboard (mobile) path: a hidden real <input> is focused when the
+  // screen is tapped — that's the only thing that summons the phone keyboard.
+  // Its IME edits (typing, backspace, autocorrect) are mirrored to the remote
+  // page by diffing the input's value; desktop keydowns never reach it because
+  // key() preventDefaults them before they can edit the value.
+  let composing = false;
+  let kbdValue = KBD_SEED;
+
+  /** (Re)fill the hidden input with the seed, caret at the end. */
+  function seedKeyboard(el) {
+    if (!el) return;
+    el.value = KBD_SEED;
+    kbdValue = KBD_SEED;
+    if (el.setSelectionRange) el.setSelectionRange(KBD_SEED.length, KBD_SEED.length);
+  }
+
+  function compositionStart() { composing = true; }
+  function compositionEnd() { composing = false; }
+
+  /** Mirror one soft-keyboard edit of the hidden input into the remote page. */
+  function imeInput(e, el) {
+    if (!el) return;
+    if (e && e.inputType === 'insertLineBreak') {
+      sendControlKey('Enter', 13);
+      seedKeyboard(el);
+      return;
+    }
+    const { backspaces, text } = diffInput(kbdValue, el.value);
+    for (let n = 0; n < backspaces; n++) sendControlKey('Backspace', 8);
+    if (text) send({ type: 'text', text });
+    kbdValue = el.value;
+    // Reseed when the seed itself gets eaten (so Backspace keeps working) or the
+    // buffer grows unbounded — but never mid-composition, that breaks the IME.
+    if (!composing && (el.value.length < KBD_SEED.length || el.value.length > 200)) {
+      seedKeyboard(el);
+    }
   }
 
   // Paste into the remote browser: the local clipboard isn't shared, so read the
@@ -161,5 +226,9 @@ export function useBrowserStream() {
     connected.value = false;
   }
 
-  return { frameSrc, connected, error, connect, mouse, wheel, key, paste, saveSession, capturePage, disconnect };
+  return {
+    frameSrc, connected, error, connect, mouse, wheel, key, paste,
+    imeInput, seedKeyboard, compositionStart, compositionEnd,
+    saveSession, capturePage, disconnect,
+  };
 }
