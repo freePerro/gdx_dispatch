@@ -155,15 +155,26 @@ function openCommandPalette() {
   window.dispatchEvent(new CustomEvent('gdx:open-command-palette'));
 }
 
+// Mobile browsers fire `resize` when the URL bar hides/shows during a
+// scroll (height-only change). Reacting to those re-collapsed the sidebar
+// while the user was scrolling it — so only respond to width changes, and
+// only auto-collapse when crossing INTO the narrow band, so a deliberate
+// expand at 768–1100px sticks.
+let lastAppliedWidth = 0;
+
 function applyMediaState() {
   const width = window.innerWidth;
+  if (width === lastAppliedWidth) return;
+  const prevWidth = lastAppliedWidth;
+  lastAppliedWidth = width;
+
   isMobile.value = width < 768;
 
   if (isMobile.value) {
     sidebarCollapsed.value = false;
   } else {
     mobileSidebarOpen.value = false;
-    if (width < 1100) {
+    if (width < 1100 && (prevWidth === 0 || prevWidth >= 1100)) {
       sidebarCollapsed.value = true;
     }
   }
@@ -202,7 +213,10 @@ onUnmounted(() => {
 }
 
 .app-layout {
+  /* 100dvh tracks the visible mobile viewport as the URL bar hides/shows;
+     100vh stays as the fallback for browsers without dvh support. */
   height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   background: var(--surface-app);
@@ -221,6 +235,7 @@ onUnmounted(() => {
 .layout-main {
   min-width: 0;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
