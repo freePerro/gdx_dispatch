@@ -63,8 +63,14 @@ EXPOSE 8000
 # The entrypoint runs migrations + first-run bootstrap (idempotent) and then
 # exec's CMD. This is what lets a fresh `docker compose up` actually log in.
 ENTRYPOINT ["/app/gdx_dispatch/docker/entrypoint.sh"]
+# --timeout-worker-healthcheck: the multiprocess manager pings each worker and
+# SIGKILLs any that miss the deadline (default 5s). Brief CPU/GIL stalls were
+# tripping it in prod, killing healthy workers mid-request → sporadic 502s
+# ("upstream prematurely closed connection" in nginx). 30s still reaps a truly
+# hung worker but tolerates transient stalls.
 CMD ["uvicorn", "gdx_dispatch.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
      "--workers", "2", \
+     "--timeout-worker-healthcheck", "30", \
      "--access-log"]
