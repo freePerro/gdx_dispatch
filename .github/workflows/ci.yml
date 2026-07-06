@@ -123,6 +123,7 @@ jobs:
           # Faster path requires fully fixing #20 (then drop --forked) or marking
           # only the crash-prone TestClient teardown tests @pytest.mark.forked.
           # The env tweaks below + --durations are kept (safe, surface slow tests).
+          # 139 = process terminated by SIGSEGV (native crash).
           SIGSEGV_EXIT_CODE=139
           set +e
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
