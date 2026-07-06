@@ -377,6 +377,24 @@ def _serialize_door_spec(spec: DoorSpec | None) -> dict[str, object] | None:
     return out
 
 
+def _display_description(item: CustomCatalogItem) -> str:
+    """Line-surface description with junk filtered out.
+
+    Some imports (QB parts sync) stuffed the category name into the
+    description column ("Accessories" on part L956W), so a line added from
+    the picker read as the category instead of the part. A description that
+    is just the item's category (or pricing bucket) carries no information —
+    fall back to the name, same as an empty description.
+    """
+    desc = (item.description or "").strip()
+    if desc.lower() in {
+        (item.category or "").strip().lower(),
+        (item.pricing_category or "").strip().lower(),
+    }:
+        desc = ""
+    return desc or item.name
+
+
 def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
     product_class = (getattr(item, "product_class", None) or "parts").strip().lower()
     out: dict[str, object] = {
@@ -389,7 +407,7 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         # surfaces should consume. Toggle controlled by tenant policy
         # (catalog_render_name_when_desc_empty), default ON.
         "description": item.description,
-        "description_display": (item.description or "").strip() or item.name,
+        "description_display": _display_description(item),
         "cost": _to_float(item.cost),
         "price": _to_float(item.price),
         "category": item.category,
