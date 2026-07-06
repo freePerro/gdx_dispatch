@@ -19,6 +19,8 @@
             :value="estimate.status"
             :severity="statusSeverity(estimate.status)"
             data-testid="estimate-status" />
+          <Tag v-if="estimate.job_id" value="Converted to Job" severity="info"
+            icon="pi pi-briefcase" data-testid="estimate-converted-tag" />
           <Button v-if="!isExisting"
             label="AI Quick Estimate" icon="pi pi-bolt" severity="help" size="small"
             @click="showAiDialog = true" data-testid="ai-quick-estimate-btn" />
@@ -29,6 +31,13 @@
           <span>Created: {{ formatDate(estimate.created_at) }}</span>
           <span class="meta-sep">·</span>
           <span>Expires: {{ formatDate(estimate.expires_at) }}</span>
+        </div>
+        <div v-if="estimate.job_id" class="converted-banner" data-testid="estimate-converted-banner">
+          <i class="pi pi-briefcase" />
+          <span>This estimate has been converted to a job.</span>
+          <Button :label="linkedJobLabel" icon="pi pi-arrow-right" icon-pos="right"
+            link size="small" data-testid="estimate-view-job-link"
+            @click="$router.push(`/jobs/${estimate.job_id}`)" />
         </div>
       </header>
 
@@ -484,10 +493,14 @@
           <Button label="Decline" icon="pi pi-times" severity="danger" outlined data-testid="estimate-decline"
             :disabled="estimate.status === 'Declined' || estimate.status === 'Accepted'"
             @click="declineEstimate" />
-          <Button v-if="estimate.status === 'Accepted'"
+          <Button v-if="estimate.status === 'Accepted' && !estimate.job_id"
             label="Convert to Job" icon="pi pi-briefcase" severity="success"
             data-testid="estimate-convert-job" :loading="converting"
             @click="convertToJob" />
+          <Button v-if="estimate.job_id"
+            :label="linkedJobLabel" icon="pi pi-briefcase" severity="info" outlined
+            data-testid="estimate-goto-job"
+            @click="$router.push(`/jobs/${estimate.job_id}`)" />
           <Button label="Print" icon="pi pi-print" text data-testid="estimate-print"
             @click="window.print()" />
           <Button label="Copy Link" icon="pi pi-link" text data-testid="estimate-copy-link"
@@ -622,7 +635,26 @@ const estimate = ref({
   status: "Draft",
   created_at: "",
   expires_at: "",
+  job_id: null,
 });
+
+// Linked job (set when this estimate was converted). Loaded best-effort for
+// a friendlier link label; the link itself only needs estimate.job_id.
+const linkedJob = ref(null);
+const linkedJobLabel = computed(() => {
+  const num = linkedJob.value?.job_number;
+  return num ? `View Job ${num}` : "View Job";
+});
+
+async function loadLinkedJob() {
+  if (!estimate.value.job_id) return;
+  try {
+    const result = await apiRaw.get(`/api/jobs/${estimate.value.job_id}`);
+    linkedJob.value = result?.data || result || null;
+  } catch {
+    linkedJob.value = null;
+  }
+}
 
 // --- Pricing tiers + features ---
 const tierSetsByCategory = ref({});
@@ -1305,7 +1337,9 @@ async function fetchEstimate() {
       status: normalizedStatus,
       created_at: data.created_at || data.createdAt || data.created || "",
       expires_at: data.expires_at || data.expiresAt || data.expiry_date || data.valid_until || "",
+      job_id: data.job_id || null,
     };
+    loadLinkedJob();
     // tax_rate on server is decimal (0.0825); null means "use tenant default".
     const serverRate = data.tax_rate ?? data.taxRate;
     let taxPct;
@@ -2032,6 +2066,7 @@ async function doConvertToJob() {
     const result = await api.post(`/api/estimates/${route.params.id}/convert-to-job`, {});
     estimate.value.status = "Converted";
     const jobId = result?.job_id || result?.data?.job_id;
+    if (jobId) estimate.value.job_id = jobId;
     toast.add({ severity: "success", summary: "Converted", detail: "Estimate converted to job", life: 3000 });
     if (jobId) router.push(`/jobs/${jobId}`);
   } catch (err) {
@@ -2176,6 +2211,24 @@ onUnmounted(() => {
 }
 .header-meta .customer-name { color: var(--text-primary, inherit); font-weight: 600; }
 .meta-sep { opacity: 0.5; }
+
+/* Banner shown when the estimate has already been converted to a job.
+   Translucent blue tint (not a palette-50 solid) so it reads correctly on
+   both light and dark themes. */
+.converted-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  background: color-mix(in srgb, var(--p-blue-500, #3b82f6) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--p-blue-500, #3b82f6) 45%, transparent);
+  color: var(--text-primary, inherit);
+}
+.converted-banner .pi-briefcase { color: var(--p-blue-500, #3b82f6); }
+.converted-banner .p-button { padding: 0 0.25rem; }
 
 .form-grid {
   display: grid;
