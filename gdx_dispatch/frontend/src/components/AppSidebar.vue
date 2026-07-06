@@ -414,7 +414,10 @@ onMounted(async () => {
 
 <style scoped>
 .app-sidebar {
+  /* 100dvh tracks the visible mobile viewport (URL bar collapse), so the
+     bottom nav items stay reachable; 100vh is the no-dvh fallback. */
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--surface-sidebar);

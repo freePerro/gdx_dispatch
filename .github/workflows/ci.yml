@@ -123,9 +123,22 @@ jobs:
           # Faster path requires fully fixing #20 (then drop --forked) or marking
           # only the crash-prone TestClient teardown tests @pytest.mark.forked.
           # The env tweaks below + --durations are kept (safe, surface slow tests).
+          # 139 = process terminated by SIGSEGV (native crash).
+          SIGSEGV_EXIT_CODE=139
+          set +e
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
             --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
             -p no:nose -p no:pastebin -p no:doctest --durations=15
+          rc=$?
+          set -e
+          if [ "$rc" -eq "$SIGSEGV_EXIT_CODE" ]; then
+            echo "::warning::pytest exited with ${SIGSEGV_EXIT_CODE} (native SIGSEGV). Retrying shard once."
+            python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
+              --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
+              -p no:nose -p no:pastebin -p no:doctest --durations=15
+          else
+            exit "$rc"
+          fi
 
   build:
     runs-on: ubuntu-latest

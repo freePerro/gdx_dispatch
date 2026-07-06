@@ -1,5 +1,41 @@
 import { describe, it, expect } from 'vitest';
-import { mapCoords, keyPayload, wsTicketUrl, isPrintableKey, REMOTE_W, REMOTE_H } from '../useBrowserStream';
+import {
+  mapCoords, keyPayload, wsTicketUrl, isPrintableKey, isImeKey, diffInput,
+  KBD_SEED, REMOTE_W, REMOTE_H,
+} from '../useBrowserStream';
+
+describe('isImeKey (soft-keyboard keydowns routed to the value diff)', () => {
+  it('flags IME keydowns (keyCode 229 / Unidentified / composing)', () => {
+    expect(isImeKey({ key: 'Unidentified', keyCode: 229 })).toBe(true);
+    expect(isImeKey({ key: 'a', keyCode: 229 })).toBe(true);
+    expect(isImeKey({ key: 'Process' })).toBe(true);
+    expect(isImeKey({ key: 'a', isComposing: true })).toBe(true);
+  });
+  it('passes real keydowns through', () => {
+    expect(isImeKey({ key: 'a', keyCode: 65 })).toBe(false);
+    expect(isImeKey({ key: 'Enter', keyCode: 13 })).toBe(false);
+    expect(isImeKey({ key: 'Backspace', keyCode: 8 })).toBe(false);
+  });
+});
+
+describe('diffInput (mirroring soft-keyboard edits)', () => {
+  it('typed chars append to the seed → insert text, no backspaces', () => {
+    expect(diffInput(KBD_SEED, KBD_SEED + 'abc')).toEqual({ backspaces: 0, text: 'abc' });
+  });
+  it('backspace shrinks the value → one backspace, no text', () => {
+    expect(diffInput(KBD_SEED + 'ab', KBD_SEED + 'a')).toEqual({ backspaces: 1, text: '' });
+  });
+  it('backspacing into the seed still registers', () => {
+    expect(diffInput(KBD_SEED, KBD_SEED.slice(0, -1))).toEqual({ backspaces: 1, text: '' });
+  });
+  it('autocorrect replacing a word → delete the tail, insert the fix', () => {
+    expect(diffInput(KBD_SEED + 'helo', KBD_SEED + 'hello'))
+      .toEqual({ backspaces: 1, text: 'lo' });
+  });
+  it('no change → nothing to send', () => {
+    expect(diffInput(KBD_SEED + 'x', KBD_SEED + 'x')).toEqual({ backspaces: 0, text: '' });
+  });
+});
 
 describe('isPrintableKey (text vs control routing)', () => {
   it('treats single chars (incl. punctuation) with no modifier as printable', () => {
