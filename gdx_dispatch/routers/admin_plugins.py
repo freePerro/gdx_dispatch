@@ -26,9 +26,12 @@ from gdx_dispatch.core.plugin_consent import (
 )
 from gdx_dispatch.plugin_api.manifest import PERMISSION_RISKS
 from gdx_dispatch.plugin_host.reconcile import (
+    artifact_name_version,
+    desired_artifact_names,
     desired_packages,
     ensure_artifact_table,
     ensure_registry_table,
+    looks_like_artifact_filename,
     safe_artifact_name,
 )
 from gdx_dispatch.routers.auth import get_current_user
@@ -129,6 +132,30 @@ def add_plugin(
     db: Session = Depends(get_db),
 ) -> dict:
     ensure_registry_table(db)
+    # Guard the free-text package field against a wheel/sdist *filename* (issue
+    # #100). A filename is not an index package spec; a private wheel belongs in the
+    # Upload flow (plugin_artifact). Recording it here makes reconcile try
+    # `pip install <bare filename>` on every boot, which fails and wedges
+    # plugin-host /ready red. If the file was already uploaded it's installed from
+    # there — report success without a bogus row; otherwise point at Upload.
+    if looks_like_artifact_filename(body.package):
+        ensure_artifact_table(db)
+        if body.package.strip() in set(desired_artifact_names(db)):
+            _, fver = artifact_name_version(body.package)
+            return {
+                "package": body.package,
+                "version": fver,
+                "status": "already-uploaded",
+                "note": "installed from the uploaded file — restart plugin-host if it isn't loaded yet",
+            }
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{body.package}' looks like a plugin file, not a package name. "
+                'Upload it under "Upload plugin file" instead; the Package field is '
+                "for an index package name like gdx-plugin-example."
+            ),
+        )
     db.execute(
         text(
             """
