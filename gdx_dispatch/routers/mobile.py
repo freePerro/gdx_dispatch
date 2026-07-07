@@ -3077,9 +3077,11 @@ def mobile_job_parts_used(
         part_obj.qty_on_hand = qty_on_hand - part.qty
         try:
             _job_uuid_parts = _UUID(job_id)
+            _job_id_valid = True
         except (ValueError, AttributeError):
             logging.getLogger(__name__).exception("mobile_job_parts_used caught exception")
             _job_uuid_parts = uuid.uuid4()
+            _job_id_valid = False
         job_part = JobPart(
             id=uuid.uuid4(),
             job_id=_job_uuid_parts,
@@ -3089,6 +3091,36 @@ def mobile_job_parts_used(
             created_at=datetime.now(UTC),
         )
         db.add(job_part)
+        if not _job_id_valid:
+            # PR4 audit round 2: never mint a checklist row keyed to the
+            # synthetic fallback UUID above — it would be an invisible,
+            # unbillable row no query can display. Loud skip.
+            logging.getLogger(__name__).error(
+                "mobile_parts_used_checklist_skipped_invalid_job_id job_id=%r", job_id
+            )
+            recorded.append({"part_id": part.part_id, "qty": part.qty})
+            continue
+        # PR4-billing-capture: this path recorded cost + decremented stock
+        # but the part NEVER reached billing. One source-tagged billable
+        # checklist row per event (events accumulate; never merged).
+        # job_id normalized to the canonical dashed form so the checklist's
+        # string-equality queries always match (audit round 2).
+        from gdx_dispatch.models.tenant_models import JobPartNeeded
+        _pn_now = datetime.now(UTC)
+        db.add(JobPartNeeded(
+            id=str(uuid.uuid4()),
+            company_id=tenant_id,
+            job_id=str(_job_uuid_parts),
+            part_name=part_obj.name or part_obj.sku or "Part",
+            sku=part_obj.sku,
+            quantity=int(part.qty),
+            status="used",
+            source="mobile",
+            unit_price=part_obj.unit_price if part_obj.unit_price else None,
+            requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
+            created_at=_pn_now,
+            updated_at=_pn_now,
+        ))
         recorded.append({"part_id": part.part_id, "qty": part.qty})
 
     db.commit()

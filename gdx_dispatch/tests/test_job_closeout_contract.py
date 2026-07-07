@@ -119,8 +119,10 @@ def test_closeout_handler_validates_part_id_before_jobpart_insert() -> None:
     Smoke-tested against prod 2026-05-10: pre-fix the synthetic UUID
     triggered "Key (part_id)=... is not present in table parts" 500."""
     span = _closeout_function_body()
-    # Must select Part by id before inserting a JobPart.
-    assert re.search(r"select\(\s*Part\.id\s*\)", span), (
+    # Must select the Part before inserting a JobPart. (PR4-billing-capture
+    # widened select(Part.id) to select(Part) — the row is needed for the
+    # sell price + stock decrement; the existence check is unchanged.)
+    assert re.search(r"select\(\s*Part(\.id)?\s*\)", span), (
         "closeout_job doesn't verify Part.id before inserting a JobPart "
         "row. Free-text closeout lines will trigger a FK violation."
     )

@@ -29,6 +29,7 @@ from gdx_dispatch.models.tenant_models import (
     JobAssignment,
     JobCloseout,
     JobDependency,
+    JobPartNeeded,
     TimeEntry,
 )
 from gdx_dispatch.modules.dispatch_settings import require_tech_for_scheduled_job
@@ -1370,9 +1371,10 @@ def closeout_job(
     flags = _load_workflow_flags(tenant_id)
     user_id = _user_id(current_user)
 
-    # Pull job
+    # Pull job (PR4: bind a UUID object — the Uuid column rejects a raw str
+    # on the SQLite test path; the id was already validated above).
     job = db.execute(
-        select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+        select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
@@ -1411,8 +1413,75 @@ def closeout_job(
         #    and the part is tracked, allow qty_on_hand to go negative.
         #    Doug 2026-05-10: blocking completion on a stock count is
         #    a worse UX — the tech is on-site, the part is in the door.
+        # PR4-billing-capture: the closeout is the tech's ATTESTED parts
+        # statement and job_parts_needed is the single billable spine — so a
+        # re-closeout REPLACES the job's still-unbilled closeout-sourced rows
+        # (event identity = job_id + source='closeout'); billed rows are
+        # never touched. No fuzzy matching against request rows — the office
+        # checklist shows both with source badges and decides (audit round 1:
+        # sku/name upsert-matching silently undercounted).
+        #
+        # Audit round 2 (PR4) — two re-closeout repros fixed here:
+        # 1. STOCK: the delete must reverse the stock decrement of the rows
+        #    it removes, or every "fix a note and resubmit" silently drains
+        #    qty_on_hand (repro: identical resubmit 10 → 6).
+        # 2. BILLED DUPES: the tech re-attests the FULL parts list, so lines
+        #    exactly matching an already-BILLED closeout row (sku/name + qty)
+        #    must be suppressed — else they resurrect as unbilled duplicates
+        #    on the leak card and one-click bills them twice. A differing qty
+        #    deliberately still lands (over-shows for operator review; exact
+        #    dedup against billed rows only is NOT the rejected fuzzy-merge
+        #    of live capture events).
+        _stale_closeout_rows = db.execute(
+            select(JobPartNeeded).where(
+                JobPartNeeded.job_id == str(job.id),
+                JobPartNeeded.source == "closeout",
+                JobPartNeeded.billed_invoice_id.is_(None),
+            )
+        ).scalars().all()
+        for _stale in _stale_closeout_rows:
+            if _stale.sku:
+                _stale_part = db.execute(
+                    select(Part).where(Part.sku == _stale.sku, Part.deleted_at.is_(None))
+                ).scalar_one_or_none()
+                if _stale_part is not None:
+                    _stale_part.qty_on_hand = int(_stale_part.qty_on_hand or 0) + int(_stale.quantity or 0)
+        db.execute(
+            JobPartNeeded.__table__.delete().where(
+                JobPartNeeded.job_id == str(job.id),
+                JobPartNeeded.source == "closeout",
+                JobPartNeeded.billed_invoice_id.is_(None),
+            )
+        )
+        _billed_keys = {
+            ((r.sku or "").strip().lower() or (r.part_name or "").strip().lower(), int(r.quantity or 0))
+            for r in db.execute(
+                select(JobPartNeeded).where(
+                    JobPartNeeded.job_id == str(job.id),
+                    JobPartNeeded.source == "closeout",
+                    JobPartNeeded.billed_invoice_id.is_not(None),
+                )
+            ).scalars().all()
+        }
+
         part_lines: list[dict] = []
         for p in payload.parts:
+            _line_key = ((p.sku or "").strip().lower() or (p.name or "").strip().lower(), int(p.qty))
+            if _line_key in _billed_keys:
+                # Already billed by an earlier closeout of this job — the
+                # re-attestation repeats it; do not re-insert, re-cost, or
+                # re-decrement. (Snapshot below still records it.)
+                part_lines.append({
+                    "part_id": None,
+                    "sku": p.sku,
+                    "name": p.name,
+                    "qty": int(p.qty),
+                    "unit_cost": float(p.unit_cost or 0),
+                    "line_total": float(p.unit_cost or 0) * int(p.qty),
+                    "in_inventory": False,
+                    "already_billed": True,
+                })
+                continue
             unit_cost = float(p.unit_cost or 0)
             line_total = unit_cost * int(p.qty)
             part_uuid: uuid.UUID | None = None
@@ -1424,14 +1493,15 @@ def closeout_job(
             # Verify the inventory part exists before inserting a JobPart row.
             # If the SKU or name doesn't match a real Part, skip the
             # job_parts insert and let the closeout snapshot carry the data.
-            part_exists = False
+            part_row = None
             if part_uuid is not None:
-                part_exists = db.execute(
-                    select(Part.id).where(
+                part_row = db.execute(
+                    select(Part).where(
                         Part.id == part_uuid,
                         Part.deleted_at.is_(None),
                     ),
-                ).scalar_one_or_none() is not None
+                ).scalar_one_or_none()
+            part_exists = part_row is not None
             if part_exists and part_uuid is not None:
                 jp = JobPart(
                     id=uuid.uuid4(),
@@ -1442,6 +1512,35 @@ def closeout_job(
                     created_at=now,
                 )
                 db.add(jp)
+                # PR4: closeout now decrements stock (it recorded JobPart
+                # rows but never touched qty_on_hand). Deliberately looser
+                # than mobile's insufficient-stock 400: allow-negative,
+                # non-blocking (Doug 2026-05-10 — the part is already in the
+                # door; a stock count must not block completion). Re-closeout
+                # is stock-neutral: the replace step above reversed the
+                # deleted rows' decrements.
+                part_row.qty_on_hand = int(part_row.qty_on_hand or 0) - int(p.qty)
+            # PR4: one billable checklist row per closeout line, 1:1 — two
+            # same-sku lines stay two rows. unit_price = catalog SELL price
+            # when the part resolved (NOT the closeout unit_cost); NULL means
+            # the office prices it at invoicing.
+            db.add(JobPartNeeded(
+                id=str(uuid.uuid4()),
+                company_id=tenant_id,
+                job_id=str(job.id),
+                part_name=p.name,
+                sku=p.sku,
+                quantity=int(p.qty),
+                status="used",
+                source="closeout",
+                unit_price=(
+                    part_row.unit_price if part_exists and part_row.unit_price else None
+                ),
+                notes=(f"cost ${unit_cost:.2f} ea" if unit_cost else None),
+                requested_by_user_id=user_id,
+                created_at=now,
+                updated_at=now,
+            ))
             part_lines.append({
                 "part_id": str(part_uuid) if part_exists and part_uuid else None,
                 "sku": p.sku,
@@ -1843,6 +1942,70 @@ def create_invoice_from_job(
             co_tax = round(co_taxable_subtotal * _co_rate, 2)
             subtotal_value = round(float(subtotal_value) + co_subtotal, 2)
             tax_amount_value = round(float(tax_amount_value) + co_tax, 2)
+            total_value = round(subtotal_value + tax_amount_value, 2)
+            invoice.subtotal = subtotal_value
+            invoice.tax_amount = tax_amount_value
+            invoice.total = total_value
+            invoice.balance_due = total_value
+
+        # PR4-billing-capture — one-click also pulls the tech's ATTESTED
+        # closeout parts, but ONLY when NO estimate priced this job (audit
+        # round 2 repro: estimate lines already include the parts the gate
+        # forces the tech to re-attest at closeout — pulling both billed a
+        # $179 job at $358 with zero humans in the loop). With an estimate,
+        # closeout parts stay on the operator checklist where the office
+        # decides. Stamp-first RETURNING, same gate as everything else. A
+        # NULL-price part bills at $0 on the DRAFT — visible for the office
+        # to price, which beats leaking it entirely.
+        _pulled_parts = []
+        if est_obj is None:
+            _pulled_parts = db.execute(
+                update(JobPartNeeded)
+                .where(
+                    JobPartNeeded.job_id == str(job.id),
+                    JobPartNeeded.source == "closeout",
+                    JobPartNeeded.billed_invoice_id.is_(None),
+                )
+                .values(billed_invoice_id=invoice_id)
+                .returning(JobPartNeeded.id)
+            ).scalars().all()
+        if _pulled_parts:
+            part_rows = db.execute(
+                select(JobPartNeeded)
+                .where(JobPartNeeded.id.in_([str(p) for p in _pulled_parts]))
+                .order_by(JobPartNeeded.created_at.asc())
+            ).scalars().all()
+            try:
+                from gdx_dispatch.modules.tax.service import resolve_rate as _pt_rate_fn
+                _pt_rate = float(_pt_rate_fn(db, job.customer_id))
+            except Exception:
+                log.exception("create_invoice_from_job_parts_tax_resolve_failed")
+                _pt_rate = 0.0
+            _existing_line_count = db.execute(
+                select(func.count(InvoiceLine.id)).where(InvoiceLine.invoice_id == invoice_id)
+            ).scalar() or 0
+            parts_subtotal = 0.0
+            for p_idx, pn in enumerate(part_rows):
+                unit = float(pn.unit_price or 0)
+                qty = int(pn.quantity or 1)
+                line_total = round(unit * qty, 2)
+                parts_subtotal += line_total
+                db.add(InvoiceLine(
+                    id=uuid.uuid4(),
+                    company_id=tenant_id,
+                    invoice_id=invoice_id,
+                    description=(pn.part_name or "Part")[:500],
+                    quantity=qty,
+                    unit_price=unit,
+                    line_total=line_total,
+                    taxable=True,
+                    part_id=pn.id,
+                    sort_order=int(_existing_line_count) + p_idx,
+                    created_at=now_dt,
+                ))
+            parts_tax = round(parts_subtotal * _pt_rate, 2)
+            subtotal_value = round(float(subtotal_value) + parts_subtotal, 2)
+            tax_amount_value = round(float(tax_amount_value) + parts_tax, 2)
             total_value = round(subtotal_value + tax_amount_value, 2)
             invoice.subtotal = subtotal_value
             invoice.tax_amount = tax_amount_value

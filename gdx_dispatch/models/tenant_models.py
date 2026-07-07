@@ -1996,6 +1996,22 @@ class JobPartNeeded(Base):
         nullable=True,
         index=True,
     )
+    # PR4-billing-capture (2026-07-07): this table is now the SINGLE billable
+    # parts spine — the three cost-only capture paths (closeout, mobile
+    # parts-used, van usage) each insert source-tagged rows here so every
+    # part a tech records can reach an invoice. No fuzzy matching, no
+    # overwrites (audit round 1: sku/name upsert-matching was an undercount
+    # generator) — every capture event is its own row; the operator-reviewed
+    # checklist + the stamp-gates-copy invoice pull decide billing truth.
+    #
+    # source: 'request' (tech asked for a part — the original flow),
+    # 'closeout' (attested at job completion; re-closeout REPLACES the job's
+    # unbilled closeout rows), 'mobile' (parts-used from the truck, one row
+    # per event), 'van' (van-stock usage with a job_id, one row per event).
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="request", server_default="request")
+    # Suggested SELL price for the office (catalog Part.unit_price at capture
+    # time — NOT the cost). NULL = office prices it on the invoice.
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
