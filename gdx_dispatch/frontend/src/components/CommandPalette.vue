@@ -18,43 +18,59 @@
         v-model="query"
         autofocus
         class="palette-input"
-        placeholder="Search jobs, customers, invoices..."
+        placeholder="Search jobs, customers, invoices, estimates..."
+        data-testid="palette-input"
       />
 
       <div class="results-wrap">
+        <p v-if="searching" class="state-line" data-testid="palette-searching">Searching…</p>
+        <p v-else-if="searchFailed" class="state-line" data-testid="palette-error">
+          Search is unavailable right now — page matches still work.
+        </p>
+
         <div
-          v-for="group in groupedResults"
-          :key="group.type"
+          v-for="group in visibleGroups"
+          :key="group.key"
           class="result-group"
-          :data-type="group.type"
+          :data-type="group.label"
+          :data-testid="`palette-group-${group.key}`"
         >
-          <h4>{{ group.type }}</h4>
+          <h4>{{ group.label }}</h4>
           <button
             v-for="item in group.items"
             :key="item.key"
             type="button"
             class="result-item"
+            :class="{ selected: item.flatIndex === selectedIndex }"
+            :data-testid="`palette-item-${item.key}`"
             @click="navigateTo(item.to)"
+            @mousemove="selectedIndex = item.flatIndex"
           >
             <i :class="item.icon" aria-hidden="true" />
-            <span>{{ item.label }}</span>
+            <span class="item-label">{{ item.label }}</span>
+            <span v-if="item.sublabel" class="item-sublabel">{{ item.sublabel }}</span>
           </button>
         </div>
-        <p v-if="groupedResults.length === 0" class="empty-state">No matching commands</p>
+
+        <p v-if="showEmptyState" class="empty-state" data-testid="palette-empty">
+          No results for "{{ query.trim() }}"
+        </p>
       </div>
     </div>
   </Dialog>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
 import { QUICK_ACTIONS } from '../constants/modules';
+import { useApi } from '../composables/useApi';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
 import { isTechnician } from '../constants/roles';
+import { formatMoney } from '../composables/useFormatters';
 
 const props = defineProps({
   modelValue: {
@@ -66,75 +82,210 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue']);
 
 const router = useRouter();
+const api = useApi();
 const query = ref('');
 const { allEnabledModules, isEnabled } = useTenantModules();
 const auth = useAuthStore();
 
+// --- Data search (/api/search) -------------------------------------------
+// 2026-07-07: the palette used to filter PAGE NAMES only while its
+// placeholder promised "Search jobs, customers, invoices..." — the backend
+// /api/search endpoint existed but nothing called it. Now: debounced fetch,
+// stale responses dropped via a request counter.
+const DEBOUNCE_MS = 250;
+const MIN_CHARS = 2;
+
+const dataResults = ref(null); // null = no data query ran (short/empty term)
+const searching = ref(false);
+const searchFailed = ref(false);
+let debounceTimer = null;
+let requestSeq = 0;
+
+watch(query, (value) => {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  const term = value.trim();
+  if (term.length < MIN_CHARS) {
+    dataResults.value = null;
+    searching.value = false;
+    searchFailed.value = false;
+    requestSeq += 1; // invalidate any in-flight response
+    return;
+  }
+  searching.value = true;
+  debounceTimer = setTimeout(() => runSearch(term), DEBOUNCE_MS);
+});
+
+async function runSearch(term) {
+  const seq = ++requestSeq;
+  try {
+    const response = await api.get(`/api/search?q=${encodeURIComponent(term)}`);
+    if (seq !== requestSeq) return; // a newer query superseded this one
+    dataResults.value = response || null;
+    searchFailed.value = false;
+  } catch (_error) {
+    if (seq !== requestSeq) return;
+    dataResults.value = null;
+    searchFailed.value = true;
+  } finally {
+    if (seq === requestSeq) searching.value = false;
+  }
+}
+
+// The backend returns every section to any authenticated role; hide sections
+// the user's nav doesn't include (same visibility source as the sidebar).
+// UI courtesy, not security — the route guard + backend enforce access.
+const visibleModuleKeys = computed(() => new Set(allEnabledModules.value.map((m) => m.key)));
+
+const DATA_SECTIONS = [
+  {
+    key: 'customers',
+    label: 'Customers',
+    moduleKey: 'customers',
+    icon: 'pi pi-user',
+    toItem: (r) => ({
+      key: `customer-${r.id}`,
+      icon: 'pi pi-user',
+      label: r.name,
+      sublabel: r.phone || r.email || '',
+      to: `/customers/${r.id}`,
+    }),
+  },
+  {
+    key: 'jobs',
+    label: 'Jobs',
+    moduleKey: 'jobs',
+    icon: 'pi pi-briefcase',
+    toItem: (r) => ({
+      key: `job-${r.id}`,
+      icon: 'pi pi-briefcase',
+      label: r.number ? `#${r.number} — ${r.title}` : r.title,
+      sublabel: r.customer_name || '',
+      to: `/jobs/${r.id}`,
+    }),
+  },
+  {
+    key: 'invoices',
+    label: 'Invoices',
+    moduleKey: 'billing',
+    icon: 'pi pi-dollar',
+    toItem: (r) => ({
+      key: `invoice-${r.id}`,
+      icon: 'pi pi-dollar',
+      label: `#${r.number}`,
+      sublabel: [r.customer_name, formatMoney(r.total)].filter(Boolean).join(' · '),
+      to: `/billing/${r.id}`,
+    }),
+  },
+  {
+    key: 'estimates',
+    label: 'Estimates',
+    moduleKey: 'estimates',
+    icon: 'pi pi-file-edit',
+    toItem: (r) => ({
+      key: `estimate-${r.id}`,
+      icon: 'pi pi-file-edit',
+      label: r.label ? `#${r.number} — ${r.label}` : `#${r.number}`,
+      sublabel: r.customer_name || '',
+      to: `/estimates/${r.id}`,
+    }),
+  },
+];
+
+const dataGroups = computed(() => {
+  const results = dataResults.value;
+  if (!results) return [];
+  return DATA_SECTIONS.filter(
+    (section) => visibleModuleKeys.value.has(section.moduleKey) && (results[section.key] || []).length
+  ).map((section) => ({
+    key: section.key,
+    label: section.label,
+    items: results[section.key].map(section.toItem),
+  }));
+});
+
+// --- Page + quick-action matches ------------------------------------------
 // Nav records come straight from `allEnabledModules`, which useTenantModules
 // already permission-filters (a tech never sees a module they lack the
 // permission for, so Ctrl-K can't surface a hidden module either).
-const baseRecords = computed(() => {
-  const role = auth.user?.role || '';
-  const dynamicModules = allEnabledModules.value
-    .map((module) => ({
-      key: module.key,
-      label: module.label,
-      icon: module.icon,
-      type: module.type,
-      to: module.to,
-    }));
+const pageRecords = computed(() =>
+  allEnabledModules.value.map((module) => ({
+    key: `page-${module.key}`,
+    label: module.label,
+    icon: module.icon,
+    to: module.to,
+  }))
+);
 
-  // AppTopbar already hides the Create-job / Create-customer buttons for tech
-  // via `canCreate`. Mirror that here so Ctrl-K doesn't re-open those actions
-  // to a tech. (Quick-action gating is separate from module nav visibility.)
-  const isTech = isTechnician(role);
-
-  const actions = QUICK_ACTIONS.filter((action) => {
-    if (action.key === 'create-job') {
-      return isEnabled('jobs') && !isTech;
-    }
-
-    if (action.key === 'create-customer') {
-      return isEnabled('customers') && !isTech;
-    }
-
-    if (action.key === 'open-dispatch') {
-      return isEnabled('dispatch') && !isTech;
-    }
-
+// AppTopbar already hides the Create-job / Create-customer buttons for tech
+// via `canCreate`. Mirror that here so Ctrl-K doesn't re-open those actions
+// to a tech. (Quick-action gating is separate from module nav visibility.)
+const actionRecords = computed(() => {
+  const isTech = isTechnician(auth.user?.role || '');
+  return QUICK_ACTIONS.filter((action) => {
+    if (action.key === 'create-job') return isEnabled('jobs') && !isTech;
+    if (action.key === 'create-customer') return isEnabled('customers') && !isTech;
+    if (action.key === 'open-dispatch') return isEnabled('dispatch') && !isTech;
     return true;
-  });
-
-  return [...dynamicModules, ...actions];
+  }).map((action) => ({
+    key: `action-${action.key}`,
+    label: action.label,
+    icon: action.icon,
+    to: action.to,
+  }));
 });
 
-const filteredResults = computed(() => {
-  const term = query.value.trim().toLowerCase();
-  if (!term) {
-    return baseRecords.value;
-  }
+const term = computed(() => query.value.trim().toLowerCase());
 
-  return baseRecords.value.filter((item) => item.label.toLowerCase().includes(term));
+const matchingPages = computed(() => {
+  if (!term.value) return pageRecords.value;
+  return pageRecords.value.filter((item) => item.label.toLowerCase().includes(term.value));
 });
 
-const groupedResults = computed(() => {
-  const grouped = new Map();
-
-  filteredResults.value.forEach((item) => {
-    if (!grouped.has(item.type)) {
-      grouped.set(item.type, []);
-    }
-    grouped.get(item.type).push(item);
-  });
-
-  return Array.from(grouped.entries()).map(([type, items]) => ({ type, items }));
+const matchingActions = computed(() => {
+  if (!term.value) return actionRecords.value;
+  return actionRecords.value.filter((item) => item.label.toLowerCase().includes(term.value));
 });
+
+// --- Combined render + keyboard model --------------------------------------
+const visibleGroups = computed(() => {
+  const groups = [
+    ...dataGroups.value,
+    { key: 'pages', label: 'Go to page', items: matchingPages.value },
+    { key: 'actions', label: 'Quick actions', items: matchingActions.value },
+  ].filter((g) => g.items.length);
+
+  // Stamp each item with its index in the flattened list so arrow-key
+  // selection can address items across groups.
+  let flatIndex = 0;
+  return groups.map((group) => ({
+    ...group,
+    items: group.items.map((item) => ({ ...item, flatIndex: flatIndex++ })),
+  }));
+});
+
+const flatItems = computed(() => visibleGroups.value.flatMap((g) => g.items));
+
+const selectedIndex = ref(0);
+
+watch(flatItems, () => {
+  selectedIndex.value = 0;
+});
+
+const showEmptyState = computed(
+  () => !searching.value && term.value.length > 0 && flatItems.value.length === 0
+);
 
 watch(
   () => props.modelValue,
   (isOpen) => {
     if (!isOpen) {
       query.value = '';
+      dataResults.value = null;
+      searching.value = false;
+      searchFailed.value = false;
+      selectedIndex.value = 0;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      requestSeq += 1;
     }
   },
 );
@@ -147,16 +298,36 @@ function handleVisibilityChange(value) {
   emit('update:modelValue', value);
 }
 
+function moveSelection(delta) {
+  const count = flatItems.value.length;
+  if (!count) return;
+  selectedIndex.value = (selectedIndex.value + delta + count) % count;
+  nextTick(() => {
+    document
+      .querySelector('.command-palette .result-item.selected')
+      ?.scrollIntoView({ block: 'nearest' });
+  });
+}
+
 function handleKeydown(event) {
   if (event.key === 'Escape') {
     closePalette();
     return;
   }
-
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveSelection(1);
+    return;
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveSelection(-1);
+    return;
+  }
   if (event.key === 'Enter') {
-    const firstResult = filteredResults.value[0];
-    if (firstResult) {
-      navigateTo(firstResult.to);
+    const target = flatItems.value[selectedIndex.value] || flatItems.value[0];
+    if (target) {
+      navigateTo(target.to);
     }
   }
 }
@@ -216,8 +387,35 @@ async function navigateTo(target) {
   cursor: pointer;
 }
 
-.result-item:hover {
+.result-item:hover,
+.result-item.selected {
   background: var(--surface-hover);
+}
+
+.result-item.selected {
+  outline: 1px solid var(--interactive-primary, var(--p-primary-color));
+  outline-offset: -1px;
+}
+
+.item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-sublabel {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.state-line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  padding: 0 var(--space-1);
 }
 
 .empty-state {

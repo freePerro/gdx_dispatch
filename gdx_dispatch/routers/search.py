@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,20 @@ router = APIRouter(
 )
 
 
+def _like(column, pattern: str):
+    return func.lower(func.coalesce(column, "")).like(pattern)
+
+
+# 2026-07-07 — wired to the Ctrl+K palette. Matching notes:
+#   - Jobs match job_number OR title OR customer name (pre-fix: title only,
+#     and the payload returned the job's UUID as "number").
+#   - Invoices match invoice_number OR customer name.
+#   - Estimates match estimate_number OR label OR jobsite_address OR
+#     customer name.
+#   - Customer.address is EncryptedString (S122-9) — not LIKE-searchable in
+#     SQL, so address lookup goes through estimates.jobsite_address only.
+#     Full customer-address search is blocked on the
+#     D-S122-9-customer-search-encryption decision (sidecar tsvector).
 @router.get("", response_model=None)
 def global_search(
     q: str = Query(min_length=1, max_length=120),
@@ -41,30 +55,44 @@ def global_search(
         estimates: list[dict[str, Any]] = []
 
         try:
-            from sqlalchemy import func as _func
+            from gdx_dispatch.models.tenant_models import Customer, Job
 
-            from gdx_dispatch.models.tenant_models import Job
             job_rows = db.execute(
-                select(Job).where(
+                select(Job, Customer.name)
+                .outerjoin(Customer, Job.customer_id == Customer.id)
+                .where(
                     Job.deleted_at.is_(None),
-                    _func.lower(_func.coalesce(Job.title, "")).like(pattern),
-                ).order_by(Job.created_at.desc()).limit(5)
-            ).scalars().all()
-            jobs = [{"id": str(j.id), "number": str(j.id), "title": j.title} for j in job_rows]
+                    (
+                        _like(Job.title, pattern)
+                        | _like(Job.job_number, pattern)
+                        | _like(Customer.name, pattern)
+                    ),
+                )
+                .order_by(Job.created_at.desc())
+                .limit(5)
+            ).all()
+            jobs = [
+                {
+                    "id": str(j.id),
+                    "number": j.job_number,
+                    "title": j.title,
+                    "customer_name": customer_name,
+                }
+                for j, customer_name in job_rows
+            ]
         except SQLAlchemyError:
             log.exception("search_jobs_failed")
 
         try:
-            from sqlalchemy import func as _func
-
             from gdx_dispatch.models.tenant_models import Customer
+
             customer_rows = db.execute(
                 select(Customer).where(
                     Customer.deleted_at.is_(None),
                     (
-                        _func.lower(_func.coalesce(Customer.name, "")).like(pattern)
-                        | _func.lower(_func.coalesce(Customer.phone, "")).like(pattern)
-                        | _func.lower(_func.coalesce(Customer.email, "")).like(pattern)
+                        _like(Customer.name, pattern)
+                        | _like(Customer.phone, pattern)
+                        | _like(Customer.email, pattern)
                     ),
                 ).order_by(Customer.created_at.desc()).limit(5)
             ).scalars().all()
@@ -81,36 +109,61 @@ def global_search(
             log.exception("search_customers_failed")
 
         try:
-            from sqlalchemy import func as _func
+            from gdx_dispatch.models.tenant_models import Customer, Invoice
 
-            from gdx_dispatch.models.tenant_models import Invoice
             invoice_rows = db.execute(
-                select(Invoice).where(
+                select(Invoice, Customer.name)
+                .outerjoin(Customer, Invoice.customer_id == Customer.id)
+                .where(
                     Invoice.deleted_at.is_(None),
-                    _func.lower(_func.coalesce(Invoice.invoice_number, "")).like(pattern),
-                ).order_by(Invoice.created_at.desc()).limit(5)
-            ).scalars().all()
-            invoices = [{"id": str(i.id), "number": i.invoice_number, "total": float(i.total or 0)} for i in invoice_rows]
+                    (
+                        _like(Invoice.invoice_number, pattern)
+                        | _like(Customer.name, pattern)
+                    ),
+                )
+                .order_by(Invoice.created_at.desc())
+                .limit(5)
+            ).all()
+            invoices = [
+                {
+                    "id": str(i.id),
+                    "number": i.invoice_number,
+                    "total": float(i.total or 0),
+                    "status": i.status,
+                    "customer_name": customer_name,
+                }
+                for i, customer_name in invoice_rows
+            ]
         except SQLAlchemyError:
             log.exception("search_invoices_failed")
 
         try:
-            from sqlalchemy import func as _func
-
+            from gdx_dispatch.models.tenant_models import Customer
             from gdx_dispatch.modules.proposals.models import Estimate
+
             estimate_rows = db.execute(
-                select(Estimate).where(
+                select(Estimate, Customer.name)
+                .outerjoin(Customer, Estimate.customer_id == Customer.id)
+                .where(
                     Estimate.deleted_at.is_(None),
-                    _func.lower(_func.coalesce(Estimate.estimate_number, "")).like(pattern),
-                ).order_by(Estimate.created_at.desc()).limit(5)
-            ).scalars().all()
+                    (
+                        _like(Estimate.estimate_number, pattern)
+                        | _like(Estimate.label, pattern)
+                        | _like(Estimate.jobsite_address, pattern)
+                        | _like(Customer.name, pattern)
+                    ),
+                )
+                .order_by(Estimate.created_at.desc())
+                .limit(5)
+            ).all()
             estimates = [
                 {
                     "id": str(e.id),
                     "number": e.estimate_number,
                     "label": e.label,
+                    "customer_name": customer_name,
                 }
-                for e in estimate_rows
+                for e, customer_name in estimate_rows
             ]
         except SQLAlchemyError:
             log.exception("search_estimates_failed")
