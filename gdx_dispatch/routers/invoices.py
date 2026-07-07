@@ -292,6 +292,11 @@ class InvoiceCreateIn(BaseModel):
             raise ValueError(
                 "from_part_ids requires job_id — parts checklists are job-scoped."
             )
+        # PR3 — change orders are job-scoped the same way.
+        if self.from_change_order_ids and self.job_id is None:
+            raise ValueError(
+                "from_change_order_ids requires job_id — change orders are job-scoped."
+            )
         # Same reasoning for line-level part_id (D-S122-line-removal-unbill).
         if self.job_id is None and any(
             getattr(li, "part_id", None) for li in self.line_items
@@ -319,6 +324,12 @@ class InvoiceCreateIn(BaseModel):
     # via the parts-from-job checklist. Set in the same transaction so a part
     # billed on one invoice can't appear in another invoice's checklist.
     from_part_ids: list[UUID] = Field(default_factory=list)
+    # PR3-billing-capture — approved change orders the operator pulled into
+    # this invoice. Their ChangeOrderLine rows are COPIED to InvoiceLines
+    # (unlike from_part_ids, whose lines arrive via line_items) and the CO is
+    # stamped billed_invoice_id in the same transaction. The stamp GATES the
+    # copy (UPDATE…RETURNING): an already-billed CO 409s the whole request.
+    from_change_order_ids: list[UUID] = Field(default_factory=list)
 
 
 class InvoicePatchIn(BaseModel):
@@ -715,17 +726,130 @@ def create_invoice(
                 )
             )
 
+    # PR3-billing-capture — pull approved change orders into this invoice.
+    # The STAMP GATES THE COPY: UPDATE…RETURNING claims the COs first; only
+    # the returned ids get their lines copied. Any requested CO the stamp
+    # didn't capture (already billed elsewhere / not approved / wrong job /
+    # deleted) 409s the WHOLE request — the rollback un-stamps atomically.
+    # (Copy-then-stamp — the naive S122 mirror — double-bills: the lines
+    # land on invoice B while the stamp silently no-ops because invoice A
+    # owns the CO. Audit round 1 catch.)
+    if payload.from_change_order_ids:
+        from sqlalchemy import or_ as _or
+
+        from gdx_dispatch.models.tenant_models import ChangeOrderLine
+        from gdx_dispatch.routers.change_orders import ChangeOrder
+        stamped_ids = set(db.execute(
+            update(ChangeOrder)
+            .where(
+                ChangeOrder.id.in_(payload.from_change_order_ids),
+                ChangeOrder.job_id == payload.job_id,
+                # Audit round 2 (blind spot): a CO signed by a DIFFERENT
+                # customer must not bill onto this invoice — tax exemption /
+                # parity would silently diverge from the signed total.
+                _or(
+                    ChangeOrder.customer_id.is_(None),
+                    ChangeOrder.customer_id == payload.customer_id,
+                ),
+                ChangeOrder.status == "approved",
+                ChangeOrder.billed_invoice_id.is_(None),
+                ChangeOrder.deleted_at.is_(None),
+            )
+            .values(billed_invoice_id=invoice.id)
+            .returning(ChangeOrder.id)
+        ).scalars().all())
+        unstamped = set(payload.from_change_order_ids) - stamped_ids
+        if unstamped:
+            # Friendly identifiers, not raw UUIDs (audit round 2).
+            labels = [
+                r[0] for r in db.execute(
+                    select(ChangeOrder.co_number).where(ChangeOrder.id.in_(unstamped))
+                ).all()
+            ] or [str(u) for u in unstamped]
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "change order(s) not billable — already billed on another "
+                    "invoice, not approved, wrong job/customer, or deleted: "
+                    + ", ".join(sorted(labels))
+                ),
+            )
+        _max_sort = db.execute(
+            select(func.max(InvoiceLine.sort_order)).where(
+                InvoiceLine.invoice_id == invoice.id
+            )
+        ).scalar_one_or_none() or 0
+        co_rows = db.execute(
+            select(ChangeOrderLine, ChangeOrder.co_number)
+            .join(ChangeOrder, ChangeOrder.id == ChangeOrderLine.co_id)
+            .where(ChangeOrderLine.co_id.in_(stamped_ids))
+            .order_by(ChangeOrder.created_at.asc(), ChangeOrderLine.id.asc())
+        ).all()
+        _offset = 0
+        _cos_with_lines: set = set()
+        for _offset, (co_ln, co_number) in enumerate(co_rows, start=1):
+            _cos_with_lines.add(co_ln.co_id)
+            db.add(
+                InvoiceLine(
+                    company_id=invoice.company_id,
+                    invoice_id=invoice.id,
+                    description=f"{co_number}: {co_ln.description}"[:500],
+                    quantity=int(co_ln.qty or 1),
+                    unit_price=_money(co_ln.unit_price),
+                    line_total=_money(co_ln.line_total),
+                    taxable=bool(getattr(co_ln, "taxable", True)),
+                    sort_order=int(_max_sort) + _offset,
+                )
+            )
+        # AUDIT ROUND 2 (money-loser reproduced live): amount-only COs — the
+        # mobile dialog's output and every pre-D-S122 legacy CO — have NO
+        # ChangeOrderLine rows. The stamp claimed them while the copy above
+        # produced zero lines: $500 signed → marked billed, $0 invoiced,
+        # gone from the checklist forever. Synthesize one line from the
+        # signed amount; a CO with neither lines nor amount is unbillable.
+        _lineless = db.execute(
+            select(ChangeOrder).where(
+                ChangeOrder.id.in_(stamped_ids - _cos_with_lines)
+            ).order_by(ChangeOrder.created_at.asc())
+        ).scalars().all()
+        for _co in _lineless:
+            if float(_co.amount or 0) <= 0:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"change order {_co.co_number} has neither line items "
+                        "nor an amount — price it before billing."
+                    ),
+                )
+            _offset += 1
+            db.add(
+                InvoiceLine(
+                    company_id=invoice.company_id,
+                    invoice_id=invoice.id,
+                    description=f"{_co.co_number}: {_co.title}"[:500],
+                    quantity=1,
+                    unit_price=_money(_co.amount),
+                    line_total=_money(_co.amount),
+                    taxable=True,
+                    sort_order=int(_max_sort) + _offset,
+                )
+            )
+
     # S122 — mark parts pulled into this invoice as billed so the checklist
     # on subsequent invoices for the same job excludes them. Same transaction
-    # as the invoice + lines so a rollback un-bills atomically. Scope the
-    # update to this job + previously-unbilled rows; never re-bill a row that
-    # already points to another invoice. ORM update for SQL portability
-    # (sqlite test path + PG prod path).
+    # as the invoice + lines so a rollback un-bills atomically.
     # D-S122-line-removal-unbill: prefer line-level part_id (set inside each
     # InvoiceLine above) over the top-level from_part_ids list — line-level
     # is the canonical source so a delete-line can release the part. Fall
     # back to the legacy from_part_ids field for callers that haven't
     # migrated yet.
+    # PR3-billing-capture: same stamp-first-RETURNING rule as change orders.
+    # The old UPDATE…WHERE billed_invoice_id IS NULL silently skipped parts
+    # another invoice already owned — but the operator's payload STILL
+    # carried those lines, so the amounts double-billed while the stamp
+    # no-opped. Now: any requested part the stamp can't claim → 409.
     line_level_part_ids = [li.part_id for li in payload.line_items if getattr(li, "part_id", None)]
     if line_level_part_ids:
         all_part_ids = line_level_part_ids
@@ -734,15 +858,28 @@ def create_invoice(
     else:
         all_part_ids = []
     if all_part_ids:
-        db.execute(
-            update(JobPartNeeded)
-            .where(
-                JobPartNeeded.id.in_(all_part_ids),
-                JobPartNeeded.job_id == str(payload.job_id),
-                JobPartNeeded.billed_invoice_id.is_(None),
+        stamped_parts = {
+            str(r) for r in db.execute(
+                update(JobPartNeeded)
+                .where(
+                    JobPartNeeded.id.in_(all_part_ids),
+                    JobPartNeeded.job_id == str(payload.job_id),
+                    JobPartNeeded.billed_invoice_id.is_(None),
+                )
+                .values(billed_invoice_id=invoice.id)
+                .returning(JobPartNeeded.id)
+            ).scalars().all()
+        }
+        missing_parts = {str(p) for p in all_part_ids} - stamped_parts
+        if missing_parts:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "part(s) not billable — already billed on another invoice "
+                    "or not on this job: " + ", ".join(sorted(missing_parts))
+                ),
             )
-            .values(billed_invoice_id=invoice.id)
-        )
 
     # Run the tax + total recompute now that lines exist. For rate-mode
     # invoices this writes the correct tax_amount; for legacy flat-tax
@@ -915,6 +1052,14 @@ def delete_invoice(
     db.execute(
         update(JobPartNeeded)
         .where(JobPartNeeded.billed_invoice_id == invoice.id)
+        .values(billed_invoice_id=None)
+    )
+    # PR3-billing-capture: change orders release the same way — a deleted
+    # draft must put its COs back on the unbilled checklist.
+    from gdx_dispatch.routers.change_orders import ChangeOrder as _CO
+    db.execute(
+        update(_CO)
+        .where(_CO.billed_invoice_id == invoice.id)
         .values(billed_invoice_id=None)
     )
     db.commit()

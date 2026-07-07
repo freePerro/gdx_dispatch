@@ -2876,6 +2876,11 @@ class ChangeOrderLine(Base):
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # PR3-billing-capture (Doug 2026-07-07): COs are handled like invoices —
+    # tax computed and SHOWN at approval/signature time, forwarded onto the
+    # invoice copy. Default TRUE mirrors InvoiceLine ("everything is taxable"
+    # unless the operator marks a line exempt, e.g. labor where allowed).
+    taxable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
 
 class QBPnlMonthly(Base):

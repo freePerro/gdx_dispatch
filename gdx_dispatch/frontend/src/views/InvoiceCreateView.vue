@@ -122,6 +122,31 @@
             />
           </div>
 
+          <!-- PR3-billing-capture: approved change orders on this job that
+               were never billed. Checked COs are stamped + copied to invoice
+               lines server-side in the same transaction. -->
+          <div class="form-field full-width" v-if="jobChangeOrders.length" data-testid="invoice-co-checklist">
+            <label>Approved change orders on this job</label>
+            <div v-for="co in jobChangeOrders" :key="co.id" class="co-checklist-row">
+              <label class="co-checklist-label">
+                <input
+                  type="checkbox"
+                  :value="co.id"
+                  v-model="form.from_change_order_ids"
+                  :data-testid="`invoice-co-${co.co_number}`"
+                />
+                <span class="co-number">{{ co.co_number }}</span>
+                <span class="co-title">{{ co.title }}</span>
+                <span class="co-amount">{{ currency(Number(co.amount) || 0) }}</span>
+              </label>
+            </div>
+            <small class="muted" v-if="form.from_change_order_ids.length">
+              {{ form.from_change_order_ids.length }} change order(s) —
+              {{ currency(selectedChangeOrderTotal) }} + applicable tax will be
+              added as invoice lines on create.
+            </small>
+          </div>
+
           <div class="form-field full-width">
             <label for="inv-notes">Notes</label>
             <Textarea
@@ -226,10 +251,33 @@ const form = ref({
     margin_pct_override: null,
   }],
   from_part_ids: [],
+  from_change_order_ids: [],
 });
 
 const customers = ref([]);
 const jobs = ref([]);
+// PR3-billing-capture — approved, never-billed change orders on the picked
+// job. Selected COs are stamped + their lines copied SERVER-side in the same
+// transaction (the stamp gates the copy), so they are not client-side rows.
+const jobChangeOrders = ref([]);
+
+async function loadJobChangeOrders(jobId) {
+  jobChangeOrders.value = [];
+  if (!jobId) return;
+  try {
+    jobChangeOrders.value = await api.get(
+      `/api/change-orders?job_id=${encodeURIComponent(jobId)}&unbilled=true`,
+    );
+  } catch (_) {
+    jobChangeOrders.value = [];
+  }
+}
+
+const selectedChangeOrderTotal = computed(() =>
+  jobChangeOrders.value
+    .filter((co) => form.value.from_change_order_ids.includes(co.id))
+    .reduce((sum, co) => sum + (Number(co.amount) || 0), 0),
+);
 
 const customerOptions = computed(() =>
   customers.value.map((c) => ({
@@ -360,6 +408,9 @@ function onJobChange() {
   }
   // Reset parts-pull tracking — different job means different parts.
   form.value.from_part_ids = [];
+  // PR3 — same for change orders; reload the job's unbilled CO checklist.
+  form.value.from_change_order_ids = [];
+  loadJobChangeOrders(form.value.job_id);
   prefillFromJobEstimate(form.value.job_id);
 }
 
@@ -436,6 +487,7 @@ async function createInvoice() {
       line_items: lineItems,
       tax_rate: taxRateDecimal > 0 ? taxRateDecimal : null,
       from_part_ids: form.value.from_part_ids || [],
+      from_change_order_ids: form.value.from_change_order_ids || [],
     };
 
     const created = await api.post('/api/invoices', payload);
@@ -565,5 +617,24 @@ watch(() => form.value.customer_id, () => onCustomerChange());
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+.co-checklist-row {
+  padding: 0.25rem 0;
+}
+.co-checklist-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.co-number {
+  font-family: monospace;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.co-title {
+  flex: 1;
+}
+.co-amount {
+  font-weight: 600;
 }
 </style>

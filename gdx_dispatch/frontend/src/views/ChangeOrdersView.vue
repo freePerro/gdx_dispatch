@@ -74,10 +74,28 @@
               v-model:lines="form.line_items"
               data-testid="co-line-editor"
             />
+            <!-- PR3-billing-capture (Doug 2026-07-07): COs are handled like
+                 invoices — tax is computed server-side with the same resolver
+                 invoices use and RENDERED here; the signed total equals the
+                 invoice total. -->
             <div class="totals-row">
-              <strong>Total:</strong>
-              <strong>{{ formatMoney(lineSubtotal) }}</strong>
+              <strong>Subtotal:</strong>
+              <strong data-testid="co-subtotal">{{ formatMoney(lineSubtotal) }}</strong>
             </div>
+            <template v-if="serverTotals && typeof serverTotals.tax_amount === 'number'">
+              <div class="totals-row">
+                <span>Tax{{ serverTotals.tax_rate ? ` (${(serverTotals.tax_rate * 100).toFixed(2)}%)` : '' }}</span>
+                <span data-testid="co-tax-amount">{{ formatMoney(serverTotals.tax_amount) }}</span>
+              </div>
+              <div class="totals-row">
+                <strong>Total incl. tax:</strong>
+                <strong data-testid="co-total">{{ formatMoney(serverTotals.total) }}</strong>
+              </div>
+            </template>
+            <small v-else class="muted" data-testid="co-tax-note">
+              + applicable tax — the tax-inclusive total appears after save and
+              carries onto the invoice.
+            </small>
           </div>
         </div>
         <template #footer>
@@ -219,11 +237,27 @@ function openCreate() {
   showDialog.value = true;
 }
 
+// PR3-billing-capture: server-computed totals (subtotal/tax/total via the
+// same resolver invoices use) for the open CO — this is the number the
+// customer signs, so it must be RENDERED, not just returned by the API.
+const serverTotals = ref(null);
+
 function openEdit(co) {
   editingCo.value = co;
   form.value = { ...co };
+  serverTotals.value = null;
   snapshot();
   showDialog.value = true;
+  // Detail fetch brings line_items + tax-inclusive totals.
+  api.get(`/api/change-orders/${co.id}`).then((detail) => {
+    if (editingCo.value && editingCo.value.id === co.id) {
+      serverTotals.value = detail;
+      if (Array.isArray(detail.line_items) && detail.line_items.length) {
+        form.value.line_items = detail.line_items.map((li) => ({ ...li }));
+        snapshot();
+      }
+    }
+  }).catch(() => { serverTotals.value = null; });
 }
 
 function cancelDialog() {

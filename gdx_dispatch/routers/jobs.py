@@ -1610,11 +1610,19 @@ def create_invoice_from_job(
     now_dt = datetime.now(timezone.utc)
     now_dt.isoformat()
 
+    # PR3: validate + convert up front like the other job endpoints — the
+    # Uuid(as_uuid=True) column needs a UUID object (raw str breaks on the
+    # SQLite test path), and a malformed id should 404, not 500.
+    try:
+        _job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "Job not found"}, 404)
+
     # Get job via ORM
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     job = db.execute(
         select(Job).where(
-            Job.id == job_id,
+            Job.id == _job_uuid,
             Job.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -1732,6 +1740,114 @@ def create_invoice_from_job(
                 created_at=now_dt,
             )
             db.add(line)
+
+        # PR3-billing-capture — one-click is the documented pull-everything
+        # path: claim this job's approved unbilled change orders (stamp via
+        # UPDATE…RETURNING — same gate as the canonical create; a CO another
+        # invoice already owns is simply not returned, no 409 here) and copy
+        # their lines. CO tax rides on top per Doug 2026-07-07 ("handled like
+        # an invoice"): taxable CO lines add rate-resolved tax to the fixed
+        # estimate-derived tax_amount.
+        from sqlalchemy import exists as _exists
+        from sqlalchemy import or_ as _or
+        from sqlalchemy import update as _update
+
+        from gdx_dispatch.models.tenant_models import ChangeOrderLine
+        from gdx_dispatch.routers.change_orders import ChangeOrder
+        stamped_ids = set(db.execute(
+            _update(ChangeOrder)
+            .where(
+                ChangeOrder.job_id == uuid.UUID(job_id),
+                # Audit round 2: don't auto-pull a CO signed by a DIFFERENT
+                # customer (tax/parity would diverge from the signed total),
+                # and don't claim a CO that has nothing to bill (no lines AND
+                # no amount) — the stamp would write it off at $0.
+                _or(
+                    ChangeOrder.customer_id.is_(None),
+                    ChangeOrder.customer_id == job.customer_id,
+                ),
+                _or(
+                    ChangeOrder.amount > 0,
+                    _exists().where(ChangeOrderLine.co_id == ChangeOrder.id),
+                ),
+                ChangeOrder.status == "approved",
+                ChangeOrder.billed_invoice_id.is_(None),
+                ChangeOrder.deleted_at.is_(None),
+            )
+            .values(billed_invoice_id=invoice_id)
+            .returning(ChangeOrder.id)
+        ).scalars().all())
+        if stamped_ids:
+            co_rows = db.execute(
+                select(ChangeOrderLine, ChangeOrder.co_number)
+                .join(ChangeOrder, ChangeOrder.id == ChangeOrderLine.co_id)
+                .where(ChangeOrderLine.co_id.in_(stamped_ids))
+                .order_by(ChangeOrder.created_at.asc(), ChangeOrderLine.id.asc())
+            ).all()
+            try:
+                from gdx_dispatch.modules.tax.service import resolve_rate as _co_rate_fn
+                _co_rate = float(_co_rate_fn(db, job.customer_id))
+            except Exception:
+                log.exception("create_invoice_from_job_co_tax_resolve_failed")
+                _co_rate = 0.0
+            co_subtotal = 0.0
+            co_taxable_subtotal = 0.0
+            _co_line_count = 0
+            _cos_with_lines: set = set()
+            for co_idx, (co_ln, co_number) in enumerate(co_rows):
+                _cos_with_lines.add(co_ln.co_id)
+                _co_line_count += 1
+                line_total = float(co_ln.line_total or 0)
+                co_subtotal += line_total
+                if bool(getattr(co_ln, "taxable", True)):
+                    co_taxable_subtotal += line_total
+                db.add(InvoiceLine(
+                    id=uuid.uuid4(),
+                    company_id=tenant_id,
+                    invoice_id=invoice_id,
+                    description=f"{co_number}: {co_ln.description}"[:500],
+                    quantity=int(co_ln.qty or 1),
+                    unit_price=float(co_ln.unit_price or 0),
+                    line_total=line_total,
+                    taxable=bool(getattr(co_ln, "taxable", True)),
+                    sort_order=len(lines) + co_idx,
+                    created_at=now_dt,
+                ))
+            # Audit round 2 (money-loser): amount-only COs — the mobile
+            # dialog's output and pre-D-S122 legacy rows — have NO lines;
+            # without this they'd be stamped billed at $0 and vanish from
+            # the checklist. Bill the signed amount as one line. (The stamp
+            # WHERE already excluded no-lines-AND-no-amount COs.)
+            _lineless_cos = db.execute(
+                select(ChangeOrder).where(
+                    ChangeOrder.id.in_(stamped_ids - _cos_with_lines)
+                ).order_by(ChangeOrder.created_at.asc())
+            ).scalars().all()
+            for _lc in _lineless_cos:
+                amt = float(_lc.amount or 0)
+                co_subtotal += amt
+                co_taxable_subtotal += amt
+                db.add(InvoiceLine(
+                    id=uuid.uuid4(),
+                    company_id=tenant_id,
+                    invoice_id=invoice_id,
+                    description=f"{_lc.co_number}: {_lc.title}"[:500],
+                    quantity=1,
+                    unit_price=amt,
+                    line_total=amt,
+                    taxable=True,
+                    sort_order=len(lines) + _co_line_count,
+                    created_at=now_dt,
+                ))
+                _co_line_count += 1
+            co_tax = round(co_taxable_subtotal * _co_rate, 2)
+            subtotal_value = round(float(subtotal_value) + co_subtotal, 2)
+            tax_amount_value = round(float(tax_amount_value) + co_tax, 2)
+            total_value = round(subtotal_value + tax_amount_value, 2)
+            invoice.subtotal = subtotal_value
+            invoice.tax_amount = tax_amount_value
+            invoice.total = total_value
+            invoice.balance_due = total_value
         db.commit()
     except Exception as exc:
         db.rollback()
