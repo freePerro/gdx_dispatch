@@ -7,7 +7,7 @@ drift if the rolling window slides past an old payment. This nightly
 sweep recomputes every customer in every tenant so a stale cache never
 silently mis-prices an estimate the next morning.
 
-Pattern mirrors `gdx_dispatch/tasks/recurring_billing.py`: walk all tenants from
+Pattern: walk all tenants from
 the control DB, open a per-tenant session, refresh, commit.
 """
 from __future__ import annotations

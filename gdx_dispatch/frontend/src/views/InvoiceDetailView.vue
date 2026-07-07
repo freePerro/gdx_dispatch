@@ -309,6 +309,17 @@
             data-testid="push-qb-btn"
             @click="pushToQuickbooks"
           />
+          <!-- PR6-billing-capture: per-invoice dunning mute for payment
+               arrangements — manual reminder logs never pause the robot. -->
+          <Button
+            v-if="['sent','overdue'].includes(String(invoice.status || '').toLowerCase())"
+            :label="invoice.dunning_paused ? 'Resume reminders' : 'Pause reminders'"
+            :icon="invoice.dunning_paused ? 'pi pi-play' : 'pi pi-pause'"
+            severity="warn"
+            outlined
+            data-testid="dunning-pause-btn"
+            @click="toggleDunningPause"
+          />
           <Button
             label="Delete"
             icon="pi pi-trash" aria-label="Delete"
@@ -657,6 +668,8 @@ function normalizeInvoice(payload) {
     due_date: payload.due_date || payload.dueDate || "",
     created_at: payload.created_at || payload.createdAt || "",
     notes: payload.notes || "",
+    // PR6 — drives the Pause/Resume reminders toggle.
+    dunning_paused: Boolean(payload.dunning_paused),
     line_items: lineItems,
     payments,
   };
@@ -877,6 +890,25 @@ function formatBytes(n) {
   if (v < 1024) return `${v} B`;
   if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
   return `${(v / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function toggleDunningPause() {
+  // PR6 — explicit per-invoice mute (payment arrangement made).
+  try {
+    const next = !invoice.value.dunning_paused;
+    await api.post(`/api/invoices/${id}/dunning-pause`, { paused: next });
+    invoice.value.dunning_paused = next;
+    toast.add({
+      severity: 'info',
+      summary: next ? 'Reminders paused' : 'Reminders resumed',
+      detail: next
+        ? 'Automated payment reminders are muted for this invoice.'
+        : 'This invoice is back on the automated reminder schedule.',
+      life: 3000,
+    });
+  } catch (e) {
+    toast.add({ severity: 'error', summary: 'Error', detail: e.message || 'Failed to update reminders', life: 4000 });
+  }
 }
 
 async function recordPayment() {

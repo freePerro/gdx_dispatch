@@ -1,7 +1,7 @@
 """Tests for the invoice_reminders router."""
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -145,8 +145,45 @@ def test_schedule_days_validation(client: TestClient):
     assert r.status_code == 422
 
 
+
+
+def _seed_invoice_row(tc: TestClient, invoice_id: str) -> None:
+    """PR6: email reminders now resolve the real invoice (and 404 on ghosts
+    instead of minting orphan log rows) — seed a minimal sent invoice."""
+    from sqlalchemy.orm import sessionmaker as _sm
+
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+
+    Session = _sm(bind=tc._engine, autoflush=False, autocommit=False)  # type: ignore[attr-defined]
+    db = Session()
+    try:
+        from datetime import date as _date
+        from datetime import timedelta as _td
+        from decimal import Decimal as _D
+        db.add(_Inv(
+            id=UUID(invoice_id),
+            company_id="tenant-test",
+            customer_id=uuid4(),
+            invoice_number=f"INV-{invoice_id[:8]}",
+            billing_type="standard",
+            sequence_number=1,
+            subtotal=_D("100"),
+            tax_amount=_D("0"),
+            total=_D("100"),
+            balance_due=_D("100"),
+            status="sent",
+            invoice_date=_date.today() - _td(days=20),
+            due_date=_date.today() - _td(days=10),
+            public_token=invoice_id.replace("-", ""),
+            locked=False,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
 def test_send_reminder_creates_payment_reminder_row(client: TestClient):
     invoice_id = str(uuid4())
+    _seed_invoice_row(client, invoice_id)
     r = client.post(
         f"/api/invoices/{invoice_id}/send-reminder",
         json={"channel": "email", "stage": "friendly", "notes": "First touch"},
@@ -156,12 +193,17 @@ def test_send_reminder_creates_payment_reminder_row(client: TestClient):
     assert data["invoice_id"] == invoice_id
     assert data["stage"] == "friendly"
     assert data["channel"] == "email"
-    assert data["notes"] == "First touch"
+    # PR6: the email path now reports delivery honestly — no SMTP/customer
+    # in this fixture, so the note carries the skip reason.
+    assert data["notes"].startswith("First touch")
+    assert "[skipped:" in data["notes"]
+    assert data["sent"] is False
     assert data["sent_at"] is not None
 
 
 def test_reminder_history(client: TestClient):
     invoice_id = str(uuid4())
+    _seed_invoice_row(client, invoice_id)
     client.post(
         f"/api/invoices/{invoice_id}/send-reminder",
         json={"channel": "email", "stage": "friendly"},

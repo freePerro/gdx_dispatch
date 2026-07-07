@@ -107,6 +107,8 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
         "notes": invoice.notes,
+        # PR6 — per-invoice dunning mute state for the detail-view toggle.
+        "dunning_paused": bool(getattr(invoice, "dunning_paused", False)),
         "locked": bool(invoice.locked),
         "locked_at": _iso_dt(invoice.locked_at),
         "sent_at": _iso_dt(invoice.sent_at),

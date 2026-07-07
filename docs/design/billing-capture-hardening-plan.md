@@ -155,3 +155,14 @@ Make the cache real: update `billing_status` inside `_recalculate_invoice` + inv
 - **No "won't-bill" terminal state:** PR 2's void-exclusion means a job whose only invoice was voided re-enters Ready-for-Billing permanently — correct for real leaks, but a deliberate write-off is un-dismissable until display-model Slice 2 (Written Off) ships storage.
 - **$0-draft stacking:** `create_invoice_from_job` has no existing-invoice guard; repeated raw-API calls stack $0 drafts (no UI caller exists — both Create Invoice buttons route to /billing/new). Guard when PR 4/5 touch that path.
 - **Pre-merge prod check (PR 2):** `SELECT billing_status, count(*) FROM jobs WHERE deleted_at IS NULL GROUP BY 1` — repo history is squashed; if legacy rows hold non-`unbilled` values, the two "tautology deletion" claims become intended-fix claims and the forecast delta should be eyeballed after deploy (deposit invoices could double-count against open-AR projection until the deposit-subtraction follow-up).
+
+## PR 6 scope note (2026-07-07, implementation-time discovery)
+
+The "recurring billing resurrection" was descoped to REMOVAL: the dead task's
+SQL referenced `service_agreements` columns that have never existed
+(`amount`, `billing_interval_months`, `next_billing_date`, `active` — the
+real model has `name/price/status/start_date/end_date`). It was not a
+disconnected task but a booby trap that would crash on first wiring.
+Since GDX has no recurring-service customers (Doug 2026-07-07), the honest
+move is deleting it and filing the real feature (schedule columns + UI +
+task) as its own designed piece of work when a recurring customer exists.

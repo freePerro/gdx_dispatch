@@ -148,6 +148,17 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=5, minute=0),  # 05:00 UTC nightly
             "options": {"queue": "priority:low"},
         },
+        "invoice-auto-dunning-daily": {
+            # PR6-billing-capture — automated dunning, OPT-IN default OFF
+            # (keys off ReminderSettings.auto_send_enabled; while off, a
+            # Monday nudge tells admin/owner what isn't being chased,
+            # permanently dismissible). Idempotent per stored threshold;
+            # per-invoice dunning_paused mutes arrangements. 13:15 UTC,
+            # right after the follow-up loop.
+            "task": "invoice_reminders.auto_dunning_tick",
+            "schedule": crontab(hour=13, minute=15),
+            "options": {"queue": "priority:low"},
+        },
         "billing-followup-daily": {
             # PR5-billing-capture — the batch's enforcement loop. Counts every
             # billing leak class (ready-to-bill jobs, stale drafts, unbilled
