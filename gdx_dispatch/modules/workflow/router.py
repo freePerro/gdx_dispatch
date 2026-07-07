@@ -25,6 +25,10 @@ _FLAG_COLUMNS = (
     "workflow_require_parts_on_complete",
     "workflow_require_hours_on_complete",
     "workflow_require_signature_on_complete",
+    # PR5-billing-capture (Doug 2026-07-07): optional invoice-before-complete
+    # hard gate. Default OFF — the daily billing follow-up loop chases
+    # invoice-after-completion shops instead.
+    "workflow_require_invoice_on_complete",
 )
 
 
@@ -35,6 +39,7 @@ class WorkflowFlags(BaseModel):
     require_parts_on_complete: bool = False
     require_hours_on_complete: bool = False
     require_signature_on_complete: bool = False
+    require_invoice_on_complete: bool = False
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -68,6 +73,7 @@ def _read(db: Session, tid: UUID) -> dict[str, bool]:
         "require_parts_on_complete": bool(row[3]),
         "require_hours_on_complete": bool(row[4]),
         "require_signature_on_complete": bool(row[5]),
+        "require_invoice_on_complete": bool(row[6]),
     }
 
 
@@ -96,15 +102,17 @@ def update_flags(
             "INSERT INTO tenant_settings (tenant_id, workflow_lock_schedule_on_start, "
             "workflow_post_arrival_event, workflow_sms_arrival_notify, "
             "workflow_require_parts_on_complete, workflow_require_hours_on_complete, "
-            "workflow_require_signature_on_complete) "
-            "VALUES (:tid, :a, :b, :c, :d, :e, :f) "
+            "workflow_require_signature_on_complete, "
+            "workflow_require_invoice_on_complete) "
+            "VALUES (:tid, :a, :b, :c, :d, :e, :f, :g) "
             "ON CONFLICT (tenant_id) DO UPDATE SET "
             "  workflow_lock_schedule_on_start = EXCLUDED.workflow_lock_schedule_on_start, "
             "  workflow_post_arrival_event = EXCLUDED.workflow_post_arrival_event, "
             "  workflow_sms_arrival_notify = EXCLUDED.workflow_sms_arrival_notify, "
             "  workflow_require_parts_on_complete = EXCLUDED.workflow_require_parts_on_complete, "
             "  workflow_require_hours_on_complete = EXCLUDED.workflow_require_hours_on_complete, "
-            "  workflow_require_signature_on_complete = EXCLUDED.workflow_require_signature_on_complete"
+            "  workflow_require_signature_on_complete = EXCLUDED.workflow_require_signature_on_complete, "
+            "  workflow_require_invoice_on_complete = EXCLUDED.workflow_require_invoice_on_complete"
         ),
         {
             "tid": str(tid),
@@ -114,6 +122,7 @@ def update_flags(
             "d": payload.require_parts_on_complete,
             "e": payload.require_hours_on_complete,
             "f": payload.require_signature_on_complete,
+            "g": payload.require_invoice_on_complete,
         },
     )
     db.commit()

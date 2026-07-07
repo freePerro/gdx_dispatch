@@ -762,7 +762,14 @@
                   <ToggleSwitch v-model="workflowFlags.require_parts_on_complete" data-testid="wf-req-parts" />
                   <div>
                     <strong>Require parts list on Complete</strong>
-                    <div class="muted">Block completion until at least one part is logged.</div>
+                    <div class="muted">Block completion until parts are logged — or the tech explicitly checks "No parts used".</div>
+                  </div>
+                </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                  <ToggleSwitch v-model="workflowFlags.require_invoice_on_complete" data-testid="wf-req-invoice" />
+                  <div>
+                    <strong>Require invoice before Complete</strong>
+                    <div class="muted">Hard gate for invoice-up-front shops. Leave OFF if you bill after the job — the daily billing follow-up chases those instead.</div>
                   </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:0.75rem;">
@@ -1815,6 +1822,7 @@ const workflowFlags = reactive({
   require_parts_on_complete: false,
   require_hours_on_complete: false,
   require_signature_on_complete: false,
+  require_invoice_on_complete: false,
 });
 const workflowSaving = ref(false);
 

@@ -34,6 +34,8 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.outlook.tasks",
             "gdx_dispatch.modules.phone_com.tasks",
             "gdx_dispatch.modules.forecasting.tasks",
+            # PR5-billing-capture — the daily billing follow-up loop.
+            "gdx_dispatch.tasks.billing_followup",
         ],
     )
     app.conf.update(

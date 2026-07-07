@@ -148,4 +148,14 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=5, minute=0),  # 05:00 UTC nightly
             "options": {"queue": "priority:low"},
         },
+        "billing-followup-daily": {
+            # PR5-billing-capture — the batch's enforcement loop. Counts every
+            # billing leak class (ready-to-bill jobs, stale drafts, unbilled
+            # approved change orders, used-never-billed parts) and upserts ONE
+            # persistent NextAction that clears itself when the pipeline is
+            # clean. 13:00 UTC ≈ start of the office day ET.
+            "task": "billing_followup.daily_tick",
+            "schedule": crontab(hour=13, minute=0),
+            "options": {"queue": "priority:low"},
+        },
     }
