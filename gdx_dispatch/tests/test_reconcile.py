@@ -165,6 +165,89 @@ def test_reconcile_skips_already_installed_package_without_pip(monkeypatch):
     assert out.installed == [] and out.failed == []
 
 
+def test_reconcile_skips_filename_row_when_already_installed(monkeypatch):
+    # Issue #100: an operator pasted a wheel FILENAME into the registry package
+    # field (empty version). It must NOT become `pip install <bare filename>`
+    # (which fails every boot and wedges /ready). Since the volume already has the
+    # dist, reconcile resolves the filename and skips — no pip, nothing failed.
+    fn = "gdx_plugin_chi_pricing-0.1.2-py3-none-any.whl"
+    monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
+    monkeypatch.setattr(rec, "desired_packages", lambda db: [(fn, "")])
+    monkeypatch.setattr(rec, "is_installed", lambda *a, **k: True)
+    monkeypatch.setattr(rec, "prune_other_versions", lambda *a, **k: [])
+    called = []
+    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    out = rec.reconcile(db=object())
+    assert called == []                       # never pip-installed a bare filename
+    assert out.installed == [] and out.failed == []  # not reported as a failed spec
+
+
+def test_reconcile_filename_row_not_installed_is_skipped_not_failed(monkeypatch):
+    # Same bad row, dist NOT on the volume. DELIBERATE tradeoff: a filename row is
+    # operator cruft (the artifact installer is the real path for uploaded wheels),
+    # so it must NOT gate /ready — we skip + log a warning rather than pip-install a
+    # bare filename (which would wedge red) or mark it failed. The add_plugin guard
+    # prevents such rows being created in the first place; this only handles legacy
+    # rows. NOT silently pretending success — it's logged and the row is ignored.
+    fn = "gdx_plugin_chi_pricing-0.1.2-py3-none-any.whl"
+    monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
+    monkeypatch.setattr(rec, "desired_packages", lambda db: [(fn, "")])
+    monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
+    called = []
+    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    out = rec.reconcile(db=object())
+    assert called == []
+    assert out.failed == []
+
+
+def test_reconcile_filename_row_version_mismatch_is_skipped_not_pip(monkeypatch):
+    # Filename parses but its version != the effective installed version → the
+    # is_installed branch is False, so we still skip (log) instead of pip-installing
+    # the bare filename. Documents the audit's version-skew edge: skip, never wedge.
+    fn = "gdx_plugin_chi_pricing-9.9.9-py3-none-any.whl"  # installed is 0.1.2, say
+    monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
+    monkeypatch.setattr(rec, "desired_packages", lambda db: [(fn, "")])
+    monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
+    called = []
+    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    out = rec.reconcile(db=object())
+    assert called == [] and out.failed == []
+
+
+def test_reconcile_filename_bypasses_are_caught(monkeypatch):
+    # The audit's bypass inputs (uppercase ext, trailing space, empty-version
+    # `foo-.whl`, .zip) must ALL be recognized as filenames and skipped — never
+    # reach `pip install <bare filename>` and wedge /ready.
+    rows = ["Plugin.WHL", "gdx_plugin_chi_pricing-0.1.2-py3-none-any.whl ",
+            "foo-.whl", "some-plugin.zip"]
+    monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
+    monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)
+    monkeypatch.setattr(rec, "desired_artifacts", lambda db: [])
+    monkeypatch.setattr(rec, "desired_packages", lambda db: [(r, "") for r in rows])
+    monkeypatch.setattr(rec, "is_installed", lambda *a, **k: False)
+    called = []
+    monkeypatch.setattr(rec, "pip_install", lambda spec: called.append(spec) or True)
+    out = rec.reconcile(db=object())
+    assert called == []       # not one bare filename reached pip
+    assert out.failed == []
+
+
+def test_looks_like_artifact_filename_classifies():
+    f = rec.looks_like_artifact_filename
+    for good in ("x-1.0.whl", "x-1.0.tar.gz", "X-1.0.WHL", " x-1.0.whl ",
+                 "foo-.whl", "a.zip", "a.tgz", "a.egg", "dir/x.whl", "..\\x.whl"):
+        assert f(good), good
+    for pkg in ("gdx-plugin-example", "requests", "gdx_plugin_chi_pricing",
+                "", None, "numpy==1.2"):
+        assert not f(pkg), pkg
+
+
 def test_reconcile_reports_failed_specs(monkeypatch):
     monkeypatch.setattr(rec, "ensure_registry_table", lambda db: None)
     monkeypatch.setattr(rec, "ensure_artifact_table", lambda db: None)

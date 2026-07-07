@@ -108,12 +108,33 @@ def artifact_name_version(filename: str) -> tuple[str | None, str | None]:
     (None, None). Wheel grammar is `{dist}-{version}(-{build})?-{py}-{abi}-{plat}.whl`
     and sdist is `{dist}-{version}.tar.gz`; in both the first two dash-fields are
     distribution and version."""
-    base = os.path.basename(filename or "")
+    base = os.path.basename((filename or "").strip())
+    low = base.lower()
     for ext in (".whl", ".tar.gz"):
-        if base.endswith(ext):
-            parts = base[: -len(ext)].split("-")
-            return (parts[0], parts[1]) if len(parts) >= 2 else (None, None)
+        if low.endswith(ext):
+            parts = base[: len(base) - len(ext)].split("-")
+            # Need both a distribution and a non-empty version (`foo-.whl` parses
+            # to ('foo', '') which is useless — treat as unparseable).
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                return parts[0], parts[1]
+            return None, None
     return None, None
+
+
+_ARTIFACT_EXTS = (".whl", ".tar.gz", ".tgz", ".zip", ".egg")
+
+
+def looks_like_artifact_filename(name: str | None) -> bool:
+    """True if `name` is a package FILE, not an index package name — i.e. an
+    operator pasted a wheel/sdist filename into the free-text package field
+    (issue #100). A PyPI package name can never contain a path separator nor end
+    in one of these archive extensions. Case- and whitespace-insensitive so
+    ``Plugin.WHL`` / ``x.whl `` don't slip through to a bare-filename pip install.
+    Detection is deliberately separate from :func:`artifact_name_version` parsing:
+    a filename we recognize but can't parse (``foo-.whl``) must still be refused,
+    not fed to pip."""
+    s = (name or "").strip().lower()
+    return "/" in s or "\\" in s or s.endswith(_ARTIFACT_EXTS)
 
 
 def installed_versions(distribution: str | None, target: str = INSTALL_DIR) -> set[str]:
@@ -367,6 +388,31 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
         ensure_registry_table(db)
         ensure_artifact_table(db)
         for package, version in desired_packages(db):
+            # An operator can paste a wheel/sdist *filename* into the free-text
+            # package field of the install UI (issue #100). A filename is not a pip
+            # spec: `pip install <bare filename>` resolves it against CWD (/app),
+            # never finds it, and fails EVERY boot — wedging /ready 503 forever even
+            # though the plugin is already installed from its uploaded artifact.
+            # NEVER feed a filename to pip: when the volume already has that dist
+            # (the common case — it's installed via the artifact loop below), skip
+            # and prune; otherwise skip with a loud warning (the uploaded artifact,
+            # if any, is the real installer — a filename here is operator cruft, not
+            # a genuine degraded plugin, so it must NOT gate /ready). A real package
+            # name is not filename-shaped and falls through unchanged. NOTE: this
+            # neutralizes the filename INSTANCE; a typo'd *package name* that can't
+            # install offline still (correctly) surfaces as a failed spec.
+            if looks_like_artifact_filename(package):
+                fdist, fver = artifact_name_version(package)
+                if fdist and fver and is_installed(fdist, fver):
+                    log.info("registry row %r resolves to installed %s %s — skipping",
+                             package, fdist, fver)
+                    prune_other_versions(fdist, fver, target=INSTALL_DIR)
+                else:
+                    log.warning(
+                        "registry row %r is a plugin filename, not a package spec — "
+                        "skipping (upload the file via the artifact installer; this row "
+                        "is ignored, not installed)", package)
+                continue
             spec = f"{package}=={version}" if version else package
             if version and is_installed(package, version):
                 log.info("registry package %s already installed — skipping", spec)
