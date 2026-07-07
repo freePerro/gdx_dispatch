@@ -135,20 +135,25 @@ def test_same_tenant_token_passes_through_auth(app_client: TestClient) -> None:
 # ── cross-tenant denial — the load-bearing security gate ────────────────────
 
 
-def test_gdx_token_at_acme_mcp_returns_403(app_client: TestClient) -> None:
-    """The plan's verification gate. Token minted at gdx → 403 at acme."""
+def test_gdx_token_at_acme_mcp_returns_401(app_client: TestClient) -> None:
+    """The plan's verification gate. Token minted at gdx → denied at acme.
+
+    401 (not 403) per RFC 6750: the token is `invalid_token` FOR THIS
+    resource (aud/gdx_tid mismatch), and 401 tells the client to re-run
+    authorization. 2026-07-07 audit: claude.ai's connector treated the
+    old 403 as terminal and never re-authenticated."""
     token = _mint(GDX_UUID, GDX_HOST)
     r = _post_init(app_client, ACME_HOST, token)
-    assert r.status_code == 403, r.text
+    assert r.status_code == 401, r.text
     body = r.json()
     assert body["error"] == "invalid_token"
 
 
-def test_acme_token_at_gdx_mcp_returns_403(app_client: TestClient) -> None:
+def test_acme_token_at_gdx_mcp_returns_401(app_client: TestClient) -> None:
     """Symmetric: cross-tenant denial works either direction."""
     token = _mint(ACME_UUID, ACME_HOST)
     r = _post_init(app_client, GDX_HOST, token)
-    assert r.status_code == 403, r.text
+    assert r.status_code == 401, r.text
 
 
 # ── missing / malformed auth ────────────────────────────────────────────────
@@ -162,22 +167,24 @@ def test_no_bearer_returns_401(app_client: TestClient) -> None:
     assert "missing bearer" in body["error_description"].lower()
 
 
-def test_malformed_bearer_returns_403(app_client: TestClient) -> None:
+def test_malformed_bearer_returns_401(app_client: TestClient) -> None:
     r = _post_init(app_client, GDX_HOST, token="not-a-jwt")
-    assert r.status_code == 403, r.text
+    assert r.status_code == 401, r.text
+    assert r.headers.get("WWW-Authenticate", "").startswith("Bearer ")
 
 
-def test_unknown_tenant_host_returns_403(app_client: TestClient) -> None:
-    """Unknown host → TenantMiddleware 404s with `Unknown tenant`. The
-    bearer middleware never gets a chance because the parent rejected
-    first; either response is acceptable as long as we don't 200."""
+def test_unknown_tenant_host_is_denied(app_client: TestClient) -> None:
+    """Unknown host must never 200. Which layer rejects depends on setup:
+    TenantMiddleware 404s (`Unknown tenant`), the bearer middleware 401s
+    (issuer mismatch → invalid_token per RFC 6750), or 403 when the
+    tenant resolves but the transport refuses the binding."""
     token = _mint(GDX_UUID, GDX_HOST)
     headers = {"Host": "stranger.example.com",
                "Accept": "application/json, text/event-stream",
                "Authorization": f"Bearer {token}"}
     r = app_client.post("/mcp/", json=_initialize_payload(), headers=headers,
                         follow_redirects=True)
-    assert r.status_code in (403, 404), r.text
+    assert r.status_code in (401, 403, 404), r.text
     assert r.status_code != 200
 
 

@@ -9,7 +9,9 @@ request it:
 2. Pulls the ``Authorization: Bearer ...`` header.
 3. Calls ``verify_mcp_bearer(...)`` with the expected issuer
    (``https://<host>``), expected audience (``https://<host>/mcp``),
-   and expected tenant UUID. Any mismatch → 403.
+   and expected tenant UUID. Any mismatch → 401 ``invalid_token``
+   (RFC 6750 — tells the client to re-run authorization; 403 is
+   reserved for a resolvable-but-forbidden condition).
 4. On success, stashes the verified ``MCPClaims`` on the ASGI
    ``scope["state"]`` so the bridge wrapper can pull a Principal
    from it without re-parsing the token.
@@ -182,7 +184,15 @@ class MCPBearerAuthMiddleware:
             await _send_error(send, 500, "server_error", str(exc))
             return
         except BearerInvalid as exc:
-            await _send_error(send, 403, "invalid_token", str(exc))
+            # 401, not 403 — RFC 6750 §3.1: an expired/malformed/
+            # wrong-audience token is `invalid_token` and MUST get 401 so
+            # the client knows to re-run authorization. The 2026-07-07
+            # audit found claude.ai's connector holding a pre-gdx_tid
+            # token and receiving 403, which reads as "give up" — the
+            # connector never attempted to re-authenticate. 403 is
+            # reserved for insufficient_scope (valid token, missing
+            # rights), which this is not.
+            await _send_error(send, 401, "invalid_token", str(exc))
             return
 
         # Stash on scope state for the bridge wrapper.
