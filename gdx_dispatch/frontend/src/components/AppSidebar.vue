@@ -145,39 +145,74 @@
         </div>
       </div>
 
-      <!-- Categorized panel (hidden during search) -->
-      <PanelMenu v-if="!filterText" :model="panelItems" multiple>
-        <template #item="{ item }">
+      <!-- Categorized nav (hidden during search). 2026-07-07 tabbed-pages:
+           cluster children are collapsed into one hub row upstream
+           (useTenantModules), and a category left with a SINGLE module
+           (e.g. Invoicing → the Billing hub, Marketing → its hub) renders
+           as a flat link row — a one-item expandable group is two clicks
+           for one destination. Multi-module categories keep the
+           collapsible PanelMenu group. -->
+      <template v-if="!filterText">
+        <template v-for="entry in navEntries" :key="entry.key">
           <div
-            v-if="item.to"
+            v-if="entry.kind === 'link'"
             class="menu-row"
-            :class="{ active: isActiveRoute(item.to) }"
+            :class="{ active: isEntryActive(entry.module) }"
           >
             <router-link
-              :to="item.to"
+              :to="entry.module.to"
               class="menu-item menu-item-link"
-              v-tooltip.right="item.description || ''"
-              @click="handleItemClick(item.to, item.label, item.icon)"
+              v-tooltip.right="entry.module.description || ''"
+              @click="handleItemClick(entry.module.to, entry.module.label, entry.module.icon)"
+              :data-testid="`sidebar-top-${entry.module.key}`"
             >
-              <i v-if="item.icon" :class="item.icon" aria-hidden="true" />
-              <span>{{ item.label }}</span>
+              <i v-if="entry.module.icon" :class="entry.module.icon" aria-hidden="true" />
+              <span>{{ entry.module.label }}</span>
             </router-link>
             <button
               class="fav-toggle"
-              :class="{ active: isFavorite(item.to) }"
-              :aria-label="isFavorite(item.to) ? `Unfavorite ${item.label}` : `Favorite ${item.label}`"
-              v-tooltip="isFavorite(item.to) ? 'Remove from favorites' : 'Add to favorites'"
-              @click.stop.prevent="toggleFavorite(item.to, item.label, item.icon)"
+              :class="{ active: isFavorite(entry.module.to) }"
+              :aria-label="isFavorite(entry.module.to) ? `Unfavorite ${entry.module.label}` : `Favorite ${entry.module.label}`"
+              v-tooltip="isFavorite(entry.module.to) ? 'Remove from favorites' : 'Add to favorites'"
+              @click.stop.prevent="toggleFavorite(entry.module.to, entry.module.label, entry.module.icon)"
             >
-              <i :class="isFavorite(item.to) ? 'pi pi-star-fill' : 'pi pi-star'" />
+              <i :class="isFavorite(entry.module.to) ? 'pi pi-star-fill' : 'pi pi-star'" />
             </button>
           </div>
-          <div v-else class="menu-group-header">
-            <i v-if="item.icon" :class="item.icon" aria-hidden="true" />
-            <span>{{ item.label }}</span>
-          </div>
+          <PanelMenu v-else :model="[entry.panel]" multiple>
+            <template #item="{ item }">
+              <div
+                v-if="item.to"
+                class="menu-row"
+                :class="{ active: isEntryActive(item) }"
+              >
+                <router-link
+                  :to="item.to"
+                  class="menu-item menu-item-link"
+                  v-tooltip.right="item.description || ''"
+                  @click="handleItemClick(item.to, item.label, item.icon)"
+                >
+                  <i v-if="item.icon" :class="item.icon" aria-hidden="true" />
+                  <span>{{ item.label }}</span>
+                </router-link>
+                <button
+                  class="fav-toggle"
+                  :class="{ active: isFavorite(item.to) }"
+                  :aria-label="isFavorite(item.to) ? `Unfavorite ${item.label}` : `Favorite ${item.label}`"
+                  v-tooltip="isFavorite(item.to) ? 'Remove from favorites' : 'Add to favorites'"
+                  @click.stop.prevent="toggleFavorite(item.to, item.label, item.icon)"
+                >
+                  <i :class="isFavorite(item.to) ? 'pi pi-star-fill' : 'pi pi-star'" />
+                </button>
+              </div>
+              <div v-else class="menu-group-header">
+                <i v-if="item.icon" :class="item.icon" aria-hidden="true" />
+                <span>{{ item.label }}</span>
+              </div>
+            </template>
+          </PanelMenu>
         </template>
-      </PanelMenu>
+      </template>
     </div>
 
     <div v-else class="sidebar-icons">
@@ -297,24 +332,45 @@ const topPins = computed(() => {
   return wanted.filter((p) => enabled.has(p.key));
 });
 
-const panelItems = computed(() => {
-  return roleAllowedCategories.value.map((category) => ({
-    key: category.key,
-    label: category.label,
-    icon: category.icon,
-    items: category.modules.map((module) => ({
-      key: module.key,
-      label: module.label,
-      icon: module.icon,
-      to: module.to,
-      description: module.description,
-    })),
-  }));
+// One entry per category: single-module categories flatten to a direct
+// link row, the rest become a PanelMenu group. `matchPaths` (set on cluster
+// hub rows by useTenantModules) rides along for active-state matching.
+const navEntries = computed(() => {
+  return roleAllowedCategories.value.map((category) => {
+    if (category.modules.length === 1) {
+      return { kind: 'link', key: `link-${category.key}`, module: category.modules[0] };
+    }
+    return {
+      kind: 'panel',
+      key: `panel-${category.key}`,
+      panel: {
+        key: category.key,
+        label: category.label,
+        icon: category.icon,
+        items: category.modules.map((module) => ({
+          key: module.key,
+          label: module.label,
+          icon: module.icon,
+          to: module.to,
+          description: module.description,
+          matchPaths: module.matchPaths,
+        })),
+      },
+    };
+  });
 });
 
 function isActiveRoute(targetPath) {
   const path = route?.path ?? '';
   return path === targetPath || path.startsWith(`${targetPath}/`);
+}
+
+// Cluster hub rows are active when ANY of their tab routes is — /payments
+// must light up the "Billing" row even though the row points at /billing.
+function isEntryActive(item) {
+  if (!item) return false;
+  const paths = item.matchPaths && item.matchPaths.length ? item.matchPaths : [item.to];
+  return paths.some((p) => isActiveRoute(p));
 }
 
 // --- Filter (search) ---

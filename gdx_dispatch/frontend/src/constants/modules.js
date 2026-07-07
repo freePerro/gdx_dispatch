@@ -8,6 +8,14 @@
 // - added Roles & Permissions, Custom Fields, Webhooks, Feature Flags, GDPR,
 //   PDF Templates, SaaS Billing, Tags into Admin
 // - merged Uploads into Documents (Documents page already lists uploads)
+//
+// 2026-07-07 tabbed-pages pass: modules that are facets of one job carry a
+// `cluster` key. The sidebar shows ONE row per cluster (see NAV_CLUSTERS below
+// + useTenantModules) and the cluster's routes render inside a shared
+// ModuleTabsPage tab bar. Child entries keep their key (enablement grants),
+// their `to` (bookmarks/pins/favorites), and their permission gate — only the
+// sidebar presentation collapses. `tabLabel` is the short in-page tab caption
+// ("Phone.com Calls" reads as "Calls" inside the Phone page).
 
 export const MODULE_CATEGORIES = [
   {
@@ -32,11 +40,11 @@ export const MODULE_CATEGORIES = [
       { key: 'technicians', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
       { key: 'performance', label: 'Performance', icon: 'pi pi-chart-line', to: '/performance', type: 'Operations', permission: 'nav.office' },
       { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock', type: 'Operations' },
-      { key: 'fleet', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office' },
-      { key: 'gps', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office' },
-      { key: 'maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office' },
-      { key: 'daily_loadsheet', label: 'Daily Load Sheet', icon: 'pi pi-check-square', to: '/daily-loadsheet', type: 'Operations', permission: 'nav.office' },
-      { key: 'delivery_loadsheet', label: 'Delivery Load Sheet', icon: 'pi pi-truck', to: '/delivery-loadsheet', type: 'Operations', permission: 'nav.office' },
+      { key: 'fleet', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
+      { key: 'gps', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
+      { key: 'maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },
+      { key: 'daily_loadsheet', label: 'Daily Load Sheet', icon: 'pi pi-check-square', to: '/daily-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Daily' },
+      { key: 'delivery_loadsheet', label: 'Delivery Load Sheet', icon: 'pi pi-truck', to: '/delivery-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Delivery' },
       { key: 'equipment', label: 'Customer Equipment', icon: 'pi pi-cog', to: '/equipment', type: 'Operations', permission: 'nav.office' },
       { key: 'equipment_tracking', label: 'Company Tools', icon: 'pi pi-database', to: '/equipment-tracking', type: 'Operations', permission: 'nav.office' },
       { key: 'photos', label: 'Photos', icon: 'pi pi-images', to: '/photos', type: 'Jobs' },
@@ -55,13 +63,13 @@ export const MODULE_CATEGORIES = [
       // disambiguate in the sidebar tooltip.
       { key: 'communications', label: 'Communications', icon: 'pi pi-comments', to: '/communications', type: 'Customers', description: 'Built-in SMS & email threads with customers' },
       { key: 'inbox', label: 'Inbox', icon: 'pi pi-inbox', to: '/inbox', type: 'Operations', description: 'Outlook-synced email inbox' },
-      { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Call log from the Phone.com line' },
-      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'SMS threads on the Phone.com line (separate from built-in Communications)' },
-      { key: 'phone_com_cold_leads', label: 'Phone.com Cold Leads', icon: 'pi pi-user-plus', to: '/phone-com/cold-leads', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Missed/unreturned callers to follow up on' },
-      { key: 'phone_com_faxes', label: 'Phone.com Faxes', icon: 'pi pi-file-pdf', to: '/phone-com/faxes', type: 'Customers', requires: 'phone_com', permission: 'nav.office', description: 'Faxes received on the Phone.com line' },
-      { key: 'reviews', label: 'Reviews', icon: 'pi pi-star', to: '/reviews', type: 'Customers', permission: 'nav.office' },
-      { key: 'referrals', label: 'Referrals', icon: 'pi pi-share-alt', to: '/referrals', type: 'Customers', permission: 'nav.office' },
-      { key: 'surveys', label: 'Surveys', icon: 'pi pi-comments', to: '/surveys', type: 'Customers', permission: 'nav.office' },
+      { key: 'phone_com_calls', label: 'Phone.com Calls', icon: 'pi pi-phone', to: '/phone-com/calls', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Calls', description: 'Call log from the Phone.com line' },
+      { key: 'phone_com_messages', label: 'Phone.com SMS', icon: 'pi pi-comment', to: '/phone-com/messages', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'SMS', description: 'SMS threads on the Phone.com line (separate from built-in Communications)' },
+      { key: 'phone_com_cold_leads', label: 'Phone.com Cold Leads', icon: 'pi pi-user-plus', to: '/phone-com/cold-leads', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Cold Leads', description: 'Missed/unreturned callers to follow up on' },
+      { key: 'phone_com_faxes', label: 'Phone.com Faxes', icon: 'pi pi-file-pdf', to: '/phone-com/faxes', type: 'Customers', requires: 'phone_com', permission: 'nav.office', cluster: 'phone_hub', tabLabel: 'Faxes', description: 'Faxes received on the Phone.com line' },
+      { key: 'reviews', label: 'Reviews', icon: 'pi pi-star', to: '/reviews', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Reviews' },
+      { key: 'referrals', label: 'Referrals', icon: 'pi pi-share-alt', to: '/referrals', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Referrals' },
+      { key: 'surveys', label: 'Surveys', icon: 'pi pi-comments', to: '/surveys', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Surveys' },
       { key: 'booking', label: 'Online Booking', icon: 'pi pi-calendar', to: '/booking', type: 'Operations', permission: 'nav.office' },
       { key: 'warranties', label: 'Warranties', icon: 'pi pi-shield', to: '/warranties', type: 'Jobs', permission: 'nav.office' },
     ],
@@ -87,10 +95,10 @@ export const MODULE_CATEGORIES = [
     label: 'Invoicing',
     icon: 'pi pi-dollar',
     modules: [
-      { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all' },
-      { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read' },
-      { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all' },
-      { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'invoices.read_all' },
+      { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Invoices' },
+      { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
+      { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
+      { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Reminders' },
     ],
   },
   {
@@ -149,11 +157,11 @@ export const MODULE_CATEGORIES = [
     label: 'Marketing',
     icon: 'pi pi-megaphone',
     modules: [
-      { key: 'campaigns', label: 'Campaigns', icon: 'pi pi-megaphone', to: '/campaigns', type: 'Jobs', permission: 'nav.office' },
-      { key: 'segments', label: 'Segments', icon: 'pi pi-sliders-h', to: '/segments', type: 'Customers', permission: 'nav.office' },
-      { key: 'automations', label: 'Automations', icon: 'pi pi-bolt', to: '/automations', type: 'Customers', permission: 'nav.office' },
-      { key: 'winback', label: 'Winback & Follow-ups', icon: 'pi pi-refresh', to: '/winback', type: 'Customers', permission: 'nav.office' },
-      { key: 'loyalty', label: 'Loyalty', icon: 'pi pi-star', to: '/loyalty', type: 'Customers', permission: 'nav.office' },
+      { key: 'campaigns', label: 'Campaigns', icon: 'pi pi-megaphone', to: '/campaigns', type: 'Jobs', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Campaigns' },
+      { key: 'segments', label: 'Segments', icon: 'pi pi-sliders-h', to: '/segments', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Segments' },
+      { key: 'automations', label: 'Automations', icon: 'pi pi-bolt', to: '/automations', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Automations' },
+      { key: 'winback', label: 'Winback & Follow-ups', icon: 'pi pi-refresh', to: '/winback', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Winback' },
+      { key: 'loyalty', label: 'Loyalty', icon: 'pi pi-star', to: '/loyalty', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Loyalty' },
     ],
   },
   {
@@ -206,6 +214,23 @@ export const MODULE_CATEGORIES = [
     ],
   },
 ];
+
+// One sidebar row per cluster; the row's target/active-state and the in-page
+// tab bar are derived from the visible child modules (see useTenantModules
+// `collapseClusters` and components/ModuleTabsPage.vue). A cluster row is
+// visible iff at least one child survives enablement + permission filtering.
+export const NAV_CLUSTERS = [
+  { key: 'phone_hub', label: 'Phone', icon: 'pi pi-phone', description: 'Phone.com calls, SMS, cold leads & faxes' },
+  { key: 'reputation_hub', label: 'Reputation', icon: 'pi pi-star', description: 'Reviews, referrals & surveys' },
+  { key: 'billing_hub', label: 'Billing', icon: 'pi pi-dollar', description: 'Invoices, payments, collections & reminders' },
+  { key: 'marketing_hub', label: 'Marketing', icon: 'pi pi-megaphone', description: 'Campaigns, segments, automations, winback & loyalty' },
+  { key: 'fleet_hub', label: 'Fleet', icon: 'pi pi-truck', description: 'Vehicles, live GPS & coverage map' },
+  { key: 'loadsheets_hub', label: 'Load Sheets', icon: 'pi pi-check-square', description: 'Daily & delivery load sheets' },
+];
+
+export function clusterByKey(key) {
+  return NAV_CLUSTERS.find((c) => c.key === key) || null;
+}
 
 export const QUICK_ACTIONS = [
   { key: 'create-job', label: 'Create Job', icon: 'pi pi-plus-circle', to: '/jobs', type: 'Quick Actions' },

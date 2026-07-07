@@ -133,6 +133,13 @@ const PerformanceView = () => import('../views/PerformanceView.vue');
 // 2026-05-05 audit pruned views whose backends never mounted (SS-27/SS-33/custom-field-sensitivity/SAR-erasure).
 const AuditLogViewer = () => import('../views/AuditLogViewer.vue');
 
+// 2026-07-07 tabbed-pages: shared tab-bar layout for nav clusters (see
+// constants/modules.js NAV_CLUSTERS). Cluster routes nest under one parent
+// so the tab bar persists across tab switches; children keep their original
+// absolute paths + route names, so bookmarks, router.push({name}) callers,
+// sidebar pins, and favorites are all unaffected.
+const ModuleTabsPage = () => import('../components/ModuleTabsPage.vue');
+
 
 // Exported for the nav↔route coverage spec (router/__tests__).
 export const routes = [
@@ -154,33 +161,50 @@ export const routes = [
   { path: '/customers', name: 'customers', component: CustomersView },
   { path: '/customers/duplicates', name: 'customer-duplicates', component: () => import('../views/CustomerDuplicatesView.vue') },
   { path: '/portal', name: 'portal', component: PortalView },
-  { path: '/referrals', name: 'referrals', component: ReferralsView },
   { path: '/customers/:id', name: 'customer-detail', component: CustomerDetailView },
   { path: '/dispatch', name: 'dispatch', component: DispatchView },
   { path: '/scheduling', name: 'scheduling', component: SchedulingView },
-  { path: '/gps', name: 'gps', component: GpsView },
-  { path: '/maps', name: 'maps', component: MapsView },
   { path: '/tasks', name: 'tasks', component: TasksView },
   // /messages → /communications (deduped 2026-04-29 per modules.js cleanup;
   // route kept as redirect so existing bookmarks resolve).
   { path: '/messages', redirect: '/communications' },
-  { path: '/reviews', name: 'reviews', component: ReviewsView },
+  // Reputation cluster — Reviews / Referrals / Surveys under one tab bar.
+  {
+    path: '/reviews',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'reputation_hub' },
+    children: [
+      { path: '', name: 'reviews', component: ReviewsView },
+      { path: '/referrals', name: 'referrals', component: ReferralsView },
+      { path: '/surveys', name: 'surveys', component: SurveysView },
+    ],
+  },
   { path: '/estimates', name: 'estimates', component: EstimatesView },
   { path: '/estimates/new', name: 'estimate-create', component: EstimateView },
   { path: '/estimates/:id', name: 'estimate-detail', component: EstimateView },
   { path: '/invoices', redirect: '/billing' },
-  { path: '/billing', name: 'billing', component: BillingView, meta: { requiresPermission: 'invoices.read_all' } },
+  // Billing cluster — Invoices / Payments / Collections / Reminders under one
+  // tab bar. Per-tab permission gates stay on the children; /billing/new and
+  // /billing/:id remain top-level (drill-in pages, no tab bar).
+  {
+    path: '/billing',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'billing_hub' },
+    children: [
+      { path: '', name: 'billing', component: BillingView, meta: { requiresPermission: 'invoices.read_all' } },
+      { path: '/payments', name: 'payments', component: PaymentsView, meta: { requiresPermission: 'payments.read' } },
+      { path: '/collections', name: 'collections', component: CollectionsView, meta: { requiresPermission: 'invoices.read_all' } },
+      { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'invoices.read_all' } },
+    ],
+  },
   { path: '/billing/new', name: 'invoice-create', component: InvoiceCreateView, meta: { requiresPermission: 'invoices.write' } },
-  { path: '/payments', name: 'payments', component: PaymentsView, meta: { requiresPermission: 'payments.read' } },
   { path: '/expenses', name: 'expenses', component: ExpensesView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/forecasting', name: 'forecasting', component: ForecastingView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/forecasting/recurring', name: 'recurring-streams', component: RecurringStreamsView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/budget', name: 'budget', component: MonthlyBudgetView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/spending-trends', name: 'spending-trends', component: SpendingTrendsView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/overhead', name: 'overhead', component: OverheadView, meta: { requiresPermission: 'accounting.read' } },
-  { path: '/collections', name: 'collections', component: CollectionsView, meta: { requiresPermission: 'invoices.read_all' } },
   { path: '/exports', name: 'exports', component: ExportsView },
-  { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'invoices.read_all' } },
   { path: '/billing/:id', name: 'invoice-detail', component: InvoiceDetailView },
   { path: '/settings', name: 'settings', component: SettingsView },
   { path: '/profile', name: 'profile', component: UserProfileView },
@@ -196,16 +220,24 @@ export const routes = [
   // 2026-07-01 UX audit: pointed at `/phone-com`, which is not a route — old
   // bookmarks landed on the 404 catch-all. Redirect to the calls view.
   { path: '/voice', redirect: '/phone-com/calls' },
-  { path: '/segments', name: 'segments', component: SegmentsView },
   // /inbound-comms → /communications (deduped 2026-04-29). Bookmark redirect.
   { path: '/inbound-comms', redirect: '/communications' },
-  { path: '/surveys', name: 'surveys', component: SurveysView },
-  { path: '/campaigns', name: 'campaigns', component: CampaignsView },
+  // Marketing cluster — Campaigns / Segments / Automations / Winback / Loyalty
+  // under one tab bar.
+  {
+    path: '/campaigns',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'marketing_hub' },
+    children: [
+      { path: '', name: 'campaigns', component: CampaignsView },
+      { path: '/segments', name: 'segments', component: SegmentsView },
+      { path: '/automations', name: 'automations', component: AutomationsView },
+      { path: '/winback', name: 'winback', component: WinbackView },
+      { path: '/loyalty', name: 'loyalty', component: LoyaltyView },
+    ],
+  },
   // /marketing → /campaigns (deduped 2026-04-29). Bookmark redirect.
   { path: '/marketing', redirect: '/campaigns' },
-  { path: '/loyalty', name: 'loyalty', component: LoyaltyView },
-  { path: '/automations', name: 'automations', component: AutomationsView },
-  { path: '/winback', name: 'winback', component: WinbackView },
   { path: '/reports', name: 'reports', component: ReportsView },
   { path: '/pricing', name: 'pricing', component: PricingView },
   { path: '/margin-tiers', name: 'margin-tiers', component: MarginTiersView },
@@ -218,9 +250,27 @@ export const routes = [
   { path: '/uploads', redirect: '/documents' },
   { path: '/resources', name: 'resources', component: ResourcesView },
   { path: '/activity', name: 'activity', component: ActivityView },
-  { path: '/fleet', name: 'fleet', component: FleetView },
-  { path: '/daily-loadsheet', name: 'daily-loadsheet', component: DailyLoadsheetView },
-  { path: '/delivery-loadsheet', name: 'delivery-loadsheet', component: DeliveryLoadsheetView },
+  // Fleet cluster — Vehicles / Live GPS / Map under one tab bar.
+  {
+    path: '/fleet',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'fleet_hub' },
+    children: [
+      { path: '', name: 'fleet', component: FleetView },
+      { path: '/gps', name: 'gps', component: GpsView },
+      { path: '/maps', name: 'maps', component: MapsView },
+    ],
+  },
+  // Load-sheets cluster — Daily / Delivery under one tab bar.
+  {
+    path: '/daily-loadsheet',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'loadsheets_hub' },
+    children: [
+      { path: '', name: 'daily-loadsheet', component: DailyLoadsheetView },
+      { path: '/delivery-loadsheet', name: 'delivery-loadsheet', component: DeliveryLoadsheetView },
+    ],
+  },
   { path: '/planner', name: 'planner', component: PlannerView },
   { path: '/catalog', name: 'catalog', component: CatalogView },
   { path: '/vendors', name: 'vendors', component: VendorsView },
@@ -238,10 +288,20 @@ export const routes = [
   // right place rather than 404'ing.
   { path: '/ai-settings', redirect: '/settings' },
   { path: '/ai-assistant', name: 'ai-assistant', component: AIAssistantView },
-  { path: '/phone-com/calls', name: 'phone-com-calls', component: PhoneComCallsView },
-  { path: '/phone-com/messages', name: 'phone-com-messages', component: PhoneComMessagesView },
-  { path: '/phone-com/cold-leads', name: 'phone-com-cold-leads', component: PhoneComColdLeadsView },
-  { path: '/phone-com/faxes', name: 'phone-com-faxes', component: PhoneComFaxesView },
+  // Phone cluster — Phone.com Calls / SMS / Cold Leads / Faxes under one tab
+  // bar. Bare /phone-com (not previously a route) now lands on Calls.
+  {
+    path: '/phone-com',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'phone_hub' },
+    redirect: '/phone-com/calls',
+    children: [
+      { path: 'calls', name: 'phone-com-calls', component: PhoneComCallsView },
+      { path: 'messages', name: 'phone-com-messages', component: PhoneComMessagesView },
+      { path: 'cold-leads', name: 'phone-com-cold-leads', component: PhoneComColdLeadsView },
+      { path: 'faxes', name: 'phone-com-faxes', component: PhoneComFaxesView },
+    ],
+  },
   { path: '/settings/integrations/outlook', name: 'outlook-settings', component: OutlookSettingsView },
   { path: '/inbox', name: 'inbox', component: InboxView },
   { path: '/equipment-tracking', name: 'equipment-tracking', component: EquipmentTrackingView },
