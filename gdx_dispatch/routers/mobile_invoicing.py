@@ -424,6 +424,18 @@ def mobile_create_invoice(
             if tier_row is not None:
                 tier_name, tier_desc, tier_total = tier_row
                 price = _money(tier_total or 0)
+                # PR1-billing-capture: F-75 zero-price policy applies from
+                # the truck too (this path bypassed the desktop guard).
+                # Block-only — the tech app has no warning-banner surface,
+                # so warn-mode is intentionally desktop-only.
+                if float(price) <= 0:
+                    from gdx_dispatch.modules.catalog_policy import get_policy
+                    if get_policy(str(tenant_id)).block_zero_price_on_invoice:
+                        db.rollback()
+                        return _jr(
+                            {"detail": "accepted tier has no price — price it before invoicing (tenant policy blocks zero-price invoice lines)"},
+                            422,
+                        )
                 desc = (
                     f"{(estimate.label or 'Service').strip()} — "
                     f"{tier_name.title()} Tier"
@@ -457,6 +469,17 @@ def mobile_create_invoice(
                 ),
                 {"eid": str(estimate.id)},
             ).all()
+            # PR1-billing-capture: same block-only F-75 guard as the tier
+            # path — a $0 estimate line must not slip onto an invoice from
+            # the truck when the tenant blocks zero-price invoicing.
+            if any(float(ln[2] or 0) <= 0 for ln in line_rows):
+                from gdx_dispatch.modules.catalog_policy import get_policy
+                if get_policy(str(tenant_id)).block_zero_price_on_invoice:
+                    db.rollback()
+                    return _jr(
+                        {"detail": "estimate contains a zero-price line — price it before invoicing (tenant policy blocks zero-price invoice lines)"},
+                        422,
+                    )
             for ln in line_rows:
                 db.add(
                     InvoiceLine(
@@ -619,6 +642,11 @@ def mobile_send_invoice(
     tenant_id = _tenant_id(request)
     if not _job_belongs_to_tech(db, str(invoice.job_id), user_id):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+
+    # PR1-billing-capture (audit catch): the desktop /send now 409s on void,
+    # but this path still EMAILED voided invoices to customers. Same guard.
+    if invoice.status == "void":
+        return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
 
     _send_invoice_email(db, invoice, tenant_id=tenant_id)
     invoice.status = "sent" if invoice.status == "draft" else invoice.status
