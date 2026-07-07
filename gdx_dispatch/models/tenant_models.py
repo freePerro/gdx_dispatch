@@ -2050,6 +2050,10 @@ class JobCloseout(Base):
     # Authoritative inventory math comes from job_parts rows; this is the
     # closeout-as-submitted snapshot for audit/billing.
     parts_used: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # PR5-billing-capture: the tech's explicit "no parts used" attestation —
+    # with require_parts_on_complete ON, the gate accepts a parts list OR
+    # this flag; bare silence still 422s (Doug 2026-07-07).
+    no_parts_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     hours_worked: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
     hourly_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
     signature_data: Mapped[str] = mapped_column(Text, nullable=True)

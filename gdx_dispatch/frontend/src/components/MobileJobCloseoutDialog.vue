@@ -48,13 +48,18 @@ const open = computed({
 
 // ─── Parts state ─────────────────────────────────────────────────────
 const parts = ref([])
+// PR5 (Doug 2026-07-07): explicit attestation — satisfies the tenant's
+// require-parts gate without a parts list; bare silence still 422s.
+const noPartsUsed = ref(false)
 function addPartRow() {
+  noPartsUsed.value = false
   parts.value.push({
     name: '',
     sku: null,
     part_id: null,
     qty: 1,
     unit_cost: 0,
+    note: '',
     suggestions: [],
     suggestionsLoading: false,
     _searchTimer: null,
@@ -165,7 +170,7 @@ const canSubmit = computed(() => {
   const hasHours = (Number(hours.value) || 0) > 0
   const hasSig = sigDrawn.value
   const hasNotes = (notes.value || '').trim().length > 0
-  if (!(hasParts || hasHours || hasSig || hasNotes)) return false
+  if (!(hasParts || hasHours || hasSig || hasNotes || noPartsUsed.value)) return false
   // Required: every parts row needs a name + qty >= 1.
   for (const p of parts.value) {
     if (!p.name.trim()) return false
@@ -184,13 +189,15 @@ async function submit() {
   }
 
   const payload = {
-    parts: parts.value.map((p) => ({
+    parts: noPartsUsed.value ? [] : parts.value.map((p) => ({
       part_id: p.part_id || null,
       sku: p.sku || null,
       name: p.name.trim(),
       qty: Number(p.qty) || 1,
       unit_cost: Number(p.unit_cost) || 0,
+      note: (p.note || '').trim() || null,
     })),
+    no_parts_used: noPartsUsed.value,
     hours: Number(hours.value) || 0,
     signature_data,
     signed_by: signedBy.value.trim() || null,
@@ -352,6 +359,13 @@ watch(open, async (v) => {
               :data-testid="`mjco-part-qty-${idx}`"
               aria-label="Quantity"
             />
+            <InputText
+              v-if="!p.part_id"
+              v-model="p.note"
+              placeholder="Not in system? Explain it for the office"
+              class="w-full part-note"
+              :data-testid="`mjco-part-note-${idx}`"
+            />
             <Button
               icon="pi pi-times"
               v-tooltip="'Remove part'"
@@ -365,6 +379,12 @@ watch(open, async (v) => {
           </li>
         </ul>
         <p v-else class="muted hint">No parts yet — tap "Add part" for each one you installed.</p>
+        <!-- PR5: deliberate attestation. With the tenant's require-parts
+             gate on, this is the only way to complete with an empty list. -->
+        <label v-if="!parts.length" class="no-parts-attest" data-testid="mjco-no-parts-used">
+          <input type="checkbox" v-model="noPartsUsed" />
+          <span>No parts were used on this job</span>
+        </label>
       </section>
 
       <!-- Hours -->

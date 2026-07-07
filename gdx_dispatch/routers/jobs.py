@@ -1118,6 +1118,7 @@ def _load_workflow_flags(tenant_id: str) -> dict[str, bool]:
         "require_parts_on_complete": False,
         "require_hours_on_complete": False,
         "require_signature_on_complete": False,
+        "require_invoice_on_complete": False,
     }
     try:
         with SessionLocal() as cdb:
@@ -1125,7 +1126,8 @@ def _load_workflow_flags(tenant_id: str) -> dict[str, bool]:
                 _text(
                     "SELECT workflow_lock_schedule_on_start, workflow_post_arrival_event, "
                     "workflow_sms_arrival_notify, workflow_require_parts_on_complete, "
-                    "workflow_require_hours_on_complete, workflow_require_signature_on_complete "
+                    "workflow_require_hours_on_complete, workflow_require_signature_on_complete, "
+                    "workflow_require_invoice_on_complete "
                     "FROM tenant_settings WHERE tenant_id = :tid"
                 ),
                 {"tid": tenant_id},
@@ -1138,6 +1140,7 @@ def _load_workflow_flags(tenant_id: str) -> dict[str, bool]:
                     "require_parts_on_complete": bool(row[3]),
                     "require_hours_on_complete": bool(row[4]),
                     "require_signature_on_complete": bool(row[5]),
+                    "require_invoice_on_complete": bool(row[6]),
                 }
     except Exception:
         log.exception("workflow_flags_read_failed", extra={"tenant_id": tenant_id})
@@ -1162,7 +1165,7 @@ def start_job(
     flags = _load_workflow_flags(tenant_id)
     try:
         job = db.execute(
-            select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+            select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
@@ -1238,6 +1241,9 @@ class JobCompletePayload(BaseModel):
     # row already; parts_count summarizes the JobPartNeeded rows).
     parts_count: int | None = None
     signature_present: bool | None = None
+    # PR5 (Doug 2026-07-07): explicit "no parts used" attestation — satisfies
+    # the require_parts gate without a parts list; bare silence still 422s.
+    no_parts_used: bool = False
 
 
 @router.post("/{job_id}/complete", response_model=None)
@@ -1260,7 +1266,7 @@ def complete_job(
     flags = _load_workflow_flags(tenant_id)
     try:
         job = db.execute(
-            select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+            select(Job).where(Job.id == uuid.UUID(job_id), Job.deleted_at.is_(None))
         ).scalar_one_or_none()
         if not job:
             return jsonable_response({"detail": "job not found"}, 404)
@@ -1274,7 +1280,11 @@ def complete_job(
                     _text("SELECT COUNT(*) FROM job_parts_needed WHERE job_id = :jid"),
                     {"jid": str(job.id)},
                 ).scalar() or 0
-            if int(parts or 0) <= 0:
+            # PR5 audit catch: the attestation is a STATEMENT, not a bypass —
+            # it only satisfies the gate when the checklist agrees (zero
+            # rows). Attesting "no parts" over known parts rows is a
+            # contradiction and still 422s.
+            if int(parts or 0) <= 0 and not payload.no_parts_used:
                 missing.append("parts")
         if flags["require_hours_on_complete"]:
             if payload.hours is None or float(payload.hours) <= 0:
@@ -1285,6 +1295,17 @@ def complete_job(
                 sig = bool(job.signature_data)
             if not sig:
                 missing.append("signature")
+        # PR5 — optional hard gate: no completion without a billing-real
+        # invoice (voids and the fabricated $0 draft don't count — the
+        # canonical predicate from PR2). Default OFF: invoice-after-
+        # completion is the normal flow; the follow-up loop chases those.
+        if flags["require_invoice_on_complete"]:
+            from gdx_dispatch.core.billing_predicates import job_billed_exists
+            billed = db.execute(
+                select(Job.id).where(Job.id == job.id, job_billed_exists())
+            ).scalar_one_or_none() is not None
+            if not billed:
+                missing.append("invoice")
         if missing:
             return jsonable_response(
                 {"detail": "completion requirements unmet", "missing": missing},
@@ -1304,7 +1325,11 @@ def complete_job(
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=_user_id(current_user),
             action="job_completed", entity_type="job", entity_id=str(job.id),
-            details={"hours": payload.hours, "flags_evaluated": flags},
+            details={
+                "hours": payload.hours,
+                "flags_evaluated": flags,
+                "no_parts_used": bool(payload.no_parts_used),
+            },
             ip_address=request.client.host if request.client else None, request=request,
         )
         db.commit()
@@ -1334,6 +1359,10 @@ class CloseoutPart(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     qty: int = Field(ge=1, le=999)
     unit_cost: float | None = Field(default=None, ge=0)
+    # PR5 (Doug 2026-07-07): free-text explanation for a part that isn't in
+    # the system — travels to the checklist row + snapshot so the office
+    # knows what it's pricing.
+    note: str | None = Field(default=None, max_length=500)
 
 
 class CloseoutPayload(BaseModel):
@@ -1342,6 +1371,9 @@ class CloseoutPayload(BaseModel):
     signature_data: str | None = Field(default=None, max_length=200_000)
     signed_by: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=4000)
+    # PR5 — the deliberate "No parts used" checkbox (satisfies the
+    # require_parts gate; silence still 422s).
+    no_parts_used: bool = False
 
 
 @router.post("/{job_id}/closeout", response_model=None, status_code=201)
@@ -1380,8 +1412,15 @@ def closeout_job(
         return jsonable_response({"detail": "job not found"}, 404)
 
     # Same gate vocabulary as /complete so frontend toasts are uniform.
+    # PR5 audit catch: attesting "no parts used" while SUBMITTING parts is a
+    # contradiction — reject it before the gates.
+    if payload.no_parts_used and payload.parts:
+        return jsonable_response(
+            {"detail": "no_parts_used cannot be combined with a parts list"},
+            422,
+        )
     missing: list[str] = []
-    if flags["require_parts_on_complete"] and not payload.parts:
+    if flags["require_parts_on_complete"] and not payload.parts and not payload.no_parts_used:
         missing.append("parts")
     if flags["require_hours_on_complete"] and (payload.hours or 0) <= 0:
         missing.append("hours")
@@ -1389,6 +1428,14 @@ def closeout_job(
         sig = (payload.signature_data or "").strip() or (job.signature_data or "").strip()
         if not sig:
             missing.append("signature")
+    # PR5 — optional invoice gate (see /complete for rationale).
+    if flags["require_invoice_on_complete"]:
+        from gdx_dispatch.core.billing_predicates import job_billed_exists
+        billed = db.execute(
+            select(Job.id).where(Job.id == job.id, job_billed_exists())
+        ).scalar_one_or_none() is not None
+        if not billed:
+            missing.append("invoice")
     if missing:
         return jsonable_response(
             {"detail": "completion requirements unmet", "missing": missing},
@@ -1536,7 +1583,14 @@ def closeout_job(
                 unit_price=(
                     part_row.unit_price if part_exists and part_row.unit_price else None
                 ),
-                notes=(f"cost ${unit_cost:.2f} ea" if unit_cost else None),
+                # PR5: the tech's free-text explanation (a part not in the
+                # system) leads; the cost breadcrumb follows.
+                notes=" — ".join(
+                    s for s in (
+                        (p.note or "").strip() or None,
+                        f"cost ${unit_cost:.2f} ea" if unit_cost else None,
+                    ) if s
+                ) or None,
                 requested_by_user_id=user_id,
                 created_at=now,
                 updated_at=now,
@@ -1548,6 +1602,7 @@ def closeout_job(
                 "qty": int(p.qty),
                 "unit_cost": unit_cost,
                 "line_total": line_total,
+                "note": (p.note or "").strip() or None,
                 # Mark whether the row was reflected in inventory or
                 # snapshot-only — useful for the office's review (RFB).
                 "in_inventory": part_exists,
@@ -1592,6 +1647,7 @@ def closeout_job(
             id=uuid.uuid4(),
             job_id=uuid.UUID(job_id),
             parts_used=part_lines,
+            no_parts_used=bool(payload.no_parts_used),
             hours_worked=float(payload.hours or 0),
             signature_data=payload.signature_data or None,
             signed_by=payload.signed_by or None,

@@ -195,6 +195,11 @@ class TenantSettings(Base):
     workflow_require_parts_on_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     workflow_require_hours_on_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
     workflow_require_signature_on_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # PR5-billing-capture (Doug 2026-07-07): optional hard gate — a job can't
+    # complete without a billing-real invoice. OFF by default: invoice-after-
+    # completion is the normal shop flow; the daily follow-up loop chases
+    # those. The flag exists for operators who invoice up-front.
+    workflow_require_invoice_on_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_warn_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_block_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_show_unassigned_lane: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
