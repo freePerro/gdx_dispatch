@@ -105,7 +105,7 @@
               @click.stop="sendEstimate(data)"
             />
             <Button
-              v-if="data.status === 'Accepted'"
+              v-if="data.status === 'Accepted' && !data.job_id"
               v-tooltip="'Convert to Job'"
               aria-label="Convert to Job"
               icon="pi pi-briefcase"
@@ -114,6 +114,16 @@
               severity="success"
               :data-testid="`convert-estimate-${data.id}`"
               @click.stop="convertToJob(data)"
+            />
+            <Button
+              v-if="data.job_id"
+              v-tooltip="'View Job'"
+              aria-label="View Job"
+              icon="pi pi-external-link"
+              text
+              size="small"
+              :data-testid="`view-job-${data.id}`"
+              @click.stop="router.push(`/jobs/${data.job_id}`)"
             />
             <Button
               v-tooltip="'Delete'"
@@ -354,7 +364,14 @@ async function convertToJob(est) {
       router.push(`/jobs/${jobId}`);
     }
   } catch (err) {
-    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to convert", life: 3000 });
+    if (err?.status === 409) {
+      // Stale row: converted in another tab/session. Refresh so the
+      // Convert button flips to View Job.
+      toast.add({ severity: "info", summary: "Already converted", detail: "This estimate already has a job.", life: 4000 });
+      await loadData();
+    } else {
+      toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to convert", life: 3000 });
+    }
   }
 }
 

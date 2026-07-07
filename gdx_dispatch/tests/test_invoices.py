@@ -548,6 +548,14 @@ def test_record_payment_validation_rejects_non_positive_amount():
         PaymentCreateIn(amount=0, method="cash", date=date.today())
 
 
+def test_record_payment_date_defaults_to_today():
+    # 2026-07-06: the /billing dialog posted without `date` and a real
+    # check payment 422'd twice. An omitted date must mean "today", not
+    # a validation error.
+    payload = PaymentCreateIn(amount=448.32, method="check")
+    assert payload.date == date.today()
+
+
 def test_list_payments_for_invoice(tenant_db_session):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)

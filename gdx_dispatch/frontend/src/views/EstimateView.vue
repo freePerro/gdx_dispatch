@@ -2020,6 +2020,10 @@ async function doAcceptEstimate() {
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/accept`, {});
     estimate.value.status = _titleCase(result?.status || "accepted");
+    // Accept can auto-convert server-side; without hydrating job_id the
+    // Convert button stays visible and a second click 409s.
+    const jobId = result?.auto_converted_job_id || result?.job_id;
+    if (jobId) estimate.value.job_id = jobId;
     toast.add({ severity: "success", summary: "Accepted", detail: "Estimate accepted", life: 3000 });
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to accept", life: 3000 });
@@ -2070,7 +2074,13 @@ async function doConvertToJob() {
     toast.add({ severity: "success", summary: "Converted", detail: "Estimate converted to job", life: 3000 });
     if (jobId) router.push(`/jobs/${jobId}`);
   } catch (err) {
-    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to convert to job", life: 3000 });
+    if (err?.status === 409) {
+      // Stale tab: the estimate was already converted elsewhere.
+      toast.add({ severity: "info", summary: "Already converted", detail: "This estimate already has a job.", life: 4000 });
+      await fetchEstimate();
+    } else {
+      toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to convert to job", life: 3000 });
+    }
   } finally {
     converting.value = false;
   }

@@ -5,7 +5,7 @@ import { formatDateTime as fmtDate } from '../composables/useFormatters'
 import Tree from 'primevue/tree'
 import ContextMenu from 'primevue/contextmenu'
 import Menu from 'primevue/menu'
-import OverlayPanel from 'primevue/overlaypanel'
+import Popover from 'primevue/popover'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -687,7 +687,7 @@ onMounted(async () => {
     <Menu ref="messageMenu" :model="messageMenuModel" :popup="true" data-test="msg-popup-menu" />
 
     <!-- ── Color picker overlay ── -->
-    <OverlayPanel ref="colorOverlay" data-test="color-overlay">
+    <Popover ref="colorOverlay" data-test="color-overlay">
       <div class="color-picker">
         <button
           v-for="c in PRESET_COLORS"
@@ -701,7 +701,7 @@ onMounted(async () => {
           <i v-if="c.key === null" class="pi pi-times" />
         </button>
       </div>
-    </OverlayPanel>
+    </Popover>
 
     <!-- ── New folder dialog ── -->
     <Dialog v-model:visible="newFolderDialogOpen" header="New folder" modal :style="{ width: '24rem' }">
