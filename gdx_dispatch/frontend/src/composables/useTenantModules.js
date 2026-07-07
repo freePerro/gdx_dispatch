@@ -1,5 +1,5 @@
 import { computed, onMounted, ref } from 'vue';
-import { MODULE_CATEGORIES } from '../constants/modules';
+import { MODULE_CATEGORIES, clusterByKey } from '../constants/modules';
 import { useApi } from './useApi';
 import { useAuthStore } from '../stores/auth';
 import { isOwner } from '../constants/roles';
@@ -79,24 +79,24 @@ const _enabledModules = ref({});
 const _plugins = ref([]);
 let _loadPromise = null;
 
-const _categories = computed(() => {
+// Categories with each module filtered by enablement + permission, cluster
+// children INTACT (no hub substitution). This is the source for the flat
+// module list — search, quick-pins, favorites, command palette, and the
+// mobile More drawer all want real destinations, not hub rows.
+const _filteredCategories = computed(() => {
   // Permission filtering: opt-in. Module entries WITHOUT a `permission`
   // field stay visible; entries that name one are hidden when the user
   // lacks it. Auth store handles admin/owner escape hatch + wildcard.
   let _hasPerm = () => true;
-  let _isOwner = false;
   try {
     const auth = useAuthStore();
     _hasPerm = (k) => auth.hasPermission(k);
-    // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
-    // matches the backend gate on /api/admin/plugins.
-    _isOwner = isOwner(auth.role);
   } catch (_e) {
     // useAuthStore() requires an active Pinia instance — during unit tests
     // without Pinia, fall through to the no-op so module filtering still works.
   }
 
-  const base = MODULE_CATEGORIES.map((category) => {
+  return MODULE_CATEGORIES.map((category) => {
     const modules = category.modules.filter((module) => {
       // `requires` (optional): the entry is gated on a different module
       // grant than its own key. Used when one backend module powers
@@ -115,11 +115,22 @@ const _categories = computed(() => {
       modules,
     };
   }).filter((category) => category.modules.length > 0);
+});
 
-  // ADR-013: append a "Plugins" category for installed third-party plugins,
-  // plus an owner-only "Manage plugins" install link. Per-request enablement is
-  // enforced server-side by the proxy + each plugin's require_module; this is
-  // just nav visibility (every installed plugin shows).
+// ADR-013 plugin nav entries: one per installed plugin, plus an owner-only
+// "Manage plugins" install link. Per-request enablement is enforced
+// server-side by the proxy + each plugin's require_module; this is just nav
+// visibility (every installed plugin shows).
+const _pluginModules = computed(() => {
+  let _isOwner = false;
+  try {
+    const auth = useAuthStore();
+    // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
+    // matches the backend gate on /api/admin/plugins.
+    _isOwner = isOwner(auth.role);
+  } catch (_e) {
+    // No Pinia in unit tests → not owner.
+  }
   const pluginModules = _plugins.value.map((p) => ({
     key: `plugin:${p.key}`,
     label: p.name || p.key,
@@ -136,13 +147,57 @@ const _categories = computed(() => {
       type: 'Plugin',
     });
   }
+  return pluginModules;
+});
+
+// 2026-07-07 tabbed-pages: within each category, a run of modules sharing a
+// `cluster` key collapses to ONE hub row at the first child's position. The
+// hub row targets the first visible child (so a user missing one tab's
+// permission still lands somewhere they can read) and carries `matchPaths`
+// so the sidebar can highlight it when ANY child route is active.
+// Exported for the unit spec.
+export function collapseClusters(modules) {
+  const emitted = new Set();
+  const out = [];
+  for (const module of modules) {
+    if (!module.cluster) {
+      out.push(module);
+      continue;
+    }
+    if (emitted.has(module.cluster)) continue;
+    emitted.add(module.cluster);
+    const cluster = clusterByKey(module.cluster);
+    const children = modules.filter((m) => m.cluster === module.cluster);
+    out.push({
+      key: cluster ? cluster.key : module.cluster,
+      label: cluster ? cluster.label : module.label,
+      icon: cluster ? cluster.icon : module.icon,
+      description: cluster ? cluster.description : module.description,
+      to: children[0].to,
+      matchPaths: children.map((m) => m.to),
+      clusterHub: module.cluster,
+    });
+  }
+  return out;
+}
+
+const _categories = computed(() => {
+  const base = _filteredCategories.value.map((category) => ({
+    ...category,
+    modules: collapseClusters(category.modules),
+  }));
+  const pluginModules = _pluginModules.value;
   if (pluginModules.length) {
     base.push({ key: 'plugins', label: 'Plugins', icon: 'pi pi-box', modules: pluginModules });
   }
   return base;
 });
 
-const _allEnabledModules = computed(() => _categories.value.flatMap((category) => category.modules));
+// Flat, hub-free module list (real destinations only) + plugin entries.
+const _allEnabledModules = computed(() => [
+  ..._filteredCategories.value.flatMap((category) => category.modules),
+  ..._pluginModules.value,
+]);
 
 async function _doLoad(api) {
   // Skip the fetch pre-auth — the endpoint is behind login and would 403
