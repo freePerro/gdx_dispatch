@@ -1,34 +1,47 @@
-"""Phase D — cc2-s49a tenant-side support submissions.
+"""Tenant-plane support submissions (/api/support).
 
-Tests the /api/support/bug and /api/support/feature endpoints in
-``gdx_dispatch/routers/support.py``. PG-only because the writes land in
-``cc_support_tickets`` (control plane).
+Originally these endpoints wrote to the control-plane
+``cc_support_tickets`` table and this file skipped unless a CC-provisioned
+Postgres URL was exported — which no environment set, so the suite never
+ran while prod bounced every submission with a 503 (2026-07-07 audit).
+Tickets now land in the tenant-plane ``SupportTicket`` ORM model, so the
+tests run everywhere on in-memory sqlite.
 """
 from __future__ import annotations
 
-import os
 from collections.abc import Generator
-from uuid import uuid4
+from datetime import UTC, datetime
 
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from sqlalchemy import text as sa_text
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-if not os.environ.get("GDX_TEST_CONTROL_DB_URL", "").strip():
-    pytest.skip(
-        "support tests require GDX_TEST_CONTROL_DB_URL pointing at a Postgres "
-        "pre-loaded with cc-v2 alembic head (>= 064_cc_support_tickets)",
-        allow_module_level=True,
-    )
+from gdx_dispatch.core.audit import TenantBase
+from gdx_dispatch.models.tenant_models import SupportTicket
+
+_STUB_TENANT_ID = "11111111-1111-1111-1111-111111111aaa"
 
 
 @pytest.fixture
-def app(control_db: Session) -> FastAPI:
-    """Minimal FastAPI app mounting only the support router + a dummy
-    middleware that injects ``request.state.tenant``. Avoids loading
-    the full gdx app (which has ~80 routers and module-level work)."""
+def db() -> Generator[Session, None, None]:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def client(db: Session) -> TestClient:
+    """Minimal app mounting only the support router + a middleware that
+    injects ``request.state.tenant``. Avoids loading the full gdx app."""
     from gdx_dispatch.core.database import get_db
     from gdx_dispatch.routers.auth import get_current_user
     from gdx_dispatch.routers.support import router
@@ -36,7 +49,6 @@ def app(control_db: Session) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
 
-    # Override get_current_user with a fixture-style dummy.
     def _stub_user() -> dict:
         return {
             "sub": "00000000-0000-0000-0000-000000000aaa",
@@ -44,42 +56,21 @@ def app(control_db: Session) -> FastAPI:
         }
 
     def _stub_db() -> Generator[Session, None, None]:
-        yield control_db
+        yield db
 
     app.dependency_overrides[get_current_user] = _stub_user
     app.dependency_overrides[get_db] = _stub_db
 
     @app.middleware("http")
     async def _inject_tenant(request: Request, call_next):
-        # Pin a known tenant id; tests will seed a row with this id.
         request.state.tenant = {"id": _STUB_TENANT_ID}
         return await call_next(request)
 
-    return app
+    return TestClient(app)
 
 
-_STUB_TENANT_ID = "11111111-1111-1111-1111-111111111aaa"
-
-
-@pytest.fixture
-def client_with_tenant(app: FastAPI, control_db: Session) -> Generator[TestClient, None, None]:
-    """Seed the stub tenant + yield a TestClient."""
-    control_db.execute(
-        sa_text(
-            "INSERT INTO tenants (id, slug, name, db_provisioned, "
-            " subscription_status, timezone, created_at) "
-            "VALUES (:id, :slug, 'Stub Tenant', true, 'active', "
-            "        'America/New_York', now()) "
-            "ON CONFLICT (id) DO NOTHING"
-        ),
-        {"id": _STUB_TENANT_ID, "slug": f"phd-s49a-{uuid4().hex[:8]}"},
-    )
-    control_db.flush()
-    yield TestClient(app)
-
-
-def test_submit_bug_happy_path(client_with_tenant, control_db):
-    r = client_with_tenant.post(
+def test_submit_bug_happy_path(client, db):
+    r = client.post(
         "/api/support/bug",
         json={
             "subject": "App crashes on save",
@@ -90,23 +81,19 @@ def test_submit_bug_happy_path(client_with_tenant, control_db):
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["status"] == "open"
-    assert "ticket_id" in body
 
-    row = control_db.execute(
-        sa_text(
-            "SELECT category, priority, opened_by_email, tenant_id "
-            "FROM cc_support_tickets WHERE id = :id"
-        ),
-        {"id": body["ticket_id"]},
-    ).first()
+    row = db.get(SupportTicket, body["ticket_id"])
+    assert row is not None
     assert row.category == "bug"
     assert row.priority == "high"
+    assert row.status == "open"
     assert row.opened_by_email == "submitter@example.com"
-    assert str(row.tenant_id) == _STUB_TENANT_ID
+    assert row.tenant_id == _STUB_TENANT_ID
+    assert row.created_at is not None
 
 
-def test_submit_feature_happy_path(client_with_tenant, control_db):
-    r = client_with_tenant.post(
+def test_submit_feature_happy_path(client, db):
+    r = client.post(
         "/api/support/feature",
         json={
             "subject": "Add bulk-edit to the dispatch lane",
@@ -114,27 +101,60 @@ def test_submit_feature_happy_path(client_with_tenant, control_db):
         },
     )
     assert r.status_code == 201, r.text
-    row = control_db.execute(
-        sa_text(
-            "SELECT category, priority FROM cc_support_tickets WHERE id = :id"
-        ),
-        {"id": r.json()["ticket_id"]},
-    ).first()
+    row = db.get(SupportTicket, r.json()["ticket_id"])
     assert row.category == "feature"
     assert row.priority == "medium"  # default
 
 
-def test_submit_invalid_priority_422(client_with_tenant):
-    r = client_with_tenant.post(
+def test_submit_invalid_priority_422(client):
+    r = client.post(
         "/api/support/bug",
         json={"subject": "x" * 5, "body": "y" * 10, "priority": "EXTREME"},
     )
     assert r.status_code == 422
 
 
-def test_submit_short_body_422(client_with_tenant):
-    r = client_with_tenant.post(
+def test_submit_short_body_422(client):
+    r = client.post(
         "/api/support/bug",
         json={"subject": "x" * 5, "body": "no"},  # body min_length=5
     )
     assert r.status_code == 422
+
+
+def test_my_lists_own_tenant_newest_first_with_category_filter(client, db):
+    client.post(
+        "/api/support/bug",
+        json={"subject": "First bug", "body": "details details"},
+    )
+    client.post(
+        "/api/support/feature",
+        json={"subject": "A feature ask", "body": "details details"},
+    )
+    client.post(
+        "/api/support/bug",
+        json={"subject": "Second bug", "body": "details details"},
+    )
+    # A foreign tenant's ticket must never appear in /my.
+    db.add(
+        SupportTicket(
+            id="99999999-9999-9999-9999-999999999999",
+            tenant_id="22222222-2222-2222-2222-222222222bbb",
+            opened_by_email="other@example.com",
+            subject="Other tenant ticket",
+            body="should not leak",
+            category="bug",
+            priority="low",
+            status="open",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    r = client.get("/api/support/my")
+    assert r.status_code == 200, r.text
+    subjects = [i["subject"] for i in r.json()["items"]]
+    assert subjects == ["Second bug", "A feature ask", "First bug"]
+
+    r = client.get("/api/support/my", params={"category": "feature"})
+    assert [i["subject"] for i in r.json()["items"]] == ["A feature ask"]
