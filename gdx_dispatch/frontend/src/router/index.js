@@ -67,6 +67,7 @@ const AdminOpsView = () => import('../views/AdminOpsView.vue');
 const ServerErrorsView = () => import('../views/ServerErrorsView.vue');
 const DatabaseAdminView = () => import('../views/DatabaseAdminView.vue');
 const NotFoundView = () => import('../views/NotFoundView.vue');
+const AccessDeniedView = () => import('../views/AccessDeniedView.vue');
 const AIAssistantView = () => import('../views/AIAssistantView.vue');
 const PhoneComCallsView = () => import('../views/PhoneComCallsView.vue');
 const PhoneComMessagesView = () => import('../views/PhoneComMessagesView.vue');
@@ -359,6 +360,8 @@ export const routes = [
   // render-guards on role and the backend enforces owner/superadmin, so no
   // route-meta permission gate (there's no owner-only permission key).
   { path: '/admin/plugins', name: 'admin-plugins', component: () => import('../views/PluginsAdminView.vue') },
+  // In-shell (nav stays visible) so a denied user can simply pick another page.
+  { path: '/access-denied', name: 'access-denied', component: AccessDeniedView },
   { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { public: true, noShell: true } },
 ];
 
@@ -384,7 +387,7 @@ export function createAppRouter() {
     window.location.reload();
   });
 
-  router.beforeEach((to) => {
+  router.beforeEach(async (to) => {
     const auth = useAuthStore();
 
     if (!to.meta.public && !auth.isAuthenticated) {
@@ -452,18 +455,30 @@ export function createAppRouter() {
 
     // Sprint role-permissions 2.3 — permission gate.
     // Backend remains the source of truth (every gated route 403s on its
-    // own); this just keeps users out of pages they can't use. Redirect
-    // to /dashboard rather than 403 — the backend will enforce if the
-    // route is hit directly.
+    // own); this just keeps users out of pages they can't use.
     if (auth.isAuthenticated && to.meta.requiresPermission) {
       if (!auth.permissionsLoaded) {
-        // Best-effort prefetch; let the navigation continue. The next
-        // navigation will see permissionsLoaded and gate correctly.
-        auth.loadPermissions().catch(() => {});
-        return true;
+        // Cold load / bookmark: the old fire-and-forget prefetch let the
+        // page mount before permissions arrived, so denied users got a
+        // render followed by raw 403 toasts from every data fetch
+        // (2026-07-07 audit, /billing). Await instead — the store caches
+        // the result and dedupes concurrent loads.
+        try {
+          await auth.loadPermissions();
+        } catch { /* network reject — handled by the flag check below */ }
+        if (!auth.permissionsLoaded) {
+          // Load failed (loadPermissions reports HTTP failure via the
+          // flag, not a throw): fail open rather than bounce a user who
+          // may have the permission. The backend still 403s anything
+          // the user truly can't do.
+          return true;
+        }
       }
       if (!auth.hasPermission(to.meta.requiresPermission)) {
-        return { path: '/dashboard' };
+        return {
+          path: '/access-denied',
+          query: { path: to.fullPath, permission: to.meta.requiresPermission },
+        };
       }
     }
 
