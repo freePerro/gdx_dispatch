@@ -19,6 +19,7 @@ from redis import Redis, from_url
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.billing_predicates import job_billed_exists
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job
 
 logger = logging.getLogger(__name__)
@@ -160,11 +161,17 @@ class RecommendationEngine:
                 logger.warning("send_estimate rule failed for job %s: %s", job_id, exc)
 
             # Rule: completed job still unbilled
+            # PR2-billing-capture: Job.billing_status is a dead cache (only
+            # ever written "unbilled"), so this rule fired for PAID jobs too.
+            # Derive from invoices via the canonical predicate instead.
             try:
-                if (
+                job_is_unbilled = (
                     job.lifecycle_stage == "completed"
-                    and job.billing_status == "unbilled"
-                ):
+                    and tenant_db.query(Job.id)
+                    .filter(Job.id == job.id, ~job_billed_exists())
+                    .first() is not None
+                )
+                if job_is_unbilled:
                     results.append(Recommendation(
                         type="invoice_now",
                         title="Invoice Now",
@@ -545,12 +552,15 @@ class RecommendationEngine:
                 )
 
             # Rule: unbilled completed work
+            # PR2-billing-capture: the old billing_status predicate counted
+            # EVERY completed job as unbilled (dead cache) — invoiced and
+            # paid ones included — so this alert over-counted forever.
             try:
                 unbilled_count = (
                     tenant_db.query(Job)
                     .filter(
                         Job.lifecycle_stage == "completed",
-                        Job.billing_status == "unbilled",
+                        ~job_billed_exists(),
                         Job.completed_at >= cutoff_30,
                         Job.deleted_at.is_(None),
                     )
@@ -565,7 +575,9 @@ class RecommendationEngine:
                             "have not been invoiced. Bill this work to capture revenue."
                         ),
                         priority="high",
-                        action_url="/jobs?billing_status=unbilled&stage=completed",
+                        # BillingView owns the Ready-for-Billing queue; the old
+                        # /jobs?billing_status=... filter keyed off the dead field.
+                        action_url="/billing",
                         estimated_value=0.0,
                     ))
             except Exception as exc:

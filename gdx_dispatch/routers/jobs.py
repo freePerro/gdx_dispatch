@@ -1555,26 +1555,27 @@ def ready_for_billing(
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """Jobs completed but not yet invoiced — ready for billing."""
+    """Jobs completed but not yet billed — ready for billing."""
     try:
-        # ORM: LEFT JOIN invoices — rows where Invoice.id IS NULL are uninvoiced.
         # Filter on lifecycle_stage (canonical post-D99) rather than the legacy
         # `status` varchar — QB-imported jobs have NULL status but
         # lifecycle_stage='completed', so the old `Job.status IN (Complete...)`
         # filter silently undercounted by ~50% on GDX prod (S114 reconcile:
         # /api/invoices/summary returned 8, this endpoint returned 4).
+        # PR2-billing-capture: "has no invoice at all" → the canonical billed
+        # predicate. The old LEFT-JOIN-IS-NULL treated a VOIDED invoice (and
+        # the fabricated $0 draft) as billing the job, so those jobs vanished
+        # from this queue forever — disagreeing with the display state, which
+        # already excluded void.
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+        from gdx_dispatch.core.billing_predicates import job_billed_exists
         results = db.execute(
-            select(Job, Customer, Invoice.id.label("invoice_id"))
+            select(Job, Customer)
             .outerjoin(Customer, Job.customer_id == Customer.id)
-            .outerjoin(
-                Invoice,
-                (Invoice.job_id == Job.id) & Invoice.deleted_at.is_(None),
-            )
             .where(
                 Job.lifecycle_stage == "completed",
                 Job.deleted_at.is_(None),
-                Invoice.id.is_(None),
+                ~job_billed_exists(),
             )
             .order_by(Job.created_at.desc())
             .limit(100)
@@ -1588,7 +1589,7 @@ def ready_for_billing(
                 "status": job.status,
                 "created_at": str(job.created_at) if job.created_at else None,
             }
-            for job, customer, _inv_id in results
+            for job, customer in results
         ]
     except Exception:
         log.exception("ready_for_billing_failed")
