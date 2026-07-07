@@ -655,9 +655,17 @@ def test_billing_summary_ready_for_billing_uses_lifecycle_stage(tenant_db_sessio
     )
 
 
-def test_billing_summary_ready_for_billing_excludes_invoiced_jobs(tenant_db_session):
-    """A completed job with an invoice already attached must NOT count as
-    ready_for_billing (regardless of invoice status)."""
+def test_billing_summary_ready_for_billing_excludes_billed_jobs(tenant_db_session):
+    """A completed job with a REAL invoice (lines, total > 0) must not count
+    as ready_for_billing.
+
+    PR2-billing-capture semantic change: this test previously asserted a
+    LINELESS invoice — a $0 draft — also excluded the job ("regardless of
+    invoice status"). Under the canonical billed predicate a $0 draft is the
+    fabricated placeholder create_invoice_from_job emits and does NOT bill
+    the job (treating it as billed hid the job from every alert). Both
+    directions pinned here; full matrix in test_billing_predicates_pr2.py.
+    """
     bs = _import_billing_summary()
     job = Job(
         customer_id=uuid4(),
@@ -667,12 +675,29 @@ def test_billing_summary_ready_for_billing_excludes_invoiced_jobs(tenant_db_sess
     )
     tenant_db_session.add(job)
     tenant_db_session.commit()
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            due_date=date.today() + timedelta(days=30),
+            line_items=[{"description": "Spring", "quantity": 1, "unit_price": 250.0}],
+        ),
+        _=_current_user(), db=tenant_db_session,
+    )
+    res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
+    assert res["ready_for_billing"] == 0
+
+    # And the $0-draft placeholder direction: void the real invoice, attach
+    # a lineless $0 draft — the job must come BACK as ready for billing.
+    inv = tenant_db_session.get(Invoice, UUID(created["id"]))
+    inv.status = "void"
+    tenant_db_session.commit()
     create_invoice(
         payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, due_date=date.today() + timedelta(days=30)),
         _=_current_user(), db=tenant_db_session,
     )
     res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
-    assert res["ready_for_billing"] == 0
+    assert res["ready_for_billing"] == 1
 
 
 def test_billing_summary_overdue_uses_due_date_and_balance(tenant_db_session):

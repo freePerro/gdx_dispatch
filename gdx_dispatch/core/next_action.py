@@ -308,12 +308,15 @@ class NextActionQueue:
 
         # Rule: follow up on stale estimates
         try:
+            # PR2-billing-capture: the billing_status clause here was a dead
+            # tautology (the column is only ever written "unbilled"), so its
+            # deletion changes nothing — kept out rather than "fixed" because
+            # estimate-stage jobs are pre-billing by definition.
             stale_estimates = (
                 tenant_db.query(Job)
                 .filter(
                     Job.lifecycle_stage == "estimate",
                     Job.created_at < cutoff_72h,
-                    Job.billing_status == "unbilled",
                     Job.deleted_at.is_(None),
                 )
                 .all()

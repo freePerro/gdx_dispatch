@@ -398,18 +398,17 @@ def billing_summary(
         )
     ) or 0)
 
-    # Ready for billing: jobs marked complete that have no invoice yet.
-    # Job → Invoice is 1-many; a job is "ready" only when ZERO non-deleted
-    # invoices reference it.
+    # Ready for billing: jobs marked complete that are not yet BILLED.
+    # PR2-billing-capture: uses the canonical predicate (voided invoices and
+    # the fabricated $0 draft no longer count as billing a job) so this count
+    # agrees with /api/jobs/ready-for-billing and the unbilled-work alert.
+    from gdx_dispatch.core.billing_predicates import job_billed_exists
     from gdx_dispatch.models.tenant_models import Job
     ready_for_billing = int(db.scalar(
         select(func.count(Job.id.distinct())).where(
             Job.deleted_at.is_(None),
             Job.lifecycle_stage == "completed",
-            ~Job.id.in_(select(Invoice.job_id).where(
-                Invoice.deleted_at.is_(None),
-                Invoice.job_id.is_not(None),
-            )),
+            ~job_billed_exists(),
         )
     ) or 0)
 

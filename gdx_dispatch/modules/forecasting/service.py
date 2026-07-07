@@ -5,10 +5,11 @@ Inputs (per-tenant):
     Bucketed by age relative to due_date (fall back to sent_at, then
     created_at). Each bucket multiplied by the tenant's collection-rate
     setting for that bucket.
-  - Scheduled jobs: lifecycle_stage in ('scheduled', 'estimate'),
-    billing_status = 'unbilled', scheduled_at within window. Estimated
-    value = SUM of latest Estimate.total per job (joined). Multiplied
-    by `scheduled_realization_rate`.
+  - Scheduled jobs: lifecycle_stage in ('scheduled', 'estimate',
+    'service_call'), scheduled_at within window. Estimated value = SUM of
+    latest Estimate.total per job (joined). Multiplied by
+    `scheduled_realization_rate`. (The old billing_status filter was a dead
+    tautology — removed PR2-billing-capture, no output change.)
   - Recurring (optional): qb_recurring_transactions where active=true
     and next_date in window; counted at face amount (no probability,
     since QBO recurring schedules are deterministic).
@@ -204,6 +205,12 @@ def _open_ar_projection(db: Session, settings: ForecastSettings, today: date, wi
 
 def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: date, window_days: int) -> dict[str, Any]:
     window_end = today + timedelta(days=window_days)
+    # PR2-billing-capture: the billing_status clause was a dead tautology —
+    # the column is only ever written "unbilled", and every stage in this
+    # pre-completion window carries that default — so deleting it changes NO
+    # output (pinned by test). Subtracting already-invoiced deposit/up-front
+    # amounts from projected job revenue is a real improvement but a separate,
+    # /audit-gated change (forecasting-accuracy standing rule).
     jobs_q = (
         select(Job)
         .where(
@@ -211,7 +218,6 @@ def _scheduled_jobs_projection(db: Session, settings: ForecastSettings, today: d
             Job.scheduled_at >= datetime.combine(today, datetime.min.time()),
             Job.scheduled_at <= datetime.combine(window_end, datetime.max.time()),
             Job.lifecycle_stage.in_(("scheduled", "estimate", "service_call")),
-            Job.billing_status.in_(("unbilled",)),
             Job.deleted_at.is_(None),
         )
     )
