@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Numeric, String, Text, Uuid, select
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
@@ -55,6 +55,19 @@ class ChangeOrder(TenantBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     customer_signature_token: Mapped[str] = mapped_column(String(255), nullable=True)
+    # PR3-billing-capture (S122 pattern, mirrors job_parts_needed): the
+    # invoice this CO was billed on. Set by the invoice-create handler via
+    # UPDATE…RETURNING — the stamp GATES the line copy, so a CO can never
+    # bill twice. NULL = never billed. FK ON DELETE SET NULL releases COs
+    # when an invoice is hard-deleted (soft-delete handler does the same).
+    # Billing truth lives HERE — `status` stays approval-workflow truth
+    # (billing a CO does not flip its status).
+    billed_invoice_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class ChangeOrderLineIn(BaseModel):
@@ -64,6 +77,10 @@ class ChangeOrderLineIn(BaseModel):
     description: str = Field(min_length=1, max_length=500)
     quantity: int = Field(default=1, gt=0, le=9999)
     unit_price: float = Field(default=0, ge=0, le=999999.99)
+    # PR3-billing-capture: COs are handled like invoices (Doug 2026-07-07) —
+    # default True mirrors InvoiceLineCreateIn; labor lines send False where
+    # the state allows.
+    taxable: bool = Field(default=True)
 
 
 class ChangeOrderIn(BaseModel):
@@ -84,7 +101,11 @@ class ChangeOrderIn(BaseModel):
     line_items: list[ChangeOrderLineIn] = Field(default_factory=list)
 
 
-def _serialize(co: ChangeOrder, lines: list[Any] | None = None) -> dict[str, Any]:
+def _serialize(
+    co: ChangeOrder,
+    lines: list[Any] | None = None,
+    db: Session | None = None,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": str(co.id),
         "co_number": co.co_number,
@@ -96,6 +117,7 @@ def _serialize(co: ChangeOrder, lines: list[Any] | None = None) -> dict[str, Any
         "reason": co.reason,
         "status": co.status,
         "amount": float(co.amount or 0),
+        "billed_invoice_id": str(co.billed_invoice_id) if co.billed_invoice_id else None,
         "approved_by": co.approved_by,
         "approved_at": co.approved_at.isoformat() if co.approved_at else None,
         "signature_url": co.signature_url,
@@ -111,9 +133,33 @@ def _serialize(co: ChangeOrder, lines: list[Any] | None = None) -> dict[str, Any
                 "quantity": int(ln.qty or 1),
                 "unit_price": float(ln.unit_price or 0),
                 "line_total": float(ln.line_total or 0),
+                "taxable": bool(getattr(ln, "taxable", True)),
             }
             for ln in lines
         ]
+        # PR3-billing-capture (Doug 2026-07-07): "handled like an invoice —
+        # tax shown so the customer sees it." Same resolver as invoices, so
+        # the total the customer signs equals the total the invoice bills.
+        # Tax failure degrades to rate 0 with a LOUD log, never a 500 — the
+        # approval screen must render even if tax config is broken.
+        subtotal = sum(float(ln.line_total or 0) for ln in lines)
+        tax_rate = 0.0
+        if db is not None:
+            try:
+                from gdx_dispatch.modules.tax.service import resolve_rate
+                tax_rate = float(resolve_rate(db, co.customer_id))
+            except Exception:
+                log.exception("change_order_tax_resolve_failed co=%s", co.id)
+        taxable_subtotal = sum(
+            float(ln.line_total or 0)
+            for ln in lines
+            if bool(getattr(ln, "taxable", True))
+        )
+        tax_amount = round(taxable_subtotal * tax_rate, 2)
+        out["subtotal"] = round(subtotal, 2)
+        out["tax_rate"] = tax_rate
+        out["tax_amount"] = tax_amount
+        out["total"] = round(subtotal + tax_amount, 2)
     return out
 
 
@@ -128,6 +174,7 @@ def list_change_orders(
     db: Session = Depends(get_db),
     job_id: str | None = None,
     status: str | None = None,
+    unbilled: bool = False,
 ) -> list[dict[str, Any]]:
     stmt = select(ChangeOrder).where(ChangeOrder.deleted_at.is_(None))
     if job_id:
@@ -135,6 +182,13 @@ def list_change_orders(
             stmt = stmt.where(ChangeOrder.job_id == UUID(job_id))
     if status:
         stmt = stmt.where(ChangeOrder.status == status)
+    if unbilled:
+        # PR3-billing-capture: the invoice-create checklist — approved,
+        # never billed. Mirrors GET parts-needed?unbilled=true (S122).
+        stmt = stmt.where(
+            ChangeOrder.status == "approved",
+            ChangeOrder.billed_invoice_id.is_(None),
+        )
     rows = db.execute(stmt.order_by(ChangeOrder.created_at.desc())).scalars().all()
     return [_serialize(r) for r in rows]
 
@@ -180,6 +234,7 @@ def create_change_order(
                 qty=li.quantity,
                 unit_price=Decimal(str(li.unit_price)),
                 line_total=Decimal(str(float(li.unit_price) * int(li.quantity))),
+                taxable=bool(li.taxable),
             ))
     db.commit()
     db.refresh(co)
@@ -214,11 +269,13 @@ def get_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Sessi
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
     # D-S122-change-orders-create-flow — return line_items on detail view.
+    # PR3-billing-capture: pass db so the detail/approval view carries
+    # subtotal/tax/total (COs are handled like invoices).
     from gdx_dispatch.models.tenant_models import ChangeOrderLine
     lines = db.execute(
         select(ChangeOrderLine).where(ChangeOrderLine.co_id == co.id)
     ).scalars().all()
-    return _serialize(co, lines=lines)
+    return _serialize(co, lines=lines, db=db)
 
 
 @router.patch("/api/change-orders/{co_id}", response_model=None)
@@ -231,6 +288,15 @@ def update_change_order(
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
+    # PR3 audit round 2: a billed CO is frozen — editing lines/amount after
+    # billing silently diverges the invoice from the signed CO, and the
+    # delta can never bill (the stamp holds). Release it first by deleting
+    # the draft invoice that owns it.
+    if co.billed_invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{co.co_number} is billed on an invoice — delete that draft invoice to release it before editing.",
+        )
     for field in ("title", "description", "reason", "customer_name"):
         val = getattr(payload, field, None)
         if val is not None:
@@ -255,6 +321,7 @@ def update_change_order(
                 qty=li.quantity,
                 unit_price=Decimal(str(li.unit_price)),
                 line_total=Decimal(str(float(li.unit_price) * int(li.quantity))),
+                taxable=bool(li.taxable),
             ))
         co.amount = Decimal(str(
             sum(float(li.unit_price) * int(li.quantity) for li in payload.line_items)
@@ -367,6 +434,13 @@ def delete_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Se
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
+    # PR3 audit round 2: same freeze as PATCH — deleting a billed CO would
+    # orphan the invoice lines' provenance.
+    if co.billed_invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{co.co_number} is billed on an invoice — delete that draft invoice to release it first.",
+        )
     co.deleted_at = utcnow()
     db.commit()
     _audit_db = locals().get('db')

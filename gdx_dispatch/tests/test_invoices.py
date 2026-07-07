@@ -791,8 +791,15 @@ def test_create_invoice_with_from_part_ids_marks_parts_billed(tenant_db_session)
     assert str(part_b.billed_invoice_id) == created["id"]
 
 
-def test_create_invoice_from_part_ids_does_not_re_bill_already_billed(tenant_db_session):
-    """S122 — a part already billed on a prior invoice stays pointing there."""
+def test_create_invoice_from_part_ids_rejects_already_billed(tenant_db_session):
+    """S122 → PR3-billing-capture semantic change: re-billing a part used to
+    be SILENTLY skipped — but the payload lines still carried the amount, so
+    the customer quietly double-paid while the stamp no-opped. Now the whole
+    second create 409s (stamp-first UPDATE…RETURNING gates the request) and
+    the part stays on the first invoice."""
+    from sqlalchemy import func as _func
+    from sqlalchemy import select
+
     job = _seed_job(tenant_db_session)
     part = _seed_part(tenant_db_session, job.id, "Roller", "received")
 
@@ -806,42 +813,51 @@ def test_create_invoice_from_part_ids_does_not_re_bill_already_billed(tenant_db_
         db=tenant_db_session,
     )
     tenant_db_session.refresh(part)
-    first_invoice_id = part.billed_invoice_id
-    assert str(first_invoice_id) == first["id"]
-
-    # Attempt to re-bill on a second invoice — backend ignores the part because
-    # billed_invoice_id IS NOT NULL.
-    second = create_invoice(
-        payload=InvoiceCreateIn(
-            job_id=job.id,
-            customer_id=job.customer_id,            line_items=[{"description": "Roller again", "quantity": 1, "unit_price": 10.0}],
-            from_part_ids=[part.id],
-        ),
-        _=_current_user(),
-        db=tenant_db_session,
-    )
-    tenant_db_session.refresh(part)
-    # Still pointing at the first invoice, not the second.
     assert str(part.billed_invoice_id) == first["id"]
-    assert str(part.billed_invoice_id) != second["id"]
+
+    count_before = tenant_db_session.scalar(select(_func.count(Invoice.id)))
+    with pytest.raises(HTTPException) as exc_info:
+        create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job.id,
+                customer_id=job.customer_id,                line_items=[{"description": "Roller again", "quantity": 1, "unit_price": 10.0}],
+                from_part_ids=[part.id],
+            ),
+            _=_current_user(),
+            db=tenant_db_session,
+        )
+    assert exc_info.value.status_code == 409
+    # No second invoice created; part still points at the first.
+    assert tenant_db_session.scalar(select(_func.count(Invoice.id))) == count_before
+    tenant_db_session.refresh(part)
+    assert str(part.billed_invoice_id) == first["id"]
 
 
-def test_create_invoice_from_part_ids_ignores_other_jobs_parts(tenant_db_session):
-    """S122 — only parts on the invoice's job get marked; other-job parts left alone."""
+def test_create_invoice_from_part_ids_rejects_other_jobs_parts(tenant_db_session):
+    """S122 → PR3-billing-capture semantic change: a wrong-job part used to
+    be silently ignored (invoice created anyway). A caller referencing a part
+    that isn't billable on THIS job is a bug or a race — now the request 409s
+    and nothing is written; the part is untouched."""
+    from sqlalchemy import func as _func
+    from sqlalchemy import select
+
     job_a = _seed_job(tenant_db_session, title="Job A")
     job_b = _seed_job(tenant_db_session, title="Job B")
     part_other = _seed_part(tenant_db_session, job_b.id, "Wrong-job part", "received")
 
-    create_invoice(
-        payload=InvoiceCreateIn(
-            job_id=job_a.id,
-            customer_id=job_a.customer_id,            line_items=[{"description": "Service", "quantity": 1, "unit_price": 50.0}],
-            from_part_ids=[part_other.id],
-        ),
-        _=_current_user(),
-        db=tenant_db_session,
-    )
-
+    count_before = tenant_db_session.scalar(select(_func.count(Invoice.id)))
+    with pytest.raises(HTTPException) as exc_info:
+        create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job_a.id,
+                customer_id=job_a.customer_id,                line_items=[{"description": "Service", "quantity": 1, "unit_price": 50.0}],
+                from_part_ids=[part_other.id],
+            ),
+            _=_current_user(),
+            db=tenant_db_session,
+        )
+    assert exc_info.value.status_code == 409
+    assert tenant_db_session.scalar(select(_func.count(Invoice.id))) == count_before
     tenant_db_session.refresh(part_other)
     assert part_other.billed_invoice_id is None
 

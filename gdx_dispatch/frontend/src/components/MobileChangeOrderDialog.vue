@@ -149,7 +149,10 @@ async function submit() {
           placeholder="0.00"
           data-testid="mco-amount"
         />
-        <small class="muted">Leave blank if the office should price it.</small>
+        <small class="muted">
+          Leave blank if the office should price it. Applicable tax is added
+          on top — the customer signs the tax-inclusive total.
+        </small>
       </div>
 
       <div class="form-field">
