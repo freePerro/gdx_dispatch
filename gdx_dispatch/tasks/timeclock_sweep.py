@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-from gdx_dispatch.celery_app import celery_app
+from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import app_engine
 from gdx_dispatch.routers.timeclock import MAX_SHIFT_HOURS
 
@@ -105,7 +105,7 @@ def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
 
 @celery_app.task(
     name="gdx_dispatch.tasks.timeclock_sweep.sweep_stuck_shifts_for_all_tenants",
-    queue="priority.low",
+    queue="priority:low",
 )
 def sweep_stuck_shifts_for_all_tenants() -> dict[str, int]:
     """Close every shift open longer than MAX_SHIFT_HOURS."""

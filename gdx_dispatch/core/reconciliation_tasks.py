@@ -12,13 +12,16 @@ def _expected_tables() -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
-@celery_app.task(queue="low", acks_late=True)
+# No queue= kwarg: "low" isn't a consumed queue (2026-07-07 audit) and a
+# decorator queue overrides task_routes, which sends reconciliation_tasks.*
+# to priority:low.
+@celery_app.task(acks_late=True)
 def monthly_billing_reconciliation_task() -> dict:
     with SessionLocal() as db:
         return run_billing_reconciliation(db)
 
 
-@celery_app.task(queue="low", acks_late=True)
+@celery_app.task(acks_late=True)
 def weekly_schema_drift_task() -> dict:
     from gdx_dispatch.core.tenant import single_tenant
     t = single_tenant()

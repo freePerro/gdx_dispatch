@@ -11,7 +11,12 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "options": {"queue": "priority:high"},
         },
         "generate-recurring-jobs-daily-6am": {
-            "task": "gdx_dispatch.tasks.recurring.generate_recurring_jobs_for_all_tenants",
+            # 2026-07-07 prod audit: this entry pointed at a task name
+            # ("…generate_recurring_jobs_for_all_tenants") that never
+            # existed — the real task is generate_recurring_jobs, which
+            # walks the single tenant itself. Every 06:00 firing died as
+            # "unregistered task".
+            "task": "gdx_dispatch.tasks.recurring.generate_recurring_jobs",
             "schedule": crontab(hour=6, minute=0),
             "options": {"queue": "priority:low"},
         },
@@ -116,6 +121,17 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # per-tenant gps_retention_days setting (default 45).
             "task": "gdx_dispatch.tasks.tech_locations_prune.prune_tech_locations_for_all_tenants",
             "schedule": crontab(hour=3, minute=0),
+            "options": {"queue": "priority:low"},
+        },
+        "timeclock-sweep-stuck-shifts-every-30m": {
+            # MH-7b — auto-close shifts open longer than MAX_SHIFT_HOURS
+            # (16h). This entry lived only in the vestigial Sprint-1
+            # gdx_dispatch/celery_app.py (which nothing ran), so stuck
+            # shifts were never closed — the 2026-07-07 prod audit found
+            # one open for 66 days. The clock-in router enforces the same
+            # cap inline, so the sweep only catches abandoned sessions.
+            "task": "gdx_dispatch.tasks.timeclock_sweep.sweep_stuck_shifts_for_all_tenants",
+            "schedule": crontab(minute="*/30"),
             "options": {"queue": "priority:low"},
         },
         "qb-sync-schedule-dispatcher-every-5m": {

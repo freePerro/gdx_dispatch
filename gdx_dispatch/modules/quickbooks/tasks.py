@@ -154,7 +154,7 @@ def _skip_if_unhealthy(tenant_id: str, db, task_name: str) -> bool:
     return False
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_all_customers_task(self, tenant_id: str) -> dict:
     """Push every Customer to QuickBooks.
 
@@ -190,7 +190,7 @@ def sync_all_customers_task(self, tenant_id: str) -> dict:
     }
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_all_invoices_task(self, tenant_id: str) -> dict:
     """Push every dirty Invoice to QuickBooks.
 
@@ -221,7 +221,7 @@ def sync_all_invoices_task(self, tenant_id: str) -> dict:
     }
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def pull_payments_task(self, tenant_id: str) -> dict:
     with _tenant_session(tenant_id) as db:
         if _skip_if_unhealthy(tenant_id, db, "pull_payments_task"): return {}  # noqa: E701
@@ -291,7 +291,7 @@ async def _pull_accounts_async(tenant_id: str, db) -> dict:
         await qb.close()
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_customer_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Customer changes from QB → GDX. Called by webhook for QB-side
     Customer create/update/delete events. ``entity_id`` is the QB customer id
@@ -305,7 +305,7 @@ def sync_customer_task(self, tenant_id: str, entity_id: str | None = None) -> di
             raise self.retry(exc=e, countdown=min(2 ** self.request.retries, 60)) from None
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_invoice_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Invoice changes from QB → GDX."""
     with _tenant_session(tenant_id) as db:
@@ -316,7 +316,7 @@ def sync_invoice_task(self, tenant_id: str, entity_id: str | None = None) -> dic
             raise self.retry(exc=e, countdown=min(2 ** self.request.retries, 60)) from None
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_payment_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Payment changes from QB → GDX."""
     with _tenant_session(tenant_id) as db:
@@ -327,7 +327,7 @@ def sync_payment_task(self, tenant_id: str, entity_id: str | None = None) -> dic
             raise self.retry(exc=e, countdown=min(2 ** self.request.retries, 60)) from None
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_item_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Item (catalog) changes from QB → GDX."""
     with _tenant_session(tenant_id) as db:
@@ -338,7 +338,7 @@ def sync_item_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
             raise self.retry(exc=e, countdown=min(2 ** self.request.retries, 60)) from None
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_vendor_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Vendor changes from QB → GDX."""
     with _tenant_session(tenant_id) as db:
@@ -349,7 +349,7 @@ def sync_vendor_task(self, tenant_id: str, entity_id: str | None = None) -> dict
             raise self.retry(exc=e, countdown=min(2 ** self.request.retries, 60)) from None
 
 
-@celery_app.task(bind=True, max_retries=5, queue="low")
+@celery_app.task(bind=True, max_retries=5, queue="priority:low")
 def sync_account_task(self, tenant_id: str, entity_id: str | None = None) -> dict:
     """Pull Chart-of-Accounts changes from QB → GDX."""
     with _tenant_session(tenant_id) as db:
@@ -365,7 +365,7 @@ def sync_account_task(self, tenant_id: str, entity_id: str | None = None) -> dic
 # ---------------------------------------------------------------------------
 
 
-@celery_app.task(bind=True, max_retries=3, queue="low")
+@celery_app.task(bind=True, max_retries=3, queue="priority:low")
 def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
     """Pull all banking data for one tenant (accounts + purchases + deposits
     + transfers). Called by the schedule dispatcher OR ad-hoc."""
@@ -414,7 +414,7 @@ def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
             raise
 
 
-@celery_app.task(queue="low")
+@celery_app.task(queue="priority:low")
 def qb_sync_schedule_dispatcher() -> dict:
     """Beat-fired dispatcher: walks every tenant DB, picks rows whose
     next_run_at has passed, queues a per-tenant banking sync. Frequency

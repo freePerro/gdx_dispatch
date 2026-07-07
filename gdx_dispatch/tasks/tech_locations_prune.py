@@ -11,7 +11,7 @@ import os
 
 from sqlalchemy import text
 
-from gdx_dispatch.celery_app import celery_app
+from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal, app_engine
 from gdx_dispatch.core.feature_defaults import TECH_MOBILE_SETTINGS
 
