@@ -293,3 +293,115 @@ def test_send_receipt_no_payment_404(session_factory):
         assert "no payment" in _as_json(resp)["detail"].lower()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# PR1-billing-capture (2026-07-07) — mobile paths honor billing guards
+# ---------------------------------------------------------------------------
+
+
+def test_create_invoice_zero_price_line_blocked_by_policy(session_factory, monkeypatch):
+    """The mobile create path bypassed the F-75 zero-price policy — a tenant
+    with block_zero_price_on_invoice ON still got $0 lines from the truck.
+    Now it 422s and writes NOTHING (the flushed invoice rolls back)."""
+    from decimal import Decimal
+    from uuid import UUID
+
+    from gdx_dispatch.modules.catalog_policy.service import CatalogPolicy
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        est = proposals_models.Estimate(
+            job_id=UUID(seed["job_id"]),
+            customer_id=UUID(seed["customer_id"]),
+            estimate_number=f"EST-{uuid4().hex[:8]}",
+            label="Zero-line estimate",
+            proposal_mode=False,
+            total=Decimal("100.00"),
+            status="accepted",
+            public_token=uuid4().hex,
+            company_id="tenant-a",
+        )
+        db.add(est)
+        db.commit()
+        db.refresh(est)
+        # Raw SQL with DASHED estimate_id: the mobile plain-copy path queries
+        # `WHERE estimate_id = :eid` with str(estimate.id) (dashed), while the
+        # ORM stores UUIDs as 32-hex on SQLite — the same dual-format quirk
+        # the tier branch works around. Seed in the format the query reads.
+        now = datetime.now(UTC)
+        for desc, price, order in (
+            ("Labor", "100.00", 1),
+            ("Hardware (included)", "0", 2),
+        ):
+            db.execute(
+                text(
+                    """
+                    INSERT INTO estimate_lines
+                        (id, estimate_id, description, quantity, unit_price,
+                         line_total, sort_order, company_id, created_at)
+                    VALUES (:id, :eid, :d, 1, :p, :p, :s, 'tenant-a', :now)
+                    """
+                ),
+                {"id": str(uuid4()), "eid": str(est.id), "d": desc,
+                 "p": price, "s": order, "now": now},
+            )
+        db.commit()
+
+        monkeypatch.setattr(
+            "gdx_dispatch.modules.catalog_policy.get_policy",
+            lambda tid: CatalogPolicy(block_zero_price_on_invoice=True),
+        )
+        resp = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(
+                estimate_id=str(est.id), send_email=False,
+            ),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 422, resp.body
+        assert "zero-price" in _as_json(resp)["detail"]
+        count = db.execute(text("SELECT COUNT(*) FROM invoices")).scalar()
+        assert count == 0, "blocked mobile invoice must roll back entirely"
+    finally:
+        db.close()
+
+
+def test_mobile_send_invoice_void_409_no_email(session_factory):
+    """Audit catch: the desktop /send got a void guard but the mobile
+    re-send still EMAILED voided invoices to customers."""
+    from uuid import UUID as _U
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.models.tenant_models import Invoice as _Invoice
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            create = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(
+                    estimate_id=estimate_id, send_email=False,
+                ),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        inv_id = _as_json(create)["id"]
+        inv = db.execute(_select(_Invoice).where(_Invoice.id == _U(inv_id))).scalar_one()
+        inv.status = "void"
+        db.commit()
+
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email") as send_mock:
+            resp = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv_id, request=_request(),
+                current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 409
+        send_mock.assert_not_called()
+        db.refresh(inv)
+        assert inv.status == "void"
+    finally:
+        db.close()

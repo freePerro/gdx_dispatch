@@ -77,15 +77,23 @@ def enforce_save_pricing(tenant_id: str, *, price: float | int | None) -> bool:
     return True
 
 
-def block_or_warn_invoice_line(tenant_id: str, *, price: float | int | None) -> str | None:
+def block_or_warn_invoice_line(
+    tenant_id: str,
+    *,
+    price: float | int | None,
+    policy: CatalogPolicy | None = None,
+) -> str | None:
     """For F-75 (a) + (b) — applied when adding a catalog item to an
     invoice. Raises 422 on (a). Returns a warning string for (b) so the
     caller can attach it to the response (frontend renders the banner).
-    Returns None when neither toggle fires."""
+    Returns None when neither toggle fires.
+
+    Pass a pre-fetched ``policy`` when checking many lines in one request —
+    each get_policy() call is a control-plane query."""
     p = float(price or 0)
     if p > 0:
         return None
-    pol = get_policy(tenant_id)
+    pol = policy or get_policy(tenant_id)
     if pol.block_zero_price_on_invoice:
         raise HTTPException(
             status_code=422,

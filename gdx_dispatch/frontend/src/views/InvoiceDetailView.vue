@@ -1015,7 +1015,17 @@ async function saveEdit() {
         if (category) body.category = category;
         if (cost != null) body.cost = cost;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
-        await api.post(`/api/invoices/${id}/lines`, body);
+        const lineResp = await api.post(`/api/invoices/${id}/lines`, body);
+        // PR1-billing-capture: surface the F-75 zero-price warning the
+        // server attaches in warn-mode — it was emitted but never rendered.
+        if (lineResp && lineResp.warning) {
+          toast.add({
+            severity: 'warn',
+            summary: 'Review pricing',
+            detail: `${lineResp.warning}: ${desc}`,
+            life: 8000,
+          });
+        }
       }
     }
 

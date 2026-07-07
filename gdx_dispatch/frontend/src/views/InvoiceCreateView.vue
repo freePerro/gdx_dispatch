@@ -439,6 +439,16 @@ async function createInvoice() {
     };
 
     const created = await api.post('/api/invoices', payload);
+    // PR1-billing-capture: surface zero-price policy warnings — the server
+    // emits these in F-75 warn-mode, but nothing rendered them before.
+    if (Array.isArray(created.warnings) && created.warnings.length) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Review pricing',
+        detail: created.warnings.join('; '),
+        life: 8000,
+      });
+    }
     toast.add({
       severity: 'success',
       summary: 'Invoice created',
