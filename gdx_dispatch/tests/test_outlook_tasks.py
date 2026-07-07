@@ -186,17 +186,27 @@ def test_backfill_walks_all_folders_and_filters_by_date():
 # ── renew_all_outlook_subscriptions ────────────────────────────────────
 
 
+def _renew_tdb(expiring, subless=()):
+    """Mock tenant session for renew_all: first query chain = expiring
+    subscriptions, outerjoin chain = accounts with no subscription row."""
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.filter.return_value.all.return_value = list(expiring)
+    (tdb.query.return_value.outerjoin.return_value
+        .filter.return_value.filter.return_value.all.return_value) = list(subless)
+    return tdb
+
+
 def test_renew_all_renews_expiring_subscription():
     from gdx_dispatch.modules.outlook import tasks
     sub_a = MagicMock(); sub_a.id = uuid4()
-    tdb = MagicMock()
-    tdb.query.return_value.filter.return_value.filter.return_value.all.return_value = [sub_a]
+    tdb = _renew_tdb([sub_a])
 
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
          patch("gdx_dispatch.modules.outlook.subscriptions.renew_subscription"):
         result = tasks.renew_all_outlook_subscriptions.run()
     assert result["examined"] == 1
     assert result["renewed"] == 1
+    assert result["created"] == 0
 
 
 def test_renew_all_continues_on_per_sub_failure():
@@ -204,8 +214,7 @@ def test_renew_all_continues_on_per_sub_failure():
     from gdx_dispatch.modules.outlook.subscriptions import SubscriptionError
     sub_a, sub_b = MagicMock(), MagicMock()
     sub_a.id, sub_b.id = uuid4(), uuid4()
-    tdb = MagicMock()
-    tdb.query.return_value.filter.return_value.filter.return_value.all.return_value = [sub_a, sub_b]
+    tdb = _renew_tdb([sub_a, sub_b])
 
     with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
          patch("gdx_dispatch.modules.outlook.subscriptions.renew_subscription",
@@ -214,6 +223,36 @@ def test_renew_all_continues_on_per_sub_failure():
     assert result["examined"] == 2
     assert result["renewed"] == 1
     assert result["failed"] == 1
+
+
+def test_renew_all_creates_missing_subscription():
+    # 2026-07-07 audit self-heal: a connected account with no subscription
+    # row gets one created (nothing else ever calls create_subscription
+    # once the connect-time attempt fails).
+    from gdx_dispatch.modules.outlook import tasks
+    account = MagicMock(); account.id = uuid4(); account.user_id = uuid4()
+    tdb = _renew_tdb([], subless=[account])
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.subscriptions.create_subscription") as create:
+        result = tasks.renew_all_outlook_subscriptions.run()
+    assert result["created"] == 1
+    assert result["create_failed"] == 0
+    assert create.call_args.kwargs["user_id"] == account.user_id
+
+
+def test_renew_all_create_failure_is_counted_not_fatal():
+    from gdx_dispatch.modules.outlook import tasks
+    from gdx_dispatch.modules.outlook.subscriptions import SubscriptionError
+    account = MagicMock(); account.id = uuid4(); account.user_id = uuid4()
+    tdb = _renew_tdb([], subless=[account])
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.subscriptions.create_subscription",
+               side_effect=SubscriptionError("validation failed")):
+        result = tasks.renew_all_outlook_subscriptions.run()
+    assert result["created"] == 0
+    assert result["create_failed"] == 1
 
 
 # ── poll_outlook_mailboxes_fallback ────────────────────────────────────
@@ -275,3 +314,44 @@ def test_poller_triggers_when_no_subscription_row():
         result = tasks.poll_outlook_mailboxes_fallback.run()
     sync.delay.assert_called_once()
     assert result["triggered"] == 1
+
+
+# ── _sync_one_folder delta bootstrap (2026-07-07 audit) ────────────────
+
+
+def test_sync_one_folder_bootstraps_delta_token_on_first_sync():
+    """First sync (no stored token) must still end holding a delta token.
+
+    The old code called gc.list_messages(), whose token-less branch hits
+    the plain listing — Graph never returns @odata.deltaLink there, so no
+    folder ever saved a token and every 30-minute poll re-walked the whole
+    mailbox (prod: 63 sync-state rows, zero tokens)."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    folder = MagicMock()
+    folder.well_known_name = None
+    folder.graph_folder_id = "AAA1"
+    folder.display_name = "Inbox"
+
+    state = MagicMock()
+    state.full_resync_required = False
+    state.delta_token = None
+
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = state
+
+    gc = MagicMock()
+    gc.list_messages_delta.return_value = {
+        "value": [],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/x/delta?$deltatoken=tok123",
+    }
+
+    account = MagicMock()
+    with patch("gdx_dispatch.modules.outlook.tasks._persist_messages", return_value=0):
+        upserted, removed = tasks._sync_one_folder(tdb, gc, account, folder)
+
+    gc.list_messages_delta.assert_called_once_with(folder="AAA1", delta_token=None, top=100)
+    gc.list_messages.assert_not_called()
+    assert state.delta_token == "tok123"
+    assert state.full_resync_required is False
+    assert (upserted, removed) == (0, 0)

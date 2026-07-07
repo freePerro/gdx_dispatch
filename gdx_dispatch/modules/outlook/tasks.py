@@ -280,7 +280,10 @@ def _sync_one_folder(
             if next_link:
                 last_resp = gc._request("GET", next_link).json()
             else:
-                last_resp = gc.list_messages(
+                # list_messages_delta, not list_messages: the plain listing
+                # never returns a deltaLink, so a token could never
+                # bootstrap and every sync walked the whole mailbox.
+                last_resp = gc.list_messages_delta(
                     folder=folder.graph_folder_id,
                     delta_token=delta_token,
                     top=100,
@@ -533,16 +536,22 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
 
 @celery_app.task(name="outlook.renew_all_outlook_subscriptions", bind=True)
 def renew_all_outlook_subscriptions(self) -> dict:
-    """Beat task: renew every OutlookSubscription nearing expiry.
-    Designed to run every 6 hours."""
+    """Beat task: renew every OutlookSubscription nearing expiry, and
+    CREATE one for any connected account that has none. Every 6 hours.
+
+    The create half is the self-heal for the 2026-07-07 audit finding:
+    nothing ever called create_subscription (the "on connect" docstring
+    was aspirational) and a failed create was never retried, so prod ran
+    with an empty outlook_subscriptions table and no real-time inbox."""
     from gdx_dispatch.modules.outlook.subscriptions import (
         RENEWAL_THRESHOLD_HOURS,
         SubscriptionError,
+        create_subscription,
         renew_subscription,
     )
 
     tenant_id_str = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
-    renewed = failed = examined = 0
+    renewed = failed = examined = created = create_failed = 0
     threshold = datetime.now(timezone.utc) + timedelta(hours=RENEWAL_THRESHOLD_HOURS)
 
     tdb = SessionLocal()
@@ -571,11 +580,43 @@ def renew_all_outlook_subscriptions(self) -> dict:
                     sub.id,
                 )
                 failed += 1
+
+        # Self-heal: create a subscription for any connected account
+        # (tokens present) that has no subscription row at all.
+        subless = (
+            tdb.query(OutlookAccount)
+            .outerjoin(OutlookSubscription, OutlookSubscription.account_id == OutlookAccount.id)
+            .filter(OutlookAccount.access_token_enc.isnot(None))
+            .filter(OutlookSubscription.id.is_(None))
+            .all()
+        )
+        for account in subless:
+            try:
+                with contextlib.closing(SessionLocal()) as cdb2:
+                    create_subscription(
+                        control_db=cdb2,
+                        tenant_db=tdb,
+                        tenant_id=UUID(tenant_id_str),
+                        user_id=UUID(str(account.user_id)),
+                    )
+                tdb.commit()
+                created += 1
+                log.info("renew_all: created missing subscription for account=%s", account.id)
+            except SubscriptionError:
+                tdb.rollback()
+                log.exception("renew_all: create failed for account=%s (fallback poll still covers sync)", account.id)
+                create_failed += 1
     except Exception:
         log.warning("renew_all: tenant %s skipped (likely missing outlook tables)", tenant_id_str)
     finally:
         tdb.close()
-    return {"examined": examined, "renewed": renewed, "failed": failed}
+    return {
+        "examined": examined,
+        "renewed": renewed,
+        "failed": failed,
+        "created": created,
+        "create_failed": create_failed,
+    }
 
 
 @celery_app.task(name="outlook.poll_outlook_mailboxes_fallback", bind=True)

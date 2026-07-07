@@ -143,6 +143,11 @@ class OutlookGraphClient:
 
         When delta_token is provided, the path becomes /me/mailFolders/{folder}/messages/delta
         with the deltaToken query — Graph returns only changes since the last delta.
+
+        NOTE: without a token this hits the PLAIN listing, which never
+        returns an @odata.deltaLink — fine for interactive views, wrong
+        for sync. Sync callers must use list_messages_delta() so the
+        first pass can bootstrap a token.
         """
         if delta_token:
             path = f"/me/mailFolders/{folder}/messages/delta"
@@ -152,6 +157,33 @@ class OutlookGraphClient:
             params = {"$top": top, "$skip": skip,
                       "$orderby": "receivedDateTime desc",
                       "$select": select or self._DEFAULT_SELECT}
+        return self._request("GET", path, params=params).json()
+
+    def list_messages_delta(
+        self,
+        *,
+        folder: str,
+        delta_token: str | None = None,
+        top: int = 100,
+        select: str | None = None,
+    ) -> dict[str, Any]:
+        """Delta-list a folder — ALWAYS via /messages/delta.
+
+        2026-07-07 audit: the sync path called list_messages(), whose
+        token-less branch hits the plain listing; Graph never returned a
+        deltaLink, so no folder ever saved a token and every 30-minute
+        fallback poll re-upserted the entire mailbox. The delta endpoint
+        with no token walks the folder once (paged via nextLink) and ends
+        with the deltaLink the next run resumes from.
+
+        Delta doesn't accept $orderby/$skip; $top and $select apply to the
+        initial request only (Graph carries them through the nextLink).
+        """
+        path = f"/me/mailFolders/{folder}/messages/delta"
+        if delta_token:
+            params: dict[str, Any] = {"$deltatoken": delta_token}
+        else:
+            params = {"$top": top, "$select": select or self._DEFAULT_SELECT}
         return self._request("GET", path, params=params).json()
 
     def get_message(self, message_id: str) -> dict[str, Any]:

@@ -32,6 +32,7 @@ def _mock_account_and_tenant(tdb, cdb):
 
 
 def test_create_subscription_posts_to_graph_and_persists(monkeypatch):
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)  # exercise the legacy fallback
     monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")
     cdb, tdb = MagicMock(), MagicMock()
     account, _ = _mock_account_and_tenant(tdb, cdb)
@@ -152,3 +153,36 @@ def test_delete_subscription_swallows_graph_failure():
         ctx.return_value.__enter__.return_value = fake_gc
         delete_subscription(control_db=cdb, tenant_db=tdb, tenant_id=TID, user_id=UID)
     tdb.delete.assert_called_once_with(sub)
+
+
+# ── _build_notification_url (2026-07-07 audit) ─────────────────────────
+# The old builder unconditionally used {slug}.{TENANT_BASE_DOMAIN} with an
+# example.com default — on single-tenant prod (env var unset) Graph's
+# endpoint validation failed and outlook_subscriptions stayed empty.
+
+
+def test_notification_url_prefers_public_base_url(monkeypatch):
+    from gdx_dispatch.modules.outlook.subscriptions import _build_notification_url
+
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.teamgaragedoor.com/")
+    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")  # must lose
+    url = _build_notification_url("gdx", "c" * 64)
+    assert url == f"https://gdx.teamgaragedoor.com/api/webhooks/outlook/gdx/{'c' * 64}"
+
+
+def test_notification_url_falls_back_to_tenant_domain(monkeypatch):
+    from gdx_dispatch.modules.outlook.subscriptions import _build_notification_url
+
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("TENANT_BASE_DOMAIN", "gdx-hosting.com")
+    url = _build_notification_url("acme", "s" * 64)
+    assert url == f"https://acme.gdx-hosting.com/api/webhooks/outlook/acme/{'s' * 64}"
+
+
+def test_notification_url_raises_when_unconfigured(monkeypatch):
+    from gdx_dispatch.modules.outlook.subscriptions import SubscriptionError, _build_notification_url
+
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
+    with pytest.raises(SubscriptionError):
+        _build_notification_url("gdx", "x" * 64)
