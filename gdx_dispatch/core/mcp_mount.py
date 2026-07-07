@@ -22,6 +22,7 @@ Two responsibilities live here:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 from typing import TYPE_CHECKING
 
@@ -145,9 +146,25 @@ def build_mcp_subapp(mcp: "FastMCP | None" = None) -> "StarletteWithLifespan":
 
     from gdx_dispatch.core.mcp_bearer_middleware import MCPBearerAuthMiddleware
 
+    # fastmcp 3.4.3 turned on DNS-rebinding protection by default:
+    # http_app() 421s any request whose Host header is outside
+    # localhost + the bound interface. That allowlist can never contain
+    # our tenant hosts (per-tenant domains, resolved at request time),
+    # so with it on every real /mcp request — claude.ai included — dies
+    # with 421 before auth runs. MCPBearerAuthMiddleware already binds
+    # host → tenant (aud + gdx_tid) and rejects unknown or mismatched
+    # hosts, which is strictly stronger than the generic rebinding
+    # guard, so disabling it does not widen exposure. Signature-gated
+    # because fastmcp <3.4.3 (e.g. already-built docker images) has no
+    # such kwarg and would TypeError at startup.
+    http_app_kwargs = {}
+    if "host_origin_protection" in inspect.signature(mcp.http_app).parameters:
+        http_app_kwargs["host_origin_protection"] = False
+
     return mcp.http_app(
         path="/",
         middleware=[Middleware(MCPBearerAuthMiddleware)],
+        **http_app_kwargs,
     )
 
 

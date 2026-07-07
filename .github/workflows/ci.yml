@@ -64,6 +64,10 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Backstop for wedged shards: a hung test used to sit at the default
+    # 6-hour job limit (2026-07-06: every run wedged in shard 4 for hours).
+    # Normal shard wall time is ~9-13 min; 45 min means "hung", not "slow".
+    timeout-minutes: 45
     # pytest-split shard matrix. The repo deliberately disabled xdist (`-n`):
     # benchmarks (2026-04-24) showed N=7 splits beat `-n 14` by ~17% AND
     # eliminated the cross-worker-fixture-race flakiness xdist introduced
