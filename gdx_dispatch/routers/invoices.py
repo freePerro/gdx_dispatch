@@ -16,6 +16,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
+from gdx_dispatch.modules.catalog_policy import block_or_warn_invoice_line, get_policy
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -413,11 +414,31 @@ def billing_summary(
         )
     ) or 0)
 
+    # PR1-billing-capture (2026-07-07): drafts are rightly excluded from
+    # the receivable KPIs above — but that made a never-sent draft invisible
+    # to EVERY billing surface, so it could sit forever unbilled. Surface
+    # them as their own pair so the dashboard can show "N drafts never
+    # sent ($X)" without polluting total_outstanding.
+    draft_count = int(db.scalar(
+        select(func.count(Invoice.id)).where(
+            Invoice.deleted_at.is_(None),
+            Invoice.status == "draft",
+        )
+    ) or 0)
+    draft_total = float(db.scalar(
+        select(func.coalesce(func.sum(_amount), 0)).where(
+            Invoice.deleted_at.is_(None),
+            Invoice.status == "draft",
+        )
+    ) or 0)
+
     return {
         "total_outstanding": round(total_outstanding, 2),
         "overdue": round(overdue, 2),
         "paid_this_month": round(paid_this_month, 2),
         "ready_for_billing": ready_for_billing,
+        "draft_count": draft_count,
+        "draft_total": round(draft_total, 2),
         "as_of": datetime.now(UTC).isoformat(),
     }
 
@@ -596,6 +617,30 @@ def create_invoice(
         # post-insert by _recalculate_invoice. Seed with 0 so the first
         # save isn't double-counted; the recalc fixes it.
         initial_tax = Decimal("0")
+    # PR1-billing-capture (2026-07-07): wire the F-75 zero-price invoice
+    # policy — it shipped as dead code, so $0 lines landed on invoices with
+    # no block and no warning. Checked BEFORE any row is written: the block
+    # toggle 422s the whole request; the warn toggle collects strings the
+    # response surfaces for the frontend banner. A failure READING the
+    # policy must not block invoicing (capture beats policy) — it logs loud
+    # and falls through, matching get_policy's own contract.
+    zero_price_warnings: list[str] = []
+    _policy_lines = (
+        [(ln.description, ln.unit_price) for ln in (estimate.lines or [])]
+        if estimate
+        else [(ln.description, ln.unit_price) for ln in (payload.line_items or [])]
+    )
+    if any(float(_p or 0) <= 0 for _, _p in _policy_lines):
+        # Only pay the control-plane policy read when a $0 line is present.
+        # get_policy never raises (it catches internally and returns
+        # defaults), so no try/except here.
+        _pol = get_policy(str(_["tenant_id"]))
+        for _desc, _price in _policy_lines:
+            _warn = block_or_warn_invoice_line(
+                str(_["tenant_id"]), price=_price, policy=_pol
+            )
+            if _warn:
+                zero_price_warnings.append(f"{_warn}: {(_desc or 'line item').strip()}")
     invoice = Invoice(
         job_id=payload.job_id,
         invoice_number=_next_invoice_number(db),
@@ -717,7 +762,10 @@ def create_invoice(
         details={"invoice_number": invoice.invoice_number, "status": invoice.status},
     )
     db.commit()
-    return _serialize_invoice(invoice)
+    resp = _serialize_invoice(invoice)
+    if zero_price_warnings:
+        resp["warnings"] = zero_price_warnings
+    return resp
 
 
 @router.get("/{invoice_id}", response_model=None)
@@ -1027,6 +1075,11 @@ def send_invoice(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
+    # PR1-billing-capture (2026-07-07, GL audit §12): sending a VOIDED
+    # invoice silently resurrected it to "sent" — a cancelled bill came
+    # back to life and re-entered AR. Mirror mark-sent's finalized guard.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void — un-void or recreate it before sending")
     invoice.status = "paid" if invoice.status == "paid" else "sent"
     invoice.sent_at = datetime.now(UTC)
     if not invoice.public_token:
@@ -1135,6 +1188,12 @@ def add_invoice_line(
     if invoice.locked or invoice.status != "draft":
         raise HTTPException(status_code=409, detail="cannot modify lines on a locked/non-draft invoice")
 
+    # PR1-billing-capture: F-75 zero-price policy on single-line adds too
+    # (block → 422 before insert; warn → surfaced on the response).
+    zero_price_warning = block_or_warn_invoice_line(
+        str(invoice.company_id or ""), price=payload.unit_price
+    )
+
     max_sort = db.execute(select(func.max(InvoiceLine.sort_order)).where(InvoiceLine.invoice_id == invoice.id)).scalar_one_or_none()
     sort_order = int(max_sort or 0) + 1
     line_total = _money(payload.quantity * payload.unit_price)
@@ -1186,7 +1245,10 @@ def add_invoice_line(
             _audit_db.commit()
         except Exception:
             log.exception('add_invoice_line_audit_failed')
-    return _serialize_line(line)
+    resp = _serialize_line(line)
+    if zero_price_warning:
+        resp["warning"] = zero_price_warning
+    return resp
 
 
 def _get_line_or_404(invoice: Invoice, line_id: UUID, db: Session) -> InvoiceLine:
@@ -1310,6 +1372,12 @@ def record_payment(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
+    # PR1-billing-capture (audit catch): a payment against a VOIDED invoice
+    # ran _recalculate_invoice, which flips status to "paid" once balance
+    # hits zero — the void resurrected into "Paid This Month" through the
+    # payment door. Same class as the /send guard.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void — un-void it before recording a payment")
 
     payment = Payment(
         company_id=invoice.company_id,

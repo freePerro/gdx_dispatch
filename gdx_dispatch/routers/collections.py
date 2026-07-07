@@ -152,9 +152,19 @@ def aging_report(
     }
 
     try:
+        # PR1-billing-capture (2026-07-07): this filter shipped with
+        # capitalized statuses ("Sent","Overdue","Partial") against the
+        # lowercase enum ("sent","overdue",...) — "Partial" isn't a status at
+        # all — so it matched ZERO rows and the aging report was always $0.
+        # "overdue" is never persisted either (computed at read time), so the
+        # honest receivable predicate is: not deleted, not draft (not yet a
+        # receivable), not void, money still owed.
+        # balance_due is NOT NULL by schema (tenant_models.py Invoice,
+        # ORM-created table), so no NULL fallback is needed here.
         stmt = select(Invoice).where(
             Invoice.deleted_at.is_(None),
-            Invoice.status.in_(("Sent", "Overdue", "Partial")),
+            Invoice.status.notin_(("draft", "void")),
+            Invoice.balance_due > 0,
         )
         invoices = db.execute(stmt).scalars().all()
     except Exception:
@@ -168,7 +178,10 @@ def aging_report(
         days_overdue = (today - inv.due_date).days
         if days_overdue < 0:
             continue  # not yet due
-        amount = float(inv.total or 0) - float(getattr(inv, "amount_paid", 0) or 0)
+        # balance_due is the canonical remainder (kept current by
+        # _recalculate_invoice); the old total-minus-amount_paid math read
+        # the deprecated amount_paid field that balance recomputation ignores.
+        amount = float(inv.balance_due or 0)
         if amount <= 0:
             continue
         total_outstanding += amount

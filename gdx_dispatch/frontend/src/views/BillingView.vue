@@ -14,6 +14,18 @@
           <template #title>Paid This Month</template>
           <template #content><p class="stat-value paid">{{ currency(paidThisMonth) }}</p></template>
         </Card>
+        <!-- PR1-billing-capture: drafts are excluded from Outstanding (they
+             aren't receivables yet) which made never-sent invoices invisible
+             to every KPI. Surface them; click filters the list to Draft. -->
+        <Card data-testid="billing-draft-invoices" class="draft-card" @click="activeStatus = 'Draft'">
+          <template #title>Unsent Drafts</template>
+          <template #content>
+            <p class="stat-value drafts">
+              {{ draftCount }}
+              <span class="draft-total">({{ currency(draftTotal) }})</span>
+            </p>
+          </template>
+        </Card>
       </div>
 
       <!-- Ready for Billing Queue -->
@@ -804,6 +816,24 @@ const paidThisMonth = computed(() => {
     .reduce((sum, inv) => sum + toNum(inv.total), 0);
 });
 
+// Unsent drafts (PR1-billing-capture). Server pair preferred; client-side
+// fallback mirrors the other KPI computeds.
+const draftCount = computed(() => {
+  if (billingSummary.value && typeof billingSummary.value.draft_count === 'number') {
+    return billingSummary.value.draft_count;
+  }
+  return invoices.value.filter((inv) => inv.status === "Draft").length;
+});
+
+const draftTotal = computed(() => {
+  if (billingSummary.value && typeof billingSummary.value.draft_total === 'number') {
+    return billingSummary.value.draft_total;
+  }
+  return invoices.value
+    .filter((inv) => inv.status === "Draft")
+    .reduce((sum, inv) => sum + toNum(inv.total), 0);
+});
+
 // --- Helpers ---
 function capitalize(s) {
   if (!s) return "";
@@ -1046,6 +1076,13 @@ onMounted(async () => {
 .stat-value.outstanding { color: var(--p-blue-500, #3b82f6); }
 .stat-value.overdue { color: var(--p-red-500, #ef4444); }
 .stat-value.paid { color: var(--p-green-500, #22c55e); }
+.stat-value.drafts { color: var(--p-amber-500, #f59e0b); }
+.draft-card { cursor: pointer; }
+.draft-total {
+  font-size: 0.9rem;
+  color: var(--p-text-muted-color, #6b7280);
+  font-weight: 400;
+}
 
 .billing-toolbar {
   display: flex;

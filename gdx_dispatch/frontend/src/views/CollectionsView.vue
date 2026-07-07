@@ -250,6 +250,14 @@ const agingBucketConfig = [
 
 const agingBuckets = computed(() => {
   const buckets = agingBucketConfig.map((bucket) => ({ ...bucket, total: 0 }));
+  // PR1-billing-capture: prefer the server aging report — it reads ALL
+  // receivable invoices. The client-side fallback below only sees invoices
+  // that already have a dunning entry logged, so it systematically
+  // undercounts (and the server endpoint returned $0 forever pre-fix).
+  const server = serverAging.value?.buckets;
+  if (Array.isArray(server) && server.length === buckets.length) {
+    return buckets.map((bucket, i) => ({ ...bucket, total: toNum(server[i]?.total) }));
+  }
   collections.value.forEach((entry) => {
     const days = toNum(entry.days_overdue ?? entry.daysPastDue ?? entry.days_past_due ?? 0);
     const amount = toNum(
@@ -364,10 +372,21 @@ function exportCollectionsCsv() {
   }
 }
 
+// Server AR aging (PR1-billing-capture). Null on failure → client fallback.
+const serverAging = ref(null);
+
+async function loadServerAging() {
+  try {
+    serverAging.value = await api.get('/api/collections/aging');
+  } catch (_) {
+    serverAging.value = null;
+  }
+}
+
 async function loadCollections() {
   loading.value = true;
   try {
-    const data = await api.get('/api/collections');
+    const [data] = await Promise.all([api.get('/api/collections'), loadServerAging()]);
     collections.value = Array.isArray(data) ? data : data?.items || [];
   } finally {
     loading.value = false;
