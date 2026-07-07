@@ -31,6 +31,41 @@
             <ToggleSwitch v-model="settings.enabled" />
           </div>
 
+          <!-- PR6-billing-capture (Doug 2026-07-07): automated dunning is
+               OPT-IN, default OFF. Flipping it on shows exactly who gets
+               emailed BEFORE saving. -->
+          <div class="form-field full-width auto-send-field" data-testid="reminders-auto-send">
+            <div class="toggle-field">
+              <label>Send reminder emails automatically</label>
+              <ToggleSwitch v-model="settings.auto_send_enabled" data-testid="reminders-auto-send-toggle" @change="onAutoSendToggle" />
+            </div>
+            <p class="field-helper">
+              Daily at the start of the office day: overdue invoices past a
+              schedule threshold get the email template above. Manual "I
+              called them" logs never pause it; the per-invoice
+              "Pause reminders" switch does.
+            </p>
+            <!-- Audit round 2: the weekly "dunning is off" nudge promised a
+                 permanent dismiss — this is that control (it was a phantom). -->
+            <label v-if="!settings.auto_send_enabled" class="nudge-dismiss" data-testid="reminders-nudge-dismiss">
+              <input type="checkbox" v-model="settings.auto_send_nudge_dismissed" />
+              <span>Don't remind me weekly that automated reminders are off</span>
+            </label>
+            <div v-if="settings.auto_send_enabled && autoSendPreview" class="auto-send-preview" data-testid="reminders-auto-send-preview">
+              <strong>
+                {{ autoSendPreview.count }} invoice(s) qualify right now —
+                {{ currency(autoSendPreview.total_balance) }} outstanding.
+              </strong>
+              <ul v-if="autoSendPreview.invoices.length">
+                <li v-for="inv in autoSendPreview.invoices.slice(0, 10)" :key="inv.invoice_id">
+                  {{ inv.invoice_number }} — {{ currency(inv.balance_due) }},
+                  {{ inv.days_overdue }} days overdue ({{ inv.stage }})
+                </li>
+              </ul>
+              <p class="field-helper">These send on the next daily run after you save.</p>
+            </div>
+          </div>
+
           <div class="form-field full-width">
             <label>Schedule days</label>
             <Chips v-model="scheduleDaysInput" placeholder="Add day count (e.g., 7)" />
@@ -166,7 +201,27 @@ const settings = ref({
   schedule_days: [],
   subject_template: "",
   body_template: "",
+  auto_send_enabled: false,
+  auto_send_nudge_dismissed: false,
 });
+
+// PR6 — who would get emailed if auto-send were on (rendered on toggle).
+const autoSendPreview = ref(null);
+
+function currency(v) {
+  const n = Number(v) || 0;
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+async function onAutoSendToggle() {
+  autoSendPreview.value = null;
+  if (!settings.value.auto_send_enabled) return;
+  try {
+    autoSendPreview.value = await api.get("/api/invoice-reminders/auto-send-preview");
+  } catch (_) {
+    autoSendPreview.value = { count: 0, total_balance: 0, invoices: [] };
+  }
+}
 
 const previewResult = ref({ subject: "", body: "" });
 const previewSample = ref({
@@ -196,7 +251,10 @@ async function loadSettings() {
       schedule_days: Array.isArray(data?.schedule_days) ? data.schedule_days : [],
       subject_template: data?.subject_template ?? "",
       body_template: data?.body_template ?? "",
+      auto_send_enabled: Boolean(data?.auto_send_enabled),
+      auto_send_nudge_dismissed: Boolean(data?.auto_send_nudge_dismissed),
     };
+    if (settings.value.auto_send_enabled) onAutoSendToggle();
   } finally {
     loading.value = false;
   }
@@ -210,6 +268,8 @@ async function saveSettings() {
       schedule_days: settings.value.schedule_days,
       subject_template: settings.value.subject_template,
       body_template: settings.value.body_template,
+      auto_send_enabled: settings.value.auto_send_enabled,
+      auto_send_nudge_dismissed: settings.value.auto_send_nudge_dismissed,
     };
     await api.post("/api/invoice-reminders/settings", payload);
   } finally {

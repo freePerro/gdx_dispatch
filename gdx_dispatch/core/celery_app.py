@@ -36,6 +36,8 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.forecasting.tasks",
             # PR5-billing-capture — the daily billing follow-up loop.
             "gdx_dispatch.tasks.billing_followup",
+            # PR6-billing-capture — opt-in automated dunning.
+            "gdx_dispatch.tasks.invoice_reminders_auto",
         ],
     )
     app.conf.update(

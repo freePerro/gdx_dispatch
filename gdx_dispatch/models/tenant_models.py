@@ -346,6 +346,10 @@ class Invoice(Base):
     tax_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     balance_due: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    # PR6-billing-capture: per-invoice dunning mute for real payment
+    # arrangements — manual reminder logs never pause the robot (Doug
+    # 2026-07-07); this explicit switch does.
+    dunning_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     status: Mapped[str] = mapped_column(
         Enum("draft", "sent", "paid", "overdue", "void", name="invoice_status"),
         nullable=False,
@@ -1145,6 +1149,13 @@ class PaymentReminder(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_by: Mapped[str] = mapped_column(String(200), nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
+    # PR6-billing-capture: which schedule threshold (days overdue) an
+    # AUTOMATED send fired for — the idempotency key that survives
+    # schedule_days edits ([7,14,30]→[5,10] neither re-fires nor wrongly
+    # skips). NULL = manual "I called them" log; manual rows live in a
+    # separate keyspace and never suppress automated sends (Doug
+    # 2026-07-07).
+    threshold_days: Mapped[int] = mapped_column(Integer, nullable=True)
     promised_payment_date: Mapped[date] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -1155,6 +1166,13 @@ class ReminderSettings(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, unique=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # PR6-billing-capture (Doug 2026-07-07): automated dunning is OPT-IN,
+    # default OFF — `enabled` stays the manual/preview feature switch; the
+    # beat task keys ONLY off auto_send_enabled. While off (and not
+    # dismissed) a weekly nudge tells admin/owner what isn't being chased;
+    # the dismiss is permanent for operators who never want dunning.
+    auto_send_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    auto_send_nudge_dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     schedule_days: Mapped[str] = mapped_column(Text, nullable=False, default="[7,14,30]")
     subject_template: Mapped[str] = mapped_column(
         String(500),

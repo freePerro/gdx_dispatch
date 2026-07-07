@@ -13,7 +13,7 @@ tenant read failure raises (Celery marks the run failed) instead of
 pretending the books are clean.
 
 Single-tenant dispatch (GDX_TENANT_ID) — same pattern as
-tasks/recurring_billing.py.
+the (since-removed) recurring_billing task.
 """
 from __future__ import annotations
 
