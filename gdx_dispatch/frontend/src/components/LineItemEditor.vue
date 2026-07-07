@@ -90,6 +90,13 @@
           class="status-pill status-received"
           :data-testid="`parts-from-job-badge-${part.id}`"
         >received</span>
+        <!-- PR4-billing-capture: provenance badge for tech-attested usage —
+             closeout / mobile / van captures that used to leak. -->
+        <span
+          v-else-if="part.status === 'used'"
+          class="status-pill status-used"
+          :data-testid="`parts-from-job-badge-${part.id}`"
+        >used · {{ part.source || 'closeout' }}</span>
       </div>
     </div>
 
@@ -528,14 +535,17 @@ async function loadPartsFromJob() {
     return;
   }
   try {
-    const url = `/api/jobs/${encodeURIComponent(props.jobId)}/parts-needed?status=ordered,received&unbilled=true`;
+    // PR4-billing-capture: 'used' rows are the closeout/mobile/van captures
+    // that previously never reached this checklist — the structural leak.
+    const url = `/api/jobs/${encodeURIComponent(props.jobId)}/parts-needed?status=ordered,received,used&unbilled=true`;
     const r = await api.get(url, { suppressErrorToast: true });
     const list = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
     partsFromJob.value = list;
-    // Pre-check received parts; ordered-but-not-received parts default off
-    // (office sees them but decides per-part whether to bill in advance).
+    // Pre-check received parts AND tech-attested used parts;
+    // ordered-but-not-received parts default off (office sees them but
+    // decides per-part whether to bill in advance).
     selectedPartIds.value = list
-      .filter((p) => p.status === 'received')
+      .filter((p) => p.status === 'received' || p.status === 'used')
       .map((p) => p.id);
   } catch (e) {
     partsFromJob.value = [];
@@ -570,11 +580,11 @@ async function addSelectedParts() {
   const picked = partsFromJob.value.filter((p) => selectedPartIds.value.includes(p.id));
   if (!picked.length) return;
 
-  // Enrich with price via sku-suggest when SKU is present. If no SKU or no
-  // match, unit_price stays 0 — operator types the price.
+  // Price preference (PR4): the capture-time catalog sell price on the row
+  // wins; else enrich via sku-suggest; else 0 — operator types the price.
   const enriched = await Promise.all(picked.map(async (p) => {
-    let unitPrice = 0;
-    if (p.sku) {
+    let unitPrice = Number(p.unit_price) > 0 ? Number(p.unit_price) : 0;
+    if (!unitPrice && p.sku) {
       try {
         const url = `/api/parts-needed/sku-suggest?q=${encodeURIComponent(p.sku)}&limit=4`;
         const sug = await api.get(url, { suppressErrorToast: true });
@@ -700,6 +710,10 @@ function addFromCatalog(items) {
 .status-received {
   background: #d1fae5;
   color: #065f46;
+}
+.status-used {
+  background: #dbeafe;
+  color: #1e40af;
 }
 .parts-from-job-locked {
   background: #fef3c7;

@@ -130,10 +130,18 @@ def use_van_item(
     tid = _tid(request)
     uid = _uid(user)
 
+    # PR4: bind a UUID object — the Uuid column rejects a raw str on the
+    # SQLite test path; malformed ids 404 instead of 500.
+    from uuid import UUID as _UUID
+    try:
+        _item_uuid = _UUID(str(payload.van_inventory_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Van inventory item not found") from None
+
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     item = db.execute(
         select(VanInventoryItem).where(
-            VanInventoryItem.id == payload.van_inventory_id,
+            VanInventoryItem.id == _item_uuid,
             VanInventoryItem.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -142,6 +150,18 @@ def use_van_item(
 
     if payload.quantity > item.quantity:
         raise HTTPException(status_code=422, detail=f"Insufficient stock: {item.quantity} available, {payload.quantity} requested")
+
+    # PR4 audit round 2: job_id was free-form — a typo minted a checklist row
+    # no query could ever display (an invisible unbillable row, the exact
+    # leak this PR closes). Validate BEFORE any mutation and FAIL LOUDLY on
+    # garbage instead of storing it. (Validated up here, outside the generic
+    # try/except below, so it surfaces as 422 — not a swallowed 500.)
+    _job_key: str | None = None
+    if payload.job_id:
+        try:
+            _job_key = str(_UUID(str(payload.job_id)))
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=422, detail=f"invalid job_id: {payload.job_id}") from None
 
     now = _now()
     item.quantity -= payload.quantity
@@ -153,6 +173,26 @@ def use_van_item(
             reason=payload.reason, created_by=uid, created_at=now,
         )
         db.add(log_entry)
+        # PR4-billing-capture: van usage decremented truck stock but the part
+        # NEVER reached billing. When the usage is job-linked, add one
+        # source-tagged billable checklist row per event (events accumulate).
+        # Van items carry no sell price — the office prices it at invoicing.
+        if _job_key:
+            from gdx_dispatch.models.tenant_models import JobPartNeeded
+            db.add(JobPartNeeded(
+                id=str(uuid4()),
+                company_id=tid,
+                job_id=_job_key,
+                part_name=item.name,
+                sku=item.sku,
+                quantity=int(payload.quantity),
+                status="used",
+                source="van",
+                notes=(f"van stock ({payload.reason})" if payload.reason else "van stock"),
+                requested_by_user_id=uid,
+                created_at=now,
+                updated_at=now,
+            ))
         db.commit()
     except Exception:
         db.rollback()

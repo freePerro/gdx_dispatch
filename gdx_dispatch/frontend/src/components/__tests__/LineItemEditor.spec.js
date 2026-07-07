@@ -510,28 +510,36 @@ describe('LineItemEditor — parts-from-job panel', () => {
     expect(wrapper.find('[data-testid="parts-from-job-panel"]').exists()).toBe(false);
   });
 
-  it('fetches parts-needed scoped to ordered+received & unbilled when job-id is set', async () => {
+  it('fetches parts-needed scoped to ordered+received+used & unbilled when job-id is set', async () => {
+    // PR4-billing-capture widened the scope: 'used' rows are the
+    // closeout/mobile/van captures that previously never reached billing.
     apiGet.mockResolvedValue([]);
     mountEditor({ jobId: 'job-abc' });
     await flushPromises();
     expect(apiGet).toHaveBeenCalledWith(
-      '/api/jobs/job-abc/parts-needed?status=ordered,received&unbilled=true',
+      '/api/jobs/job-abc/parts-needed?status=ordered,received,used&unbilled=true',
       expect.any(Object),
     );
   });
 
-  it('pre-checks received parts; leaves ordered parts unchecked', async () => {
+  it('pre-checks received AND used parts; leaves ordered parts unchecked', async () => {
     apiGet.mockResolvedValue([
       { id: 'p-recv', part_name: 'Spring', quantity: 1, status: 'received', sku: null },
       { id: 'p-ord', part_name: 'Cable', quantity: 1, status: 'ordered', sku: null },
+      { id: 'p-used', part_name: 'Strut', quantity: 1, status: 'used', source: 'closeout', sku: null },
     ]);
     const wrapper = mountEditor({ jobId: 'job-1' });
     await flushPromises();
 
     const recv = wrapper.find('[data-testid="parts-from-job-check-p-recv"]').element;
     const ord = wrapper.find('[data-testid="parts-from-job-check-p-ord"]').element;
+    const used = wrapper.find('[data-testid="parts-from-job-check-p-used"]').element;
     expect(recv.checked).toBe(true);
     expect(ord.checked).toBe(false);
+    expect(used.checked).toBe(true);
+    // Provenance badge on the tech-attested row.
+    const badge = wrapper.find('[data-testid="parts-from-job-badge-p-used"]');
+    expect(badge.text().toLowerCase()).toContain('closeout');
   });
 
   it('renders an "ordered, not received" badge on ordered parts', async () => {

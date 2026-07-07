@@ -95,9 +95,15 @@ class PartNeededTechUpdate(BaseModel):
 class PartStatusUpdate(BaseModel):
     """Dispatcher-side status (and optional ETA) change. ``status`` is
     required to keep the legacy single-purpose contract; ``eta_at`` is the
-    Phase 1.3 C6 addition."""
+    Phase 1.3 C6 addition.
 
-    status: str = Field(pattern="^(needed|ordered|received)$")
+    PR4-billing-capture adds ``wont_bill`` — the office's dismiss verb for
+    the "parts used, never billed" review card (warranty part, goodwill,
+    already covered by a flat price). Without a dismiss path the leak card
+    floods and becomes wallpaper (audit round 2). ``wont_bill`` rows leave
+    every billing checklist/report but keep their audit trail."""
+
+    status: str = Field(pattern="^(needed|ordered|received|used|wont_bill)$")
     eta_at: datetime | None = None
 
 
@@ -120,6 +126,11 @@ def _serialize(p: JobPartNeeded) -> dict[str, Any]:
         # row. Frontend uses this for the badge; server still enforces the
         # unbilled filter for the picker default.
         "billed_invoice_id": str(p.billed_invoice_id) if p.billed_invoice_id else None,
+        # PR4-billing-capture — capture provenance + suggested sell price.
+        # source: request | closeout | mobile | van (checklist badge);
+        # unit_price: catalog sell price at capture, NULL = office prices it.
+        "source": getattr(p, "source", None) or "request",
+        "unit_price": float(p.unit_price) if getattr(p, "unit_price", None) is not None else None,
         "created_at": str(p.created_at) if p.created_at else None,
         "updated_at": str(p.updated_at) if p.updated_at else None,
     }
@@ -409,6 +420,89 @@ def pending_parts(
         {"tid": tid},
     ).mappings().all()
     return [dict(r) for r in rows]
+
+
+@router.get(
+    "/parts-needed/unbilled-consumed",
+    dependencies=[Depends(require_permission("invoices.read_all"))],
+)
+def unbilled_consumed_parts(
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """PR4-billing-capture — 'consumed but not billed': parts recorded as
+    used or received on COMPLETED jobs that never reached an invoice,
+    grouped per job. Catches the case Ready-to-Bill misses: the invoice
+    already went out, THEN the tech logged parts (or the office pulled the
+    estimate lines and skipped the parts checklist). Rendered on the
+    BillingView review section.
+    """
+    from uuid import UUID as _UUID
+
+    from gdx_dispatch.models.tenant_models import Customer, Job
+
+    # Two-step on purpose: JobPartNeeded.job_id is String(36) while Job.id is
+    # a native Uuid — a direct SQL join needs a cast on PG and breaks on the
+    # SQLite test path. Cap 2000 unbilled rows — far above any real shop's
+    # leak backlog; if it ever hits, scream in the logs (audit round 2: the
+    # earlier comment claimed loudness the code didn't have).
+    parts = db.execute(
+        select(JobPartNeeded)
+        .where(
+            JobPartNeeded.billed_invoice_id.is_(None),
+            JobPartNeeded.status.in_(("used", "received")),
+        )
+        .order_by(JobPartNeeded.created_at.asc())
+        .limit(2000)
+    ).scalars().all()
+    if len(parts) >= 2000:
+        log.warning(
+            "unbilled_consumed_parts_cap_hit rows=2000 — report is TRUNCATED "
+            "(oldest-first window); the leak backlog exceeds the cap"
+        )
+    if not parts:
+        return []
+
+    job_uuids = set()
+    for p in parts:
+        try:
+            job_uuids.add(_UUID(str(p.job_id)))
+        except (ValueError, AttributeError):
+            continue
+    jobs = {
+        str(j.id): (j, cust)
+        for j, cust in db.execute(
+            select(Job, Customer)
+            .outerjoin(Customer, Customer.id == Job.customer_id)
+            .where(
+                Job.id.in_(job_uuids),
+                Job.lifecycle_stage == "completed",
+                Job.deleted_at.is_(None),
+            )
+        ).all()
+    }
+
+    by_job: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        key = str(part.job_id)
+        if key not in jobs:
+            continue  # job not completed (or deleted) — not leak-review yet
+        job, customer = jobs[key]
+        entry = by_job.setdefault(key, {
+            "job_id": key,
+            "job_title": job.title or "",
+            "customer_name": customer.name if customer else "",
+            "completed_at": str(job.completed_at) if job.completed_at else None,
+            "parts": [],
+            "suggested_total": 0.0,
+        })
+        entry["parts"].append(_serialize(part))
+        if part.unit_price is not None:
+            entry["suggested_total"] = round(
+                entry["suggested_total"] + float(part.unit_price) * int(part.quantity or 1), 2
+            )
+    return list(by_job.values())
 
 
 @router.get(

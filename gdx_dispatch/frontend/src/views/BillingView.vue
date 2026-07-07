@@ -59,6 +59,46 @@
         </template>
       </Card>
 
+      <!-- PR4-billing-capture: parts a tech recorded as used on a COMPLETED
+           job that never reached an invoice — the leak Ready-for-Billing
+           misses (the invoice may already be out). Review takes the office
+           to the job to bill or dismiss them. -->
+      <Card v-if="leakedParts.length" class="ready-billing-card" data-testid="unbilled-parts-review">
+        <template #title>
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-exclamation-triangle" style="color: var(--p-amber-500)" />
+            Parts used, never billed
+            <Tag :value="String(leakedParts.length)" severity="danger" rounded />
+          </div>
+        </template>
+        <template #content>
+          <DataTable responsiveLayout="scroll" :value="leakedParts" :rows="5" size="small" stripedRows>
+            <Column field="customer_name" header="Customer" />
+            <Column field="job_title" header="Job" />
+            <Column header="Parts">
+              <template #body="{ data }">
+                {{ data.parts.length }} part(s)
+                <small class="muted" v-if="data.suggested_total">
+                  · ≈{{ currency(data.suggested_total) }}
+                </small>
+              </template>
+            </Column>
+            <Column header="Action" style="width: 16rem">
+              <template #body="{ data }">
+                <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
+                  class="mr-2"
+                  @click="reviewJob({ id: data.job_id })" data-testid="review-unbilled-parts" />
+                <!-- PR4 audit round 2: without a dismiss verb the card floods
+                     with history and becomes wallpaper. wont_bill keeps the
+                     audit trail but leaves every billing surface. -->
+                <Button label="Won't bill" icon="pi pi-ban" size="small" severity="danger" text
+                  @click="dismissLeakedParts(data)" data-testid="dismiss-unbilled-parts" />
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
       <!-- Toolbar: Search + Date filter + Create -->
       <div class="billing-toolbar">
         <span class="p-input-icon-left search-wrap">
@@ -381,6 +421,9 @@ const toast = useToast();
 // --- State ---
 const loading = ref(false);
 const readyJobs = ref([]);
+// PR4 — /api/parts-needed/unbilled-consumed: parts used on completed jobs
+// that never reached an invoice, grouped per job.
+const leakedParts = ref([]);
 const creating = ref(false);
 const recordingPayment = ref(false);
 const invoices = ref([]);
@@ -918,11 +961,34 @@ async function loadData() {
       console.warn("ready_for_billing_failed", e);
       readyJobs.value = [];
     }
+    // PR4 — parts consumed on completed jobs that never reached an invoice.
+    try {
+      const leaked = await api.get("/api/parts-needed/unbilled-consumed");
+      leakedParts.value = Array.isArray(leaked) ? leaked : [];
+    } catch (e) {
+      console.warn("unbilled_consumed_parts_failed", e);
+      leakedParts.value = [];
+    }
   } catch (e) {
     console.error("billing_loadData_failed", e);
     toast.add({ severity: "error", summary: "Error", detail: "Failed to load billing data", life: 3000 });
   } finally {
     loading.value = false;
+  }
+}
+
+async function dismissLeakedParts(entry) {
+  // PR4 — office decision: these consumed parts will never be billed
+  // (warranty/goodwill/flat-priced). Marks each part wont_bill; the rows
+  // keep their audit trail but leave the billing surfaces.
+  try {
+    for (const part of entry.parts || []) {
+      await api.patch(`/api/parts-needed/${part.id}/status`, { status: 'wont_bill' });
+    }
+    leakedParts.value = leakedParts.value.filter((e) => e.job_id !== entry.job_id);
+    toast.add({ severity: 'info', summary: "Won't bill", detail: `${(entry.parts || []).length} part(s) dismissed`, life: 3000 });
+  } catch (e) {
+    toast.add({ severity: 'error', summary: 'Error', detail: e.message || 'Failed to dismiss parts', life: 4000 });
   }
 }
 
