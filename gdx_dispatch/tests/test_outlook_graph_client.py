@@ -113,3 +113,30 @@ def test_context_manager_closes_underlying_client():
         assert c._client is not None
     # After exit, close was called — underlying httpx.Client._state should be closed
     assert c._client.is_closed
+
+
+@respx.mock
+def test_list_messages_delta_without_token_still_hits_delta_endpoint(client):
+    # 2026-07-07 audit: the sync path used list_messages(), whose token-less
+    # branch hits the PLAIN listing — Graph never returns a deltaLink there,
+    # so no folder could ever bootstrap a token and every sync re-walked the
+    # whole mailbox. The delta lister must hit /delta even with no token.
+    route = respx.get(f"{GRAPH}/me/mailFolders/AAA1/messages/delta").mock(
+        return_value=Response(200, json={"value": [], "@odata.deltaLink": "https://x?$deltatoken=t1"})
+    )
+    client.list_messages_delta(folder="AAA1")
+    assert route.called
+    qp = dict(route.calls[0].request.url.params)
+    assert "$deltatoken" not in qp
+    assert qp["$top"] == "100"
+    assert "$select" in qp  # delta rejects $orderby/$skip; select is allowed
+
+
+@respx.mock
+def test_list_messages_delta_with_token_resumes(client):
+    route = respx.get(f"{GRAPH}/me/mailFolders/AAA1/messages/delta").mock(
+        return_value=Response(200, json={"value": []})
+    )
+    client.list_messages_delta(folder="AAA1", delta_token="prev-tok")
+    qp = dict(route.calls[0].request.url.params)
+    assert qp == {"$deltatoken": "prev-tok"}

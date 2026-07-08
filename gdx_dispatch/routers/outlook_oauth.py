@@ -365,6 +365,28 @@ def oauth_callback(
         scopes=tok.get("scope"),
     )
     tenant_db.commit()
+
+    # Best-effort Graph webhook subscription so real-time notifications
+    # start immediately. 2026-07-07 audit: despite create_subscription's
+    # "on connect" docstring, nothing ever called it — prod ran with an
+    # empty outlook_subscriptions table and the 30-minute fallback poll
+    # carried all traffic. Failure is non-fatal: renew_all_outlook_
+    # subscriptions self-heals missing subscriptions every 6h, and the
+    # fallback poll keeps the mailbox synced meanwhile.
+    try:
+        from gdx_dispatch.modules.outlook.subscriptions import create_subscription
+
+        create_subscription(
+            control_db=control_db,
+            tenant_db=tenant_db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        tenant_db.commit()
+    except Exception:
+        tenant_db.rollback()
+        log.exception("outlook callback: subscription create failed (fallback poll still covers sync)")
+
     return _safe_redirect(status_q="ok")
 
 
