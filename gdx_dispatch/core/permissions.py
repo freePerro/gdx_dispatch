@@ -93,6 +93,10 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     ("vendor_statements.read", "View vendor statements", "vendor_statements"),
     ("vendor_statements.write", "Upload and manage vendor statements", "vendor_statements"),
 
+    # Vendor invoices — A/P bill intake (Sprint vendor-invoice-intake)
+    ("vendor_invoices.read", "View vendor bills", "vendor_invoices"),
+    ("vendor_invoices.write", "Upload and confirm vendor bills", "vendor_invoices"),
+
     # Users
     ("users.read", "View users", "users"),
     ("users.write", "Invite / edit users", "users"),
@@ -151,6 +155,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "payments.read",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read", "vendor_statements.write",
+        "vendor_invoices.read", "vendor_invoices.write",
         "mobile.use", "mobile.dispatch_view", "mobile.chat",
         "nav.office",
     ],
@@ -172,6 +177,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "jobs.read_all",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read",
+        "vendor_invoices.read",
         "nav.office",
     ],
     "accounting": [
@@ -184,6 +190,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "billing.read",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",
         "vendor_statements.read", "vendor_statements.write",
+        "vendor_invoices.read", "vendor_invoices.write",
         "nav.office",
     ],
     # viewer = read-only auditor across every module, plus office-tier nav so the

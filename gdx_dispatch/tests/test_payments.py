@@ -128,6 +128,11 @@ def test_confirm_payment_marks_paid(client, db_session, invoice):
     """POST /api/payments/confirm sets invoice.status=paid when PI succeeded."""
     mock_pi = MagicMock()
     mock_pi.status = "succeeded"
+    # The confirm handler records external_ref=pi.id + amount=pi.amount on the
+    # Payment (GL payment posting); a bare MagicMock for these binds a MagicMock
+    # into the SQL and errors — set concrete values.
+    mock_pi.id = "pi_test_123"
+    mock_pi.amount = 16200
 
     with patch("stripe.PaymentIntent.retrieve", return_value=mock_pi):
         resp = client.post(

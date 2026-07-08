@@ -1630,6 +1630,12 @@ def create_app() -> FastAPI:
         app.include_router(_vendor_statements_router.router)
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_statements")
+    # Sprint vendor-invoice-intake — supplier bill upload + parse + match/confirm
+    try:
+        from gdx_dispatch.routers import vendor_invoices as _vendor_invoices_router
+        app.include_router(_vendor_invoices_router.router)
+    except Exception:
+        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_invoices")
     app.include_router(loyalty_router.router if hasattr(loyalty_router, "router") else loyalty_router)
     app.include_router(marketing_router.router if hasattr(marketing_router, "router") else marketing_router)
     app.include_router(campaigns_router.router if hasattr(campaigns_router, "router") else campaigns_router)

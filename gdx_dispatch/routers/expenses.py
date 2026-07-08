@@ -389,7 +389,11 @@ _RECEIPT_MAX_BYTES = 25 * 1024 * 1024
 _RECEIPT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"}
 
 
-def _receipt_dir(company_id: str, expense_id: UUID) -> "os.PathLike":
+def _receipt_dir(company_id: str, expense_id: UUID):
+    # Returns a pathlib.Path. No return annotation: os/Path are imported
+    # function-locally (deliberate — keeps `os` out of module scope for the
+    # realpath path-injection barrier), so a "os.PathLike" forward-ref
+    # annotation is an undefined name (F821, the CI hard gate).
     import os as _os
     from pathlib import Path as _Path
 

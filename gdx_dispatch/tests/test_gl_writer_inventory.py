@@ -56,6 +56,11 @@ STATUS_WRITERS: dict[str, tuple[int, str]] = {
     # deleted the dead core/quickbooks.py legacy pull and runtime-gates the
     # live sync pull (_assert_money_pull_allowed raises when the flag is on).
     "modules/quickbooks/sync.py": (1, "QB pull — S9 gate raises when ledger on"),
+    # NOT the GL-governed core Invoice: this is VendorInvoice.status (an A/P
+    # supplier-bill's own open/paid/void), set by the vendor-bills PATCH
+    # endpoint. The regex `(?:\w+_)?invoice\.status` can't tell the models
+    # apart; this write is outside the ledger chokepoint by design.
+    "routers/vendor_invoices.py": (1, "VendorInvoice.status (A/P bill), not core Invoice.status"),
 }
 
 # Matches `invoice.status = x` / `the_invoice.status = x` — NOT `inv.status`
