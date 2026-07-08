@@ -15,14 +15,17 @@ def _tenant_session() -> Session:
     return SessionLocal()
 
 
-@celery_app.task(queue="high")
+# No queue= kwarg: a decorator queue overrides task_routes entirely, and
+# "high"/"low" are pre-rename queue names no worker consumes (2026-07-07
+# audit). task_routes sends webhooks.* to priority:high.
+@celery_app.task
 def deliver_webhook_task(delivery_id: str) -> None:
     with _tenant_session() as db:
         if db.get(WebhookDelivery, delivery_id):  # noqa: E701,E702
             asyncio.run(deliver_webhook(delivery_id, db))
 
 
-@celery_app.task(queue="low")
+@celery_app.task
 def retry_failed_webhooks_task() -> int:
     now, total = utcnow(), 0
     with _tenant_session() as db:
