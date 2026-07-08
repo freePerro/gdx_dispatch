@@ -164,10 +164,10 @@ def test_delete_subscription_swallows_graph_failure():
 def test_notification_url_prefers_public_base_url(monkeypatch):
     from gdx_dispatch.modules.outlook.subscriptions import _build_notification_url
 
-    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.teamgaragedoor.com/")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://dispatch.example.com/")
     monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.com")  # must lose
     url = _build_notification_url("gdx", "c" * 64)
-    assert url == f"https://gdx.teamgaragedoor.com/api/webhooks/outlook/gdx/{'c' * 64}"
+    assert url == f"https://dispatch.example.com/api/webhooks/outlook/gdx/{'c' * 64}"
 
 
 def test_notification_url_falls_back_to_tenant_domain(monkeypatch):
