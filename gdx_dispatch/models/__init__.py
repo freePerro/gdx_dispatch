@@ -101,7 +101,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     ServiceAgreement,
     ServiceAgreementTemplate,
     ServiceTrigger,
-    StickyNote,
     StockAdjustment,
     SupplierAccount,
     SupplierCatalogItem,

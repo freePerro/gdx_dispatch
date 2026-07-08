@@ -1019,28 +1019,6 @@ class JobChatMessage(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class StickyNote(Base):
-    __tablename__ = "sticky_notes"
-
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    title: Mapped[str] = mapped_column(String(200), nullable=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    color: Mapped[str] = mapped_column(String(20), nullable=False, default="#fef3c7")
-    pos_x: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    pos_y: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    width: Mapped[int] = mapped_column(Integer, nullable=False, default=240)
-    height: Mapped[int] = mapped_column(Integer, nullable=False, default=180)
-    created_by: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
-    )
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class Tag(Base):
     __tablename__ = "tags"
 
@@ -1762,6 +1740,17 @@ class PlannerTask(Base):
     assigned_to: Mapped[str] = mapped_column(String(36), nullable=True)
     job_id: Mapped[str] = mapped_column(String(36), nullable=True)
     customer_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    # ── Call-capture (2026-07-07) ──────────────────────────────────────────
+    # Quick-capture a phone-call note without stopping to find/create a
+    # customer. contact_phone carries the caller's number for direct-to-cell
+    # calls and unmatched callers (customer_id may stay null until backfilled);
+    # phone_com_call_id links back to the phone_com_calls row when captured from
+    # the recent-calls strip; source marks how the row was created
+    # (e.g. "quick_capture") — the morning digest counts these, and create_task
+    # defaults their due_date to today so they surface in the needs_action view.
+    contact_phone: Mapped[str] = mapped_column(String(40), nullable=True)
+    phone_com_call_id: Mapped[str] = mapped_column(String(80), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
