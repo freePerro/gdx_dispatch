@@ -1865,6 +1865,31 @@ class BugReport(Base):
     resolution_notes: Mapped[str] = mapped_column(Text, nullable=True)
 
 
+class SupportTicket(Base):
+    """Tenant-plane home for /api/support submissions.
+
+    Replaces the control-plane ``cc_support_tickets`` target (Command
+    Center alembic 064) that a single-tenant install never provisions —
+    prod bounced every submission with a 503 until the 2026-07-07 audit
+    caught it. Column names mirror the old table so the support router's
+    SQL and the FeedbackPortal response shapes carry over unchanged.
+    """
+
+    __tablename__ = "support_tickets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    opened_by_email: Mapped[str] = mapped_column(String(200), nullable=False)
+    opened_by_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False, default="bug")
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_summary: Mapped[str] = mapped_column(Text, nullable=True)
+
+
 class ClientError(Base):
     __tablename__ = "client_errors"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

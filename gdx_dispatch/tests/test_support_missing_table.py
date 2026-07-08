@@ -1,7 +1,8 @@
-"""Graceful degradation + debug recording when cc_support_tickets is absent.
+"""Graceful degradation + debug recording when support_tickets is absent.
 
-cc_support_tickets is provisioned by the Command Center's alembic, not this app.
-On a DB where it's missing, the support endpoints must degrade (empty list / 503)
+support_tickets is normally created by create_orm_tables() at container
+start, but a DB predating the model (or a request racing the entrypoint)
+can still lack it. The support endpoints must degrade (empty list / 503)
 rather than surfacing a raw 500. When the operator turns on debug logging
 (app_settings.debug_logging_enabled), the otherwise-swallowed error is also
 recorded to the server-error sink so it shows on the Server Errors page.
@@ -22,11 +23,13 @@ from gdx_dispatch.routers import support as support_router
 
 @pytest.fixture()
 def ctx():
-    # create_all builds app_settings (+ other ORM tables) but NOT
-    # cc_support_tickets (control-plane, no ORM model) — exactly the drift we
-    # want to exercise.
+    # support_tickets is an ORM table since the 2026-07 tenant-plane move, so
+    # create_all now builds it; drop it afterwards to reproduce the drift this
+    # file exercises (a DB predating the model / racing create_orm_tables).
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     TenantBase.metadata.create_all(engine, checkfirst=True)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE support_tickets")
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     def _override_db():
