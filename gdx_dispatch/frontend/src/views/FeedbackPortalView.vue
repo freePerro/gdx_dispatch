@@ -174,9 +174,15 @@ async function fetchTickets() {
   loading.value = true;
   error.value = null;
   try {
-    const params = categoryFilter.value ? { category: categoryFilter.value } : {};
-    const res = await api.get("/api/support/my", { params });
-    tickets.value = res.data.items || [];
+    // useApi.get() has no `params` option (silently ignored) and returns
+    // the parsed body directly — the old `{ params }` + `res.data.items`
+    // pair meant the filter never applied AND the success path threw on
+    // undefined `.data`, so the portal always showed "Could not load".
+    const qs = categoryFilter.value
+      ? `?category=${encodeURIComponent(categoryFilter.value)}`
+      : "";
+    const res = await api.get(`/api/support/my${qs}`);
+    tickets.value = res.items || [];
   } catch (e) {
     error.value = "Could not load your submissions.";
     tickets.value = [];
