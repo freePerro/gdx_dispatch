@@ -29,6 +29,12 @@ x-app-env: &app-env
   GDX_DEFAULT_TENANT_ID: ${GDX_DEFAULT_TENANT_ID:-}
   GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-}
   GDX_TENANT_NAME: ${GDX_TENANT_NAME:-}
+  # Public origin for server-built absolute URLs: Graph webhook
+  # subscriptions (outlook/subscriptions.py), auth + payments links,
+  # well-known metadata fallback. Unset → those callers fall back to
+  # gdx.example.com defaults and Outlook subscription creation fails
+  # loudly (2026-07-07 audit).
+  GDX_PUBLIC_BASE_URL: ${GDX_PUBLIC_BASE_URL:-}
 
 services:
   # ── Database ─────────────────────────────────────────────────────────────────
