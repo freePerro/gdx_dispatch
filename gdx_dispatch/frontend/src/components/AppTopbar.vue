@@ -118,6 +118,21 @@
 
         <HelpButton />
 
+        <!-- Mobile-only search button. The desktop search box that opens the
+             Ctrl+K palette is hidden on phone routes and the shortcut is
+             unreachable without a keyboard, so give the palette a tap target
+             here so global search actually works on a phone. -->
+        <Button
+          v-if="isOnMobileRoute"
+          type="button"
+          class="p-button-text mobile-search-btn"
+          aria-label="Search"
+          data-testid="mobile-search-btn"
+          @click="emitOpenSearch"
+        >
+          <i class="pi pi-search" aria-hidden="true" />
+        </Button>
+
         <Button
           type="button"
           class="p-button-text notification-btn"

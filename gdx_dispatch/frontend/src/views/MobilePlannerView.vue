@@ -201,12 +201,35 @@
           <Select v-model="selectedTask.assigned_to" :options="userOptions" optionLabel="label" optionValue="value" placeholder="Assign to" :showClear="true" filter class="w-full" />
           <Select v-model="selectedTask.job_id" :options="jobOptions" optionLabel="label" optionValue="value" placeholder="Linked job" :showClear="true" filter class="w-full" />
           <Select v-model="selectedTask.customer_id" :options="customerOptions" optionLabel="label" optionValue="value" placeholder="Linked customer" :showClear="true" filter class="w-full" />
+
+          <!-- Captured call with a number but no customer → offer to create one. -->
+          <div v-if="selectedTask.contact_phone && !selectedTask.customer_id" class="capture-cta">
+            <p class="capture-cta-text">
+              <i class="pi pi-phone" aria-hidden="true" />
+              Captured from a call — {{ selectedTask.contact_phone }} isn't linked to a customer yet.
+            </p>
+            <Button
+              label="Create customer from this call"
+              icon="pi pi-user-plus"
+              size="small"
+              outlined
+              class="w-full"
+              @click="createCustomerFromTask"
+            />
+          </div>
         </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" text @click="showTaskDetail = false" />
           <Button label="Save" :loading="taskEditSaving" @click="saveTaskEdits" />
         </template>
       </Dialog>
+
+      <CustomerFormDialog
+        v-model:visible="showCustomerCreate"
+        mode="create"
+        :customer="customerPrefill"
+        @saved="onCustomerCreatedFromTask"
+      />
 
       <!-- Plan create -->
       <Dialog
@@ -287,8 +310,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApiWithToast } from '../composables/useApiWithToast'
+import CustomerFormDialog from '../components/CustomerFormDialog.vue'
 
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -313,6 +337,7 @@ const TASK_VIEWS = [
   { label: 'Completed', value: 'completed' },
 ]
 const TASK_SORTS = [
+  { label: 'Needs action', value: 'needs_action' },
   { label: 'Newest', value: 'newest' },
   { label: 'Oldest', value: 'oldest' },
   { label: 'Priority', value: 'priority' },
@@ -326,7 +351,9 @@ const myId = ref(sessionStorage.getItem('gdx_user_id') || '')
 const tasks = ref([])
 const tasksLoading = ref(true)
 const taskView = ref('mine')
-const taskSort = ref('newest')
+// Default to "needs action" so overdue + today (and every fresh call-capture,
+// which is due today) sit at the top instead of scrolling away.
+const taskSort = ref('needs_action')
 const showTaskForm = ref(false)
 const taskSaving = ref(false)
 const taskForm = ref(emptyTaskForm())
@@ -514,8 +541,40 @@ function editTask(task) {
     assigned_to: task.assigned_to || null,
     job_id: task.job_id || null,
     customer_id: task.customer_id || null,
+    contact_phone: task.contact_phone || null,
+    phone_com_call_id: task.phone_com_call_id || null,
+    source: task.source || null,
   }
   showTaskDetail.value = true
+}
+
+// ── Create-customer-from-capture (2026-07-07) ──
+// A captured call note may carry a phone number but no customer. Offer to spin
+// up the customer from the task; on save, link it back and backfill the call
+// rows so the cold-leads queue shrinks.
+const showCustomerCreate = ref(false)
+const customerPrefill = ref(null)
+
+function createCustomerFromTask() {
+  if (!selectedTask.value?.contact_phone) return
+  customerPrefill.value = { phone: selectedTask.value.contact_phone }
+  showCustomerCreate.value = true
+}
+
+async function onCustomerCreatedFromTask(saved) {
+  const newId = saved?.id
+  const task = selectedTask.value
+  if (!newId || !task?.id) return
+  try {
+    await api.post(
+      `/api/planner/tasks/${task.id}/link-customer`,
+      { customer_id: newId },
+      { successMessage: 'Customer created and linked' },
+    )
+    task.customer_id = newId
+    await loadJobsAndCustomers()
+    await loadTasks()
+  } catch { /* toast handled */ }
 }
 
 async function saveTaskEdits() {
@@ -594,10 +653,21 @@ watch(activeTab, (tab) => {
   if (tab === 'messages' && threads.value.length === 0) loadThreads()
 })
 
+// A quick-capture from the FAB fires this on the window; reload so the new
+// note appears without a manual refresh.
+function onExternalCapture() {
+  if (activeTab.value === 'tasks') loadTasks()
+}
+
 onMounted(() => {
   loadTasks()
   loadUsers()
   loadJobsAndCustomers()
+  window.addEventListener('gdx:planner-refresh', onExternalCapture)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('gdx:planner-refresh', onExternalCapture)
 })
 </script>
 
@@ -610,6 +680,22 @@ onMounted(() => {
   max-width: 800px;
   margin: 0 auto;
   position: relative;
+}
+
+/* Captured-call CTA in the task detail dialog. */
+.capture-cta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 0.625rem;
+  background: var(--surface-elevated);
+}
+.capture-cta-text {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .mobile-page-head {

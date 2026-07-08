@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from celery.schedules import crontab
 
 
@@ -9,6 +11,16 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "task": "gdx_dispatch.tasks.reminders.check_upcoming_appointment_reminders",
             "schedule": crontab(minute=0),
             "options": {"queue": "priority:high"},
+        },
+        "planner-digest-daily": {
+            # First staff-facing scheduled reminder. Emails a summary of open
+            # planner tasks so call-notes taken on a busy day don't scroll away.
+            # Celery has no timezone set → fires in UTC; PLANNER_DIGEST_HOUR
+            # (default 13 ≈ morning US Central) tunes it. No-ops unless
+            # PLANNER_DIGEST_EMAIL is set. See docs/design/call-capture-followup-plan.md.
+            "task": "gdx_dispatch.tasks.planner_digest.send_planner_digest",
+            "schedule": crontab(hour=int(os.getenv("PLANNER_DIGEST_HOUR", "13") or "13"), minute=0),
+            "options": {"queue": "priority:low"},
         },
         "generate-recurring-jobs-daily-6am": {
             # 2026-07-07 prod audit: this entry pointed at a task name

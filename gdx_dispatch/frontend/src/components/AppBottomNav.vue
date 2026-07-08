@@ -74,6 +74,22 @@
         </div>
       </section>
     </Drawer>
+
+    <!-- Quick-capture FAB (2026-07-07): note a phone call in ~10s without
+         stopping to find/create a customer. Office roles only — the same
+         population that has the Planner tab. Floats above the nav, centered,
+         clear of the bottom-right bug FAB. -->
+    <button
+      v-if="showCapture"
+      type="button"
+      class="capture-fab"
+      aria-label="Quick note from a call"
+      data-testid="quick-capture-fab"
+      @click="captureOpen = true"
+    >
+      <i class="pi pi-plus" aria-hidden="true" />
+    </button>
+    <QuickCaptureSheet v-model:visible="captureOpen" @saved="onCaptureSaved" />
   </nav>
 </template>
 
@@ -86,6 +102,7 @@ import { useTenantModules } from '../composables/useTenantModules';
 import { useAuthStore } from '../stores/auth';
 import { groupModules } from '../composables/useModuleSections';
 import { isTechnician } from '../constants/roles';
+import QuickCaptureSheet from './QuickCaptureSheet.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -94,6 +111,17 @@ const auth = useAuthStore();
 
 const moreOpen = ref(false);
 const moreSearch = ref('');
+
+const captureOpen = ref(false);
+// Office roles run the planner + field the calls; techs get a lean strip and
+// don't. Gate the quick-capture FAB to the same non-tech population.
+const showCapture = computed(() => !isTechnician(auth.user?.role));
+
+function onCaptureSaved() {
+  // Nudge the planner to reload if it's mounted (e.g. Doug captured from the
+  // planner screen). Harmless no-op elsewhere.
+  window.dispatchEvent(new CustomEvent('gdx:planner-refresh'));
+}
 
 function closeDrawer() {
   moreOpen.value = false;
@@ -290,6 +318,30 @@ function handleTab(item) {
 .tab-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Quick-capture FAB: docked above the nav, centered. 56px is the Material
+   touch-target size; sits clear of the bottom-right bug FAB. */
+.capture-fab {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--bottom-nav-height) + 0.75rem);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--interactive-primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 1.4rem;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  z-index: 121;
+  cursor: pointer;
+}
+.capture-fab:active {
+  transform: translateX(-50%) scale(0.94);
 }
 
 .drawer-items {
