@@ -30,6 +30,19 @@ def test_validation_handshake_400_when_missing_token(app):
     assert r.status_code == 400
 
 
+def test_validation_handshake_via_post_echoes_token(app):
+    """Graph sends the validation handshake as a POST with an EMPTY body.
+
+    2026-07-08 prod catch: only the GET route echoed the token; the POST
+    route tried request.json() on the empty body and 400'd
+    (JSONDecodeError), so Graph's subscription create always failed with
+    "Notification endpoint must respond with 200 OK"."""
+    r = app.post("/api/webhooks/outlook/gdx/abc-state?validationToken=hello-microsoft")
+    assert r.status_code == 200
+    assert r.text == "hello-microsoft"
+    assert r.headers["content-type"].startswith("text/plain")
+
+
 def test_post_with_no_events_returns_202(app):
     r = app.post("/api/webhooks/outlook/gdx/abc-state", json={"value": []})
     assert r.status_code == 202

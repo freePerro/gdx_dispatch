@@ -4,8 +4,13 @@ Path: ``GET/POST /api/webhooks/outlook/{tenant_slug}/{client_state}``.
 
 Two flows:
 
-1. **Validation handshake**: Microsoft GETs the URL with ``?validationToken=...``
-   once on subscription create. We echo it back as text/plain within 10 seconds.
+1. **Validation handshake**: Microsoft **POSTs** the URL with
+   ``?validationToken=...`` and an EMPTY body once on subscription create;
+   we must echo the token back as text/plain 200 within 10 seconds.
+   (2026-07-08 prod catch: this doc used to say Graph GETs — only the GET
+   route echoed the token, the POST route tried ``request.json()`` on the
+   empty body and 400'd, so every subscription create failed Graph-side
+   validation. The GET echo is kept for manual probing.)
 
 2. **Change notifications**: subsequent POSTs carry ``{"value": [...]}``. Each
    event has its own ``clientState``. We verify path secret + payload clientState
@@ -57,8 +62,15 @@ async def receive_notifications(
     tenant_slug: str,
     client_state: str,
     request: Request,
+    validationToken: str | None = Query(None),  # noqa: N803 — MS spelling
 ) -> Response:
     """Accept change notifications. Verify clientState, enqueue, return 202."""
+    if validationToken:
+        # Graph's subscription-validation handshake is a POST with an empty
+        # body — echo the token before any JSON parsing or the create fails
+        # with "Notification endpoint must respond with 200 OK".
+        log.info("outlook validation handshake (POST): tenant=%s", tenant_slug)
+        return PlainTextResponse(validationToken, status_code=200)
     body = await request.json()
     events = body.get("value") or []
     if not events:
