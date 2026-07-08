@@ -9,7 +9,7 @@ const STUBS = {
   Tree: { template: '<div class="stub-tree"></div>' },
   ContextMenu: { template: '<div></div>', methods: { show() {}, hide() {} } },
   Menu: { template: '<div></div>', methods: { toggle() {}, hide() {} } },
-  OverlayPanel: { template: '<div></div>', methods: { toggle() {}, hide() {} } },
+  Popover: { template: '<div></div>', methods: { toggle() {}, hide() {} } },
   Dialog: {
     template: '<div v-if="visible" class="stub-dialog"><slot /><slot name="footer" /></div>',
     props: ['visible'],

@@ -1025,6 +1025,9 @@ async function recordPayment() {
       amount: newPayment.value.amount,
       method: newPayment.value.method,
       reference: newPayment.value.reference,
+      // The dialog has no date picker; the API requires `date` (422
+      // without it). Same today-default as InvoiceDetail/MobileInvoice.
+      date: new Date().toISOString().slice(0, 10),
     });
     showPaymentDialog.value = false;
     toast.add({ severity: "success", summary: "Recorded", detail: "Payment recorded", life: 3000 });

@@ -1,3 +1,4 @@
+import datetime as _datetime
 import logging
 import secrets
 import uuid as _uuid
@@ -348,7 +349,12 @@ class InvoicePatchIn(BaseModel):
 class PaymentCreateIn(BaseModel):
     amount: float = Field(gt=0)
     method: str = Field(min_length=1, max_length=50)
-    date: date
+    # Defaulted to today so a caller without a date picker records the
+    # payment instead of 422ing (the /billing dialog shipped without one
+    # and a real check payment bounced twice on 2026-07-06). Annotated via
+    # the module alias: pydantic rejects a field named `date` whose
+    # annotation is the bare `date` type once it carries a default.
+    date: _datetime.date = Field(default_factory=date.today)
     # Optional reference (check #, transaction ID, Zelle memo). Pre-fix this
     # was missing from the schema and dropped by Pydantic; payment-history
     # cells rendered empty for every payment recorded via the UI.
