@@ -102,12 +102,22 @@ function newVisible(role, module) {
   return moduleVisible(module, (k) => roleHas(role, k));
 }
 
+// Deliberate visibility removals since the Set→permission migration. `photos`
+// was field-tier (every role), but the /photos page's default feed
+// /api/photos/recent is a tenant-wide gallery restricted to dispatch/admin — a
+// technician saw a nav item that 403'd and crashed the page on open (prod
+// incident, 2026-07-10). Reclassified to nav.office, which correctly drops it
+// from the technician's (field-tier) nav.
+const APPROVED_REMOVALS = new Set(['technician:photos']);
+
 describe('nav visibility — Set→permission migration parity', () => {
-  it('zero regressions: no builtin role loses any module it could see before', () => {
+  it('zero regressions: no builtin role loses any module it could see before (except approved removals)', () => {
     const regressions = [];
     for (const role of PARITY_ROLES) {
       for (const m of MODULES) {
-        if (oldVisible(role, m.key) && !newVisible(role, m)) regressions.push(`${role}:${m.key}`);
+        if (oldVisible(role, m.key) && !newVisible(role, m) && !APPROVED_REMOVALS.has(`${role}:${m.key}`)) {
+          regressions.push(`${role}:${m.key}`);
+        }
       }
     }
     expect(regressions).toEqual([]);
@@ -137,11 +147,18 @@ describe('moduleVisible — single permission-driven gate', () => {
 });
 
 describe('catalog tagging — tier invariants', () => {
-  const FIELD = new Set(['jobs', 'timeclock', 'photos', 'communications', 'inbox', 'inventory']);
+  const FIELD = new Set(['jobs', 'timeclock', 'communications', 'inbox', 'inventory']);
 
-  it('the only ungated modules are the 6 field-tier ones', () => {
+  it('the only ungated modules are the 5 field-tier ones', () => {
     const ungated = MODULES.filter((m) => !m.permission).map((m) => m.key);
     expect(new Set(ungated)).toEqual(FIELD);
+  });
+
+  it('photos is office-tier: hidden from technicians, shown to dispatch (prod fix 2026-07-10)', () => {
+    const photos = MODULES.find((m) => m.key === 'photos');
+    expect(photos.permission).toBe('nav.office');
+    expect(newVisible('technician', photos)).toBe(false);
+    expect(newVisible('dispatcher', photos)).toBe(true);
   });
 
   it('technician (field tier) sees no nav.office or nav.admin gated module', () => {

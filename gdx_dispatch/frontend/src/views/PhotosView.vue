@@ -56,6 +56,11 @@
             </div>
           </article>
         </div>
+        <div v-else-if="accessDenied" class="empty-state">
+          <i class="pi pi-lock" aria-hidden="true"></i>
+          <h3>Not available for your role</h3>
+          <p>The tenant-wide photo gallery is limited to dispatch and admin roles. Open a specific job to see its photos.</p>
+        </div>
         <div v-else class="empty-state">
           <i class="pi pi-image" aria-hidden="true"></i>
           <h3>No photos yet</h3>
@@ -152,6 +157,7 @@ const api = useApiWithToast();
 const jobs = ref([]);
 const photos = ref([]);
 const loading = ref(true);
+const accessDenied = ref(false);
 const selectedJob = ref(null);
 const kindFilter = ref("all");
 const uploadDialog = ref(false);
@@ -221,10 +227,17 @@ async function loadJobs() {
 
 async function loadPhotos() {
   loading.value = true;
+  accessDenied.value = false;
   try {
     const endpoint = selectedJob.value ? `/api/jobs/${selectedJob.value}/photos` : "/api/photos/recent";
     const data = await api.get(endpoint);
     photos.value = Array.isArray(data) ? data : data?.items || [];
+  } catch (err) {
+    // The default feed (/api/photos/recent) is dispatch/admin-only. Never let a
+    // 403 (or any load error) throw out of onMounted and white-screen the page —
+    // show an access-denied empty state instead. (prod crash, 2026-07-10.)
+    photos.value = [];
+    accessDenied.value = err?.status === 403;
   } finally {
     loading.value = false;
   }

@@ -318,7 +318,7 @@ export const routes = [
   { path: '/signatures', name: 'signatures', component: SignaturesView },
   { path: '/technicians', name: 'technicians', component: TechniciansView },
   { path: '/job-costing', name: 'job-costing', component: JobCostingView },
-  { path: '/photos', name: 'photos', component: PhotosView },
+  { path: '/photos', name: 'photos', component: PhotosView, meta: { requiresPermission: 'nav.office' } },
   { path: '/tags', name: 'tags', component: TagsView },
   { path: '/webhooks', name: 'webhooks', component: WebhooksView, meta: { requiresPermission: 'webhooks.manage' } },
   { path: '/gdpr', name: 'gdpr', component: GdprView, meta: { requiresPermission: 'settings.write' } },
