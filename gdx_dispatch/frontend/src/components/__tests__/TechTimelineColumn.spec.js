@@ -52,6 +52,27 @@ describe('TechTimelineColumn', () => {
     expect(w.find('.tech-timeline-body').exists()).toBe(false);
   });
 
+  // Regression: a job on a tech's day off used to vanish entirely — the
+  // "Off today" swap replaced the whole subtree that renders the jobs, so the
+  // job was fetched and passed in but never shown. It must stay visible (with
+  // a warning) so a dispatcher can reassign/reschedule it.
+  it('still renders jobs (with a warning, no blank swap) when off but has jobs', () => {
+    const sel = new Date(2026, 4, 21);
+    const timedJob = {
+      id: 'j2', customer_name: 'Beta',
+      scheduled_at: new Date(2026, 4, 21, 10, 30).toISOString(),
+      scheduled_duration_hours: 1.5,
+    };
+    const w = mountColumn({ tech: { isOffToday: true }, jobs: [timedJob], selectedDate: sel });
+    // The blank "Off today" placeholder must NOT replace the timeline.
+    expect(w.find('.tech-timeline-off').exists()).toBe(false);
+    // The timeline body renders and the job block is mounted (visible).
+    expect(w.find('.tech-timeline-body').exists()).toBe(true);
+    expect(w.find('[data-testid="timeline-job-j2"]').exists()).toBe(true);
+    // A warning marks it as a conflict.
+    expect(w.find('[data-testid="tech-off-with-jobs-tech-1"]').exists()).toBe(true);
+  });
+
   it('puts date-only jobs in the tray, timed jobs in the body', () => {
     const sel = new Date(2026, 4, 21);
     const trayJob = {

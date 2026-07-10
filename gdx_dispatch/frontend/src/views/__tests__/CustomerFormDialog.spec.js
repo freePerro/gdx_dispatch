@@ -48,6 +48,14 @@ const stubs = {
     template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
     inheritAttrs: false,
   },
+  // PhoneInput wraps PrimeVue InputMask; stub it like InputText (emit raw
+  // value) so these behavior tests don't need the PrimeVue plugin.
+  PhoneInput: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    inheritAttrs: false,
+  },
   Textarea: {
     props: ['modelValue'],
     emits: ['update:modelValue'],

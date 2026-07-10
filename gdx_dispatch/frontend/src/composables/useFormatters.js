@@ -90,10 +90,25 @@ export function formatNumber(value, { locale, digits } = {}) {
 }
 
 /**
+ * US phone → "(111)222-3333". Strips non-digits, drops a leading US country
+ * code, and only reformats a clean 10-digit number — anything else (extensions,
+ * international, still-being-typed partials) passes through unchanged so a
+ * number is never mangled or hidden. Empty → '' (not the em-dash placeholder,
+ * so callers can render their own "no phone" affordance / tel: link guard).
+ */
+export function formatPhone(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const digits = String(value).replace(/\D/g, '');
+  const ten = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  if (ten.length !== 10) return String(value);
+  return `(${ten.slice(0, 3)})${ten.slice(3, 6)}-${ten.slice(6)}`;
+}
+
+/**
  * Composable form for views that prefer destructured imports of the
  * functions all in one go. No setup required, but matches the project
  * `useX()` convention.
  */
 export function useFormatters() {
-  return { formatDate, formatDateTime, formatTime, formatMoney, formatPercent, formatNumber };
+  return { formatDate, formatDateTime, formatTime, formatMoney, formatPercent, formatNumber, formatPhone };
 }

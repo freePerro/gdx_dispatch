@@ -77,7 +77,7 @@
                    open detail. -->
               <div v-if="selectedCustomer && !form.new_customer" class="customer-contact" data-testid="estimate-customer-contact">
                 <div v-if="selectedCustomer.phone" class="contact-row">
-                  <i class="pi pi-phone" /> {{ selectedCustomer.phone }}
+                  <i class="pi pi-phone" /> {{ formatPhone(selectedCustomer.phone) }}
                 </div>
                 <div v-if="selectedCustomer.email" class="contact-row">
                   <i class="pi pi-envelope" /> {{ selectedCustomer.email }}
@@ -102,8 +102,8 @@
                 </div>
                 <div class="form-field">
                   <label for="new-cust-phone">Phone</label>
-                  <InputText id="new-cust-phone" v-model="form.new_cust_phone"
-                    placeholder="(555) 555-5555" class="w-full"
+                  <PhoneInput id="new-cust-phone" v-model="form.new_cust_phone"
+                    class="w-full"
                     data-testid="estimate-new-cust-phone-input" />
                 </div>
               </div>
@@ -581,9 +581,10 @@ import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
+import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatDate, formatMoney, formatPercent } from "../composables/useFormatters";
+import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Card from "primevue/card";

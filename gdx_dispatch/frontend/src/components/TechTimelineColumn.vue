@@ -15,10 +15,24 @@
   tech-header capacity bar (still in DispatchView above the column body).
 -->
 <template>
-  <div class="tech-timeline" :class="{ 'tech-timeline--off': isOffToday }">
-    <div v-if="isOffToday" class="tech-timeline-off">Off today</div>
+  <div class="tech-timeline" :class="{ 'tech-timeline--off': isOffToday && !hasJobs }">
+    <!-- Off with nothing scheduled: the simple placeholder (unchanged). -->
+    <div v-if="isOffToday && !hasJobs" class="tech-timeline-off">Off today</div>
 
+    <!-- Otherwise render the timeline. If the tech is off but a job landed on
+         this day anyway, we MUST still show it (previously the whole subtree was
+         replaced by "Off today", so the job vanished with no way to see it) —
+         surface it with a warning so the dispatcher can reassign/reschedule. -->
     <template v-else>
+      <div
+        v-if="isOffToday"
+        class="tech-timeline-off-warning"
+        :data-testid="`tech-off-with-jobs-${tech.id}`"
+      >
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        Off today — {{ jobs.length }} job{{ jobs.length === 1 ? '' : 's' }} still scheduled
+      </div>
+
       <!-- Unscheduled tray -->
       <div
         class="tech-timeline-tray"
@@ -171,6 +185,10 @@ const shiftEndHours = computed(() => parseHHMM(props.tech.effective_shift_end) ?
 const shiftLengthHours = computed(() => Math.max(1, shiftEndHours.value - shiftStartHours.value));
 const bodyHeightPx = computed(() => shiftLengthHours.value * props.pxPerHour);
 const isOffToday = computed(() => Boolean(props.tech.isOffToday));
+// Any job on this tech+day (scheduled or unscheduled). Drives whether an
+// off-day still renders its timeline: off + no jobs → placeholder; off + jobs
+// → timeline with a warning so nothing is ever hidden.
+const hasJobs = computed(() => (props.jobs || []).length > 0);
 
 const hourTicks = computed(() => {
   const start = Math.floor(shiftStartHours.value);
@@ -374,6 +392,24 @@ defineExpose({ dropYToISO });
   color: var(--p-text-muted-color, #6b7280);
   border: 1px dashed var(--p-content-border-color, #d1d5db);
   border-radius: var(--p-border-radius, 6px);
+}
+/* Off-day that still has jobs — amber warning so the (visible) jobs read as a
+   scheduling conflict, not a normal assignment. */
+.tech-timeline-off-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--p-amber-800, #92400e);
+  background: var(--p-amber-100, #fef3c7);
+  border: 1px solid var(--p-amber-300, #fcd34d);
+  border-radius: var(--p-border-radius, 6px);
+}
+.tech-timeline-off-warning .pi {
+  font-size: 0.8rem;
 }
 
 .tech-timeline-tray {

@@ -631,6 +631,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { usePollingRefresh } from '../composables/usePollingRefresh';
 import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useTenantTimezone } from '../composables/useTenantTimezone';
 import { formatTime, formatDateTime } from '../composables/useFormatters';
 import { useToast } from 'primevue/usetoast';
 import Avatar from 'primevue/avatar';
@@ -652,6 +653,9 @@ import TechTimelineColumn from '../components/TechTimelineColumn.vue';
 const api = useApiWithToast();
 const toast = useToast();
 const router = useRouter();
+// Office display timezone — the board buckets jobs into day columns and renders
+// card times in THIS zone, not UTC or the viewer's browser zone.
+const { tenantTimezone, zonedDateKey } = useTenantTimezone();
 
 const jobStatuses = ['Scheduled', 'In Progress', 'Complete', 'Invoiced'];
 
@@ -918,7 +922,13 @@ function sumDurationHours(jobList) {
 
 function matchesDate(job, dateStr) {
   if (!job.scheduled_at) return dateStr === selectedDateStr.value;
-  return String(job.scheduled_at).split('T')[0] === dateStr;
+  // Bucket by the OFFICE-local calendar day (tenant timezone), not the raw UTC
+  // date. Slicing the UTC ISO string put an evening job into the NEXT day's
+  // column: for a negative offset like US-Central, "Jul 10 8:00 PM" serializes
+  // to "2026-07-11T01:00:00Z", so .split('T')[0] matched the Jul 11 column.
+  // zonedDateKey resolves the timestamp in the tenant zone so the column and
+  // the card time (also rendered in the tenant zone) always agree.
+  return zonedDateKey(job.scheduled_at) === dateStr;
 }
 
 const rangeFilteredJobs = computed(() => {
@@ -1496,7 +1506,11 @@ const sortedScheduledUnassigned = computed(() => {
 
 function formatScheduled(iso) {
   if (!iso) return '';
-  return formatDateTime(iso, { options: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } });
+  const options = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+  // Render in the office zone so the card time matches the day column it sits
+  // in. Omitted until the tz loads → browser-local, same as before.
+  if (tenantTimezone.value) options.timeZone = tenantTimezone.value;
+  return formatDateTime(iso, { options });
 }
 
 function getHoldingAreaJobs(areaId) {

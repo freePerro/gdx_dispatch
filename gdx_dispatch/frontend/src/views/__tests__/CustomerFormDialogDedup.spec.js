@@ -49,6 +49,15 @@ const stubs = {
       '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
     inheritAttrs: false,
   },
+  // PhoneInput wraps PrimeVue InputMask; stub it like InputText (emit raw
+  // value) so the dedup lookup receives what's typed without the PrimeVue plugin.
+  PhoneInput: {
+    props: ["modelValue"],
+    emits: ["update:modelValue"],
+    template:
+      '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    inheritAttrs: false,
+  },
   Textarea: {
     props: ["modelValue"],
     emits: ["update:modelValue"],

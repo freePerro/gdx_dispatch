@@ -171,10 +171,9 @@
               </div>
               <div class="form-field">
                 <label for="new-cust-phone">Phone</label>
-                <InputText
+                <PhoneInput
                   id="new-cust-phone"
                   v-model="jobForm.new_cust_phone"
-                  placeholder="(555) 555-5555"
                   class="w-full"
                   data-testid="new-job-new-cust-phone-input"
                 />
@@ -377,6 +376,49 @@
             </div>
           </div>
 
+          <!-- Parts from catalog (create mode only). Staged locally, then
+               attached to the job's parts-to-order list after it's created. -->
+          <div v-if="!isEditMode && canAddParts" class="form-field" data-testid="new-job-catalog-parts">
+            <div class="catalog-parts-head">
+              <label>Parts from catalog <span class="optional-hint">(optional)</span></label>
+              <Button
+                type="button"
+                label="Add from Catalog"
+                icon="pi pi-book"
+                size="small"
+                severity="secondary"
+                data-testid="new-job-add-catalog"
+                @click="catalogPickerVisible = true"
+              />
+            </div>
+            <ul v-if="catalogParts.length" class="catalog-parts-list" data-testid="new-job-catalog-parts-list">
+              <li v-for="(p, idx) in catalogParts" :key="idx" class="catalog-part-row">
+                <span class="cp-name">{{ p.part_name }}</span>
+                <span v-if="p.unit_price != null" class="cp-price">{{ formatMoney(p.unit_price) }}</span>
+                <input
+                  v-model.number="p.quantity"
+                  type="number"
+                  min="1"
+                  max="999"
+                  class="cp-qty"
+                  aria-label="Quantity"
+                  :data-testid="`new-job-catalog-qty-${idx}`"
+                />
+                <Button
+                  type="button"
+                  icon="pi pi-times"
+                  text
+                  severity="danger"
+                  size="small"
+                  aria-label="Remove part"
+                  :data-testid="`new-job-catalog-remove-${idx}`"
+                  @click="removeCatalogPart(idx)"
+                />
+              </li>
+            </ul>
+            <p v-else class="optional-hint">No catalog parts added yet.</p>
+          </div>
+
           <!-- Status transition (edit mode only) -->
           <div v-if="isEditMode" class="form-field">
             <label>Status</label>
@@ -412,6 +454,8 @@
           </div>
         </form>
       </Dialog>
+
+      <CatalogPickerDialog v-model:visible="catalogPickerVisible" @add="addCatalogPartsToForm" />
 
       <!-- Soft-gate: scheduled job with no tech (2026-05-01).
            Tenant has dispatch_warn_save_no_tech enabled. -->
@@ -466,7 +510,8 @@ import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
-import { formatDate } from "../composables/useFormatters";
+import { usePermission } from "../composables/usePermission";
+import { formatDate, formatMoney } from "../composables/useFormatters";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Column from "primevue/column";
@@ -478,6 +523,8 @@ import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import EmptyState from "../components/EmptyState.vue";
 import JobStateChip from "../components/JobStateChip.vue";
+import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
+import PhoneInput from "../components/PhoneInput.vue";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
 import Toast from "primevue/toast";
@@ -487,6 +534,29 @@ const api = useApiWithToast();
 const toast = useToast();
 const router = useRouter();
 const route = useRoute();
+const { hasPermission } = usePermission();
+
+// Catalog parts staged on the create dialog. Collected locally, then attached
+// to the new job via /api/jobs/{id}/parts-needed after it's created (POST
+// /api/jobs has no parts field). Gated on inventory.write — the backend
+// enforces it too, this just hides a section the user can't use.
+const canAddParts = computed(() => hasPermission("inventory.write"));
+const catalogPickerVisible = ref(false);
+const catalogParts = ref([]);
+function addCatalogPartsToForm(items) {
+  if (!Array.isArray(items)) return;
+  for (const it of items) {
+    catalogParts.value.push({
+      part_name: it.name || it.description || it.sku || "Catalog item",
+      sku: it.sku || null,
+      unit_price: Number(it.price) > 0 ? Number(it.price) : null,
+      quantity: 1,
+    });
+  }
+}
+function removeCatalogPart(idx) {
+  catalogParts.value.splice(idx, 1);
+}
 
 function createInvoiceFromJob() {
   // Navigate to billing with query params that BillingView can use to pre-fill
@@ -789,6 +859,7 @@ function openCreateDialog() {
   formMode.value = "create";
   _seedingLocation.value = true;
   jobForm.value = emptyForm();
+  catalogParts.value = [];
   formError.value = "";
   showFormDialog.value = true;
 }
@@ -979,6 +1050,32 @@ async function submitForm() {
           notes: jobForm.value.appt_notes || "",
         };
         await api.post("/api/appointments", appointmentPayload);
+      }
+
+      // Attach any catalog parts staged on the form to the new job's
+      // parts-to-order list, carrying the catalog sell price so they reach the
+      // invoice checklist pre-priced. Best-effort + re-gated (defense-in-depth):
+      // a failure here doesn't undo the created job.
+      const partsToAttach = canAddParts.value ? catalogParts.value : [];
+      if (jobId && partsToAttach.length) {
+        let partsFailed = 0;
+        for (const p of partsToAttach) {
+          try {
+            await api.post(`/api/jobs/${jobId}/parts-needed`, {
+              part_name: p.part_name,
+              quantity: Math.max(1, Number(p.quantity) || 1),
+              sku: p.sku || null,
+              unit_price: p.unit_price != null ? Number(p.unit_price) : null,
+              urgency: "normal",
+              notes: "",
+            });
+          } catch {
+            partsFailed += 1;
+          }
+        }
+        if (partsFailed) {
+          toast.add({ severity: "warn", summary: "Job created", detail: `${partsFailed} of ${partsToAttach.length} catalog parts couldn't be added — add them from the job.`, life: 5000 });
+        }
       }
 
       toast.add({ severity: "success", summary: "Job Created", detail: "New job created successfully.", life: 3000 });
@@ -1289,6 +1386,55 @@ defineExpose({
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
+}
+
+.optional-hint {
+  color: var(--p-text-muted-color, #6b7280);
+  font-weight: 400;
+  font-size: 0.85em;
+}
+
+.catalog-parts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.catalog-parts-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.catalog-part-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.catalog-part-row .cp-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-part-row .cp-price {
+  color: var(--p-text-muted-color, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+
+.catalog-part-row .cp-qty {
+  width: 56px;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--surface-border, #dee2e6);
+  border-radius: 6px;
+  background: var(--surface-ground, #fff);
+  color: inherit;
 }
 
 .form-actions {

@@ -80,7 +80,7 @@
         </Column>
         <Column field="phone" header="Phone" sortable style="width: 150px">
           <template #body="{ data }">
-            <a v-if="data.phone" :href="`tel:${data.phone}`" class="contact-link" @click.stop>{{ data.phone }}</a>
+            <a v-if="data.phone" :href="`tel:${data.phone}`" class="contact-link" @click.stop>{{ formatPhone(data.phone) }}</a>
             <span v-else class="text-muted">—</span>
           </template>
         </Column>
@@ -179,6 +179,7 @@ import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
+import { formatPhone } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";

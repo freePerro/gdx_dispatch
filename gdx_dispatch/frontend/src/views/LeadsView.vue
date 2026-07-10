@@ -141,7 +141,7 @@
             <template #body="{ data }">{{ data.email || '—' }}</template>
           </Column>
           <Column field="phone" header="Phone" sortable>
-            <template #body="{ data }">{{ data.phone || '—' }}</template>
+            <template #body="{ data }">{{ formatPhone(data.phone) || '—' }}</template>
           </Column>
           <Column field="source" header="Source" sortable />
           <Column field="created_at" header="Submitted" style="width:140px" sortable>
@@ -205,7 +205,7 @@
           </div>
           <div class="form-field">
             <label>Phone</label>
-            <InputText v-model="form.phone" class="w-full" />
+            <PhoneInput v-model="form.phone" class="w-full" />
           </div>
           <div class="form-field">
             <label>Source</label>
@@ -252,7 +252,7 @@
           </div>
           <div class="ld-row">
             <span class="ld-label">Phone</span>
-            <span><a v-if="selectedLanding.phone" :href="`tel:${selectedLanding.phone}`">{{ selectedLanding.phone }}</a><template v-else>—</template></span>
+            <span><a v-if="selectedLanding.phone" :href="`tel:${selectedLanding.phone}`">{{ formatPhone(selectedLanding.phone) }}</a><template v-else>—</template></span>
           </div>
           <div class="ld-row"><span class="ld-label">Source</span><span>{{ selectedLanding.source || '—' }}</span></div>
           <div class="ld-row"><span class="ld-label">Status</span><span>{{ selectedLanding.status || 'new' }}</span></div>
@@ -310,7 +310,7 @@ import { useApiWithToast } from '../composables/useApiWithToast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useListPrefs } from '../composables/useListPrefs';
 import { useTableExport } from '../composables/useTableExport';
-import { formatMoney as formatCurrency, formatDate, formatDateTime } from '../composables/useFormatters';
+import { formatMoney as formatCurrency, formatDate, formatDateTime, formatPhone } from '../composables/useFormatters';
 import { useAuthStore } from '../stores/auth';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -327,6 +327,7 @@ import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import Toolbar from 'primevue/toolbar';
 import EmptyState from '../components/EmptyState.vue';
+import PhoneInput from '../components/PhoneInput.vue';
 
 const api = useApiWithToast();
 const { confirmDestructive } = useDestructiveConfirm();

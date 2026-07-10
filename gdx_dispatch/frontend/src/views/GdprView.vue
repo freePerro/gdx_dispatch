@@ -25,7 +25,7 @@
           </template>
         </Column>
         <Column field="phone" header="Phone" style="width: 160px">
-          <template #body="{ data }">{{ data.phone || data.primary_phone || '—' }}</template>
+          <template #body="{ data }">{{ formatPhone(data.phone) || formatPhone(data.primary_phone) || '—' }}</template>
         </Column>
         <Column field="created_at" header="Joined" style="width: 140px">
           <template #body="{ data }">{{ (data.created_at || data.added_at || '').split('T')[0] || '—' }}</template>
@@ -95,6 +95,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { formatPhone } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
 import Column from "primevue/column";

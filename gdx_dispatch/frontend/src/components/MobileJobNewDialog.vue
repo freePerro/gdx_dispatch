@@ -29,7 +29,9 @@ import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { usePermission } from '../composables/usePermission'
 import { useDirtyDialog } from '../composables/useDirtyDialog'
+import { formatPhone } from '../composables/useFormatters'
 import FormField from './FormField.vue'
+import PhoneInput from './PhoneInput.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -417,7 +419,7 @@ watch(open, async (v) => {
               @click="pickCustomer(c)"
             >
               <strong>{{ c.name }}</strong>
-              <span v-if="c.phone" class="muted"> · {{ c.phone }}</span>
+              <span v-if="c.phone" class="muted"> · {{ formatPhone(c.phone) }}</span>
             </li>
           </ul>
           <div
@@ -450,11 +452,11 @@ watch(open, async (v) => {
             data-testid="mjn-newcust-name"
           />
           <div class="form-row">
-            <!-- Phone stays raw: FormField has no inputmode pass-through and
-                 losing inputmode="tel" would cost techs the phone keypad. -->
+            <!-- PhoneInput auto-formats to (111)222-3333; inputmode="tel"
+                 falls through so techs still get the numeric phone keypad. -->
             <div class="form-field">
               <label>Phone</label>
-              <InputText
+              <PhoneInput
                 v-model="newCust.phone"
                 class="w-full"
                 inputmode="tel"

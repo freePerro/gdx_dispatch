@@ -78,6 +78,11 @@ class PartNeededIn(BaseModel):
     # Phase 1.3 C1 — optional catalog-resolved SKU + tech-captured photo URL.
     sku: str | None = Field(default=None, max_length=64)
     photo_url: str | None = Field(default=None, max_length=2000)
+    # Catalog-picker intake — carries the catalog SELL price so a part queued
+    # from a catalog reaches the invoice-create checklist pre-priced (the
+    # LineItemEditor pull prefills the invoice line's unit_price from this).
+    # NULL = office prices it on the invoice, matching the free-text flow.
+    unit_price: float | None = Field(default=None, ge=0, le=999999.99)
 
 
 class PartNeededTechUpdate(BaseModel):
@@ -164,6 +169,7 @@ def add_part_needed(
         notes=payload.notes,
         sku=payload.sku or None,
         photo_url=payload.photo_url or None,
+        unit_price=payload.unit_price,
         requested_by_user_id=uid,
         created_at=now,
         updated_at=now,

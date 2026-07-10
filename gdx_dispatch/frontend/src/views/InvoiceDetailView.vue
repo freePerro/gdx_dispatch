@@ -65,7 +65,7 @@
             </div>
             <div class="bill-to-row" data-testid="bill-to-phone">
               <i class="pi pi-phone" />
-              <a v-if="invoice.customer_phone" :href="`tel:${invoice.customer_phone}`">{{ invoice.customer_phone }}</a>
+              <a v-if="invoice.customer_phone" :href="`tel:${invoice.customer_phone}`">{{ formatPhone(invoice.customer_phone) }}</a>
               <a v-else-if="invoice.customer_id" href="#" class="muted add-link" data-testid="bill-to-add-phone" @click.prevent="openCustomerEdit">+ Add phone</a>
               <span v-else class="muted">—</span>
             </div>
@@ -473,7 +473,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
-import { formatDate, formatMoney, formatPercent } from "../composables/useFormatters";
+import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";

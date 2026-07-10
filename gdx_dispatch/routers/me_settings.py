@@ -38,3 +38,21 @@ def get_my_tech_mobile_settings(
         "settings": load_tenant_mobile_settings(db, request=request),
         "tenant_timezone": tz,
     }
+
+
+@router.get("/api/me/timezone")
+def get_my_timezone(
+    _user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the tenant's configured display timezone (IANA name).
+
+    Lightweight companion to ``/api/me/tech-mobile-settings`` for any surface
+    that needs to render dates/times in the office's local zone rather than the
+    browser's — e.g. the dispatch board, which must bucket a job into the
+    correct office-local calendar day instead of slicing its UTC timestamp.
+    Falls back to ``America/New_York`` when unset, matching the mobile endpoint.
+    """
+    row = db.query(AppSettings).first()
+    tz = (row.timezone if row and row.timezone else "America/New_York")
+    return {"tenant_timezone": tz}

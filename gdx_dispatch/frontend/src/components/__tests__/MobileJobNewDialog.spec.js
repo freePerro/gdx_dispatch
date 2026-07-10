@@ -59,6 +59,14 @@ const stubs = {
     template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value); $emit(\'input\', $event)" />',
     inheritAttrs: false,
   },
+  // PhoneInput wraps PrimeVue InputMask; stub it like InputText (emit raw
+  // value) so setInput drives it without the PrimeVue plugin.
+  PhoneInput: {
+    props: ['modelValue'],
+    emits: ['update:modelValue', 'input'],
+    template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value); $emit(\'input\', $event)" />',
+    inheritAttrs: false,
+  },
   FormField: {
     props: ['modelValue', 'label', 'required', 'type', 'as', 'rows', 'placeholder', 'autocomplete'],
     emits: ['update:modelValue'],
