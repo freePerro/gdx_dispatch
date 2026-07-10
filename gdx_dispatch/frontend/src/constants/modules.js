@@ -23,7 +23,7 @@ export const MODULE_CATEGORIES = [
     label: 'Operations',
     icon: 'pi pi-cog',
     modules: [
-      // Field tier (ungated — every role, no permission needed): jobs, timeclock, photos.
+      // Field tier (ungated — every role, no permission needed): jobs, timeclock.
       { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/jobs', type: 'Jobs' },
       { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/dispatch', type: 'Jobs', permission: 'nav.office' },
       // 2026-07-01 UX audit: "Scheduling" vs "Appointments" were conflated (both
@@ -47,7 +47,11 @@ export const MODULE_CATEGORIES = [
       { key: 'delivery_loadsheet', label: 'Delivery Load Sheet', icon: 'pi pi-truck', to: '/delivery-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Delivery' },
       { key: 'equipment', label: 'Customer Equipment', icon: 'pi pi-cog', to: '/equipment', type: 'Operations', permission: 'nav.office' },
       { key: 'equipment_tracking', label: 'Company Tools', icon: 'pi pi-database', to: '/equipment-tracking', type: 'Operations', permission: 'nav.office' },
-      { key: 'photos', label: 'Photos', icon: 'pi pi-images', to: '/photos', type: 'Jobs' },
+      // Office tier: the default /photos feed is /api/photos/recent, a tenant-wide
+      // gallery restricted to dispatch/admin (a tech must not see other jobs'
+      // customer-premises photos). Field-tier here showed techs a nav item that
+      // 403'd + crashed the page on open (prod incident, 2026-07-10).
+      { key: 'photos', label: 'Photos', icon: 'pi pi-images', to: '/photos', type: 'Jobs', permission: 'nav.office' },
     ],
   },
   {

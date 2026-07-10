@@ -182,3 +182,69 @@ def test_no_match_returns_empty_sections(client):
 
     body = tc.get("/api/search", params={"q": "zzz-nothing"}).json()
     assert body == {"jobs": [], "customers": [], "invoices": [], "estimates": []}
+
+
+def _client_for_role(role):
+    """A search-router test client whose middleware injects an arbitrary role.
+
+    The module-level `client` fixture hardcodes role="admin"; these role-gate
+    regressions need to vary it.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def _override_db():
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def inject_user(request, call_next):
+        request.state.current_user = {"sub": "test-user", "role": role, "tenant_id": TENANT}
+        request.state.tenant = {"id": TENANT}
+        return await call_next(request)
+
+    app.include_router(search_router.router)
+    app.dependency_overrides[search_router.get_db] = _override_db
+    return TestClient(app, raise_server_exceptions=True), SessionLocal, engine, app
+
+
+@pytest.mark.parametrize("role", ["technician", "tech", "dispatcher", "owner", "admin"])
+def test_search_admits_canonical_and_legacy_role_spellings(role):
+    """Regression (prod incident, 2026-07-10): migration 009 (#45)
+    renamed users.role `tech`→`technician`, but the /api/search gate still
+    listed only the legacy `"tech"` and require_role matched raw strings — so a
+    migrated technician 403'd ("Insufficient role") on every keystroke of the
+    mobile-jobs search box. require_role now normalizes both sides, so the
+    canonical AND legacy spellings pass."""
+    tc, SessionLocal, engine, app = _client_for_role(role)
+    try:
+        with SessionLocal() as db:
+            _seed(db)
+        resp = tc.get("/api/search", params={"q": "henning"})
+        assert resp.status_code == 200, f"role {role!r} should pass the search gate"
+        assert [c["name"] for c in resp.json()["customers"]] == ["Henning Lumber Yard"]
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def test_search_still_rejects_unlisted_role():
+    """The normalize fix must not broaden access: a role that is neither on the
+    gate's list nor an alias of one still 403s."""
+    tc, _SessionLocal, engine, app = _client_for_role("nobody")
+    try:
+        resp = tc.get("/api/search", params={"q": "henning"})
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()

@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.roles import normalize_role
 
 MODULES = {
     "jobs": {"name": "Jobs", "tier": "starter", "default": True},
@@ -238,8 +239,17 @@ def require_role(*roles: str) -> Callable:
     populated by production middleware, so every require_role gate 403'd in
     production. Now it composes with get_current_user, matching the rest of
     the codebase's auth pattern.
+
+    Both the declared `roles` and the caller's role are run through
+    core.roles.normalize_role before comparison, so a gate written with a
+    legacy spelling (`"tech"`) still admits the canonical form (`"technician"`)
+    and vice-versa. Without this, the #45 role-canonicalization (migration 009,
+    which renamed users.role `tech`→`technician`) silently orphaned every gate
+    still listing `"tech"` — a migrated technician 403'd on /api/search,
+    /api/resources, etc. (prod incident, 2026-07-10). normalize_role only
+    collapses known aliases, so this never broadens access to another role.
     """
-    allowed = set(roles)
+    allowed = {normalize_role(r) for r in roles}
 
     def _dependency(request: Request) -> None:
         user: dict = {}
@@ -268,7 +278,7 @@ def require_role(*roles: str) -> Callable:
                 logging.getLogger(__name__).exception("_dependency caught exception")
                 pass
 
-        role = str((user or {}).get("role") or "")
+        role = normalize_role((user or {}).get("role"))
         if role in allowed:
             return
 
@@ -299,7 +309,7 @@ def require_role(*roles: str) -> Callable:
                 if jti:
                     from gdx_dispatch.routers.auth.core import _get_app_denylist
                     revoked = _get_app_denylist(request).contains(str(jti))
-                if not revoked and str(claims.get("role", "")) in allowed:
+                if not revoked and normalize_role(claims.get("role")) in allowed:
                     return
             except Exception:
                 logging.getLogger(__name__).exception("_dependency caught exception")
