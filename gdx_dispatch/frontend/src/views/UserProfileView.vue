@@ -49,7 +49,7 @@
             </div>
             <div class="field-row">
               <label for="profile-phone">Phone</label>
-              <InputText id="profile-phone" v-model="form.phone" data-testid="profile-phone" />
+              <PhoneInput id="profile-phone" v-model="form.phone" data-testid="profile-phone" />
             </div>
             <div class="field-row">
               <label for="profile-route-start">Route start address</label>
@@ -133,6 +133,7 @@ import { formatDateTime } from '../composables/useFormatters'
 import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import PhoneInput from '../components/PhoneInput.vue'
 import Password from 'primevue/password'
 import Card from 'primevue/card'
 import Tag from 'primevue/tag'

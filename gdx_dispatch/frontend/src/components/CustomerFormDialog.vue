@@ -27,7 +27,7 @@
         <span>
           Possible duplicate of
           <strong>{{ duplicateMatch.customer.name }}</strong>
-          <template v-if="duplicateMatch.customer.phone"> · {{ duplicateMatch.customer.phone }}</template>
+          <template v-if="duplicateMatch.customer.phone"> · {{ formatPhone(duplicateMatch.customer.phone) }}</template>
           <template v-else-if="duplicateMatch.customer.email"> · {{ duplicateMatch.customer.email }}</template>
           (matched on {{ duplicateMatch.on }}). Save anyway if this is a different customer.
         </span>
@@ -36,10 +36,9 @@
       <div class="form-row">
         <div class="form-field">
           <label for="cfd-phone">Phone</label>
-          <InputText
+          <PhoneInput
             id="cfd-phone"
             v-model="form.phone"
-            placeholder="(555) 555-5555"
             data-testid="customer-phone-input"
             class="w-full"
             maxlength="30"
@@ -121,6 +120,8 @@ import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";
 import FormField from "./FormField.vue";
+import PhoneInput from "./PhoneInput.vue";
+import { formatPhone } from "../composables/useFormatters";
 
 const props = defineProps({
   visible: { type: Boolean, default: false },

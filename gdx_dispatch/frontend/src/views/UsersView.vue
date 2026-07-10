@@ -284,7 +284,7 @@
           </div>
           <div class="form-field">
             <label for="edit-phone">Phone</label>
-            <InputText
+            <PhoneInput
               id="edit-phone"
               v-model="editForm.phone"
               data-testid="users-edit-phone"
@@ -601,6 +601,7 @@ import ToggleSwitch from 'primevue/toggleswitch';
 import Toast from 'primevue/toast';
 import Toolbar from 'primevue/toolbar';
 import Password from 'primevue/password';
+import PhoneInput from '../components/PhoneInput.vue';
 
 const api = useApiWithToast();
 const toast = useToast();

@@ -65,7 +65,7 @@
               </Column>
               <Column field="phone" header="Phone">
                 <template #body="{ data }">
-                  <span v-if="data.phone">{{ data.phone }}</span>
+                  <span v-if="data.phone">{{ formatPhone(data.phone) }}</span>
                   <span v-else class="text-muted">—</span>
                 </template>
               </Column>
@@ -140,7 +140,7 @@
 import { onMounted, ref, reactive } from "vue";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatDate } from "../composables/useFormatters";
+import { formatDate, formatPhone } from "../composables/useFormatters";
 import Button from "primevue/button";
 import Card from "primevue/card";
 import Checkbox from "primevue/checkbox";

@@ -61,6 +61,7 @@ def _create(db, user=_TECH, **overrides):
         notes=overrides.get("notes", ""),
         sku=overrides.get("sku"),
         photo_url=overrides.get("photo_url"),
+        unit_price=overrides.get("unit_price"),
     )
     return pr.add_part_needed(_JOB_ID, _request(), payload, user=user, db=db)
 
@@ -81,6 +82,28 @@ def test_c1_freetext_fallback_leaves_sku_null(db):
     out = _create(db, sku=None, part_name="weird custom thing")
     assert out["sku"] is None
     assert out["part_name"] == "weird custom thing"
+
+
+# ---------------------------------------------------------------------------
+# Catalog intake — a part queued from the catalog picker carries the catalog
+# SELL price so the invoice-create checklist prefills the line unit_price.
+# ---------------------------------------------------------------------------
+
+def test_catalog_create_persists_unit_price(db):
+    out = _create(db, part_name="Belt Drive Opener", sku="BD-450", unit_price=450)
+    assert out["unit_price"] == 450.0
+    # Round-trips through the list view the checklist reads, not just the
+    # create response.
+    rows = pr.list_job_parts(_JOB_ID, _request(), user=_DISPATCH, db=db)
+    match = next(r for r in rows if r["id"] == out["id"])
+    assert match["unit_price"] == 450.0
+
+
+def test_catalog_unit_price_optional_defaults_null(db):
+    # Free-text / manual "+ Order Part" flow sends no price → NULL (office
+    # prices it on the invoice), unchanged from the legacy contract.
+    out = _create(db, part_name="mystery part")
+    assert out["unit_price"] is None
 
 
 # ---------------------------------------------------------------------------

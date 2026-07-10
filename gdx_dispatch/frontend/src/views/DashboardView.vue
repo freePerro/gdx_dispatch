@@ -291,7 +291,7 @@
         </div>
         <div class="flex flex-column gap-1">
           <label class="font-semibold">Phone</label>
-          <InputText v-model="scForm.customer_phone" placeholder="(555) 000-0000" data-testid="sc-phone" />
+          <PhoneInput v-model="scForm.customer_phone" data-testid="sc-phone" />
         </div>
         <div class="flex flex-column gap-1">
           <label class="font-semibold">Urgency</label>
@@ -330,6 +330,7 @@ import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";
 import Select from "primevue/select";
+import PhoneInput from "../components/PhoneInput.vue";
 
 const api = useApi();
 const router = useRouter();

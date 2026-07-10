@@ -75,7 +75,7 @@
           </div>
           <div class="form-field">
             <label>Phone</label>
-            <InputText v-model="form.phone" class="w-full" />
+            <PhoneInput v-model="form.phone" class="w-full" />
           </div>
           <div class="form-field">
             <label>Hourly Rate</label>
@@ -128,6 +128,7 @@ import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Toolbar from "primevue/toolbar";
+import PhoneInput from "../components/PhoneInput.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 

@@ -27,7 +27,7 @@
           <div class="info-grid">
             <div class="info-item" data-testid="customer-phone">
               <i class="pi pi-phone"></i>
-              <a v-if="customer.phone" :href="'tel:' + customer.phone">{{ customer.phone }}</a>
+              <a v-if="customer.phone" :href="'tel:' + customer.phone">{{ formatPhone(customer.phone) }}</a>
               <a v-else href="#" class="muted add-link" @click.prevent="openEditDialog">+ Add phone</a>
             </div>
             <div class="info-item" data-testid="customer-email">
@@ -340,7 +340,7 @@
           <div class="form-row">
             <div class="form-field">
               <label for="edit-phone">Phone</label>
-              <InputMask id="edit-phone" v-model="editForm.phone" mask="(999) 999-9999" data-testid="edit-customer-phone" class="w-full" />
+              <PhoneInput id="edit-phone" v-model="editForm.phone" data-testid="edit-customer-phone" class="w-full" />
             </div>
             <div class="form-field">
               <label for="edit-email">Email</label>
@@ -631,7 +631,7 @@ import { computed, ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatDate, formatDateTime, formatMoney, formatPercent } from "../composables/useFormatters";
+import { formatDate, formatDateTime, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { useAuthStore } from "../stores/auth";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -640,8 +640,8 @@ import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Select from "primevue/select";
 import DatePicker from "primevue/datepicker";
-import InputMask from "primevue/inputmask";
 import InputText from "primevue/inputtext";
+import PhoneInput from "../components/PhoneInput.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";

@@ -16,11 +16,15 @@ import InputText from 'primevue/inputtext'
 import DatePicker from 'primevue/datepicker'
 import Tag from 'primevue/tag'
 import { useApi } from '../composables/useApi'
+import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { useToast } from 'primevue/usetoast'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 
 const api = useApi()
 const toast = useToast()
+// Office display timezone — the board buckets jobs into the selected day in
+// THIS zone (same basis as the desktop board), not UTC/browser time.
+const { zonedDateKey } = useTenantTimezone()
 
 const TABS = [
   { label: 'Board', value: 'board' },
@@ -69,13 +73,26 @@ const dateLabel = computed(() => {
   return selectedDate.value.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 })
 
+// Jobs on the selected day. The /api/jobs fetch returns the full list (the
+// server ignores the ?date= param — same as the desktop board), so the board
+// MUST filter client-side or every tech column shows all-time jobs and the
+// date pill does nothing. A dated job matches when its OFFICE-local day equals
+// the selected day; undated jobs (leads with no time yet) surface on today's
+// board only, so they don't duplicate across every day or vanish entirely.
+const dayJobs = computed(() => {
+  const key = selectedDateStr.value
+  return jobs.value.filter((j) =>
+    j.scheduled_at ? zonedDateKey(j.scheduled_at) === key : isToday.value,
+  )
+})
+
 const unassignedJobs = computed(() =>
   // MH-6: exclude terminal-state jobs (Complete / Cancelled / Paid /
   // Failed). Audit found the Unassigned queue was ~90% completed QB-
   // imported historical records under a green "Assign tech" CTA — not
   // actionable. Terminal jobs that legitimately have no tech (closed-
   // out historical imports) belong in reports, not the live queue.
-  jobs.value.filter((j) => !j.technician_id && !j.assigned_to && !isTerminal(j)),
+  dayJobs.value.filter((j) => !j.technician_id && !j.assigned_to && !isTerminal(j)),
 )
 
 const techColumns = computed(() => {
@@ -83,7 +100,7 @@ const techColumns = computed(() => {
   for (const tech of technicians.value) {
     byTech.set(String(tech.id), { id: String(tech.id), name: tech.name, jobs: [] })
   }
-  for (const job of jobs.value) {
+  for (const job of dayJobs.value) {
     const tid = String(job.technician_id || job.assigned_to || '')
     if (!tid) continue
     if (!byTech.has(tid)) {
@@ -168,6 +185,9 @@ function timeWindow(job) {
 
 async function fetchJobs() {
   try {
+    // NOTE: the server currently ignores ?date= (list_jobs has no date param),
+    // so this returns the full list and `dayJobs` filters it client-side. The
+    // param is kept so filtering narrows automatically if the API gains it.
     const data = await api.get(`/api/jobs?date=${selectedDateStr.value}`)
     const list = Array.isArray(data) ? data : data?.items || data?.jobs || []
     jobs.value = list

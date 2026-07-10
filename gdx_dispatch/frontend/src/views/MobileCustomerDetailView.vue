@@ -94,7 +94,7 @@
         <!-- Compact info card: phone/email/address shown inline if present. -->
         <div class="info-card" data-test="mcd-info-card">
           <div v-if="customer.phone" class="info-row">
-            <i class="pi pi-phone" /> {{ customer.phone }}
+            <i class="pi pi-phone" /> {{ formatPhone(customer.phone) }}
           </div>
           <div v-if="customer.email" class="info-row">
             <i class="pi pi-envelope" /> {{ customer.email }}
@@ -330,7 +330,7 @@
           </div>
           <div>
             <label for="mcd-edit-phone">Phone</label>
-            <InputText id="mcd-edit-phone" v-model="editForm.phone" type="tel" class="w-full" data-test="mcd-edit-phone" />
+            <PhoneInput id="mcd-edit-phone" v-model="editForm.phone" class="w-full" data-test="mcd-edit-phone" />
           </div>
           <div>
             <label for="mcd-edit-email">Email</label>
@@ -353,9 +353,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { formatPhone } from '../composables/useFormatters'
 import { estimateStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
 
+import PhoneInput from '../components/PhoneInput.vue'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Button from 'primevue/button'

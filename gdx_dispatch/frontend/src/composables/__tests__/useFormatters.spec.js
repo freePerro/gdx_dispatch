@@ -5,9 +5,35 @@ import {
   formatMoney,
   formatPercent,
   formatNumber,
+  formatPhone,
 } from '../useFormatters';
 
 const LOCALE = 'en-US';
+
+describe('formatPhone', () => {
+  it('formats a clean 10-digit number as (111)222-3333', () => {
+    expect(formatPhone('1112223333')).toBe('(111)222-3333');
+  });
+
+  it('normalizes numbers that already have separators or a country code', () => {
+    expect(formatPhone('111-222-3333')).toBe('(111)222-3333');
+    expect(formatPhone('(111) 222-3333')).toBe('(111)222-3333');
+    expect(formatPhone('+1 111 222 3333')).toBe('(111)222-3333');
+    expect(formatPhone('11112223333')).toBe('(111)222-3333');
+  });
+
+  it('returns empty string for null/undefined/empty (no placeholder)', () => {
+    expect(formatPhone(null)).toBe('');
+    expect(formatPhone(undefined)).toBe('');
+    expect(formatPhone('')).toBe('');
+  });
+
+  it('passes through non-10-digit values unchanged (never mangles)', () => {
+    expect(formatPhone('555-1234')).toBe('555-1234'); // 7 digits
+    expect(formatPhone('1112223333x99')).toBe('1112223333x99'); // extension
+    expect(formatPhone('+44 20 7946 0958')).toBe('+44 20 7946 0958'); // intl
+  });
+});
 
 describe('useFormatters', () => {
   it('formatDate handles null/undefined/empty', () => {

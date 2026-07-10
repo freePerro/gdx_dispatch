@@ -590,6 +590,7 @@
             <h3>Parts Used</h3>
             <Button label="+ Add Part" icon="pi pi-plus" severity="secondary" @click="openAddPart" data-testid="job-detail-add-part" />
             <Button label="+ Order Part" icon="pi pi-shopping-cart" severity="info" @click="openOrderPart" data-testid="job-detail-order-part" />
+            <Button label="Add from Catalog" icon="pi pi-book" severity="info" :loading="addingCatalogParts" @click="catalogPickerVisible = true" data-testid="job-detail-add-catalog" />
             <Button label="Apply Template" icon="pi pi-file" severity="info" text @click="openApplyTemplate" data-testid="job-detail-apply-template" />
           </div>
           <div v-if="!costing?.parts?.items?.length" class="muted">No parts recorded.</div>
@@ -603,7 +604,28 @@
               <template #body="{ data }">{{ formatCurrency(data.subtotal) }}</template>
             </Column>
           </DataTable>
+
+          <!-- Parts queued to order (the "+ Order Part" / "Add from Catalog"
+               flow). Distinct from Parts Used above (consumption); these carry
+               a suggested sell price that flows into the invoice checklist. -->
+          <div class="parts-to-order-block" data-testid="job-detail-parts-to-order">
+            <h4 class="parts-subhead">To order ({{ partsNeeded.length }})</h4>
+            <div v-if="!partsNeeded.length" class="muted">Nothing queued to order.</div>
+            <DataTable v-else :value="partsNeeded" striped-rows responsive-layout="scroll" class="table-small">
+              <Column field="part_name" header="Part" />
+              <Column field="sku" header="SKU" />
+              <Column field="quantity" header="Qty" style="width: 70px" />
+              <Column header="Sell price" style="width: 110px">
+                <template #body="{ data }">{{ data.unit_price != null ? formatCurrency(data.unit_price) : '—' }}</template>
+              </Column>
+              <Column field="status" header="Status" style="width: 110px">
+                <template #body="{ data }"><Tag :value="data.status" severity="info" /></template>
+              </Column>
+            </DataTable>
+          </div>
         </div>
+
+        <CatalogPickerDialog v-model:visible="catalogPickerVisible" @add="addCatalogParts" />
         <div class="card dispatch-status-card">
           <div class="card-header">
             <h3>Dispatch status</h3>
@@ -819,7 +841,7 @@
       </div>
       <div class="form-field">
         <label>Phone</label>
-        <InputText v-model="customerEditForm.phone" data-testid="customer-edit-phone" />
+        <PhoneInput v-model="customerEditForm.phone" data-testid="customer-edit-phone" />
       </div>
       <div class="form-field">
         <label>Email</label>
@@ -848,7 +870,7 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent } from "../composables/useFormatters";
+import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
@@ -867,6 +889,8 @@ import Dialog from "primevue/dialog";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import JobStateChip from "../components/JobStateChip.vue";
+import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
+import PhoneInput from "../components/PhoneInput.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -921,6 +945,13 @@ const orderPartForm = ref({
   urgency: 'normal',
   notes: '',
 });
+// Parts queued to order for this job (the "+ Order Part" / "Add from Catalog"
+// flow writes here). Rendered under the Parts card so the queue is visible on
+// the job — previously these rows only surfaced in Parts-to-Order + the
+// invoice checklist.
+const partsNeeded = ref([]);
+const catalogPickerVisible = ref(false);
+const addingCatalogParts = ref(false);
 const addingPart = ref(false);
 const signatureDialog = ref(false);
 const signatureCanvas = ref(null);
@@ -1042,11 +1073,6 @@ function formatPercent(value) {
   return fmtPercent(value, { whole: true });
 }
 
-function formatPhone(raw) {
-  if (!raw) return "—";
-  return raw;
-}
-
 function techLabel(id) {
   if (!id) return "Unassigned";
   const tech = technicians.value.find((tech) => tech.id === id);
@@ -1097,6 +1123,7 @@ async function refreshRelated() {
     fetchActivity(),
     fetchNotes(),
     fetchCosting(),
+    fetchPartsNeeded(),
     fetchTechnicians(),
     fetchAssignments(),
     fetchAppointments(),
@@ -1170,6 +1197,15 @@ async function fetchCosting() {
     costing.value = data || null;
   } catch {
     costing.value = null;
+  }
+}
+
+async function fetchPartsNeeded() {
+  try {
+    const data = await api.get(`/api/jobs/${route.params.id}/parts-needed`);
+    partsNeeded.value = Array.isArray(data) ? data : data?.items || [];
+  } catch {
+    partsNeeded.value = [];
   }
 }
 
@@ -1616,6 +1652,38 @@ async function saveOrderPart() {
   }
 }
 
+// Add-from-Catalog — the CatalogPickerDialog emits normalized catalog items.
+// Each becomes a job parts-to-order row carrying the catalog SELL price
+// (unit_price), so it reaches the invoice-create checklist pre-priced. Qty
+// defaults to 1 (editable later via the order/edit flow). Best-effort per
+// item: one failure doesn't abort the rest.
+async function addCatalogParts(items) {
+  if (!Array.isArray(items) || !items.length) return;
+  addingCatalogParts.value = true;
+  let failed = 0;
+  for (const it of items) {
+    try {
+      await api.post(`/api/jobs/${route.params.id}/parts-needed`, {
+        part_name: it.name || it.description || it.sku || 'Catalog item',
+        quantity: 1,
+        sku: it.sku || null,
+        unit_price: Number(it.price) > 0 ? Number(it.price) : null,
+        urgency: 'normal',
+        notes: '',
+      });
+    } catch {
+      failed += 1;
+    }
+  }
+  addingCatalogParts.value = false;
+  if (failed) {
+    toast.add({ severity: 'warn', summary: 'Some parts failed', detail: `${failed} of ${items.length} could not be added`, life: 4000 });
+  } else {
+    toast.add({ severity: 'success', summary: 'Added', detail: `${items.length} part${items.length === 1 ? '' : 's'} added to job order list`, life: 3000 });
+  }
+  await fetchPartsNeeded();
+}
+
 async function openApplyTemplate() {
   try {
     const templates = await api.get('/api/job-templates');
@@ -1804,7 +1872,9 @@ onMounted(async () => {
 .tab-panel { margin-top: 1rem; }
 .details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
 .card { background: var(--surface-card); border-radius: 8px; padding: 1rem; border: 1px solid var(--border); }
-.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; gap: 0.5rem; flex-wrap: wrap; }
+.parts-to-order-block { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.parts-subhead { margin: 0 0 0.5rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--p-text-muted-color, #94a3b8); }
 .detail-row { display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
 .detail-row:last-child { border-bottom: none; }
 .detail-text { max-width: 100%; }

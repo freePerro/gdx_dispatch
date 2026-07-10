@@ -46,7 +46,7 @@
           </div>
           <div class="cust-meta">
             <span v-if="c.phone" class="meta-item">
-              <i class="pi pi-phone" /> {{ c.phone }}
+              <i class="pi pi-phone" /> {{ formatPhone(c.phone) }}
             </span>
             <span v-if="c.email" class="meta-item">
               <i class="pi pi-envelope" /> {{ c.email }}
@@ -72,7 +72,7 @@
           </div>
           <div>
             <label for="mc-phone">Phone</label>
-            <InputText id="mc-phone" v-model="form.phone" type="tel" class="w-full" data-test="mc-form-phone" />
+            <PhoneInput id="mc-phone" v-model="form.phone" class="w-full" data-test="mc-form-phone" />
           </div>
           <div>
             <label for="mc-email">Email</label>
@@ -95,8 +95,10 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { formatPhone } from '../composables/useFormatters'
 import { useToast } from 'primevue/usetoast'
 
+import PhoneInput from '../components/PhoneInput.vue'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Button from 'primevue/button'

@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dateKeyInZone } from '../../composables/useTenantTimezone';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SFC_PATH = path.join(__dirname, '..', 'MobileDispatchView.vue');
@@ -153,5 +154,45 @@ describe('MH-6 helpers — isTerminal + unassigned filter', () => {
     ];
     const unassigned = jobs.filter((j) => !j.technician_id && !j.assigned_to && !isTerminal(j));
     expect(unassigned.map((j) => j.id)).toEqual([1, 4]);
+  });
+});
+
+// The board fetches the FULL job list (server ignores ?date=), so it must
+// bucket to the selected day client-side or every tech column shows all-time
+// jobs. This locks both that the SFC actually routes tech/unassigned through
+// dayJobs, and the dayJobs predicate itself.
+describe('MobileDispatchView — selected-day filtering', () => {
+  it('SFC derives dayJobs and feeds tech columns + unassigned from it', () => {
+    expect(SRC).toMatch(/const dayJobs\s*=\s*computed/);
+    // tech grouping iterates dayJobs, not the raw jobs list
+    expect(SRC).toMatch(/for \(const job of dayJobs\.value\)/);
+    // unassigned queue is scoped to the day too
+    expect(SRC).toMatch(/dayJobs\.value\.filter\(\(j\) => !j\.technician_id/);
+  });
+
+  // Mirror of dayJobs' predicate (office-tz day match; undated → today only),
+  // exercised with the REAL dateKeyInZone so the office-tz math is the same.
+  function dayFilter(jobs, key, isToday, tz) {
+    return jobs.filter((j) =>
+      j.scheduled_at ? dateKeyInZone(j.scheduled_at, tz) === key : isToday,
+    );
+  }
+
+  const TZ = 'America/Chicago';
+
+  it('keeps only jobs whose OFFICE-local day matches the selected day', () => {
+    const jobs = [
+      { id: 'a', scheduled_at: '2026-07-10T15:00:00Z' }, // 10am CDT → Jul 10
+      { id: 'b', scheduled_at: '2026-07-11T01:00:00Z' }, // 8pm CDT Jul 10 → Jul 10
+      { id: 'c', scheduled_at: '2026-07-11T14:00:00Z' }, // Jul 11
+    ];
+    const out = dayFilter(jobs, '2026-07-10', false, TZ);
+    expect(out.map((j) => j.id)).toEqual(['a', 'b']); // NOT 'c'
+  });
+
+  it('shows an undated job only on today', () => {
+    const jobs = [{ id: 'lead', scheduled_at: null }];
+    expect(dayFilter(jobs, '2026-07-10', true, TZ).map((j) => j.id)).toEqual(['lead']);
+    expect(dayFilter(jobs, '2026-07-10', false, TZ)).toEqual([]);
   });
 });
