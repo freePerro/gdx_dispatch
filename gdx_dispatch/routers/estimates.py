@@ -110,7 +110,10 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "tax_rate": _to_float(estimate.tax_rate) if estimate.tax_rate is not None else None,
         "discount": _to_float(estimate.discount) if estimate.discount is not None else None,
         # Tri-state override: null = inherit tenant default; true/false = explicit.
-        "hide_line_prices": estimate.hide_line_prices,
+        # getattr-guarded: always present on a real ORM Estimate, but this helper
+        # is also handed lightweight non-ORM stubs in tests — matches the getattr
+        # style _serialize_line already uses for optional fields.
+        "hide_line_prices": getattr(estimate, "hide_line_prices", None),
         "status": estimate.status,
         "total": _to_float(estimate.total),
         "sent_at": estimate.sent_at.isoformat() if estimate.sent_at else None,
