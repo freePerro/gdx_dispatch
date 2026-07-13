@@ -94,15 +94,15 @@
 <div class="section">
   <div class="section-title">Parts &amp; Materials</div>
   <table class="parts-table">
-    <thead><tr><th>Description</th><th>Category</th><th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th></tr></thead>
+    <thead><tr><th>Description</th><th>Category</th><th style="text-align:center">Qty</th>{% if not hide_line_prices %}<th style="text-align:right">Unit Price</th><th style="text-align:right">Total</th>{% endif %}</tr></thead>
     <tbody>
     {% for part in parts %}
-      <tr><td>{{ part.description }}</td><td>{{ part.category }}</td><td style="text-align:center">{{ part.quantity }}</td><td style="text-align:right">${{ "%.2f"|format(part.unit_price) }}</td><td style="text-align:right">${{ "%.2f"|format(part.total) }}</td></tr>
+      <tr><td>{{ part.description }}</td><td>{{ part.category }}</td><td style="text-align:center">{{ part.quantity }}</td>{% if not hide_line_prices %}<td style="text-align:right">${{ "%.2f"|format(part.unit_price) }}</td><td style="text-align:right">${{ "%.2f"|format(part.total) }}</td>{% endif %}</tr>
     {% else %}
-      <tr><td colspan="5" style="text-align:center;color:#999">No estimate lines found for this job</td></tr>
+      <tr><td colspan="{{ 3 if hide_line_prices else 5 }}" style="text-align:center;color:#999">No estimate lines found for this job</td></tr>
     {% endfor %}
     </tbody>
-    <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700;padding:8px">Estimate Total</td><td style="text-align:right;font-weight:700;padding:8px">${{ "%.2f"|format(estimate_total) }}</td></tr></tfoot>
+    <tfoot><tr><td colspan="{{ 2 if hide_line_prices else 4 }}" style="text-align:right;font-weight:700;padding:8px">Estimate Total</td><td style="text-align:right;font-weight:700;padding:8px">${{ "%.2f"|format(estimate_total) }}</td></tr></tfoot>
   </table>
 </div>
 

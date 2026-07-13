@@ -95,12 +95,18 @@ def _estimate_payload(
     attachment_images: list[dict[str, Any]] | None = None,
     attachment_files: list[dict[str, Any]] | None = None,
     deposit_pct: int = 0,
+    hide_line_prices_default: bool = False,
     db: Session | None = None,
 ) -> dict[str, Any]:
+    from gdx_dispatch.modules.estimates_features import effective_hide_line_prices
     lines = sorted(estimate.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
     totals = compute_estimate_totals(estimate, db)
     pct = max(0, min(100, int(deposit_pct or 0)))
     deposit_amount = round(totals["total"] * pct / 100.0, 2) if pct > 0 else 0.0
+    # Tri-state: per-estimate override wins; NULL inherits the tenant default.
+    hide_line_prices = effective_hide_line_prices(
+        getattr(estimate, "hide_line_prices", None), hide_line_prices_default
+    )
     return {
         "estimate_number": estimate.estimate_number,
         "customer": _customer_payload(customer),
@@ -120,6 +126,7 @@ def _estimate_payload(
         "tax": totals["tax"],
         "tax_rate_pct": totals["tax_rate_pct"],
         "total": totals["total"],
+        "hide_line_prices": hide_line_prices,
         "deposit_pct": pct,
         "deposit_amount": deposit_amount,
         # Terms = tenant-wide default text from Settings → Feature Settings.
@@ -166,6 +173,9 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, A
         "status": invoice.status,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else "",
         "terms": invoice.notes or "",
+        # "Total-only" display — hides per-line prices + Subtotal/Tax rows,
+        # keeping Total + Balance Due. Snapshotted from the source estimate.
+        "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),
     }
 
 
@@ -191,6 +201,7 @@ def estimate_pdf(
     # Settings → Estimates card). Best-effort — defaults if anything fails.
     default_terms = ""
     deposit_pct = 0
+    hide_line_prices_default = False
     tenant_id = ""
     if request is not None:
         tenant_id = str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id") or "")
@@ -200,9 +211,11 @@ def estimate_pdf(
             features = get_features(tenant_id)
             default_terms = features.default_terms
             deposit_pct = features.deposit_pct
+            hide_line_prices_default = features.hide_line_prices
     except Exception:
         default_terms = ""
         deposit_pct = 0
+        hide_line_prices_default = False
 
     images, files = _estimate_attachments_for_pdf(db, estimate.id, tenant_id)
     pdf_bytes = generate_estimate_pdf(
@@ -213,6 +226,7 @@ def estimate_pdf(
             attachment_images=images,
             attachment_files=files,
             deposit_pct=deposit_pct,
+            hide_line_prices_default=hide_line_prices_default,
             db=db,
         ),
         tenant_branding=_branding_payload(db),

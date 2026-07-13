@@ -246,6 +246,19 @@
               <Textarea id="est-notes" v-model="form.notes" rows="3" class="w-full"
                 data-testid="estimate-notes" />
             </div>
+
+            <!-- Customer price display (total-only option) -->
+            <div class="form-field full-width">
+              <label for="est-hide-line-prices">Customer price display</label>
+              <Select id="est-hide-line-prices" v-model="hideLinePricesChoice"
+                :options="hideLinePricesOptions" optionLabel="label" optionValue="value"
+                class="w-full" data-testid="estimate-hide-line-prices" />
+              <small class="muted">
+                Hides the per-line Unit Price / Line Total on the customer PDF, email, and
+                install sheet (the subtotal, tax and total still show). The editor always
+                shows line prices — this only changes what the customer sees.
+              </small>
+            </div>
           </div>
 
           <!-- Attachments (existing estimates only — needs an id) -->
@@ -659,7 +672,27 @@ async function loadLinkedJob() {
 
 // --- Pricing tiers + features ---
 const tierSetsByCategory = ref({});
-const estimateFeatures = ref({ estimates_allow_line_margin_override: true });
+const estimateFeatures = ref({ estimates_allow_line_margin_override: true, estimates_hide_line_prices: false });
+
+// Tri-state per-estimate "total-only" control. The persisted form value is
+// null (inherit tenant default) | false (show) | true (hide). PrimeVue Select
+// treats a null option value as "no selection" and renders blank, so the
+// dropdown uses string sentinels and this computed maps them to/from the
+// nullable boolean the API expects.
+const hideLinePricesOptions = computed(() => [
+  { label: `Company default (${estimateFeatures.value.estimates_hide_line_prices ? "hide prices" : "show prices"})`, value: "inherit" },
+  { label: "Show line prices", value: "show" },
+  { label: "Hide line-item prices", value: "hide" },
+]);
+const hideLinePricesChoice = computed({
+  get() {
+    const v = form.value.hide_line_prices;
+    return v === true ? "hide" : v === false ? "show" : "inherit";
+  },
+  set(choice) {
+    form.value.hide_line_prices = choice === "hide" ? true : choice === "show" ? false : null;
+  },
+});
 
 // Tenant-wide default tax rate (Settings → Tax). Used when an estimate has
 // no per-estimate tax_rate. Stored on the server as decimal (0.0825); we
@@ -1120,6 +1153,8 @@ const form = ref({
   // tenantDefaultTaxPct in once it loads.
   tax_rate: 0,
   discount: 0,
+  // "Total-only" override. null = inherit tenant default; true/false explicit.
+  hide_line_prices: null,
   line_items: [defaultLineItem()],
 });
 
@@ -1365,6 +1400,8 @@ async function fetchEstimate() {
       notes: data.notes || "",
       tax_rate: taxPct,
       discount: toNum(data.discount ?? 0),
+      // null = inherit tenant default; true/false = explicit per-estimate override.
+      hide_line_prices: data.hide_line_prices ?? null,
       // Snapshot whether the loaded estimate had its own tax_rate. If null on
       // server and user doesn't change the form value, we save back null on
       // PATCH so the estimate continues to track the tenant default if it
@@ -1514,6 +1551,7 @@ async function _createDraftFromForm() {
       notes: form.value.notes || null,
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
+      hide_line_prices: form.value.hide_line_prices ?? null,
     };
     const result = await apiRaw.post("/api/estimates", payload);
     const created = result?.data || result;
@@ -1712,6 +1750,7 @@ async function _flushNow() {
       notes: form.value.notes || null,
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
+      hide_line_prices: form.value.hide_line_prices ?? null,
     });
 
     // 2. Pending deletes — drain first so newly-added lines don't collide.
@@ -1815,6 +1854,7 @@ async function createEstimate() {
       notes: form.value.notes,
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
+      hide_line_prices: form.value.hide_line_prices ?? null,
       line_items: form.value.line_items
         .filter((li) => li.description && li.unit_price > 0)
         .map((li) => ({

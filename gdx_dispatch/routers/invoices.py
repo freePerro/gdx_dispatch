@@ -108,6 +108,8 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
         "notes": invoice.notes,
+        # "Total-only" display — hides per-line prices on the invoice PDF.
+        "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),
         # PR6 — per-invoice dunning mute state for the detail-view toggle.
         "dunning_paused": bool(getattr(invoice, "dunning_paused", False)),
         "locked": bool(invoice.locked),
@@ -344,6 +346,8 @@ class InvoicePatchIn(BaseModel):
     invoice_date: date | None = None
     due_date: date | None = None
     notes: str | None = None
+    # "Total-only" display toggle for this invoice's PDF.
+    hide_line_prices: bool | None = None
 
 
 class PaymentCreateIn(BaseModel):
@@ -659,6 +663,24 @@ def create_invoice(
             )
             if _warn:
                 zero_price_warnings.append(f"{_warn}: {(_desc or 'line item').strip()}")
+    # Snapshot the source estimate's "total-only" display onto the invoice so
+    # the invoice PDF the customer receives matches the estimate they already
+    # saw. Best-effort — a features read must never block invoicing (capture
+    # beats presentation), mirroring the zero-price policy contract above.
+    invoice_hide_line_prices = False
+    if estimate is not None:
+        try:
+            from gdx_dispatch.modules.estimates_features import (
+                effective_hide_line_prices,
+                get_features,
+            )
+            _hide_default = get_features(str(_["tenant_id"])).hide_line_prices
+            invoice_hide_line_prices = effective_hide_line_prices(
+                estimate.hide_line_prices, _hide_default
+            )
+        except Exception:
+            log.exception("invoice_create_hide_line_prices_resolve_failed")
+            invoice_hide_line_prices = False
     invoice = Invoice(
         job_id=payload.job_id,
         invoice_number=_next_invoice_number(db),
@@ -669,6 +691,7 @@ def create_invoice(
         tax_amount=initial_tax,
         total=_money(Decimal(str(subtotal_value)) + initial_tax),
         balance_due=_money(Decimal(str(subtotal_value)) + initial_tax),
+        hide_line_prices=invoice_hide_line_prices,
         status="draft",
         invoice_date=invoice_date_value,
         due_date=due_date,
@@ -1004,6 +1027,8 @@ def patch_invoice(
         invoice.due_date = updates["due_date"]
     if "notes" in updates:
         invoice.notes = updates["notes"].strip() if updates["notes"] else None
+    if "hide_line_prices" in updates:
+        invoice.hide_line_prices = bool(updates["hide_line_prices"])
 
     _recalculate_invoice(invoice, db)
     db.commit()

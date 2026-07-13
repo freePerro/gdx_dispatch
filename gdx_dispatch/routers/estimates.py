@@ -109,6 +109,8 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "notes": estimate.notes,
         "tax_rate": _to_float(estimate.tax_rate) if estimate.tax_rate is not None else None,
         "discount": _to_float(estimate.discount) if estimate.discount is not None else None,
+        # Tri-state override: null = inherit tenant default; true/false = explicit.
+        "hide_line_prices": estimate.hide_line_prices,
         "status": estimate.status,
         "total": _to_float(estimate.total),
         "sent_at": estimate.sent_at.isoformat() if estimate.sent_at else None,
@@ -343,6 +345,8 @@ class EstimateCreateIn(BaseModel):
     line_items: list[EstimateLineCreateNested] = Field(default_factory=list)
     description: str | None = None
     valid_until: str | None = None
+    # "Total-only" override at create time. None = inherit tenant default.
+    hide_line_prices: bool | None = None
 
 
 class EstimatePatchIn(BaseModel):
@@ -354,6 +358,9 @@ class EstimatePatchIn(BaseModel):
     discount: float | None = Field(default=None, ge=0, le=999999.99)
     job_id: UUID | None = None
     customer_id: UUID | None = None
+    # Tri-state via exclude_unset: field omitted = untouched; explicit null =
+    # revert to inherit tenant default; true/false = force hide/show.
+    hide_line_prices: bool | None = None
 
 
 class EstimateLineCreateIn(BaseModel):
@@ -619,6 +626,7 @@ def create_estimate(
         notes=payload.notes.strip() if payload.notes else None,
         tax_rate=Decimal(str(payload.tax_rate)) if payload.tax_rate is not None else None,
         discount=Decimal(str(payload.discount)) if payload.discount is not None else None,
+        hide_line_prices=payload.hide_line_prices,
         status="draft",
         total=Decimal("0.00"),
         public_token=secrets.token_urlsafe(48)[:64],
@@ -1181,20 +1189,23 @@ def estimate_email_compose(
     images, files = _estimate_attachments_for_pdf(db, estimate.id, tenant_id)
     default_terms = ""
     deposit_pct = 0
+    hide_line_prices_default = False
     try:
         from gdx_dispatch.modules.estimates_features import get_features
         if tenant_id:
             features = get_features(tenant_id)
             default_terms = features.default_terms
             deposit_pct = features.deposit_pct
+            hide_line_prices_default = features.hide_line_prices
     except Exception:
         default_terms = ""
         deposit_pct = 0
+        hide_line_prices_default = False
     pdf_bytes = generate_estimate_pdf(
         estimate_data=_estimate_payload(
             estimate, customer, default_terms=default_terms,
             attachment_images=images, attachment_files=files,
-            deposit_pct=deposit_pct, db=db,
+            deposit_pct=deposit_pct, hide_line_prices_default=hide_line_prices_default, db=db,
         ),
         tenant_branding=_branding_payload(db),
     )
@@ -1691,6 +1702,7 @@ def duplicate_estimate(
         tax_rate=source.tax_rate,
         discount=source.discount,
         proposal_mode=bool(source.proposal_mode),
+        hide_line_prices=source.hide_line_prices,
         status="draft",
         total=Decimal("0.00"),
         public_token=secrets.token_urlsafe(48)[:64],

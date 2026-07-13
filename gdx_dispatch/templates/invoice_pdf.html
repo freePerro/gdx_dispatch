@@ -52,8 +52,10 @@
         <tr>
           <th>Description</th>
           <th class="num">Qty</th>
+          {% if not data.hide_line_prices %}
           <th class="num">Unit Price</th>
           <th class="num">Line Total</th>
+          {% endif %}
         </tr>
       </thead>
       <tbody>
@@ -61,8 +63,10 @@
         <tr>
           <td>{{ line.description }}</td>
           <td class="num">{{ line.quantity }}</td>
+          {% if not data.hide_line_prices %}
           <td class="num">${{ '%.2f'|format(line.unit_price or 0) }}</td>
           <td class="num">${{ '%.2f'|format(line.line_total or 0) }}</td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
@@ -70,6 +74,8 @@
   </div>
 
   <table class="totals">
+    {# Tax stays separately stated even when per-line prices are hidden — an
+       invoice must disclose tax. Only the per-line columns above are gated. #}
     <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
     <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">${{ '%.2f'|format(data.tax or 0) }}</td></tr>
     <tr><td class="label">Total</td><td class="num">${{ '%.2f'|format(data.total or 0) }}</td></tr>

@@ -358,6 +358,12 @@ class Invoice(Base):
     due_date: Mapped[date] = mapped_column(Date, nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # "Total-only" display (migration 019). Snapshotted from the source
+    # estimate's EFFECTIVE hide-prices value at estimate->invoice conversion so
+    # the invoice PDF matches the estimate the customer already saw; editable
+    # afterward via PATCH. When True the invoice PDF hides per-line Unit
+    # Price/Line Total (and Subtotal/Tax rows), showing only Total + Balance Due.
+    hide_line_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -212,6 +212,10 @@
             <label>Notes</label>
             <InputText v-model="editNotes" class="w-full" />
           </div>
+          <div class="edit-field" style="grid-column: 1 / -1; display:flex; align-items:center; gap:0.6rem;">
+            <ToggleSwitch v-model="editHideLinePrices" inputId="inv-hide-line-prices" data-testid="invoice-hide-line-prices" />
+            <label for="inv-hide-line-prices" style="margin:0">Hide line-item prices on PDF</label>
+          </div>
         </div>
 
         <!-- Totals. In edit mode the breakdown is computed live from the
@@ -482,6 +486,7 @@ import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Divider from "primevue/divider";
 import Select from "primevue/select";
+import ToggleSwitch from "primevue/toggleswitch";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
@@ -534,6 +539,7 @@ const editTaxRatePct = ref(0);      // displayed as percent (e.g., 7.38), not de
 const editInvoiceDate = ref("");    // ISO yyyy-mm-dd
 const editDueDate = ref("");
 const editNotes = ref("");
+const editHideLinePrices = ref(false);
 const tenantDefaultRatePct = computed(() => taxRate.value * 100);
 
 const invoice = ref({
@@ -670,6 +676,8 @@ function normalizeInvoice(payload) {
     notes: payload.notes || "",
     // PR6 — drives the Pause/Resume reminders toggle.
     dunning_paused: Boolean(payload.dunning_paused),
+    // Drives the edit-mode "hide line-item prices on PDF" toggle.
+    hide_line_prices: Boolean(payload.hide_line_prices),
     line_items: lineItems,
     payments,
   };
@@ -977,6 +985,7 @@ function enterEditMode() {
   editInvoiceDate.value = invoice.value.invoice_date || "";
   editDueDate.value = invoice.value.due_date || "";
   editNotes.value = invoice.value.notes || "";
+  editHideLinePrices.value = Boolean(invoice.value.hide_line_prices);
   editing.value = true;
 }
 
@@ -1079,6 +1088,7 @@ async function saveEdit() {
       invoice_date: editInvoiceDate.value || null,
       due_date: editDueDate.value || null,
       notes: editNotes.value || null,
+      hide_line_prices: editHideLinePrices.value,
     });
 
     toast.add({ severity: "success", summary: "Saved", detail: "Invoice updated", life: 3000 });

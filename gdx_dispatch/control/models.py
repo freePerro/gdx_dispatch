@@ -226,5 +226,9 @@ class TenantSettings(Base):
     payroll_source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual", server_default="manual")
     maps_provider: Mapped[str] = mapped_column(String(40), nullable=False, default="google_maps", server_default="google_maps")
     estimates_allow_line_margin_override: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # Tenant-wide default for "total-only" estimates (migration 019). When true,
+    # new estimates whose per-estimate hide_line_prices is NULL render the
+    # customer PDF/email with per-line prices hidden. Per-estimate override wins.
+    estimates_hide_line_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
