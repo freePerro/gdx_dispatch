@@ -46,9 +46,10 @@ def test_duplicate_copies_header_fields_and_resets_state(client: TestClient):
     assert dup["estimate_number"] != src["estimate_number"]
     assert dup["estimate_number"].startswith("EST-")
 
-    # Copied fields
+    # Copied fields (label gets an incrementing "-N" suffix so option variants
+    # of the same job stay distinguishable in lists).
     assert dup["customer_id"] == src["customer_id"]
-    assert dup["label"] == "Shop doors r 10.29"
+    assert dup["label"] == "Shop doors r 10.29-1"
     assert dup["notes"] == "50% down required."
     assert dup["description"] == "3 - 12x12 + 1 - 16x12"
 
@@ -242,6 +243,35 @@ def test_duplicate_proposal_mode_clones_tiers(client: TestClient):
         assert all(t.stripe_payment_link is None for t in new_tiers)
     finally:
         db.close()
+
+
+def test_duplicate_label_appends_incrementing_suffix(client: TestClient):
+    """Duplicating for door-option variants must yield distinguishable job
+    names. First dup of "Job" -> "Job-1"; duplicating "Job" again -> "Job-2"
+    (lowest free N, no collision); duplicating "Job-1" -> "Job-2" as well
+    (increments the shared base, never stacks "-1-1").
+    """
+    src = _create_estimate(client, label="123 Main St - Door Replacement")
+
+    dup1 = client.post(f"/api/estimates/{src['id']}/duplicate").json()
+    assert dup1["label"] == "123 Main St - Door Replacement-1"
+
+    # Re-duplicating the ORIGINAL should not collide with dup1.
+    dup2 = client.post(f"/api/estimates/{src['id']}/duplicate").json()
+    assert dup2["label"] == "123 Main St - Door Replacement-2"
+
+    # Duplicating an already-suffixed estimate increments the base, no "-1-1".
+    dup3 = client.post(f"/api/estimates/{dup1['id']}/duplicate").json()
+    assert dup3["label"] == "123 Main St - Door Replacement-3"
+
+
+def test_duplicate_label_handles_null_and_blank(client: TestClient):
+    """A null/blank job name stays null/blank on the duplicate — we only
+    suffix when there's an actual name to distinguish.
+    """
+    src = _create_estimate(client, label=None)
+    dup = client.post(f"/api/estimates/{src['id']}/duplicate").json()
+    assert dup["label"] in (None, "")
 
 
 def test_duplicate_drops_soft_deleted_customer(client: TestClient):

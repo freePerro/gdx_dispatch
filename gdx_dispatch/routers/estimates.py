@@ -71,6 +71,46 @@ def _next_estimate_number(db: Session) -> str:
     return f"EST-{highest + 1:06d}"
 
 
+def _next_duplicate_label(db: Session, source_label: str | None) -> str | None:
+    """Job name for a duplicated estimate: append an incrementing "-N" suffix.
+
+    Duplicates used to copy the source label verbatim, so option variants of
+    the same job (same jobsite, different doors) were indistinguishable in
+    lists. Instead we append a numeric suffix — "Front door" -> "Front door-1"
+    -> "Front door-2". If the source already ends in a "-N" suffix we increment
+    the shared base rather than stacking ("Front door-1" -> "Front door-2", not
+    "-1-1"), and we pick the lowest free N so re-duplicating the original keeps
+    counting up instead of colliding with an earlier copy.
+    """
+    import re
+
+    if not source_label or not source_label.strip():
+        return source_label
+
+    m = re.match(r"^(.*)-(\d+)$", source_label)
+    base = m.group(1) if m else source_label
+
+    # Find suffixes already in use for this base so we pick the next free one.
+    # No company/tenant filter — mirrors _next_estimate_number (single-tenant).
+    like_base = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    existing = db.execute(
+        select(Estimate.label).where(Estimate.label.like(f"{like_base}-%", escape="\\"))
+    ).scalars().all()
+    used: set[int] = set()
+    pattern = re.compile(re.escape(base) + r"-(\d+)$")
+    for lbl in existing:
+        mm = pattern.match(lbl or "")
+        if mm:
+            used.add(int(mm.group(1)))
+
+    n = 1
+    while n in used:
+        n += 1
+    suffix = f"-{n}"
+    # Respect the String(200) label column limit if the base is very long.
+    return f"{base[: 200 - len(suffix)]}{suffix}"
+
+
 def _serialize_line(line: EstimateLine) -> dict[str, object]:
     # Sprint 1.0.5 — surface snapshot fields so the estimate side panel can
     # compute per-line profit and margin without a server round-trip.
@@ -1667,9 +1707,11 @@ def duplicate_estimate(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Full clone of an estimate: same customer / job-name / jobsite / description /
-    notes / tax / lines. Resets status=draft, mints a new estimate_number and
-    public_token, clears sent/accepted/declined/signed state and job linkage.
+    """Full clone of an estimate: same customer / jobsite / description /
+    notes / tax / lines. The job name (label) gets an incrementing "-N" suffix
+    so option variants stay distinguishable (see _next_duplicate_label). Resets
+    status=draft, mints a new estimate_number and public_token, clears
+    sent/accepted/declined/signed state and job linkage.
 
     Edge cases (auditor 2026-05-27):
       - proposal_mode estimates clone their ProposalTier rows too; without
@@ -1698,7 +1740,7 @@ def duplicate_estimate(
         job_id=None,  # duplicates start unattached; original Job keeps its estimate
         customer_id=cloned_customer_id,
         estimate_number=_next_estimate_number(db),
-        label=source.label,
+        label=_next_duplicate_label(db, source.label),
         jobsite_address=source.jobsite_address,
         description=source.description,
         notes=source.notes,
