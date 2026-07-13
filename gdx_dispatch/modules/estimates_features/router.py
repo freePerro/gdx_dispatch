@@ -21,6 +21,7 @@ _COLS = (
     "estimate_email_subject_template",
     "estimate_email_body_template",
     "estimate_deposit_pct",
+    "estimates_hide_line_prices",
 )
 
 
@@ -30,6 +31,7 @@ class FeaturesPayload(BaseModel):
     estimate_email_subject_template: str = ""
     estimate_email_body_template: str = ""
     estimate_deposit_pct: int = 50
+    estimates_hide_line_prices: bool = False
 
 
 def _tenant_uuid(request: Request) -> UUID:

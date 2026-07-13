@@ -277,7 +277,7 @@ def install_sheet(
     db: Session = Depends(get_db),
 ) -> Response:
     tenant = getattr(request.state, "tenant", {}) or {}
-    str(tenant.get("id", ""))
+    tenant_id = str(tenant.get("id", ""))
 
     # Get job via ORM
     try:
@@ -403,6 +403,25 @@ def install_sheet(
     if door_specs:
         door_specs["high_lift_display"] = f'{door_specs["high_lift_in"]}"' if door_specs.get("high_lift_in") else _val(door_specs.get("high_lift"), "No")
 
+    # "Total-only" display — the install sheet is a customer-signed document, so
+    # respect the same effective hide-prices setting the estimate PDF uses
+    # (per-estimate override else tenant default). Best-effort; show prices on
+    # any read error so the tech sheet is never blank.
+    hide_line_prices = False
+    if estimate_obj is not None:
+        try:
+            from gdx_dispatch.modules.estimates_features import (
+                effective_hide_line_prices,
+                get_features,
+            )
+            _hide_default = get_features(tenant_id).hide_line_prices if tenant_id else False
+            hide_line_prices = effective_hide_line_prices(
+                getattr(estimate_obj, "hide_line_prices", None), _hide_default
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("install_sheet hide_line_prices resolve failed")
+            hide_line_prices = False
+
     job_num = f"JOB-{str(job['id'])[:8].upper()}"
     auto_print = False
 
@@ -417,6 +436,7 @@ def install_sheet(
                 technician=tech_name, job_type=_val(job.get("job_type"), "Service"),
                 priority=_val(job.get("priority"), "Normal"), door_specs=door_specs,
                 parts=parts, estimate_total=estimate_total,
+                hide_line_prices=hide_line_prices,
                 notes=_val(estimate_obj.notes if estimate_obj else job.get("description"), "No special instructions."),
                 auto_print=False,
             )
@@ -435,6 +455,7 @@ def install_sheet(
         technician=tech_name, job_type=_val(job.get("job_type"), "Service"),
         priority=_val(job.get("priority"), "Normal"), door_specs=door_specs,
         parts=parts, estimate_total=estimate_total,
+        hide_line_prices=hide_line_prices,
         notes=_val(estimate_obj.notes if estimate_obj else job.get("description"), "No special instructions."),
         auto_print=auto_print,
     )

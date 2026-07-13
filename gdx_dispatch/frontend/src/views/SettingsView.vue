@@ -514,6 +514,18 @@
                     </div>
                   </div>
                 </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                  <ToggleSwitch v-model="estimatesFeatures.estimates_hide_line_prices" data-testid="est-hide-line-prices" />
+                  <div>
+                    <strong>Hide line-item prices</strong>
+                    <div class="muted">
+                      Default for new estimates: the customer PDF/email and install sheet
+                      show line items and quantities plus the subtotal, tax and total,
+                      hiding only the per-line Unit Price / Line Total. Any estimate can
+                      override this individually.
+                    </div>
+                  </div>
+                </div>
                 <Divider />
                 <div style="display:flex; flex-direction:column; gap:0.4rem;">
                   <strong>Default Terms</strong>
@@ -1662,6 +1674,7 @@ const estimatesFeatures = reactive({
   estimate_email_subject_template: "",
   estimate_email_body_template: "",
   estimate_deposit_pct: 50,
+  estimates_hide_line_prices: false,
 });
 const emailSubjectPlaceholder = "{{job_title}}";
 const emailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached estimate for {{job_title}}.\n\nReply with any questions, or to move forward.\n\nThanks,\n{{company_name}}";

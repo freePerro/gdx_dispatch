@@ -178,6 +178,55 @@ def test_create_invoice_from_estimate_copies_total_and_lines(tenant_db_session):
     assert invoice["lines"][1]["description"] == "Labor"
 
 
+def test_create_invoice_snapshots_estimate_hide_line_prices(tenant_db_session):
+    """A "total-only" estimate (hide_line_prices=True) carries that onto the
+    invoice at conversion so the invoice PDF matches the estimate the customer
+    already saw. The per-estimate override wins even if the tenant-default read
+    is unavailable in this hermetic env (best-effort get_features → default)."""
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("150.00"))
+    est.hide_line_prices = True
+    tenant_db_session.commit()
+    _seed_estimate_line(tenant_db_session, est.id, "Door", 1, Decimal("150.00"))
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, estimate_id=est.id),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+
+    # A normal estimate (NULL override, no tenant default) → invoice shows prices.
+    est2 = _seed_estimate(tenant_db_session, job.id, Decimal("75.00"))
+    _seed_estimate_line(tenant_db_session, est2.id, "Spring", 1, Decimal("75.00"))
+    created2 = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, estimate_id=est2.id),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created2["hide_line_prices"] is False
+
+
+def test_create_invoice_inherits_tenant_default_hide_line_prices(tenant_db_session, monkeypatch):
+    """The headline "company default flows onto the invoice" path: a NULL-override
+    estimate inherits the TENANT DEFAULT at conversion. The hermetic env can't
+    read the control DB, so stub get_features to return the default = True and
+    assert the invoice snapshots it (audit gap: this branch was otherwise only
+    exercised in production)."""
+    from gdx_dispatch.modules import estimates_features as ef
+    monkeypatch.setattr(ef, "get_features", lambda tid: ef.EstimatesFeatures(hide_line_prices=True))
+
+    job = _seed_job(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, job.id, Decimal("100.00"))  # hide_line_prices = None (inherit)
+    _seed_estimate_line(tenant_db_session, est.id, "Door", 1, Decimal("100.00"))
+    created = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, estimate_id=est.id),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    assert created["hide_line_prices"] is True
+
+
 def test_create_invoice_validation_allows_missing_job_id():
     """Counter-sale invoices have no job. customer_id stays required; job_id
     is optional after the 2026-05-14 counter-sale flip."""

@@ -26,6 +26,13 @@ class Estimate(TenantBase):
     tax_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=True)
     discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)
     proposal_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # "Total-only" display override (migration 019). NULLABLE tri-state:
+    # NULL = inherit tenant default (tenant_settings.estimates_hide_line_prices);
+    # True = hide per-line prices on the customer PDF/email (show only the bottom
+    # line Total); False = force show. Mirrors the tax_rate/discount override
+    # pattern above (NULL = tenant default). Purely presentational — never changes
+    # the computed total.
+    hide_line_prices: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     status: Mapped[str] = mapped_column(
         Enum("draft", "sent", "accepted", "declined", "rejected", "expired", name="estimate_status"),

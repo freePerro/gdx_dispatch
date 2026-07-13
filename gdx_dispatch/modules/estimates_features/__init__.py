@@ -11,6 +11,7 @@ here without changing routes.
 """
 from gdx_dispatch.modules.estimates_features.service import (  # noqa: F401
     EstimatesFeatures,
+    effective_hide_line_prices,
     get_features,
     require_line_margin_override_allowed,
 )
