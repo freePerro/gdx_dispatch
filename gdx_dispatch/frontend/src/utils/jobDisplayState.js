@@ -67,6 +67,28 @@ function titleize(s) {
 }
 
 /**
+ * A job in the "scheduled" pipeline stage with NO appointment date — e.g. a
+ * converted estimate parked in "Order Doors" awaiting delivery. Doug
+ * 2026-07-13: a scanning user reads the bare word "Scheduled" as "has an
+ * appointment", so these must display as "Awaiting Schedule" instead.
+ *
+ * DISPLAY-ONLY. The stored lifecycle_stage stays "scheduled" — that value is
+ * load-bearing (scheduling board, recommender, MCP list_jobs all key off it);
+ * never "fix" the underlying value to match this label.
+ *
+ * Guarded on key presence: a payload that simply omits `scheduled_at`
+ * (older cache, partial serializer) proves nothing and is NOT relabeled.
+ */
+export function isAwaitingSchedule(job) {
+  if (!job || typeof job !== 'object') return false;
+  if (!('scheduled_at' in job) || job.scheduled_at) return false;
+  const stage = String(
+    (job.display_state && job.display_state.stage) || job.lifecycle_stage || job.status || ''
+  ).toLowerCase().trim();
+  return stage === 'scheduled';
+}
+
+/**
  * @param {object|null|undefined} job - a job object from the API.
  * @returns {{stage:string,type:string,label:string,isFinished:boolean,severity:string,icon:string}}
  */
@@ -77,6 +99,20 @@ export function jobDisplayState(job) {
   if (ds && typeof ds === 'object' && ds.label) {
     const type = ds.type === 'won' || ds.type === 'lost' ? ds.type : 'open';
     const stage = String(ds.stage || '').toLowerCase();
+    // Sub-state refinement: "scheduled" with no appointment date reads as
+    // a lie at a glance — relabel + warn so it scans as needing a date.
+    // stage stays 'scheduled' (data-stage consumers see the true stage).
+    if (stage === 'scheduled' && isAwaitingSchedule(job)) {
+      return {
+        stage,
+        type,
+        label: 'Awaiting Schedule',
+        isFinished: false,
+        severity: 'warn',
+        icon: 'pi pi-clock',
+        unverified: false,
+      };
+    }
     const override = STAGE_OVERRIDE[stage] || null;
     return {
       stage: stage || 'unknown',
@@ -113,7 +149,20 @@ export function jobDisplayState(job) {
       };
     }
     // Non-deceptive work stages (service_call/scheduled/estimate/…) are
-    // still useful — show them, but flagged unverified.
+    // still useful — show them, but flagged unverified. The scheduled-with-
+    // no-date refinement applies here too (same key-presence guard) so a
+    // degraded payload can't regress to the misleading bare "Scheduled".
+    if (norm === 'scheduled' && isAwaitingSchedule(job)) {
+      return {
+        stage: norm,
+        type: 'open',
+        label: 'Awaiting Schedule',
+        isFinished: false,
+        severity: 'warn',
+        icon: 'pi pi-clock',
+        unverified: true,
+      };
+    }
     return {
       stage: norm,
       type: 'open',

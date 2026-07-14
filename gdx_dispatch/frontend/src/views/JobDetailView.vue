@@ -49,8 +49,12 @@
       </div>
 
       <div class="stage-strip">
+        <!-- The active "Scheduled" pill relabels to "Awaiting Schedule" when the
+             job has no appointment date — a green "Scheduled" pill on a dateless
+             job reads as booked. Click semantics + testids stay keyed to the
+             canonical stage name. -->
         <Button v-for="stage in stageButtons" :key="stage"
-          :label="stage"
+          :label="stage === 'Scheduled' && awaitingSchedule ? 'Awaiting Schedule' : stage"
           :severity="stageSeverity(stage)"
           :rounded="true"
           :outlined="stage !== job.status"
@@ -90,11 +94,11 @@
             </div>
             <div class="detail-row">
               <span>Lifecycle Stage</span>
-              <strong>{{ job.lifecycle_stage || job.status || 'Unknown' }}</strong>
+              <strong>{{ lifecycleStageDisplay }}</strong>
             </div>
             <div class="detail-row">
-              <span>Scheduled</span>
-              <strong>{{ job.scheduled_at ? formatDate(job.scheduled_at) : 'Not scheduled' }}</strong>
+              <span>Scheduled For</span>
+              <strong>{{ job.scheduled_at ? formatDate(job.scheduled_at) : 'Not yet scheduled' }}</strong>
             </div>
             <div class="detail-row">
               <span>Priority</span>
@@ -875,6 +879,7 @@ import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
 import { estimateStatusSeverity } from "../utils/statusSeverity";
+import { isAwaitingSchedule } from "../utils/jobDisplayState";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";
@@ -999,6 +1004,19 @@ const inventoryOptions = computed(() => inventoryItems.value.map((item) => ({
   value: item.id,
 })));
 const dispatchNotes = computed(() => job.value.notes || job.value.description || "No dispatch notes." );
+// A job in the "Scheduled" pipeline stage with no appointment date (e.g. a
+// converted estimate awaiting door delivery) is sold and on the board but NOT
+// on the calendar — the bare word "Scheduled" reads, at a glance, as "has an
+// appointment". The one rule lives in utils/jobDisplayState.isAwaitingSchedule
+// (also drives the JobStateChip header badge); here it relabels the Lifecycle
+// Stage row and the stage-strip pill. Display-only: the stored lifecycle_stage
+// stays "scheduled" (load-bearing for the scheduling board, recommender, and
+// MCP list — do NOT change the underlying value).
+const awaitingSchedule = computed(() => isAwaitingSchedule(job.value));
+const lifecycleStageDisplay = computed(() => {
+  if (awaitingSchedule.value) return "Awaiting Schedule";
+  return job.value.lifecycle_stage || job.value.status || "Unknown";
+});
 // Sprint customer-multi-location (2026-05-21) — if the job is bound to
 // a specific customer_locations row, that wins. Otherwise fall back to
 // the customer's primary location, then their (deprecated single-string)
@@ -1057,6 +1075,9 @@ function invoiceStatusSeverity(status) {
 
 function stageSeverity(stage) {
   if (!job.value.status) return "secondary";
+  // Active "Scheduled" with no date: amber, not green — it needs a date,
+  // it isn't booked. Pairs with the "Awaiting Schedule" relabel above.
+  if (stage === "Scheduled" && stage === job.value.status && awaitingSchedule.value) return "warn";
   if (stage === job.value.status) return "success";
   if (stage === "Complete" && job.value.status === "Invoiced") return "success";
   return "secondary";
