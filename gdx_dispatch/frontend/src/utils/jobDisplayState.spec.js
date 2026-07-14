@@ -7,7 +7,7 @@
  * regression here is a regression everywhere.
  */
 import { describe, expect, it } from 'vitest';
-import { jobDisplayState } from './jobDisplayState';
+import { isAwaitingSchedule, jobDisplayState } from './jobDisplayState';
 
 describe('jobDisplayState — authoritative display_state', () => {
   it('maps won → success + check icon, finished', () => {
@@ -116,6 +116,64 @@ describe('jobDisplayState — graceful fallback (no display_state)', () => {
       display_state: { stage: 'invoiced', type: 'open', label: 'Invoiced', is_finished: false },
     });
     expect(s.unverified).toBe(false);
+  });
+});
+
+describe('jobDisplayState — scheduled-with-no-date sub-state (Doug 2026-07-13)', () => {
+  // A converted estimate is stored lifecycle_stage="scheduled" with
+  // scheduled_at NULL (intentional, load-bearing convention). Displaying the
+  // bare word "Scheduled" for it reads as "has an appointment" — relabel to
+  // "Awaiting Schedule" at the display layer only.
+  it('authoritative scheduled + scheduled_at null → Awaiting Schedule, warn', () => {
+    const s = jobDisplayState({
+      display_state: { stage: 'scheduled', type: 'open', label: 'Scheduled', is_finished: false },
+      scheduled_at: null,
+    });
+    expect(s).toEqual({
+      stage: 'scheduled', type: 'open', label: 'Awaiting Schedule', isFinished: false,
+      severity: 'warn', icon: 'pi pi-clock', unverified: false,
+    });
+  });
+
+  it('authoritative scheduled WITH a date keeps the plain Scheduled label', () => {
+    const s = jobDisplayState({
+      display_state: { stage: 'scheduled', type: 'open', label: 'Scheduled', is_finished: false },
+      scheduled_at: '2026-07-08T14:00:00Z',
+    });
+    expect(s.label).toBe('Scheduled');
+    expect(s.severity).toBe('info');
+  });
+
+  it('payload that OMITS scheduled_at is never relabeled (proves nothing)', () => {
+    const s = jobDisplayState({
+      display_state: { stage: 'scheduled', type: 'open', label: 'Scheduled', is_finished: false },
+    });
+    expect(s.label).toBe('Scheduled');
+    expect(s.severity).toBe('info');
+  });
+
+  it('fallback scheduled + scheduled_at null → Awaiting Schedule, still unverified', () => {
+    const s = jobDisplayState({ status: 'Scheduled', scheduled_at: null });
+    expect(s.label).toBe('Awaiting Schedule');
+    expect(s.severity).toBe('warn');
+    expect(s.unverified).toBe(true);
+  });
+
+  it('data-stage stays "scheduled" — the stored stage is load-bearing', () => {
+    const s = jobDisplayState({
+      display_state: { stage: 'scheduled', type: 'open', label: 'Scheduled', is_finished: false },
+      scheduled_at: null,
+    });
+    expect(s.stage).toBe('scheduled');
+  });
+
+  it('isAwaitingSchedule: only scheduled-stage, key-present, empty-date jobs', () => {
+    expect(isAwaitingSchedule({ lifecycle_stage: 'Scheduled', scheduled_at: null })).toBe(true);
+    expect(isAwaitingSchedule({ lifecycle_stage: 'Scheduled', scheduled_at: '2026-07-08' })).toBe(false);
+    expect(isAwaitingSchedule({ lifecycle_stage: 'Scheduled' })).toBe(false); // key absent
+    expect(isAwaitingSchedule({ lifecycle_stage: 'in_progress', scheduled_at: null })).toBe(false);
+    expect(isAwaitingSchedule(null)).toBe(false);
+    expect(isAwaitingSchedule(undefined)).toBe(false);
   });
 });
 
