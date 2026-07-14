@@ -110,7 +110,11 @@
           <Column field="title" header="Title" />
           <Column field="status" header="Status" style="width: 130px">
             <template #body="{ data }">
-              <Tag :value="data.lifecycle_stage || data.status || '--'" :severity="jobStatusSeverity(data.lifecycle_stage || data.status)" />
+              <!-- Canonical chip (Slice 4): embedded customer.jobs now carry
+                   display_state + scheduled_at, so a converted estimate with
+                   no appointment reads "Awaiting Schedule" instead of the raw
+                   lifecycle_stage "scheduled". -->
+              <JobStateChip :job="data" :show-icon="false" />
             </template>
           </Column>
           <Column field="priority" header="Priority" style="width: 110px" />
@@ -641,6 +645,7 @@ import Dialog from "primevue/dialog";
 import Select from "primevue/select";
 import DatePicker from "primevue/datepicker";
 import InputText from "primevue/inputtext";
+import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
@@ -772,15 +777,6 @@ function toDatePayload(value) {
     return value.toISOString().split("T")[0];
   }
   return value;
-}
-
-function jobStatusSeverity(status) {
-  const map = {
-    Estimate: "info", Sold: "success", Scheduled: "warning",
-    InProgress: "info", "In Progress": "info",
-    Complete: "success", Invoiced: "secondary",
-  };
-  return map[status] || "secondary";
 }
 
 function goToJob(job) {

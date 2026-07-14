@@ -410,6 +410,23 @@ async def get_customer(
         .order_by(Job.scheduled_at.desc().nullslast(), Job.created_at.desc())
         .limit(200)
     ).scalars().all()
+    # Canonical display_state for the embedded jobs — the same batched
+    # enrichment the /api/jobs list runs, so CustomerDetailView's
+    # JobStateChip renders the authoritative label instead of falling back
+    # to the raw lifecycle_stage (which reads "scheduled" even for jobs
+    # with no appointment date). Local import: first cross-router use of
+    # the helper; jobs.py does not import from this module, so no cycle.
+    # Degrades to {} on any failure — the customer payload never breaks
+    # over a display field (mirrors the helper's own contract).
+    try:
+        from gdx_dispatch.routers.jobs import _display_state_for_jobs
+
+        ds_map = _display_state_for_jobs(
+            db, [(j.id, j.lifecycle_stage) for j in job_rows]
+        )
+    except Exception:
+        log.exception("customer_jobs_display_state_failed")
+        ds_map = {}
     jobs = [
         {
             "id": str(j.id),
@@ -420,6 +437,7 @@ async def get_customer(
             "priority": j.priority,
             "scheduled_at": j.scheduled_at.isoformat() if j.scheduled_at else None,
             "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            "display_state": ds_map.get(str(j.id)),
         }
         for j in job_rows
     ]

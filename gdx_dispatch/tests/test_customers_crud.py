@@ -183,6 +183,44 @@ async def test_get_customer_success(tenant_db_session):
     assert out["jobs"] == []
 
 
+async def test_get_customer_embedded_jobs_carry_display_state(tenant_db_session):
+    # The embedded jobs feed CustomerDetailView's JobStateChip (desktop).
+    # Without display_state the chip falls back to the raw lifecycle_stage,
+    # which reads "scheduled" even for a converted estimate with no
+    # appointment date. Pin: enrichment present + authoritative shape.
+    customer_id = _seed_customer(tenant_db_session, name="Dora")
+    # ORM seed (mirrors test_customer_portal.py) — raw-SQL UUID strings don't
+    # round-trip the Uuid(as_uuid=True) comparison in get_customer's query.
+    from gdx_dispatch.models.tenant_models import Job
+
+    tenant_db_session.add(
+        Job(
+            customer_id=uuid.UUID(customer_id),
+            title="Converted estimate",
+            lifecycle_stage="scheduled",
+            status="Scheduled",
+            dispatch_status="unassigned",
+            billing_status="unbilled",
+            company_id="tenant-test",
+        )
+    )
+    tenant_db_session.commit()
+
+    out = await get_customer(customer_id=customer_id, _={}, db=tenant_db_session)
+
+    assert len(out["jobs"]) == 1
+    j = out["jobs"][0]
+    # scheduled_at key must be PRESENT (null) — the frontend's
+    # isAwaitingSchedule guard requires the key to relabel.
+    assert "scheduled_at" in j and j["scheduled_at"] is None
+    ds = j["display_state"]
+    assert ds is not None
+    assert ds["stage"] == "scheduled"
+    assert ds["type"] == "open"
+    assert ds["label"] == "Scheduled"
+    assert ds["is_finished"] is False
+
+
 async def test_get_customer_not_found(tenant_db_session):
     with pytest.raises(Exception) as exc:
         await get_customer(customer_id=str(uuid.uuid4()), _={}, db=tenant_db_session)

@@ -137,10 +137,11 @@
               >
                 <div class="row-top">
                   <span class="row-title">{{ j.title || j.job_number || 'Job' }}</span>
-                  <Tag
-                    :value="j.lifecycle_stage || j.status || '—'"
-                    :severity="jobStatusSeverity(j.lifecycle_stage || j.status)"
-                  />
+                  <!-- Canonical chip (Slice 4): /api/jobs payloads carry
+                       display_state + scheduled_at, so a converted estimate
+                       with no appointment reads "Awaiting Schedule" here
+                       instead of a bare "scheduled". -->
+                  <JobStateChip :job="j" :show-icon="false" />
                 </div>
                 <div class="row-meta">
                   <span v-if="j.scheduled_at"><i class="pi pi-calendar" /> {{ fmtDate(j.scheduled_at) }}</span>
@@ -357,6 +358,7 @@ import { formatPhone } from '../composables/useFormatters'
 import { estimateStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
 
+import JobStateChip from '../components/JobStateChip.vue'
 import PhoneInput from '../components/PhoneInput.vue'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
@@ -411,15 +413,6 @@ function fmtDate(d) {
   } catch {
     return String(d)
   }
-}
-
-function jobStatusSeverity(s) {
-  const k = String(s || '').toLowerCase()
-  if (['completed', 'complete', 'done', 'paid'].includes(k)) return 'success'
-  if (['scheduled', 'in_progress', 'active'].includes(k)) return 'info'
-  if (['unscheduled', 'pending'].includes(k)) return 'warning'
-  if (['canceled', 'cancelled', 'voided'].includes(k)) return 'danger'
-  return 'secondary'
 }
 
 function invoiceStatusSeverity(s) {
