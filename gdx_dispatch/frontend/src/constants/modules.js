@@ -117,6 +117,7 @@ export const MODULE_CATEGORIES = [
       { key: 'vendor_statements', label: 'Vendor Statements', icon: 'pi pi-file-import', to: '/vendor-statements', type: 'Invoices', permission: 'vendor_statements.read' },
       { key: 'exports', label: 'Exports', icon: 'pi pi-download', to: '/exports', type: 'Invoices', permission: 'nav.admin' },
       { key: 'quickbooks', label: 'QuickBooks', icon: 'pi pi-plug', to: '/quickbooks', type: 'Invoices', permission: 'nav.admin' },
+      { key: 'accounting_settings', label: 'Accounting Settings', icon: 'pi pi-sliders-h', to: '/accounting-settings', type: 'Invoices', permission: 'accounting.read', description: 'Chart of accounts, posting maps, and the ledger master switch' },
     ],
   },
   {

@@ -145,6 +145,17 @@ def validate_role_map(map_name: str, mapping: dict) -> None:
         raise LedgerConfigError(f"{map_name} maps to unknown roles: {bad}")
 
 
+def validate_payment_method_map(mapping: dict) -> None:
+    """Role validity PLUS the "other" fallback — resolve_payment_method_role
+    depends on it. Lives here (not just the router) so every writer of the
+    map, present or future, hits the same wall."""
+    validate_role_map("payment_method_role_map", mapping)
+    if "other" not in mapping:
+        raise LedgerConfigError(
+            'payment_method_role_map needs an "other" fallback entry'
+        )
+
+
 def get_gl_settings(session: Session, company_id: str) -> GlSettings | None:
     return session.scalars(
         select(GlSettings).where(GlSettings.company_id == company_id)
@@ -181,7 +192,7 @@ def ensure_gl_settings(session: Session, company_id: str) -> GlSettings:
     if row.cpa_review is None:
         row.cpa_review = {}
 
-    validate_role_map("payment_method_role_map", row.payment_method_role_map)
+    validate_payment_method_map(row.payment_method_role_map)
     validate_role_map("credit_reason_role_map", row.credit_reason_role_map)
 
     session.flush()
