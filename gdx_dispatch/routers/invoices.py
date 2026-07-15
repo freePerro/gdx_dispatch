@@ -19,8 +19,16 @@ from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.catalog_policy import block_or_warn_invoice_line, get_policy
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
-from gdx_dispatch.modules.ledger.rules import IssuanceCompositionError, repost_invoice_issuance
-from gdx_dispatch.modules.ledger.service import transition_invoice_status
+from gdx_dispatch.modules.ledger.rules import (
+    IssuanceCompositionError,
+    post_payment_received,
+    repost_invoice_issuance,
+    resettle_invoice_payments,
+)
+from gdx_dispatch.modules.ledger.service import (
+    ledger_posting_enabled,
+    transition_invoice_status,
+)
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -199,7 +207,11 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     total_amount = _money(subtotal_amount + tax_amount)
 
     paid = db.execute(
-        select(func.sum(Payment.amount)).where(Payment.invoice_id == invoice.id)
+        # GL S6 (P4): voided payments stay as history but stop counting.
+        select(func.sum(Payment.amount)).where(
+            Payment.invoice_id == invoice.id,
+            Payment.voided_at.is_(None),
+        )
     ).scalar_one_or_none() or 0
     paid_amount = _money(_to_float(paid))
     balance_due = _money(max(_to_float(total_amount) - _to_float(paid_amount), 0))
@@ -377,6 +389,10 @@ class PaymentCreateIn(BaseModel):
     # the module alias: pydantic rejects a field named `date` whose
     # annotation is the bare `date` type once it carries a default.
     date: _datetime.date = Field(default_factory=date.today)
+    # GL S6: with ledger posting ON, an overpayment is rejected unless the
+    # caller opts in — the excess then credits 2300 Customer Credits instead
+    # of AR (spec §5.3). Flag off keeps today's permissive behavior.
+    allow_overpayment: bool = False
     # Optional reference (check #, transaction ID, Zelle memo). Pre-fix this
     # was missing from the schema and dropped by Pydantic; payment-history
     # cells rendered empty for every payment recorded via the UI.
@@ -1575,6 +1591,24 @@ def record_payment(
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void it before recording a payment")
 
+    # GL S6: overpayment gate, active only when ledger posting is on (flag
+    # off keeps today's permissive behavior — zero behavior change until
+    # cutover). Opt-in routes the excess to 2300 Customer Credits.
+    if ledger_posting_enabled(db, invoice.company_id) and not payload.allow_overpayment:
+        already_paid = db.execute(
+            select(func.sum(Payment.amount)).where(
+                Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
+            )
+        ).scalar_one_or_none() or 0
+        if _to_float(already_paid) + float(_money(payload.amount)) > _to_float(invoice.total) + 0.005:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "payment exceeds the invoice balance — set allow_overpayment "
+                    "to credit the excess to the customer's account"
+                ),
+            )
+
     payment = Payment(
         company_id=invoice.company_id,
         invoice_id=invoice.id,
@@ -1587,6 +1621,16 @@ def record_payment(
     db.flush()
 
     _recalculate_invoice(invoice, db)
+    # GL S6 (P3): the payment posts AFTER the recalc so a draft paid in full
+    # posts P1 (auto-flip transition) before P3 in the same transaction —
+    # negative AR is structurally impossible (spec §5.1/§5.3).
+    try:
+        post_payment_received(db, payment, invoice, actor=_actor_id(_))
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"payment date falls in a locked accounting period — {exc}",
+        ) from exc
 
     # Sprint 1.0.6 — refresh the customer's rolling-volume cache so the
     # next estimate sees the new payment immediately. Best-effort: never
@@ -1605,6 +1649,49 @@ def record_payment(
         tenant_id=None,
         user_id=_actor_id(_),
         action="payment_recorded",
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        details={"payment_id": str(payment.id), "amount": _to_float(payment.amount)},
+    )
+    db.commit()
+    return _serialize_payment(payment)
+
+
+@router.post("/{invoice_id}/payments/{payment_id}/void", response_model=None)
+def void_payment(
+    invoice_id: UUID,
+    payment_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Void a recorded payment (GL S6, P4). The row stays as history but
+    stops counting; its P3 ledger entry is reversed when posting is on. A
+    fully-paid invoice whose payment is voided reopens to "sent"."""
+    invoice = _get_invoice_or_404(invoice_id, db)
+    payment = db.get(Payment, payment_id)
+    if payment is None or payment.invoice_id != invoice.id:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.voided_at is not None:
+        return _serialize_payment(payment)  # idempotent
+
+    payment.voided_at = datetime.now(UTC)
+    db.flush()  # resettle reads Payment rows — the void must be visible
+    # Reverses the voided payment's P3 AND reverse+reposts every remaining
+    # payment whose AR/2300 split the void changed (audit round 2: stale
+    # splits diverged GL from balance_due and broke replay determinism).
+    resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+    _recalculate_invoice(invoice, db)
+    if invoice.status == "paid" and _to_float(invoice.balance_due) > 0:
+        # the money that made it "paid" is gone — reopen it
+        transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))
+        invoice.paid_at = None
+    db.commit()
+    db.refresh(payment)
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=_actor_id(_),
+        action="payment_voided",
         entity_type="invoice",
         entity_id=str(invoice.id),
         details={"payment_id": str(payment.id), "amount": _to_float(payment.amount)},
@@ -1644,7 +1731,9 @@ def void_invoice(
         return _serialize_invoice(invoice)  # idempotent
 
     has_payments = db.execute(
-        select(func.count()).select_from(Payment).where(Payment.invoice_id == invoice.id)
+        select(func.count())
+        .select_from(Payment)
+        .where(Payment.invoice_id == invoice.id, Payment.voided_at.is_(None))
     ).scalar_one()
     if has_payments:
         raise HTTPException(
@@ -1818,15 +1907,17 @@ def process_refund(
     """Process a partial or full refund on an invoice."""
     _validate_uuid(invoice_id, "Invoice")
 
-    invoice = _get_invoice_or_404(invoice_id, db)
+    invoice = _get_invoice_or_404(UUID(invoice_id), db)
     refund_amount = _money(payload.amount)
 
     if float(refund_amount) > _to_float(invoice.amount_paid):
         raise HTTPException(status_code=422, detail="Refund exceeds amount paid")
 
     invoice.amount_paid = _money(_to_float(invoice.amount_paid) - float(refund_amount))
-    if _to_float(invoice.amount_paid) <= 0:
-        invoice.status = "refunded"
+    # GL S6 (bug #2, GL audit §12): this endpoint wrote the enum-invalid
+    # status "refunded". A refund does not change the invoice's lifecycle
+    # status — S7 rebuilds refunds properly on the invoice_adjustments table
+    # with contra-revenue posting; until then the status stays put.
     db.commit()
 
     log_audit_event_sync(

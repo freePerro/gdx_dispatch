@@ -18,7 +18,8 @@ Post-issuance edits reverse the live P1 and repost at current content
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError
 from gdx_dispatch.modules.ledger.engine import (
     PostingEvent,
     PostingLine,
@@ -35,6 +37,7 @@ from gdx_dispatch.modules.ledger.engine import (
 from gdx_dispatch.modules.ledger.models import (
     ENTRY_STATUS_POSTED,
     ROLE_AR,
+    ROLE_CUSTOMER_CREDITS,
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
     ROLE_SALES_TAX_PAYABLE,
@@ -284,6 +287,169 @@ def reverse_invoice_issuance(session: Session, invoice, old_status, new_status, 
         reverse_entry(session, live, created_by=actor)
 
 
+# ---------------------------------------------------------------------------
+# P3 / P4 — payments (S6, spec §5.3)
+# ---------------------------------------------------------------------------
+
+EVENT_PAYMENT = "received"
+
+
+def _prior_nonvoided_paid_cents(session: Session, invoice, payment) -> int:
+    """Σ non-voided payments recorded BEFORE this one (created_at, id order —
+    deterministic, so a backfill replay computes the same overpayment split
+    this payment got at recording time)."""
+    from gdx_dispatch.models.tenant_models import Payment
+
+    rows = session.scalars(
+        select(Payment).where(
+            Payment.invoice_id == invoice.id,
+            Payment.voided_at.is_(None),
+            Payment.id != payment.id,
+        )
+    ).all()
+
+    def _key(p):
+        # SQLite hands back naive datetimes, fresh rows carry aware ones —
+        # normalize so the ordering never TypeErrors.
+        ts = p.created_at
+        if ts is not None and ts.tzinfo is not None:
+            ts = ts.astimezone(dt_timezone.utc).replace(tzinfo=None)
+        return (ts or datetime.min, str(p.id))
+
+    marker = _key(payment)
+    return sum(to_cents(_dec(p.amount)) for p in rows if _key(p) < marker)
+
+
+def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine, ...]:
+    """P3: debit the method's account role (1000/1050 per the settings map),
+    credit 1200 AR — with any excess beyond the invoice's remaining AR
+    credited to 2300 Customer Credits instead (the opt-in overpayment path;
+    the API rejects overpayment without the opt-in)."""
+    amount_cents = to_cents(_dec(payment.amount))
+    if amount_cents == 0:
+        return ()
+    company_id = invoice.company_id
+    settings = ledger_service.get_gl_settings(session, company_id)
+    if settings is None:  # flag can't be on without a row, but never guess
+        raise LedgerConfigError("gl_settings missing — accounting not initialized")
+    method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
+
+    total_cents = to_cents(_dec(invoice.total))
+    remaining_ar = max(total_cents - _prior_nonvoided_paid_cents(session, invoice, payment), 0)
+    ar_portion = min(amount_cents, remaining_ar)
+    excess = amount_cents - ar_portion
+
+    lines = [
+        PostingLine(
+            amount_cents=amount_cents,
+            role=method_role,
+            job_id=invoice.job_id,
+            customer_id=invoice.customer_id,
+            memo=f"payment on {invoice.invoice_number} ({payment.method})",
+        )
+    ]
+    if ar_portion:
+        lines.append(
+            PostingLine(
+                amount_cents=-ar_portion,
+                role=ROLE_AR,
+                job_id=invoice.job_id,
+                customer_id=invoice.customer_id,
+                memo=f"payment applied to {invoice.invoice_number}",
+            )
+        )
+    if excess:
+        lines.append(
+            PostingLine(
+                amount_cents=-excess,
+                role=ROLE_CUSTOMER_CREDITS,
+                job_id=invoice.job_id,
+                customer_id=invoice.customer_id,
+                memo=f"overpayment on {invoice.invoice_number} → customer credit",
+            )
+        )
+    return tuple(lines)
+
+
+def post_payment_received(session: Session, payment, invoice, actor: str | None = None):
+    """P3 — called from every path that creates a Payment row. No-op with
+    the flag off or for zero-amount payments. Never commits."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return None
+    lines = build_payment_lines(session, payment, invoice)
+    if not lines:
+        return None
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="payment",
+            source_id=str(payment.id),
+            event=EVENT_PAYMENT,
+            effective_at=payment.payment_date or date.today(),
+            lines=lines,
+            created_by=actor,
+        ),
+    )
+
+
+def _live_payment_entries(session: Session, payment, company_id):
+    return session.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.company_id == company_id,
+            GlJournalEntry.source_type == "payment",
+            GlJournalEntry.source_id == str(payment.id),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(f"payment:{payment.id}:{EVENT_PAYMENT}:%"),
+        )
+    ).all()
+
+
+def resettle_invoice_payments(session: Session, invoice, actor: str | None = None) -> None:
+    """P4's other half (audit round 2, executed repro): voiding a payment
+    changes the AR arithmetic for every LATER payment on the invoice — their
+    AR/2300 splits were computed against the old void set. Leaving them
+    stale (a) diverges GL AR from balance_due the moment the void commits,
+    and (b) breaks replay determinism (a backfill after the void computes
+    different content → new keys → double-posts).
+
+    So: reverse the voided payments' live entries, then reverse+repost every
+    remaining payment whose split changed — the same §5.6 key machinery the
+    invoice-edit path uses. Replays after this are idempotent again (same
+    state → same splits → same keys). Never commits.
+    """
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return
+    from gdx_dispatch.models.tenant_models import Payment
+
+    payments = session.scalars(
+        select(Payment).where(Payment.invoice_id == invoice.id)
+    ).all()
+    for payment in payments:
+        if payment.voided_at is not None:
+            for live in _live_payment_entries(session, payment, invoice.company_id):
+                reverse_entry(session, live, created_by=actor)
+            continue
+        lines = build_payment_lines(session, payment, invoice)
+        if not lines:
+            continue
+        posted = post_for_event(
+            session,
+            PostingEvent(
+                company_id=invoice.company_id,
+                source_type="payment",
+                source_id=str(payment.id),
+                event=EVENT_PAYMENT,
+                effective_at=payment.payment_date or date.today(),
+                lines=lines,
+                created_by=actor,
+            ),
+        )
+        for live in _live_payment_entries(session, payment, invoice.company_id):
+            if live.id != posted.id:
+                reverse_entry(session, live, created_by=actor)
+
+
 # --- registration (module import = registration; the chokepoint imports us
 # lazily on first flag-on transition) --------------------------------------
 
@@ -294,6 +460,9 @@ ledger_service._POSTING_RULES.update(
         ("sent", "void"): reverse_invoice_issuance,
         ("paid", "void"): reverse_invoice_issuance,
         # draft→void: nothing posted, nothing to reverse — pass-through.
-        # ("sent","paid") is P3 — S6 registers it.
+        # No ("sent","paid") rule on purpose: P3 posts per-payment at the
+        # recording sites (S6), not on the status transition; the flip is a
+        # derived consequence of the money, never the money itself.
+        # ("paid","sent") reopen after a payment void is likewise money-free.
     }
 )

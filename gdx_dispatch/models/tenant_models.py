@@ -465,6 +465,10 @@ class Payment(Base):
     # dropped it (no field in PaymentCreateIn), backend never persisted,
     # payment history rendered empty Reference cells. Apr 30 2026 walk-through.
     reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # GL S6 (P4): a voided payment stays as history but stops counting —
+    # _recalculate_invoice and the ledger both skip it. Set-once via the
+    # payment-void endpoint; migration 022 adds the column on existing DBs.
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # -- columns from production schema not yet in ORM --
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)

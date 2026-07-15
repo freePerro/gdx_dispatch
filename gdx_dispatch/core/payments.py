@@ -124,12 +124,74 @@ def _stripe_extra(tenant: dict) -> dict[str, Any]:
     return {"stripe_account": acct} if acct else {}
 
 
-def _mark_invoice_paid(invoice: Invoice, db: Session) -> None:
-    """Set invoice status=paid, paid_at=now, and zero out balance_due if present."""
-    invoice.status = "paid"
-    invoice.paid_at = datetime.now(timezone.utc)
-    if hasattr(invoice, "balance_due"):
-        invoice.balance_due = 0
+def _mark_invoice_paid(
+    invoice: Invoice,
+    db: Session,
+    *,
+    external_ref: str | None = None,
+    method: str = "card",
+    amount: float | None = None,
+) -> None:
+    """Record processor money as a REAL Payment row, recalc, post P3.
+
+    GL S6 rewrite (bug #1, GL audit §12): the old version flipped the status
+    straight to paid with NO Payment row and a mid-flow commit — money moved
+    at the processor with nothing recorded locally. Now:
+
+    - idempotent on ``external_ref`` (the PaymentIntent id): confirm +
+      webhook both firing records exactly one payment;
+    - the status flip happens inside ``_recalculate_invoice`` via the
+      chokepoint (auto-flip), so P1 posts before P3 when the ledger is on;
+    - one commit at the end — the payment, the recalc, and the ledger entry
+      land or roll back together.
+    """
+    from sqlalchemy import select as _select
+
+    # Late imports: the single recalc/posting truths live one layer up/over;
+    # importing at call time avoids a routers←core import at module load.
+    from gdx_dispatch.modules.ledger.rules import post_payment_received
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    if external_ref:
+        existing = db.scalars(
+            _select(Payment).where(
+                Payment.invoice_id == invoice.id,
+                Payment.reference == external_ref,
+            )
+        ).first()
+        if existing is not None:
+            return  # already recorded (idempotent across confirm + webhook)
+
+    from sqlalchemy import func as _func
+
+    already_paid = db.execute(
+        _select(_func.sum(Payment.amount)).where(
+            Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
+        )
+    ).scalar_one_or_none() or 0
+    remaining = float(invoice.total or 0) - float(already_paid)
+    # amount = what the processor says MOVED (PaymentIntent amount /
+    # amount_received, audit round 2: recording "remaining" instead of the
+    # actual charge misstated cash on partial intents). Zero/None → fall
+    # back to remaining (legacy events without an amount).
+    pay_amount = amount if amount else max(remaining, 0)
+    if pay_amount <= 0:
+        _recalculate_invoice(invoice, db)  # nothing new to record; true-up status
+        db.commit()
+        return
+
+    payment = Payment(
+        company_id=invoice.company_id,
+        invoice_id=invoice.id,
+        amount=pay_amount,
+        method=method,
+        payment_date=datetime.now(timezone.utc).date(),
+        reference=external_ref,
+    )
+    db.add(payment)
+    db.flush()
+    _recalculate_invoice(invoice, db)
+    post_payment_received(db, payment, invoice)
     db.commit()
 
 
@@ -209,7 +271,7 @@ def confirm_payment(
 
         invoice = db.get(Invoice, invoice_uuid)
         if invoice and invoice.deleted_at is None:
-            _mark_invoice_paid(invoice, db)
+            _mark_invoice_paid(invoice, db, external_ref=pi.id, method="card", amount=(pi.amount or 0) / 100.0)
 
     return {"status": pi.status, "invoice_id": body.invoice_id}
 
@@ -292,7 +354,7 @@ def ach_charge(
 
     # ACH payments may be processing (not yet succeeded); mark partial if needed
     if pi.status == "succeeded":
-        _mark_invoice_paid(invoice, db)
+        _mark_invoice_paid(invoice, db, external_ref=pi.id, method="ach", amount=(pi.amount or 0) / 100.0)
 
     return {"status": pi.status, "payment_intent_id": pi.id}
 
@@ -413,7 +475,7 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             try:
                 invoice = db.get(Invoice, UUID(invoice_id))
                 if invoice and invoice.deleted_at is None and invoice.status != "paid":
-                    _mark_invoice_paid(invoice, db)
+                    _mark_invoice_paid(invoice, db, external_ref=data.get("id"), method="card", amount=(data.get("amount_received") or 0) / 100.0)
                     logger.info("Invoice %s marked paid via webhook", invoice_id)
                     # Receipt email placeholder — wire up notification service here
                     # send_receipt_email(invoice)

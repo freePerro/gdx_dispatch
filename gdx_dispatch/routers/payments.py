@@ -238,6 +238,7 @@ def charge_method(
     body: ChargeRequest,
     user: CustomerUser = Depends(_current_portal_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Charge a previously saved payment method off-session."""
     stripe_cid = _require_stripe_customer(user)
@@ -261,6 +262,30 @@ def charge_method(
             exc,
         )
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
+
+    # GL S6 (bug #1, spec §5.3 Stripe consolidation): the portal charge was
+    # the last money path moving processor funds with NO Payment row. Route
+    # through the one recording function — idempotent on the intent id.
+    invoice_ref = (body.metadata or {}).get("invoice_id")
+    if intent.status == "succeeded" and invoice_ref:
+        try:
+            from uuid import UUID as _UUID
+
+            from gdx_dispatch.core.payments import _mark_invoice_paid
+            from gdx_dispatch.models.tenant_models import Invoice
+
+            invoice = db.get(Invoice, _UUID(str(invoice_ref)))
+            if invoice is not None and invoice.deleted_at is None:
+                _mark_invoice_paid(
+                    invoice, db,
+                    external_ref=intent.id,
+                    method="card",
+                    amount=(intent.amount or 0) / 100.0,
+                )
+        except Exception:
+            # The charge SUCCEEDED at Stripe — never 500 the customer for a
+            # local recording failure; the log line is the reconciliation cue.
+            logger.exception("portal_charge_payment_recording_failed intent=%s", intent.id)
     _audit_db = locals().get('db')
     if _audit_db is not None:
         try:
