@@ -468,19 +468,22 @@ def patch_account(
         )
 
     if updates.get("active") is False:
-        # Deactivation cross-check (audit round 1): a live expense-category
-        # mapping must not silently start dangling.
+        # Deactivation cross-check (audit rounds 1+4): a live category
+        # mapping — expense OR revenue — must not silently start dangling.
         settings = get_gl_settings(db, company_id)
-        mapped = {
-            cat
-            for cat, acct_id in ((settings.expense_category_account_map or {}) if settings else {}).items()
-            if acct_id == str(account.id)
-        }
+        mapped = set()
+        for map_name in ("expense_category_account_map", "revenue_category_account_map"):
+            mapping = (getattr(settings, map_name, None) or {}) if settings else {}
+            mapped |= {
+                f"{cat} ({map_name.split('_')[0]})"
+                for cat, acct_id in mapping.items()
+                if acct_id == str(account.id)
+            }
         if mapped:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{account.code} is mapped to expense categories "
+                    f"{account.code} is mapped to categories "
                     f"{sorted(mapped)} — remap them before deactivating"
                 ),
             )

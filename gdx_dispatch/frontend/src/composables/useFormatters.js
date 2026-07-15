@@ -16,9 +16,26 @@
 
 const PLACEHOLDER = '—';
 
+/**
+ * Parse a date-ONLY string ("YYYY-MM-DD") as a LOCAL calendar date. A bare
+ * new Date("2026-07-14") is UTC midnight — one day EARLY in every US
+ * timezone. Use this anywhere a backend `date` field feeds a DatePicker or
+ * a formatter (caught in the GL S8 headed browser walk: the table showed
+ * Jul 13 for a Jul 14 expense, and UTC-parsed edit dialogs walked the date
+ * back a day on every save). Returns null for non-date-only input.
+ */
+export function parseLocalDateString(input) {
+  if (typeof input !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(input)) return null;
+  const [y, m, d] = input.split('-').map(Number);
+  const local = new Date(y, m - 1, d);
+  return isNaN(local) ? null : local;
+}
+
 function _toDate(input) {
   if (input === null || input === undefined || input === '') return null;
   if (input instanceof Date) return isNaN(input) ? null : input;
+  const asLocalDate = parseLocalDateString(input);
+  if (asLocalDate) return asLocalDate;
   const d = new Date(input);
   return isNaN(d) ? null : d;
 }

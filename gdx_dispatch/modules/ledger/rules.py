@@ -38,6 +38,8 @@ from gdx_dispatch.modules.ledger.models import (
     ENTRY_STATUS_POSTED,
     ROLE_AR,
     ROLE_CUSTOMER_CREDITS,
+    ROLE_EXPENSE_FALLBACK,
+    ROLE_OPERATING_BANK,
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
     ROLE_REFUNDS,
@@ -653,6 +655,154 @@ def reverse_invoice_adjustments(session: Session, invoice, actor: str | None = N
         ).all()
         for entry in live:
             reverse_entry(session, entry, created_by=actor)
+
+
+# ---------------------------------------------------------------------------
+# S8 — expenses (P5/P6, spec §5.5)
+# ---------------------------------------------------------------------------
+
+EVENT_EXPENSE = "recorded"
+
+
+class ExpenseCompositionError(RuntimeError):
+    """Expense lines don't sum to the header amount — refuse to post."""
+
+
+def _expense_account_id(session: Session, settings, company_id: str, category: str | None):
+    """category → mapped expense account id, else None (EXPENSE_FALLBACK).
+    Canonicalizes first (audit round 4): historical rows carry the legacy
+    frontend vocabulary (materials/supplies/…) — without normalization the
+    whole backfill would land in 6900."""
+    from gdx_dispatch.core.expense_categories import canonicalize_expense_category
+
+    mapping = (settings.expense_category_account_map or {}) if settings else {}
+    canonical = canonicalize_expense_category(category)
+    acct_id = mapping.get(canonical or category or "")
+    if not acct_id:
+        return None
+    try:
+        acct_uuid = UUID(str(acct_id))
+    except ValueError:
+        return None
+    account = session.get(GlAccount, acct_uuid)
+    if account is None or account.company_id != company_id or not account.active:
+        return None
+    return account.id
+
+
+def build_expense_lines(session: Session, expense) -> tuple[PostingLine, ...]:
+    """P5: debit the category's mapped expense account (unmapped/dangling →
+    6900 EXPENSE_FALLBACK, memo-flagged), credit Operating Bank — the
+    paid-on-date simplification (spec §5.5 [JUDGMENT][CPA]). If detail lines
+    exist they must sum to the header (refuse, never guess)."""
+    amount_cents = to_cents(_dec(expense.amount))
+    if amount_cents == 0:
+        return ()
+    company_id = expense.company_id
+    settings = ledger_service.get_gl_settings(session, company_id)
+
+    detail = [l for l in (expense.lines or [])]
+    if detail:
+        lines_sum = sum(to_cents(_dec(l.amount)) for l in detail)
+        # Overshoot can never reconcile and must refuse; an UNDER-complete
+        # set is a legitimate work-in-progress (lines build incrementally) —
+        # the entry is header-level either way, lines are detail.
+        if lines_sum > amount_cents:
+            raise ExpenseCompositionError(
+                f"expense lines sum to {lines_sum}c, over the header amount "
+                f"{amount_cents}c — reconcile before posting"
+            )
+
+    account_id = _expense_account_id(session, settings, company_id, expense.category)
+    memo = f"{expense.vendor}: {expense.category}"
+    if account_id is None:
+        debit = PostingLine(
+            amount_cents=amount_cents,
+            role=ROLE_EXPENSE_FALLBACK,
+            job_id=expense.job_id,
+            memo=f"[unmapped category: {expense.category}] {memo}",
+        )
+    else:
+        debit = PostingLine(
+            amount_cents=amount_cents,
+            account_id=account_id,
+            job_id=expense.job_id,
+            memo=memo,
+        )
+    return (
+        debit,
+        PostingLine(
+            amount_cents=-amount_cents,
+            role=ROLE_OPERATING_BANK,
+            job_id=expense.job_id,
+            memo=f"paid {expense.vendor} on {expense.date}",
+        ),
+    )
+
+
+def _live_expense_entry(session: Session, expense) -> GlJournalEntry | None:
+    return session.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.company_id == expense.company_id,
+            GlJournalEntry.source_type == "expense",
+            GlJournalEntry.source_id == str(expense.id),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(f"expense:{expense.id}:{EVENT_EXPENSE}:%"),
+        )
+    ).first()
+
+
+def post_expense_recorded(session: Session, expense, actor: str | None = None):
+    """P5 — no-op with the flag off or for zero-amount expenses."""
+    if not ledger_service.ledger_posting_enabled(session, expense.company_id):
+        return None
+    lines = build_expense_lines(session, expense)
+    if not lines:
+        return None
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=expense.company_id,
+            source_type="expense",
+            source_id=str(expense.id),
+            event=EVENT_EXPENSE,
+            effective_at=expense.date or date.today(),
+            lines=lines,
+            created_by=actor,
+        ),
+    )
+
+
+def repost_expense(session: Session, expense, actor: str | None = None) -> None:
+    """P6 — every mutation (PATCH, line add, category change) reverses the
+    live entry and reposts at current content. Same post-first-then-compare
+    shape as invoice edits; soft-deleted expenses reverse outright."""
+    if not ledger_service.ledger_posting_enabled(session, expense.company_id):
+        return
+    live = _live_expense_entry(session, expense)
+    if getattr(expense, "deleted_at", None) is not None:
+        if live is not None:
+            reverse_entry(session, live, created_by=actor)
+        return
+    lines = build_expense_lines(session, expense)
+    if not lines:
+        if live is not None:
+            reverse_entry(session, live, created_by=actor)
+        return
+    posted = post_for_event(
+        session,
+        PostingEvent(
+            company_id=expense.company_id,
+            source_type="expense",
+            source_id=str(expense.id),
+            event=EVENT_EXPENSE,
+            effective_at=expense.date or date.today(),
+            lines=lines,
+            created_by=actor,
+        ),
+    )
+    if live is not None and posted.id != live.id:
+        reverse_entry(session, live, created_by=actor)
 
 
 # --- registration (module import = registration; the chokepoint imports us

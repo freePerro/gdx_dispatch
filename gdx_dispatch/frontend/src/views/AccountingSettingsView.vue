@@ -525,10 +525,18 @@ defineExpose({ openEdit });
 .hint { color: var(--p-text-muted-color); font-size: 0.85rem; }
 .switch-row { display: flex; align-items: center; gap: 0.75rem; }
 .attest-row { display: flex; align-items: center; gap: 0.5rem; }
-.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 0.5rem 1.25rem; }
-.map-row { display: flex; align-items: center; gap: 0.6rem; }
-.map-key { min-width: 8rem; font-weight: 600; text-transform: capitalize; }
-.map-value { flex: 1; }
+/* min-width: 0 lets the Select shrink inside its cell — without it the
+   flex item's intrinsic width (long role names like OPERATING_BANK) spilled
+   over the neighboring label (caught in the GL S8 browser walk). */
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr)); gap: 0.5rem 1.25rem; }
+.map-row { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.map-key { flex: 0 0 8rem; font-weight: 600; text-transform: capitalize; overflow-wrap: anywhere; }
+.map-value { flex: 1; min-width: 0; }
+@media (max-width: 480px) {
+  /* a 21rem track overflows a ~360px phone — stack instead */
+  .map-grid { grid-template-columns: 1fr; }
+  .map-key { flex-basis: 6.5rem; }
+}
 .lock-note { color: var(--p-orange-500, #f97316); font-size: 0.8rem; }
 .cpa-stamp { color: var(--p-green-500, #22c55e); font-size: 0.8rem; }
 .spinner-wrap { display: flex; justify-content: center; padding: 3rem 0; }

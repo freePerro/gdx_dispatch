@@ -204,23 +204,37 @@ def test_add_expense_line(client):
     tc, SessionLocal = client
     exp = _create_expense(tc)
 
+    # GL S8: lines may not overshoot the header amount (they must reconcile),
+    # so the detail line matches the expense total here.
+    line_amount = exp["amount"]
     r = tc.post(
         f"/api/expenses/{exp['id']}/lines",
-        json={"account": "Tools", "amount": 210.45, "description": "New drill"},
+        json={"account": "Tools", "amount": line_amount, "description": "New drill"},
     )
     assert r.status_code == 201, r.text
     data = r.json()
     assert UUID(data["id"])
     assert data["expense_id"] == exp["id"]
-    assert data["amount"] == 210.45
+    assert data["amount"] == line_amount
 
     db = SessionLocal()
     try:
         line = db.execute(select(ExpenseLine).where(ExpenseLine.id == UUID(data["id"]))).scalar_one()
         assert line.account == "Tools"
-        assert float(line.amount) == 210.45
+        assert float(line.amount) == line_amount
     finally:
         db.close()
+
+
+def test_add_expense_line_overshoot_rejected(client):
+    """GL S8: a line set that exceeds the header can never reconcile."""
+    tc, _ = client
+    exp = _create_expense(tc)
+    r = tc.post(
+        f"/api/expenses/{exp['id']}/lines",
+        json={"account": "Tools", "amount": exp["amount"] + 1, "description": "too much"},
+    )
+    assert r.status_code == 409, r.text
 
 
 def test_add_expense_line_expense_not_found(client):
