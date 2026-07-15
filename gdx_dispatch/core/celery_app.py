@@ -86,6 +86,13 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
 
 celery_app = create_celery()
 
+# GL chokepoint tripwire (S4): workers write invoice status too (QB sync) —
+# the exact silent background path the guard exists for. create_app() covers
+# the API process only; workers boot through this module. Idempotent.
+from gdx_dispatch.modules.ledger.guard import install_flush_guard  # noqa: E402
+
+install_flush_guard()
+
 # Ensure external task modules are imported so Celery registers decorated tasks.
 from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401

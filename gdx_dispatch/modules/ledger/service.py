@@ -193,3 +193,57 @@ def ensure_gl_seed(session: Session, company_id: str) -> GlSettings:
     idempotent bootstrap callers use; flushes, never commits."""
     seed_coa(session, company_id)
     return ensure_gl_settings(session, company_id)
+
+
+def ledger_posting_enabled(session: Session, company_id: str) -> bool:
+    """The master switch (S4+). No settings row (never seeded) = off."""
+    row = get_gl_settings(session, company_id)
+    return bool(row and row.ledger_posting_enabled)
+
+
+# ---------------------------------------------------------------------------
+# The chokepoint (S4, spec §2) — the ONLY legal writer of Invoice.status.
+# ---------------------------------------------------------------------------
+
+# Transient instance attribute the chokepoint stamps and the flush guard
+# consumes — how the guard tells a sanctioned transition from a bypass. The
+# value is the sanctioned TARGET status (not a boolean): the guard only
+# honors it if the flushed status matches, so a stale stamp can't bless a
+# different later write.
+SANCTION_ATTR = "_gl_transition_sanctioned"
+# session.info key listing stamped instances; the guard's after_rollback
+# hook clears their stamps (a rolled-back transition must leave no sanction).
+SANCTION_REGISTRY_KEY = "gl_sanctioned_invoices"
+
+# (old_status, new_status) → posting callable. EMPTY in S4 — the flag can be
+# on with no rules and behavior is still identical. S5+ registers P1/P2…;
+# each callable receives (session, invoice, old_status, new_status, actor).
+_POSTING_RULES: dict = {}
+
+
+def transition_invoice_status(session, invoice, new_status: str, *, actor: str | None = None) -> str:
+    """Move an invoice to ``new_status`` through the ledger chokepoint.
+
+    S4 semantics: a sanctioned pass-through. With ``ledger_posting_enabled``
+    off (the shipped default) the only behavioral delta vs. the old raw
+    ``invoice.status = x`` is one SELECT on gl_settings per transition. With
+    the flag on, the registered posting rules for (old, new) run inside the
+    caller's transaction (none exist until S5) — if a rule raises, the
+    caller's rollback unwinds the status change with it.
+
+    Returns the previous status. Idempotent: transitioning to the current
+    status is a no-op that still returns it.
+    """
+    old_status = invoice.status
+    if new_status == old_status:
+        return old_status
+
+    setattr(invoice, SANCTION_ATTR, new_status)
+    session.info.setdefault(SANCTION_REGISTRY_KEY, []).append(invoice)
+    invoice.status = new_status
+
+    if ledger_posting_enabled(session, invoice.company_id):
+        rule = _POSTING_RULES.get((old_status, new_status))
+        if rule is not None:
+            rule(session, invoice, old_status, new_status, actor)
+    return old_status
