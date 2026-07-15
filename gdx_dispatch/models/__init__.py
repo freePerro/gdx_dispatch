@@ -213,9 +213,11 @@ try:
         GlJournalEntry,
         GlJournalLine,
         GlPeriodLock,
+        GlSettings,
     )
 except ImportError:
     pass
+
 try:
     from gdx_dispatch.modules.gps_dispatch.models import DispatchRoute  # noqa: F401
 except ImportError:

@@ -19,6 +19,7 @@ from datetime import date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     Date,
@@ -29,12 +30,20 @@ from sqlalchemy import (
     Sequence,
     String,
     Text,
+    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
-from gdx_dispatch.core.audit import utcnow
-from gdx_dispatch.models.tenant_models import TenantBase
+# TenantBase comes from its owner, core.audit — NOT via
+# gdx_dispatch.models.tenant_models. Importing through the models package
+# creates a cycle (this module ← models/__init__ ← tenant_models submodule
+# import triggers the package init): whenever ledger models were imported
+# before the package, the package init's re-import hit a partially
+# initialized module and its `except ImportError` silently dropped every
+# Gl* name from gdx_dispatch.models. Found by S2 audit round 1.
+from gdx_dispatch.core.audit import TenantBase, utcnow
 
 # Account roles the engine posts to. Stable identifiers — the operator may
 # rename/renumber the account that *owns* a role (S4.5) but never reassign the
@@ -52,6 +61,27 @@ ROLE_OPENING_EQUITY = "OPENING_EQUITY"
 ROLE_ROUNDING = "ROUNDING"
 ROLE_WAGES = "WAGES"
 ROLE_PAYROLL_TAX = "PAYROLL_TAX"
+# Fallback for expense categories with no (or a dangling) account mapping —
+# the expense-side twin of SALES_FALLBACK (spec §4: unknown → 6900 + memo flag).
+ROLE_EXPENSE_FALLBACK = "EXPENSE_FALLBACK"
+
+# Every role the engine may resolve. The S2 seed guarantees exactly one active
+# system account per role; tests assert the two lists never drift.
+ALL_ROLES = (
+    ROLE_AR,
+    ROLE_UNDEPOSITED,
+    ROLE_OPERATING_BANK,
+    ROLE_SALES_TAX_PAYABLE,
+    ROLE_CUSTOMER_CREDITS,
+    ROLE_SALES_FALLBACK,
+    ROLE_DISCOUNTS,
+    ROLE_REFUNDS,
+    ROLE_OPENING_EQUITY,
+    ROLE_ROUNDING,
+    ROLE_WAGES,
+    ROLE_PAYROLL_TAX,
+    ROLE_EXPENSE_FALLBACK,
+)
 
 # Account classification — drives the balance sheet vs P&L split and the
 # natural debit/credit sign in reports.
@@ -81,9 +111,9 @@ class GlAccount(TenantBase):
     parent_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("gl_accounts.id"), nullable=True
     )
-    # Stable engine binding. NULL for operator-added accounts. Enforcement of
-    # "exactly one active account per role" lives in the S2 seed + settings
-    # layer, not a DB constraint (a deactivated old account may share the role).
+    # Stable engine binding. NULL for operator-added accounts. "Exactly one
+    # ACTIVE system account per role" is DB-enforced by the partial unique
+    # index below (a deactivated old account may still share the role).
     role: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     is_system: Mapped[bool] = mapped_column(nullable=False, default=False)
     active: Mapped[bool] = mapped_column(nullable=False, default=True)
@@ -94,6 +124,19 @@ class GlAccount(TenantBase):
 
     __table_args__ = (
         Index("ix_gl_accounts_code", "code"),
+        # Makes ambiguous role ownership unrepresentable, and arbitrates the
+        # concurrent-first-seed race: two racing seed_coa() transactions both
+        # insert system rows, so the loser dies here and its whole seed
+        # (non-system rows included) rolls back with it. Fresh DBs get this
+        # via create_all; existing DBs via migration 020.
+        Index(
+            "uq_gl_accounts_active_system_role",
+            "company_id",
+            "role",
+            unique=True,
+            postgresql_where=text("is_system AND active"),
+            sqlite_where=text("is_system AND active"),
+        ),
     )
 
 
@@ -190,6 +233,80 @@ class GlJournalLine(TenantBase):
 
     __table_args__ = (
         CheckConstraint("amount_cents <> 0", name="ck_gl_line_amount_nonzero"),
+    )
+
+
+class GlSettings(TenantBase):
+    """The accounting config store — a per-company singleton (S2, spec §4 /
+    plan guiding rule 3). Every CPA-dependent choice lives here as *data* the
+    Accounting Settings page (S4.5) edits, never as a code constant. The
+    posting engine (S3) reads role→account resolution and the maps below from
+    this row; ``ledger_posting_enabled`` is the master switch S4/S9 gate on.
+
+    Map values are account *roles* (see ``ALL_ROLES``), except
+    ``expense_category_account_map`` whose values are ``gl_accounts.id``
+    strings — categories map to ordinary (non-system) accounts the operator
+    may renumber, so the stable id is the key, with ``EXPENSE_FALLBACK`` as
+    the dangling-reference escape hatch.
+
+    Guardrail (enforced in the S4.5 layer, recorded here): ``inventory_treatment``,
+    ``cutover_month``, and ``payment_method_role_map`` become read-only once
+    ``ledger_posting_enabled`` is on or any journal entry has posted.
+
+    The JSON maps are nullable on purpose: NULL means "defaults not yet
+    materialized" and ``ensure_gl_settings()`` (service.py) fills them — one
+    source of truth for defaults, not two.
+    """
+
+    __tablename__ = "gl_settings"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    # Master switch — nothing posts while False (S4 chokepoint reads this).
+    ledger_posting_enabled: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+    # Books are accrual; cash reports are derived (spec §6). tax_basis is what
+    # the CPA files on — drives the §1.446-1(a)(4) reconciliation workpaper.
+    reporting_basis: Mapped[str] = mapped_column(String(10), nullable=False, default="accrual")
+    tax_basis: Mapped[str] = mapped_column(String(10), nullable=False, default="cash")
+
+    # Phase 1.5 gate (spec §7): parts expensed or capitalized. [CPA]
+    inventory_treatment: Mapped[str] = mapped_column(String(20), nullable=False, default="expense")
+
+    # First day of the month the ledger becomes the money truth (P8 opening
+    # balances post as of this date). NULL until cutover is planned.
+    cutover_month: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    # Entity/filing basis. [CPA] — free-form-ish on purpose; validated set in S4.5.
+    entity_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Opening-bank-balance attestation (Phase 2 tie-out anchor).
+    opening_bank_attested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    opening_bank_attested_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # payment method (normalized lowercase) → role: UNDEPOSITED vs OPERATING_BANK.
+    payment_method_role_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # credit/refund reason → role: DISCOUNTS (4900) vs REFUNDS (4910). [CPA]
+    credit_reason_role_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # expense category → gl_accounts.id (string). Unknown/dangling → EXPENSE_FALLBACK.
+    expense_category_account_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Per-key CPA-review stamps: {setting_key: {"reviewed_at": iso8601, "by": user_id}}.
+    cpa_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        # Singleton per company — ensure_gl_settings() get-or-creates.
+        UniqueConstraint("company_id", name="uq_gl_settings_company"),
     )
 
 
