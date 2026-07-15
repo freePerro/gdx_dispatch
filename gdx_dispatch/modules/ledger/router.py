@@ -129,6 +129,7 @@ def _settings_payload(db: Session, settings, company_id: str) -> dict:
             "payment_method_role_map": settings.payment_method_role_map,
             "credit_reason_role_map": settings.credit_reason_role_map,
             "expense_category_account_map": settings.expense_category_account_map,
+            "revenue_category_account_map": settings.revenue_category_account_map or {},
             "cpa_review": settings.cpa_review or {},
         },
         "accounts": [_account_payload(a) for a in accounts],
@@ -202,6 +203,7 @@ class SettingsPatchIn(BaseModel):
     payment_method_role_map: dict[str, str] | None = None
     credit_reason_role_map: dict[str, str] | None = None
     expense_category_account_map: dict[str, str] | None = None
+    revenue_category_account_map: dict[str, str] | None = None
     attest_opening_bank: bool = False
     clear_opening_bank_attestation: bool = False
 
@@ -260,10 +262,15 @@ def patch_accounting_settings(
     except LedgerConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if "expense_category_account_map" in updates:
-        # Mapped accounts must exist, be ACTIVE, and be expense-typed — a
-        # map to 1200 AR would have S8 debiting an asset for fuel (audit
-        # round 1: existence alone was checked).
+    for map_field, wanted_type in (
+        ("expense_category_account_map", "expense"),
+        ("revenue_category_account_map", "revenue"),
+    ):
+        if map_field not in updates:
+            continue
+        # Mapped accounts must exist, be ACTIVE, and carry the right type — a
+        # map to 1200 AR would have posting debit/credit the wrong side of
+        # the books (audit round 1: existence alone was checked).
         accounts_by_id = {
             str(a.id): a
             for a in db.scalars(
@@ -271,16 +278,16 @@ def patch_accounting_settings(
             )
         }
         bad = {}
-        for cat, acct_id in updates["expense_category_account_map"].items():
+        for cat, acct_id in updates[map_field].items():
             acct = accounts_by_id.get(acct_id)
             if acct is None:
                 bad[cat] = "unknown account"
             elif not acct.active:
                 bad[cat] = f"{acct.code} {acct.name} is deactivated"
-            elif acct.type != "expense":
-                bad[cat] = f"{acct.code} {acct.name} is {acct.type}, not expense"
+            elif acct.type != wanted_type:
+                bad[cat] = f"{acct.code} {acct.name} is {acct.type}, not {wanted_type}"
         if bad:
-            raise HTTPException(status_code=422, detail=f"expense map invalid: {bad}")
+            raise HTTPException(status_code=422, detail=f"{map_field} invalid: {bad}")
 
     for field, value in updates.items():
         setattr(settings, field, value)

@@ -254,6 +254,11 @@ def transition_invoice_status(session, invoice, new_status: str, *, actor: str |
     invoice.status = new_status
 
     if ledger_posting_enabled(session, invoice.company_id):
+        # Lazy one-time import: importing rules.py IS registration, and doing
+        # it here means no caller can reach a flag-on transition with an
+        # unpopulated registry through import-order luck.
+        from gdx_dispatch.modules.ledger import rules as _rules  # noqa: F401
+
         rule = _POSTING_RULES.get((old_status, new_status))
         if rule is not None:
             rule(session, invoice, old_status, new_status, actor)

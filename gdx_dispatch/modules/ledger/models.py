@@ -293,6 +293,11 @@ class GlSettings(TenantBase):
     credit_reason_role_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # expense category → gl_accounts.id (string). Unknown/dangling → EXPENSE_FALLBACK.
     expense_category_account_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # invoice-line category (free-form, estimate-derived) → gl_accounts.id.
+    # Empty by default: unmapped/NULL categories credit 4000 SALES_FALLBACK,
+    # memo-flagged (spec §5.1). Added in S5; migration 021 backfills the
+    # column when gl_settings pre-dates it.
+    revenue_category_account_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Per-key CPA-review stamps: {setting_key: {"reviewed_at": iso8601, "by": user_id}}.
     cpa_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)

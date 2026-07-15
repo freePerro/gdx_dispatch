@@ -18,6 +18,9 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
 from gdx_dispatch.modules.catalog_policy import block_or_warn_invoice_line, get_policy
+from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+from gdx_dispatch.modules.ledger.rules import IssuanceCompositionError, repost_invoice_issuance
+from gdx_dispatch.modules.ledger.service import transition_invoice_status
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -204,8 +207,23 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     invoice.subtotal = subtotal_amount
     invoice.total = total_amount
     invoice.balance_due = balance_due
+    # GL S5: an already-issued invoice whose content just changed reverses
+    # its live P1 and reposts at current content (no-op with the flag off or
+    # when content is unchanged — the idempotency key matches). Ledger
+    # refusals surface as 409s with the reason, never bare 500s.
+    try:
+        repost_invoice_issuance(db, invoice)
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"invoice is in a locked accounting period — {exc}",
+        ) from exc
+    except IssuanceCompositionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if _to_float(balance_due) <= 0 and _to_float(total_amount) > 0:
-        invoice.status = "paid"
+        # GL S5: the auto-flip routes through the chokepoint; a draft paid in
+        # full posts P1 on this transition (before P3, which lands in S6).
+        transition_invoice_status(db, invoice, "paid")
         if not invoice.paid_at:
             invoice.paid_at = datetime.now(UTC)
 
@@ -1226,7 +1244,7 @@ def mark_invoice_sent(
     invoice = _get_invoice_or_404(invoice_id, db)
     if invoice.status in {"paid", "void"}:
         raise HTTPException(status_code=409, detail="invoice is finalized")
-    invoice.status = "sent"
+    transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5: P1 posts here when the flag is on
     invoice.sent_at = datetime.now(UTC)
     if not invoice.public_token:
         invoice.public_token = secrets.token_urlsafe(48)[:64]
@@ -1257,7 +1275,8 @@ def send_invoice(
     # back to life and re-entered AR. Mirror mark-sent's finalized guard.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void or recreate it before sending")
-    invoice.status = "paid" if invoice.status == "paid" else "sent"
+    if invoice.status != "paid":
+        transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5
     invoice.sent_at = datetime.now(UTC)
     if not invoice.public_token:
         invoice.public_token = secrets.token_urlsafe(48)[:64]
@@ -1607,6 +1626,47 @@ def list_payments(
         .order_by(Payment.payment_date.asc(), Payment.created_at.asc(), Payment.id.asc())
     ).scalars().all()
     return [_serialize_payment(row) for row in rows]
+
+
+@router.post("/{invoice_id}/void", response_model=None)
+def void_invoice(
+    invoice_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Void an invoice (GL S5, spec §5.1). Payments must be voided/removed
+    first — voiding a bill while keeping its money would silently orphan the
+    cash. Voided stays void (/send and /mobile resend both 409). Reverses the
+    live P1 entry when ledger posting is on; draft voids have nothing posted.
+    """
+    invoice = _get_invoice_or_404(invoice_id, db)
+    if invoice.status == "void":
+        return _serialize_invoice(invoice)  # idempotent
+
+    has_payments = db.execute(
+        select(func.count()).select_from(Payment).where(Payment.invoice_id == invoice.id)
+    ).scalar_one()
+    if has_payments:
+        raise HTTPException(
+            status_code=409,
+            detail="invoice has recorded payments — void or remove them first",
+        )
+
+    transition_invoice_status(db, invoice, "void", actor=_actor_id(_))
+    invoice.balance_due = _money(0)
+    db.commit()
+    db.refresh(invoice)
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=_actor_id(_),
+        action="invoice_voided",
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        details={"total": _to_float(invoice.total)},
+    )
+    db.commit()
+    return _serialize_invoice(invoice)
 
 
 @router.post("/{invoice_id}/finalize", response_model=None)
