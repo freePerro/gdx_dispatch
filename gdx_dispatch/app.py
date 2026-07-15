@@ -1298,6 +1298,12 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     configure_json_logging()
+    # GL chokepoint tripwire (S4): catches Invoice.status writes that bypass
+    # transition_invoice_status once ledger posting is enabled. No-op while
+    # the flag is off. Idempotent, process-global.
+    from gdx_dispatch.modules.ledger.guard import install_flush_guard
+
+    install_flush_guard()
     app = FastAPI(
         title="GDX API",
         description="DispatchApp — Multi-tenant field service dispatch platform API. "
