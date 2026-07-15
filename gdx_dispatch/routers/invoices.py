@@ -16,14 +16,26 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
-from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Job, JobPartNeeded, Payment
+from gdx_dispatch.models.tenant_models import (
+    Invoice,
+    InvoiceAdjustment,
+    InvoiceLine,
+    Job,
+    JobPartNeeded,
+    Payment,
+)
 from gdx_dispatch.modules.catalog_policy import block_or_warn_invoice_line, get_policy
 from gdx_dispatch.modules.ledger.engine import PeriodLockedError
 from gdx_dispatch.modules.ledger.rules import (
     IssuanceCompositionError,
+    customer_credit_balance_cents,
+    post_credit_application,
+    post_credit_memo,
     post_payment_received,
+    post_refund,
     repost_invoice_issuance,
     resettle_invoice_payments,
+    reverse_invoice_adjustments,
 )
 from gdx_dispatch.modules.ledger.service import (
     ledger_posting_enabled,
@@ -214,7 +226,20 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
         )
     ).scalar_one_or_none() or 0
     paid_amount = _money(_to_float(paid))
-    balance_due = _money(max(_to_float(total_amount) - _to_float(paid_amount), 0))
+    # GL S7 (bug #4): credit memos + applied credits reduce the balance via
+    # the adjustments table — the old /credit-memo mutated the deprecated
+    # amount_paid column, which this recalc ignores, so its effect evaporated
+    # on the next recalculation. Refunds don't change the balance (they are
+    # contra-revenue cash-outs capped by net paid).
+    credited = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice.id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+        )
+    ).scalar_one_or_none() or 0
+    balance_due = _money(
+        max(_to_float(total_amount) - _to_float(paid_amount) - _to_float(credited), 0)
+    )
 
     invoice.subtotal = subtotal_amount
     invoice.total = total_amount
@@ -1600,12 +1625,23 @@ def record_payment(
                 Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
             )
         ).scalar_one_or_none() or 0
-        if _to_float(already_paid) + float(_money(payload.amount)) > _to_float(invoice.total) + 0.005:
+        # Audit round 3: the gate must measure against the REMAINING
+        # receivable — total minus credit memos/applied credits — or a
+        # payment of the printed total after a credit memo silently drives
+        # AR negative instead of minting a customer credit.
+        credited = db.execute(
+            select(func.sum(InvoiceAdjustment.amount)).where(
+                InvoiceAdjustment.invoice_id == invoice.id,
+                InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+            )
+        ).scalar_one_or_none() or 0
+        remaining = _to_float(invoice.total) - _to_float(credited)
+        if _to_float(already_paid) + float(_money(payload.amount)) > remaining + 0.005:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "payment exceeds the invoice balance — set allow_overpayment "
-                    "to credit the excess to the customer's account"
+                    "payment exceeds the invoice's remaining balance — set "
+                    "allow_overpayment to credit the excess to the customer's account"
                 ),
             )
 
@@ -1742,6 +1778,8 @@ def void_invoice(
         )
 
     transition_invoice_status(db, invoice, "void", actor=_actor_id(_))
+    # GL S7: the P1 reversal alone would strand adjustment entries on AR.
+    reverse_invoice_adjustments(db, invoice, actor=_actor_id(_))
     invoice.balance_due = _money(0)
     db.commit()
     db.refresh(invoice)
@@ -1864,6 +1902,21 @@ class CreditMemoIn(BaseModel):
     reason: str = Field(min_length=1)
 
 
+def _net_paid(db: Session, invoice) -> float:
+    paid = db.execute(
+        select(func.sum(Payment.amount)).where(
+            Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
+        )
+    ).scalar_one_or_none() or 0
+    refunded = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice.id,
+            InvoiceAdjustment.kind == "refund",
+        )
+    ).scalar_one_or_none() or 0
+    return _to_float(paid) - _to_float(refunded)
+
+
 @router.post("/{invoice_id}/credit-memo", response_model=None)
 def issue_credit_memo(
     invoice_id: str,
@@ -1871,21 +1924,131 @@ def issue_credit_memo(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
-    """Issue a credit memo against an invoice."""
+    """Issue a credit memo — forgive part of the remaining balance (GL S7,
+    spec §5.2). Recorded on invoice_adjustments (bug #4: the old version
+    mutated the deprecated amount_paid, which recalc ignores). Capped at the
+    remaining balance; posts debit 4900/4910 per reason, credit AR when
+    ledger posting is on."""
     _validate_uuid(invoice_id, "Invoice")
-    invoice = _get_invoice_or_404(invoice_id, db)
+    invoice = _get_invoice_or_404(UUID(invoice_id), db)
+    if invoice.status not in ("sent", "paid"):
+        # Audit round 3: a credit memo on a DRAFT posts an AR credit that
+        # P1 never debited (negative AR), and draft deletion would strand
+        # the entry. Drafts are edited, not credited.
+        raise HTTPException(status_code=409, detail="only issued invoices can be credited — edit the draft instead")
     credit_amount = _money(payload.amount)
-    invoice.amount_paid = _money(_to_float(invoice.amount_paid) + float(credit_amount))
-    if _to_float(invoice.amount_paid) >= _to_float(invoice.total):
-        invoice.status = "paid"
+    _recalculate_invoice(invoice, db)
+    if float(credit_amount) > _to_float(invoice.balance_due) + 0.005:
+        raise HTTPException(
+            status_code=422,
+            detail=f"credit memo exceeds the remaining balance ({_to_float(invoice.balance_due):.2f})",
+        )
+
+    adjustment = InvoiceAdjustment(
+        invoice_id=invoice.id,
+        kind="credit_memo",
+        amount=credit_amount,
+        reason=payload.reason.strip(),
+        created_by=_actor_id(_),
+        company_id=invoice.company_id,
+    )
+    db.add(adjustment)
+    db.flush()
+    post_credit_memo(db, adjustment, invoice, actor=_actor_id(_))
+    # belt: if the shrunken receivable changed any existing payment's
+    # AR/2300 split, reverse+repost it (caps make this a no-op normally)
+    resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+    _recalculate_invoice(invoice, db)  # fully-credited invoices settle to paid
     db.commit()
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="credit_memo_issued", entity_type="invoice", entity_id=str(invoice.id),
-        details={"amount": float(credit_amount), "reason": payload.reason},
+        details={"amount": float(credit_amount), "reason": payload.reason, "adjustment_id": str(adjustment.id)},
     )
     db.commit()
-    return {"invoice_id": str(invoice.id), "credit_amount": float(credit_amount), "reason": payload.reason}
+    return {
+        "invoice_id": str(invoice.id),
+        "adjustment_id": str(adjustment.id),
+        "credit_amount": float(credit_amount),
+        "reason": payload.reason,
+        "balance_due": _to_float(invoice.balance_due),
+    }
+
+
+class ApplyCreditIn(BaseModel):
+    amount: float = Field(gt=0)
+
+
+@router.post("/{invoice_id}/apply-credit", response_model=None)
+def apply_customer_credit(
+    invoice_id: UUID,
+    payload: ApplyCreditIn,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """P9 (GL S7, spec §5.3): consume the customer's 2300 credit balance
+    against this open invoice. Dual cap: neither the customer's live credit
+    balance nor the invoice's remaining balance may be exceeded. Requires
+    ledger posting (the credit balance IS the 2300 ledger balance)."""
+    invoice = _get_invoice_or_404(invoice_id, db)
+    if invoice.status not in ("sent", "paid"):
+        raise HTTPException(status_code=409, detail="only issued invoices can receive credit")
+    if not ledger_posting_enabled(db, invoice.company_id):
+        raise HTTPException(
+            status_code=409,
+            detail="customer credits live on the ledger — enable ledger posting first",
+        )
+    if not invoice.customer_id:
+        raise HTTPException(status_code=422, detail="invoice has no customer")
+
+    amount = _money(payload.amount)
+    _recalculate_invoice(invoice, db)
+
+    # Spec §5.3: the one Phase-1 balance precondition — lock the customer's
+    # credit rows so two concurrent applications can't double-spend (PG;
+    # SQLite ignores FOR UPDATE, single-writer tests unaffected).
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(_text("SELECT 1 FROM gl_journal_lines WHERE customer_id = :cid FOR UPDATE"),
+                   {"cid": str(invoice.customer_id)})
+    available = customer_credit_balance_cents(db, invoice.company_id, invoice.customer_id)
+    if float(amount) * 100 > available + 0.5:
+        raise HTTPException(
+            status_code=422,
+            detail=f"customer credit balance is {available / 100:.2f} — cannot apply {float(amount):.2f}",
+        )
+    if float(amount) > _to_float(invoice.balance_due) + 0.005:
+        raise HTTPException(
+            status_code=422,
+            detail=f"amount exceeds the remaining balance ({_to_float(invoice.balance_due):.2f})",
+        )
+
+    adjustment = InvoiceAdjustment(
+        invoice_id=invoice.id,
+        kind="credit_applied",
+        amount=amount,
+        reason="customer credit applied",
+        created_by=_actor_id(_),
+        company_id=invoice.company_id,
+    )
+    db.add(adjustment)
+    db.flush()
+    post_credit_application(db, adjustment, invoice, actor=_actor_id(_))
+    resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+    _recalculate_invoice(invoice, db)
+    db.commit()
+    log_audit_event_sync(
+        db=db, tenant_id=None, user_id=_actor_id(_),
+        action="customer_credit_applied", entity_type="invoice", entity_id=str(invoice.id),
+        details={"amount": float(amount), "adjustment_id": str(adjustment.id)},
+    )
+    db.commit()
+    return {
+        "invoice_id": str(invoice.id),
+        "adjustment_id": str(adjustment.id),
+        "applied": float(amount),
+        "balance_due": _to_float(invoice.balance_due),
+        "remaining_credit": (available - int(round(float(amount) * 100))) / 100,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1895,6 +2058,9 @@ def issue_credit_memo(
 class RefundIn(BaseModel):
     amount: float = Field(gt=0, le=1_000_000)
     reason: str = Field(default="", max_length=500)
+    # Required when ledger posting is on — the cash has to leave through a
+    # concrete account (check → operating bank, cash → undeposited, …).
+    refund_method: str | None = Field(default=None, max_length=50)
 
 
 @router.post("/{invoice_id}/refund", response_model=None)
@@ -1904,30 +2070,55 @@ def process_refund(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
-    """Process a partial or full refund on an invoice."""
+    """Refund money against payments actually received (GL S7, spec §5.2).
+    Recorded on invoice_adjustments; capped by net paid (non-voided payments
+    minus prior refunds — bug #4: the old cap read the deprecated
+    amount_paid column). Posts debit 4910/4900, credit the cash account, when
+    ledger posting is on. Lifecycle status untouched (bug #2 stays fixed)."""
     _validate_uuid(invoice_id, "Invoice")
-
     invoice = _get_invoice_or_404(UUID(invoice_id), db)
+    if invoice.status not in ("sent", "paid"):
+        raise HTTPException(status_code=409, detail="only issued invoices can be refunded")
     refund_amount = _money(payload.amount)
 
-    if float(refund_amount) > _to_float(invoice.amount_paid):
-        raise HTTPException(status_code=422, detail="Refund exceeds amount paid")
+    net_paid = _net_paid(db, invoice)
+    if float(refund_amount) > net_paid + 0.005:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Refund exceeds net amount paid ({net_paid:.2f})",
+        )
+    if ledger_posting_enabled(db, invoice.company_id) and not (payload.refund_method or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="refund_method is required while ledger posting is enabled",
+        )
 
-    invoice.amount_paid = _money(_to_float(invoice.amount_paid) - float(refund_amount))
-    # GL S6 (bug #2, GL audit §12): this endpoint wrote the enum-invalid
-    # status "refunded". A refund does not change the invoice's lifecycle
-    # status — S7 rebuilds refunds properly on the invoice_adjustments table
-    # with contra-revenue posting; until then the status stays put.
+    adjustment = InvoiceAdjustment(
+        invoice_id=invoice.id,
+        kind="refund",
+        amount=refund_amount,
+        reason=(payload.reason or "").strip() or None,
+        refund_method=(payload.refund_method or "").strip().lower() or None,
+        created_by=_actor_id(_),
+        company_id=invoice.company_id,
+    )
+    db.add(adjustment)
+    db.flush()
+    post_refund(db, adjustment, invoice, actor=_actor_id(_))
     db.commit()
 
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="refund_processed", entity_type="invoice", entity_id=str(invoice.id),
-        details={"amount": float(refund_amount), "reason": payload.reason},
+        details={"amount": float(refund_amount), "reason": payload.reason, "adjustment_id": str(adjustment.id)},
     )
     db.commit()
 
-    return {"invoice_id": str(invoice.id), "refund_amount": float(refund_amount)}
+    return {
+        "invoice_id": str(invoice.id),
+        "adjustment_id": str(adjustment.id),
+        "refund_amount": float(refund_amount),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -40,9 +40,11 @@ from gdx_dispatch.modules.ledger.models import (
     ROLE_CUSTOMER_CREDITS,
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
+    ROLE_REFUNDS,
     ROLE_SALES_TAX_PAYABLE,
     GlAccount,
     GlJournalEntry,
+    GlJournalLine,
 )
 from gdx_dispatch.modules.ledger.money import to_cents
 
@@ -320,11 +322,29 @@ def _prior_nonvoided_paid_cents(session: Session, invoice, payment) -> int:
     return sum(to_cents(_dec(p.amount)) for p in rows if _key(p) < marker)
 
 
+def invoice_credited_cents(session: Session, invoice) -> int:
+    """Σ balance-reducing adjustments (credit_memo + credit_applied) — the
+    other half of the receivable arithmetic. Audit round 3 (executed):
+    payment splits that ignored credit memos drove live AR negative and
+    swallowed the customer's overpayment instead of minting a 2300 credit."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+
+    rows = session.scalars(
+        select(InvoiceAdjustment).where(
+            InvoiceAdjustment.invoice_id == invoice.id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+        )
+    ).all()
+    return sum(to_cents(_dec(r.amount)) for r in rows)
+
+
 def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine, ...]:
     """P3: debit the method's account role (1000/1050 per the settings map),
     credit 1200 AR — with any excess beyond the invoice's remaining AR
     credited to 2300 Customer Credits instead (the opt-in overpayment path;
-    the API rejects overpayment without the opt-in)."""
+    the API rejects overpayment without the opt-in). Remaining AR counts BOTH
+    prior payments AND balance-reducing adjustments — a pure function of
+    current state, so replays and resettles stay key-identical."""
     amount_cents = to_cents(_dec(payment.amount))
     if amount_cents == 0:
         return ()
@@ -335,7 +355,12 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
     method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
 
     total_cents = to_cents(_dec(invoice.total))
-    remaining_ar = max(total_cents - _prior_nonvoided_paid_cents(session, invoice, payment), 0)
+    remaining_ar = max(
+        total_cents
+        - _prior_nonvoided_paid_cents(session, invoice, payment)
+        - invoice_credited_cents(session, invoice),
+        0,
+    )
     ar_portion = min(amount_cents, remaining_ar)
     excess = amount_cents - ar_portion
 
@@ -448,6 +473,186 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
         for live in _live_payment_entries(session, payment, invoice.company_id):
             if live.id != posted.id:
                 reverse_entry(session, live, created_by=actor)
+
+
+# ---------------------------------------------------------------------------
+# S7 — credit memos / refunds / apply-credit (spec §5.2, P9)
+# ---------------------------------------------------------------------------
+
+
+def _reason_role(settings, reason: str | None) -> str:
+    """reason → 4900 DISCOUNTS vs 4910 REFUNDS via the settings map;
+    unmapped/NULL falls to REFUNDS (the conservative contra-revenue bucket —
+    a mystery credit must not silently inflate the discounts line)."""
+    mapping = (settings.credit_reason_role_map or {}) if settings else {}
+    return mapping.get((reason or "").strip().lower(), ROLE_REFUNDS)
+
+
+def post_credit_memo(session: Session, adjustment, invoice, actor: str | None = None):
+    """Credit memo: debit 4900/4910 per reason, credit 1200 AR — forgiving
+    part of the receivable (spec §5.2). Keyed per adjustment row."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return None
+    amount_cents = to_cents(_dec(adjustment.amount))
+    if amount_cents == 0:
+        return None
+    settings = ledger_service.get_gl_settings(session, invoice.company_id)
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="adjustment",
+            source_id=str(adjustment.id),
+            event="credit_memo",
+            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            lines=(
+                PostingLine(
+                    amount_cents=amount_cents,
+                    role=_reason_role(settings, adjustment.reason),
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"credit memo on {invoice.invoice_number}: {adjustment.reason or 'unspecified'}",
+                ),
+                PostingLine(
+                    amount_cents=-amount_cents,
+                    role=ROLE_AR,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"credit memo applied to {invoice.invoice_number}",
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
+
+
+def post_refund(session: Session, adjustment, invoice, actor: str | None = None):
+    """Refund: debit 4910 (contra-revenue per reason), credit the cash
+    account the money leaves through (refund_method via the payment map).
+    AR untouched — a refund is money back for money paid, not forgiveness."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return None
+    amount_cents = to_cents(_dec(adjustment.amount))
+    if amount_cents == 0:
+        return None
+    settings = ledger_service.get_gl_settings(session, invoice.company_id)
+    if settings is None:
+        raise LedgerConfigError("gl_settings missing — accounting not initialized")
+    cash_role = ledger_service.resolve_payment_method_role(settings, adjustment.refund_method)
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="adjustment",
+            source_id=str(adjustment.id),
+            event="refund",
+            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            lines=(
+                PostingLine(
+                    amount_cents=amount_cents,
+                    role=_reason_role(settings, adjustment.reason),
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"refund on {invoice.invoice_number}: {adjustment.reason or 'unspecified'}",
+                ),
+                PostingLine(
+                    amount_cents=-amount_cents,
+                    role=cash_role,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"refund paid out via {adjustment.refund_method}",
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
+
+
+def post_credit_application(session: Session, adjustment, invoice, actor: str | None = None):
+    """P9: consume 2300 Customer Credits balance against an open invoice —
+    debit 2300, credit 1200 (spec §5.3). Caps are enforced at the API."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return None
+    amount_cents = to_cents(_dec(adjustment.amount))
+    if amount_cents == 0:
+        return None
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="adjustment",
+            source_id=str(adjustment.id),
+            event="credit_applied",
+            effective_at=adjustment.created_at.date() if adjustment.created_at else date.today(),
+            lines=(
+                PostingLine(
+                    amount_cents=amount_cents,
+                    role=ROLE_CUSTOMER_CREDITS,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"customer credit applied to {invoice.invoice_number}",
+                ),
+                PostingLine(
+                    amount_cents=-amount_cents,
+                    role=ROLE_AR,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"credit applied to {invoice.invoice_number}",
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
+
+
+def customer_credit_balance_cents(session: Session, company_id: str, customer_id) -> int:
+    """The customer's live 2300 balance from the ledger (credit-normal:
+    stored negative, returned positive). Sums ALL lines with NO status
+    filter — reversal entries negate their originals, and filtering by
+    status counts a reversal without the original it cancels (audit round
+    3, executed: an overpay-void drove the balance NEGATIVE and locked the
+    customer out of credit they were genuinely owed). Company scoping rides
+    the entry join. PG callers should have locked the credit rows (SELECT
+    FOR UPDATE) before trusting this for a spend."""
+    from gdx_dispatch.modules.ledger.coa import resolve_role_account
+
+    credits_acct = resolve_role_account(session, company_id, ROLE_CUSTOMER_CREDITS)
+    total = 0
+    rows = session.execute(
+        select(GlJournalLine.amount_cents)
+        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
+        .where(
+            GlJournalLine.account_id == credits_acct.id,
+            GlJournalLine.customer_id == customer_id,
+            GlJournalEntry.company_id == company_id,
+        )
+    ).all()
+    for (amount_cents,) in rows:
+        total += amount_cents
+    return -total
+
+
+def reverse_invoice_adjustments(session: Session, invoice, actor: str | None = None) -> None:
+    """On invoice void: the P1 reversal alone would leave adjustment entries
+    dangling on AR — reverse every live adjustment entry too."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+
+    adjustments = session.scalars(
+        select(InvoiceAdjustment).where(InvoiceAdjustment.invoice_id == invoice.id)
+    ).all()
+    for adjustment in adjustments:
+        live = session.scalars(
+            select(GlJournalEntry).where(
+                GlJournalEntry.company_id == invoice.company_id,
+                GlJournalEntry.source_type == "adjustment",
+                GlJournalEntry.source_id == str(adjustment.id),
+                GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            )
+        ).all()
+        for entry in live:
+            reverse_entry(session, entry, created_by=actor)
 
 
 # --- registration (module import = registration; the chokepoint imports us
