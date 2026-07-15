@@ -315,6 +315,32 @@ class GlSettings(TenantBase):
     )
 
 
+class ExpenseReceipt(TenantBase):
+    """Source documents for expenses (S8, spec §3.7). Rev. Proc. 97-22
+    compliance mapping: ``sha256`` = integrity, vendor/date/amount live on
+    the expense row = indexing, original-resolution download = reproduction,
+    soft-delete-only + ≥7-year retention = Pub 583. There is deliberately no
+    hard-delete path and the stored file is never unlinked."""
+
+    __tablename__ = "expense_receipts"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    expense_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("expenses.id"), nullable=False, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    uploaded_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class GlPeriodLock(TenantBase):
     """Append-only period-lock history. A posting with ``effective_at`` on or
     before the most-recent ``lock_date`` is hard-blocked unless the caller holds

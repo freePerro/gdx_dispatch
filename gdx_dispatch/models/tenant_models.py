@@ -971,6 +971,11 @@ class JobReceipt(Base):
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(200), nullable=True)
+    # GL S8 (spec §3.7 promote-from-field): a road receipt promoted into a
+    # real Expense records the link here — migration 023 on existing DBs.
+    promoted_expense_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

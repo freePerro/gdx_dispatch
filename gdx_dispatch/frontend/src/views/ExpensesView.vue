@@ -225,14 +225,28 @@ const editingExpense = ref(null);
 const saving = ref(false);
 const jobOptions = ref([]);
 
-const categoryOptions = [
-  { value: 'materials', label: 'Materials' },
-  { value: 'travel', label: 'Travel' },
-  { value: 'meals', label: 'Meals' },
-  { value: 'equipment', label: 'Equipment' },
-  { value: 'supplies', label: 'Supplies' },
-  { value: 'other', label: 'Other' },
+// GL S8: the backend validates categories against its canonical list (they
+// drive the accounting category→account map), so the dropdown LOADS that
+// list from /api/expense-categories instead of hardcoding a divergent
+// vocabulary (the old materials/travel/meals list had zero overlap and
+// every save would have 422'd). Fallback mirrors the server's canonical
+// list for offline/first-paint.
+const FALLBACK_CATEGORIES = [
+  'Fuel', 'Parts/Supplies', 'Tools/Equipment', 'Advertising',
+  'Insurance', 'Vehicle Maintenance', 'Subcontractor', 'Other',
 ];
+const categoryOptions = ref(FALLBACK_CATEGORIES.map((c) => ({ value: c, label: c })));
+
+async function loadCategories() {
+  try {
+    const list = await api.get('/api/expense-categories');
+    if (Array.isArray(list) && list.length) {
+      categoryOptions.value = list.map((c) => ({ value: c, label: c }));
+    }
+  } catch {
+    /* keep the fallback */
+  }
+}
 
 const form = ref(emptyForm());
 
@@ -240,7 +254,7 @@ function emptyForm() {
   return {
     date: null,
     vendor: '',
-    category: categoryOptions[0].value,
+    category: categoryOptions.value[0].value,
     amount: null,
     description: '',
     job_id: null,
@@ -336,7 +350,7 @@ function openEdit(entry) {
   form.value = {
     date: entry.date ? new Date(entry.date) : null,
     vendor: entry.vendor || '',
-    category: entry.category || categoryOptions[0].value,
+    category: entry.category || categoryOptions.value[0].value,
     amount: entry.amount ?? null,
     description: entry.description || '',
     job_id: entry.job_id || null,
@@ -373,6 +387,7 @@ async function saveExpense() {
 }
 
 onMounted(() => {
+  loadCategories();
   loadJobs();
   loadExpenses();
 });

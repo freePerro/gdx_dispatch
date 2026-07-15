@@ -210,6 +210,7 @@ try:
     # 2026-07-02 — GL ledger (Phase 1 core): chart of accounts + append-only
     # journal. Tables built by create_all; integrity triggers in migration 012.
     from gdx_dispatch.modules.ledger.models import (  # noqa: F401
+        ExpenseReceipt,
         GlAccount,
         GlJournalEntry,
         GlJournalLine,
