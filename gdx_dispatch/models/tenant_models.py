@@ -476,6 +476,36 @@ class Payment(Base):
     invoice: Mapped[Invoice] = relationship(back_populates="payments")
 
 
+class InvoiceAdjustment(Base):
+    """Credit memos / refunds / applied credits (GL S7, spec §5.2, P9) —
+    replacing the old habit of mutating the deprecated ``amount_paid``
+    column (bug #4: recalc ignored it, so a credit memo's effect evaporated
+    on the next recalculation). Append-only; ``_recalculate_invoice`` derives
+    ``balance_due = total − Σnon-voided payments − Σ(credit_memo +
+    credit_applied)``. Refunds don't change the balance — they are
+    contra-revenue cash-outs capped by net paid.
+    """
+
+    __tablename__ = "invoice_adjustments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    invoice_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(
+        Enum("credit_memo", "refund", "credit_applied", name="invoice_adjustment_kind"),
+        nullable=False,
+    )
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    refund_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+
 class Expense(Base):
     __tablename__ = "expenses"
 

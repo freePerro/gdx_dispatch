@@ -50,9 +50,10 @@ def _scan(pattern: str) -> Counter:
 # plan's slice map — every writer is either retrofitted through the
 # chokepoint (S5/S6/S7) or disabled under the flag (S9) or deleted.
 STATUS_WRITERS: dict[str, tuple[int, str]] = {
-    # S5 retrofitted the issuance writers; S6 rewrote _mark_invoice_paid
-    # (core/payments.py 1→0) and deleted /refund's enum-invalid write.
-    "routers/invoices.py": (1, "credit-memo writer — S7 retrofits with invoice_adjustments"),
+    # S5 retrofitted the issuance writers; S6 rewrote _mark_invoice_paid and
+    # /refund; S7 rebuilt /credit-memo on invoice_adjustments. Every live
+    # operational writer now routes through transition_invoice_status —
+    # only the QB-sync writers remain, and S9 disables/deletes them.
     "core/quickbooks.py": (1, "dead writer — S9 deletes/deprecates (spec §5 row 8)"),
     "modules/quickbooks/sync.py": (1, "QB pull — S9 disables when ledger on"),
 }

@@ -53,6 +53,7 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     InternalTask,
     InventoryItem,
     Invoice,
+    InvoiceAdjustment,
     InvoiceLine,
     Job,
     # Inline DDL replacements
