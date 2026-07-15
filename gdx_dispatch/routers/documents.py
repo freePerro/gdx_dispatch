@@ -243,19 +243,41 @@ async def list_documents(
     stmt = stmt.order_by(Document.uploaded_at.desc())
     docs = db.execute(stmt).scalars().all()
 
+    # Resolve uploaded_by → email/username in ONE bulk query, not per-row.
+    # uploaded_by is a free-form string column: real user ids are UUIDs, but
+    # some rows carry sentinels like "system". Filtering to valid UUIDs both
+    # avoids the N+1 SELECT (was one query per document) and the psycopg2
+    # "invalid input syntax for uuid" that a "system" value triggered — which
+    # the old per-row try/except logged as an ERROR + traceback for every
+    # such document (hundreds of ERROR lines per Documents page load).
+    # Found in the 2026-07-15 full-app walk.
+    # Map each doc's raw uploaded_by → its canonical UUID string so the
+    # display lookup below can't miss on formatting (uppercase / braces /
+    # no-hyphens all parse to the same UUID; keying the display dict by
+    # canonical str and looking up by the same canonical str keeps them
+    # aligned — the DB-side comparison the old per-row query used did this
+    # implicitly).
+    canonical_by_raw: dict[str, str] = {}
+    for doc in docs:
+        if not doc.uploaded_by:
+            continue
+        try:
+            canonical_by_raw[str(doc.uploaded_by)] = str(UUID(str(doc.uploaded_by)))
+        except (ValueError, TypeError):
+            continue  # non-UUID sentinel (e.g. "system") — leave as-is
+    display_by_canonical: dict[str, str] = {}
+    if canonical_by_raw:
+        for user_row in db.execute(
+            select(User).where(User.id.in_({UUID(c) for c in canonical_by_raw.values()}))
+        ).scalars():
+            display_by_canonical[str(user_row.id)] = (
+                user_row.email or user_row.username or str(user_row.id)
+            )
+
     results: list[DocumentOut] = []
     for doc in docs:
-        # Resolve uploaded_by to email/username if possible
-        uploaded_by_display = doc.uploaded_by
-        if doc.uploaded_by:
-            try:
-                user_row = db.execute(
-                    select(User).where(User.id == doc.uploaded_by)
-                ).scalar_one_or_none()
-                if user_row:
-                    uploaded_by_display = user_row.email or user_row.username or doc.uploaded_by
-            except Exception:
-                log.exception("documents_user_lookup_failed uploaded_by=%s", doc.uploaded_by)
+        canonical = canonical_by_raw.get(str(doc.uploaded_by))
+        uploaded_by_display = display_by_canonical.get(canonical, doc.uploaded_by)
         results.append(DocumentOut(**_serialize_document(doc, uploaded_by_display)))
     return results
 
