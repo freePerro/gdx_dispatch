@@ -96,16 +96,23 @@ def day_summary(
     # SQLite test path uses julianday(); PG uses EXTRACT EPOCH. Try
     # the dialect-appropriate one based on the SQLAlchemy bind.
     is_sqlite = db.bind is not None and db.bind.dialect.name == "sqlite"
+    # Table is `time_entries` — the one that actually carries populated
+    # user_id / clock_in / clock_out (mobile.py's _create_time_entry writes
+    # it, payroll reads it). The old "timeclock_entries" was a nonexistent
+    # table (query raised UndefinedTable, swallowed → 0 hours); `timeclocks`
+    # exists but its legacy clock_in/clock_out/user_id columns are never
+    # written (0 rows), so it would keep reporting 0. Found + corrected in
+    # the 2026-07-15 full-app walk (audit round 2).
     if is_sqlite:
         hours_sql = (
             "SELECT COALESCE(SUM((julianday(clock_out) - julianday(clock_in)) * 24.0), 0) "
-            "FROM timeclock_entries WHERE CAST(user_id AS TEXT) = :uid "
+            "FROM time_entries WHERE CAST(user_id AS TEXT) = :uid "
             "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL"
         )
     else:
         hours_sql = (
             "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (clock_out - clock_in)) / 3600.0), 0) "
-            "FROM timeclock_entries WHERE CAST(user_id AS TEXT) = :uid "
+            "FROM time_entries WHERE CAST(user_id AS TEXT) = :uid "
             "AND clock_in >= :start AND clock_in < :end AND clock_out IS NOT NULL"
         )
     try:
@@ -123,10 +130,13 @@ def day_summary(
     try:
         parts_requested = int(db.execute(
             _text(
+                # Table is `job_parts_needed`, attribution column is
+                # `requested_by_user_id`, and it has no deleted_at (soft state
+                # lives in `status`). The old names raised UndefinedTable so
+                # the day-wrap always reported 0 parts. (2026-07-15 walk.)
                 """
-                SELECT COUNT(*) FROM parts_needed
-                WHERE deleted_at IS NULL
-                  AND requested_by = :uid
+                SELECT COUNT(*) FROM job_parts_needed
+                WHERE requested_by_user_id = :uid
                   AND created_at >= :start AND created_at < :end
                 """
             ),

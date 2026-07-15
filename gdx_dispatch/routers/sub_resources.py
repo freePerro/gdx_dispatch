@@ -25,9 +25,24 @@ router = APIRouter(tags=["sub-resources"])
 
 @router.get("/api/customers/{customer_id}/recurring-jobs")
 def customer_recurring_jobs(customer_id: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Table is `recurring_job_schedules` and the date column is `next_run`
+    # (aliased to next_run_at for the frontend) — the old query named a
+    # nonexistent "recurring_jobs" table with title/next_due columns, so it
+    # ALWAYS threw UndefinedTable and returned empty: every customer showed
+    # "No recurring jobs" regardless of their schedules. A left join pulls
+    # the template name for the row title. Found in the 2026-07-15 walk.
     try:
         rows = db.execute(
-            text("SELECT id, customer_id, title, frequency, next_due, status, created_at FROM recurring_jobs WHERE customer_id = :cid AND deleted_at IS NULL"),
+            text(
+                """
+                SELECT s.id, s.customer_id, s.frequency, s.status, s.created_at,
+                       s.next_run AS next_run_at, t.title AS template_name
+                FROM recurring_job_schedules s
+                LEFT JOIN job_templates t ON t.id = s.job_template_id
+                WHERE s.customer_id = :cid AND s.deleted_at IS NULL
+                ORDER BY s.next_run NULLS LAST
+                """
+            ),
             {"cid": customer_id},
         ).mappings().all()
         return {"items": [dict(r) for r in rows], "total": len(rows)}
@@ -211,7 +226,9 @@ def billing_usage(user: dict = Depends(get_current_user), db: Session = Depends(
 @router.get("/api/ai/quality/summary")
 def ai_quality_summary(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        total = db.execute(text("SELECT COUNT(*) FROM ai_logs")).scalar() or 0
+        # Table is `ai_quote_log` — "ai_logs" never existed, so this count
+        # was always the swallowed 0 (2026-07-15 walk).
+        total = db.execute(text("SELECT COUNT(*) FROM ai_quote_log")).scalar() or 0
     except Exception:
         logging.getLogger(__name__).exception("ai_quality_summary caught exception")
         total = 0
