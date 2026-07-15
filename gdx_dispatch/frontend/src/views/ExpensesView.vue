@@ -199,7 +199,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { formatDate, formatMoney } from '../composables/useFormatters';
+import { formatDate, formatMoney, parseLocalDateString } from '../composables/useFormatters';
+import { useToast } from 'primevue/usetoast';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -215,6 +216,7 @@ import Toolbar from 'primevue/toolbar';
 import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
+const toast = useToast();
 const expenses = ref([]);
 const loading = ref(true);
 const statusTabs = ['Draft', 'Submitted', 'Approved', 'Reimbursed'];
@@ -348,7 +350,9 @@ function openCreate() {
 function openEdit(entry) {
   editingExpense.value = entry;
   form.value = {
-    date: entry.date ? new Date(entry.date) : null,
+    // date-only strings must LOCAL-parse: UTC-parsing here made every
+    // edit-save silently decrement the date by a day (audit round 5).
+    date: entry.date ? (parseLocalDateString(entry.date) || new Date(entry.date)) : null,
     vendor: entry.vendor || '',
     category: entry.category || categoryOptions.value[0].value,
     amount: entry.amount ?? null,
@@ -360,18 +364,33 @@ function openEdit(entry) {
   showDialog.value = true;
 }
 
+// The backend field is a DATE; toISOString() shifted local midnight into a
+// UTC datetime (2026-07-14T05:00Z in Central) — pydantic 422s it, and an
+// evening pick would land on the WRONG day. Serialize the local Y-M-D.
+// (Caught in the GL S8 headed browser walk — pre-existing bug.)
+function toLocalDateString(d) {
+  if (!d) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 async function saveExpense() {
   if (!form.value.vendor.trim()) return;
+  if (!form.value.amount || Number(form.value.amount) <= 0) {
+    // backend enforces gt=0 — say so instead of silently doing nothing
+    // (audit round 5: a silent no-op also made legacy $0 rows uneditable)
+    toast.add({ severity: 'warn', summary: 'Amount required', detail: 'Enter an amount greater than $0.', life: 4000 });
+    return;
+  }
   saving.value = true;
   const payload = {
     vendor: form.value.vendor,
     category: form.value.category,
-    amount: form.value.amount ? Number(form.value.amount) : 0,
+    amount: Number(form.value.amount),
     description: form.value.description,
     job_id: form.value.job_id,
     receipt_url: form.value.receipt_url,
     status: form.value.status,
-    date: form.value.date ? form.value.date.toISOString() : null,
+    date: toLocalDateString(form.value.date),
   };
   try {
     if (editingExpense.value) {

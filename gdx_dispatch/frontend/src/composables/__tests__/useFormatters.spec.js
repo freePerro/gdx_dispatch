@@ -36,6 +36,16 @@ describe('formatPhone', () => {
 });
 
 describe('useFormatters', () => {
+  it('formatDate treats date-only strings as LOCAL calendar dates (GL S8 walk)', () => {
+    // new Date('2026-07-14') is UTC midnight — in any US timezone that
+    // rendered as Jul 13. The formatter must show the calendar date the
+    // backend stored, regardless of the machine's timezone.
+    expect(formatDate('2026-07-14', { locale: 'en-US' })).toBe('Jul 14, 2026');
+    expect(formatDate('2026-01-01', { locale: 'en-US' })).toBe('Jan 1, 2026');
+    // full ISO datetimes still convert as instants (unchanged behavior)
+    expect(formatDate('2026-07-14T12:00:00Z', { locale: 'en-US' })).toMatch(/Jul 1[34], 2026/);
+  });
+
   it('formatDate handles null/undefined/empty', () => {
     expect(formatDate(null)).toBe('—');
     expect(formatDate(undefined)).toBe('—');

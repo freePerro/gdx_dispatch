@@ -214,7 +214,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { formatDate, formatMoney as formatCurrency } from '../composables/useFormatters';
+import { formatDate, formatMoney as formatCurrency, parseLocalDateString } from '../composables/useFormatters';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -398,7 +398,11 @@ function openEdit(entry) {
   form.value = {
     status: normalizeStatus(entry.status),
     note: entry.note || '',
-    last_contact: entry.last_contact ? new Date(entry.last_contact) : null,
+    // date-only strings LOCAL-parse (GL S8 walk): UTC-parsing showed the
+    // previous day in the picker vs the (now-correct) table rendering.
+    last_contact: entry.last_contact
+      ? (parseLocalDateString(entry.last_contact) || new Date(entry.last_contact))
+      : null,
   };
   showDialog.value = true;
 }

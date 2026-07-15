@@ -58,6 +58,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue';
+import { parseLocalDateString } from '../../composables/useFormatters';
 import Dialog from 'primevue/dialog';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
@@ -115,7 +116,11 @@ watch(() => props.visible, (v) => {
       cadence: props.stream.cadence || 'monthly',
       cadence_anchor_day: props.stream.cadence_anchor_day ?? null,
       term_total_occurrences: props.stream.term_total_occurrences ?? null,
-      term_end_date: props.stream.term_end_date ? new Date(props.stream.term_end_date) : null,
+      // date-only strings LOCAL-parse (GL S8 walk): UTC-parsing opened the
+      // picker on the previous day in US timezones.
+      term_end_date: props.stream.term_end_date
+        ? (parseLocalDateString(props.stream.term_end_date) || new Date(props.stream.term_end_date))
+        : null,
       notes: props.stream.notes || '',
     };
     if (form.value.term_total_occurrences) termMode.value = 'occurrences';
