@@ -35,6 +35,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job
+from gdx_dispatch.modules.ledger.service import transition_invoice_status
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
@@ -524,7 +525,7 @@ def mobile_create_invoice(
     # Optionally send the invoice email immediately (S2-B2).
     if payload.send_email:
         _send_invoice_email(db, invoice, tenant_id=tenant_id)
-        invoice.status = "sent"
+        transition_invoice_status(db, invoice, "sent")  # GL S5: P1 posts here when the flag is on
         invoice.sent_at = datetime.now(UTC)
         db.commit()
         db.refresh(invoice)
@@ -649,7 +650,8 @@ def mobile_send_invoice(
         return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
 
     _send_invoice_email(db, invoice, tenant_id=tenant_id)
-    invoice.status = "sent" if invoice.status == "draft" else invoice.status
+    if invoice.status == "draft":
+        transition_invoice_status(db, invoice, "sent")  # GL S5
     invoice.sent_at = datetime.now(UTC)
     db.commit()
     db.refresh(invoice)

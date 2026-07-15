@@ -50,8 +50,9 @@ def _scan(pattern: str) -> Counter:
 # plan's slice map — every writer is either retrofitted through the
 # chokepoint (S5/S6/S7) or disabled under the flag (S9) or deleted.
 STATUS_WRITERS: dict[str, tuple[int, str]] = {
-    "routers/invoices.py": (5, "S5/S6/S7 retrofit through transition_invoice_status"),
-    "routers/mobile_invoicing.py": (2, "S5 retrofit through transition_invoice_status"),
+    # S5 retrofitted: _recalculate auto-flip, /mark-sent, /send (invoices.py)
+    # and both mobile send paths now route through transition_invoice_status.
+    "routers/invoices.py": (2, "credit-memo + refund writers — S7 retrofits with invoice_adjustments"),
     "core/payments.py": (1, "S6 refactor (_mark_invoice_paid) through the chokepoint"),
     "core/quickbooks.py": (1, "dead writer — S9 deletes/deprecates (spec §5 row 8)"),
     "modules/quickbooks/sync.py": (1, "QB pull — S9 disables when ledger on"),

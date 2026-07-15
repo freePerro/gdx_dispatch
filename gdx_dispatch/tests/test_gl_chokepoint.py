@@ -56,8 +56,20 @@ def _make_invoice(status="draft", company_id=COMPANY, number=None):
 
 
 def _invoice(db, status="draft"):
+    from gdx_dispatch.models.tenant_models import InvoiceLine
+
     inv = _make_invoice(status)
     db.add(inv)
+    db.flush()
+    # P1 (S5) refuses invoices whose total doesn't reconcile with lines —
+    # give the fixture invoice one matching line so guard tests can issue it.
+    db.add(
+        InvoiceLine(
+            invoice_id=inv.id, description="Test work", quantity=1,
+            unit_price=Decimal("100.00"), line_total=Decimal("100.00"),
+            company_id=COMPANY,
+        )
+    )
     db.commit()
     return inv
 
@@ -118,8 +130,10 @@ def test_flag_on_chokepoint_write_passes(db, monkeypatch):
     transition_invoice_status(db, inv, "sent")
     db.commit()
     assert db.get(Invoice, inv.id).status == "sent"
-    # no posting rules are registered in S4 — flag on still posts nothing
-    assert db.scalars(select(GlJournalEntry)).all() == []
+    # S5 registered the P1 rule: a flag-on issuance posts one balanced entry
+    # (test_gl_invoice_posting.py covers the composition in depth).
+    entries = db.scalars(select(GlJournalEntry)).all()
+    assert len(entries) == 1 and entries[0].status == "posted"
 
 
 def test_sanction_is_single_use(db, monkeypatch):

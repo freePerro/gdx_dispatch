@@ -250,14 +250,6 @@ def post_for_event(
     """
     _validate_balance(event.lines)
     resolved = _resolve_lines(session, event.company_id, event.lines)
-    _check_period_lock(
-        session,
-        event.company_id,
-        event.effective_at,
-        override_lock=override_lock,
-        created_by=event.created_by,
-        context=f"{event.source_type}:{event.source_id}:{event.event}",
-    )
 
     chash = content_hash(
         {
@@ -276,11 +268,26 @@ def post_for_event(
     )
     prefix = key_prefix(event.source_type, event.source_id, event.event, chash)
 
+    lock_checked = False
     for _ in range(_MAX_KEY_ATTEMPTS):
         key = idempotency_key(prefix, compute_seq(session, event.company_id, prefix))
         existing = _entry_by_key(session, event.company_id, key)
         if existing is not None and existing.status == ENTRY_STATUS_POSTED:
             return existing  # idempotent success — same content already live
+        if not lock_checked:
+            # Lock check AFTER the idempotency pre-flight (audit round 2): a
+            # no-op replay of an already-live entry posts nothing new and
+            # must not explode just because the period has since closed —
+            # otherwise recording a payment on a locked-period invoice 500s.
+            _check_period_lock(
+                session,
+                event.company_id,
+                event.effective_at,
+                override_lock=override_lock,
+                created_by=event.created_by,
+                context=f"{event.source_type}:{event.source_id}:{event.event}",
+            )
+            lock_checked = True
         try:
             with session.begin_nested():
                 entry = _insert_entry(
