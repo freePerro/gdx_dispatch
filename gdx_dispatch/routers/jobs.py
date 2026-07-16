@@ -30,6 +30,7 @@ from gdx_dispatch.models.tenant_models import (
     JobCloseout,
     JobDependency,
     JobPartNeeded,
+    Technician,
     TimeEntry,
 )
 from gdx_dispatch.modules.dispatch_settings import require_tech_for_scheduled_job
@@ -1376,6 +1377,128 @@ class CloseoutPayload(BaseModel):
     no_parts_used: bool = False
 
 
+# The labor row a closeout owns, so a re-closeout updates it instead of
+# adding a second one (mirrors the parts replace step).
+CLOSEOUT_LABOR_NOTE = "Closeout-attached"
+
+
+
+def _resolve_technician_id(db: Session, user_id: str) -> str | None:
+    """Technician.id for a user, or None — used to look up the hourly rate.
+
+    Deliberately NOT for identity: payroll groups `time_entries` by `user_id`
+    (payroll.py:246-263) and `tech_id` is vestigial there. Mirrors
+    `mobile._get_technician_id`, minus its unused tenant_id arg, plus the
+    `deleted_at` filter it omits. `created_at` is nullable, so NULLs sort
+    per-dialect — tie-break on id to keep SQLite and Postgres agreeing.
+    """
+    try:
+        row = (
+            db.query(Technician.id)
+            .filter(
+                Technician.user_id == user_id,
+                Technician.active.isnot(False),
+                Technician.deleted_at.is_(None),
+            )
+            .order_by(Technician.created_at.desc().nullslast(), Technician.id)
+            .first()
+        )
+    except SQLAlchemyError:
+        log.exception("closeout_resolve_technician_failed")
+        return None
+    return str(row[0]) if row else None
+
+
+def _labor_rate_for(db: Session, technician_id: str | None) -> float:
+    """The tech's hourly rate, snapshotted onto the row. Cost readers use the
+    stored `hourly_rate` column (labor.py:110, job_costing.py:200) and never
+    re-resolve it, so a row written without it is costed at the default rate
+    forever. Reuses labor.py's resolver so there is one rate definition.
+    """
+    from gdx_dispatch.routers.labor import DEFAULT_HOURLY_RATE, _resolve_hourly_rate
+
+    if not technician_id:
+        return DEFAULT_HOURLY_RATE
+    try:
+        return _resolve_hourly_rate(db, technician_id)
+    except SQLAlchemyError:
+        log.exception("closeout_resolve_rate_failed")
+        return DEFAULT_HOURLY_RATE
+
+
+def _open_job_timers(db: Session, job_uuid: uuid.UUID) -> list[TimeEntry]:
+    """Every open timer on this job, whoever started it.
+
+    Scoped to the job rather than the closer: a job can carry N techs
+    (JobAssignment), and only the closer's own timer getting closed would
+    leave every other tech's running forever — the bug this exists to kill.
+    Day-level shifts live in `timeclock_entries` (TimeclockEntry), not here.
+    """
+    return list(
+        db.execute(
+            select(TimeEntry)
+            .where(
+                TimeEntry.job_id == job_uuid,
+                TimeEntry.clock_out.is_(None),
+                TimeEntry.deleted_at.is_(None),
+            )
+            .order_by(TimeEntry.clock_in.desc())
+        ).scalars().all()
+    )
+
+
+def _owned_closeout_labor_entry(db: Session, job_uuid: uuid.UUID) -> TimeEntry | None:
+    """The labor row an earlier closeout of this JOB already wrote.
+
+    Scoped to the job, not the closer: a closeout is a job-level attestation
+    (one JobCloseout per job, re-closeout restates it — see the parts replace
+    above). Keying this on the closer instead would dedupe only when the same
+    human closes twice, and a tech closing 2h followed by a dispatcher closing
+    3h would bill 5h for a 3h job.
+    """
+    return db.execute(
+        select(TimeEntry)
+        .where(
+            TimeEntry.job_id == job_uuid,
+            TimeEntry.notes == CLOSEOUT_LABOR_NOTE,
+            TimeEntry.deleted_at.is_(None),
+        )
+        .order_by(TimeEntry.clock_in.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _close_labor_entry(
+    entry: TimeEntry,
+    now: datetime,
+    attested_minutes: int,
+    hourly_rate: float | None,
+) -> None:
+    """Stamp an end on a labor row.
+
+    Only ATTESTED time is payable. Wall-clock elapsed is not evidence of work —
+    it measures how long the tech forgot to close the timer, and prod carried
+    timers open for months — so an unattested timer closes at zero and is
+    surfaced for the office rather than guessed at. Inventing hours here feeds
+    job costing (job_costing.py:201) and payroll gross pay directly, and an
+    overpayment gets cashed where a missing hour gets reported.
+
+    clock_in is never moved: payroll windows on DATE(clock_in) (payroll.py:250),
+    so the hours stay in the day the work happened rather than the day someone
+    got around to closing out.
+    """
+    clock_in_at = entry.clock_in or now
+    if clock_in_at.tzinfo is None:
+        # SQLite hands back naive datetimes where Postgres is aware.
+        clock_in_at = clock_in_at.replace(tzinfo=UTC)
+
+    entry.clock_out = clock_in_at + timedelta(minutes=attested_minutes)
+    entry.duration_minutes = attested_minutes
+    if hourly_rate is not None:
+        entry.hourly_rate = hourly_rate
+    entry.updated_at = now
+
+
 @router.post("/{job_id}/closeout", response_model=None, status_code=201)
 def closeout_job(
     payload: CloseoutPayload,
@@ -1608,39 +1731,76 @@ def closeout_job(
                 "in_inventory": part_exists,
             })
 
-        # 2) Time-entry attachment — find the calling tech's open work
-        #    entry. If found and unattached, attach it to this job. If
-        #    none open and hours > 0, write a synthetic entry to keep the
-        #    labor-cost trail honest (closer != calling tech is expected
-        #    when a dispatcher closes for a forgetful tech).
-        if (payload.hours or 0) > 0:
-            open_entry = db.execute(
-                select(TimeEntry).where(
-                    TimeEntry.tech_id == user_id,
-                    TimeEntry.clock_out.is_(None),
-                    TimeEntry.deleted_at.is_(None),
-                ).order_by(TimeEntry.clock_in.desc()).limit(1)
-            ).scalar_one_or_none()
-            if open_entry and not open_entry.job_id:
-                open_entry.job_id = uuid.UUID(job_id)
-                open_entry.updated_at = now
-            elif not open_entry:
-                # Synthetic entry — closer attests `hours` worth of work.
-                clock_in_at = now - timedelta(hours=float(payload.hours or 0))
-                synthetic = TimeEntry(
-                    id=uuid.uuid4(),
-                    company_id=tenant_id,
-                    job_id=uuid.UUID(job_id),
-                    tech_id=user_id,
-                    clock_in=clock_in_at,
-                    clock_out=now,
-                    duration_minutes=int(round(float(payload.hours or 0) * 60)),
-                    entry_type="work",
-                    notes="Closeout-attached",
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(synthetic)
+        # 2) Labor trail. The mobile arrival auto-clocks-in a per-job timer
+        #    (mobile.py `mobile_job_arrived`) and closeout is the only thing
+        #    that can end it — it never did, so prod carried timers open for
+        #    months while closeout added a second, synthetic row beside them.
+        #
+        #    Two readers decide whether a row counts and the old code
+        #    satisfied neither: payroll groups by `user_id` and skips a NULL
+        #    clock_out (payroll.py:246-263) — the timer had no clock_out and
+        #    the synthetic had no user_id, so NO job hours were payable at
+        #    all — while costing reads the stored `hourly_rate` (labor.py:110,
+        #    job_costing.py:201) and never re-resolves it, so every row costed
+        #    at the default rate. Rows written here set all three.
+        #
+        #    Attested hours are the only payable input. Elapsed measures how
+        #    long a timer went unclosed, not work done, so an unattested timer
+        #    closes at zero and is surfaced rather than guessed at.
+        technician_id = _resolve_technician_id(db, user_id)
+        attested_minutes = int(round(float(payload.hours or 0) * 60))
+
+        timers = _open_job_timers(db, job.id)
+
+        # The job's single attested-labor row. Order matters: an existing
+        # closeout row wins so a re-closeout RESTATES it (a second submit, or
+        # a re-arrival then re-closeout, must not stack a second row); then
+        # the caller's own arrival timer; then a synthetic.
+        target = _owned_closeout_labor_entry(db, job.id)
+        if target is None:
+            target = next((t for t in timers if t.user_id == user_id), None)
+        if target is None and attested_minutes:
+            # No timer — the closer attests the work happened (a dispatcher
+            # closing for a forgetful tech, or a tech who never tapped
+            # "I'm here"). Identity stays exactly as it was before this
+            # change: tech_id = the closer, user_id NULL. Stamping the
+            # closer's user_id would make payroll pay THEM for a tech's
+            # hours; NULL keeps the row unpayable (as today) while job
+            # costing still counts it. Who owns an unattested row is a
+            # product decision, not a bug fix.
+            target = TimeEntry(
+                id=uuid.uuid4(),
+                company_id=tenant_id,
+                job_id=job.id,
+                tech_id=user_id,
+                clock_in=now - timedelta(minutes=attested_minutes),
+                entry_type="work",
+                created_at=now,
+            )
+            db.add(target)
+
+        if target is not None:
+            _close_labor_entry(
+                target, now, attested_minutes, _labor_rate_for(db, technician_id)
+            )
+            target.notes = CLOSEOUT_LABOR_NOTE
+
+        # Every other open timer on the job closes UNPAID. The caller attested
+        # for the job, not for a colleague's clock, and elapsed is not
+        # evidence. Zero + a warning is honest; a guess gets cashed.
+        for timer in timers:
+            if timer is target:
+                continue
+            _close_labor_entry(timer, now, 0, None)
+            log.warning(
+                "closeout_unattested_timer_closed",
+                extra={
+                    "job_id": str(job.id),
+                    "entry_id": str(timer.id),
+                    "timer_user_id": timer.user_id,
+                    "closed_by": user_id,
+                },
+            )
 
         # 3) JobCloseout snapshot row.
         closeout = JobCloseout(
