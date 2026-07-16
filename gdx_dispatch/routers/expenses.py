@@ -129,7 +129,67 @@ def list_expenses(
     if end_date is not None:
         q = q.where(Expense.date <= end_date)
     rows = list(db.execute(q.order_by(Expense.date.desc(), Expense.created_at.desc())).scalars().all())
-    return [_expense_to_dict(row) for row in rows]
+    payloads = [_expense_to_dict(row) for row in rows]
+    _annotate_gl_accounts(db, rows, payloads)
+    _annotate_receipt_counts(db, rows, payloads)
+    return payloads
+
+
+def _annotate_receipt_counts(db: Session, rows: list[Expense], payloads: list[dict]) -> None:
+    """One grouped query — the list's Receipts column and the
+    only-with-receipt filter read this."""
+    if not rows:
+        return
+    from sqlalchemy import func
+
+    counts = dict(
+        db.execute(
+            select(ExpenseReceipt.expense_id, func.count())
+            .where(
+                ExpenseReceipt.expense_id.in_([r.id for r in rows]),
+                ExpenseReceipt.deleted_at.is_(None),
+            )
+            .group_by(ExpenseReceipt.expense_id)
+        ).all()
+    )
+    for row, payload in zip(rows, payloads):
+        payload["receipt_count"] = int(counts.get(row.id, 0))
+
+
+def _annotate_gl_accounts(db: Session, rows: list[Expense], payloads: list[dict]) -> None:
+    """GL S11 (spec §9): expense detail shows the CoA account it posts to —
+    resolved through the same category map P5 uses, one settings read for
+    the whole page. Annotation only; failures never break the list."""
+    if not rows:
+        return
+    try:
+        from gdx_dispatch.modules.ledger import service as ledger_service
+        from gdx_dispatch.modules.ledger.models import GlAccount, ROLE_EXPENSE_FALLBACK
+        from gdx_dispatch.modules.ledger.rules import _expense_account_id
+
+        company_id = rows[0].company_id
+        settings = ledger_service.get_gl_settings(db, company_id)
+        if settings is None:
+            return
+        fallback = db.execute(
+            select(GlAccount).where(
+                GlAccount.company_id == company_id,
+                GlAccount.role == ROLE_EXPENSE_FALLBACK,
+                GlAccount.active.is_(True),
+            )
+        ).scalar_one_or_none()
+        cache: dict = {}
+        for row, payload in zip(rows, payloads):
+            key = row.category or ""
+            if key not in cache:
+                account_id = _expense_account_id(db, settings, company_id, row.category)
+                account = db.get(GlAccount, account_id) if account_id else fallback
+                cache[key] = account
+            account = cache[key]
+            if account is not None:
+                payload["gl_account"] = {"code": account.code, "name": account.name}
+    except Exception:
+        log.exception("expense_gl_account_annotation_failed")
 
 
 @router.post("/expenses", response_model=None, status_code=201)

@@ -20,6 +20,7 @@ const InvoiceDetailView = () => import('../views/InvoiceDetailView.vue');
 const InvoiceCreateView = () => import('../views/InvoiceCreateView.vue');
 const SettingsView = () => import('../views/SettingsView.vue');
 const AccountingSettingsView = () => import('../views/AccountingSettingsView.vue');
+const AccountingLedgerView = () => import('../views/AccountingLedgerView.vue');
 const UserProfileView = () => import('../views/UserProfileView.vue');
 const InvoiceRemindersView = () => import('../views/InvoiceRemindersView.vue');
 const JobDetailView = () => import('../views/JobDetailView.vue');
@@ -209,7 +210,8 @@ export const routes = [
   { path: '/exports', name: 'exports', component: ExportsView },
   { path: '/billing/:id', name: 'invoice-detail', component: InvoiceDetailView },
   { path: '/settings', name: 'settings', component: SettingsView },
-  { path: '/accounting-settings', name: 'accounting-settings', component: AccountingSettingsView },
+  { path: '/accounting-settings', name: 'accounting-settings', component: AccountingSettingsView, meta: { requiresPermission: 'accounting.read' } },
+  { path: '/accounting-ledger', name: 'accounting-ledger', component: AccountingLedgerView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/profile', name: 'profile', component: UserProfileView },
   { path: '/sso', name: 'sso', component: SsoView },
   // (duplicate /onboarding registration removed 2026-05-09 — already declared

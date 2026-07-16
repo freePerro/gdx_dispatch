@@ -513,3 +513,105 @@ def patch_account(
     )
     db.commit()
     return _account_payload(account)
+
+
+# ---------------------------------------------------------------------------
+# S11 — reports + journal browser (spec §6, §9). Pure reads, accounting.read.
+# ---------------------------------------------------------------------------
+
+def _parse_date(value: str | None, param: str, default: date | None = None) -> date:
+    if not value:
+        if default is not None:
+            return default
+        raise HTTPException(status_code=422, detail=f"{param} is required (YYYY-MM-DD)")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"{param} must be YYYY-MM-DD"
+        ) from exc
+
+
+@router.get("/reports/trial-balance")
+def report_trial_balance(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+) -> dict:
+    from gdx_dispatch.modules.ledger import reports
+
+    company_id = _tenant_id(user)
+    return reports.trial_balance(
+        db, company_id, as_of=_parse_date(as_of, "as_of", default=date.today())
+    )
+
+
+@router.get("/reports/pnl")
+def report_pnl(
+    start: str | None = None,
+    end: str | None = None,
+    basis: str = "accrual",
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+) -> dict:
+    from gdx_dispatch.modules.ledger import reports
+
+    if basis not in ("accrual", "cash"):
+        raise HTTPException(status_code=422, detail="basis must be accrual or cash")
+    company_id = _tenant_id(user)
+    start_d = _parse_date(start, "start", default=date.today().replace(day=1))
+    end_d = _parse_date(end, "end", default=date.today())
+    if end_d < start_d:
+        raise HTTPException(status_code=422, detail="end is before start")
+    if basis == "cash":
+        return reports.pnl_cash(db, company_id, start=start_d, end=end_d)
+    return reports.pnl_accrual(db, company_id, start=start_d, end=end_d)
+
+
+@router.get("/reports/balance-sheet")
+def report_balance_sheet(
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+) -> dict:
+    from gdx_dispatch.modules.ledger import reports
+
+    company_id = _tenant_id(user)
+    return reports.balance_sheet(
+        db, company_id, as_of=_parse_date(as_of, "as_of", default=date.today())
+    )
+
+
+@router.get("/journal")
+def journal_browser(
+    limit: int = 50,
+    offset: int = 0,
+    source_type: str | None = None,
+    account_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+) -> dict:
+    from gdx_dispatch.modules.ledger import reports
+
+    company_id = _tenant_id(user)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    if source_type and source_type not in ("invoice", "payment", "adjustment", "expense"):
+        raise HTTPException(status_code=422, detail="unknown source_type")
+    if account_id:
+        try:
+            UUID(account_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="account_id must be a UUID") from exc
+    return reports.journal_page(
+        db,
+        company_id,
+        limit=limit,
+        offset=offset,
+        source_type=source_type,
+        account_id=account_id,
+    )
