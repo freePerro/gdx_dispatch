@@ -70,17 +70,26 @@
         <Column header="Job" style="width:200px">
           <template #body="{ data }">{{ jobLabel(data) }}</template>
         </Column>
-        <Column header="Receipt" style="width:130px">
+        <Column header="Receipts" style="width:110px">
           <template #body="{ data }">
-            <a
-              v-if="data.receipt_url"
-              :href="data.receipt_url"
-              target="_blank"
-              rel="noreferrer"
+            <span
+              v-if="data.receipt_count"
+              class="receipt-count"
               :data-testid="`expense-receipt-${data.id}`"
             >
-              View
-            </a>
+              <i class="pi pi-paperclip" /> {{ data.receipt_count }}
+            </span>
+            <span v-else>—</span>
+          </template>
+        </Column>
+        <Column header="Posts to" style="width:180px">
+          <template #body="{ data }">
+            <span
+              v-if="data.gl_account"
+              v-tooltip="'The chart-of-accounts account this category posts to'"
+              class="gl-account"
+              :data-testid="`expense-gl-account-${data.id}`"
+            >{{ data.gl_account.code }} · {{ data.gl_account.name }}</span>
             <span v-else>—</span>
           </template>
         </Column>
@@ -173,8 +182,35 @@
             />
           </div>
           <div class="form-field">
-            <label>Receipt URL</label>
-            <InputText v-model="form.receipt_url" class="w-full" data-testid="expense-receipt" />
+            <label>Receipts</label>
+            <div v-if="editingExpense" class="receipts-manager" data-testid="expense-receipts-manager">
+              <ul v-if="receipts.length" class="receipt-list">
+                <li v-for="receipt in receipts" :key="receipt.id">
+                  <a
+                    href="#"
+                    @click.prevent="openAuthedFile(`/api/expenses/${editingExpense.id}/receipts/${receipt.id}/download`)"
+                  >{{ receipt.filename }}</a>
+                  <Button
+                    icon="pi pi-trash"
+                    text
+                    size="small"
+                    severity="danger"
+                    :aria-label="`Delete ${receipt.filename}`"
+                    @click="deleteReceipt(receipt)"
+                  />
+                </li>
+              </ul>
+              <p v-else class="hint">No receipts attached yet.</p>
+              <input
+                ref="receiptFileInput"
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.heic,.webp"
+                class="receipt-file-input"
+                data-testid="expense-receipt-file"
+                @change="uploadReceipt"
+              />
+            </div>
+            <p v-else class="hint">Save the expense first, then attach receipt files here.</p>
           </div>
         </div>
         <template #footer>
@@ -200,6 +236,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDate, formatMoney, parseLocalDateString } from '../composables/useFormatters';
+import { openAuthedFile } from '../composables/useAuthedFile';
 import { useToast } from 'primevue/usetoast';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -225,6 +262,8 @@ const onlyWithReceipt = ref(false);
 const showDialog = ref(false);
 const editingExpense = ref(null);
 const saving = ref(false);
+const receipts = ref([]);
+const receiptFileInput = ref(null);
 const jobOptions = ref([]);
 
 // GL S8: the backend validates categories against its canonical list (they
@@ -260,9 +299,39 @@ function emptyForm() {
     amount: null,
     description: '',
     job_id: null,
-    receipt_url: '',
     status: statusTabs[0],
   };
+}
+
+async function loadReceipts(expenseId) {
+  try {
+    const data = await api.get(`/api/expenses/${expenseId}/receipts`);
+    receipts.value = Array.isArray(data) ? data : data?.receipts || [];
+  } catch {
+    receipts.value = [];
+  }
+}
+
+async function uploadReceipt(event) {
+  const file = event.target?.files?.[0];
+  if (!file || !editingExpense.value) return;
+  const body = new FormData();
+  body.append('file', file);
+  await api.post(`/api/expenses/${editingExpense.value.id}/receipts`, body, {
+    successMessage: 'Receipt attached',
+  });
+  if (receiptFileInput.value) receiptFileInput.value.value = '';
+  await loadReceipts(editingExpense.value.id);
+  await loadExpenses();
+}
+
+async function deleteReceipt(receipt) {
+  if (!editingExpense.value) return;
+  await api.del(`/api/expenses/${editingExpense.value.id}/receipts/${receipt.id}`, {
+    successMessage: 'Receipt removed',
+  });
+  await loadReceipts(editingExpense.value.id);
+  await loadExpenses();
 }
 
 const dialogTitle = computed(() => (editingExpense.value ? 'Edit Expense' : 'Log Expense'));
@@ -279,7 +348,7 @@ const counts = computed(() => {
 const filteredExpenses = computed(() => {
   return expenses.value
     .filter((entry) => entry.status === statusFilter.value)
-    .filter((entry) => (onlyWithReceipt.value ? Boolean(entry.receipt_url) : true));
+    .filter((entry) => (onlyWithReceipt.value ? Boolean(entry.receipt_count) : true));
 });
 
 function tabLabel(status) {
@@ -358,9 +427,10 @@ function openEdit(entry) {
     amount: entry.amount ?? null,
     description: entry.description || '',
     job_id: entry.job_id || null,
-    receipt_url: entry.receipt_url || '',
     status: entry.status || statusTabs[0],
   };
+  receipts.value = [];
+  loadReceipts(entry.id);
   showDialog.value = true;
 }
 
@@ -388,7 +458,6 @@ async function saveExpense() {
     amount: Number(form.value.amount),
     description: form.value.description,
     job_id: form.value.job_id,
-    receipt_url: form.value.receipt_url,
     status: form.value.status,
     date: toLocalDateString(form.value.date),
   };
