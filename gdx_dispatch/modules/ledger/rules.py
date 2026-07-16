@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.ledger import service as ledger_service
-from gdx_dispatch.modules.ledger.coa import LedgerConfigError
+from gdx_dispatch.modules.ledger.coa import LedgerConfigError, resolve_role_account
 from gdx_dispatch.modules.ledger.engine import (
     PostingEvent,
     PostingLine,
@@ -39,6 +39,7 @@ from gdx_dispatch.modules.ledger.models import (
     ROLE_AR,
     ROLE_CUSTOMER_CREDITS,
     ROLE_EXPENSE_FALLBACK,
+    ROLE_OPENING_EQUITY,
     ROLE_OPERATING_BANK,
     ROLE_ROUNDING,
     ROLE_SALES_FALLBACK,
@@ -224,6 +225,12 @@ def _live_issuance_entry(session: Session, invoice) -> GlJournalEntry | None:
 
 def post_invoice_issuance(session: Session, invoice, old_status, new_status, actor) -> None:
     """P1 — registered for draft→sent and draft→paid."""
+    if pre_cutover_era(session, invoice):
+        # S10: issuing an invoice DATED into the pre-cutover era (a backdated
+        # sale) claims it for the QBO-era books — its receivable enters as a
+        # P8 anchor at the cutover date, its revenue never posts (spec §5.7).
+        post_opening_balance(session, invoice, actor=actor)
+        return
     lines = build_issuance_lines(session, invoice)
     if not lines:
         return  # zero-total invoice: nothing to record
@@ -252,8 +259,21 @@ def repost_invoice_issuance(session: Session, invoice, actor: str | None = None)
     if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
         return
 
-    lines = build_issuance_lines(session, invoice)
     live = _live_issuance_entry(session, invoice)
+    if live is None and pre_cutover_era(session, invoice):
+        # S10 (spec §5.7): an era invoice's receivable enters the ledger
+        # only as its P8 anchor (which is zero — hence absent — for
+        # invoices settled at cutover). There is no P1 to reverse+repost,
+        # and fresh-posting one here would double-count the opening AR or
+        # slam into the era lock on every routine recalc (payment
+        # recording, voids). Ensure the anchor and stop. Direct money
+        # edits are already blocked at the API (draft-only endpoints).
+        # A live P1 on an era-dated invoice (posted via an explicit
+        # accounting.close override) keeps the normal repost path.
+        post_opening_balance(session, invoice, actor=actor)
+        return
+
+    lines = build_issuance_lines(session, invoice)
 
     if not lines:
         # content collapsed to zero-total: reverse whatever is live
@@ -449,13 +469,29 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
         return
     from gdx_dispatch.models.tenant_models import Payment
 
+    # S10: on a pre-cutover-era invoice (by DATE — settled ones carry no
+    # anchor), opening-era payments (rows that existed at cutover) are
+    # already accounted for inside the opening amount (zero for settled
+    # invoices) — reposting them as P3 would double-count the money or slam
+    # historical rows into the era lock. They only touch the ledger when
+    # voided post-cutover, via the explicit compensator below.
+    era_invoice = pre_cutover_era(session, invoice)
+    cutover = _cutover_date(session, invoice.company_id) if era_invoice else None
+
     payments = session.scalars(
         select(Payment).where(Payment.invoice_id == invoice.id)
     ).all()
     for payment in payments:
+        in_opening = (
+            era_invoice and cutover is not None and _existed_at_cutover(payment, cutover)
+        )
         if payment.voided_at is not None:
             for live in _live_payment_entries(session, payment, invoice.company_id):
                 reverse_entry(session, live, created_by=actor)
+            if in_opening and not _voided_before_cutover(payment, cutover):
+                _post_opening_payment_void(session, payment, invoice, actor)
+            continue
+        if in_opening:
             continue
         lines = build_payment_lines(session, payment, invoice)
         if not lines:
@@ -803,6 +839,313 @@ def repost_expense(session: Session, expense, actor: str | None = None) -> None:
     )
     if live is not None and posted.id != live.id:
         reverse_entry(session, live, created_by=actor)
+
+
+# ---------------------------------------------------------------------------
+# S10 — cutover & opening balances (P8, spec §5.7)
+# ---------------------------------------------------------------------------
+
+EVENT_OPENING = "opening"
+EVENT_OPENING_VOID = "opening_void"
+EVENT_OPENING_PAYMENT_VOID = "opening_payment_void"
+
+
+def _cutover_date(session: Session, company_id: str) -> date | None:
+    settings = ledger_service.get_gl_settings(session, company_id)
+    return settings.cutover_month if settings else None
+
+
+def _created_date(row) -> date | None:
+    ts = getattr(row, "created_at", None)
+    if ts is None:
+        return None
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(dt_timezone.utc).replace(tzinfo=None)
+    return ts.date()
+
+
+def _existed_at_cutover(row, cutover: date) -> bool:
+    """Opening-balance membership is by ROW EXISTENCE at the cutover date
+    (created_at), not by the row's business date — the operational balance
+    the opening entry snapshots counted exactly the rows that existed then.
+    A backdated payment recorded after cutover is a post-cutover event (it
+    posts P3; the period lock arbitrates its effective date)."""
+    created = _created_date(row)
+    return created is not None and created < cutover
+
+
+def _voided_before_cutover(payment, cutover: date) -> bool:
+    ts = payment.voided_at
+    if ts is None:
+        return False
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(dt_timezone.utc).replace(tzinfo=None)
+    return ts.date() < cutover
+
+
+def _live_opening_entry(session: Session, invoice) -> GlJournalEntry | None:
+    return session.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.company_id == invoice.company_id,
+            GlJournalEntry.source_type == "invoice",
+            GlJournalEntry.source_id == str(invoice.id),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(f"invoice:{invoice.id}:{EVENT_OPENING}:%"),
+        )
+    ).first()
+
+
+def has_opening_anchor(session: Session, invoice) -> bool:
+    """True when the invoice is P8-anchored: its receivable entered the
+    ledger as an opening balance, not through P1. Anchored invoices are never
+    reversed-and-reposted — post-cutover changes go through the ruled
+    endpoints (payment / credit memo / refund / void), each posting its own
+    entry against the anchor (spec §5.7)."""
+    return _live_opening_entry(session, invoice) is not None
+
+
+def pre_cutover_era(session: Session, invoice) -> bool:
+    """Era membership is by DATE, never by anchor existence (audit round 1:
+    a pre-cutover invoice fully settled at cutover has no anchor — keying on
+    the anchor made routine post-cutover voids on paid history try to post
+    fresh P1/P3 into the locked era). An era invoice's receivable enters the
+    ledger only as a P8 anchor (zero for settled ones); its revenue belongs
+    to the QBO-era books and never posts."""
+    cutover = _cutover_date(session, invoice.company_id)
+    return cutover is not None and _effective_at(invoice) < cutover
+
+
+def opening_balance_cents(session: Session, invoice, cutover: date) -> int:
+    """Opening AR for one pre-cutover invoice: ``total − Σ payments existing
+    (and not yet voided) at cutover − Σ credit adjustments existing at
+    cutover`` (spec §5.7 — the credit-memo term matters because the legacy
+    endpoint mutated ``amount_paid``, which payment sums ignore). Every term
+    is anchored to immutable timestamps, so re-running the backfill after
+    post-cutover activity computes the identical amount → identical key."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
+
+    total = to_cents(_dec(invoice.total))
+    paid = sum(
+        to_cents(_dec(p.amount))
+        for p in session.scalars(
+            select(Payment).where(Payment.invoice_id == invoice.id)
+        ).all()
+        if _existed_at_cutover(p, cutover) and not _voided_before_cutover(p, cutover)
+    )
+    credited = sum(
+        to_cents(_dec(a.amount))
+        for a in session.scalars(
+            select(InvoiceAdjustment).where(
+                InvoiceAdjustment.invoice_id == invoice.id,
+                InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+            )
+        ).all()
+        if _existed_at_cutover(a, cutover)
+    )
+    return total - paid - credited
+
+
+def build_opening_lines(invoice, opening_cents: int) -> tuple[PostingLine, ...]:
+    """P8: one AR debit per invoice (customer_id dimension — every
+    pre-cutover invoice gets its own anchor entry), credit 3950."""
+    if opening_cents <= 0:
+        return ()
+    return (
+        PostingLine(
+            amount_cents=opening_cents,
+            role=ROLE_AR,
+            job_id=invoice.job_id,
+            customer_id=invoice.customer_id,
+            memo=f"P8 opening balance — invoice {invoice.invoice_number}",
+        ),
+        PostingLine(
+            amount_cents=-opening_cents,
+            role=ROLE_OPENING_EQUITY,
+            customer_id=invoice.customer_id,
+            memo=f"P8 opening balance — invoice {invoice.invoice_number}",
+        ),
+    )
+
+
+def post_opening_balance(session: Session, invoice, *, actor: str | None = None):
+    """Post the P8 anchor for one invoice. Deliberately NOT flag-gated: the
+    rollout posts opening balances and reconciles them against QBO aging
+    BEFORE the flag flips (§11 step 3). Idempotent by content; returns the
+    entry, or None when the invoice doesn't qualify (not issued, deleted,
+    post-cutover, or nothing open at cutover)."""
+    cutover = _cutover_date(session, invoice.company_id)
+    if cutover is None:
+        raise LedgerConfigError(
+            "cutover_month is not set — plan the cutover on the Accounting "
+            "Settings page before posting opening balances"
+        )
+    if invoice.status not in ISSUED_STATUSES or getattr(invoice, "deleted_at", None):
+        return None
+    if _effective_at(invoice) >= cutover:
+        return None  # post-cutover invoice: P1 territory, not P8
+    opening = opening_balance_cents(session, invoice, cutover)
+    lines = build_opening_lines(invoice, opening)
+    if not lines:
+        return None
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="invoice",
+            source_id=str(invoice.id),
+            event=EVENT_OPENING,
+            effective_at=cutover,
+            lines=lines,
+            created_by=actor,
+        ),
+    )
+
+
+def invoice_ar_balance_cents(session: Session, invoice) -> int:
+    """The invoice's attributable AR balance ON THE LEDGER: Σ AR-account line
+    amounts across every entry sourced from this invoice, its payments, or
+    its adjustments — reversals included, so reversed pairs net to zero.
+    Correct-by-construction input for the void settlement below."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment, Payment
+
+    ar_account = resolve_role_account(session, invoice.company_id, ROLE_AR)
+    payment_ids = [
+        str(pid)
+        for pid in session.scalars(
+            select(Payment.id).where(Payment.invoice_id == invoice.id)
+        ).all()
+    ]
+    adjustment_ids = [
+        str(aid)
+        for aid in session.scalars(
+            select(InvoiceAdjustment.id).where(InvoiceAdjustment.invoice_id == invoice.id)
+        ).all()
+    ]
+    from sqlalchemy import and_, or_
+
+    source_match = or_(
+        and_(
+            GlJournalEntry.source_type == "invoice",
+            GlJournalEntry.source_id == str(invoice.id),
+        ),
+        and_(
+            GlJournalEntry.source_type == "payment",
+            GlJournalEntry.source_id.in_(payment_ids or ["-"]),
+        ),
+        and_(
+            GlJournalEntry.source_type == "adjustment",
+            GlJournalEntry.source_id.in_(adjustment_ids or ["-"]),
+        ),
+    )
+    rows = session.execute(
+        select(GlJournalLine.amount_cents)
+        .join(GlJournalEntry, GlJournalLine.entry_id == GlJournalEntry.id)
+        .where(
+            GlJournalEntry.company_id == invoice.company_id,
+            GlJournalLine.account_id == ar_account.id,
+            source_match,
+        )
+    ).all()
+    return sum(amount for (amount,) in rows)
+
+
+def settle_opening_on_void(session: Session, invoice, actor: str | None = None) -> None:
+    """Void of a P8-anchored invoice: the anchor is never reversed (spec
+    §5.7 — 'immutable in a stronger sense'); instead the void posts its own
+    entry against it, clearing whatever AR the invoice still holds on the
+    ledger (debit 3950, credit 1200). Runs after reverse_invoice_adjustments
+    so restored credits are part of the cleared amount. Post-cutover voids of
+    opening-era receivables are opening-balance corrections — they land back
+    in 3950, not bad-debt expense; the CPA can reclass by manual JE.
+    [JUDGMENT]"""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return
+    if not pre_cutover_era(session, invoice) and not has_opening_anchor(session, invoice):
+        return
+    existing = session.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.company_id == invoice.company_id,
+            GlJournalEntry.source_type == "invoice",
+            GlJournalEntry.source_id == str(invoice.id),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(
+                f"invoice:{invoice.id}:{EVENT_OPENING_VOID}:%"
+            ),
+        )
+    ).first()
+    if existing is not None:
+        return  # already settled (voids have no stable timestamp — guard by existence)
+    remaining = invoice_ar_balance_cents(session, invoice)
+    if remaining <= 0:
+        return
+    post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="invoice",
+            source_id=str(invoice.id),
+            event=EVENT_OPENING_VOID,
+            effective_at=date.today(),
+            lines=(
+                PostingLine(
+                    amount_cents=remaining,
+                    role=ROLE_OPENING_EQUITY,
+                    customer_id=invoice.customer_id,
+                    memo=f"void of pre-cutover invoice {invoice.invoice_number}",
+                ),
+                PostingLine(
+                    amount_cents=-remaining,
+                    role=ROLE_AR,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"void of pre-cutover invoice {invoice.invoice_number}",
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
+
+
+def _post_opening_payment_void(session: Session, payment, invoice, actor: str | None):
+    """An opening-era payment voided post-cutover has no P3 entry to reverse
+    (its money lives inside the P8 amount) — the void posts its own
+    compensator instead: debit AR (the customer owes again), credit the
+    method's account (the money went back)."""
+    settings = ledger_service.get_gl_settings(session, invoice.company_id)
+    if settings is None:
+        raise LedgerConfigError("gl_settings missing — accounting not initialized")
+    method_role = ledger_service.resolve_payment_method_role(settings, payment.method)
+    amount_cents = to_cents(_dec(payment.amount))
+    if amount_cents == 0:
+        return
+    voided_on = payment.voided_at.date() if payment.voided_at else date.today()
+    post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="payment",
+            source_id=str(payment.id),
+            event=EVENT_OPENING_PAYMENT_VOID,
+            effective_at=voided_on,
+            lines=(
+                PostingLine(
+                    amount_cents=amount_cents,
+                    role=ROLE_AR,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"void of opening-era payment on {invoice.invoice_number}",
+                ),
+                PostingLine(
+                    amount_cents=-amount_cents,
+                    role=method_role,
+                    job_id=invoice.job_id,
+                    customer_id=invoice.customer_id,
+                    memo=f"void of opening-era payment on {invoice.invoice_number}",
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
 
 
 # --- registration (module import = registration; the chokepoint imports us
