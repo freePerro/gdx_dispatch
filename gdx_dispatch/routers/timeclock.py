@@ -122,6 +122,17 @@ def _elapsed_hours_since(iso: str | datetime) -> float:
     return (datetime.now(UTC) - parsed).total_seconds() / 3600.0
 
 
+AUTO_CLOSE_NOTE = "Auto-closed — end time unknown, needs office review"
+
+
+def _append_note(existing: str | None, addition: str) -> str:
+    """Append without clobbering what the tech wrote."""
+    current = (existing or "").strip()
+    if addition in current:
+        return current
+    return f"{current} — {addition}".strip(" —") if current else addition
+
+
 def _auto_close_stale_shift(
     db: Session,
     *,
@@ -130,17 +141,29 @@ def _auto_close_stale_shift(
     actor_user_id: str,
     request: Request | None,
     reason: str = "exceeded_max_shift",
-) -> int:
-    """Close a stale open shift and audit-log the action.
+) -> int | None:
+    """Close a stale open shift with an UNKNOWN duration, and audit-log it.
+
+    MH-7b (2026-06-04) stopped shifts staying open forever by stamping
+    `minutes = now - clock_in`. That converted the bug rather than fixing it:
+    the tech went home hours ago, so elapsed measures how long the clock ran
+    unattended, not work. Prod carries the result — shifts of 72h, 215h, 266h,
+    323h and 1584h, all "closed", all fiction. A tech is paid start-of-day to
+    end-of-day (Doug 2026-07-17), and nobody here knows when that day ended.
+
+    So: close the row (a new shift can start) but leave `minutes` NULL, which
+    every reader already coalesces to 0 — the shift is worth nothing until a
+    human says otherwise. `GET /exceptions` surfaces it for the office, and
+    PATCH /entries/{id} recomputes `minutes` the moment they set the real
+    clock-out. Returns None because no duration was established.
 
     Caller is responsible for db.commit() after — same transaction shape
-    as the regular clock-out flow. Returns the computed minute delta
-    that was stamped onto the entry.
+    as the regular clock-out flow.
     """
     now_iso = datetime.now(UTC).isoformat()
-    minutes = _minutes_between(str(entry.clock_in_at), now_iso)
     entry.clock_out_at = now_iso
-    entry.minutes = minutes
+    entry.minutes = None
+    entry.notes = _append_note(entry.notes, AUTO_CLOSE_NOTE)
     entry.updated_at = now_iso
     # Best-effort audit. We pass request=None for celery-side calls; the
     # log_audit_event helper tolerates that.
@@ -154,7 +177,13 @@ def _auto_close_stale_shift(
                 entity_type="timeclock_entry",
                 entity_id=str(entry.id),
                 details={
-                    "minutes": minutes,
+                    "minutes": None,
+                    # Evidence, not truth: how long the clock ran unattended.
+                    # Recorded so the office has a bound when they set the
+                    # real end time; never stamped onto the entry as worked.
+                    "unattended_minutes": _minutes_between(
+                        str(entry.clock_in_at), now_iso
+                    ),
                     "reason": reason,
                     "max_shift_hours": MAX_SHIFT_HOURS,
                 },
@@ -164,7 +193,11 @@ def _auto_close_stale_shift(
     except Exception:
         # Audit failure must not block the close-out itself.
         log.exception("timeclock_auto_close_audit_failed", extra={"entry_id": str(entry.id)})
-    return minutes
+    log.warning(
+        "timeclock_auto_closed_unknown_duration",
+        extra={"tenant_id": tenant_id, "entry_id": str(entry.id), "reason": reason},
+    )
+    return None
 
 
 def _entry_to_response(entry: TimeclockEntry) -> TimeEntryResponse:
@@ -917,3 +950,169 @@ def submit_day(
         db.rollback()
         log.exception("submit_day_failed", extra={"tenant_id": tenant_id, "user_id": user_id})
         raise HTTPException(status_code=500, detail="Submit day failed") from None
+
+
+# ---------------------------------------------------------------------------
+# Labor exceptions — the office's self-clearing review card
+# ---------------------------------------------------------------------------
+# Doug 2026-07-17: a tech is paid start-of-day to end-of-day, and "it should be
+# the dispatcher or office personel that get told about the discrepency."
+#
+# Deliberately NOT a report and NOT a recommendation. `core/recommendations.py`
+# and next-actions have no frontend renderer at all, so anything filed there is
+# invisible on arrival. This is a plain endpoint the office view renders as a
+# card that only exists when something is wrong (v-if="rows.length"), so it
+# cannot nag on a clean day and nobody has to remember to open it. The fix IS
+# the dismissal: correcting the shift via PATCH /entries/{id} (or deleting a
+# junk row) drops it out of here on the next load.
+
+# Tied to MAX_SHIFT_HOURS on purpose: that constant is already this app's
+# declaration of the longest possible real day (it is what the clock-in guard
+# and the sweep auto-close at), so anything longer is by the system's own
+# definition not a worked shift. A second, lower threshold would contradict it
+# — a genuine 15h day would sit in the card forever with no dismiss, and the
+# only way to clear it would be to edit true data into false data, which is
+# the very disease being cured. Prod's offenders (72h, 215h, 266h, 323h,
+# 1584h) clear this by an order of magnitude. Surfacing merely-unusual shifts
+# would make the card wallpaper — the recorded failure mode of the parts
+# checklist (parts_needed.py:105, "floods and becomes wallpaper").
+IMPLAUSIBLE_SHIFT_MINUTES = int(MAX_SHIFT_HOURS * 60)
+
+# Near-zero shifts (accidental double-taps: 21 of 39 rows on prod) are
+# deliberately NOT surfaced. They are 0 minutes, so they cost nothing and pay
+# nothing — showing 21 harmless rows on day one is exactly the flood above.
+_EXCEPTION_ROW_CAP = 500
+
+
+class LaborExceptionItem(BaseModel):
+    kind: str
+    entry_id: str
+    technician_id: str
+    tech_name: str | None = None
+    started_at: str
+    ended_at: str | None = None
+    hours: float
+    detail: str
+
+
+def _tech_names(db: Session, tenant_id: str, ids: set[str]) -> dict[str, str]:
+    """Best-effort id -> display name.
+
+    `timeclock_entries_router.technician_id` holds a USER id despite the column
+    name (verified on prod: 29/39 match users, 0 match technicians), so this
+    resolves through `users`. 10/39 rows match neither and stay unnamed rather
+    than being dropped — an orphaned shift is still a real discrepancy.
+    """
+    if not ids:
+        return {}
+    try:
+        rows = db.execute(
+            text(
+                "SELECT id::text AS id, "
+                "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
+                "FROM users WHERE company_id = :tenant_id AND id::text = ANY(:ids)"
+            ),
+            {"tenant_id": tenant_id, "ids": list(ids)},
+        ).mappings().all()
+    except SQLAlchemyError:
+        # Never fail the card over a cosmetic label (SQLite has no ANY()).
+        log.exception("labor_exception_names_failed", extra={"tenant_id": tenant_id})
+        return {}
+    return {str(r["id"]): r["label"] for r in rows if r["label"]}
+
+
+@router.get("/exceptions", response_model=list[LaborExceptionItem])
+def labor_exceptions(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[LaborExceptionItem]:
+    """Shifts the office needs to correct. Dispatch/admin only — same gate as
+    the payroll aggregate, since this exposes other people's time."""
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    tenant_id = _tenant_id(request)
+    items: list[LaborExceptionItem] = []
+
+    try:
+        rows = db.execute(
+            select(TimeclockEntry)
+            .where(
+                TimeclockEntry.tenant_id == tenant_id,
+                TimeclockEntry.deleted_at.is_(None),
+            )
+            .order_by(TimeclockEntry.clock_in_at.desc())
+            .limit(_EXCEPTION_ROW_CAP)
+        ).scalars().all()
+    except SQLAlchemyError:
+        log.exception("labor_exceptions_failed", extra={"tenant_id": tenant_id})
+        raise HTTPException(status_code=500, detail="Labor exceptions failed") from None
+
+    if len(rows) == _EXCEPTION_ROW_CAP:
+        # Fail loudly: a truncated card reads as "all clear" when it isn't.
+        log.warning(
+            "labor_exceptions_cap_hit",
+            extra={"tenant_id": tenant_id, "cap": _EXCEPTION_ROW_CAP},
+        )
+
+    for row in rows:
+        started = str(row.clock_in_at or "")
+        if row.clock_out_at is None:
+            try:
+                open_hours = _elapsed_hours_since(started)
+            except ValueError:
+                log.warning(
+                    "labor_exception_unparsable_clock_in",
+                    extra={"entry_id": str(row.id)},
+                )
+                continue
+            if open_hours <= IMPLAUSIBLE_SHIFT_MINUTES / 60:
+                continue  # a normal in-progress shift, not an exception
+            items.append(
+                LaborExceptionItem(
+                    kind="open_shift",
+                    entry_id=str(row.id),
+                    technician_id=str(row.technician_id),
+                    started_at=started,
+                    ended_at=None,
+                    hours=round(open_hours, 1),
+                    detail="Still clocked in — never clocked out.",
+                )
+            )
+            continue
+
+        if row.minutes is None:
+            # Auto-closed past MAX_SHIFT_HOURS: the clock ran unattended, so
+            # the real end time is unknown and only a human can supply it.
+            items.append(
+                LaborExceptionItem(
+                    kind="unknown_duration_shift",
+                    entry_id=str(row.id),
+                    technician_id=str(row.technician_id),
+                    started_at=started,
+                    ended_at=str(row.clock_out_at),
+                    hours=0.0,
+                    detail="Auto-closed after a missed clock-out — set the real end time.",
+                )
+            )
+            continue
+
+        if int(row.minutes) > IMPLAUSIBLE_SHIFT_MINUTES:
+            items.append(
+                LaborExceptionItem(
+                    kind="implausible_shift",
+                    entry_id=str(row.id),
+                    technician_id=str(row.technician_id),
+                    started_at=started,
+                    ended_at=str(row.clock_out_at),
+                    hours=round(int(row.minutes) / 60, 1),
+                    detail="Shift too long to be a real day — likely a missed clock-out.",
+                )
+            )
+
+    names = _tech_names(db, tenant_id, {i.technician_id for i in items})
+    for item in items:
+        item.tech_name = names.get(item.technician_id)
+
+    items.sort(key=lambda i: i.hours, reverse=True)
+    return items

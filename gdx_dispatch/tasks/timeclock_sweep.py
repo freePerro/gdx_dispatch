@@ -22,13 +22,29 @@ from sqlalchemy import text
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
-from gdx_dispatch.routers.timeclock import MAX_SHIFT_HOURS
+from gdx_dispatch.routers.timeclock import AUTO_CLOSE_NOTE, MAX_SHIFT_HOURS
 
 log = logging.getLogger(__name__)
 
 
 def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
-    """Close every open shift older than MAX_SHIFT_HOURS.
+    """Close every open shift older than MAX_SHIFT_HOURS, with an UNKNOWN
+    duration.
+
+    2026-07-17 — this task is the writer that manufactured prod's fabricated
+    shifts (verified: the only `timeclock_auto_close` audit row on prod is
+    `reason=sweep_max_shift`, 2026-07-08, and it is the 1584h row's clock-out
+    date; the clock-in router's copy of this guard has never fired). It
+    stamped `minutes = now - clock_in`, but a tech who forgot to clock out
+    went home hours ago: elapsed measures how long the clock ran unattended,
+    not work. A tech is paid start-of-day to end-of-day (Doug 2026-07-17) and
+    nothing here knows when that day ended.
+
+    So the row closes with `minutes = NULL` — every reader coalesces it to 0,
+    so the shift is worth nothing until a human says otherwise — plus a note.
+    The elapsed value goes to the audit log as evidence, never onto the row.
+    `GET /api/timeclock/exceptions` surfaces it for the office, and PATCH
+    /entries/{id} recomputes `minutes` when they set the real clock-out.
 
     2026-07-08 — rewritten after the task's FIRST prod run failed: the
     raw audit INSERT used `:details::jsonb` (SQLAlchemy text() sends the
@@ -50,6 +66,11 @@ def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
     ).isoformat()
     db = SessionLocal()
     try:
+        # No tenant_id filter, deliberately: single-tenant deployment, one
+        # tenant per database, and isolation is the connection (the app-wide
+        # three-plane convention). Filtering on the env-derived tenant_id
+        # would only add a silent no-op if GDX_TENANT_ID ever drifts from the
+        # rows — the sweep would close nothing and say so to no one.
         rows = db.execute(
             text(
                 """
@@ -72,18 +93,30 @@ def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
                 now = datetime.now(timezone.utc)
-                minutes = max(0, int((now - parsed).total_seconds() // 60))
+                # How long the clock ran unattended — evidence for the office,
+                # never stamped onto the row as time worked. See below.
+                unattended = max(0, int((now - parsed).total_seconds() // 60))
                 db.execute(
                     text(
                         """
                         UPDATE timeclock_entries_router
                            SET clock_out_at = :now,
-                               minutes      = :minutes,
+                               minutes      = NULL,
+                               notes        = CASE
+                                   WHEN notes IS NULL OR notes = '' THEN :note
+                                   WHEN notes LIKE :note_like THEN notes
+                                   ELSE notes || ' — ' || :note
+                               END,
                                updated_at   = :now
                          WHERE id = :id
                         """
                     ),
-                    {"now": now.isoformat(), "minutes": minutes, "id": entry_id},
+                    {
+                        "now": now.isoformat(),
+                        "note": AUTO_CLOSE_NOTE,
+                        "note_like": f"%{AUTO_CLOSE_NOTE}%",
+                        "id": entry_id,
+                    },
                 )
                 log_audit_event_sync(
                     db,
@@ -93,7 +126,8 @@ def _close_stale_for_tenant(tenant_id: str) -> dict[str, int]:
                     entity_type="timeclock_entry",
                     entity_id=str(entry_id),
                     details={
-                        "minutes": minutes,
+                        "minutes": None,
+                        "unattended_minutes": unattended,
                         "reason": "sweep_max_shift",
                         "max_shift_hours": MAX_SHIFT_HOURS,
                     },
