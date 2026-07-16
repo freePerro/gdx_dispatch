@@ -139,6 +139,7 @@
                 <i v-if="step.status === 'pending'" class="pi pi-clock" />
                 <i v-else-if="step.status === 'syncing'" class="pi pi-spin pi-spinner" />
                 <i v-else-if="step.status === 'done'" class="pi pi-check-circle" />
+                <i v-else-if="step.status === 'skipped'" class="pi pi-lock" />
                 <i v-else class="pi pi-exclamation-circle" />
               </span>
               <span class="sync-step-label">{{ step.label }}</span>
@@ -306,6 +307,7 @@ const loadQuickbooks = async () => {
       last_error: dashboard.last_error || null,
       entity_counts: dashboard.entity_counts || {},
       delete_sync_enabled: !!dashboard.delete_sync_enabled,
+      money_pulls_disabled: !!dashboard.money_pulls_disabled,
     };
     syncEvents.value = Array.isArray(events?.events) ? events.events : [];
   } catch (err) {
@@ -457,6 +459,7 @@ onBeforeUnmount(() => {
 .sync-step.status-syncing .sync-step-icon { color: var(--p-blue-600, #2563eb); }
 .sync-step.status-done .sync-step-icon { color: var(--p-green-600, #16a34a); }
 .sync-step.status-error .sync-step-icon { color: var(--p-red-600, #dc2626); }
+.sync-step.status-skipped .sync-step-icon { color: var(--p-text-muted-color, #64748b); }
 .sync-step-label {
   font-weight: 600;
   color: var(--p-text-color, #0f172a);

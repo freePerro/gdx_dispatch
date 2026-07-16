@@ -32,7 +32,7 @@ export function useQBSync(api) {
   const steps = reactive(
     DEFAULT_STEPS.map((s) => ({
       ...s,
-      status: 'pending', // pending | syncing | done | error
+      status: 'pending', // pending | syncing | done | error | skipped
       created: 0,
       updated: 0,
       adopted: 0,
@@ -55,12 +55,22 @@ export function useQBSync(api) {
     overallStatus.value = '';
   };
 
+  // GL S9: with ledger posting on, the backend refuses invoice/payment pulls
+  // (409 on /sync/invoices; {disabled: "ledger_posting_enabled"} slots inside
+  // /sync/full). That's a deliberate steady state after cutover, not a sync
+  // failure — render it as 'skipped', never as a red error step.
+  const SKIP_MESSAGE = 'Skipped — GDX ledger is the book of record';
+
   const _applyResult = (step, result, opts = {}) => {
     // result shape varies: single-entity calls return { created, updated, adopted?, errors }
     // full-sync call returns { customers: {...}, invoices: {...}, items: {...}, vendors: {...}, payments: {...} }
+    let skippedNote = '';
     if (opts.isFullSync && result) {
       const v = result.vendors || {};
       const p = result.payments || {};
+      if (p.disabled === 'ledger_posting_enabled') {
+        skippedNote = 'payments skipped — ledger is book of record';
+      }
       step.created = (v.created || 0) + (p.created || 0);
       step.updated = (v.updated || 0) + (p.updated || 0);
       step.adopted = (v.adopted || 0) + (p.adopted || 0);
@@ -78,6 +88,7 @@ export function useQBSync(api) {
     if (step.updated) bits.push(`${step.updated} updated`);
     if (step.adopted) bits.push(`${step.adopted} linked`);
     if (step.errors.length) bits.push(`${step.errors.length} errors`);
+    if (skippedNote) bits.push(skippedNote);
     step.message = bits.join(' • ') || 'Nothing to sync';
   };
 
@@ -92,13 +103,23 @@ export function useQBSync(api) {
     for (const step of steps) {
       step.status = 'syncing';
       try {
-        const result = await api.post(step.url);
+        // The progress panel is open and renders each step's outcome inline —
+        // a toast on top of it would double-report (and post-cutover the
+        // invoices step 409s on every run by design; see below).
+        const result = await api.post(step.url, undefined, { suppressErrorToast: true });
         _applyResult(step, result, { isFullSync: step.url.endsWith('/full') });
         if (step.status === 'error') hadError = true;
       } catch (err) {
-        step.status = 'error';
-        step.message = err?.message || 'Request failed';
-        hadError = true;
+        if (err?.status === 409) {
+          // GL S9: 409 = pull deliberately disabled (ledger is book of
+          // record), not a failure.
+          step.status = 'skipped';
+          step.message = SKIP_MESSAGE;
+        } else {
+          step.status = 'error';
+          step.message = err?.message || 'Request failed';
+          hadError = true;
+        }
       }
     }
 

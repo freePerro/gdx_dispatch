@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,7 +22,6 @@ from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceLine,
     Job,
-    Payment,
 )
 
 log = logging.getLogger(__name__)
@@ -379,141 +378,10 @@ def pull_customers(tenant_id: str, db: Session) -> dict[str, int]:
         raise
 
 
-def _find_or_create_import_job(customer_id: UUID, db: Session, company_id: str = "") -> Job:
-    job = db.execute(select(Job).where(Job.customer_id == customer_id, Job.title == "QuickBooks Import")).scalar_one_or_none()
-    if job is not None:
-        return job
-    job = Job(customer_id=customer_id, title="QuickBooks Import", description="Imported from QuickBooks", company_id=company_id)
-    db.add(job)
-    db.flush()
-    return job
-
-
-def pull_invoices(tenant_id: str, db: Session) -> dict[str, int]:
-    created = 0
-    updated = 0
-    try:
-        qb_client = get_qb_client(tenant_id, db)
-        rows = _query_qb_entities(qb_client, "Invoice")
-
-        for raw in rows:
-            qb_id = str(raw.get("Id") or "")
-            if not qb_id:
-                continue
-
-            mapping = db.execute(
-                select(QBEntityMap).where(
-                    QBEntityMap.tenant_id == tenant_id,
-                    QBEntityMap.entity_type == "invoice",
-                    QBEntityMap.qb_id == qb_id,
-                )
-            ).scalar_one_or_none()
-
-            total = Decimal(str(raw.get("TotalAmt") or 0))
-            balance = Decimal(str(raw.get("Balance") or total))
-            doc_number = str(raw.get("DocNumber") or f"QB-{qb_id}")
-            qb_due_date_str = raw.get("DueDate")
-            try:
-                qb_due_date = date.fromisoformat(qb_due_date_str) if qb_due_date_str else None
-            except (TypeError, ValueError):
-                qb_due_date = None
-            qb_txn_date_str = raw.get("TxnDate")
-            try:
-                qb_invoice_date = date.fromisoformat(qb_txn_date_str) if qb_txn_date_str else None
-            except (TypeError, ValueError):
-                qb_invoice_date = None
-
-            if mapping is not None:
-                invoice = db.get(Invoice, UUID(mapping.local_id))
-                if invoice is None:
-                    continue
-                invoice.subtotal = total
-                invoice.total = total
-                invoice.balance_due = balance
-                invoice.status = "paid" if balance <= 0 else "sent"
-                if qb_due_date is not None:
-                    invoice.due_date = qb_due_date
-                if qb_invoice_date is not None:
-                    invoice.invoice_date = qb_invoice_date
-                updated += 1
-                continue
-
-            qb_customer_id = str((raw.get("CustomerRef") or {}).get("value") or "")
-            customer_map = None
-            if qb_customer_id:
-                customer_map = db.execute(
-                    select(QBEntityMap).where(
-                        QBEntityMap.tenant_id == tenant_id,
-                        QBEntityMap.entity_type == "customer",
-                        QBEntityMap.qb_id == qb_customer_id,
-                    )
-                ).scalar_one_or_none()
-
-            customer: Customer
-            if customer_map is not None:
-                customer = db.get(Customer, UUID(customer_map.local_id))
-                if customer is None:
-                    continue
-            else:
-                customer = Customer(name=f"QB Customer {qb_customer_id or 'Unknown'}", source="quickbooks", company_id=tenant_id)
-                db.add(customer)
-                db.flush()
-                if qb_customer_id:
-                    _upsert_map(tenant_id, "customer", str(customer.id), qb_customer_id, db)
-
-            job = _find_or_create_import_job(customer.id, db, company_id=tenant_id)
-
-            invoice = Invoice(
-                job_id=job.id,
-                invoice_number=doc_number,
-                subtotal=total,
-                tax_amount=0,
-                total=total,
-                balance_due=balance,
-                status="paid" if balance <= 0 else "sent",
-                invoice_date=qb_invoice_date,
-                due_date=qb_due_date,
-                public_token=f"qb-{qb_id}"[:64],
-                notes="Imported from QuickBooks",
-                customer_id=customer.id,
-                company_id=tenant_id,
-            )
-            db.add(invoice)
-            db.flush()
-
-            lines = raw.get("Line") or []
-            sort_order = 1
-            for line in lines:
-                amount = Decimal(str(line.get("Amount") or 0))
-                db.add(
-                    InvoiceLine(
-                        invoice_id=invoice.id,
-                        description=str(line.get("Description") or "QuickBooks line"),
-                        quantity=1,
-                        unit_price=amount,
-                        line_total=amount,
-                        sort_order=sort_order,
-                    )
-                )
-                sort_order += 1
-
-            _upsert_map(tenant_id, "invoice", str(invoice.id), qb_id, db)
-            created += 1
-
-        db.commit()
-        _touch_sync_success(tenant_id, db)
-        _run_audit(
-            db,
-            event_type="qb_pull_invoices",
-            entity_id=tenant_id,
-            payload={"tenant_id": tenant_id, "created": created, "updated": updated},
-        )
-        db.commit()
-        return {"created": created, "updated": updated}
-    except Exception as exc:
-        db.rollback()
-        _touch_sync_error(tenant_id, db, exc)
-        raise
+# GL S9 (spec §5 row 8): the legacy pull_invoices/pull_payments that lived
+# here were dead raw Invoice.status/Payment writers (the live sync is
+# modules/quickbooks/sync.py, gated by ledger_posting_enabled). Deleted so
+# nobody resurrects a pull path that bypasses the ledger chokepoint.
 
 
 def _get_or_create_qb_catalog(db: Session) -> CustomCatalog:
@@ -622,83 +490,6 @@ def pull_vendors(tenant_id: str, db: Session) -> dict[str, int]:
         _run_audit(
             db,
             event_type="qb_pull_vendors",
-            entity_id=tenant_id,
-            payload={"tenant_id": tenant_id, "created": created, "updated": updated},
-        )
-        db.commit()
-        return {"created": created, "updated": updated}
-    except Exception as exc:
-        db.rollback()
-        _touch_sync_error(tenant_id, db, exc)
-        raise
-
-
-def pull_payments(tenant_id: str, db: Session) -> dict[str, int]:
-    created = 0
-    updated = 0
-    try:
-        qb_client = get_qb_client(tenant_id, db)
-        rows = _query_qb_entities(qb_client, "Payment")
-
-        for raw in rows:
-            qb_id = str(raw.get("Id") or "")
-            if not qb_id:
-                continue
-
-            payment_map = db.execute(
-                select(QBEntityMap).where(
-                    QBEntityMap.tenant_id == tenant_id,
-                    QBEntityMap.entity_type == "payment",
-                    QBEntityMap.qb_id == qb_id,
-                )
-            ).scalar_one_or_none()
-            if payment_map is not None:
-                updated += 1
-                continue
-
-            linked_qb_invoice_id = ""
-            for line in raw.get("Line") or []:
-                for txn in line.get("LinkedTxn") or []:
-                    if str(txn.get("TxnType") or "").lower() == "invoice" and txn.get("TxnId"):
-                        linked_qb_invoice_id = str(txn["TxnId"])
-                        break
-                if linked_qb_invoice_id:
-                    break
-            if not linked_qb_invoice_id:
-                continue
-
-            invoice_map = db.execute(
-                select(QBEntityMap).where(
-                    QBEntityMap.tenant_id == tenant_id,
-                    QBEntityMap.entity_type == "invoice",
-                    QBEntityMap.qb_id == linked_qb_invoice_id,
-                )
-            ).scalar_one_or_none()
-            if invoice_map is None:
-                continue
-            invoice = db.get(Invoice, UUID(invoice_map.local_id))
-            if invoice is None:
-                continue
-
-            amount = Decimal(str(raw.get("TotalAmt") or 0))
-            payment = Payment(invoice_id=invoice.id, amount=amount, method="quickbooks", payment_date=date.today())
-            db.add(payment)
-            db.flush()
-            _upsert_map(tenant_id, "payment", str(payment.id), qb_id, db)
-            # Sprint 1.0.6 — keep customer rolling-volume cache fresh
-            if invoice.customer_id:
-                try:
-                    from gdx_dispatch.services.customer_rolling_volume import refresh_cached_volume
-                    refresh_cached_volume(invoice.customer_id, db)
-                except Exception:
-                    log.exception("rolling_volume_refresh_failed_qb_pull")
-            created += 1
-
-        db.commit()
-        _touch_sync_success(tenant_id, db)
-        _run_audit(
-            db,
-            event_type="qb_pull_payments",
             entity_id=tenant_id,
             payload={"tenant_id": tenant_id, "created": created, "updated": updated},
         )

@@ -152,6 +152,16 @@ async def qb_webhook(
     processed = 0
     skipped = 0
     unhandled = 0
+    suppressed_ledger_on = 0
+
+    # GL S9 (spec §5.4): with ledger posting on, Invoice/Payment webhooks must
+    # not enqueue pull tasks — every GDX→QBO push echoes back as a webhook, so
+    # dispatching would mean a permanently-failing task per push. Suppress at
+    # dispatch (events are still recorded + audited below); the in-pull gate
+    # remains as the loud backstop for direct enqueues.
+    from gdx_dispatch.modules.quickbooks.sync import money_pulls_disabled as _pulls_off  # noqa: PLC0415
+
+    suppress_money_dispatch = _pulls_off(db, tenant_id)
 
     for realm_id, entity_name, entity_id, operation in events:
         event_id = f"{realm_id}:{entity_name}:{entity_id}:{operation}"
@@ -193,7 +203,14 @@ async def qb_webhook(
             "Account": "sync_account_task",
         }
         task_name = _PER_ENTITY_TASK_BY_NAME.get(entity_name)
-        if task_name:
+        if task_name and suppress_money_dispatch and entity_name in ("Invoice", "Payment"):
+            log.warning(
+                "qb_webhook_money_pull_suppressed tenant=%s entity=%s op=%s — "
+                "ledger_posting_enabled: GDX is the book of record (GL spec §5.4)",
+                tenant_id, entity_name, operation,
+            )
+            suppressed_ledger_on += 1
+        elif task_name:
             from gdx_dispatch.modules.quickbooks import tasks as qb_tasks  # noqa: PLC0415
             task = getattr(qb_tasks, task_name)
             task.delay(tenant_id, entity_id)
@@ -205,4 +222,10 @@ async def qb_webhook(
             )
             unhandled += 1
 
-    return {"processed": processed, "skipped": skipped, "unhandled": unhandled, "format_seen": 1}
+    return {
+        "processed": processed,
+        "skipped": skipped,
+        "unhandled": unhandled,
+        "suppressed_ledger_on": suppressed_ledger_on,
+        "format_seen": 1,
+    }
