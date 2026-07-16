@@ -52,10 +52,10 @@ def _scan(pattern: str) -> Counter:
 STATUS_WRITERS: dict[str, tuple[int, str]] = {
     # S5 retrofitted the issuance writers; S6 rewrote _mark_invoice_paid and
     # /refund; S7 rebuilt /credit-memo on invoice_adjustments. Every live
-    # operational writer now routes through transition_invoice_status —
-    # only the QB-sync writers remain, and S9 disables/deletes them.
-    "core/quickbooks.py": (1, "dead writer — S9 deletes/deprecates (spec §5 row 8)"),
-    "modules/quickbooks/sync.py": (1, "QB pull — S9 disables when ledger on"),
+    # operational writer now routes through transition_invoice_status. S9
+    # deleted the dead core/quickbooks.py legacy pull and runtime-gates the
+    # live sync pull (_assert_money_pull_allowed raises when the flag is on).
+    "modules/quickbooks/sync.py": (1, "QB pull — S9 gate raises when ledger on"),
 }
 
 # Matches `invoice.status = x` / `the_invoice.status = x` — NOT `inv.status`
@@ -87,8 +87,7 @@ def test_invoice_status_writer_inventory_is_exact():
 
 NON_DRAFT_BIRTHS: dict[str, tuple[int, str]] = {
     "routers/onboarding.py": (1, "sample invoice during onboarding — S5 revisit"),
-    "core/quickbooks.py": (1, "QB pull creation — S9 disables when ledger on"),
-    "modules/quickbooks/sync.py": (1, "QB pull creation — S9 disables when ledger on"),
+    "modules/quickbooks/sync.py": (1, "QB pull creation — S9 gate raises when ledger on"),
 }
 
 # A `status=` kwarg with a non-draft value within an Invoice( constructor.
@@ -142,7 +141,7 @@ _MONEY_MODELS = (
 
 RAW_CORE_WRITES: dict[str, tuple[int, str]] = {
     "modules/quickbooks/sync.py": (
-        1, "InvoiceLine resync bulk delete — S9 disables the pull under the flag"
+        1, "InvoiceLine resync bulk delete — S9 gate raises when ledger on"
     ),
 }
 

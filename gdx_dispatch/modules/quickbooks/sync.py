@@ -45,6 +45,55 @@ class QBRateLimitError(QBSyncError):
     pass
 
 
+class QBPullDisabledError(QBSyncError):
+    """A money-mutating QB pull was attempted while ledger posting is on.
+
+    GL S9 (spec §5.4): once ``ledger_posting_enabled`` the GDX ledger is the
+    book of record — pulls that mutate Invoice/Payment rows would write money
+    around the posting chokepoint, so they fail loudly instead. Read-only
+    mirror pulls (accounts, bank transactions) and non-money entity pulls
+    (customers, items, vendors) are unaffected. QBO-side corrections flow
+    forward from GDX (credit memo / void / adjustment → push), never back.
+    """
+
+
+def money_pulls_disabled(db: Session, tenant_id: str) -> bool:
+    """Read-only form of the §5.4 gate, for health/status surfaces (qb_status,
+    qb_dashboard, webhook dispatch). Fail-open on lookup errors — a status
+    page must not 500 over a flag read; the in-pull gate below stays
+    fail-closed and is the actual enforcement."""
+    from gdx_dispatch.modules.ledger.service import ledger_posting_enabled  # noqa: PLC0415
+
+    try:
+        return ledger_posting_enabled(db, tenant_id)
+    except Exception:
+        log.exception("qb_ledger_flag_lookup_failed tenant=%s", tenant_id)
+        db.rollback()
+        return False
+
+
+def _assert_money_pull_allowed(tenant_id: str, db: Session, operation: str) -> None:
+    """Gate for the four §5.4 money-mutating pull paths. Raises when the
+    ledger flag is on; a flag-lookup error propagates (fail-closed — better a
+    failed sync than money written around the chokepoint). The import is
+    local so celery workers that never sync don't pay the ledger import at
+    module load."""
+    from gdx_dispatch.modules.ledger.service import ledger_posting_enabled  # noqa: PLC0415
+
+    if ledger_posting_enabled(db, tenant_id):
+        log.error(
+            "qb_money_pull_blocked tenant=%s operation=%s — ledger_posting_enabled: "
+            "GDX is the book of record; QBO-side changes to invoices/payments no "
+            "longer flow back (GL spec §5.4). Correct in GDX and push forward.",
+            tenant_id, operation,
+        )
+        raise QBPullDisabledError(
+            f"QuickBooks {operation} pull is disabled: ledger posting is enabled "
+            "and GDX is the book of record. Make the correction in GDX "
+            "(credit memo, void, adjustment) and push it to QuickBooks instead."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -291,6 +340,8 @@ def _apply_qbo_deletes(
     do not nuke everything; require the caller to opt in by passing a real
     set).
     """
+    if entity_type in ("invoice", "payment"):
+        _assert_money_pull_allowed(tenant_id, db, f"{entity_type} delete-sync")
     if not _delete_sync_enabled(tenant_id, db):
         return 0
     if not seen_qb_ids:
@@ -368,6 +419,7 @@ def _resync_invoice_lines(invoice_id: UUID, raw_lines: list[dict[str, Any]], ten
 
     Returns the number of lines written.
     """
+    _assert_money_pull_allowed(tenant_id, db, "invoice line resync")
     db.execute(
         InvoiceLine.__table__.delete().where(InvoiceLine.invoice_id == invoice_id)
     )
@@ -651,6 +703,7 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
 
     Per-row SAVEPOINTs so one bad invoice doesn't roll back vendors/payments/etc.
     """
+    _assert_money_pull_allowed(tenant_id, db, "invoice")
     created = 0
     updated = 0
     adopted = 0
@@ -1045,6 +1098,7 @@ async def pull_vendors(tenant_id: str, db: Session, qb: QBClient) -> dict[str, i
 
 async def pull_payments(tenant_id: str, db: Session, qb: QBClient) -> dict[str, int]:
     """Pull payments from QuickBooks and link to local invoices."""
+    _assert_money_pull_allowed(tenant_id, db, "payment")
     created = 0
     updated = 0
     skipped = 0  # payments with no linkable local invoice

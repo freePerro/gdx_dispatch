@@ -95,6 +95,31 @@ describe('useQBSync', () => {
     expect(steps[5].status).toBe('done');
   });
 
+  it('GL S9: renders a 409 pull-disable as skipped, not error, and stays overall done', async () => {
+    const disabled409 = Object.assign(new Error('QuickBooks invoice pull is disabled: ledger posting is enabled'), { status: 409 });
+    const api = makeFakeApi({
+      '/api/qb/sync/customers': { created: 1, updated: 0, errors: [] },
+      '/api/qb/sync/invoices': disabled409,
+      '/api/qb/sync/items': { created: 0, updated: 0, errors: [] },
+      '/api/qb/sync/full': {
+        vendors: { created: 0, updated: 0, errors: [] },
+        payments: { disabled: 'ledger_posting_enabled', detail: 'book of record' },
+      },
+      '/api/qb/sync/accounts': { created: 0, updated: 0, errors: [] },
+      '/api/qb/sync/bank-transactions': { created: 0, updated: 0, errors: [] },
+    });
+    const { steps, start, overallStatus } = useQBSync(api);
+    await start();
+    const invoices = steps.find((s) => s.key === 'invoices');
+    expect(invoices.status).toBe('skipped');
+    expect(invoices.message).toMatch(/book of record/i);
+    const vp = steps.find((s) => s.key === 'vendors_payments');
+    expect(vp.status).toBe('done');
+    expect(vp.message).toMatch(/payments skipped/i);
+    // A deliberate skip is not a partial failure.
+    expect(overallStatus.value).toBe('done');
+  });
+
   it('start() is a no-op while a previous run is still in flight', async () => {
     let resolveFirst;
     const blockingPromise = new Promise((r) => { resolveFirst = r; });

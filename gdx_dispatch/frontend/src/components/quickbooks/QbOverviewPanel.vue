@@ -1,5 +1,18 @@
 <template>
   <div class="qb-overview-panel">
+    <div v-if="status.money_pulls_disabled" class="ledger-banner" data-testid="qb-overview-ledger-banner">
+      <i class="pi pi-lock" />
+      <div>
+        <p class="ledger-banner-title">Invoice &amp; payment pulls are off — GDX ledger is the book of record</p>
+        <p class="ledger-banner-detail">
+          Ledger posting is enabled, so invoice and payment changes made in QuickBooks no
+          longer flow back into GDX. Make corrections in GDX (credit memo, void, adjustment)
+          and they push forward to QuickBooks. Customer, item, account, and banking syncs
+          still work.
+        </p>
+      </div>
+    </div>
+
     <div v-if="status.last_error" class="error-banner" data-testid="qb-overview-error-banner">
       <i class="pi pi-exclamation-triangle" />
       <div>
@@ -64,7 +77,7 @@
               icon="pi pi-sync"
               size="small"
               severity="secondary"
-              :disabled="!status.connected"
+              :disabled="!status.connected || (status.money_pulls_disabled && row.entity === 'invoices')"
               :data-testid="`qb-overview-sync-${row.entity}`"
               @click="$emit('sync-entity', row.entity)"
             />
@@ -141,6 +154,20 @@ const formatDateTime = (value) => {
   color: var(--p-red-900, #450a0a);
   margin-bottom: 1rem;
 }
+
+.ledger-banner {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: var(--p-blue-50, #eff6ff);
+  border: 1px solid var(--p-blue-300, #93c5fd);
+  border-radius: 6px;
+  color: var(--p-blue-900, #1e3a8a);
+  margin-bottom: 1rem;
+}
+.ledger-banner i { font-size: 1.25rem; color: var(--p-blue-600, #2563eb); }
+.ledger-banner-title { margin: 0; font-weight: 700; }
+.ledger-banner-detail { margin: 0.15rem 0 0; font-weight: 500; }
 .error-banner i { font-size: 1.25rem; color: var(--p-red-600, #dc2626); }
 .error-banner-title { margin: 0; font-weight: 700; }
 .error-banner-detail { margin: 0.15rem 0 0; font-weight: 500; }

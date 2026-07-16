@@ -232,6 +232,20 @@ def qb_status(
     # last_sync_at — the previous code hardcoded None, so the /quickbooks page
     # showed "Last Sync: —" while the sync_log table had real recent rows.
     tenant_id_lookahead = _tenant_id(request)
+
+    # GL S9 (spec §5.4): surface the pull-disable state wherever QB health is
+    # read — with ledger posting on, invoice/payment pulls fail loudly and the
+    # frontend needs to say why instead of showing a broken "Sync Now".
+    pulls_off = sync.money_pulls_disabled(db, tenant_id_lookahead)
+    ledger_fields = {
+        "money_pulls_disabled": pulls_off,
+        "money_pulls_disabled_reason": (
+            "ledger_posting_enabled — GDX is the book of record; invoice/payment "
+            "pulls from QuickBooks are disabled (corrections flow GDX → QBO)"
+            if pulls_off else None
+        ),
+    }
+
     legacy_last_sync_at = None
     try:
         legacy = db.execute(
@@ -267,6 +281,7 @@ def qb_status(
                 "last_error": None,
                 "auth_state": auth_state,
                 "needs_reconnect": auth_state == "needs_reconnect",
+                **ledger_fields,
             }
     except Exception:
         log.exception("qb_token_store_query_failed — falling back to QBConnection")
@@ -282,6 +297,7 @@ def qb_status(
         "last_sync_at": row.last_sync_at.isoformat() if row and row.last_sync_at else None,
         "error_count": int(row.error_count or 0) if row else 0,
         "last_error": row.last_error if row else None,
+        **ledger_fields,
     }
 
 
@@ -441,8 +457,11 @@ async def sync_invoices(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     _audit(db, request, current_user, "sync_invoices", "invoice")
-    async with await get_qb_client(tenant_id, db) as qb:
-        return await sync.pull_invoices(tenant_id, db, qb)
+    try:
+        async with await get_qb_client(tenant_id, db) as qb:
+            return await sync.pull_invoices(tenant_id, db, qb)
+    except sync.QBPullDisabledError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post("/sync/items")
@@ -574,6 +593,17 @@ async def sync_full(
     """
     tenant_id = _tenant_id(request)
     _audit(db, request, current_user, "sync_full", "full")
+
+    async def _money_pull(coro) -> dict[str, Any]:
+        # GL S9 (spec §5.4): invoice/payment pulls are disabled once ledger
+        # posting is on. The mirror + non-money pulls below still run, so
+        # "Sync Now" keeps refreshing the CoA/Bank tabs — the disabled slots
+        # say so explicitly instead of silently vanishing.
+        try:
+            return await coro
+        except sync.QBPullDisabledError as exc:
+            return {"disabled": "ledger_posting_enabled", "detail": str(exc)}
+
     async with await get_qb_client(tenant_id, db) as qb:
         # Accounts + bank transactions live in qb_accounts / qb_bank_transactions
         # (Slice 3B), separate from qb_entity_maps. Folded into the full sync so
@@ -581,10 +611,10 @@ async def sync_full(
         # tabs — without these, those tabs stay empty after a generic sync.
         return {
             "customers": await sync.pull_customers(tenant_id, db, qb),
-            "invoices": await sync.pull_invoices(tenant_id, db, qb),
+            "invoices": await _money_pull(sync.pull_invoices(tenant_id, db, qb)),
             "items": await sync.pull_items(tenant_id, db, qb),
             "vendors": await sync.pull_vendors(tenant_id, db, qb),
-            "payments": await sync.pull_payments(tenant_id, db, qb),
+            "payments": await _money_pull(sync.pull_payments(tenant_id, db, qb)),
             "accounts": await sync.pull_accounts(tenant_id, db, qb),
             "bank_transactions": await sync.pull_bank_transactions(tenant_id, db, qb),
         }
@@ -764,6 +794,9 @@ def qb_dashboard(
     if extra_banking_total:
         entity_counts["bank_transaction"] = int(entity_counts.get("bank_transaction", 0)) + extra_banking_total
 
+    # GL S9 (spec §5.4): the dashboard is the frontend's primary status
+    # source (it only falls back to /status on older builds) — surface the
+    # pull-disable state here too.
     return {
         "connected": bool(conn) or token_present,
         "realm_id": conn.realm_id if conn else None,
@@ -773,6 +806,7 @@ def qb_dashboard(
         "entity_counts": entity_counts,
         "delete_sync_enabled": sync._delete_sync_enabled(tenant_id, db),
         "delete_sync_source": _delete_sync_source(conn),
+        "money_pulls_disabled": sync.money_pulls_disabled(db, tenant_id),
     }
 
 
