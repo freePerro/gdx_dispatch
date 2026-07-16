@@ -36,6 +36,7 @@ from gdx_dispatch.modules.ledger.rules import (
     repost_invoice_issuance,
     resettle_invoice_payments,
     reverse_invoice_adjustments,
+    settle_opening_on_void,
 )
 from gdx_dispatch.modules.ledger.service import (
     ledger_posting_enabled,
@@ -1715,7 +1716,14 @@ def void_payment(
     # Reverses the voided payment's P3 AND reverse+reposts every remaining
     # payment whose AR/2300 split the void changed (audit round 2: stale
     # splits diverged GL from balance_due and broke replay determinism).
-    resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+    # Ledger refusals surface as 409s with the reason, never bare 500s.
+    try:
+        resettle_invoice_payments(db, invoice, actor=_actor_id(_))
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"payment is in a locked accounting period — {exc}",
+        ) from exc
     _recalculate_invoice(invoice, db)
     if invoice.status == "paid" and _to_float(invoice.balance_due) > 0:
         # the money that made it "paid" is gone — reopen it
@@ -1779,7 +1787,17 @@ def void_invoice(
 
     transition_invoice_status(db, invoice, "void", actor=_actor_id(_))
     # GL S7: the P1 reversal alone would strand adjustment entries on AR.
-    reverse_invoice_adjustments(db, invoice, actor=_actor_id(_))
+    # GL S10: a pre-cutover-era invoice has no P1 to reverse — the void
+    # posts its own entry clearing whatever AR it still holds (spec §5.7).
+    # Ledger refusals surface as 409s with the reason, never bare 500s.
+    try:
+        reverse_invoice_adjustments(db, invoice, actor=_actor_id(_))
+        settle_opening_on_void(db, invoice, actor=_actor_id(_))
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"void posts into a locked accounting period — {exc}",
+        ) from exc
     invoice.balance_due = _money(0)
     db.commit()
     db.refresh(invoice)
