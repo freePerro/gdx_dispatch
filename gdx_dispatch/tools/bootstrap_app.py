@@ -17,14 +17,17 @@ Pipeline:
   3. Seed the matching company row (company_id == tenant id in single-tenant
      mode).
   4. Seed an initial admin user so someone can log in. The password comes
-     from GDX_ADMIN_PASSWORD if set, otherwise a random one is generated and
-     printed to the logs. The user is flagged must_change_password=True.
+     from GDX_ADMIN_PASSWORD if set (and is then never written to the logs),
+     otherwise a random one is generated and printed to the logs as its one
+     handoff channel. The user is flagged must_change_password=True either
+     way. Set GDX_ADMIN_PASSWORD to keep any password out of the logs.
 
 Env vars:
   GDX_TENANT_ID / GDX_TENANT_SLUG / GDX_TENANT_NAME — tenant identity
       (defaults supplied by single_tenant(); zero-config works).
   GDX_ADMIN_EMAIL     — admin login (default: admin@example.com)
-  GDX_ADMIN_PASSWORD  — admin password (default: randomly generated, logged)
+  GDX_ADMIN_PASSWORD  — admin password (default: randomly generated and
+      logged once; when set, the value is never written to the logs)
   GDX_SKIP_BOOTSTRAP=1 — skip entirely (e.g. when managing the DB yourself).
 
 Run: python -m gdx_dispatch.tools.bootstrap_app
@@ -48,6 +51,41 @@ def _hash_password(password: str) -> str:
     import bcrypt
 
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _resolve_admin_password() -> tuple[str, bool]:
+    """(password, generated) from GDX_ADMIN_PASSWORD, single-sourced.
+
+    Set-but-EMPTY must mean "generate" — `.env.template` ships
+    ``GDX_ADMIN_PASSWORD=`` and compose ``env_file:`` injects it as an empty
+    string, so an ``in os.environ`` test here would claim the password came
+    from the operator while a random one was actually seeded (a silent
+    lockout: the banner would hide a password nobody holds).
+    """
+    supplied = os.getenv("GDX_ADMIN_PASSWORD")
+    if supplied:
+        return supplied, False
+    return secrets.token_urlsafe(12), True
+
+
+def _admin_banner(title: str, email: str, password: str, *, generated: bool) -> str:
+    """First-login banner for the seeded owner account.
+
+    Only a GENERATED password is included — the log line is its one handoff
+    channel on a zero-config first boot. An operator-supplied
+    GDX_ADMIN_PASSWORD is a secret they already hold; echoing it back into
+    persisted container logs would only widen its exposure.
+    """
+    shown = password if generated else "(from GDX_ADMIN_PASSWORD — not shown)"
+    return (
+        "\n"
+        "════════════════════════════════════════════════════════════\n"
+        f"  GDX Dispatch — {title}\n"
+        f"    email:    {email}\n"
+        f"    password: {shown}\n"
+        "  You MUST change this password on first login.\n"
+        "════════════════════════════════════════════════════════════"
+    )
 
 
 def create_orm_tables() -> None:
@@ -122,8 +160,7 @@ def main() -> int:
             db.commit()
             log.info("Admin user already present (%s) — leaving it untouched.", admin_email)
         else:
-            admin_password = os.getenv("GDX_ADMIN_PASSWORD") or secrets.token_urlsafe(12)
-            generated = "GDX_ADMIN_PASSWORD" not in os.environ
+            admin_password, generated = _resolve_admin_password()
             # If a soft-deleted row with this email survives, revive it in
             # place rather than inserting a duplicate-email row.
             tombstoned = db.execute(
@@ -159,18 +196,7 @@ def main() -> int:
                 revived = False
             db.commit()
             title = "initial admin account created" if not revived else "owner account restored"
-            banner = (
-                "\n"
-                "════════════════════════════════════════════════════════════\n"
-                f"  GDX Dispatch — {title}\n"
-                f"    email:    {admin_email}\n"
-                f"    password: {admin_password}\n"
-                "  You MUST change this password on first login.\n"
-            )
-            if not generated:
-                banner += "  (password taken from GDX_ADMIN_PASSWORD)\n"
-            banner += "════════════════════════════════════════════════════════════"
-            log.warning(banner)
+            log.warning(_admin_banner(title, admin_email, admin_password, generated=generated))
 
     log.info("Bootstrap complete.")
     return 0

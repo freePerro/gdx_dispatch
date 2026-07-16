@@ -22,6 +22,7 @@ equity/revenue credit-positive).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from uuid import UUID
@@ -42,7 +43,18 @@ from gdx_dispatch.modules.ledger.models import (
 from gdx_dispatch.modules.ledger.money import to_cents
 from gdx_dispatch.modules.ledger.rules import IssuanceCompositionError, _dec
 
+log = logging.getLogger(__name__)
+
 CREDIT_NATURAL = ("liability", "equity", "revenue")
+
+# Shown to the API caller in skipped_invoices[].reason. A fixed string on
+# purpose (CWE-209): exception text must not flow into the HTTP payload —
+# the cents-level detail goes to the server log instead, and the operator
+# sees it interactively as a 409 when editing the invoice itself.
+_SKIP_REASON = (
+    "total doesn't reconcile with live lines + tax beyond rounding — "
+    "excluded from cash-basis revenue"
+)
 
 
 def _line_rows(session: Session, company_id: str, *, start: date | None, end: date | None):
@@ -261,10 +273,15 @@ def cash_revenue_by_account(
                 try:
                     components = invoice_components(session, invoice)
                 except IssuanceCompositionError as exc:
+                    log.warning(
+                        "cash P&L: skipping invoice %s: %s",
+                        invoice.invoice_number,
+                        exc,
+                    )
                     skipped.append(
                         {
                             "invoice_number": invoice.invoice_number,
-                            "reason": str(exc),
+                            "reason": _SKIP_REASON,
                         }
                     )
                     break
