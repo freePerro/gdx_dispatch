@@ -122,6 +122,31 @@ class HashColumn:
         return hashlib.sha256(payload).hexdigest()
 
 
+def decrypt_if_ciphertext(value: str | None) -> str | None:
+    """Best-effort decrypt for values read OUTSIDE the ORM mapper.
+
+    The contract is "every read of an EncryptedString column goes through
+    the ORM" — but a handful of raw-SQL readers are load-bearing (the
+    tech-mobile job lists join customers in one DISTINCT query). Those
+    call sites read the raw column bytes, so ``process_result_value``
+    never fires and mixed-state rows render ``gAAAA…`` ciphertext (the
+    2026-07-16 tech-mobile Jobs-tab bug — same class as S122-1b).
+
+    Unlike ``process_result_value`` this does NOT warn on passthrough:
+    during the plaintext→ciphertext transition, plaintext is the
+    *expected majority* state for raw readers, not an anomaly. Every
+    call site must also carry ``# noqa: RAW_ENC`` on its ``text(`` line
+    so the raw-SQL scan records the bypass as acknowledged-and-handled.
+    """
+    if value is None or _FERNET is None:
+        return value
+    from cryptography.fernet import InvalidToken  # noqa: PLC0415
+    try:
+        return _FERNET.decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return value
+
+
 # Per-call-site dedupe for passthrough WARN logs — auditor round-2 finding
 # on S122-9 slice 1. Without dedupe, a failed activation against an ORM
 # column the app reads on every request would spam 10k+ identical lines

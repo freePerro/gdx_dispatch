@@ -191,3 +191,42 @@ def test_job_owner_via_assigned_technician_is_allowed() -> None:
         assert ei.value.status_code == 404
     finally:
         db.close()
+
+
+def test_job_owner_via_job_assignments_row_is_allowed() -> None:
+    """2026-07-16 audit finding: /api/mobile/jobs lists jobs linked through
+    Phase 1.4 job_assignments rows, but the ownership gate only checked
+    assigned_to + appointments — so a listed multi-tech job 404'd the moment
+    the tech tapped it. The gate must honor job_assignments too."""
+    from sqlalchemy import text
+
+    from gdx_dispatch.core.job_access import assert_job_access, job_belongs_to_user
+
+    db = _seeded_session()
+    try:
+        # job-2 is linked to tech-1 ONLY via a job_assignments row.
+        db.execute(
+            text(
+                "INSERT INTO jobs (id, title, dispatch_status, company_id) "
+                "VALUES ('job-2','J2','scheduled','t1')"
+            )
+        )
+        db.execute(
+            text(
+                "INSERT INTO job_assignments (id, job_id, tech_id, is_lead, assigned_at) "
+                "VALUES ('ja-1','job-2','tech-1',0,'2026-07-16T00:00:00+00:00')"
+            )
+        )
+        db.commit()
+        assert job_belongs_to_user(db, "t1", "job-2", "user-owner") is True
+        assert job_belongs_to_user(db, "t1", "job-2", "user-other") is False
+        assert_job_access(db, "t1", {"role": "tech", "user_id": "user-owner"}, "job-2")
+
+        # A soft-deleted assignment row must NOT grant access.
+        db.execute(
+            text("UPDATE job_assignments SET deleted_at = '2026-07-16T01:00:00+00:00' WHERE id = 'ja-1'")
+        )
+        db.commit()
+        assert job_belongs_to_user(db, "t1", "job-2", "user-owner") is False
+    finally:
+        db.close()

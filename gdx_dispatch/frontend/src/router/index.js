@@ -48,6 +48,7 @@ const DocumentsView = () => import('../views/DocumentsView.vue');
 const FleetView = () => import('../views/FleetView.vue');
 const MobileTodayView = () => import('../views/MobileTodayView.vue');
 const MobileJobsView = () => import('../views/MobileJobsView.vue');
+const MobileJobDetailView = () => import('../views/MobileJobDetailView.vue');
 const MobileSummaryView = () => import('../views/MobileSummaryView.vue');
 const MobileDispatchView = () => import('../views/MobileDispatchView.vue');
 const MobilePlannerView = () => import('../views/MobilePlannerView.vue');
@@ -342,6 +343,7 @@ export const routes = [
   { path: '/performance', name: 'performance', component: PerformanceView },
   { path: '/mobile', name: 'mobile', component: MobileTodayView, meta: { noSidebar: true } },
   { path: '/mobile/jobs', name: 'mobile-jobs', component: MobileJobsView, meta: { noSidebar: true } },
+  { path: '/mobile/jobs/:id', name: 'mobile-job-detail', component: MobileJobDetailView, meta: { noSidebar: true } },
   { path: '/mobile/summary', name: 'mobile-summary', component: MobileSummaryView, meta: { noSidebar: true } },
   { path: '/mobile/dispatch', name: 'mobile-dispatch', component: MobileDispatchView, meta: { noSidebar: true, requiresPermission: 'mobile.dispatch_view' } },
   { path: '/mobile/planner', name: 'mobile-planner', component: MobilePlannerView, meta: { noSidebar: true } },

@@ -49,6 +49,7 @@ const loading = ref(true)
 const error = ref(null)
 const refreshing = ref(false)
 const jobs = ref([])
+const areaJobs = ref([])
 const tech = ref(null)
 const date = ref(null)
 const advancing = ref({})
@@ -73,13 +74,30 @@ const mappableJobs = computed(() =>
   jobs.value.filter((j) => j.location && j.location.lat != null && j.location.lng != null),
 )
 
+// 2026-07-16 — "today" is the tech's LOCAL calendar day. Without these
+// params the backend fell back to the UTC date, so from 7pm local (UTC-5)
+// the list silently rolled over to tomorrow and evening jobs vanished.
+function localDayParams() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const params = new URLSearchParams({
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+  })
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (tz) params.set('tz', tz)
+  } catch { /* very old WebView — backend falls back to UTC */ }
+  return params
+}
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   refreshing.value = silent
   error.value = null
   try {
-    const data = await api.get('/api/mobile/today')
+    const data = await api.get(`/api/mobile/today?${localDayParams().toString()}`)
     jobs.value = data.jobs || []
+    areaJobs.value = data.area_jobs || []
     tech.value = data.tech_id
     date.value = data.date
   } catch (err) {
@@ -1404,6 +1422,40 @@ function replayTour() {
         </li>
         </template>
       </ol>
+
+      <!-- 2026-07-16 — "do it when you're in the area" jobs: assigned,
+           deliberately undated, still open. Dispatch leaves these without a
+           scheduled date on purpose; they were invisible on mobile before. -->
+      <div
+        v-if="!loading && view === VIEW_LIST && areaJobs.length"
+        class="area-section"
+        data-testid="mobile-area-jobs"
+      >
+        <h2 class="area-heading">
+          <i class="pi pi-map" />
+          When you're in the area
+          <span class="area-count">{{ areaJobs.length }}</span>
+        </h2>
+        <ol class="job-list">
+          <li v-for="job in areaJobs" :key="job.id">
+            <router-link
+              :to="`/mobile/jobs/${job.id}`"
+              class="area-card"
+              :data-testid="`mobile-area-job-${job.id}`"
+            >
+              <div class="job-row job-row-top">
+                <div class="area-customer">{{ job.customer?.name || '—' }}</div>
+                <i class="pi pi-chevron-right area-chevron" />
+              </div>
+              <div v-if="job.customer?.address" class="area-address">
+                <i class="pi pi-map-marker" />
+                <span>{{ job.customer.address }}</span>
+              </div>
+              <div v-if="job.title" class="area-title">{{ job.title }}</div>
+            </router-link>
+          </li>
+        </ol>
+      </div>
     </section>
 
     <!-- Phase 2 / C3.5 — unified closeout sheet (Doug 2026-05-10).
@@ -1968,4 +2020,34 @@ function replayTour() {
 /* Phase 2 / C3.5 — removed .sig-form / .sig-canvas / .sig-clear; the
    inline complete-and-sign dialog they styled is gone, replaced by
    MobileJobCloseoutDialog which carries its own scoped styles. */
+
+/* 2026-07-16 — "when you're in the area" section (undated assigned jobs). */
+.area-section { margin-top: 1.25rem; }
+.area-heading {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin: 0 0 0.6rem; font-size: 0.95rem; font-weight: 700;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.area-count {
+  background: var(--p-content-border-color, #e5e7eb);
+  color: var(--p-text-color, #1f2937);
+  border-radius: 999px; padding: 0 0.5rem;
+  font-size: 0.75rem; font-weight: 600; line-height: 1.4;
+}
+.area-card {
+  background: var(--p-content-background, #fff);
+  border: 1px solid var(--p-content-border-color, #e5e7eb);
+  border-radius: 0.6rem; padding: 0.75rem 1rem;
+  display: flex; flex-direction: column; gap: 0.35rem;
+  color: inherit; text-decoration: none;
+}
+.area-card:active { background: var(--p-content-hover-background, #f3f4f6); }
+.area-customer { font-size: 1rem; font-weight: 700; }
+.area-chevron { color: var(--p-text-muted-color, #9ca3af); font-size: 0.8rem; }
+.area-address {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 0.9rem; color: var(--p-primary-color, #2563eb);
+}
+.area-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.area-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 </style>

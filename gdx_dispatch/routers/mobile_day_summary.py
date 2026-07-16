@@ -18,6 +18,8 @@ from uuid import UUID as _UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text as _text
+
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
@@ -70,7 +72,7 @@ def day_summary(
 
     # Jobs the user finished today (assigned_to OR job_assignment).
     jobs_done = db.execute(
-        _text(
+        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.completed_at,
                    c.name AS customer_name, c.address AS customer_address
@@ -201,7 +203,7 @@ def day_summary(
     tomorrow_start = day_start + timedelta(days=1)
     tomorrow_end = tomorrow_start + timedelta(days=1)
     next_first = db.execute(
-        _text(
+        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.scheduled_at,
                    c.name AS customer_name, c.address AS customer_address
@@ -233,7 +235,7 @@ def day_summary(
                 "title": r[1],
                 "completed_at": r[2].isoformat() if r[2] else None,
                 "customer_name": r[3],
-                "customer_address": r[4],
+                "customer_address": decrypt_if_ciphertext(r[4]),
             }
             for r in jobs_done
         ],
@@ -248,7 +250,7 @@ def day_summary(
                 "title": next_first[1],
                 "scheduled_at": next_first[2].isoformat() if next_first[2] else None,
                 "customer_name": next_first[3],
-                "customer_address": next_first[4],
+                "customer_address": decrypt_if_ciphertext(next_first[4]),
             }
             if next_first else None
         ),

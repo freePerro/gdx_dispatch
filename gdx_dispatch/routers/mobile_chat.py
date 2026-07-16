@@ -29,6 +29,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy import text as _text
+
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
@@ -432,7 +434,7 @@ def list_dispatch_threads(
     for r in rows:
         # Pull the job + customer details for context.
         jrow = db.execute(
-            _text(
+            _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
                 """
                 SELECT j.title, c.name, c.address
                 FROM jobs j
@@ -449,6 +451,7 @@ def list_dispatch_threads(
             "total_count": int(r[3] or 0),
             "job_title": jrow[0] if jrow else None,
             "customer_name": jrow[1] if jrow else None,
-            "customer_address": jrow[2] if jrow else None,
+            # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
+            "customer_address": decrypt_if_ciphertext(jrow[2]) if jrow else None,
         })
     return _jr({"threads": threads})

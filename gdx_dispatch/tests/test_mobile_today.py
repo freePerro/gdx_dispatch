@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -438,3 +439,170 @@ class TestPartsSummary:
         assert card["parts_summary"] == {
             "total": 4, "needed": 2, "ordered": 1, "received": 1,
         }
+
+
+# ── 2026-07-16 tech-mobile job-access fix: union + area jobs + local tz ──
+
+
+def _seed_assignment(db, *, job_id, tech_id=TECH) -> None:
+    from gdx_dispatch.models.tenant_models import JobAssignment
+
+    db.add(JobAssignment(id=uuid4().hex, job_id=str(job_id), tech_id=tech_id))
+    db.commit()
+
+
+class TestScheduledUnion:
+    def test_scheduled_job_shows_alongside_appointments(self, app_and_db):
+        """Pre-fix: ONE appointment hid every scheduled-but-appointmentless
+        job (the fallback only ran when the appointment list was empty)."""
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j_appt = _seed_job(db, customer_id=c.id, title="With appointment")
+        _seed_appointment(db, job_id=j_appt.id, customer_id=c.id, start=_now())
+        j_sched = _seed_job(
+            db, customer_id=c.id, title="Scheduled only",
+            scheduled_at=_now() + timedelta(hours=2),
+        )
+        body = client.get("/api/mobile/today").json()
+        titles = [card["title"] for card in body["jobs"]]
+        assert titles == ["With appointment", "Scheduled only"]
+        assert str(j_sched.id) in {card["id"] for card in body["jobs"]}
+
+    def test_no_duplicate_when_job_has_appointment(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j = _seed_job(db, customer_id=c.id)
+        _seed_appointment(db, job_id=j.id, customer_id=c.id, start=_now())
+        body = client.get("/api/mobile/today").json()
+        assert body["count"] == 1
+
+    def test_scheduled_job_via_job_assignments_row(self, app_and_db):
+        """Multi-tech jobs link through job_assignments, not assigned_to —
+        the scheduled-jobs union must match them too."""
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j = _seed_job(db, customer_id=c.id, assigned_to=None)
+        _seed_assignment(db, job_id=j.id)
+        body = client.get("/api/mobile/today").json()
+        assert body["count"] == 1
+        assert body["jobs"][0]["id"] == str(j.id)
+
+
+class TestAreaJobs:
+    def test_undated_assigned_job_lands_in_area_jobs(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j = Job(
+            id=uuid4(), company_id=TENANT, customer_id=c.id,
+            title="When in the area", description="d",
+            scheduled_at=None, assigned_to=TECH,
+            dispatch_status="assigned", lifecycle_stage="scheduled",
+        )
+        db.add(j)
+        db.commit()
+        body = client.get("/api/mobile/today").json()
+        assert body["count"] == 0
+        assert body["area_count"] == 1
+        assert body["area_jobs"][0]["id"] == str(j.id)
+        assert body["area_jobs"][0]["customer"]["name"] == "Acme"
+
+    def test_done_and_terminal_stages_excluded(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        for stage, status in (
+            ("completed", "assigned"),
+            ("cancelled", "assigned"),
+            ("lead", "assigned"),
+            ("estimate", "assigned"),
+            ("scheduled", "done"),
+        ):
+            db.add(Job(
+                id=uuid4(), company_id=TENANT, customer_id=c.id,
+                title=f"{stage}/{status}", description="d",
+                scheduled_at=None, assigned_to=TECH,
+                dispatch_status=status, lifecycle_stage=stage,
+            ))
+        db.commit()
+        body = client.get("/api/mobile/today").json()
+        assert body["area_count"] == 0
+
+    def test_area_jobs_via_job_assignments_row(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j = Job(
+            id=uuid4(), company_id=TENANT, customer_id=c.id,
+            title="Area via assignment", description="d",
+            scheduled_at=None, assigned_to=None,
+            dispatch_status="assigned", lifecycle_stage="in_progress",
+        )
+        db.add(j)
+        db.commit()
+        _seed_assignment(db, job_id=j.id)
+        body = client.get("/api/mobile/today").json()
+        assert body["area_count"] == 1
+
+    def test_other_techs_undated_jobs_excluded(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        db.add(Job(
+            id=uuid4(), company_id=TENANT, customer_id=c.id,
+            title="Someone else's", description="d",
+            scheduled_at=None, assigned_to="tech-other",
+            dispatch_status="assigned", lifecycle_stage="scheduled",
+        ))
+        db.commit()
+        body = client.get("/api/mobile/today").json()
+        assert body["area_count"] == 0
+
+    def test_empty_response_keeps_area_shape(self, app_and_db):
+        client, _ = app_and_db  # no technician record at all
+        body = client.get("/api/mobile/today").json()
+        assert body["area_jobs"] == []
+        assert body["area_count"] == 0
+
+
+class TestLocalTimezone:
+    def test_evening_job_stays_on_local_day(self, app_and_db):
+        """A 9pm America/Chicago job is 02:00 UTC the NEXT day. With the
+        device tz it must appear on the local date; the UTC fallback used
+        to push it to tomorrow (the 2026-07-10 'invisible evening job')."""
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        base = _now()  # 12:00 UTC today
+        local_date = base.date()
+        # 21:00 America/Chicago on local_date == 02:00 UTC on local_date+1.
+        evening_utc = datetime(
+            local_date.year, local_date.month, local_date.day, 21, 0,
+            tzinfo=ZoneInfo("America/Chicago"),
+        ).astimezone(UTC)
+        j = _seed_job(db, customer_id=c.id, scheduled_at=evening_utc)
+        _seed_appointment(db, job_id=j.id, customer_id=c.id, start=evening_utc)
+
+        with_tz = client.get(
+            f"/api/mobile/today?date={local_date.isoformat()}&tz=America/Chicago"
+        ).json()
+        assert with_tz["count"] == 1
+
+        utc_view = client.get(
+            f"/api/mobile/today?date={local_date.isoformat()}"
+        ).json()
+        assert utc_view["count"] == 0
+
+    def test_invalid_tz_falls_back_to_utc(self, app_and_db):
+        client, db = app_and_db
+        _seed_tech(db)
+        c = _seed_customer(db)
+        j = _seed_job(db, customer_id=c.id)
+        _seed_appointment(db, job_id=j.id, customer_id=c.id, start=_now())
+        body = client.get(
+            f"/api/mobile/today?date={_now().date().isoformat()}&tz=Not/AZone"
+        ).json()
+        assert body["count"] == 1

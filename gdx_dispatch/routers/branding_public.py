@@ -44,6 +44,34 @@ async def get_branding_public(
     )
 
 
+@router.get("/integrations/google-maps")
+def get_google_maps_key_public(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Tenant Google Maps JS API key — readable by every authenticated user.
+
+    The gated twin in ``routers/settings.py:get_google_maps_key`` documents
+    "reachable by any authenticated user", but the router-level
+    admin/owner/superadmin dependency silently overrode that: technicians got
+    403 and the tech-mobile map view never rendered (2026-07-16, reported
+    from a tech's device via /api/feedback/client-error). Same pattern as
+    ``/modules`` above — this public copy wins by include order in
+    ``gdx_dispatch/app.py``; the PATCH (write side) stays admin-gated.
+
+    Exposing the key to signed-in users is by design: it ships in the
+    ``<script src=…&key=…>`` URL of every browser that loads a map, so the
+    real control is the HTTP-referrer restriction on the key itself in
+    Google Cloud Console.
+    """
+    from gdx_dispatch.routers.settings import _ensure_settings
+
+    row = _ensure_settings(db)
+    key = (row.google_maps_api_key or "").strip()
+    return {"key": key, "configured": bool(key)}
+
+
 @router.get("/modules")
 def get_modules_public(
     request: Request,

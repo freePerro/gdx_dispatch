@@ -447,6 +447,12 @@ def get_google_maps_key(
     URL), so there's nothing to gate. The real control is HTTP-referrer
     restriction set in Google Cloud Console by the admin who owns the
     key.
+
+    NOTE: this router's ADMIN-ONLY router-level dependency overrides the
+    intent above, so the authoritative any-authenticated-user read lives in
+    ``routers/branding_public.py:get_google_maps_key_public`` (wins by
+    include order — same pattern as ``/modules``). This copy is shadowed
+    and kept only so the settings router remains self-describing.
     """
     row = _ensure_settings(db)
     key = (row.google_maps_api_key or "").strip()
