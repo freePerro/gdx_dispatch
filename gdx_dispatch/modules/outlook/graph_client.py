@@ -17,13 +17,18 @@ Microsoft Graph reference:
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-
 log = logging.getLogger("gdx_dispatch.modules.outlook.graph_client")
+
+# Graph throttles with 429 (+ a Retry-After header) and occasionally returns
+# transient 503/504. These are retried with backoff; everything else raises.
+_RETRYABLE_STATUS = frozenset({429, 503, 504})
 
 
 class OutlookGraphAPIError(RuntimeError):
@@ -56,6 +61,9 @@ class OutlookGraphClient:
         *,
         timeout_s: int = 30,
         base_url: str = "https://graph.microsoft.com/v1.0",
+        max_retries: int = 3,
+        retry_max_delay_s: float = 60.0,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         if not access_token:
             raise ValueError("access_token is required")
@@ -63,6 +71,9 @@ class OutlookGraphClient:
         self._timeout_s = timeout_s
         self._base_url = base_url.rstrip("/")
         self._client = httpx.Client(timeout=timeout_s)
+        self._max_retries = max_retries
+        self._retry_max_delay_s = retry_max_delay_s
+        self._sleep = sleep or time.sleep  # injectable for tests
 
     def close(self) -> None:
         self._client.close()
@@ -91,14 +102,38 @@ class OutlookGraphClient:
         }
         if json is not None:
             headers["Content-Type"] = "application/json"
-        resp = self._client.request(method, url, headers=headers, params=params, json=json)
-        if resp.status_code >= 400:
+
+        attempt = 0
+        while True:
+            resp = self._client.request(method, url, headers=headers, params=params, json=json)
+            if resp.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
+                delay = self._retry_delay(resp, attempt)
+                log.warning(
+                    "graph_throttled status=%s endpoint=%s retry=%d/%d after=%.1fs",
+                    resp.status_code, path, attempt + 1, self._max_retries, delay,
+                )
+                self._sleep(delay)
+                attempt += 1
+                continue
+            if resp.status_code >= 400:
+                try:
+                    body = resp.json()
+                except Exception:  # noqa: BLE001
+                    body = resp.text
+                raise OutlookGraphAPIError(resp.status_code, body, endpoint=path)
+            return resp
+
+    def _retry_delay(self, resp: httpx.Response, attempt: int) -> float:
+        """Seconds to wait before retrying a throttled/transient response.
+        Honors a numeric ``Retry-After`` header (Graph sends seconds); otherwise
+        exponential backoff (1, 2, 4, …). Always capped at ``retry_max_delay_s``."""
+        retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+        if retry_after:
             try:
-                body = resp.json()
-            except Exception:  # noqa: BLE001
-                body = resp.text
-            raise OutlookGraphAPIError(resp.status_code, body, endpoint=path)
-        return resp
+                return min(float(retry_after), self._retry_max_delay_s)
+            except ValueError:
+                pass  # HTTP-date form — fall through to backoff
+        return min(2.0 ** attempt, self._retry_max_delay_s)
 
     # ── auth + metadata ─────────────────────────────────────────────────
 
