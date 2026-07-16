@@ -125,6 +125,8 @@ const MarginTiersView = () => import('../views/MarginTiersView.vue');
 const LaborMatrixView = () => import('../views/LaborMatrixView.vue');
 const VendorStatementsView = () => import('../views/VendorStatementsView.vue');
 const VendorStatementDetailView = () => import('../views/VendorStatementDetailView.vue');
+const VendorBillsView = () => import('../views/VendorBillsView.vue');
+const VendorBillDetailView = () => import('../views/VendorBillDetailView.vue');
 const QuickbooksView = () => import('../views/QuickbooksView.vue');
 const PdfTemplateEditorView = () => import('../views/PdfTemplateEditorView.vue');
 const PartsToOrderView = () => import('../views/PartsToOrderView.vue');
@@ -249,6 +251,8 @@ export const routes = [
   { path: '/labor-matrix', name: 'labor-matrix', component: LaborMatrixView },
   { path: '/vendor-statements', name: 'vendor-statements', component: VendorStatementsView, meta: { requiresPermission: 'vendor_statements.read' } },
   { path: '/vendor-statements/:id', name: 'vendor-statement-detail', component: VendorStatementDetailView, meta: { requiresPermission: 'vendor_statements.read' } },
+  { path: '/vendor-bills', name: 'vendor-bills', component: VendorBillsView, meta: { requiresPermission: 'vendor_invoices.read' } },
+  { path: '/vendor-bills/:id', name: 'vendor-bill-detail', component: VendorBillDetailView, meta: { requiresPermission: 'vendor_invoices.read' } },
   { path: '/quickbooks', name: 'quickbooks', component: QuickbooksView },
   { path: '/documents', name: 'documents', component: DocumentsView },
   // /uploads → /documents (merged 2026-04-29). Bookmark redirect.
