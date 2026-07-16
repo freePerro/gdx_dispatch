@@ -24,9 +24,14 @@ helper the boot gate and SOC2 evidence collector consume. When a model
 swaps a column to/from ``EncryptedString``, this scan updates
 automatically.
 
-Today (post-S122-1c) the helper reports ``columns=()`` so this scan
-finds zero matches and is a no-op. That changes the moment slices 2/3
-of S122-9 add columns back.
+S122-9 slice 3 (2026-05-12) re-added ``customers.address`` (plus the
+vendor/webhook secret columns), so the scan is LIVE — and the 2026-07-16
+tech-mobile ciphertext bug proved it must actually run: four raw readers
+in ``routers/mobile.py`` shipped unseen because (a) nothing executed the
+scan in CI and (b) the module aliases ``text`` as ``_text``, which the
+exact-name matcher missed. Both fixed that day: alias-aware matching
+below + ``tests/test_raw_sql_on_encrypted_columns_scan.py::
+test_repo_scan_is_clean`` runs the real scan on every pytest run.
 
 What it flags
 -------------
@@ -155,6 +160,10 @@ def _find_text_calls(tree: ast.AST) -> list[tuple[int, str]]:
       * ``text("SELECT … FROM …")``
       * ``sqlalchemy.text("…")``
       * ``sa.text("…")``
+      * ``_text("…")`` / ``sql_text("…")`` — import-alias forms. The
+        2026-07-16 tech-mobile ciphertext bug lived behind
+        ``from sqlalchemy import text as _text``; the exact-name match
+        made every query in that module invisible to this scan.
 
     f-strings and concatenated multi-arg variants are NOT inspected
     (documented limitation — same as tenant_plane_redundant_filter_scan).
@@ -164,13 +173,14 @@ def _find_text_calls(tree: ast.AST) -> list[tuple[int, str]]:
         if not isinstance(node, ast.Call) or not node.args:
             continue
         func = node.func
-        # Match `text`, `sa.text`, `sqlalchemy.text`, `db.text`, etc.
+        # Match `text`, `sa.text`, `sqlalchemy.text`, `db.text`, plus the
+        # conventional aliases `_text` / `sa_text` / `sql_text`.
         fname = ""
         if isinstance(func, ast.Name):
             fname = func.id
         elif isinstance(func, ast.Attribute):
             fname = func.attr
-        if fname != "text":
+        if fname != "text" and not fname.endswith("_text"):
             continue
         first = node.args[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):

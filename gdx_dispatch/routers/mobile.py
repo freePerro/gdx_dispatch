@@ -7,17 +7,18 @@ import json
 import logging
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 from uuid import UUID as _UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy import text as _text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -27,10 +28,12 @@ from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
     Job,
+    JobAssignment,
     JobNote,
     MobileSyncAction,
     Tag,
@@ -580,7 +583,7 @@ def get_mobile_schedule(
         return jsonable_response({"date": target_date.isoformat(), "tech_id": None, "count": 0, "jobs": []})
 
     rows = db.execute(
-        _text(
+        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.description, j.dispatch_status, j.scheduled_at,
                    a.id AS appointment_id, a.start_at, a.end_at,
@@ -611,7 +614,8 @@ def get_mobile_schedule(
             "id": row.get("customer_id"),
             "name": row.get("customer_name"),
             "phone": row.get("customer_phone"),
-            "address": row.get("customer_address"),
+            # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
+            "address": decrypt_if_ciphertext(row.get("customer_address")),
         }
         jobs.append(
             {
@@ -636,7 +640,7 @@ def get_mobile_schedule(
     # agree. Skipped when appointments-derived rows already returned data.
     if not jobs:
         fb_rows = db.execute(
-            _text(
+            _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
                 """
                 SELECT j.id, j.title, j.description, j.dispatch_status, j.scheduled_at,
                        c.id AS customer_id, c.name AS customer_name,
@@ -662,7 +666,8 @@ def get_mobile_schedule(
                 "id": row.get("customer_id"),
                 "name": row.get("customer_name"),
                 "phone": row.get("customer_phone"),
-                "address": row.get("customer_address"),
+                # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
+                "address": decrypt_if_ciphertext(row.get("customer_address")),
             }
             jobs.append(
                 {
@@ -785,10 +790,89 @@ def _job_card(
     }
 
 
+def _resolve_tzinfo(tz: str | None) -> ZoneInfo:
+    """IANA name → ZoneInfo, falling back to UTC on anything invalid.
+
+    The client sends its device zone (``Intl.DateTimeFormat().resolvedOptions()
+    .timeZone``); a bad/missing value must degrade to the pre-tz behaviour
+    (UTC day boundaries), never 500.
+    """
+    if tz:
+        try:
+            return ZoneInfo(tz)
+        except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, ValueError, OSError
+            pass
+    return ZoneInfo("UTC")
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Naive timestamps (SQLite test DB) are stored UTC; PG returns aware."""
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _local_day_window(target_date: date_type, tzinfo: ZoneInfo) -> tuple[datetime, datetime]:
+    """[start, end) UTC instants covering ``target_date`` in ``tzinfo``."""
+    local_midnight = datetime(
+        target_date.year, target_date.month, target_date.day, tzinfo=tzinfo
+    )
+    return (
+        local_midnight.astimezone(UTC),
+        (local_midnight + timedelta(days=1)).astimezone(UTC),
+    )
+
+
+def _window_utc_dates(win_start: datetime, win_end: datetime) -> list[date_type]:
+    """Every UTC calendar date a local day spans — usually 2, but a 25h
+    DST fall-back day in a zone whose midnight sits just before UTC
+    midnight can touch 3 (e.g. Lord Howe), so walk the full range rather
+    than taking the two endpoints.
+
+    ``func.date(col).in_(dates)`` is portable PG+SQLite; exact window
+    membership is refined in Python because comparing an aware bind param
+    against SQLite's naive text storage is not reliable at the SQL layer.
+    """
+    last = (win_end - timedelta(microseconds=1)).date()
+    dates = [win_start.date()]
+    while dates[-1] < last:
+        dates.append(dates[-1] + timedelta(days=1))
+    return dates
+
+
+def _assignment_job_uuids(db: Session, technician_id: str) -> list[_UUID]:
+    """Job ids linked to this tech via Phase 1.4 job_assignments rows.
+
+    job_assignments.job_id is String(36) while jobs.id is Uuid — convert in
+    Python so the predicate stays portable (mirrors the CAST in the raw-SQL
+    /jobs list query).
+    """
+    rows = (
+        db.query(JobAssignment.job_id)
+        .filter(
+            JobAssignment.tech_id == technician_id,
+            JobAssignment.deleted_at.is_(None),
+        )
+        .all()
+    )
+    out: list[_UUID] = []
+    for (raw,) in rows:
+        try:
+            out.append(_UUID(str(raw)))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+# Lifecycle stages with nothing left for a tech to do on site. Everything
+# else (service_call, scheduled, in_progress) is actionable field work.
+_AREA_EXCLUDED_STAGES = ("lead", "estimate", "completed", "cancelled")
+_AREA_JOBS_LIMIT = 50
+
+
 @router.get("/today", response_model=None)
 async def get_mobile_today(
     request: Request,
     date: date_type | None = Query(default=None),
+    tz: str | None = Query(default=None, max_length=64),
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -797,6 +881,19 @@ async def get_mobile_today(
     S1-A2 — populates ``drive_time_to_next_seconds`` on every card except
     the last, gated on ``tech_mobile.drive_time_provider``. Setting=off
     leaves the field None across the board.
+
+    2026-07-16 (tech-mobile job-access fix):
+
+    * ``tz`` — IANA zone from the device. "Today" is the tech's local
+      calendar day, not the UTC one (an evening job used to fall off the
+      list at 7pm local because its timestamp crossed UTC midnight).
+    * The appointment list and the scheduled-jobs list are now a UNION —
+      previously scheduled-but-appointmentless jobs only surfaced when the
+      tech had zero appointments, so one appointment hid every other job.
+    * ``area_jobs`` — assigned jobs with NO scheduled date ("do it when
+      you're in the area"): lifecycle not in {lead, estimate, completed,
+      cancelled}, dispatch_status != done. Dispatch leaves these undated
+      on purpose; they used to be invisible on mobile.
     """
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user or {})
@@ -804,25 +901,46 @@ async def get_mobile_today(
         return jsonable_response({"detail": "unauthorized"}, 401)
 
     technician_id = _get_technician_id(db, tenant_id, user_id)
-    target_date = date or datetime.now(UTC).date()
-    empty = {"date": target_date.isoformat(), "tech_id": None, "count": 0, "jobs": []}
+    tzinfo = _resolve_tzinfo(tz)
+    target_date = date or datetime.now(tzinfo).date()
+    empty = {
+        "date": target_date.isoformat(),
+        "tech_id": None,
+        "count": 0,
+        "jobs": [],
+        "area_jobs": [],
+        "area_count": 0,
+    }
     if not technician_id:
         return jsonable_response(empty)
 
-    # 1) Today's appointments for this tech.
-    appts = (
-        db.query(Appointment)
-        .filter(
-            Appointment.company_id == tenant_id,
-            Appointment.tech_id == technician_id,
-            Appointment.deleted_at.is_(None),
-            func.date(Appointment.start_at) == target_date,
-        )
-        .order_by(Appointment.start_at.asc())
-        .all()
+    win_start, win_end = _local_day_window(target_date, tzinfo)
+    utc_dates = _window_utc_dates(win_start, win_end)
+    ja_job_uuids = _assignment_job_uuids(db, technician_id)
+    assigned_pred = or_(
+        Job.assigned_to == technician_id,
+        Job.id.in_(ja_job_uuids) if ja_job_uuids else Job.id.is_(None),
     )
 
-    # 2) Pull jobs + customers via ORM (mapper-routed; see _job_card docstring).
+    # 1) Today's appointments for this tech (coarse SQL date filter, exact
+    #    window refined in Python — see _window_utc_dates).
+    appts = [
+        a
+        for a in (
+            db.query(Appointment)
+            .filter(
+                Appointment.company_id == tenant_id,
+                Appointment.tech_id == technician_id,
+                Appointment.deleted_at.is_(None),
+                func.date(Appointment.start_at).in_(utc_dates),
+            )
+            .order_by(Appointment.start_at.asc())
+            .all()
+        )
+        if a.start_at is not None and win_start <= _as_utc(a.start_at) < win_end
+    ]
+
+    # 2) Pull appointment jobs via ORM (mapper-routed; see _job_card docstring).
     job_ids = [a.job_id for a in appts if a.job_id is not None]
     jobs_by_id: dict[Any, Job] = {}
     if job_ids:
@@ -833,27 +951,55 @@ async def get_mobile_today(
         ):
             jobs_by_id[j.id] = j
 
-    fallback_used = False
-    if not appts:
-        # Fallback: tech has jobs scheduled for today but no appointment row
-        # (QB-imported jobs can land in this state).
-        fb_jobs = (
+    # 2b) UNION: jobs scheduled today for this tech with no appointment row
+    #     (dispatch schedules on the jobs table; appointment rows are the
+    #     exception in practice, not the rule).
+    scheduled_jobs = [
+        j
+        for j in (
             db.query(Job)
             .filter(
                 Job.company_id == tenant_id,
-                Job.assigned_to == technician_id,
+                assigned_pred,
                 Job.deleted_at.is_(None),
                 Job.scheduled_at.isnot(None),
-                func.date(Job.scheduled_at) == target_date,
+                func.date(Job.scheduled_at).in_(utc_dates),
             )
             .order_by(Job.scheduled_at.asc())
             .all()
         )
-        for j in fb_jobs:
-            jobs_by_id[j.id] = j
-        fallback_used = bool(fb_jobs)
+        if j.scheduled_at is not None
+        and win_start <= _as_utc(j.scheduled_at) < win_end
+        and j.id not in jobs_by_id
+    ]
+    for j in scheduled_jobs:
+        jobs_by_id[j.id] = j
 
-    customer_ids = list({j.customer_id for j in jobs_by_id.values() if j.customer_id})
+    # 2c) "When in the area" — assigned, deliberately undated, still open.
+    appt_or_sched_ids = set(jobs_by_id.keys())
+    area_jobs = [
+        j
+        for j in (
+            db.query(Job)
+            .filter(
+                Job.company_id == tenant_id,
+                assigned_pred,
+                Job.deleted_at.is_(None),
+                Job.scheduled_at.is_(None),
+                Job.dispatch_status != "done",
+                Job.lifecycle_stage.notin_(_AREA_EXCLUDED_STAGES),
+            )
+            .order_by(Job.created_at.asc())
+            .limit(_AREA_JOBS_LIMIT)
+            .all()
+        )
+        if j.id not in appt_or_sched_ids
+    ]
+
+    customer_ids = list(
+        {j.customer_id for j in jobs_by_id.values() if j.customer_id}
+        | {j.customer_id for j in area_jobs if j.customer_id}
+    )
     customers_by_id: dict[Any, Customer] = {}
     if customer_ids:
         for c in db.query(Customer).filter(Customer.id.in_(customer_ids)).all():
@@ -862,22 +1008,26 @@ async def get_mobile_today(
     # 3) Tags per customer (alerts feed).
     tag_map = _customer_tags_map(db, tenant_id, customer_ids)
 
-    # 4) Assemble cards in the order the iteration yielded.
+    # 4) Assemble cards: appointment stops first (route order), then
+    #    scheduled-but-appointmentless jobs by scheduled time.
     cards: list[dict[str, Any]] = []
-    if not fallback_used and appts:
-        for a in appts:
-            job = jobs_by_id.get(a.job_id) if a.job_id else None
-            if job is None:
-                continue
-            customer = customers_by_id.get(job.customer_id) if job.customer_id else None
-            tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
-            cards.append(_job_card(job, customer, a, tags))
-    else:
-        # Fallback path — order by Job.scheduled_at (already done in query).
-        for job in jobs_by_id.values():
-            customer = customers_by_id.get(job.customer_id) if job.customer_id else None
-            tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
-            cards.append(_job_card(job, customer, None, tags))
+    for a in appts:
+        job = jobs_by_id.get(a.job_id) if a.job_id else None
+        if job is None:
+            continue
+        customer = customers_by_id.get(job.customer_id) if job.customer_id else None
+        tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
+        cards.append(_job_card(job, customer, a, tags))
+    for job in scheduled_jobs:
+        customer = customers_by_id.get(job.customer_id) if job.customer_id else None
+        tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
+        cards.append(_job_card(job, customer, None, tags))
+
+    area_cards: list[dict[str, Any]] = []
+    for job in area_jobs:
+        customer = customers_by_id.get(job.customer_id) if job.customer_id else None
+        tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
+        area_cards.append(_job_card(job, customer, None, tags))
 
     # Phase 1.4 D1+D2 — multi-tech card decoration. For every card,
     # surface the full assignment list with per-tech state stamps so the
@@ -960,6 +1110,8 @@ async def get_mobile_today(
             "tech_id": technician_id,
             "count": len(cards),
             "jobs": cards,
+            "area_jobs": area_cards,
+            "area_count": len(area_cards),
             "drive_time_provider": provider,
         }
     )
@@ -1122,7 +1274,7 @@ def mobile_all_my_jobs(
         return jsonable_response({"jobs": [], "count": 0, "tech_id": None})
 
     rows = db.execute(
-        _text(
+        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
                    j.priority, j.job_type, j.created_at,
@@ -1158,7 +1310,9 @@ def mobile_all_my_jobs(
             "priority": r.get("priority") or "Normal",
             "service_type": r.get("job_type") or "Service",
             "customer_name": r.get("customer_name") or "—",
-            "customer_address": r.get("customer_address") or "",
+            # Raw-SQL read bypasses the EncryptedString mapper — decrypt here
+            # (the 2026-07-16 Jobs-tab "gAAAA… where the address should be" bug).
+            "customer_address": decrypt_if_ciphertext(r.get("customer_address")) or "",
             "scheduled_at": scheduled_iso,
         })
     return jsonable_response({"count": len(jobs), "jobs": jobs, "tech_id": technician_id})
@@ -1181,7 +1335,7 @@ def mobile_my_jobs(
 
     target_date = datetime.now(UTC).date()
     rows = db.execute(
-        _text(
+        _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.status, j.priority,
                    c.name AS customer_name, COALESCE(c.address, '') AS address,
@@ -1217,7 +1371,8 @@ def mobile_my_jobs(
             {
                 "id": row.get("id"),
                 "customer_name": row.get("customer_name"),
-                "address": row.get("address"),
+                # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
+                "address": decrypt_if_ciphertext(row.get("address")),
                 "scheduled_time": scheduled_time,
                 "status": row.get("status"),
                 "priority": row.get("priority"),
@@ -1354,8 +1509,12 @@ def mobile_my_job_detail(
 
     photos = db.execute(
         _text(
+            # `kind` is the real column (JobPhoto.kind); the previous
+            # ``photo_type`` name never existed in any schema and 500'd this
+            # endpoint on prod (UndefinedColumn, 2026-07-16). Aliased so the
+            # response shape keeps the documented ``photo_type`` key.
             """
-            SELECT id, filename, photo_type, caption, created_at
+            SELECT id, filename, kind AS photo_type, caption, created_at
             FROM job_photos
             WHERE company_id = :tenant_id
               AND job_id = :job_id
@@ -1675,10 +1834,12 @@ def get_mobile_job_detail(
     ).mappings().all()
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    # 2026-07-16: + url/kind/caption so the mobile job-detail view can render
+    # the photo strip, not just count attachments.
     photos = db.execute(
         _text(
             """
-            SELECT id, filename, content_type, file_size, created_at
+            SELECT id, filename, url, kind, caption, content_type, file_size, created_at
             FROM job_photos
             WHERE job_id = :job_id
               AND deleted_at IS NULL

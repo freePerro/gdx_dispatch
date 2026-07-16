@@ -50,26 +50,38 @@
       </div>
 
       <ol v-else class="job-list">
-        <li v-for="job in visibleJobs" :key="job.id" class="job-card">
-          <div class="job-row job-row-top">
-            <div class="job-customer">{{ job.customer_name || '—' }}</div>
-            <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ','_')}`]">
-              <i :class="statusIcon(job.dispatch_status)" />
-              {{ statusLabel(job.dispatch_status) }}
-            </span>
-          </div>
-          <div v-if="job.scheduled_at" class="job-when">
-            <i class="pi pi-calendar" />
-            {{ formatScheduled(job.scheduled_at) }}
-          </div>
-          <div
-            class="job-address"
-            :class="{ 'job-address-missing': !job.customer_address }"
+        <li v-for="job in visibleJobs" :key="job.id">
+          <!-- 2026-07-16: cards used to be display-only — a tech had NO path
+               from this list to notes/phone/description. The whole card is
+               now a link into the mobile job detail view. -->
+          <router-link
+            :to="`/mobile/jobs/${job.id}`"
+            class="job-card"
+            :data-testid="`mobile-job-card-${job.id}`"
           >
-            <i class="pi pi-map-marker" />
-            <span>{{ job.customer_address || 'No address — ask dispatch' }}</span>
-          </div>
-          <div v-if="job.title" class="job-title">{{ job.title }}</div>
+            <div class="job-row job-row-top">
+              <div class="job-customer">{{ job.customer_name || '—' }}</div>
+              <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ','_')}`]">
+                <i :class="statusIcon(job.dispatch_status)" />
+                {{ statusLabel(job.dispatch_status) }}
+              </span>
+            </div>
+            <div v-if="job.scheduled_at" class="job-when">
+              <i class="pi pi-calendar" />
+              {{ formatScheduled(job.scheduled_at) }}
+            </div>
+            <div
+              class="job-address"
+              :class="{ 'job-address-missing': !job.customer_address }"
+            >
+              <i class="pi pi-map-marker" />
+              <span>{{ job.customer_address || 'No address — ask dispatch' }}</span>
+            </div>
+            <div class="job-row job-row-bottom">
+              <div v-if="job.title" class="job-title">{{ job.title }}</div>
+              <i class="pi pi-chevron-right job-chevron" />
+            </div>
+          </router-link>
         </li>
       </ol>
 
@@ -190,9 +202,13 @@ onMounted(load)
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   border-radius: 0.6rem; padding: 0.85rem 1rem;
   display: flex; flex-direction: column; gap: 0.45rem;
+  color: inherit; text-decoration: none;
 }
+.job-card:active { background: var(--p-content-hover-background, #f3f4f6); }
 .job-row { display: flex; align-items: center; gap: 0.5rem; }
 .job-row-top { justify-content: space-between; }
+.job-row-bottom { justify-content: space-between; min-height: 1rem; }
+.job-chevron { color: var(--p-text-muted-color, #9ca3af); font-size: 0.8rem; margin-left: auto; }
 .job-customer { font-size: 1.05rem; font-weight: 700; }
 .job-when { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
 .job-address { display: flex; align-items: center; gap: 0.35rem; font-size: 0.95rem; color: var(--p-primary-color, #2563eb); }

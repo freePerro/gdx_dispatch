@@ -1,8 +1,20 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { defineConfig } from 'vitest/config';
 import vue from '@vitejs/plugin-vue';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 export default defineConfig({
   plugins: [vue()],
+  resolve: {
+    // Mirror vite.config.js — views import composables via `@/…`
+    // (MobileTodayView.vue was the first one a test actually mounted).
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,

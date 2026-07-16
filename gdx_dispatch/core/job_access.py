@@ -34,8 +34,12 @@ def job_belongs_to_user(db: Session, tenant_id: str, job_id: str, user_id: str |
     Ownership holds if ANY of:
       (a) jobs.assigned_to == the caller's technician id (the common case), or
       (b) jobs.assigned_to == the caller's user id (legacy/direct), or
-      (c) an appointment ties the caller's technician record to the job.
-    All columns are varchar, so the SQL is portable (PG + SQLite).
+      (c) an appointment ties the caller's technician record to the job, or
+      (d) a Phase 1.4 job_assignments row ties their technician record to the
+          job — the /api/mobile/jobs list matches these, so the ownership gate
+          must too or a listed job 404s on open (2026-07-16 audit finding).
+    All columns are varchar (CASTs cover jobs.id/job_assignments.job_id being
+    uuid vs varchar across planes), so the SQL is portable (PG + SQLite).
     """
     if not job_id or not tenant_id or not user_id:
         return False
@@ -59,7 +63,20 @@ def job_belongs_to_user(db: Session, tenant_id: str, job_id: str, user_id: str |
         ),
         params,
     ).scalar()
-    return bool(via_appt)
+    if via_appt:
+        return True
+    via_assignment = db.execute(
+        text(
+            "SELECT 1 FROM job_assignments ja "
+            "JOIN technicians te ON te.id = ja.tech_id "
+            "JOIN jobs j ON CAST(j.id AS TEXT) = CAST(ja.job_id AS TEXT) "
+            "WHERE CAST(ja.job_id AS TEXT) = :j AND ja.deleted_at IS NULL "
+            "AND j.company_id = :t AND j.deleted_at IS NULL "
+            "AND te.user_id = :u LIMIT 1"
+        ),
+        params,
+    ).scalar()
+    return bool(via_assignment)
 
 
 def assert_job_access(db: Session, tenant_id: str, current_user: Any, job_id: str) -> None:

@@ -127,6 +127,66 @@ def test_skips_known_tool_files(tmp_path: Path):
     assert findings == []
 
 
+def test_finds_aliased_text_call(tmp_path: Path, monkeypatch):
+    """``from sqlalchemy import text as _text`` must not blind the scan.
+
+    The 2026-07-16 tech-mobile ciphertext bug (Jobs tab rendering
+    ``gAAAA…`` where the address should be) lived behind exactly this
+    alias — four raw readers in routers/mobile.py were invisible to the
+    exact-name matcher."""
+    src = textwrap.dedent("""
+        from sqlalchemy import text as _text
+
+        def list_jobs(db):
+            return db.execute(
+                _text("SELECT c.address FROM customers c")
+            ).fetchall()
+    """)
+    f = tmp_path / "aliased.py"
+    f.write_text(src)
+    monkeypatch.setattr(scan_mod, "SCAN_ROOTS", [tmp_path])
+    findings = scan_mod.scan(encrypted=[("customers", "address")])
+    assert len(findings) == 1
+    assert findings[0][0] == f
+
+
+def test_repo_scan_is_clean(monkeypatch):
+    """Run the REAL scan against the REAL repo — the enforcement layer.
+
+    Two assertions, both load-bearing:
+
+    1. The encrypted-column inventory is non-empty and includes
+       ``customers.address``. The scan degrades to a no-op when the
+       model import fails, and a no-op gate is what let the 2026-07-16
+       mobile ciphertext bug ship — so a broken inventory must FAIL
+       here, not skip.
+    2. Zero unsuppressed findings. A legitimate raw-SQL touch must
+       decrypt via ``pii.decrypt_if_ciphertext`` and annotate the
+       ``text(`` line with ``# noqa: RAW_ENC``; everything else is a
+       regression of the S122-1b bypass class.
+    """
+    encrypted = scan_mod._load_encrypted_columns()
+    assert ("customers", "address") in encrypted, (
+        "encryption_status() no longer reports customers.address — either "
+        "the model changed (update this test) or the inventory helper is "
+        "broken (the scan below would silently no-op)."
+    )
+    monkeypatch.setattr(
+        scan_mod, "SCAN_ROOTS", [scan_mod.REPO_ROOT / "gdx_dispatch"]
+    )
+    findings = scan_mod.scan(encrypted=encrypted)
+    assert findings == [], (
+        "net-new raw SQL against an EncryptedString column:\n"
+        + "\n".join(
+            f"  {path}:{lineno} {table}.{column}  «{excerpt}»"
+            for path, lineno, table, column, excerpt in findings
+        )
+        + "\nEvery read/write of an encrypted column must go through the ORM, "
+        "or decrypt via pii.decrypt_if_ciphertext with a `# noqa: RAW_ENC` "
+        "annotation on the text( line."
+    )
+
+
 def test_baseline_round_trip(tmp_path: Path, monkeypatch):
     """Baseline write → read → net-new diff."""
     src = textwrap.dedent("""
