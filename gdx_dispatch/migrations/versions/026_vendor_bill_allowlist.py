@@ -9,12 +9,20 @@ fresh DB create_orm_tables() already builds the column and this migration is a
 guarded no-op. It only does real work on a DB where outlook_settings already
 exists without the column.
 
-Revision ID: 026_outlook_vendor_bill_allowlist
+Revision ID: 026_vendor_bill_allowlist
 Revises: 025_vendor_invoice_dedup_index
+
+(Renamed from 026_outlook_vendor_bill_allowlist: alembic_version.version_num
+is varchar(32) and the original ID was 33 chars. The rename is safe because
+Postgres RAISES on an over-length varchar — it never truncates-and-stores —
+so no DB anywhere can hold the old ID; and env.py's single-transaction
+upgrade rolled this migration's DDL back with the failed stamp, so no DB is
+left half-applied either. Re-running is harmless regardless: the upgrade is
+IF-guarded and idempotent.)
 """
 from alembic import op
 
-revision = "026_outlook_vendor_bill_allowlist"
+revision = "026_vendor_bill_allowlist"
 down_revision = "025_vendor_invoice_dedup_index"
 branch_labels = None
 depends_on = None

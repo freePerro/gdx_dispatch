@@ -21,12 +21,12 @@ import { MODULE_CATEGORIES, flattenModules } from '../../constants/modules';
 //    docstring if roles change). 'owner' = wildcard. ────────────────────────
 const RESOLVED_ROLE_PERMS = {
   owner: '*',
-  admin: ['accounting.export','accounting.read','accounting.write','billing.read','customers.delete','customers.read_all','customers.read_own','customers.write','dispatch.read','estimates.read_all','estimates.read_own','estimates.send','estimates.write','inventory.read','inventory.write','invoices.read_all','invoices.read_own','invoices.refund','invoices.send','invoices.write','jobs.delete','jobs.read_all','jobs.read_own','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.admin','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','scheduling.read_all','scheduling.read_own','scheduling.write','settings.read','settings.write','users.read','users.write','vendor_statements.read','vendor_statements.write','webhooks.manage'],
-  dispatcher: ['customers.read_all','customers.write','dispatch.read','estimates.read_all','estimates.write','invoices.read_all','jobs.read_all','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.office','payments.read','pricing.labor_matrix.read','pricing.labor_matrix.write','scheduling.read_all','scheduling.write','vendor_statements.read','vendor_statements.write'],
+  admin: ['accounting.export','accounting.read','accounting.write','billing.read','customers.delete','customers.read_all','customers.read_own','customers.write','dispatch.read','estimates.read_all','estimates.read_own','estimates.send','estimates.write','inventory.read','inventory.write','invoices.read_all','invoices.read_own','invoices.refund','invoices.send','invoices.write','jobs.delete','jobs.read_all','jobs.read_own','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.admin','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','scheduling.read_all','scheduling.read_own','scheduling.write','settings.read','settings.write','users.read','users.write','vendor_invoices.read','vendor_invoices.write','vendor_statements.read','vendor_statements.write','webhooks.manage'],
+  dispatcher: ['customers.read_all','customers.write','dispatch.read','estimates.read_all','estimates.write','invoices.read_all','jobs.read_all','jobs.write','leads.delete','leads.read','leads.write','mobile.chat','mobile.dispatch_view','mobile.use','nav.office','payments.read','pricing.labor_matrix.read','pricing.labor_matrix.write','scheduling.read_all','scheduling.write','vendor_invoices.read','vendor_invoices.write','vendor_statements.read','vendor_statements.write'],
   technician: ['customers.read_own','estimates.read_own','inventory.read','inventory.write','jobs.read_own','jobs.write','mobile.chat','mobile.use','pricing.labor_matrix.read','scheduling.read_own'],
-  sales: ['customers.read_all','customers.write','estimates.read_all','estimates.send','estimates.write','invoices.read_all','jobs.read_all','leads.delete','leads.read','leads.write','nav.office','pricing.labor_matrix.read','pricing.labor_matrix.write','vendor_statements.read'],
-  accounting: ['accounting.export','accounting.read','accounting.write','billing.read','invoices.read_all','invoices.refund','invoices.send','invoices.write','leads.read','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','vendor_statements.read','vendor_statements.write'],
-  viewer: ['accounting.read','billing.read','customers.read_all','customers.read_own','dispatch.read','estimates.read_all','estimates.read_own','inventory.read','invoices.read_all','invoices.read_own','jobs.read_all','jobs.read_own','leads.read','nav.office','payments.read','payroll.read','pricing.labor_matrix.read','reports.read','scheduling.read_all','scheduling.read_own','settings.read','users.read','vendor_statements.read'],
+  sales: ['customers.read_all','customers.write','estimates.read_all','estimates.send','estimates.write','invoices.read_all','jobs.read_all','leads.delete','leads.read','leads.write','nav.office','pricing.labor_matrix.read','pricing.labor_matrix.write','vendor_invoices.read','vendor_statements.read'],
+  accounting: ['accounting.export','accounting.read','accounting.write','billing.read','invoices.read_all','invoices.refund','invoices.send','invoices.write','leads.read','nav.office','payments.process','payments.read','payroll.export','payroll.read','payroll.write','pricing.labor_matrix.read','pricing.labor_matrix.write','reports.export','reports.read','vendor_invoices.read','vendor_invoices.write','vendor_statements.read','vendor_statements.write'],
+  viewer: ['accounting.read','billing.read','customers.read_all','customers.read_own','dispatch.read','estimates.read_all','estimates.read_own','inventory.read','invoices.read_all','invoices.read_own','jobs.read_all','jobs.read_own','leads.read','nav.office','payments.read','payroll.read','pricing.labor_matrix.read','reports.read','scheduling.read_all','scheduling.read_own','settings.read','users.read','vendor_invoices.read','vendor_statements.read'],
 };
 
 // ── Frozen pre-migration snapshot (the deleted Sets + the module→permission
@@ -77,7 +77,10 @@ const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'ac
 // predate them, so they're out of scope for migration parity.
 // accounting_ledger (GL S11) post-dates the migration too — the reports/
 // journal page is new surface, not a revealed legacy module.
-const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger']);
+// vendor_bills (vendor-invoice intake, 2026-07-16) post-dates the migration
+// too — the supplier-bill review queue is new surface, not a revealed legacy
+// module.
+const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger', 'vendor_bills']);
 const MODULES = flattenModules().filter((m) => !POST_MIGRATION_KEYS.has(m.key));
 
 function canonical(role) {
@@ -186,6 +189,18 @@ describe('catalog tagging — tier invariants', () => {
     for (const role of ['admin', 'owner']) {
       for (const m of MODULES) expect(newVisible(role, m)).toBe(true);
     }
+  });
+
+  // vendor_bills sits in POST_MIGRATION_KEYS, so the parity suite never
+  // touches it — pin its visibility explicitly (vendor_invoices.read).
+  it('vendor_bills: visible to every builtin role except technician', () => {
+    const vendorBills = flattenModules().find((m) => m.key === 'vendor_bills');
+    expect(vendorBills).toBeTruthy();
+    expect(vendorBills.permission).toBe('vendor_invoices.read');
+    for (const role of ['owner', 'admin', 'dispatcher', 'sales', 'accounting', 'viewer']) {
+      expect(newVisible(role, vendorBills), role).toBe(true);
+    }
+    expect(newVisible('technician', vendorBills)).toBe(false);
   });
 });
 
