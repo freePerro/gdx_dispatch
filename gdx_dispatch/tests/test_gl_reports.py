@@ -246,6 +246,9 @@ def test_pnl_cash_skips_irreconcilable_invoice_instead_of_500(db):
     cash = reports.pnl_cash(db, COMPANY, start=date(2026, 7, 1), end=date(2026, 7, 31))
     assert cash["totals"]["revenue_cents"] == 500_00  # the good invoice only
     assert [row["invoice_number"] for row in cash["skipped_invoices"]] == [bad.invoice_number]
+    # CWE-209: the payload reason is exactly the fixed string — exception
+    # text (residual cents etc.) goes to the server log, not the response.
+    assert cash["skipped_invoices"][0]["reason"] == reports._SKIP_REASON
 
 
 def test_pnl_cash_credit_applied_recognizes_at_application(db):
