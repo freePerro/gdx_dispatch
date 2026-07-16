@@ -17,11 +17,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder
 from gdx_dispatch.modules.vendor_invoices.matching import (
+    compute_vendor_key,
     find_duplicate_invoice,
+    find_invoice_by_key,
     flag_possible_duplicate,
     resolve_vendor,
 )
@@ -201,6 +204,7 @@ def upload_midwest_invoice(
         )
 
     # Persist the document (reuse an existing one on a content-hash-only hit).
+    new_file_path: Path | None = None
     if existing_doc is not None:
         document = existing_doc
     else:
@@ -208,7 +212,8 @@ def upload_midwest_invoice(
         upload_root.mkdir(parents=True, exist_ok=True)
         suffix = Path(original_filename).suffix or ".pdf"
         stored_filename = f"{uuid4()}{suffix.lower()}"
-        (upload_root / stored_filename).write_bytes(pdf_bytes)
+        new_file_path = upload_root / stored_filename
+        new_file_path.write_bytes(pdf_bytes)
 
         folder = _get_or_create_folder(db, VENDOR_BILLS_FOLDER, uploaded_by)
         document = Document(
@@ -238,6 +243,7 @@ def upload_midwest_invoice(
 
     invoice = VendorInvoice(
         vendor_id=vendor_id,
+        vendor_key=compute_vendor_key(vendor_id, vendor_name_raw),
         vendor_name_raw=vendor_name_raw,
         invoice_number=parsed.invoice_number,
         invoice_date=parsed.invoice_date,
@@ -263,7 +269,31 @@ def upload_midwest_invoice(
     )
     invoice.lines = build_lines_from_parsed(parsed)
     db.add(invoice)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # A concurrent upload won the (vendor_key, invoice_number) unique index.
+        # Roll back our aborted transaction (discards the Document ROW we just
+        # created) and delete the PDF we wrote to disk before the flush (rollback
+        # can't un-write it), so the concurrent loser leaves no orphan. Then
+        # return the winner as the dedup result.
+        db.rollback()
+        if new_file_path is not None:
+            new_file_path.unlink(missing_ok=True)
+        winner = find_invoice_by_key(
+            db,
+            vendor_key=compute_vendor_key(vendor_id, vendor_name_raw),
+            invoice_number=parsed.invoice_number,
+        )
+        if winner is not None:
+            return InvoiceUploadResult(
+                invoice=winner,
+                document=None,
+                created=False,
+                duplicate_reason="vendor_invoice_number",
+                duplicate_of=winner,
+            )
+        raise  # not a dedup collision we can resolve — surface it
 
     # Layer 3 — advisory possible-duplicate flag (never blocks).
     duplicate_of = flag_possible_duplicate(db, invoice)

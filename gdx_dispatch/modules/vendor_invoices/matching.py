@@ -90,6 +90,30 @@ def resolve_vendor(db: Session, vendor_name_raw: str | None) -> Vendor | None:
     return None
 
 
+def compute_vendor_key(vendor_id: UUID | None, vendor_name_raw: str | None) -> str:
+    """The stable dedup key: the resolved vendor id (as text) when known, else the
+    normalized raw name. Matches the ``vendor_invoices.vendor_key`` unique index."""
+    if vendor_id is not None:
+        return str(vendor_id)
+    return normalize_name(vendor_name_raw)
+
+
+def find_invoice_by_key(
+    db: Session, *, vendor_key: str, invoice_number: str
+) -> VendorInvoice | None:
+    """Direct (vendor_key, invoice_number) lookup — the race fallback re-queries
+    with this after the DB unique index rejects a concurrent duplicate insert. Kept
+    separate from ``find_duplicate_invoice`` so tests can stub the app-level check
+    without disabling the fallback."""
+    return db.execute(
+        select(VendorInvoice)
+        .where(VendorInvoice.deleted_at.is_(None))
+        .where(VendorInvoice.vendor_key == vendor_key)
+        .where(func.lower(VendorInvoice.invoice_number) == invoice_number.lower())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def _load_aliases(raw: str | None) -> list[str]:
     if not raw:
         return []

@@ -93,6 +93,47 @@ def test_upload_content_hash_dedup(tenant_db):
     assert tenant_db.query(VendorInvoice).count() == 1
 
 
+def test_upload_integrity_fallback_returns_winner(tenant_db, monkeypatch):
+    """Concurrency backstop: if the app-level dedup check is bypassed (the race
+    window) and a duplicate (vendor_key, invoice_number) already exists, the DB
+    unique index raises IntegrityError → the service rolls back, cleans up its
+    on-disk file, and returns the existing 'winner' instead of a second row."""
+    import os
+
+    from gdx_dispatch.modules.vendor_invoices import service as svc
+    from gdx_dispatch.modules.vendor_invoices.matching import compute_vendor_key
+    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoice
+    from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import parse_midwest_invoice
+
+    pdf = _sample()
+    parsed = parse_midwest_invoice(pdf)
+
+    # A concurrent upload already committed this bill.
+    winner = VendorInvoice(
+        vendor_key=compute_vendor_key(None, "Midwest Wholesale Doors"),
+        vendor_name_raw="Midwest Wholesale Doors",
+        invoice_number=parsed.invoice_number,
+        invoice_date=parsed.invoice_date,
+        subtotal=parsed.subtotal, tax=parsed.tax, shipping=parsed.shipping, total=parsed.total,
+    )
+    tenant_db.add(winner)
+    tenant_db.commit()
+
+    # Force the app-level pre-check to miss, so the insert reaches the DB index.
+    monkeypatch.setattr(svc, "find_duplicate_invoice", lambda *a, **k: None)
+
+    result = svc.upload_midwest_invoice(
+        tenant_db, pdf_bytes=pdf, original_filename="dup.pdf",
+        content_type="application/pdf", uploaded_by="u",
+    )
+    assert result.created is False
+    assert result.duplicate_reason == "vendor_invoice_number"
+    assert result.invoice.id == winner.id
+    # Only the winner exists; the loser wrote no orphan row or file.
+    assert tenant_db.query(VendorInvoice).filter(VendorInvoice.deleted_at.is_(None)).count() == 1
+    assert list(Path(os.environ["UPLOAD_DIR"]).iterdir()) == []
+
+
 def test_upload_lines_persist(tenant_db):
     pdf = _sample()
     result = upload_midwest_invoice(
