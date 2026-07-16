@@ -542,6 +542,26 @@ describe('LineItemEditor — parts-from-job panel', () => {
     expect(badge.text().toLowerCase()).toContain('closeout');
   });
 
+  it('vendor-bill-sourced parts arrive UNCHECKED and badged (vendor-invoice AUDIT-R2)', async () => {
+    // A received row from a parsed vendor bill must NOT be pre-checked — a
+    // special-order door is usually already on the estimate, so the office adds
+    // it deliberately. It's still shown + badged so it can't be missed.
+    apiGet.mockResolvedValue([
+      { id: 'p-recv', part_name: 'Spring', quantity: 1, status: 'received', sku: null },
+      { id: 'p-vinv', part_name: 'CHI door', quantity: 1, status: 'received',
+        source: 'vendor_invoice', supplier: 'Midwest Wholesale Doors', sku: null },
+    ]);
+    const wrapper = mountEditor({ jobId: 'job-1' });
+    await flushPromises();
+
+    const recv = wrapper.find('[data-testid="parts-from-job-check-p-recv"]').element;
+    const vinv = wrapper.find('[data-testid="parts-from-job-check-p-vinv"]').element;
+    expect(recv.checked).toBe(true);    // ordinary received: pre-checked
+    expect(vinv.checked).toBe(false);   // vendor-bill: NOT pre-checked
+    const badge = wrapper.find('[data-testid="parts-from-job-badge-p-vinv"]');
+    expect(badge.text().toLowerCase()).toContain('vendor bill');
+  });
+
   it('renders an "ordered, not received" badge on ordered parts', async () => {
     apiGet.mockResolvedValue([
       { id: 'p-ord', part_name: 'Cable', quantity: 1, status: 'ordered' },

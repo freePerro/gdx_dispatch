@@ -81,7 +81,12 @@
         </label>
         <span class="parts-from-job-qty">×{{ part.quantity || 1 }}</span>
         <span
-          v-if="part.status === 'ordered'"
+          v-if="part.source === 'vendor_invoice'"
+          class="status-pill status-vendor-bill"
+          :data-testid="`parts-from-job-badge-${part.id}`"
+        >vendor bill<template v-if="part.supplier"> · {{ part.supplier }}</template></span>
+        <span
+          v-else-if="part.status === 'ordered'"
           class="status-pill status-ordered"
           :data-testid="`parts-from-job-badge-${part.id}`"
         >ordered, not received</span>
@@ -544,8 +549,12 @@ async function loadPartsFromJob() {
     // Pre-check received parts AND tech-attested used parts;
     // ordered-but-not-received parts default off (office sees them but
     // decides per-part whether to bill in advance).
+    // [vendor-invoice-intake AUDIT-R2] vendor-bill-sourced rows arrive
+    // UNCHECKED — a special-order door is usually already on the estimate, so
+    // the office must add it deliberately (else it lands as a duplicate/$0
+    // line). They're still shown + badged so they can't be missed.
     selectedPartIds.value = list
-      .filter((p) => p.status === 'received' || p.status === 'used')
+      .filter((p) => (p.status === 'received' || p.status === 'used') && p.source !== 'vendor_invoice')
       .map((p) => p.id);
   } catch (e) {
     partsFromJob.value = [];
@@ -710,6 +719,10 @@ function addFromCatalog(items) {
 .status-received {
   background: #d1fae5;
   color: #065f46;
+}
+.status-vendor-bill {
+  background: #ede9fe;
+  color: #5b21b6;
 }
 .status-used {
   background: #dbeafe;

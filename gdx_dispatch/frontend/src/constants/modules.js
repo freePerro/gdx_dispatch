@@ -115,6 +115,7 @@ export const MODULE_CATEGORIES = [
       { key: 'pricing', label: 'Pricing', icon: 'pi pi-tags', to: '/pricing', type: 'Invoices', permission: 'nav.admin' },
       { key: 'labor_matrix', label: 'Labor Matrix', icon: 'pi pi-wrench', to: '/labor-matrix', type: 'Invoices', permission: 'pricing.labor_matrix.read' },
       { key: 'vendor_statements', label: 'Vendor Statements', icon: 'pi pi-file-import', to: '/vendor-statements', type: 'Invoices', permission: 'vendor_statements.read' },
+      { key: 'vendor_bills', label: 'Vendor Bills', icon: 'pi pi-inbox', to: '/vendor-bills', type: 'Invoices', permission: 'vendor_invoices.read' },
       { key: 'exports', label: 'Exports', icon: 'pi pi-download', to: '/exports', type: 'Invoices', permission: 'nav.admin' },
       { key: 'quickbooks', label: 'QuickBooks', icon: 'pi pi-plug', to: '/quickbooks', type: 'Invoices', permission: 'nav.admin' },
       { key: 'accounting_ledger', label: 'Ledger', icon: 'pi pi-book', to: '/accounting-ledger', type: 'Invoices', permission: 'accounting.read', description: 'Trial balance, P&L, balance sheet, and the journal' },
