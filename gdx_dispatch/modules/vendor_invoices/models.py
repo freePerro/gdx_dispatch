@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -54,12 +54,38 @@ LINE_CONFIRMED = "confirmed"
 
 class VendorInvoice(TenantBase):
     __tablename__ = "vendor_invoices"
+    # DB-level dedup backstop (the app-level check in matching.find_duplicate_invoice
+    # is a fast path; under concurrent uploads two requests can both pass it, so the
+    # DB enforces uniqueness). Partial WHERE deleted_at IS NULL so a voided/deleted
+    # bill can be re-imported (mirrors the vendor-statement soft-delete allowance).
+    __table_args__ = (
+        Index(
+            "uq_vendor_invoice_key",
+            "vendor_key",
+            "invoice_number",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_vendor_invoice_document",
+            "document_id",
+            unique=True,
+            postgresql_where=text("document_id IS NOT NULL AND deleted_at IS NULL"),
+            sqlite_where=text("document_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
 
     vendor_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("vendors.id"), nullable=True, index=True
     )
+    # Normalized vendor identity for the dedup unique index: str(vendor_id) when the
+    # vendor resolved to a row, else the normalized raw name. One stable key that
+    # covers resolved AND unresolved vendors (a partial index on nullable vendor_id
+    # alone wouldn't protect unresolved-vendor dupes). Set by the service.
+    vendor_key: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
     # The vendor name exactly as it appeared on the bill (or as the LLM read
     # it). Resolved to ``vendor_id`` via the vendors table + name_aliases before
     # the (vendor, invoice_number) dedup check. Kept raw for audit.

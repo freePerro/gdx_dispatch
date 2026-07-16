@@ -8,8 +8,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from gdx_dispatch.models.tenant_models import Customer, Job, Vendor
 from gdx_dispatch.modules.vendor_invoices.matching import (
+    compute_vendor_key,
     find_duplicate_invoice,
     flag_possible_duplicate,
     resolve_vendor,
@@ -22,6 +26,7 @@ def _mk_invoice(db, *, number, total, vendor="Midwest Wholesale Doors",
                 inv_date=date(2026, 1, 15), vendor_id=None):
     inv = VendorInvoice(
         vendor_id=vendor_id,
+        vendor_key=compute_vendor_key(vendor_id, vendor),
         vendor_name_raw=vendor,
         invoice_number=number,
         invoice_date=inv_date,
@@ -131,11 +136,56 @@ def test_layer3_different_total_not_flagged(tenant_db):
     assert flag_possible_duplicate(tenant_db, b) is None
 
 
-def test_layer3_same_number_not_flagged_as_dup(tenant_db):
-    """Layer 3 only fires on DIFFERENT invoice numbers (same number is layer 2)."""
-    _mk_invoice(tenant_db, number="1001", total="275.00", inv_date=date(2026, 1, 1))
-    b = _mk_invoice(tenant_db, number="1001", total="275.00", inv_date=date(2026, 1, 5))
-    assert flag_possible_duplicate(tenant_db, b) is None
+# --------------------------------------------------------------------------- #
+# DB dedup backstop — partial unique index on (vendor_key, invoice_number)
+# --------------------------------------------------------------------------- #
+def test_compute_vendor_key():
+    from uuid import uuid4
+    vid = uuid4()
+    assert compute_vendor_key(vid, "anything") == str(vid)
+    assert compute_vendor_key(None, "Midwest Wholesale Doors") == "midwest wholesale doors"
+    assert compute_vendor_key(None, "Midwest  Whsle,  Doors!") == "midwest whsle doors"
+    assert compute_vendor_key(None, None) == ""
+
+
+def test_dedup_index_blocks_same_vendor_and_number(tenant_db):
+    """The DB backstop: a second insert with the same (vendor_key, invoice_number)
+    is rejected even if the app-level check is bypassed (the concurrency case)."""
+    _mk_invoice(tenant_db, number="90000001", total="275.00")
+    dup = VendorInvoice(
+        vendor_key=compute_vendor_key(None, "Midwest Wholesale Doors"),
+        vendor_name_raw="Midwest Wholesale Doors",
+        invoice_number="90000001",
+        invoice_date=date(2026, 1, 15),
+        subtotal=Decimal("275.00"), tax=Decimal("0"), shipping=Decimal("0"),
+        total=Decimal("275.00"),
+    )
+    tenant_db.add(dup)
+    with pytest.raises(IntegrityError):
+        tenant_db.flush()
+
+
+def test_dedup_index_blocks_duplicate_document(tenant_db):
+    """uq_vendor_invoice_document: one invoice per document (concurrent reuse)."""
+    from uuid import uuid4
+    doc = uuid4()
+    a = _mk_invoice(tenant_db, number="D1", total="1.00")
+    a.document_id = doc
+    tenant_db.flush()
+    b = _mk_invoice(tenant_db, number="D2", total="1.00")  # different number, same doc
+    b.document_id = doc
+    with pytest.raises(IntegrityError):
+        tenant_db.flush()
+
+
+def test_dedup_index_allows_reimport_after_soft_delete(tenant_db):
+    """Partial WHERE deleted_at IS NULL: a voided/deleted bill can be re-imported."""
+    first = _mk_invoice(tenant_db, number="90000002", total="10.00")
+    first.deleted_at = datetime(2026, 2, 1)  # soft-delete
+    tenant_db.flush()
+    # Same key again now succeeds because the first is excluded from the index.
+    again = _mk_invoice(tenant_db, number="90000002", total="10.00")
+    assert again.id != first.id
 
 
 # --------------------------------------------------------------------------- #
