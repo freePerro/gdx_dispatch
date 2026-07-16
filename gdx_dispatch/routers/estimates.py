@@ -40,7 +40,10 @@ def _to_float(value: object) -> float:
 def _derive_margin_pct(cost: Decimal | float | None, unit_price: Decimal | float | None) -> Decimal | None:
     """Back-derive a margin_pct_snapshot from cost + unit_price.
 
-    Returns None when either value is missing/<=0 (signals genuine free-form/manual line).
+    Returns None when either value is missing/<=0 (signals genuine free-form/manual line),
+    or when the result would not fit the Numeric(6,4) snapshot column (a price far below
+    cost — e.g. a fat-fingered $5 on a $1000 cost derives -199.0, which would raise
+    DataError on Postgres; SQLite CI ignores Numeric precision, so guard here).
     Otherwise returns (unit_price - cost) / unit_price as a Decimal. Used at line creation
     when the client sent a cost (e.g. CHI / typed-catalog door) without going through the
     engine path, and at PATCH time to heal pre-existing lines that were born with cost
@@ -52,7 +55,10 @@ def _derive_margin_pct(cost: Decimal | float | None, unit_price: Decimal | float
     u = Decimal(str(unit_price))
     if u <= 0 or c < 0:
         return None
-    return ((u - c) / u).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    derived = ((u - c) / u).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if derived <= Decimal("-99.9999"):
+        return None
+    return derived
 
 
 def _next_estimate_number(db: Session) -> str:
@@ -1022,6 +1028,15 @@ def patch_line(
     new_cost = updates.pop("cost", None)
     new_override = updates.pop("margin_pct_override", None)
     clear_override = updates.pop("clear_margin_override", False)
+    # WYSIWYG: an explicitly-sent unit_price is authoritative and must never
+    # be overwritten by the engine re-derive below. The autosave client sends
+    # unit_price + cost on every flush; before this guard, the re-derive
+    # silently reverted manual price edits to cost_snapshot × frozen margin
+    # (screen showed the typed price, DB/PDF showed the tier price). A price
+    # sent as null keeps the legacy engine-derivation behavior.
+    explicit_price = updates.get("unit_price") is not None
+    old_unit_price = _to_float(line.unit_price)
+    old_cost_snapshot = _to_float(line.cost_snapshot)
 
     for key, value in updates.items():
         if isinstance(value, str):
@@ -1036,13 +1051,15 @@ def patch_line(
         # Heal pre-existing lines born with cost_snapshot but NULL margin
         # (typed-catalog / CHI doors created before 2026-05-07). Back-derive
         # margin from current cost + unit_price and proceed. Genuine free-form
-        # lines (no cost snapshot, no usable unit_price) still 409.
+        # lines (no cost snapshot, no usable unit_price) still 409 — unless
+        # the caller sent an explicit price, in which case there is nothing
+        # to re-derive and rejecting would abort the client's flush loop.
         healed = _derive_margin_pct(line.cost_snapshot, line.unit_price)
         if healed is not None:
             line.margin_pct_snapshot = healed
             line.pricing_source = line.pricing_source or "client_cost"
             is_engine_line = True
-        else:
+        elif not explicit_price:
             raise HTTPException(
                 status_code=409,
                 detail="cannot apply engine fields to a manually-priced line; recreate the line via cost+pricing_category",
@@ -1053,17 +1070,39 @@ def patch_line(
         line.margin_pct_override = Decimal(str(new_override))
     if new_cost is not None:
         line.cost_snapshot = _money(new_cost)
-    if is_engine_line and (new_cost is not None or new_override is not None or clear_override):
+    if explicit_price:
+        # Manual price wins — no sell re-derivation. Keep margin bookkeeping
+        # consistent so future cost-only PATCHes re-derive from what the
+        # operator actually charges (mirrors the POST cost-fallback path).
+        # Skipped when an override is being set: the override is the operator's
+        # margin record and the client computes the price from it. Below-cost
+        # prices back-derive a negative margin, which the snapshot can hold.
+        price_changed = abs(_to_float(line.unit_price) - old_unit_price) > 0.005
+        cost_changed = new_cost is not None and abs(_to_float(line.cost_snapshot) - old_cost_snapshot) > 0.005
+        if new_override is not None:
+            # UI margin edit — the client computes the price from the override
+            # and sends both; the override is the operator's margin record.
+            line.pricing_source = "line_override"
+        elif price_changed or cost_changed:
+            derived = _derive_margin_pct(line.cost_snapshot, line.unit_price)
+            if derived is not None:
+                line.margin_pct_snapshot = derived
+                line.pricing_source = line.pricing_source or "client_cost"
+    elif is_engine_line and (new_cost is not None or new_override is not None or clear_override):
         # Re-derive sell from frozen margin_pct_snapshot (or override if set).
         # Per decision A: admin tier edits never silently re-price old lines.
         from gdx_dispatch.services.pricing_engine import sell_from_cost
 
         effective_margin = line.margin_pct_override or line.margin_pct_snapshot
-        new_sell = sell_from_cost(
-            Decimal(str(line.cost_snapshot)),
-            Decimal(str(effective_margin)),
-        )
-        line.unit_price = _money(float(new_sell))
+        # A below-cost manual price leaves a negative snapshot behind —
+        # sell_from_cost would raise PricingConfigError (500). An operator's
+        # below-cost price is deliberate: keep the price, apply the cost edit.
+        if Decimal("0") <= Decimal(str(effective_margin)) < Decimal("1"):
+            new_sell = sell_from_cost(
+                Decimal(str(line.cost_snapshot)),
+                Decimal(str(effective_margin)),
+            )
+            line.unit_price = _money(float(new_sell))
         line.pricing_source = (
             "line_override" if line.margin_pct_override is not None else line.pricing_source
         )
