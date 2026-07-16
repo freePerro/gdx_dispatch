@@ -516,6 +516,16 @@ class Expense(Base):
     category: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
     job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
+    # vendor-invoice-intake (2026-07-08): where this Expense originated.
+    # 'manual' = keyed in the Expenses UI (the pre-existing path).
+    # 'vendor_invoice' = auto-created when the office confirms a parsed vendor
+    # bill line onto a job/overhead. The distinction is the QuickBooks-push
+    # boundary: a `vendor_invoice` expense is ALREADY mirrored to QB by the
+    # banking sync (the paid bill lands as a `Purchase`), so any future
+    # expense-push MUST anti-join `source = 'vendor_invoice'` or the same
+    # dollars post to QB twice. `push_expense` has no callers today; this
+    # column is the contract that keeps it correct when someone wires it.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1107,6 +1117,12 @@ class Vendor(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    # vendor-invoice-intake (2026-07-08): JSON array of alternate spellings the
+    # same vendor bills under (e.g. an OCR/LLM read of "Midwest Whsle Doors" vs
+    # the canonical "Midwest Wholesale Doors"). Used to resolve a parsed
+    # invoice's raw vendor name back to this row before the dedup uniqueness
+    # check. NULL/absent = no aliases. Not PII, not encrypted.
+    name_aliases: Mapped[str | None] = mapped_column(Text, nullable=True)
     # PII-at-rest (S122 pattern, mirrors Customer.address): a vendor's bank
     # ``account_number`` and ``tax_id`` (EIN/SSN-equivalent) are encrypted via
     # the EncryptedString TypeDecorator. Safe here because every read/write of
