@@ -20,7 +20,8 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import InventoryItem, StockAdjustment
+from gdx_dispatch.models.tenant_models import InventoryItem
+from gdx_dispatch.modules.inventory.stock import apply_stock_delta
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -309,13 +310,15 @@ def receive_po(
         if line.item_id:
             item = db.get(InventoryItem, line.item_id)
             if item:
-                item.quantity += line.quantity_ordered
-                db.add(StockAdjustment(
-                    item_id=item.id,
-                    quantity_delta=line.quantity_ordered,
+                # Atomic delta (locks the item row) so two PO receives — or a PO
+                # receive racing a vendor-invoice stock confirm — can't lost-update.
+                apply_stock_delta(
+                    db,
+                    item,
+                    delta=line.quantity_ordered,
                     reason="po_receive",
                     notes=f"Received from PO {po.po_number}",
-                ))
+                )
         line.quantity_received = line.quantity_ordered
 
     po.status = "received"
