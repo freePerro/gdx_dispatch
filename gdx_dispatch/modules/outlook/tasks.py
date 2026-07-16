@@ -34,10 +34,15 @@ from gdx_dispatch.modules.outlook.models import (
     OutlookFolderPrefs,
     OutlookFolderSyncState,
     OutlookMessage,
+    OutlookSettings,
     OutlookSubscription,
 )
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
-
+from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
+    ingest_message_attachments,
+    is_candidate,
+    normalize_allowlist,
+)
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.tasks")
 
@@ -247,6 +252,9 @@ def _sync_one_folder(
     gc,
     account: OutlookAccount,
     folder: OutlookFolder,
+    *,
+    allowlist: list[str] | None = None,
+    candidates: list[dict] | None = None,
 ) -> tuple[int, int]:
     """Delta-sync one folder. Returns (upserted, removed).
 
@@ -296,6 +304,11 @@ def _sync_one_folder(
                 folder_id=folder.graph_folder_id,
                 folder_display_name=folder.display_name,
             )
+            # Vendor-bill auto-ingest: only COLLECT candidates here (cheap, no
+            # Graph call). The actual download + pipeline runs AFTER this folder's
+            # sync state commits, in an isolated session — see _ingest_vendor_bills.
+            if allowlist and candidates is not None:
+                candidates.extend(m for m in non_removed if is_candidate(m, allowlist))
             next_link = last_resp.get("@odata.nextLink")
             if not next_link:
                 break
@@ -320,6 +333,35 @@ def _sync_one_folder(
             state.last_error = str(exc)[:500]
             raise
     return upserted, removed
+
+
+def _ingest_vendor_bills(gc, candidates: list[dict], allowlist: list[str]) -> dict[str, int]:
+    """Download + pipeline the collected vendor-bill candidates in a session
+    fully isolated from the sync's tenant session. Each message commits on its
+    own, and a poisoned session is discarded + replaced — so the pipeline's
+    flush/rollback/disk-I/O can never reach the sync mirror, and one bad bill
+    can't abort the whole sync."""
+    totals = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+    if not candidates or not allowlist:
+        return totals
+    idb = SessionLocal()
+    try:
+        for m in candidates:
+            try:
+                r = ingest_message_attachments(idb, gc, m, allowlist)
+                idb.commit()
+                for k, v in r.items():
+                    totals[k] += v
+            except Exception:  # noqa: BLE001
+                log.exception("vendor_bill_ingest: message %s failed", m.get("id"))
+                totals["errors"] += 1
+                with contextlib.suppress(Exception):
+                    idb.rollback()
+                idb.close()
+                idb = SessionLocal()  # fresh session in case the last one poisoned
+    finally:
+        idb.close()
+    return totals
 
 
 def _apply_message_deletes(
@@ -374,6 +416,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             return {"messages_upserted": 0, "skipped": "no account"}
 
         folders_up = folders_del = msgs_up = msgs_rem = 0
+        ingest_totals = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
         failed: list[dict] = []
         try:
             with with_outlook_client(cdb2, tdb, account.user_id, tid) as gc:
@@ -385,9 +428,21 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                     .filter(OutlookFolder.account_id == account.id)
                     .all()
                 )
+                # Vendor-bill auto-ingest allowlist (empty = feature off). Loaded
+                # once per sync; candidates are COLLECTED during the folder loop
+                # and ingested afterward in an isolated session (below), never
+                # inside a folder-sync transaction.
+                _settings = tdb.get(OutlookSettings, 1)
+                allowlist = normalize_allowlist(
+                    getattr(_settings, "vendor_bill_sender_allowlist", None) if _settings else None
+                )
+                vb_candidates: list[dict] = []
                 for f in folders:
                     try:
-                        u, r = _sync_one_folder(tdb, gc, account, f)
+                        u, r = _sync_one_folder(
+                            tdb, gc, account, f,
+                            allowlist=allowlist, candidates=vb_candidates,
+                        )
                         msgs_up += u
                         msgs_rem += r
                         tdb.commit()
@@ -396,6 +451,13 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                                     f.display_name, f.graph_folder_id, exc)
                         failed.append({"folder": f.display_name, "error": str(exc)[:200]})
                         tdb.rollback()
+
+                # Every folder's sync state is now committed. Ingest the collected
+                # vendor-bill candidates in an ISOLATED session (gc is still alive)
+                # so the pipeline's flush/rollback/disk-I/O can't reach the sync
+                # mirror or advance a delta token past un-mirrored messages.
+                if allowlist and vb_candidates:
+                    ingest_totals = _ingest_vendor_bills(gc, vb_candidates, allowlist)
         except OutlookReconnectRequired as exc:
             log.warning("sync_outlook_mailbox: reconnect required for %s: %s", aid, exc)
             account.last_error = str(exc)[:500]
@@ -411,6 +473,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             "messages_upserted": msgs_up,
             "messages_removed": msgs_rem,
             "failed_folders": failed,
+            "vendor_bills": ingest_totals,
         }
 
 

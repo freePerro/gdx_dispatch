@@ -227,5 +227,11 @@ class OutlookSettings(TenantBase):
         "untagged_visibility": "only_owner",
     })
     auto_email_triggers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # vendor-invoice-intake Phase 2: sender addresses/domains whose PDF
+    # attachments are auto-ingested into the vendor-bills review queue during
+    # the Outlook delta sync. EMPTY = feature off (nothing auto-ingests) —
+    # Doug opts in per tenant by listing the supplier's From address or domain
+    # (e.g. "billing@midwestwholesaledoors.com" or "midwestwholesaledoors.com").
+    vendor_bill_sender_allowlist: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
