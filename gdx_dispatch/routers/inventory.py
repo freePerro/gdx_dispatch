@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import InventoryItem, StockAdjustment
+from gdx_dispatch.models.tenant_models import InventoryItem
+from gdx_dispatch.modules.inventory.stock import apply_stock_delta
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -265,16 +266,17 @@ def adjust_stock(
     if not item or item.deleted_at:
         raise HTTPException(status_code=404, detail="Part not found")
 
-    item.quantity = max(0, item.quantity + payload.quantity_delta)
-
-    adjustment = StockAdjustment(
-        item_id=item_id,
-        quantity_delta=payload.quantity_delta,
+    # Atomic delta (locks the item row) so concurrent manual adjusts — or an
+    # adjust racing a PO receive / vendor-invoice confirm — can't lost-update.
+    apply_stock_delta(
+        db,
+        item,
+        delta=payload.quantity_delta,
         reason=payload.reason,
         notes=payload.notes,
         job_id=UUID(payload.job_id) if payload.job_id else None,
+        clamp_nonneg=True,
     )
-    db.add(adjustment)
     db.commit()
     db.refresh(item)
     _audit_db = locals().get('db')

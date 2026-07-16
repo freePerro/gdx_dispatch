@@ -31,8 +31,8 @@ from gdx_dispatch.models.tenant_models import (
     InventoryItem,
     Job,
     JobPartNeeded,
-    StockAdjustment,
 )
+from gdx_dispatch.modules.inventory.stock import apply_stock_delta
 from gdx_dispatch.modules.vendor_invoices.models import (
     DISP_JOB,
     DISP_OVERHEAD,
@@ -164,15 +164,13 @@ def confirm_line(
             raise ConfirmError(f"inventory item {inventory_item_id} not found")
 
         delta = _int_qty(line.quantity)
-        item.quantity = (item.quantity or 0) + delta
-        adj = StockAdjustment(
-            item_id=item.id,
-            quantity_delta=delta,
+        adj = apply_stock_delta(
+            db,
+            item,
+            delta=delta,
             reason="vendor_invoice",
             notes=f"Invoice {invoice.invoice_number} line {line.line_no}",
         )
-        db.add(adj)
-        db.flush()
         line.inventory_item_id = item.id
         line.stock_adjustment_id = adj.id
         if update_catalog_cost:
