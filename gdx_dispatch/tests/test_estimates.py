@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -676,3 +677,197 @@ def test_accept_copies_estimate_lines_onto_job(client: TestClient):
     assert door.supplier == "CHI"
     # line_metadata scalars survive into the readable notes summary
     assert "color=white" in (door.notes or "")
+
+
+# --- WYSIWYG price fix — an explicitly-sent unit_price is authoritative ------
+# Regression suite for the "manual price reverts to the tier percentage" bug:
+# the autosave client PATCHes every line with unit_price + cost on every
+# flush; patch_line used to re-derive sell from cost_snapshot × frozen margin
+# whenever cost arrived, silently overwriting the manual price (screen showed
+# the typed price, DB/PDF showed the tier price).
+
+
+def _create_engine_line(client: TestClient, estimate_id: str, cost=1000.0, price=1500.0) -> dict:
+    # Cost without pricing_category takes the client_cost fallback: unit_price
+    # honored, margin_pct_snapshot back-derived → an engine-managed line.
+    r = client.post(
+        f"/api/estimates/{estimate_id}/lines",
+        json={"description": "Door", "quantity": 1, "unit_price": price, "cost": cost},
+    )
+    assert r.status_code == 201, r.text
+    line = r.json()
+    assert line["margin_pct_snapshot"] is not None, "expected an engine line"
+    return line
+
+
+def test_patch_line_manual_price_wins_over_engine_rederive(client: TestClient):
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    # The exact autosave flush payload after a user types a new price.
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 1375.0, "cost": 1000.0},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["unit_price"] == pytest.approx(1375.0)
+    assert body["line_total"] == pytest.approx(1375.0)
+    # Margin bookkeeping tracks the operator's actual price.
+    assert body["margin_pct_snapshot"] == pytest.approx((1375.0 - 1000.0) / 1375.0, abs=1e-4)
+
+
+def test_patch_line_manual_price_with_clear_override_does_not_revert(client: TestClient):
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    # Operator sets a margin override first (price re-derives from it) ...
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"margin_pct_override": 0.40},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["unit_price"] == pytest.approx(1000.0 / 0.6, abs=0.01)
+
+    # ... then hand-types a price. markPriceOverride clears the user-margin
+    # flag, so the flush sends clear_margin_override alongside the new price.
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 1200.0,
+              "cost": 1000.0, "clear_margin_override": True},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["unit_price"] == pytest.approx(1200.0)
+    assert body["margin_pct_override"] is None
+
+
+def test_patch_line_below_cost_price_honored(client: TestClient):
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    # Selling below cost is legitimate (the UI shows "(loss)") and is not
+    # representable as a [0,1) margin override — the price must still stick.
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 800.0, "cost": 1000.0},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["unit_price"] == pytest.approx(800.0)
+    assert r.json()["line_total"] == pytest.approx(800.0)
+
+
+def test_patch_line_cost_only_still_rederives_from_frozen_margin(client: TestClient):
+    # Legacy engine contract preserved: a PATCH that changes cost WITHOUT an
+    # explicit unit_price re-derives sell from the frozen margin snapshot.
+    from gdx_dispatch.services.pricing_engine import sell_from_cost
+
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+    snapshot = Decimal(str(line["margin_pct_snapshot"]))
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"cost": 1200.0},
+    )
+    assert r.status_code == 200, r.text
+    expected = float(sell_from_cost(Decimal("1200.0"), snapshot))
+    assert r.json()["unit_price"] == pytest.approx(expected, abs=0.01)
+
+
+def test_patch_line_noop_flush_is_stable(client: TestClient):
+    # The autosave deep-watcher fires once on page load and PATCHes every
+    # line with unchanged values — prices and snapshots must not drift.
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+    payload = {"description": "Door", "quantity": 1, "unit_price": 1500.0, "cost": 1000.0}
+
+    first = client.patch(f"/api/estimates/{est['id']}/lines/{line['id']}", json=payload)
+    second = client.patch(f"/api/estimates/{est['id']}/lines/{line['id']}", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert second.json()["unit_price"] == pytest.approx(1500.0)
+    assert second.json()["margin_pct_snapshot"] == pytest.approx(line["margin_pct_snapshot"], abs=1e-4)
+
+
+def test_patch_line_freeform_line_flush_no_longer_409s(client: TestClient):
+    # Free-form manual line (no cost): with the margin-override feature on
+    # (the default), the autosave flush sends clear_margin_override for every
+    # line the user didn't margin-edit. That used to 409 on manual lines
+    # ("cannot apply engine fields") and abort the whole flush loop, so every
+    # line after it in the estimate silently never saved.
+    est = _create_estimate(client)
+    r = client.post(
+        f"/api/estimates/{est['id']}/lines",
+        json={"description": "Haul away old door", "quantity": 1, "unit_price": 150.0},
+    )
+    assert r.status_code == 201, r.text
+    line = r.json()
+    assert line["margin_pct_snapshot"] is None
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Haul away old door", "quantity": 1, "unit_price": 175.0,
+              "clear_margin_override": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["unit_price"] == pytest.approx(175.0)
+
+
+def test_patch_line_cost_edit_after_below_cost_price_keeps_price(client: TestClient):
+    # A below-cost manual price leaves a negative margin snapshot. A later
+    # cost-only PATCH (legacy engine contract) must not feed it into
+    # sell_from_cost — PricingConfigError → 500. The operator's below-cost
+    # price is deliberate: keep the price, apply the cost edit.
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 800.0, "cost": 1000.0},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"cost": 900.0},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["unit_price"] == pytest.approx(800.0)
+    assert r.json()["cost_snapshot"] == pytest.approx(900.0)
+
+
+def test_patch_line_extreme_below_cost_price_skips_snapshot(client: TestClient):
+    # A fat-fingered price ($5 on a $1000 cost) back-derives margin -199.0,
+    # which cannot fit the Numeric(6,4) snapshot column (Postgres DataError;
+    # SQLite CI silently accepts it, so pin the None-return instead): the
+    # price is honored, the snapshot keeps its previous value.
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 5.0, "cost": 1000.0},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["unit_price"] == pytest.approx(5.0)
+    assert r.json()["margin_pct_snapshot"] == pytest.approx(line["margin_pct_snapshot"], abs=1e-4)
+
+
+def test_patch_line_price_with_override_sets_line_override_source(client: TestClient):
+    # UI margin edit: the client computes the price from the override and
+    # sends BOTH. The explicit price wins verbatim, the override is stored,
+    # and pricing_source marks the line as operator-overridden (the profit
+    # panel badge reads this).
+    est = _create_estimate(client)
+    line = _create_engine_line(client, est["id"])
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/lines/{line['id']}",
+        json={"description": "Door", "quantity": 1, "unit_price": 1666.0,
+              "cost": 1000.0, "margin_pct_override": 0.40},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["unit_price"] == pytest.approx(1666.0)  # client's price, not re-derived 1666.67
+    assert body["margin_pct_override"] == pytest.approx(0.40)
+    assert body["pricing_source"] == "line_override"
