@@ -192,7 +192,7 @@
                   <InputNumber
                     v-if="estimateFeatures.estimates_allow_line_margin_override"
                     v-model="item.margin_pct_override"
-                    suffix="%" :min="0" :max="99" :maxFractionDigits="1"
+                    suffix="%" :min="0" :max="99" :maxFractionDigits="2"
                     placeholder="tier"
                     class="col-margin" :data-testid="`est-line-margin-${idx}`"
                     @update:modelValue="onMarginOverrideChange(item)" />
@@ -1417,8 +1417,11 @@ async function fetchEstimate() {
             quantity: toNum(li.quantity ?? 1),
             cost: li.cost_snapshot ?? li.cost ?? null,
             unit_price: toNum(li.unit_price ?? 0),
+            // 2 decimals of percent = the backend's 4-decimal margin quantum
+            // (0.0001) exactly — toFixed(1) lost precision here, so the
+            // load→autosave round-trip degraded stored overrides.
             margin_pct_override: li.margin_pct_override != null
-              ? Number((Number(li.margin_pct_override) * 100).toFixed(1))
+              ? Number((Number(li.margin_pct_override) * 100).toFixed(2))
               : null,
             _marginUserEdited: li.margin_pct_override != null,
             labor_price_item_id: li.labor_price_item_id ?? null,
@@ -1602,6 +1605,7 @@ watch(
 const pendingLineDeletes = ref([]);
 let _autosaveDebounce = null;
 let _autosaveInFlight = false;
+let _autosaveInFlightPromise = null;
 let _autosaveQueued = false;
 const FINALIZED = new Set(["accepted", "declined", "Accepted", "Declined"]);
 // Exposed to the template for the Slice 3 status pill — Vue's <template>
@@ -1736,6 +1740,8 @@ async function _flushNow() {
     return;
   }
   _autosaveInFlight = true;
+  let _resolveInFlight;
+  _autosaveInFlightPromise = new Promise((resolve) => { _resolveInFlight = resolve; });
   autosaveState.value = "saving";
   autosaveError.value = "";
   const id = route.params.id;
@@ -1765,9 +1771,14 @@ async function _flushNow() {
       }
     }
 
-    // 3. Lines: POST new, PATCH existing.
+    // 3. Lines: POST new, PATCH existing. New lines need content before the
+    // first POST (keeps blank placeholder rows out of the DB); existing lines
+    // PATCH whenever they still have a description AND a price value — a
+    // price edited down to $0 is a real edit that must reach the DB (and the
+    // PDF), but a transiently CLEARED price input (null, mid-retype) must
+    // not: the backend treats null as "derive for me" (409s manual lines).
     for (const li of form.value.line_items) {
-      if (!_lineHasContent(li)) continue;
+      if (li.id ? !(li.description && li.unit_price != null) : !_lineHasContent(li)) continue;
       if (li.id) {
         try {
           await apiRaw.patch(`/api/estimates/${id}/lines/${li.id}`, _linePatchPayload(li));
@@ -1791,6 +1802,8 @@ async function _flushNow() {
     autosaveState.value = "error";
   } finally {
     _autosaveInFlight = false;
+    _resolveInFlight();
+    _autosaveInFlightPromise = null;
     if (_autosaveQueued) {
       _autosaveQueued = false;
       // Re-arm the debounce — give a brief breather instead of an
@@ -1799,6 +1812,24 @@ async function _flushNow() {
       _scheduleFlush();
     }
   }
+}
+
+// Force-persist the current form state before any action that renders it
+// back from the server (PDF download, email compose, manual save). A bare
+// `await _flushNow()` is NOT sufficient: it early-returns (queues a retry)
+// while another flush is in flight — exactly the racing case. This drains
+// the in-flight flush, cancels any re-armed debounce, then runs one final
+// authoritative flush of the current form state to completion.
+async function forceFlush() {
+  if (_autosaveDebounce) { clearTimeout(_autosaveDebounce); _autosaveDebounce = null; }
+  while (_autosaveInFlightPromise) {
+    await _autosaveInFlightPromise;
+  }
+  // The drained flush's finally may have re-armed the debounce for a queued
+  // retry; the flush below supersedes it.
+  if (_autosaveDebounce) { clearTimeout(_autosaveDebounce); _autosaveDebounce = null; }
+  _autosaveQueued = false;
+  await _flushNow();
 }
 
 function _scheduleFlush() {
@@ -1888,11 +1919,7 @@ async function createEstimate() {
 async function saveExistingEstimate() {
   saving.value = true;
   try {
-    if (_autosaveDebounce) {
-      clearTimeout(_autosaveDebounce);
-      _autosaveDebounce = null;
-    }
-    await _flushNow();
+    await forceFlush();
     if (autosaveState.value === "error") {
       toast.add({ severity: "error", summary: "Save failed", detail: autosaveError.value || "Could not save", life: 4000 });
     } else {
@@ -1906,6 +1933,12 @@ async function saveExistingEstimate() {
 // --- Status transitions ---
 async function downloadPdf() {
   try {
+    // The PDF renders server-side from the DB — persist pending edits first
+    // or the document silently omits them (the debounce window race).
+    await forceFlush();
+    if (autosaveState.value === "error") {
+      toast.add({ severity: "warn", summary: "Unsaved changes", detail: "Latest edits could not be saved — the PDF may not include them", life: 6000 });
+    }
     await openAuthedFile(`/api/estimates/${route.params.id}/pdf`);
   } catch (e) {
     toast.add({ severity: "error", summary: "PDF failed", detail: e?.message || "Could not open estimate PDF", life: 5000 });
@@ -1913,6 +1946,14 @@ async function downloadPdf() {
 }
 
 async function emailEstimate() {
+  // The composer snapshots the PDF server-side at open — flush first, and
+  // refuse to open on a failed save: emailing a customer a stale-price PDF
+  // is the worst failure mode this screen has.
+  await forceFlush();
+  if (autosaveState.value === "error") {
+    toast.add({ severity: "error", summary: "Save failed", detail: "Fix the save error before emailing — the attached PDF would not include your latest changes", life: 6000 });
+    return;
+  }
   composerLoading.value = true;
   showComposer.value = true;
   composer.value = { to: "", subject: "", body_text: "", pdf: null, extras: [] };
