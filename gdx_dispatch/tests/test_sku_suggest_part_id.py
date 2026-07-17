@@ -35,6 +35,7 @@ from starlette.requests import Request
 from gdx_dispatch.models.tenant_models import (
     ChiDoorCatalog,
     ChiPartsCatalog,
+    CustomCatalog,
     CustomCatalogItem,
     DoorSpec,
 )
@@ -55,7 +56,7 @@ def db() -> Generator[Session, None, None]:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
-    for model in (Part, CustomCatalogItem, ChiPartsCatalog, ChiDoorCatalog, DoorSpec):
+    for model in (Part, CustomCatalog, CustomCatalogItem, ChiPartsCatalog, ChiDoorCatalog, DoorSpec):
         model.__table__.create(bind=engine, checkfirst=True)
     session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
     try:
@@ -77,18 +78,43 @@ def _suggest(db: Session, q: str, limit: int = 10) -> list[dict]:
     )
 
 
-def _add_custom_part(db: Session, *, sku: str, name: str, product_class: str = "parts") -> None:
-    db.add(
-        CustomCatalogItem(
-            id=uuid.uuid4(),
-            catalog_id=uuid.uuid4(),
-            sku=sku,
-            name=name,
-            product_class=product_class,
-            active=True,
-        )
+def _add_catalog(db: Session, *, name: str = "Springs", active: bool = True,
+                 deleted: bool = False) -> CustomCatalog:
+    """A real parent catalog. Items are only reachable through one — an item
+    whose catalog is deleted or disabled must never be offered."""
+    from datetime import datetime, timezone
+
+    cat = CustomCatalog(
+        id=uuid.uuid4(),
+        name=name,
+        active=active,
+        deleted_at=datetime.now(timezone.utc) if deleted else None,
     )
+    db.add(cat)
     db.commit()
+    return cat
+
+
+def _add_custom_part(
+    db: Session,
+    *,
+    sku: str,
+    name: str,
+    product_class: str = "parts",
+    catalog: CustomCatalog | None = None,
+) -> CustomCatalogItem:
+    cat = catalog or _add_catalog(db)
+    item = CustomCatalogItem(
+        id=uuid.uuid4(),
+        catalog_id=cat.id,
+        sku=sku,
+        name=name,
+        product_class=product_class,
+        active=True,
+    )
+    db.add(item)
+    db.commit()
+    return item
 
 
 def _add_chi_door(db: Session, *, sku: str, model_number: str) -> None:
@@ -193,6 +219,93 @@ def test_a_sku_in_two_catalogs_is_suggested_once(db: Session) -> None:
     hits = _suggest(db, "roller")
 
     assert len(hits) == 1, f"duplicate sku offered twice: {hits}"
+
+
+def test_an_item_in_a_deleted_catalog_is_never_offered(db: Session) -> None:
+    """The catalog is the unit an operator deletes, not the item.
+
+    Deleting a catalog leaves its items with deleted_at NULL and active TRUE —
+    only the PARENT is marked. Filtering the item alone therefore offers the
+    whole contents of every deleted catalog: on prod that was 2,555 of 2,854
+    active items (89% of this source) against 299 in a catalog that still
+    exists, which is why the tech's picker didn't match the estimate builder's.
+    """
+    dead = _add_catalog(db, name="Old Springs 2019", deleted=True)
+    live = _add_catalog(db, name="Springs")
+    _add_custom_part(db, sku="OLD-1", name="Torsion spring, old list", catalog=dead)
+    _add_custom_part(db, sku="NEW-1", name="Torsion spring", catalog=live)
+
+    hits = _suggest(db, "spring")
+
+    assert [h["sku"] for h in hits] == ["NEW-1"], (
+        "offered a part out of a catalog that was deleted"
+    )
+
+
+def test_an_item_in_a_disabled_catalog_is_never_offered(db: Session) -> None:
+    """`active=False` is the operator's "temporarily hide" switch (#50). Hidden
+    from the estimate builder has to mean hidden from the tech too."""
+    off = _add_catalog(db, name="Seasonal", active=False)
+    _add_custom_part(db, sku="OFF-1", name="Torsion spring", catalog=off)
+
+    assert _suggest(db, "spring") == []
+
+
+def test_a_suggestion_says_which_catalog_it_came_from(db: Session) -> None:
+    """The picker groups by catalog, so every row must carry its own — and the
+    id, so filtering doesn't have to match on a display name."""
+    springs = _add_catalog(db, name="Springs")
+    _add_custom_part(db, sku="SPR-207", name="Torsion spring", catalog=springs)
+
+    hit = _suggest(db, "spring")[0]
+
+    assert hit["catalog"] == "Springs"
+    assert hit["catalog_id"] == str(springs.id)
+
+
+def test_catalog_filter_restricts_to_that_catalog(db: Session) -> None:
+    hardware = _add_catalog(db, name="Hardware")
+    springs = _add_catalog(db, name="Springs")
+    _add_custom_part(db, sku="HW-1", name="Spring bracket", catalog=hardware)
+    _add_custom_part(db, sku="SPR-1", name="Torsion spring", catalog=springs)
+
+    hits = parts_needed.sku_suggest(
+        request=_request(), q="spring", limit=10,
+        catalog_id=str(springs.id), user={"tenant_id": "tenant-a"}, db=db,
+    )
+
+    assert [h["sku"] for h in hits] == ["SPR-1"]
+
+
+def test_catalog_filter_excludes_the_other_sources(db: Session) -> None:
+    """Filtering to a custom catalog must not still fold in CHI or inventory —
+    the tech asked for one list."""
+    springs = _add_catalog(db, name="Springs")
+    _add_custom_part(db, sku="SPR-1", name="Torsion spring", catalog=springs)
+    db.add(ChiPartsCatalog(id=uuid.uuid4(), sku="CHI-1", name="Spring", is_active=True))
+    db.add(Part(id=uuid.uuid4(), sku="INV-1", name="Spring", qty_on_hand=1))
+    db.commit()
+
+    hits = parts_needed.sku_suggest(
+        request=_request(), q="spring", limit=50,
+        catalog_id=str(springs.id), user={"tenant_id": "tenant-a"}, db=db,
+    )
+
+    assert [h["sku"] for h in hits] == ["SPR-1"]
+
+
+def test_an_unparseable_catalog_filter_returns_nothing_not_everything(db: Session) -> None:
+    """Widening a bad filter to "all catalogs" is how a tech orders off the
+    wrong list without noticing."""
+    springs = _add_catalog(db, name="Springs")
+    _add_custom_part(db, sku="SPR-1", name="Torsion spring", catalog=springs)
+
+    hits = parts_needed.sku_suggest(
+        request=_request(), q="spring", limit=10,
+        catalog_id="not-a-uuid", user={"tenant_id": "tenant-a"}, db=db,
+    )
+
+    assert hits == []
 
 
 # ── Contract 1: part_id rides only on inventory rows ─────────────────────────

@@ -535,6 +535,23 @@ function toggleUserMenu(event) {
   color: var(--interactive-primary);
 }
 
+/* At phone widths the icon buttons carry desktop padding — 4 of them ate 282
+   of 412px, leaving the brand 66px when it needed 142, so it ellipsised to
+   "Garage Door Xp…" purely to make room for whitespace. 44px is the tap-target
+   floor from e2e/mobile-touch-targets.spec.js; hold that exactly and the name
+   fits whole. */
+@media (max-width: 600px) {
+  .app-topbar :deep(.p-button.p-button-text) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .topbar-right {
+    gap: 0.15rem;
+  }
+}
+
 @media (max-width: 960px) {
   .search-wrap {
     display: none;

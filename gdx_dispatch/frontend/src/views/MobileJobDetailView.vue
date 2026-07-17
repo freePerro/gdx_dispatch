@@ -191,6 +191,31 @@
         <div v-else class="detail-meta detail-meta-muted">No parts requested yet.</div>
 
         <div class="part-add">
+          <!-- Catalog chips, straight from /api/catalogs — never a hardcoded
+               list. Custom catalogs are per-tenant data: every business running
+               GDX Dispatch defines its own set and renames or adds to them
+               whenever it likes, so the only correct list is the one the API
+               returns right now. Same source the estimate builder's picker
+               reads, so the two can't drift apart. -->
+          <div v-if="catalogs.length" class="catalog-chips" data-testid="mjd-catalog-chips">
+            <button
+              type="button"
+              :class="['chip', { 'chip-on': !partCatalogId }]"
+              @click="pickCatalog(null)"
+            >
+              All
+            </button>
+            <button
+              v-for="c in catalogs"
+              :key="c.id"
+              type="button"
+              :class="['chip', { 'chip-on': partCatalogId === c.id }]"
+              @click="pickCatalog(c.id)"
+            >
+              {{ c.name }}
+            </button>
+          </div>
+
           <!-- Search is the same catalog the estimate builder searches. Typing
                is never blocked on it: offline, or for a part nobody has
                catalogued, the free-text name is submitted with sku=null and the
@@ -212,14 +237,24 @@
                 <span class="suggest-name">{{ s.name }}</span>
                 <span class="suggest-meta">
                   <span v-if="s.sku">{{ s.sku }}</span>
+                  <!-- Which list it came off. Two catalogs can carry the same
+                       part at different prices, so the catalog is the
+                       difference between the right part and the wrong one. -->
+                  <span v-if="s.catalog" class="suggest-catalog">{{ s.catalog }}</span>
                   <span v-if="s.qty_on_hand != null" class="suggest-stock">
                     {{ s.qty_on_hand }} on hand
                   </span>
-                  <span v-else-if="s.source === 'door_catalog'" class="muted">door</span>
                 </span>
               </button>
             </li>
           </ul>
+          <div
+            v-else-if="partQuery.trim().length >= 2 && !partSearching"
+            class="detail-meta detail-meta-muted"
+            data-testid="mjd-part-nomatch"
+          >
+            Nothing in the catalog matches — Request sends what you typed.
+          </div>
 
           <div v-if="partQuery.trim()" class="part-controls">
             <InputNumber
@@ -403,7 +438,13 @@ const partSku = ref(null)
 const partQty = ref(1)
 const partUrgent = ref(false)
 const partBusy = ref(false)
+const partSearching = ref(false)
 const partSuggestions = ref([])
+// One screenful and a bit. The list scrolls inside itself; a tech narrows with
+// the search box rather than thumbing a whole catalog.
+const BROWSE_PAGE_SIZE = 25
+const catalogs = ref([])
+const partCatalogId = ref(null)
 let partSearchTimer = null
 let partSearchSeq = 0
 
@@ -612,28 +653,107 @@ function onPartQuery() {
   partSku.value = null
   const q = partQuery.value.trim()
   clearTimeout(partSearchTimer)
-  if (q.length < 2) {
+  // With a catalog picked, an empty box means "show me that catalog". Search
+  // alone is not enough: a tenant names its items however it likes, and one
+  // real catalog here is 77 items specced like "207X2.000X20.0 Left" — not one
+  // of which contains the word its catalog is named after. Browsing is the
+  // interaction; typing only narrows. Without a catalog there is nothing to
+  // browse, so wait for a couple of characters.
+  if (!partCatalogId.value && q.length < 2) {
     partSuggestions.value = []
     return
   }
   partSearchTimer = setTimeout(() => searchParts(q), 250)
 }
 
+/**
+ * A catalog row in the shape pickSuggestion/addPart expect.
+ *
+ * source stays 'catalog' so part_id is never set: job_parts.part_id is an FK to
+ * parts.id and a custom_catalog_items id would violate it. sku is legitimately
+ * empty on catalog rows — a whole catalog of real parts here has none — so the
+ * request rides on the name alone, which the create endpoint accepts.
+ */
+function _catalogRowToSuggestion(row, catalogName) {
+  return {
+    source: 'catalog',
+    catalog_id: partCatalogId.value,
+    catalog: catalogName,
+    sku: row.sku || null,
+    name: row.name || row.description || row.sku || '',
+    vendor: row.vendor || null,
+    category: row.category || null,
+    qty_on_hand: null,
+  }
+}
+
 async function searchParts(q) {
   const seq = ++partSearchSeq
+  partSearching.value = true
   try {
-    const r = await api.get(
-      `/api/parts-needed/sku-suggest?q=${encodeURIComponent(q)}&limit=6`,
-      { suppressErrorToast: true },
-    )
+    let rows
+    if (partCatalogId.value) {
+      // Browsing one catalog: the estimate builder's own endpoint — paginated,
+      // searchable within the catalog, and it already handles the virtual CHI
+      // feeds. Reused rather than reimplemented so the tech's list and the
+      // estimate's list cannot drift apart.
+      const cat = catalogs.value.find((c) => c.id === partCatalogId.value)
+      const r = await api.get(
+        `/api/catalogs/${encodeURIComponent(partCatalogId.value)}/items`
+          + `?search=${encodeURIComponent(q)}&per_page=${BROWSE_PAGE_SIZE}`,
+        { suppressErrorToast: true },
+      )
+      rows = (r?.items || []).map((row) => _catalogRowToSuggestion(row, cat?.name))
+    } else {
+      // No catalog picked: search across all of them at once.
+      const r = await api.get(
+        `/api/parts-needed/sku-suggest?q=${encodeURIComponent(q)}&limit=6`,
+        { suppressErrorToast: true },
+      )
+      rows = Array.isArray(r) ? r : []
+    }
     // A slow earlier request must not overwrite a newer one's results.
     if (seq !== partSearchSeq) return
-    partSuggestions.value = Array.isArray(r) ? r : []
+    partSuggestions.value = rows
   } catch {
     // Offline, or the search is down. Free-text still works — say nothing and
     // let the tech type.
     if (seq === partSearchSeq) partSuggestions.value = []
+  } finally {
+    if (seq === partSearchSeq) partSearching.value = false
   }
+}
+
+/**
+ * The catalogs the tech can search, exactly as the server lists them.
+ *
+ * Never hardcoded: catalogs are tenant data that someone adds and removes from
+ * the Catalogs page, so the only correct list is the one the API returns today.
+ * Failure is silent on purpose — search still works across everything without
+ * the chips, and a toast about catalogs while a tech is trying to order a
+ * spring is noise.
+ */
+async function loadCatalogs() {
+  try {
+    const r = await api.get('/api/catalogs', { suppressErrorToast: true })
+    catalogs.value = (Array.isArray(r) ? r : [])
+      .filter((c) => c?.id && c?.name)
+      .map((c) => ({ id: String(c.id), name: String(c.name) }))
+  } catch {
+    catalogs.value = []
+  }
+}
+
+function pickCatalog(id) {
+  partCatalogId.value = id
+  clearTimeout(partSearchTimer)
+  const q = partQuery.value.trim()
+  // Tapping a catalog lists it immediately — that IS the interaction, because
+  // the items aren't findable by typing their category. Tapping "All" with an
+  // empty box has nothing to show, so clear.
+  if (id) searchParts(q)
+  else if (q.length >= 2) searchParts(q)
+  else partSuggestions.value = []
 }
 
 function pickPart(s) {
@@ -683,6 +803,7 @@ async function addPart() {
     partQty.value = 1
     partUrgent.value = false
     partSuggestions.value = []
+    partCatalogId.value = null
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Could not request part', detail: err?.message || '', life: 4000 })
   } finally {
@@ -765,7 +886,10 @@ watch(pendingCount, (now, before) => {
   if (now < before) refresh()
 })
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCatalogs()
+})
 </script>
 
 <style scoped>
@@ -880,6 +1004,23 @@ onMounted(load)
 .part-status { text-transform: capitalize; }
 
 .part-add { display: flex; flex-direction: column; gap: 0.5rem; }
+/* Chips scroll sideways rather than wrapping into a wall: the count is tenant
+   data and grows whenever someone adds a catalog. */
+.catalog-chips {
+  display: flex; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.2rem;
+  scrollbar-width: none;
+}
+.catalog-chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: 0 0 auto; min-height: 36px; padding: 0 0.7rem; cursor: pointer;
+  border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 999px;
+  background: var(--p-content-background, #fff); color: inherit;
+  font: inherit; font-size: 0.8rem; white-space: nowrap;
+}
+.chip-on {
+  background: var(--p-primary-color, #3b82f6);
+  border-color: var(--p-primary-color, #3b82f6); color: #fff; font-weight: 600;
+}
 .suggest-list {
   list-style: none; margin: 0; padding: 0;
   border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 6px;
@@ -902,6 +1043,7 @@ onMounted(load)
   color: var(--p-text-muted-color, #9ca3af); font-family: ui-monospace, monospace;
 }
 .suggest-stock { color: var(--p-green-600, #16a34a); font-family: inherit; }
+.suggest-catalog { font-family: inherit; font-style: italic; }
 
 .part-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
 .part-controls :deep(.p-inputnumber-input) { width: 3rem; text-align: center; }

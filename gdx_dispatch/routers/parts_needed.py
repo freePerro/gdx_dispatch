@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID as _UUID
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -544,6 +545,11 @@ def sku_suggest(
     request: Request,
     q: str = Query(default="", min_length=0, max_length=64),
     limit: int = Query(default=10, ge=1, le=50),
+    catalog_id: str | None = Query(
+        default=None,
+        description="Restrict to one catalog. Accepts a custom catalog's id or "
+        "a virtual CHI catalog id. Omit to search them all.",
+    ),
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -591,10 +597,38 @@ def sku_suggest(
     from gdx_dispatch.models.tenant_models import (
         ChiDoorCatalog,
         ChiPartsCatalog,
+        CustomCatalog,
         CustomCatalogItem,
         DoorSpec,
     )
     from gdx_dispatch.modules.inventory.models import Part
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID, VIRTUAL_CHI_PARTS_ID
+
+    # One catalog, or all of them. The two CHI feeds have no row in
+    # custom_catalogs — they're virtual ids the catalog router synthesizes — so
+    # a filter naming one of them selects a whole source rather than narrowing a
+    # query, and must switch the other sources off entirely.
+    # `catalog_id` is only a str when FastAPI resolved it. Called directly — in
+    # tests, or from another handler — an unpassed arg is still the Query(...)
+    # marker object, and `.strip()` on that is an AttributeError 500. Normalize
+    # before touching it.
+    wanted = (catalog_id.strip() or None) if isinstance(catalog_id, str) else None
+    _catalog_filter: Any = None
+    if wanted:
+        if wanted not in (VIRTUAL_CHI_DOORS_ID, VIRTUAL_CHI_PARTS_ID):
+            try:
+                _catalog_filter = _UUID(wanted)
+            except (ValueError, AttributeError, TypeError):
+                # An unparseable id must return nothing, never everything: the
+                # tech asked for one catalog and silently widening to all of
+                # them is how you order a part from the wrong list.
+                return []
+    _want_custom = wanted is None or _catalog_filter is not None
+    _want_chi_parts = wanted is None or wanted == VIRTUAL_CHI_PARTS_ID
+    _want_chi_doors = wanted is None or wanted == VIRTUAL_CHI_DOORS_ID
+    # inventory.parts is the tenant's own stock, not a catalog — it has no
+    # catalog_id, so any catalog filter excludes it.
+    _want_inventory = wanted is None
 
     suggestions: list[dict[str, Any]] = []
     seen_skus: set[str] = set()
@@ -645,7 +679,7 @@ def sku_suggest(
         .limit(limit)
         .all()
     )
-    for p in part_rows:
+    for p in (part_rows if _want_inventory else []):
         _add(
             {
                 "source": "parts",
@@ -672,14 +706,26 @@ def sku_suggest(
     #
     # No NULL guard on product_class: the column is NOT NULL with a 'parts'
     # server default, verified on prod — a NULL leg here would be dead code.
+    #
+    # The JOIN is not decoration. Filtering the ITEM's deleted_at/active while
+    # ignoring its parent catalog's offers the tech items out of catalogs that
+    # were deleted: on prod that is 2,555 of 2,854 active items — 89% of this
+    # source — against 299 in a catalog that still exists. all-items has always
+    # joined and filtered both, which is precisely why the tech's picker didn't
+    # look like the estimate builder's. `active` is a "temporarily hide" flag
+    # (#50), so an item in a disabled catalog must not be offered either.
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_custom:
         custom_part_rows = (
-            db.query(CustomCatalogItem)
+            db.query(CustomCatalogItem, CustomCatalog)
+            .join(CustomCatalog, CustomCatalogItem.catalog_id == CustomCatalog.id)
             .filter(
+                CustomCatalog.deleted_at.is_(None),
+                CustomCatalog.active.is_(True),
                 CustomCatalogItem.deleted_at.is_(None),
                 CustomCatalogItem.active.is_(True),
                 CustomCatalogItem.product_class != "door",
+                *( [CustomCatalogItem.catalog_id == _catalog_filter] if _catalog_filter else [] ),
                 or_(
                     CustomCatalogItem.sku.ilike(like),
                     CustomCatalogItem.name.ilike(like),
@@ -691,13 +737,20 @@ def sku_suggest(
             .limit(remaining)
             .all()
         )
-        for cci in custom_part_rows:
+        for cci, cat in custom_part_rows:
             _add(
                 {
                     # Not 'parts': job_parts.part_id is an FK to parts.id and a
                     # custom_catalog_items id would violate it. 'catalog' keeps
                     # part_id null and snapshots by value.
                     "source": "catalog",
+                    # Which catalog this came out of. The tech's picker groups
+                    # and filters on these and must never hardcode a name:
+                    # custom catalogs are per-tenant data, defined and renamed
+                    # by each business running GDX Dispatch, so whatever the
+                    # tenant has is what shows up.
+                    "catalog_id": str(cci.catalog_id),
+                    "catalog": cat.name,
                     "sku": cci.sku,
                     # name first — it is the short human label ("#4 hinge");
                     # description is where the paragraphs live.
@@ -711,7 +764,7 @@ def sku_suggest(
     # Source 3 — CHI's parts line. Never queried before 2026-07-16; it holds
     # 78 of the 90 springs in the system.
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_chi_parts:
         chi_part_rows = (
             db.query(ChiPartsCatalog)
             .filter(
@@ -731,6 +784,8 @@ def sku_suggest(
             _add(
                 {
                     "source": "catalog",
+                    "catalog_id": VIRTUAL_CHI_PARTS_ID,
+                    "catalog": "CHI Parts",
                     "sku": cp.sku,
                     "name": _name(cp.name, cp.description, cp.sku),
                     "vendor": cp.brand or cp.manufacturer,
@@ -743,7 +798,7 @@ def sku_suggest(
     # are marketing paragraphs that match nearly any needle, so in front they
     # ate the whole `limit`.
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_chi_doors:
         door_rows = (
             db.query(ChiDoorCatalog)
             .filter(
@@ -768,6 +823,8 @@ def sku_suggest(
             _add(
                 {
                     "source": "door_catalog",
+                    "catalog_id": VIRTUAL_CHI_DOORS_ID,
+                    "catalog": "CHI Doors",
                     "sku": d.sku,
                     # model_number ahead of description: the description is the
                     # marketing paragraph, and pickSuggestion() saves this as
@@ -782,7 +839,7 @@ def sku_suggest(
     # Sprint typed-catalogs follow-up — also surface tenant-custom doors
     # (CustomCatalogItem with product_class='door' joined to DoorSpec).
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_custom:
         custom_door_rows = (
             db.query(CustomCatalogItem, DoorSpec)
             .outerjoin(DoorSpec, DoorSpec.catalog_item_id == CustomCatalogItem.id)
