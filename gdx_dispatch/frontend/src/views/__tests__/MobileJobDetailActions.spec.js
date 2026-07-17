@@ -79,19 +79,9 @@ function jobPayload(overrides = {}) {
   };
 }
 
-// The view fetches the job AND the tech-mobile settings on mount; route by URL
-// so a settings call can't consume the job's mock (the old spec used
-// mockResolvedValueOnce and any extra GET would have broken it).
-function routeGet(overrides = {}, settings = {}) {
-  getMock.mockImplementation(async (url) => {
-    if (String(url).includes("tech-mobile-settings")) return { settings };
-    return jobPayload(overrides);
-  });
-}
-
-async function mountWith(overrides = {}, settings = {}) {
+async function mountWith(overrides = {}) {
   const { default: View } = await import("../MobileJobDetailView.vue");
-  routeGet(overrides, settings);
+  getMock.mockImplementation(async () => jobPayload(overrides));
   const w = mount(View, { global: { stubs } });
   await flushPromises();
   return w;
@@ -264,7 +254,7 @@ describe("photo capture", () => {
     const w = await mountWith();
     await pick(w, [file()]);
     await flushPromises();
-    expect(capturePhotoMock).toHaveBeenCalledWith("job-123", expect.any(File), null);
+    expect(capturePhotoMock).toHaveBeenCalledWith("job-123", expect.any(File));
   });
 
   it("says 'saved on your phone' when there's no signal — never 'uploaded'", async () => {
@@ -291,30 +281,8 @@ describe("photo capture", () => {
     expect(w.find('[data-testid="mjd-photo-pending"]').text()).toContain("3 waiting for signal");
   });
 
-  it("hides the slot picker when the tenant leaves tagging optional", async () => {
-    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "optional" });
-    expect(w.find('[data-testid="mjd-photo-kinds"]').exists()).toBe(false);
-  });
 
-  it("requires a slot when the tenant demands one, rather than eating the 400", async () => {
-    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "required" });
-    expect(w.find('[data-testid="mjd-photo-kinds"]').exists()).toBe(true);
 
-    await pick(w, [file()]);
-    await flushPromises();
-    expect(capturePhotoMock).not.toHaveBeenCalled();
-    expect(toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ severity: "warn" }),
-    );
-  });
-
-  it("sends the chosen slot", async () => {
-    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "required" });
-    await w.find('[data-testid="mjd-photo-kind-after"]').trigger("click");
-    await pick(w, [file()]);
-    await flushPromises();
-    expect(capturePhotoMock).toHaveBeenCalledWith("job-123", expect.any(File), "after");
-  });
 });
 
 describe("time is shown, never edited", () => {

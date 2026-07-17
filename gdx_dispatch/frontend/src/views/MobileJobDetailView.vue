@@ -109,21 +109,6 @@
         </div>
         <div v-else class="detail-meta detail-meta-muted">No photos yet.</div>
 
-        <!-- The tenant can require a slot. When it's optional the server
-             defaults to "during", so don't make the tech choose for nothing. -->
-        <div v-if="photoSlotRequired" class="photo-kinds" data-testid="mjd-photo-kinds">
-          <Button
-            v-for="k in PHOTO_KINDS"
-            :key="k"
-            :label="k"
-            size="small"
-            :outlined="photoKind !== k"
-            :severity="photoKind === k ? 'primary' : 'secondary'"
-            :data-testid="`mjd-photo-kind-${k}`"
-            @click="photoKind = k"
-          />
-        </div>
-
         <!-- A real file input, not a Button — only an input can open the
              camera. Deliberately NO `capture` attribute: Android honours it by
              forcing a single shot straight to the lens, which kills `multiple`
@@ -143,9 +128,6 @@
             {{ photoBusy ? 'Saving…' : 'Add photo' }}
           </span>
         </label>
-        <small v-if="photoSlotRequired && !photoKind" class="photo-hint">
-          Pick before / during / after first.
-        </small>
       </div>
 
       <!-- Time is shown, never edited here. Arriving starts the job clock and
@@ -250,11 +232,8 @@ const route = useRoute()
 const router = useRouter()
 const { pendingPhotos, capturePhoto } = usePhotoQueue()
 
-const PHOTO_KINDS = ['before', 'during', 'after']
 const photoInput = ref(null)
-const photoKind = ref(null)
 const photoBusy = ref(false)
-const photoSlotRequired = ref(false)
 
 const loading = ref(true)
 const error = ref(null)
@@ -382,42 +361,15 @@ function onCloseoutDone() {
   refresh()
 }
 
-// Cached, because this is a network GET that fails precisely when the tech is
-// offline — which is the whole use case. Failing open there would hide the slot
-// picker, send kind=null, and the server would 400 the photo hours later at
-// drain time, long after the tech drove away. Remember the last known answer.
-const SLOT_CACHE_KEY = 'gdx_photo_slot_required'
-
-async function loadPhotoSettings() {
-  try {
-    photoSlotRequired.value = localStorage.getItem(SLOT_CACHE_KEY) === '1'
-  } catch { /* private mode */ }
-  try {
-    const r = await api.get('/api/me/tech-mobile-settings')
-    const required =
-      (r?.settings || {})['tech_mobile.photo_slot_tagging'] === 'required'
-    photoSlotRequired.value = required
-    try { localStorage.setItem(SLOT_CACHE_KEY, required ? '1' : '0') } catch { /* ignore */ }
-  } catch {
-    // Offline or unreachable: keep whatever the cache said rather than
-    // guessing "optional" and setting the tech up for a rejected upload.
-  }
-}
 
 async function onPhotoPicked(e) {
   const files = Array.from(e?.target?.files || [])
   if (!files.length) return
-  if (photoSlotRequired.value && !photoKind.value) {
-    toast.add({ severity: 'warn', summary: 'Pick before / during / after first', life: 3000 })
-    if (photoInput.value) photoInput.value.value = ''
-    return
-  }
-
   photoBusy.value = true
   let queued = 0
   try {
     for (const f of files) {
-      const r = await capturePhoto(job.value.id, f, photoKind.value)
+      const r = await capturePhoto(job.value.id, f)
       if (r?.queued) queued += 1
     }
     // The photo is SAVED either way — that's the point of storing the blob
@@ -476,12 +428,7 @@ function formatScheduled(iso) {
   } catch { return iso }
 }
 
-onMounted(() => {
-  load()
-  // Not awaited: it only decides whether the slot picker shows, and the job
-  // must render even if settings are unreachable.
-  loadPhotoSettings()
-})
+onMounted(load)
 </script>
 
 <style scoped>
@@ -516,8 +463,6 @@ onMounted(() => {
   font-size: 0.75rem; font-weight: 600;
   color: var(--p-amber-600, #b45309);
 }
-.photo-kinds { display: flex; gap: 0.4rem; }
-.photo-kinds :deep(.p-button) { flex: 1; min-height: 44px; text-transform: capitalize; }
 /* A styled <label> wrapping a hidden file input — capture="environment" is
    what jumps straight to the back camera, and only a real input gets that. */
 .photo-add {
@@ -529,7 +474,6 @@ onMounted(() => {
 }
 .photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .photo-add span { display: inline-flex; align-items: center; gap: 0.4rem; }
-.photo-hint { color: var(--p-text-muted-color, #6b7280); font-size: 0.75rem; }
 .photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; }
 .photo-thumb { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 0.4rem; overflow: hidden; border: 1px solid var(--p-content-border-color, #e5e7eb); display: flex; align-items: center; justify-content: center; }
 .photo-thumb img { width: 100%; height: 100%; object-fit: cover; }

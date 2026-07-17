@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -221,15 +221,73 @@ def _insert_document(
     return row
 
 
+def _link_job_photo(
+    db: Session,
+    *,
+    tenant_id: str,
+    job_id: str,
+    document_id: str,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    uploaded_by: str,
+    kind: str | None = None,
+    caption: str | None = None,
+) -> None:
+    """Create the JobPhoto record for a just-stored file.
+
+    The url points at the document's download route — the same shape the Photos
+    page builds by hand today. Best-effort: a photo that stored its bytes must
+    not 500 because the index row failed, but it MUST be logged, because a
+    silently-missing record is exactly the failure this closes.
+    """
+    from uuid import UUID as _UUID
+
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    try:
+        # SAVEPOINT: a failure here must not take the document down with it.
+        # Bare try/except is not enough — a failed flush leaves the session
+        # unusable, so the outer commit would fail too and the tech would lose
+        # the upload they were told succeeded.
+        with db.begin_nested():
+            # JobPhoto.job_id is a Uuid column — binding the raw path string
+            # raises rather than parsing.
+            db.add(JobPhoto(
+                company_id=tenant_id,
+                job_id=_UUID(str(job_id)),
+                kind=(kind or "during"),  # untagged defaults to the server's slot
+                url=f"/api/documents/{document_id}/download",
+                filename=filename,
+                mime_type=content_type,
+                size_bytes=size_bytes,
+                caption=caption,
+                uploaded_by=uploaded_by,
+            ))
+    except Exception:
+        log.exception(
+            "job_photo_link_failed job=%s document=%s", job_id, document_id
+        )
+
+
 @router.post("/api/jobs/{job_id}/photos", status_code=201, response_model=DocumentOut)
 def upload_job_photo(
     job_id: str,
     request: Request,
     file: UploadFile = File(...),
+    # Optional so a tech can just shoot and go; the Photos page passes them.
+    kind: str | None = Form(default=None),
+    caption: str | None = Form(default=None),
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DocumentOut:
     try:
+        # Called directly (tests, other handlers) the Form(...) defaults arrive
+        # as FastAPI marker objects rather than None, and would be bound
+        # straight into SQL. Normalize to real values either way.
+        kind = kind if isinstance(kind, str) else None
+        caption = caption if isinstance(caption, str) else None
+
         if (file.content_type or "").strip().lower() not in ALLOWED_IMAGE_MIME_TYPES:
             raise HTTPException(status_code=415, detail="Only jpg/png/webp are supported")
 
@@ -253,6 +311,26 @@ def upload_job_photo(
             entity_type="job_photo",
             entity_id=job_id,
             uploaded_by=uploaded_by,
+        )
+
+        # A document holds the BYTES; a job photo is the photo record that
+        # points at them. They are different things — receipts and spec sheets
+        # are documents, a picture of the door is a photo — and every photo
+        # surface (the Photos page, the job's strip, the mobile job screen)
+        # reads job_photos. Storing the file and never creating that record is
+        # why job_photos has been empty since the feature shipped: the upload
+        # "worked" and the photo appeared nowhere.
+        _link_job_photo(
+            db,
+            tenant_id=tenant_id,
+            job_id=job_id,
+            document_id=row["id"],
+            filename=row["filename"],
+            content_type=effective_ct,
+            size_bytes=row["size_bytes"],
+            uploaded_by=uploaded_by,
+            kind=kind,
+            caption=caption,
         )
 
         asyncio.run(log_audit_event(

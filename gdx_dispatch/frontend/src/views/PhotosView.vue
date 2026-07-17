@@ -249,24 +249,19 @@ async function submitUpload() {
   if (!canUpload.value) return;
   uploading.value = true;
   try {
+    // One call. This used to be two — POST /api/documents for the bytes, then
+    // a JSON POST to /api/jobs/{id}/photos to create the photo record — and
+    // that second step has been 422ing since it shipped: a multipart handler
+    // in uploads.py claims the same path and is included first, so the JSON
+    // hit a route demanding a file. The file uploaded, the photo record never
+    // existed, and job_photos sat empty. The upload route now creates the
+    // record itself.
     const formData = new FormData();
     formData.append("job_id", uploadForm.job_id);
     formData.append("file", uploadForm.file);
-    // Phase B2 (2026-04-24): switched from deleted /api/documents/upload
-    // to canonical POST /api/documents. Form fields are the same; the
-    // canonical route writes tenant_id + job_id correctly, which the
-    // deleted route left NULL on some paths (root cause of the
-    // 2026-04-22 preview bug).
-    const doc = await api.post("/api/documents", formData);
-    const payload = {
-      url: `/api/documents/${doc.id}/download`,
-      kind: uploadForm.kind,
-      filename: doc.original_name || doc.filename,
-      mime_type: doc.content_type,
-      size_bytes: doc.size_bytes,
-      caption: uploadForm.caption,
-    };
-    await api.post(`/api/jobs/${uploadForm.job_id}/photos`, payload, { successMessage: "Photo added" });
+    if (uploadForm.kind) formData.append("kind", uploadForm.kind);
+    if (uploadForm.caption) formData.append("caption", uploadForm.caption);
+    await api.post(`/api/jobs/${uploadForm.job_id}/photos`, formData, { successMessage: "Photo added" });
     closeUpload();
     await loadPhotos();
   } finally {

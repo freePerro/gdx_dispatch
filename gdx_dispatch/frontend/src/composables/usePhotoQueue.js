@@ -17,6 +17,13 @@
  * Drains on the same signals as the JSON queue (`online` + `visibilitychange`
  * — iOS never fires a reliable `online`), so a photo taken in a basement lands
  * when the tech gets back to the truck.
+ *
+ * Posts to the SAME route the desktop uses — `/api/jobs/{id}/photos` — not the
+ * mobile-only twin. Doug: "if they are on a job it should just automatically be
+ * tagged to that job and that customer", and the job already knows its
+ * customer, so the URL is the tagging. One route means the office sees a tech's
+ * photo on the very same Photos page as their own; two routes is how you get a
+ * photo nobody can find.
  */
 import { ref } from 'vue'
 import { db, QUEUE_STATUS } from '../lib/offlineDb'
@@ -154,7 +161,7 @@ async function _sendPhoto(photoId, row) {
     // 401 it refreshes the token and retries. A photo captured at 9am and
     // drained at 5pm meets an expired token; hand-rolled fetch would take that
     // 401 as the server's verdict on the photo.
-    await createApiClient().post(`/api/mobile/jobs/${row.job_id}/photos`, form)
+    await createApiClient().post(`/api/jobs/${row.job_id}/photos`, form)
   } catch (err) {
     const status = err?.status || 0
     if (!status && !_looksLikeNetwork(err)) {

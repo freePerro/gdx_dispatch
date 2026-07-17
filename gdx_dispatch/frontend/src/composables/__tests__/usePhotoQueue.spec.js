@@ -97,7 +97,9 @@ describe("online capture", () => {
     expect(r.queued).toBe(false);
 
     const [url, body] = postMock.mock.calls[0];
-    expect(url).toBe("/api/mobile/jobs/job-1/photos");
+    // The SAME route the desktop posts to — a tech photo and an office
+    // photo must land in one place, or the office can never find it.
+    expect(url).toBe("/api/jobs/job-1/photos");
     expect(body).toBeInstanceOf(FormData);
     expect(body.get("kind")).toBe("before");
     expect(body.get("file")).toBeTruthy();
