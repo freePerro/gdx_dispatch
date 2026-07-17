@@ -108,6 +108,15 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     # Webhooks
     ("webhooks.manage", "Manage webhooks", "webhooks"),
 
+    # Contact details only — NOT customers.write. A tech standing in the
+    # customer's driveway is the one person who can fix a missing phone number
+    # or get an email for the invoice (219 of 382 customers here have no email
+    # at all), but customers.write also carries pricing_class,
+    # margin_override_pct and payment_terms_days. Those are money, and a field
+    # tech has no business near them. This key grants name/phone/email and the
+    # contact list, and the endpoints that accept it touch nothing else.
+    ("customers.contact_write", "Add or correct customer contact details", "customers"),
+
     # Mobile (technician field app)
     ("mobile.use", "Use the mobile app", "mobile"),
     # Phase 4 Polish (Sprint tech_mobile)
@@ -148,7 +157,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "jobs.read_all", "jobs.write",
         "scheduling.read_all", "scheduling.write",
         "dispatch.read",
-        "customers.read_all", "customers.write",
+        "customers.read_all", "customers.write", "customers.contact_write",
         "leads.read", "leads.write", "leads.delete",
         "estimates.read_all", "estimates.write",
         "invoices.read_all",
@@ -163,6 +172,8 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "jobs.read_own", "jobs.write",
         "scheduling.read_own",
         "customers.read_own",
+        # Contact details only — never customers.write. See the key's note above.
+        "customers.contact_write",
         "estimates.read_own",
         "inventory.read", "inventory.write",
         "pricing.labor_matrix.read",
@@ -170,7 +181,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         # No nav.office / nav.admin — technicians are the field tier.
     ],
     "sales": [
-        "customers.read_all", "customers.write",
+        "customers.read_all", "customers.write", "customers.contact_write",
         "leads.read", "leads.write", "leads.delete",
         "estimates.read_all", "estimates.write", "estimates.send",
         "invoices.read_all",

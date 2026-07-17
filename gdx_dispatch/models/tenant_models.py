@@ -206,6 +206,51 @@ class Customer(Base):
         return value
 
 
+class CustomerContact(Base):
+    """A person at a customer, beyond the one name/phone/email on the customer.
+
+    `customers` holds exactly one of each, which is fine for a house and wrong
+    for anything else: a property manager, a front desk and an on-site super are
+    three different people who all belong to the same account. Techs are the
+    ones who learn these — standing in the driveway is when you find out who to
+    actually call — so the mobile job screen can add them, and they follow the
+    customer to every future job rather than living on one visit.
+
+    Plaintext name/phone/email, matching `Customer` (see the note on that class:
+    they stay plaintext pending D-S122-9-customer-search-encryption, because
+    LIKE against ciphertext matches nothing). `address` is deliberately absent —
+    the job's address is the customer's, and a second one here would just be a
+    thing to disagree with it.
+
+    No *_hash sidecars, deliberately: Customer's exist so the email poller and
+    the Phone.com resolver can find a customer from an inbound address/number.
+    Wiring those lookups to also search contacts is a real improvement and a
+    separate change — adding the columns now, with nothing reading them, would
+    be dead weight that later looks load-bearing.
+    """
+
+    __tablename__ = "customer_contacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    customer_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("customers.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Free text, not an enum: "property manager", "tenant", "gate code guy".
+    # Every tenant's vocabulary is its own and a dropdown would just be wrong
+    # somewhere.
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)

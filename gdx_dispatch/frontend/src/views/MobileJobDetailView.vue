@@ -65,8 +65,91 @@
           <i class="pi pi-map-marker" />
           <span>{{ customer.address }}</span>
         </a>
+        <a
+          v-if="customer?.email"
+          class="contact-row"
+          :href="`mailto:${customer.email}`"
+          data-testid="mobile-job-detail-email"
+        >
+          <i class="pi pi-envelope" />
+          <span>{{ customer.email }}</span>
+        </a>
+
+        <!-- The people at this account beyond the one name on the record: a
+             property manager, a front desk, whoever actually answers. They
+             follow the customer, so the next tech on the next job sees them. -->
+        <ul v-if="contacts.length" class="contact-list" data-testid="mjd-contact-list">
+          <li v-for="c in contacts" :key="c.id">
+            <div class="contact-who">
+              <span class="contact-name">{{ c.name }}</span>
+              <span v-if="c.label" class="contact-label">{{ c.label }}</span>
+            </div>
+            <a v-if="c.phone" class="contact-row contact-row-sub" :href="`tel:${c.phone}`">
+              <i class="pi pi-phone" />
+              <span>{{ c.phone }}</span>
+            </a>
+            <a v-if="c.email" class="contact-row contact-row-sub" :href="`mailto:${c.email}`">
+              <i class="pi pi-envelope" />
+              <span>{{ c.email }}</span>
+            </a>
+          </li>
+        </ul>
+
         <div v-if="!customer?.phone && !customer?.address" class="detail-meta detail-meta-muted">
-          No contact info on file — ask dispatch.
+          No contact info on file — you're the one who can fix that.
+        </div>
+
+        <!-- The tech is the only person standing in front of the customer, so
+             they're the only one who can fill in what's missing. 219 of 382
+             customers have no email at all. -->
+        <div v-if="!contactFormOpen" class="contact-actions">
+          <Button
+            v-if="!customer?.email"
+            label="Add email"
+            icon="pi pi-envelope"
+            size="small"
+            text
+            data-testid="mjd-add-email"
+            @click="openContactForm('email')"
+          />
+          <Button
+            label="Add contact"
+            icon="pi pi-user-plus"
+            size="small"
+            text
+            data-testid="mjd-add-contact"
+            @click="openContactForm('contact')"
+          />
+        </div>
+
+        <div v-else class="contact-form">
+          <template v-if="contactFormMode === 'email'">
+            <InputText
+              v-model="emailDraft"
+              type="email"
+              inputmode="email"
+              maxlength="254"
+              placeholder="Customer email"
+              data-testid="mjd-email-input"
+            />
+          </template>
+          <template v-else>
+            <InputText v-model="contactDraft.name" maxlength="200" placeholder="Name" data-testid="mjd-contact-name" />
+            <InputText v-model="contactDraft.phone" type="tel" inputmode="tel" maxlength="50" placeholder="Phone" data-testid="mjd-contact-phone" />
+            <InputText v-model="contactDraft.label" maxlength="120" placeholder="Who they are (optional)" data-testid="mjd-contact-label" />
+          </template>
+          <div class="contact-form-actions">
+            <Button label="Cancel" size="small" text severity="secondary" @click="closeContactForm" />
+            <Button
+              label="Save"
+              icon="pi pi-check"
+              size="small"
+              :loading="contactBusy"
+              :disabled="!contactFormValid"
+              data-testid="mjd-contact-save"
+              @click="saveContactForm"
+            />
+          </div>
         </div>
       </div>
 
@@ -432,6 +515,85 @@ const invoiceOpen = ref(false)
 
 const noteDraft = ref('')
 const noteBusy = ref(false)
+
+const contactFormOpen = ref(false)
+const contactFormMode = ref('contact')
+const contactBusy = ref(false)
+const emailDraft = ref('')
+const contactDraft = ref({ name: '', phone: '', label: '' })
+
+// Contacts ride on the customer in the job payload.
+const contacts = computed(() => customer.value?.contacts || [])
+
+const contactFormValid = computed(() => {
+  if (contactFormMode.value === 'email') {
+    // Deliberately not a strict RFC pattern — a tech typing what's on the work
+    // order shouldn't be argued with by a regex. The server bounds the length;
+    // an address with an @ and a dot is the bar for "worth saving".
+    const e = emailDraft.value.trim()
+    return e.length >= 5 && e.includes('@') && e.includes('.')
+  }
+  // A name alone is a real contact: "ask for Jim at the front desk" is worth
+  // recording even before anyone has his number.
+  return contactDraft.value.name.trim().length > 0
+})
+
+function openContactForm(mode) {
+  contactFormMode.value = mode
+  emailDraft.value = customer.value?.email || ''
+  contactDraft.value = { name: '', phone: '', label: '' }
+  contactFormOpen.value = true
+}
+
+function closeContactForm() {
+  contactFormOpen.value = false
+  emailDraft.value = ''
+  contactDraft.value = { name: '', phone: '', label: '' }
+}
+
+async function saveContactForm() {
+  if (!contactFormValid.value || contactBusy.value) return
+  contactBusy.value = true
+  const isEmail = contactFormMode.value === 'email'
+  try {
+    if (isEmail) {
+      // patchQueued/postQueued: a tech gets the email at the door, which is
+      // exactly where the signal isn't. The write survives the dead zone.
+      await api.patchQueued(
+        `/api/mobile/jobs/${job.value.id}/customer`,
+        { email: emailDraft.value.trim() },
+        { actionType: 'job.customer_contact', resourceId: String(job.value.id) },
+      )
+    } else {
+      const d = contactDraft.value
+      await api.postQueued(
+        `/api/mobile/jobs/${job.value.id}/customer/contacts`,
+        {
+          name: d.name.trim(),
+          phone: d.phone.trim() || null,
+          label: d.label.trim() || null,
+        },
+        { actionType: 'job.customer_contact', resourceId: String(job.value.id) },
+      )
+    }
+    await refresh()
+    toast.add({
+      severity: 'success',
+      summary: isEmail ? 'Email saved' : 'Contact added',
+      life: 2500,
+    })
+    closeContactForm()
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: isEmail ? 'Could not save email' : 'Could not add contact',
+      detail: err?.message || '',
+      life: 4000,
+    })
+  } finally {
+    contactBusy.value = false
+  }
+}
 
 const partQuery = ref('')
 const partSku = ref(null)
@@ -915,6 +1077,23 @@ onMounted(() => {
   color: var(--p-primary-color, #2563eb); text-decoration: none;
   font-size: 0.95rem; padding: 0.25rem 0;
 }
+.contact-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.contact-list li {
+  padding-top: 0.5rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+}
+.contact-who { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.contact-name { font-weight: 600; font-size: 0.95rem; }
+.contact-label {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em;
+  color: var(--p-text-muted-color, #9ca3af);
+}
+.contact-row-sub { min-height: 40px; }
+.contact-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
+.contact-actions :deep(.p-button) { min-height: 44px; }
+.contact-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+.contact-form :deep(.p-inputtext) { width: 100%; min-height: 44px; }
+.contact-form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.contact-form-actions :deep(.p-button) { min-height: 44px; }
 .note-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .note-body { font-size: 0.95rem; white-space: pre-wrap; }
 .note-when { font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); }
