@@ -246,6 +246,14 @@ onUnmounted(() => {
   top: 0;
   z-index: 100;
   background: var(--surface-header);
+  /* A grid item defaults to min-width:auto and will not shrink below its
+     content's min-content width. Without this the header sizes to whatever the
+     topbar needs (760px for a long tenant name on a 360px phone), overflows its
+     column, and .layout-main's overflow:hidden simply CLIPS the icons out of
+     existence — no scrollbar, no wrap, just gone. With it, the header is held
+     to the column width and the topbar's own min-width:0 chain can ellipsise
+     the brand instead. */
+  min-width: 0;
 }
 
 .breadcrumbs-row {
