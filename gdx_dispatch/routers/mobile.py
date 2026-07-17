@@ -229,8 +229,8 @@ def _get_job(db: Session, tenant_id: str, job_id: str) -> dict[str, Any] | None:
         _text(
             """
             SELECT id, customer_id, title, description, dispatch_status,
-                   scheduled_at, completed_at, signature_data, signed_by,
-                   signed_at, created_at
+                   scheduled_at, arrived_at, completed_at, signature_data,
+                   signed_by, signed_at, created_at
             FROM jobs
             WHERE id = :job_id
               AND company_id = :tenant_id
@@ -297,6 +297,40 @@ def _image_suffix(file: UploadFile) -> str:
     if filename.endswith(".gif") or "gif" in content_type:
         return "gif"
     return "jpg"
+
+
+def _job_is_billed(db: Session, job_id: Any) -> bool:
+    """Has this job reached a real invoice?
+
+    Derived from invoices via the ONE canonical predicate, never from
+    `Job.billing_status` — that column is a dead cache that only ever says
+    "unbilled", and every reader that trusted it counted paid jobs as unbilled
+    (core/billing_predicates.py).
+    """
+    from gdx_dispatch.core.billing_predicates import job_billed_exists
+
+    # `Job.id` is a Uuid column; the id reaching here came out of a raw-SQL
+    # SELECT as a plain string, and binding that against Uuid raises rather
+    # than parsing it. Coerce first — the except below would otherwise swallow
+    # it and silently hide the Bill button on every job.
+    try:
+        jid = job_id if isinstance(job_id, _UUID) else _UUID(str(job_id))
+    except (ValueError, AttributeError, TypeError):
+        log.warning("mobile_job_billed_unparsable_id", extra={"job_id": str(job_id)})
+        return True
+
+    try:
+        return bool(
+            db.execute(
+                select(Job.id).where(Job.id == jid, job_billed_exists()).limit(1)
+            ).first()
+        )
+    except SQLAlchemyError:
+        # Never break the job screen over one button's guard. Failing to
+        # "billed" hides Bill rather than inviting a second invoice — but it is
+        # a real failure, so it must be loud, not swallowed.
+        log.exception("mobile_job_billed_check_failed", extra={"job_id": str(job_id)})
+        return True
 
 
 def _build_navigation_link(address: str | None) -> str | None:
@@ -1820,6 +1854,25 @@ def get_mobile_job_detail(
                     "address": c_obj.address,
                 }
 
+    # The tech's actions read the customer off the job (`job.customer?.id` for
+    # equipment/change-order, `job.customer?.name` for toasts) — same as the
+    # Today cards. Nest it rather than shipping a second sibling copy: two
+    # copies of one customer in one payload is a divergence trap, and there is
+    # exactly one consumer of this endpoint to keep in step.
+    job["customer"] = customer
+    # Built server-side so both surfaces navigate identically — the client used
+    # to hand-build a different Google Maps URL format from the sibling address.
+    job["navigation_link"] = _build_navigation_link(
+        customer.get("address") if customer else None
+    )
+    # Derived, never cached. `Job.billing_status` looks like the answer and is a
+    # dead column — nothing has ever written anything but "unbilled", so every
+    # reader that trusted it counted paid jobs as unbilled
+    # (core/billing_predicates.py). This screen opens ANY job, including one
+    # invoiced months ago, so it needs the real answer to avoid offering to
+    # re-bill it.
+    job["billed"] = _job_is_billed(db, job.get("id"))
+
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     notes = db.execute(
         _text(
@@ -1852,7 +1905,6 @@ def get_mobile_job_detail(
     return jsonable_response(
         {
             "job": job,
-            "customer": customer,
             "notes": [dict(r) for r in notes],
             "photos": [dict(r) for r in photos],
         }

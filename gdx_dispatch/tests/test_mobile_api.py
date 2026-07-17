@@ -5,7 +5,7 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -199,9 +199,156 @@ def test_get_job_detail_success(session_factory):
         assert r.status_code == 200
         data = _as_json(r)
         assert data["job"]["id"] == seed["job_id"]
-        assert data["customer"]["name"] == "Acme Customer"
+        # The customer rides ON the job — the shape the Today cards already
+        # use, so a tech action can read `job.customer` without caring which
+        # screen mounted it. It is deliberately NOT also emitted as a sibling:
+        # two copies of one customer in one payload is a divergence trap.
+        assert data["job"]["customer"]["name"] == "Acme Customer"
+        assert "customer" not in data, "sibling customer copy is back"
+        # Built server-side so both surfaces navigate the same way.
+        assert data["job"]["navigation_link"].startswith("https://maps.google.com/?q=")
         assert len(data["notes"]) == 1
         assert len(data["photos"]) == 1
+    finally:
+        db.close()
+
+
+def _seed_uuid_job(db) -> tuple[str, str]:
+    """A job whose id is PROD-shaped.
+
+    `_seed_job_bundle` uses the literal "job-1", which is fine for handlers that
+    only pass the id through raw SQL — but the billed check compares against the
+    ORM's Uuid column, and a non-UUID string there raises rather than parses.
+    A fixture id that could never exist in prod would prove nothing.
+    """
+    job_id = uuid4().hex  # 32-char hex — what Uuid(as_uuid=True) stores on SQLite
+    customer_id = uuid4().hex
+    now = datetime.now(UTC)
+    db.execute(
+        text(
+            "INSERT INTO customers (id, name, phone, email, address, company_id) "
+            "VALUES (:id, 'Acme Customer', '555-1111', 'a@example.com', '123 Main', 'tenant-a')"
+        ),
+        {"id": customer_id},
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO jobs (
+                id, company_id, customer_id, title, description, dispatch_status,
+                scheduled_at, created_at, deleted_at
+            ) VALUES (
+                :id, 'tenant-a', :customer_id, 'Garage Door Repair', 'Broken spring',
+                'done', :now, :now, NULL
+            )
+            """
+        ),
+        {"id": job_id, "customer_id": customer_id, "now": now},
+    )
+    # The ownership gate 404s a job the tech isn't on — seed the link the same
+    # way the real flow does, so this exercises the gate rather than bypassing it.
+    db.execute(
+        text(
+            "INSERT OR IGNORE INTO technicians (id, company_id, user_id, active, created_at) "
+            "VALUES ('tech-1', 'tenant-a', 'user-1', 1, :now)"
+        ),
+        {"now": now},
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO appointments (
+                id, company_id, job_id, tech_id, title, start_at, end_at,
+                created_at, updated_at, deleted_at
+            ) VALUES (
+                :id, 'tenant-a', :job_id, 'tech-1', 'Service Call', :now, :now,
+                :now, :now, NULL
+            )
+            """
+        ),
+        {"id": uuid4().hex, "job_id": job_id, "now": now},
+    )
+    db.commit()
+    return job_id, customer_id
+
+
+def _detail(db, job_id):
+    r = mobile_router.get_mobile_job_detail(
+        job_id=job_id, request=_request(), current_user=_TEST_USER, db=db,
+    )
+    assert r.status_code == 200
+    return _as_json(r)["job"]
+
+
+def _add_invoice(db, job_id, customer_id, *, status: str, total: float, deleted: bool = False):
+    """Insert through the ORM so the row matches the real schema rather than a
+    hand-rolled column list (invoices has no `updated_at`, for one)."""
+    from gdx_dispatch.models.tenant_models import Invoice
+
+    db.add(
+        Invoice(
+            id=uuid4(),
+            company_id="tenant-a",
+            job_id=UUID(job_id) if isinstance(job_id, str) else job_id,
+            customer_id=UUID(customer_id) if isinstance(customer_id, str) else customer_id,
+            invoice_number=f"INV-{uuid4().hex[:8]}",
+            public_token=uuid4().hex,
+            status=status,
+            subtotal=total,
+            total=total,
+            balance_due=total,
+            deleted_at=datetime.now(UTC) if deleted else None,
+        )
+    )
+    db.commit()
+
+
+def test_job_detail_billed_flag_is_derived_from_invoices(session_factory):
+    """`billed` must come from real invoices, never from Job.billing_status.
+
+    That column looks like the answer and is a dead cache — nothing has ever
+    written anything but "unbilled", so every reader that trusted it counted
+    paid jobs as unbilled (core/billing_predicates.py). The mobile job screen
+    opens ANY job, including one invoiced months ago, and uses this flag to
+    decide whether to offer "Bill / collect". Getting it wrong means inviting a
+    second invoice on a paid job.
+    """
+    db = session_factory()
+    try:
+        job_id, customer_id = _seed_uuid_job(db)
+
+        # No invoice yet — billable.
+        assert _detail(db, job_id)["billed"] is False
+
+        # A sent invoice bills the job.
+        _add_invoice(db, job_id, customer_id, status="sent", total=250.0)
+        assert _detail(db, job_id)["billed"] is True
+    finally:
+        db.close()
+
+
+def test_job_detail_billed_flag_ignores_void_and_zero_drafts(session_factory):
+    """The two deliberate exclusions in the canonical predicate.
+
+    A voided invoice doesn't bill a job (the old queries lost such jobs from
+    Ready-for-Billing forever), and the $0 draft that create_invoice_from_job
+    fabricates when a job has no estimate isn't billing either — treating it as
+    billed would silently hide the job from the tech AND every alert.
+    """
+    db = session_factory()
+    try:
+        void_job, void_cust = _seed_uuid_job(db)
+        _add_invoice(db, void_job, void_cust, status="void", total=250.0)
+        assert _detail(db, void_job)["billed"] is False, "a voided invoice billed the job"
+
+        draft_job, draft_cust = _seed_uuid_job(db)
+        _add_invoice(db, draft_job, draft_cust, status="draft", total=0.0)
+        assert _detail(db, draft_job)["billed"] is False, "the fabricated $0 draft billed the job"
+
+        # A $0 invoice deliberately SENT does count — warranty work, stop nagging.
+        sent_job, sent_cust = _seed_uuid_job(db)
+        _add_invoice(db, sent_job, sent_cust, status="sent", total=0.0)
+        assert _detail(db, sent_job)["billed"] is True
     finally:
         db.close()
 

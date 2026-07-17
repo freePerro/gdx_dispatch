@@ -121,14 +121,18 @@ describe("MobileJobsView card links", () => {
 describe("MobileJobDetailView", () => {
   it("renders customer contact as tel/navigation links", async () => {
     const { default: MobileJobDetailView } = await import("../src/views/MobileJobDetailView.vue");
+    // The customer now rides ON the job, and the nav link is built server-side
+    // — one shape, shared with the Today cards, so the actions can read
+    // job.customer without caring which screen mounted them.
     getMock.mockResolvedValueOnce({
       job: {
         id: "job-123", title: "Opener install", description: "8ft door",
         dispatch_status: "assigned", scheduled_at: "2026-07-16T15:00:00+00:00",
-      },
-      customer: {
-        id: "c1", name: "Acme", phone: "5551234567",
-        email: "a@example.com", address: "123 Main St",
+        navigation_link: "https://maps.google.com/?q=123+Main+St",
+        customer: {
+          id: "c1", name: "Acme", phone: "5551234567",
+          email: "a@example.com", address: "123 Main St",
+        },
       },
       notes: [{ id: "n1", note: "Gate code 4321", created_at: "2026-07-15T12:00:00+00:00" }],
       photos: [],
@@ -139,8 +143,7 @@ describe("MobileJobDetailView", () => {
     expect(w.find('[data-testid="mobile-job-detail-customer"]').text()).toBe("Acme");
     expect(w.find('[data-testid="mobile-job-detail-phone"]').attributes("href")).toBe("tel:5551234567");
     const nav = w.find('[data-testid="mobile-job-detail-address"]').attributes("href");
-    expect(nav).toContain("google.com/maps");
-    expect(nav).toContain(encodeURIComponent("123 Main St"));
+    expect(nav).toBe("https://maps.google.com/?q=123+Main+St");
     expect(w.text()).toContain("Gate code 4321");
   });
 
