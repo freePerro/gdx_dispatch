@@ -152,6 +152,45 @@
         {{ routeOrderSummary }}
       </p>
 
+      <!-- Labor exceptions — shifts the office needs to correct.
+           Deliberately not a report: it renders only when something is wrong,
+           on the screen dispatch already has open, so nobody has to remember
+           to run it and it cannot nag on a clean day. Correcting the shift IS
+           the dismissal — the row drops out on the next load. -->
+      <Card v-if="laborExceptions.length" class="board-section" data-testid="labor-exceptions">
+        <template #title>
+          <div class="section-header">
+            <span class="section-icon pi pi-exclamation-triangle" style="color: var(--p-amber-500)"></span>
+            <span>Timeclock needs a look</span>
+            <Tag :value="String(laborExceptions.length)" severity="warning" rounded />
+          </div>
+        </template>
+        <template #content>
+          <DataTable responsiveLayout="scroll" :value="laborExceptions" :rows="5" size="small" stripedRows>
+            <Column header="Who">
+              <template #body="{ data }">
+                {{ data.tech_name || 'Unknown tech' }}
+              </template>
+            </Column>
+            <Column header="Started">
+              <template #body="{ data }">{{ formatDateTime(data.started_at) }}</template>
+            </Column>
+            <Column header="What">
+              <template #body="{ data }">
+                {{ data.detail }}
+                <small v-if="data.hours" class="muted"> · recorded {{ data.hours }}h</small>
+              </template>
+            </Column>
+            <Column header="Action" style="width: 10rem">
+              <template #body="{ data }">
+                <Button label="Fix" icon="pi pi-clock" size="small" severity="secondary"
+                  @click="fixLaborException(data)" data-testid="fix-labor-exception" />
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
       <!-- Day View -->
       <div v-if="viewMode === 'day'" style="display: flex; flex-direction: column;">
         <!-- Unassigned Jobs -->
@@ -646,6 +685,8 @@ import Drawer from 'primevue/drawer';
 import Select from 'primevue/select';
 import SelectButton from 'primevue/selectbutton';
 import Tag from 'primevue/tag';
+import DataTable from 'primevue/datatable';
+import Column from 'primevue/column';
 import JobStateChip from '../components/JobStateChip.vue';
 import TechEfficiencyPanel from '../components/TechEfficiencyPanel.vue';
 import TechTimelineColumn from '../components/TechTimelineColumn.vue';
@@ -661,6 +702,28 @@ const jobStatuses = ['Scheduled', 'In Progress', 'Complete', 'Invoiced'];
 
 function goToJob(job) {
   if (job?.id) router.push(`/jobs/${job.id}`);
+}
+
+// Shifts the office needs to correct: still clocked in long past the cap, or
+// closed with a duration nothing can vouch for. Empty on a healthy shop, and
+// the card does not render at all — this must never become wallpaper.
+const laborExceptions = ref([]);
+
+async function loadLaborExceptions() {
+  try {
+    const rows = await api.get('/api/timeclock/exceptions');
+    laborExceptions.value = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    // Techs get a 403 here by design; never break the board over it.
+    console.warn('labor_exceptions_failed', e);
+    laborExceptions.value = [];
+  }
+}
+
+function fixLaborException(row) {
+  // The timeclock view is where a shift's times get corrected; fixing it is
+  // what clears this row.
+  router.push({ path: '/timeclock', query: { entry: row.entry_id } });
 }
 
 async function quickStatusChange(job) {
@@ -1668,6 +1731,7 @@ onMounted(async () => {
   await loadDispatchSettings();
   refreshBoard();
   refreshLiveTechs();
+  loadLaborExceptions();
   liveTechsTimer = setInterval(refreshLiveTechs, 30_000);
 });
 
