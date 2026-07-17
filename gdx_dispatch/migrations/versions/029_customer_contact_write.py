@@ -45,15 +45,25 @@ def upgrade() -> None:
     # of the JSON and corrupt every role it touched. Cast to jsonb to do the
     # work, cast back to text to store it.
     #
-    # The LIKE guard is the cheap filter that keeps a malformed row from
-    # reaching ::jsonb, which RAISES and would abort the whole migration.
-    # Verified on prod: 14/14 rows well-formed, 0 null/empty.
+    # pg_input_is_valid, not a LIKE. The first draft guarded with
+    # `permissions LIKE '[%%]'` and a comment claiming that kept malformed rows
+    # away from ::jsonb. It does not, and one line of SQL disproves it:
     #
-    # It is written '[%%]' rather than '[%]' because this string goes to the
-    # DBAPI, and psycopg2 reads a bare % as a parameter placeholder: it fails
-    # with "immutabledict is not a sequence" and, since env.py wraps the upgrade
-    # in a single transaction, drags every other migration in the run down with
-    # it. (Which is exactly what it did the first time this was run.)
+    #   '[oops]' LIKE '[%]'  -> true, then ::jsonb RAISES
+    #     invalid input syntax for type json
+    #
+    # LIKE filters things that don't LOOK like an array; anything shaped [...]
+    # sails through and raises, and because env.py wraps the upgrade in one
+    # transaction it takes the whole run down. Nor does WHERE-clause order save
+    # it: the planner puts `~~` first because it is cheap, not because SQL
+    # promises to evaluate the guard before the cast. pg_input_is_valid answers
+    # the actual question — "will this cast" — and both prod and dev are PG
+    # 16.13, so it's available. (Caught in review, 2026-07-17.)
+    #
+    # '%%' escaping is still needed on any literal % here: exec_driver_sql
+    # passes params, so psycopg2 reads a bare % as a placeholder and fails with
+    # "immutabledict is not a sequence" — verified, and it is exactly what this
+    # migration did on its first run.
     op.get_bind().exec_driver_sql(
         f"""
         DO $$ BEGIN
@@ -64,7 +74,8 @@ def upgrade() -> None:
             UPDATE tenant_roles
                SET permissions = ((permissions::jsonb) || '["{_KEY}"]'::jsonb)::text
              WHERE name IN {_ROLES!r}
-               AND permissions LIKE '[%%]'
+               AND permissions IS NOT NULL
+               AND pg_input_is_valid(permissions, 'jsonb')
                AND jsonb_typeof(permissions::jsonb) = 'array'
                -- Not already granted, and not a wildcard role (owner holds "*"
                -- and appending a key to it would be noise).
@@ -77,19 +88,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.get_bind().exec_driver_sql(
-        f"""
-        DO $$ BEGIN
-          IF EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'tenant_roles'
-          ) THEN
-            UPDATE tenant_roles
-               SET permissions = ((permissions::jsonb) - '{_KEY}')::text
-             WHERE name IN {_ROLES!r}
-               AND permissions LIKE '[%%]'
-               AND jsonb_typeof(permissions::jsonb) = 'array';
-          END IF;
-        END $$;
-        """
-    )
+    """Deliberately a no-op. Stripping the key back out is not the inverse.
+
+    The first draft stripped it unconditionally, which is not what upgrade did
+    in reverse — upgrade grants only where the key is ABSENT, so it has no idea
+    which rows it actually touched. Two ways that loses real data:
+
+      * A tenant seeded AFTER this shipped gets the key from BUILTIN_ROLES
+        without this migration ever running. An unconditional strip removes a
+        grant 029 never made.
+      * An operator who ticked "Add or correct customer contact details" onto a
+        role in the Roles & Permissions UI has their deliberate choice deleted
+        by a schema rollback.
+
+    Leaving the key granted on a rollback is harmless in the other direction:
+    the older code simply never checks a permission it doesn't define, and
+    _load_user_permissions ignores unknown keys. Harmless-and-stale beats
+    correct-looking-and-destructive, so this does nothing. (Review, 2026-07-17.)
+    """
+    pass
