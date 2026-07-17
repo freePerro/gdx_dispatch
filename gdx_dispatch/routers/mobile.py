@@ -1902,11 +1902,41 @@ def get_mobile_job_detail(
         {"job_id": job_id},
     ).mappings().all()
 
+    # 2026-07-16: the parts the tech has REQUESTED for this job. Without these
+    # they can't see what was already asked for, and re-request it.
+    #
+    # source='request' is not a nicety. job_parts_needed is the shared billable
+    # spine for four different events: 'request' (asked for), 'closeout'
+    # (attested as installed at completion), 'mobile' (used off the truck) and
+    # 'van' (van-stock usage) — the last three are parts already IN the door.
+    # Unfiltered, this card labels an installed part "Needed", and worse: a
+    # re-closeout DELETES and recreates its unbilled rows (jobs.py:1620), so
+    # the list would silently rewrite itself under the tech. The office
+    # checklist shows all four and distinguishes them with source badges; this
+    # card asks one question and must answer only it.
+    #
+    # job_id is String(36) here, so it matches the dashed job_id directly — no
+    # UUID cast, unlike job_photos.job_id, which is a Uuid column.
+    parts = db.execute(
+        _text(
+            """
+            SELECT id, part_name, sku, quantity, urgency, status, notes, eta_at,
+                   created_at
+            FROM job_parts_needed
+            WHERE job_id = :job_id
+              AND source = 'request'
+            ORDER BY created_at ASC
+            """
+        ),
+        {"job_id": job_id},
+    ).mappings().all()
+
     return jsonable_response(
         {
             "job": job,
             "notes": [dict(r) for r in notes],
             "photos": [dict(r) for r in photos],
+            "parts": [dict(r) for r in parts],
         }
     )
 

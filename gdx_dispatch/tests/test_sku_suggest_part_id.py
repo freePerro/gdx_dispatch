@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Generator
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
@@ -273,9 +273,30 @@ def test_empty_query_returns_nothing(db: Session) -> None:
 
 
 def test_endpoint_is_permission_gated() -> None:
-    """A tech needs inventory.read to reach this; don't let a refactor drop it."""
-    src = (
-        __import__("pathlib").Path(parts_needed.__file__).read_text(encoding="utf-8")
+    """The gate must be on THIS route, not merely somewhere in the module.
+
+    Asserting `'require_permission("inventory.read")' in src` is what this was,
+    and it was worthless: the string appears 4 times in the file, so deleting
+    sku_suggest's own gate left the test green (verified by mutation). That is
+    the same vacuous-pin failure this file's header condemns — written straight
+    back into it. Introspect the real route's dependencies instead.
+    """
+    # The router carries prefix="/api", so the decorator's literal path is not
+    # the route's path.
+    route = next(
+        r for r in parts_needed.router.routes
+        if getattr(r, "path", None) == "/api/parts-needed/sku-suggest"
     )
-    assert 'require_permission("inventory.read")' in src
-    assert text  # keep the sqlalchemy import honest for linters
+    required: set[str] = set()
+    for dep in route.dependant.dependencies:
+        for cell in getattr(dep.call, "__closure__", None) or ():
+            try:
+                value = cell.cell_contents
+            except ValueError:  # pragma: no cover — empty cell
+                continue
+            if isinstance(value, set) and all(isinstance(v, str) for v in value):
+                required |= value
+
+    assert "inventory.read" in required, (
+        f"sku-suggest lost its inventory.read gate; route requires {required or '{}'}"
+    )
