@@ -2070,7 +2070,12 @@ class JobPartNeeded(Base):
     # filed the request (per-tech attribution for multi-tech jobs), optional
     # photo URL the tech captured at request time, dispatch-set ETA the tech
     # sees on their card.
-    sku: Mapped[str] = mapped_column(String(64), nullable=True)
+    # 255 = the widest catalog this is populated from (chi_parts_catalog /
+    # chi_door_catalog are varchar(255)). It was 64, so the part picker could
+    # offer a sku the request could not store — a 422 online, and offline a
+    # silently-dropped queued write. Never trim a sku to fit: a truncated sku
+    # is a different part, and dispatch would order it. See migration 028.
+    sku: Mapped[str] = mapped_column(String(255), nullable=True)
     requested_by_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
     photo_url: Mapped[str] = mapped_column(Text, nullable=True)
     eta_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

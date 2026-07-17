@@ -76,7 +76,7 @@ class PartNeededIn(BaseModel):
     urgency: str = Field(default="normal", pattern="^(normal|urgent|critical)$")
     notes: str = Field(default="", max_length=1000)
     # Phase 1.3 C1 — optional catalog-resolved SKU + tech-captured photo URL.
-    sku: str | None = Field(default=None, max_length=64)
+    sku: str | None = Field(default=None, max_length=255)
     photo_url: str | None = Field(default=None, max_length=2000)
     # Catalog-picker intake — carries the catalog SELL price so a part queued
     # from a catalog reaches the invoice-create checklist pre-priced (the
@@ -93,7 +93,9 @@ class PartNeededTechUpdate(BaseModel):
     supplier: str | None = Field(default=None, max_length=200)
     urgency: str | None = Field(default=None, pattern="^(normal|urgent|critical)$")
     notes: str | None = Field(default=None, max_length=1000)
-    sku: str | None = Field(default=None, max_length=64)
+    # 255 to match the column and the catalogs it's picked from — see the
+    # create schema above and migration 028.
+    sku: str | None = Field(default=None, max_length=255)
     photo_url: str | None = Field(default=None, max_length=2000)
 
 

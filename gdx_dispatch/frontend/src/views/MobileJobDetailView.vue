@@ -89,7 +89,17 @@
               <span v-else-if="n._pending" class="pending-flag">
                 <i class="pi pi-cloud-upload" /> waiting for signal
               </span>
-              <span v-else>{{ formatScheduled(n.created_at) }}</span>
+              <span v-else>
+                <!-- Who wrote it matters: more than one tech works a job, and
+                     "who found the frayed cable" is the next question. Omitted
+                     entirely rather than shown as "Unknown" when we genuinely
+                     don't know — the office screen's `|| 'Unknown'` read as a
+                     display default and hid the fact that NOT ONE note in
+                     production had an author recorded. -->
+                <span v-if="n.author_name" class="note-author">{{ n.author_name }}</span>
+                <span v-if="n.author_name"> · </span>
+                <span>{{ formatScheduled(n.created_at) }}</span>
+              </span>
             </div>
           </li>
         </ul>
@@ -784,6 +794,7 @@ onMounted(load)
 .note-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .note-body { font-size: 0.95rem; white-space: pre-wrap; }
 .note-when { font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); }
+.note-author { font-weight: 600; }
 .photo-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .photo-pending {
   display: inline-flex; align-items: center; gap: 0.3rem;

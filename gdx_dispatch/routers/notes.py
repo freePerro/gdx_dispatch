@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_access import assert_job_access
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.user_display import _from_auth_dict, resolve_author_name
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -77,10 +78,18 @@ def _user_id(user: Any) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("email") or "system")
 
 
-def _user_name(user: Any) -> str | None:
-    if not isinstance(user, dict):
-        return None
-    return user.get("name") or user.get("email") or None
+def _user_name(user: Any, db: Session | None = None) -> str | None:
+    """Display name for the note's author.
+
+    Was `user.get("name") or user.get("email")` — a guess against an auth dict
+    that holds neither, so every note it wrote was attributed to nobody and the
+    job screen rendered "Unknown". The shared resolver goes to the DB via the
+    user's id, which is the one thing the token does carry.
+    """
+    if db is None:
+        # No session to resolve against — the auth dict is all there is.
+        return _from_auth_dict(user)
+    return resolve_author_name(db, user)
 
 
 def _user_role(user: Any) -> str:
@@ -196,7 +205,7 @@ def create_job_note(
         company_id=tenant_id,
         job_id=str(job_id),
         author_id=_user_id(user),
-        author_name=_user_name(user),
+        author_name=_user_name(user, db),
         body=payload.body,
         visibility=payload.visibility,
     )

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -1874,12 +1875,21 @@ def get_mobile_job_detail(
     job["billed"] = _job_is_billed(db, job.get("id"))
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    # author_name rides along: more than one tech works a job, and "who found
+    # the frayed cable" is the question the next person asks. Notes written
+    # before 2026-07-17 have NULL here — both writers guessed the name off the
+    # auth dict, which never had it — so migration 027 backfills them from
+    # author_id. deleted_at is filtered because job_notes has the column and a
+    # soft-deleted note is not a note (the photos query below already did this;
+    # this one didn't, so deleting a note left it on the tech's screen).
     notes = db.execute(
         _text(
             """
-            SELECT id, body AS note, author_id AS created_by, created_at
+            SELECT id, body AS note, author_id AS created_by, author_name,
+                   created_at
             FROM job_notes
             WHERE job_id = :job_id
+              AND deleted_at IS NULL
             ORDER BY created_at ASC
             """
         ),
@@ -3219,19 +3229,11 @@ def add_mobile_job_note(
     except (ValueError, AttributeError):
         logging.getLogger(__name__).exception("add_mobile_job_note caught exception")
         _jid = None
-    # S1-B4 — per-tech attribution: author_id + a best-effort
-    # display name resolved from the user dict (name / full_name / email
-    # in that order, falling back to None so the UI can show the user_id
-    # if no human-readable label is available).
-    user_dict = current_user or {}
-    author_name = None
-    if isinstance(user_dict, dict):
-        author_name = (
-            user_dict.get("name")
-            or user_dict.get("full_name")
-            or user_dict.get("email")
-            or None
-        )
+    # S1-B4 — per-tech attribution. Resolved from the user's id via the DB, not
+    # guessed off the auth dict: the JWT carries sub/role/tenant_id and none of
+    # name/full_name/email, so the old guess wrote NULL for every note ever
+    # made and the office job screen showed "Unknown" on all of them.
+    author_name = resolve_author_name(db, current_user, user_id=user_id)
     note_obj = JobNote(
         id=str(uuid.uuid4()),
         company_id=tenant_id,
