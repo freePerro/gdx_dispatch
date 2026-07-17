@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID as _UUID
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -76,7 +77,7 @@ class PartNeededIn(BaseModel):
     urgency: str = Field(default="normal", pattern="^(normal|urgent|critical)$")
     notes: str = Field(default="", max_length=1000)
     # Phase 1.3 C1 — optional catalog-resolved SKU + tech-captured photo URL.
-    sku: str | None = Field(default=None, max_length=64)
+    sku: str | None = Field(default=None, max_length=255)
     photo_url: str | None = Field(default=None, max_length=2000)
     # Catalog-picker intake — carries the catalog SELL price so a part queued
     # from a catalog reaches the invoice-create checklist pre-priced (the
@@ -93,7 +94,9 @@ class PartNeededTechUpdate(BaseModel):
     supplier: str | None = Field(default=None, max_length=200)
     urgency: str | None = Field(default=None, pattern="^(normal|urgent|critical)$")
     notes: str | None = Field(default=None, max_length=1000)
-    sku: str | None = Field(default=None, max_length=64)
+    # 255 to match the column and the catalogs it's picked from — see the
+    # create schema above and migration 028.
+    sku: str | None = Field(default=None, max_length=255)
     photo_url: str | None = Field(default=None, max_length=2000)
 
 
@@ -542,16 +545,43 @@ def sku_suggest(
     request: Request,
     q: str = Query(default="", min_length=0, max_length=64),
     limit: int = Query(default=10, ge=1, le=50),
+    catalog_id: str | None = Query(
+        default=None,
+        description="Restrict to one catalog. Accepts a custom catalog's id or "
+        "a virtual CHI catalog id. Omit to search them all.",
+    ),
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """C7 — SKU autocomplete, tenant-scoped, two-source merged.
+    """SKU autocomplete — the same catalog the estimate builder searches.
 
-    Sources (in order of suggestion priority):
-      1. ``inventory.parts`` — the tenant's own parts catalog (with on-hand
-         qty so the tech can see "we have it on the truck/warehouse").
-      2. ``chi_door_catalog`` — door-line catalog for door requests that
-         aren't kept as bench inventory.
+    Sources, in suggestion priority. **Parts before doors**: a tech mid-job
+    wants a spring, not a door, and the door rows carry long marketing
+    descriptions that match almost any needle and crowd everything else out
+    of ``limit``.
+
+      1. ``inventory.parts`` — tenant bench/truck stock, the only source that
+         carries a real ``part_id`` (see ``source`` note below).
+      2. ``custom_catalog_items`` (non-door) — the tenant's own catalog, and
+         where the real parts actually are: 2,561 ``product_class='parts'``
+         rows in production.
+      3. ``chi_parts_catalog`` — CHI's parts line (springs, rollers, cable).
+      4. ``chi_door_catalog`` — CHI's door line.
+      5. ``custom_catalog_items`` (``product_class='door'``) — custom doors.
+
+    Sources 2 and 3 were unreachable before 2026-07-16, which made this
+    endpoint incapable of suggesting a part. Source 2 was filtered to
+    ``product_class == 'door'`` — a value that matches **zero** rows in
+    production — and source 3 was never queried at all. With ``parts`` empty,
+    the only source that could return anything was the door catalog: searching
+    "spring" returned 8 doors whose marketing copy says "spring" while all 90
+    real springs (12 custom + 78 CHI) stayed invisible.
+
+    ``source`` is load-bearing, not a label: MobileJobCloseoutDialog keeps
+    ``part_id`` only when ``source == 'parts'``, because ``job_parts.part_id``
+    is an FK to ``parts.id`` and rejects an id from any other table. Catalog
+    rows therefore ride as ``source='catalog'`` with no ``part_id`` and are
+    snapshotted by value.
 
     No match → caller falls back to free-text typing; the create endpoint
     accepts ``sku=null`` and the request is still saved.
@@ -566,12 +596,71 @@ def sku_suggest(
     # parts router to the inventory module's import side-effects.
     from gdx_dispatch.models.tenant_models import (
         ChiDoorCatalog,
+        ChiPartsCatalog,
+        CustomCatalog,
         CustomCatalogItem,
         DoorSpec,
     )
     from gdx_dispatch.modules.inventory.models import Part
+    from gdx_dispatch.routers.catalog import VIRTUAL_CHI_DOORS_ID, VIRTUAL_CHI_PARTS_ID
+
+    # One catalog, or all of them. The two CHI feeds have no row in
+    # custom_catalogs — they're virtual ids the catalog router synthesizes — so
+    # a filter naming one of them selects a whole source rather than narrowing a
+    # query, and must switch the other sources off entirely.
+    # `catalog_id` is only a str when FastAPI resolved it. Called directly — in
+    # tests, or from another handler — an unpassed arg is still the Query(...)
+    # marker object, and `.strip()` on that is an AttributeError 500. Normalize
+    # before touching it.
+    wanted = (catalog_id.strip() or None) if isinstance(catalog_id, str) else None
+    _catalog_filter: Any = None
+    if wanted:
+        if wanted not in (VIRTUAL_CHI_DOORS_ID, VIRTUAL_CHI_PARTS_ID):
+            try:
+                _catalog_filter = _UUID(wanted)
+            except (ValueError, AttributeError, TypeError):
+                # An unparseable id must return nothing, never everything: the
+                # tech asked for one catalog and silently widening to all of
+                # them is how you order a part from the wrong list.
+                return []
+    _want_custom = wanted is None or _catalog_filter is not None
+    _want_chi_parts = wanted is None or wanted == VIRTUAL_CHI_PARTS_ID
+    _want_chi_doors = wanted is None or wanted == VIRTUAL_CHI_DOORS_ID
+    # inventory.parts is the tenant's own stock, not a catalog — it has no
+    # catalog_id, so any catalog filter excludes it.
+    _want_inventory = wanted is None
 
     suggestions: list[dict[str, Any]] = []
+    seen_skus: set[str] = set()
+
+    def _add(row: dict[str, Any]) -> None:
+        """Append unless a higher-priority source already claimed this sku.
+
+        The same sku legitimately exists in more than one catalog (a CHI part
+        the tenant also stocks). First writer wins, which is why source order
+        above is priority order.
+        """
+        sku = (row.get("sku") or "").strip().lower()
+        if sku and sku in seen_skus:
+            return
+        if sku:
+            seen_skus.add(sku)
+        suggestions.append(row)
+
+    def _name(*candidates: Any) -> str:
+        """First non-empty candidate, trimmed to something a phone can show.
+
+        pickSuggestion() assigns this straight to the part name it saves, so an
+        untrimmed value is not just ugly — it is what lands in the job record.
+        The CHI door rows carry ~900-char marketing paragraphs in
+        ``description``, which is how a part came to be named three sentences
+        about curb appeal.
+        """
+        for c in candidates:
+            text = str(c).strip() if c is not None else ""
+            if text:
+                return text if len(text) <= 120 else text[:117].rstrip() + "..."
+        return ""
 
     # Source 1 — parts catalog. Three-plane: tenant connection IS the filter.
     part_rows = (
@@ -590,8 +679,8 @@ def sku_suggest(
         .limit(limit)
         .all()
     )
-    for p in part_rows:
-        suggestions.append(
+    for p in (part_rows if _want_inventory else []):
+        _add(
             {
                 "source": "parts",
                 # Phase 2 / C5 (Doug 2026-05-10): the closeout dialog
@@ -610,8 +699,106 @@ def sku_suggest(
             }
         )
 
+    # Source 2 — the tenant's own catalog, everything that is not a door.
+    # This is the same table the estimate builder searches via
+    # /api/catalogs/all-items, which is Doug's rule for this picker: the tech
+    # searches what the estimate searches.
+    #
+    # No NULL guard on product_class: the column is NOT NULL with a 'parts'
+    # server default, verified on prod — a NULL leg here would be dead code.
+    #
+    # The JOIN is not decoration. Filtering the ITEM's deleted_at/active while
+    # ignoring its parent catalog's offers the tech items out of catalogs that
+    # were deleted: on prod that is 2,555 of 2,854 active items — 89% of this
+    # source — against 299 in a catalog that still exists. all-items has always
+    # joined and filtered both, which is precisely why the tech's picker didn't
+    # look like the estimate builder's. `active` is a "temporarily hide" flag
+    # (#50), so an item in a disabled catalog must not be offered either.
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_custom:
+        custom_part_rows = (
+            db.query(CustomCatalogItem, CustomCatalog)
+            .join(CustomCatalog, CustomCatalogItem.catalog_id == CustomCatalog.id)
+            .filter(
+                CustomCatalog.deleted_at.is_(None),
+                CustomCatalog.active.is_(True),
+                CustomCatalogItem.deleted_at.is_(None),
+                CustomCatalogItem.active.is_(True),
+                CustomCatalogItem.product_class != "door",
+                *( [CustomCatalogItem.catalog_id == _catalog_filter] if _catalog_filter else [] ),
+                or_(
+                    CustomCatalogItem.sku.ilike(like),
+                    CustomCatalogItem.name.ilike(like),
+                    CustomCatalogItem.description.ilike(like),
+                    CustomCatalogItem.category.ilike(like),
+                ),
+            )
+            .order_by(CustomCatalogItem.sku.asc())
+            .limit(remaining)
+            .all()
+        )
+        for cci, cat in custom_part_rows:
+            _add(
+                {
+                    # Not 'parts': job_parts.part_id is an FK to parts.id and a
+                    # custom_catalog_items id would violate it. 'catalog' keeps
+                    # part_id null and snapshots by value.
+                    "source": "catalog",
+                    # Which catalog this came out of. The tech's picker groups
+                    # and filters on these and must never hardcode a name:
+                    # custom catalogs are per-tenant data, defined and renamed
+                    # by each business running GDX Dispatch, so whatever the
+                    # tenant has is what shows up.
+                    "catalog_id": str(cci.catalog_id),
+                    "catalog": cat.name,
+                    "sku": cci.sku,
+                    # name first — it is the short human label ("#4 hinge");
+                    # description is where the paragraphs live.
+                    "name": _name(cci.name, cci.description, cci.sku),
+                    "vendor": cci.vendor,
+                    "category": cci.category,
+                    "qty_on_hand": None,
+                }
+            )
+
+    # Source 3 — CHI's parts line. Never queried before 2026-07-16; it holds
+    # 78 of the 90 springs in the system.
+    remaining = max(0, limit - len(suggestions))
+    if remaining and _want_chi_parts:
+        chi_part_rows = (
+            db.query(ChiPartsCatalog)
+            .filter(
+                ChiPartsCatalog.is_active.is_(True),
+                or_(
+                    ChiPartsCatalog.sku.ilike(like),
+                    ChiPartsCatalog.name.ilike(like),
+                    ChiPartsCatalog.description.ilike(like),
+                    ChiPartsCatalog.part_type.ilike(like),
+                ),
+            )
+            .order_by(ChiPartsCatalog.sku.asc())
+            .limit(remaining)
+            .all()
+        )
+        for cp in chi_part_rows:
+            _add(
+                {
+                    "source": "catalog",
+                    "catalog_id": VIRTUAL_CHI_PARTS_ID,
+                    "catalog": "CHI Parts",
+                    "sku": cp.sku,
+                    "name": _name(cp.name, cp.description, cp.sku),
+                    "vendor": cp.brand or cp.manufacturer,
+                    "category": cp.part_type,
+                    "qty_on_hand": None,
+                }
+            )
+
+    # Source 4 — CHI doors. Behind the parts sources now: these descriptions
+    # are marketing paragraphs that match nearly any needle, so in front they
+    # ate the whole `limit`.
+    remaining = max(0, limit - len(suggestions))
+    if remaining and _want_chi_doors:
         door_rows = (
             db.query(ChiDoorCatalog)
             .filter(
@@ -633,11 +820,16 @@ def sku_suggest(
             .all()
         )
         for d in door_rows:
-            suggestions.append(
+            _add(
                 {
                     "source": "door_catalog",
+                    "catalog_id": VIRTUAL_CHI_DOORS_ID,
+                    "catalog": "CHI Doors",
                     "sku": d.sku,
-                    "name": d.description or d.model_number or d.sku,
+                    # model_number ahead of description: the description is the
+                    # marketing paragraph, and pickSuggestion() saves this as
+                    # the part name.
+                    "name": _name(d.model_number, d.description, d.sku),
                     "vendor": d.brand or d.manufacturer,
                     "model_number": d.model_number,
                     "qty_on_hand": None,
@@ -647,7 +839,7 @@ def sku_suggest(
     # Sprint typed-catalogs follow-up — also surface tenant-custom doors
     # (CustomCatalogItem with product_class='door' joined to DoorSpec).
     remaining = max(0, limit - len(suggestions))
-    if remaining:
+    if remaining and _want_custom:
         custom_door_rows = (
             db.query(CustomCatalogItem, DoorSpec)
             .outerjoin(DoorSpec, DoorSpec.catalog_item_id == CustomCatalogItem.id)
@@ -672,11 +864,11 @@ def sku_suggest(
             .all()
         )
         for cci, ds in custom_door_rows:
-            suggestions.append(
+            _add(
                 {
                     "source": "door_catalog",
                     "sku": cci.sku,
-                    "name": cci.description or cci.name or cci.sku,
+                    "name": _name(cci.name, cci.description, cci.sku),
                     "vendor": (ds.manufacturer if ds else None),
                     "model_number": (ds.model_number if ds else None),
                     "qty_on_hand": None,

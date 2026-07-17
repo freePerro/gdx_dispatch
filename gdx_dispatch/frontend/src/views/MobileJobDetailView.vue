@@ -65,8 +65,91 @@
           <i class="pi pi-map-marker" />
           <span>{{ customer.address }}</span>
         </a>
+        <a
+          v-if="customer?.email"
+          class="contact-row"
+          :href="`mailto:${customer.email}`"
+          data-testid="mobile-job-detail-email"
+        >
+          <i class="pi pi-envelope" />
+          <span>{{ customer.email }}</span>
+        </a>
+
+        <!-- The people at this account beyond the one name on the record: a
+             property manager, a front desk, whoever actually answers. They
+             follow the customer, so the next tech on the next job sees them. -->
+        <ul v-if="contacts.length" class="contact-list" data-testid="mjd-contact-list">
+          <li v-for="c in contacts" :key="c.id">
+            <div class="contact-who">
+              <span class="contact-name">{{ c.name }}</span>
+              <span v-if="c.label" class="contact-label">{{ c.label }}</span>
+            </div>
+            <a v-if="c.phone" class="contact-row contact-row-sub" :href="`tel:${c.phone}`">
+              <i class="pi pi-phone" />
+              <span>{{ c.phone }}</span>
+            </a>
+            <a v-if="c.email" class="contact-row contact-row-sub" :href="`mailto:${c.email}`">
+              <i class="pi pi-envelope" />
+              <span>{{ c.email }}</span>
+            </a>
+          </li>
+        </ul>
+
         <div v-if="!customer?.phone && !customer?.address" class="detail-meta detail-meta-muted">
-          No contact info on file — ask dispatch.
+          No contact info on file — you're the one who can fix that.
+        </div>
+
+        <!-- The tech is the only person standing in front of the customer, so
+             they're the only one who can fill in what's missing. 219 of 382
+             customers have no email at all. -->
+        <div v-if="!contactFormOpen" class="contact-actions">
+          <Button
+            v-if="!customer?.email"
+            label="Add email"
+            icon="pi pi-envelope"
+            size="small"
+            text
+            data-testid="mjd-add-email"
+            @click="openContactForm('email')"
+          />
+          <Button
+            label="Add contact"
+            icon="pi pi-user-plus"
+            size="small"
+            text
+            data-testid="mjd-add-contact"
+            @click="openContactForm('contact')"
+          />
+        </div>
+
+        <div v-else class="contact-form">
+          <template v-if="contactFormMode === 'email'">
+            <InputText
+              v-model="emailDraft"
+              type="email"
+              inputmode="email"
+              maxlength="254"
+              placeholder="Customer email"
+              data-testid="mjd-email-input"
+            />
+          </template>
+          <template v-else>
+            <InputText v-model="contactDraft.name" maxlength="200" placeholder="Name" data-testid="mjd-contact-name" />
+            <InputText v-model="contactDraft.phone" type="tel" inputmode="tel" maxlength="50" placeholder="Phone" data-testid="mjd-contact-phone" />
+            <InputText v-model="contactDraft.label" maxlength="120" placeholder="Who they are (optional)" data-testid="mjd-contact-label" />
+          </template>
+          <div class="contact-form-actions">
+            <Button label="Cancel" size="small" text severity="secondary" @click="closeContactForm" />
+            <Button
+              label="Save"
+              icon="pi pi-check"
+              size="small"
+              :loading="contactBusy"
+              :disabled="!contactFormValid"
+              data-testid="mjd-contact-save"
+              @click="saveContactForm"
+            />
+          </div>
         </div>
       </div>
 
@@ -75,14 +158,52 @@
         <p class="detail-description">{{ job.description }}</p>
       </div>
 
-      <div v-if="notes.length" class="detail-card">
+      <!-- Always rendered, never `v-if="notes.length"`: the tech with nothing
+           written yet is exactly the one who needs somewhere to write. -->
+      <div class="detail-card">
         <h2>Notes</h2>
-        <ul class="note-list">
+        <ul v-if="notes.length" class="note-list">
           <li v-for="n in notes" :key="n.id">
             <div class="note-body">{{ n.note }}</div>
-            <div class="note-when">{{ formatScheduled(n.created_at) }}</div>
+            <div class="note-when">
+              <span v-if="n._failed" class="failed-flag">
+                <i class="pi pi-exclamation-triangle" /> didn't send — tap Add note to retry
+              </span>
+              <span v-else-if="n._pending" class="pending-flag">
+                <i class="pi pi-cloud-upload" /> waiting for signal
+              </span>
+              <span v-else>
+                <!-- Who wrote it matters: more than one tech works a job, and
+                     "who found the frayed cable" is the next question. Omitted
+                     entirely rather than shown as "Unknown" when we genuinely
+                     don't know — the office screen's `|| 'Unknown'` read as a
+                     display default and hid the fact that NOT ONE note in
+                     production had an author recorded. -->
+                <span v-if="n.author_name" class="note-author">{{ n.author_name }}</span>
+                <span v-if="n.author_name"> · </span>
+                <span>{{ formatScheduled(n.created_at) }}</span>
+              </span>
+            </div>
           </li>
         </ul>
+        <div v-else class="detail-meta detail-meta-muted">No notes yet.</div>
+
+        <Textarea
+          v-model="noteDraft"
+          rows="2"
+          auto-resize
+          placeholder="What did you find?"
+          data-testid="mjd-note-input"
+        />
+        <Button
+          label="Add note"
+          icon="pi pi-plus"
+          size="small"
+          :loading="noteBusy"
+          :disabled="!noteDraft.trim()"
+          data-testid="mjd-note-add"
+          @click="addNote"
+        />
       </div>
 
       <div class="detail-card">
@@ -95,17 +216,16 @@
         </div>
 
         <div v-if="photos.length" class="photo-strip">
-          <a
-            v-for="p in photos"
-            :key="p.id"
-            :href="p.url"
-            target="_blank"
-            rel="noopener"
-            class="photo-thumb"
-          >
-            <img v-if="p.url" :src="p.url" :alt="p.caption || p.filename || 'Job photo'" loading="lazy" />
-            <span v-else class="photo-name">{{ p.filename || 'Photo' }}</span>
-          </a>
+          <!-- AuthedImage, not a bare <img>: the url needs a Bearer token
+               and an <img src> can't send one — it 401s and paints a broken
+               icon, which is exactly what a real phone showed. -->
+          <div v-for="p in photos" :key="p.id" class="photo-thumb">
+            <AuthedImage :src="p.url" :alt="p.caption || p.filename || 'Job photo'">
+              <template #fallback>
+                <span class="photo-name">{{ p.filename || 'Photo' }}</span>
+              </template>
+            </AuthedImage>
+          </div>
         </div>
         <div v-else class="detail-meta detail-meta-muted">No photos yet.</div>
 
@@ -128,6 +248,123 @@
             {{ photoBusy ? 'Saving…' : 'Add photo' }}
           </span>
         </label>
+      </div>
+
+      <div class="detail-card">
+        <h2>Parts</h2>
+        <ul v-if="parts.length" class="part-list" data-testid="mjd-part-list">
+          <li v-for="p in parts" :key="p.id">
+            <div class="part-main">
+              <span class="part-name">{{ p.part_name }}</span>
+              <span class="part-qty">×{{ p.quantity || 1 }}</span>
+            </div>
+            <div class="part-meta">
+              <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
+              <span v-if="p.urgency === 'urgent'" class="part-urgent">urgent</span>
+              <span v-if="p._failed" class="failed-flag">
+                <i class="pi pi-exclamation-triangle" /> didn't send
+              </span>
+              <span v-else-if="p._pending" class="pending-flag">
+                <i class="pi pi-cloud-upload" /> waiting for signal
+              </span>
+              <span v-else class="part-status">{{ p.status || 'needed' }}</span>
+            </div>
+          </li>
+        </ul>
+        <div v-else class="detail-meta detail-meta-muted">No parts requested yet.</div>
+
+        <div class="part-add">
+          <!-- Catalog chips, straight from /api/catalogs — never a hardcoded
+               list. Custom catalogs are per-tenant data: every business running
+               GDX Dispatch defines its own set and renames or adds to them
+               whenever it likes, so the only correct list is the one the API
+               returns right now. Same source the estimate builder's picker
+               reads, so the two can't drift apart. -->
+          <div v-if="catalogs.length" class="catalog-chips" data-testid="mjd-catalog-chips">
+            <button
+              type="button"
+              :class="['chip', { 'chip-on': !partCatalogId }]"
+              @click="pickCatalog(null)"
+            >
+              All
+            </button>
+            <button
+              v-for="c in catalogs"
+              :key="c.id"
+              type="button"
+              :class="['chip', { 'chip-on': partCatalogId === c.id }]"
+              @click="pickCatalog(c.id)"
+            >
+              {{ c.name }}
+            </button>
+          </div>
+
+          <!-- Search is the same catalog the estimate builder searches. Typing
+               is never blocked on it: offline, or for a part nobody has
+               catalogued, the free-text name is submitted with sku=null and the
+               request still reaches dispatch. -->
+          <!-- maxlength mirrors JobPartNeeded.part_name String(200). Without
+               it a long free-text name 422s — loudly online, and SILENTLY
+               offline, where the queue marks it failed and the request is
+               simply gone. Stop it at the keyboard instead. -->
+          <InputText
+            v-model="partQuery"
+            maxlength="200"
+            placeholder="Search parts, or just type a name"
+            data-testid="mjd-part-search"
+            @input="onPartQuery"
+          />
+          <ul v-if="partSuggestions.length" class="suggest-list" data-testid="mjd-part-suggestions">
+            <li v-for="s in partSuggestions" :key="`${s.source}-${s.sku}-${s.name}`">
+              <button type="button" @click="pickPart(s)">
+                <span class="suggest-name">{{ s.name }}</span>
+                <span class="suggest-meta">
+                  <span v-if="s.sku">{{ s.sku }}</span>
+                  <!-- Which list it came off. Two catalogs can carry the same
+                       part at different prices, so the catalog is the
+                       difference between the right part and the wrong one. -->
+                  <span v-if="s.catalog" class="suggest-catalog">{{ s.catalog }}</span>
+                  <span v-if="s.qty_on_hand != null" class="suggest-stock">
+                    {{ s.qty_on_hand }} on hand
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
+          <div
+            v-else-if="partQuery.trim().length >= 2 && !partSearching"
+            class="detail-meta detail-meta-muted"
+            data-testid="mjd-part-nomatch"
+          >
+            Nothing in the catalog matches — Request sends what you typed.
+          </div>
+
+          <div v-if="partQuery.trim()" class="part-controls">
+            <InputNumber
+              v-model="partQty"
+              :min="1"
+              :max="99"
+              show-buttons
+              button-layout="horizontal"
+              data-testid="mjd-part-qty"
+            >
+              <template #incrementbuttonicon><i class="pi pi-plus" /></template>
+              <template #decrementbuttonicon><i class="pi pi-minus" /></template>
+            </InputNumber>
+            <div class="urgent-toggle">
+              <Checkbox v-model="partUrgent" input-id="mjd-part-urgent" binary />
+              <label for="mjd-part-urgent">Urgent</label>
+            </div>
+            <Button
+              label="Request"
+              icon="pi pi-plus"
+              size="small"
+              :loading="partBusy"
+              data-testid="mjd-part-add"
+              @click="addPart"
+            />
+          </div>
+        </div>
       </div>
 
       <!-- Time is shown, never edited here. Arriving starts the job clock and
@@ -155,8 +392,21 @@
         </div>
       </div>
 
-      <!-- Sticky so the tech can act without scrolling a long job. -->
-      <div class="action-bar" data-testid="mobile-job-detail-actions">
+      <!-- Sticky so the tech can act without scrolling a long job.
+           Hidden for as long as the part composer is open — while suggestions
+           show AND while a picked/typed name is pending submit. This bar
+           floats over that whole area: on a real phone it covered four of six
+           suggestions (a tap meant for the third landed on "On my way",
+           firing a dispatch action the tech never chose), and once a part was
+           picked it covered the Request button itself. Raising the composer's
+           z-index doesn't fix it — the app's bottom nav is a separate stacking
+           context and still wins — but yielding the space does, and a tech
+           mid-compose isn't reaching for these buttons anyway. -->
+      <div
+        v-if="!partComposerOpen"
+        class="action-bar"
+        data-testid="mobile-job-detail-actions"
+      >
         <Button
           v-if="canGoEnRoute"
           label="On my way"
@@ -217,12 +467,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
+import InputNumber from 'primevue/inputnumber'
+import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { queuedWriteStatus, useOfflineSync } from '../composables/useOfflineSync'
 import { usePhotoQueue } from '../composables/usePhotoQueue'
+import AuthedImage from '../components/AuthedImage.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 
@@ -232,6 +488,18 @@ const route = useRoute()
 const router = useRouter()
 const { pendingPhotos, capturePhoto } = usePhotoQueue()
 
+// Registers the queue's `online` + `visibilitychange` drain listeners for as
+// long as this screen is mounted, and tears them down after.
+//
+// They live in useOfflineSync()'s onMounted, and until now MobileTodayView was
+// the ONLY caller in the app — so a tech who queued a note, a part request or
+// an arrival from this screen and then regained signal drained nothing: the
+// writes sat in IndexedDB until they happened to navigate back to Today.
+// Caught on a real phone by watching a note stay "waiting for signal" with the
+// wifi back on. syncNow() guards on a module-level `syncing` ref, so a second
+// caller can't double-drain.
+const { pendingCount } = useOfflineSync()
+
 const photoInput = ref(null)
 const photoBusy = ref(false)
 
@@ -240,13 +508,118 @@ const error = ref(null)
 const job = ref(null)
 const notes = ref([])
 const photos = ref([])
+const parts = ref([])
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 const invoiceOpen = ref(false)
 
+const noteDraft = ref('')
+const noteBusy = ref(false)
+
+const contactFormOpen = ref(false)
+const contactFormMode = ref('contact')
+const contactBusy = ref(false)
+const emailDraft = ref('')
+const contactDraft = ref({ name: '', phone: '', label: '' })
+
+// Contacts ride on the customer in the job payload.
+const contacts = computed(() => customer.value?.contacts || [])
+
+const contactFormValid = computed(() => {
+  if (contactFormMode.value === 'email') {
+    // Deliberately not a strict RFC pattern — a tech typing what's on the work
+    // order shouldn't be argued with by a regex. The server bounds the length;
+    // an address with an @ and a dot is the bar for "worth saving".
+    const e = emailDraft.value.trim()
+    return e.length >= 5 && e.includes('@') && e.includes('.')
+  }
+  // A name alone is a real contact: "ask for Jim at the front desk" is worth
+  // recording even before anyone has his number.
+  return contactDraft.value.name.trim().length > 0
+})
+
+function openContactForm(mode) {
+  contactFormMode.value = mode
+  emailDraft.value = customer.value?.email || ''
+  contactDraft.value = { name: '', phone: '', label: '' }
+  contactFormOpen.value = true
+}
+
+function closeContactForm() {
+  contactFormOpen.value = false
+  emailDraft.value = ''
+  contactDraft.value = { name: '', phone: '', label: '' }
+}
+
+async function saveContactForm() {
+  if (!contactFormValid.value || contactBusy.value) return
+  contactBusy.value = true
+  const isEmail = contactFormMode.value === 'email'
+  try {
+    if (isEmail) {
+      // patchQueued/postQueued: a tech gets the email at the door, which is
+      // exactly where the signal isn't. The write survives the dead zone.
+      await api.patchQueued(
+        `/api/mobile/jobs/${job.value.id}/customer`,
+        { email: emailDraft.value.trim() },
+        { actionType: 'job.customer_contact', resourceId: String(job.value.id) },
+      )
+    } else {
+      const d = contactDraft.value
+      await api.postQueued(
+        `/api/mobile/jobs/${job.value.id}/customer/contacts`,
+        {
+          name: d.name.trim(),
+          phone: d.phone.trim() || null,
+          label: d.label.trim() || null,
+        },
+        { actionType: 'job.customer_contact', resourceId: String(job.value.id) },
+      )
+    }
+    await refresh()
+    toast.add({
+      severity: 'success',
+      summary: isEmail ? 'Email saved' : 'Contact added',
+      life: 2500,
+    })
+    closeContactForm()
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: isEmail ? 'Could not save email' : 'Could not add contact',
+      detail: err?.message || '',
+      life: 4000,
+    })
+  } finally {
+    contactBusy.value = false
+  }
+}
+
+const partQuery = ref('')
+const partSku = ref(null)
+const partQty = ref(1)
+const partUrgent = ref(false)
+const partBusy = ref(false)
+const partSearching = ref(false)
+const partSuggestions = ref([])
+// One screenful and a bit. The list scrolls inside itself; a tech narrows with
+// the search box rather than thumbing a whole catalog.
+const BROWSE_PAGE_SIZE = 25
+const catalogs = ref([])
+const partCatalogId = ref(null)
+let partSearchTimer = null
+let partSearchSeq = 0
+
 // The customer rides on the job (same shape the Today cards read), so the
 // actions can reach job.customer without caring which screen mounted them.
 const customer = computed(() => job.value?.customer || null)
+
+// True from the first keystroke in the part search until the request is filed
+// or the field is cleared — i.e. exactly while the suggestion list or the
+// qty/urgent/Request row is on screen and needs the sticky bar out of the way.
+const partComposerOpen = computed(
+  () => partSuggestions.value.length > 0 || partQuery.value.trim().length > 0,
+)
 
 async function load() {
   loading.value = true
@@ -256,6 +629,7 @@ async function load() {
     job.value = r?.job || null
     notes.value = r?.notes || []
     photos.value = r?.photos || []
+    parts.value = r?.parts || []
     if (!job.value) error.value = 'Job not found'
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.
@@ -275,12 +649,40 @@ async function refresh() {
     const r = await api.get(`/api/mobile/job/${route.params.id}`)
     if (r?.job) {
       job.value = r.job
-      notes.value = r.notes || []
+      notes.value = await withStillQueued(r.notes || [], notes.value)
       photos.value = r.photos || []
+      parts.value = await withStillQueued(r.parts || [], parts.value)
     }
   } catch {
     // Offline or a blip. The queued write still lands on reconnect.
   }
+}
+
+/**
+ * Server rows + the optimistic rows whose own write hasn't landed yet.
+ *
+ * The server list is authoritative for everything it knows about, but it
+ * cannot know about a write still sitting in the queue. Overwriting wholesale
+ * would erase a note the tech wrote in a dead zone the moment any later
+ * refresh runs — the write is safe in the queue, but it looks lost, which is
+ * the same failure the vanishing-job split above exists to prevent.
+ *
+ * A row is dropped only when ITS OWN key leaves the queue, so it can never
+ * linger beside the server's copy of itself. A write the server REJECTED stays
+ * on screen flagged "didn't send": it isn't coming back on a refresh, and
+ * quietly deleting the tech's work is worse than showing it failed.
+ */
+async function withStillQueued(serverRows, currentRows) {
+  const local = (currentRows || []).filter((r) => r._pending || r._failed)
+  if (!local.length) return serverRows
+  const survivors = []
+  for (const row of local) {
+    const state = await queuedWriteStatus(row._key)
+    if (state === 'waiting') survivors.push({ ...row, _pending: true, _failed: false })
+    else if (state === 'failed') survivors.push({ ...row, _pending: false, _failed: true })
+    // null → it landed; the server row above is the real one.
+  }
+  return [...serverRows, ...survivors]
 }
 
 const navigationLink = computed(() => job.value?.navigation_link || null)
@@ -361,6 +763,216 @@ function onCloseoutDone() {
   refresh()
 }
 
+// ─── Notes ───────────────────────────────────────────────────────────────
+async function addNote() {
+  const body = noteDraft.value.trim()
+  if (!body || noteBusy.value) return
+  noteBusy.value = true
+  try {
+    // The mobile endpoint, not the office one at /api/jobs/{id}/notes. Both
+    // write JobNote.body and both work; this one goes through the same
+    // _assert_job_access gate as the rest of this screen, which is the reason
+    // to prefer it.
+    //
+    // (It also *tries* to record author_name for per-tech attribution — but
+    // resolves it from name/full_name/email on the user dict, and the JWT
+    // carries only sub/role/tenant_id, so it always writes NULL. Verified
+    // against a real technician token: the column is empty for every note in
+    // the DB. Don't count that feature as working.)
+    //
+    // Its field is `note`; the office endpoint's is `body`; the read side
+    // aliases the column back (SELECT body AS note). Three names, one column —
+    // so what you post is not what you get back. Posting the wrong one 422s.
+    const r = await api.postQueued(
+      `/api/mobile/jobs/${job.value.id}/notes`,
+      { note: body },
+      { actionType: 'job.note', resourceId: String(job.value.id) },
+    )
+    if (r?.queued) {
+      // Show it now, flagged. It is safe in the queue; the tech needs to see
+      // that what they wrote wasn't dropped.
+      notes.value = [
+        ...notes.value,
+        { id: `pending-${r.idempotency_key}`, note: body, _pending: true, _key: r.idempotency_key },
+      ]
+      toast.add({ severity: 'info', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
+    } else {
+      await refresh()
+    }
+    noteDraft.value = ''
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not add note', detail: err?.message || '', life: 4000 })
+  } finally {
+    noteBusy.value = false
+  }
+}
+
+// ─── Parts ───────────────────────────────────────────────────────────────
+function onPartQuery() {
+  // Typing a name by hand is a valid request on its own, so clear any SKU the
+  // tech previously picked — otherwise an edited name keeps riding the old
+  // sku and dispatch orders the wrong part.
+  partSku.value = null
+  const q = partQuery.value.trim()
+  clearTimeout(partSearchTimer)
+  // With a catalog picked, an empty box means "show me that catalog". Search
+  // alone is not enough: a tenant names its items however it likes, and one
+  // real catalog here is 77 items specced like "207X2.000X20.0 Left" — not one
+  // of which contains the word its catalog is named after. Browsing is the
+  // interaction; typing only narrows. Without a catalog there is nothing to
+  // browse, so wait for a couple of characters.
+  if (!partCatalogId.value && q.length < 2) {
+    partSuggestions.value = []
+    return
+  }
+  partSearchTimer = setTimeout(() => searchParts(q), 250)
+}
+
+/**
+ * A catalog row in the shape pickSuggestion/addPart expect.
+ *
+ * source stays 'catalog' so part_id is never set: job_parts.part_id is an FK to
+ * parts.id and a custom_catalog_items id would violate it. sku is legitimately
+ * empty on catalog rows — a whole catalog of real parts here has none — so the
+ * request rides on the name alone, which the create endpoint accepts.
+ */
+function _catalogRowToSuggestion(row, catalogName) {
+  return {
+    source: 'catalog',
+    catalog_id: partCatalogId.value,
+    catalog: catalogName,
+    sku: row.sku || null,
+    name: row.name || row.description || row.sku || '',
+    vendor: row.vendor || null,
+    category: row.category || null,
+    qty_on_hand: null,
+  }
+}
+
+async function searchParts(q) {
+  const seq = ++partSearchSeq
+  partSearching.value = true
+  try {
+    let rows
+    if (partCatalogId.value) {
+      // Browsing one catalog: the estimate builder's own endpoint — paginated,
+      // searchable within the catalog, and it already handles the virtual CHI
+      // feeds. Reused rather than reimplemented so the tech's list and the
+      // estimate's list cannot drift apart.
+      const cat = catalogs.value.find((c) => c.id === partCatalogId.value)
+      const r = await api.get(
+        `/api/catalogs/${encodeURIComponent(partCatalogId.value)}/items`
+          + `?search=${encodeURIComponent(q)}&per_page=${BROWSE_PAGE_SIZE}`,
+        { suppressErrorToast: true },
+      )
+      rows = (r?.items || []).map((row) => _catalogRowToSuggestion(row, cat?.name))
+    } else {
+      // No catalog picked: search across all of them at once.
+      const r = await api.get(
+        `/api/parts-needed/sku-suggest?q=${encodeURIComponent(q)}&limit=6`,
+        { suppressErrorToast: true },
+      )
+      rows = Array.isArray(r) ? r : []
+    }
+    // A slow earlier request must not overwrite a newer one's results.
+    if (seq !== partSearchSeq) return
+    partSuggestions.value = rows
+  } catch {
+    // Offline, or the search is down. Free-text still works — say nothing and
+    // let the tech type.
+    if (seq === partSearchSeq) partSuggestions.value = []
+  } finally {
+    if (seq === partSearchSeq) partSearching.value = false
+  }
+}
+
+/**
+ * The catalogs the tech can search, exactly as the server lists them.
+ *
+ * Never hardcoded: catalogs are tenant data that someone adds and removes from
+ * the Catalogs page, so the only correct list is the one the API returns today.
+ * Failure is silent on purpose — search still works across everything without
+ * the chips, and a toast about catalogs while a tech is trying to order a
+ * spring is noise.
+ */
+async function loadCatalogs() {
+  try {
+    const r = await api.get('/api/catalogs', { suppressErrorToast: true })
+    catalogs.value = (Array.isArray(r) ? r : [])
+      .filter((c) => c?.id && c?.name)
+      .map((c) => ({ id: String(c.id), name: String(c.name) }))
+  } catch {
+    catalogs.value = []
+  }
+}
+
+function pickCatalog(id) {
+  partCatalogId.value = id
+  clearTimeout(partSearchTimer)
+  const q = partQuery.value.trim()
+  // Tapping a catalog lists it immediately — that IS the interaction, because
+  // the items aren't findable by typing their category. Tapping "All" with an
+  // empty box has nothing to show, so clear.
+  if (id) searchParts(q)
+  else if (q.length >= 2) searchParts(q)
+  else partSuggestions.value = []
+}
+
+function pickPart(s) {
+  partQuery.value = s.name || s.sku || ''
+  partSku.value = s.sku || null
+  partSuggestions.value = []
+}
+
+async function addPart() {
+  const name = partQuery.value.trim()
+  if (!name || partBusy.value) return
+  partBusy.value = true
+  // Clamp here, not just on the input. `:max` only clamps on blur, so a tech
+  // who types a qty and taps Request without leaving the field submits whatever
+  // is in it — and the server accepts anything up to 999 (PartNeededIn), so a
+  // fat-fingered 267 would reach dispatch as a real order for 267 rollers. The
+  // bound belongs on the path that sends the value.
+  const qty = Math.min(99, Math.max(1, Math.trunc(Number(partQty.value) || 1)))
+  const urgency = partUrgent.value ? 'urgent' : 'normal'
+  try {
+    const r = await api.postQueued(
+      `/api/jobs/${job.value.id}/parts-needed`,
+      { part_name: name, sku: partSku.value, quantity: qty, urgency },
+      { actionType: 'job.part_needed', resourceId: String(job.value.id) },
+    )
+    if (r?.queued) {
+      parts.value = [
+        ...parts.value,
+        {
+          id: `pending-${r.idempotency_key}`,
+          part_name: name,
+          sku: partSku.value,
+          quantity: qty,
+          urgency,
+          status: 'needed',
+          _pending: true,
+          _key: r.idempotency_key,
+        },
+      ]
+      toast.add({ severity: 'info', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
+    } else {
+      await refresh()
+      toast.add({ severity: 'success', summary: 'Part requested', life: 2500 })
+    }
+    partQuery.value = ''
+    partSku.value = null
+    partQty.value = 1
+    partUrgent.value = false
+    partSuggestions.value = []
+    partCatalogId.value = null
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not request part', detail: err?.message || '', life: 4000 })
+  } finally {
+    partBusy.value = false
+  }
+}
+
 
 async function onPhotoPicked(e) {
   const files = Array.from(e?.target?.files || [])
@@ -428,7 +1040,18 @@ function formatScheduled(iso) {
   } catch { return iso }
 }
 
-onMounted(load)
+// Draining is silent — it happens in the queue, not here — so without this the
+// tech watches "waiting for signal" sit there after the write has already
+// landed. Refetch whenever the queue shrinks: withStillQueued() then finds the
+// key gone and swaps the optimistic row for the server's, timestamp and all.
+watch(pendingCount, (now, before) => {
+  if (now < before) refresh()
+})
+
+onMounted(() => {
+  load()
+  loadCatalogs()
+})
 </script>
 
 <style scoped>
@@ -454,9 +1077,27 @@ onMounted(load)
   color: var(--p-primary-color, #2563eb); text-decoration: none;
   font-size: 0.95rem; padding: 0.25rem 0;
 }
+.contact-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.contact-list li {
+  padding-top: 0.5rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+}
+.contact-who { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.contact-name { font-weight: 600; font-size: 0.95rem; }
+.contact-label {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em;
+  color: var(--p-text-muted-color, #9ca3af);
+}
+.contact-row-sub { min-height: 40px; }
+.contact-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
+.contact-actions :deep(.p-button) { min-height: 44px; }
+.contact-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+.contact-form :deep(.p-inputtext) { width: 100%; min-height: 44px; }
+.contact-form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.contact-form-actions :deep(.p-button) { min-height: 44px; }
 .note-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .note-body { font-size: 0.95rem; white-space: pre-wrap; }
 .note-when { font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); }
+.note-author { font-weight: 600; }
 .photo-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .photo-pending {
   display: inline-flex; align-items: center; gap: 0.3rem;
@@ -476,7 +1117,7 @@ onMounted(load)
 .photo-add span { display: inline-flex; align-items: center; gap: 0.4rem; }
 .photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; }
 .photo-thumb { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 0.4rem; overflow: hidden; border: 1px solid var(--p-content-border-color, #e5e7eb); display: flex; align-items: center; justify-content: center; }
-.photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.photo-thumb :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 .photo-name { font-size: 0.7rem; padding: 0.25rem; word-break: break-all; }
 .status-pill {
   display: inline-flex; align-items: center; gap: 0.3rem;
@@ -508,4 +1149,85 @@ onMounted(load)
 }
 .action-bar:empty { display: none; }
 .action-bar :deep(.p-button) { flex: 1 1 auto; min-height: 44px; }
+
+/* Notes + parts composers. Every control here clears the same 44px tap floor
+   the action bar does — a tech taps these wearing gloves. */
+.detail-card :deep(.p-textarea) { width: 100%; margin-top: 0.6rem; }
+.detail-card :deep(.p-inputtext) { width: 100%; min-height: 44px; }
+.detail-card > :deep(.p-button) { margin-top: 0.5rem; min-height: 44px; }
+
+.pending-flag {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  color: var(--p-primary-color, #3b82f6);
+}
+.failed-flag {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  color: var(--p-red-500, #ef4444); font-weight: 600;
+}
+
+.part-list { list-style: none; margin: 0 0 0.6rem; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.part-list li { border-bottom: 1px solid var(--p-content-border-color, #e5e7eb); padding-bottom: 0.5rem; }
+.part-list li:last-child { border-bottom: 0; }
+.part-main { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.95rem; }
+.part-name { font-weight: 500; }
+.part-qty { color: var(--p-text-muted-color, #9ca3af); white-space: nowrap; }
+.part-meta {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+  font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); margin-top: 0.15rem;
+}
+.part-sku { font-family: ui-monospace, monospace; }
+.part-urgent {
+  color: var(--p-red-500, #ef4444); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.part-status { text-transform: capitalize; }
+
+.part-add { display: flex; flex-direction: column; gap: 0.5rem; }
+/* Chips scroll sideways rather than wrapping into a wall: the count is tenant
+   data and grows whenever someone adds a catalog. */
+.catalog-chips {
+  display: flex; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.2rem;
+  scrollbar-width: none;
+}
+.catalog-chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: 0 0 auto; min-height: 36px; padding: 0 0.7rem; cursor: pointer;
+  border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 999px;
+  background: var(--p-content-background, #fff); color: inherit;
+  font: inherit; font-size: 0.8rem; white-space: nowrap;
+}
+.chip-on {
+  background: var(--p-primary-color, #3b82f6);
+  border-color: var(--p-primary-color, #3b82f6); color: #fff; font-weight: 600;
+}
+.suggest-list {
+  list-style: none; margin: 0; padding: 0;
+  border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 6px;
+  overflow: hidden;
+  /* The catalog is 2,600 items; a long match list must scroll inside itself
+     rather than push the Request button off-screen. */
+  max-height: 40vh; overflow-y: auto;
+}
+.suggest-list button {
+  width: 100%; min-height: 44px; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 0.15rem;
+  padding: 0.5rem 0.6rem; border: 0; border-bottom: 1px solid var(--p-content-border-color, #e5e7eb);
+  background: var(--p-content-background, #fff); color: inherit; font: inherit;
+}
+.suggest-list li:last-child button { border-bottom: 0; }
+.suggest-list button:active { background: var(--p-content-hover-background, #f3f4f6); }
+.suggest-name { font-size: 0.9rem; }
+.suggest-meta {
+  display: flex; gap: 0.5rem; font-size: 0.72rem;
+  color: var(--p-text-muted-color, #9ca3af); font-family: ui-monospace, monospace;
+}
+.suggest-stock { color: var(--p-green-600, #16a34a); font-family: inherit; }
+.suggest-catalog { font-family: inherit; font-style: italic; }
+
+.part-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.part-controls :deep(.p-inputnumber-input) { width: 3rem; text-align: center; }
+.part-controls :deep(.p-inputnumber .p-button) { min-width: 44px; min-height: 44px; }
+.urgent-toggle { display: flex; align-items: center; gap: 0.4rem; min-height: 44px; }
+.urgent-toggle label { font-size: 0.9rem; }
+.part-controls :deep(.p-button) { min-height: 44px; }
 </style>

@@ -18,12 +18,15 @@
  * — iOS never fires a reliable `online`), so a photo taken in a basement lands
  * when the tech gets back to the truck.
  *
- * Posts to the SAME route the desktop uses — `/api/jobs/{id}/photos` — not the
- * mobile-only twin. Doug: "if they are on a job it should just automatically be
- * tagged to that job and that customer", and the job already knows its
- * customer, so the URL is the tagging. One route means the office sees a tech's
- * photo on the very same Photos page as their own; two routes is how you get a
- * photo nobody can find.
+ * Posts to `POST /api/documents` — the ONE upload path that is actually proven
+ * (1078 files live in it and download fine), takes job_id + customer_id, and
+ * stores flat where the download route looks. The two job-photo-specific routes
+ * were both broken: one is shadowed and 422s, the other wrote to a nested path
+ * the download route never reads, so its files 404'd. Riding the proven road
+ * beats a third parallel one.
+ *
+ * Doug: "if they are on a job it should just automatically be tagged to that
+ * job and that customer" — the job knows its customer, so job_id is the tagging.
  */
 import { ref } from 'vue'
 import { db, QUEUE_STATUS } from '../lib/offlineDb'
@@ -152,6 +155,11 @@ async function _sendPhoto(photoId, row) {
 
   const form = new FormData()
   form.append('file', row.blob, row.filename || 'photo.jpg')
+  // job_id is the tagging: the job knows its customer, so the photo lands on
+  // both without the tech choosing anything.
+  form.append('job_id', String(row.job_id))
+  // Say it outright: this is a photo, not a document that happens to be a JPEG.
+  form.append('as_photo', 'true')
   if (row.kind) form.append('kind', row.kind)
 
   try {
@@ -161,7 +169,7 @@ async function _sendPhoto(photoId, row) {
     // 401 it refreshes the token and retries. A photo captured at 9am and
     // drained at 5pm meets an expired token; hand-rolled fetch would take that
     // 401 as the server's verdict on the photo.
-    await createApiClient().post(`/api/jobs/${row.job_id}/photos`, form)
+    await createApiClient().post('/api/documents', form)
   } catch (err) {
     const status = err?.status || 0
     if (!status && !_looksLikeNetwork(err)) {

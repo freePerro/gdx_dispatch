@@ -90,6 +90,11 @@ export async function queueAction(method, url, body = null, opts = {}) {
       // "queued" stub here would tell the caller a dead request was saved.
       // Rethrow so the caller's error path runs. (409 never reaches here —
       // _drainOne treats it as synced.)
+      //
+      // 401 is the exception: _drainOne left it PENDING to retry, so it is an
+      // outage in disguise. Rethrowing would tell the tech "could not save"
+      // about a write that is queued and will land.
+      if (e?.status === 401 && e.transient) return { queued: true, idempotency_key }
       if (e?.status && e.status >= 400 && e.status < 500) throw e
       // Network / 5xx: row stays pending; surface a stub so the caller
       // can finish optimistically.
@@ -97,6 +102,38 @@ export async function queueAction(method, url, body = null, opts = {}) {
     }
   }
   return { queued: true, idempotency_key }
+}
+
+/**
+ * What happened to this specific queued write?
+ *
+ * Returns 'waiting' (still to land), 'failed' (the server rejected it and it
+ * will never replay), or null (it landed, or was never queued).
+ *
+ * A view that optimistically renders a queued row needs this to know when to
+ * stop: drop it too early and the tech's note vanishes while it is still
+ * queued; drop it too late and it double-renders beside the server's copy once
+ * it drains. `pendingCount` can't answer it — that count is global, so one
+ * unrelated queued photo would keep a long-drained note pinned on screen.
+ *
+ * 'failed' is reported rather than folded into null on purpose. A dead write
+ * must not just disappear — the tech wrote that note and is entitled to know it
+ * didn't send. Returning a bare boolean here is what made the first version of
+ * this silently delete rejected work, which is the same failure the queue
+ * itself exists to prevent.
+ */
+export async function queuedWriteStatus(idempotencyKey) {
+  if (!idempotencyKey) return null
+  const row = await db.sync_queue
+    .where('idempotency_key')
+    .equals(idempotencyKey)
+    .first()
+  if (!row) return null
+  // SYNCING counts as waiting: it is mid-flight, so the server list can't have
+  // it yet.
+  if (row.status === QUEUE_STATUS.PENDING || row.status === QUEUE_STATUS.SYNCING) return 'waiting'
+  if (row.status === QUEUE_STATUS.FAILED) return 'failed'
+  return null
 }
 
 async function _drainOne(entry) {
@@ -157,6 +194,32 @@ async function _drainOne(entry) {
     await _refreshPendingCount()
     if (resp.status === 204) return null
     try { return await resp.json() } catch { return null }
+  }
+
+  // 401 is NOT the server's verdict on the work — it is a stale token, and
+  // this queue exists precisely because writes sit for hours before replaying.
+  // A tech queues "I'm here" in a dead zone, drives out an hour later, and the
+  // token they had at 9am is expired by the time we replay: taking that 401 as
+  // "this arrival is invalid, never retry" throws the arrival away silently.
+  // Stay PENDING and let the next drain carry it — by then the app's own API
+  // calls will have refreshed the token (useApi.request refreshes and retries
+  // on 401; this replay path deliberately uses a bare fetch and cannot).
+  //
+  // usePhotoQueue draws the same line for the same reason (_PERMANENT excludes
+  // 401). This queue — which carries arrivals, notes and part requests — did
+  // not, so every one of them was one expired token away from vanishing.
+  if (resp.status === 401) {
+    await db.sync_queue.update(entry.id, {
+      status: QUEUE_STATUS.PENDING,
+      attempt_count: (entry.attempt_count || 0) + 1,
+      last_error: 'unauthorized_will_retry',
+      last_error_code: 401,
+    })
+    await _refreshPendingCount()
+    const e = new Error('unauthorized_will_retry')
+    e.status = 401
+    e.transient = true
+    throw e
   }
 
   // Other 4xx — client error. Retrying won't help; flag as failed.

@@ -42,7 +42,7 @@
         <div v-if="filteredPhotos.length" class="photo-grid">
           <article v-for="photo in filteredPhotos" :key="photo.id" class="photo-card">
             <div class="photo-wrapper" @click="openLightbox(photo)">
-              <img :src="photo.url" :alt="photo.filename || 'Photo'" />
+              <AuthedImage :src="photo.url" :alt="photo.filename || 'Photo'" />
               <Tag :value="photo.kind" class="photo-kind" />
             </div>
             <div class="photo-meta">
@@ -114,7 +114,7 @@
       >
         <div v-if="editingPhoto" class="lightbox-content">
           <div class="lightbox-image">
-            <img :src="editingPhoto.url" :alt="editingPhoto.filename || 'Photo'" />
+            <AuthedImage :src="editingPhoto.url" :alt="editingPhoto.filename || 'Photo'" />
           </div>
           <div class="lightbox-form">
             <div class="form-field">
@@ -141,6 +141,7 @@
 </template>
 
 <script setup>
+import AuthedImage from '../components/AuthedImage.vue';
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import Button from "primevue/button";
@@ -256,12 +257,20 @@ async function submitUpload() {
     // hit a route demanding a file. The file uploaded, the photo record never
     // existed, and job_photos sat empty. The upload route now creates the
     // record itself.
+    // One call to the canonical upload. This used to be two — POST
+    // /api/documents for the bytes, then a JSON POST to /api/jobs/{id}/photos
+    // to create the photo record — and that second step has 422'd since it
+    // shipped: a multipart handler in uploads.py claims the same path and is
+    // included first, so the JSON hit a route demanding a file. The file
+    // uploaded, the photo record never existed, and job_photos sat empty.
+    // /api/documents now creates the record itself.
     const formData = new FormData();
     formData.append("job_id", uploadForm.job_id);
     formData.append("file", uploadForm.file);
+    formData.append("as_photo", "true");
     if (uploadForm.kind) formData.append("kind", uploadForm.kind);
-    if (uploadForm.caption) formData.append("caption", uploadForm.caption);
-    await api.post(`/api/jobs/${uploadForm.job_id}/photos`, formData, { successMessage: "Photo added" });
+    if (uploadForm.caption) formData.append("description", uploadForm.caption);
+    await api.post("/api/documents", formData, { successMessage: "Photo added" });
     closeUpload();
     await loadPhotos();
   } finally {

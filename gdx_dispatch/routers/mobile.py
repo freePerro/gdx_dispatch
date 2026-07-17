@@ -25,8 +25,10 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.models.tenant_models import (
@@ -71,6 +73,34 @@ class SignatureBody(BaseModel):
 
 class NoteBody(BaseModel):
     note: str = Field(min_length=1, max_length=5000)
+
+
+class CustomerContactBody(BaseModel):
+    """What a tech can add about who to call. Nothing here is money.
+
+    Every field is optional except the name — a tech who only learns "ask for
+    Jim at the front desk" should still be able to write that down; a contact
+    with no phone is worth more than no contact.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=254)
+    label: str | None = Field(default=None, max_length=120)
+
+
+class CustomerContactPatch(BaseModel):
+    """Fix the customer's own contact details. None = leave alone.
+
+    Deliberately NOT the whole customer: pricing_class, margin_override_pct and
+    payment_terms_days live on the same row and are money. A field tech gets
+    name/phone/email and nothing else, which is why this rides on
+    customers.contact_write rather than customers.write.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=254)
 
 
 class EnRouteBody(BaseModel):
@@ -1873,13 +1903,34 @@ def get_mobile_job_detail(
     # re-bill it.
     job["billed"] = _job_is_billed(db, job.get("id"))
 
+    # The people at this customer beyond the one name/phone on the record. The
+    # tech needs them to know who to actually call, and needs to see what's
+    # already there before adding a duplicate.
+    if customer and customer.get("id"):
+        try:
+            _cust_key = _UUID(str(customer["id"]))
+        except (ValueError, AttributeError, TypeError):
+            _cust_key = None
+        customer["contacts"] = (
+            _serialize_customer_contacts(db, _cust_key) if _cust_key else []
+        )
+
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    # author_name rides along: more than one tech works a job, and "who found
+    # the frayed cable" is the question the next person asks. Notes written
+    # before 2026-07-17 have NULL here — both writers guessed the name off the
+    # auth dict, which never had it — so migration 027 backfills them from
+    # author_id. deleted_at is filtered because job_notes has the column and a
+    # soft-deleted note is not a note (the photos query below already did this;
+    # this one didn't, so deleting a note left it on the tech's screen).
     notes = db.execute(
         _text(
             """
-            SELECT id, body AS note, author_id AS created_by, created_at
+            SELECT id, body AS note, author_id AS created_by, author_name,
+                   created_at
             FROM job_notes
             WHERE job_id = :job_id
+              AND deleted_at IS NULL
             ORDER BY created_at ASC
             """
         ),
@@ -1902,11 +1953,41 @@ def get_mobile_job_detail(
         {"job_id": job_id},
     ).mappings().all()
 
+    # 2026-07-16: the parts the tech has REQUESTED for this job. Without these
+    # they can't see what was already asked for, and re-request it.
+    #
+    # source='request' is not a nicety. job_parts_needed is the shared billable
+    # spine for four different events: 'request' (asked for), 'closeout'
+    # (attested as installed at completion), 'mobile' (used off the truck) and
+    # 'van' (van-stock usage) — the last three are parts already IN the door.
+    # Unfiltered, this card labels an installed part "Needed", and worse: a
+    # re-closeout DELETES and recreates its unbilled rows (jobs.py:1620), so
+    # the list would silently rewrite itself under the tech. The office
+    # checklist shows all four and distinguishes them with source badges; this
+    # card asks one question and must answer only it.
+    #
+    # job_id is String(36) here, so it matches the dashed job_id directly — no
+    # UUID cast, unlike job_photos.job_id, which is a Uuid column.
+    parts = db.execute(
+        _text(
+            """
+            SELECT id, part_name, sku, quantity, urgency, status, notes, eta_at,
+                   created_at
+            FROM job_parts_needed
+            WHERE job_id = :job_id
+              AND source = 'request'
+            ORDER BY created_at ASC
+            """
+        ),
+        {"job_id": job_id},
+    ).mappings().all()
+
     return jsonable_response(
         {
             "job": job,
             "notes": [dict(r) for r in notes],
             "photos": [dict(r) for r in photos],
+            "parts": [dict(r) for r in parts],
         }
     )
 
@@ -3189,19 +3270,11 @@ def add_mobile_job_note(
     except (ValueError, AttributeError):
         logging.getLogger(__name__).exception("add_mobile_job_note caught exception")
         _jid = None
-    # S1-B4 — per-tech attribution: author_id + a best-effort
-    # display name resolved from the user dict (name / full_name / email
-    # in that order, falling back to None so the UI can show the user_id
-    # if no human-readable label is available).
-    user_dict = current_user or {}
-    author_name = None
-    if isinstance(user_dict, dict):
-        author_name = (
-            user_dict.get("name")
-            or user_dict.get("full_name")
-            or user_dict.get("email")
-            or None
-        )
+    # S1-B4 — per-tech attribution. Resolved from the user's id via the DB, not
+    # guessed off the auth dict: the JWT carries sub/role/tenant_id and none of
+    # name/full_name/email, so the old guess wrote NULL for every note ever
+    # made and the office job screen showed "Unknown" on all of them.
+    author_name = resolve_author_name(db, current_user, user_id=user_id)
     note_obj = JobNote(
         id=str(uuid.uuid4()),
         company_id=tenant_id,
@@ -3249,6 +3322,277 @@ def add_mobile_job_note(
         },
         201,
     )
+
+
+def _serialize_contact(c) -> dict[str, Any]:
+    return {
+        "id": str(c.id),
+        "name": c.name,
+        "phone": c.phone,
+        "email": c.email,
+        "label": c.label,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+def _serialize_customer_contacts(db: Session, customer_id) -> list[dict[str, Any]]:
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    rows = db.execute(
+        select(CustomerContact)
+        .where(
+            CustomerContact.customer_id == customer_id,
+            CustomerContact.deleted_at.is_(None),
+        )
+        .order_by(CustomerContact.created_at.asc())
+    ).scalars().all()
+    return [_serialize_contact(r) for r in rows]
+
+
+def _audit_mobile(
+    db: Session,
+    request: Request,
+    current_user: Any,
+    *,
+    action: str,
+    entity_id: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Audit that cannot take the request down with it.
+
+    The swallow is deliberate and narrow: the write it describes is already
+    committed, so raising here would report failure for work that happened. It
+    rolls back and LOGS — the arrival/en-route audits elsewhere in this file
+    swallow silently and write zero rows, which is how you end up with an audit
+    trail that isn't one.
+    """
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=_tenant_id(request),
+            user_id=_user_id(current_user or {}),
+            action=action,
+            entity_type=action,
+            entity_id=str(entity_id),
+            details=details or {},
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("mobile_audit_failed action=%s entity_id=%s", action, entity_id)
+
+
+# ── Customer contact details ────────────────────────────────────────────────
+#
+# Scoped through the JOB, not /api/customers/{id}, on purpose. A technician
+# holds customers.read_own — they have no business reaching an arbitrary
+# customer by id — but they are the one person standing in the driveway who can
+# find out the phone number that is missing (219 of 382 customers here have no
+# email at all). Going through the job means _assert_job_access answers "may
+# this tech touch this customer" with the same rule as the rest of the screen,
+# instead of a new one invented here.
+
+
+def _customer_for_job(db: Session, tenant_id: str, job_id: str):
+    """The job's customer row, via the ORM.
+
+    ORM, never raw SQL. Customer.name/email/phone are @validates-hooked to
+    maintain the *_hash sidecars, and those hashes are not decoration: the email
+    poller finds a customer by email_hash and the Phone.com resolver matches
+    inbound calls by phone_hash (E.164-normalized). A raw UPDATE would write the
+    value, skip the hash, and the customer's own replies and calls would stop
+    matching them — silently, forever. tools/raw_sql_on_encrypted_columns_scan.py
+    lint-gates this file for the same family of reason.
+    """
+    from gdx_dispatch.models.tenant_models import Customer
+
+    job = _get_job(db, tenant_id, job_id)
+    if not job:
+        return None, None
+    cust_id = (job or {}).get("customer_id")
+    if not cust_id:
+        return job, None
+    try:
+        key = _UUID(str(cust_id))
+    except (ValueError, AttributeError, TypeError):
+        return job, None
+    return job, db.execute(select(Customer).where(Customer.id == key)).scalar_one_or_none()
+
+
+@router.patch(
+    "/jobs/{job_id}/customer",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+def update_mobile_job_customer(
+    job_id: str,
+    payload: CustomerContactPatch,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add or correct the customer's own name / phone / email from the field."""
+    tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
+    job, customer = _customer_for_job(db, tenant_id, job_id)
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+    if customer is None:
+        return jsonable_response({"detail": "job has no customer"}, 404)
+
+    fields = payload.model_dump(exclude_unset=True)
+    changed = []
+    for key in ("name", "phone", "email"):
+        if key not in fields:
+            continue
+        value = (fields[key] or "").strip() or None
+        # name is NOT NULL on customers — refuse to blank it rather than let the
+        # DB raise on flush and lose the rest of the patch with it.
+        if key == "name" and not value:
+            continue
+        if getattr(customer, key) == value:
+            continue
+        # Plain attribute set: @validates("name","email","phone") recomputes the
+        # hash. This is the entire reason this goes through the ORM.
+        setattr(customer, key, value)
+        changed.append(key)
+
+    if changed:
+        db.commit()
+        # WHICH fields, never the values: an audit row is not the place to
+        # re-publish a customer's phone number and email in the clear.
+        _audit_mobile(
+            db, request, current_user,
+            action="mobile_customer_contact_updated",
+            entity_id=str(customer.id),
+            details={"job_id": job_id, "fields": changed},
+        )
+
+    return jsonable_response(
+        {
+            "ok": True,
+            "changed": changed,
+            "customer": {
+                "id": str(customer.id),
+                "name": customer.name,
+                "phone": customer.phone,
+                "email": customer.email,
+            },
+        }
+    )
+
+
+@router.get("/jobs/{job_id}/customer/contacts", response_model=None)
+def list_mobile_job_customer_contacts(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
+    job, customer = _customer_for_job(db, tenant_id, job_id)
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+    if customer is None:
+        return jsonable_response({"contacts": []})
+    return jsonable_response({"contacts": _serialize_customer_contacts(db, customer.id)})
+
+
+@router.post(
+    "/jobs/{job_id}/customer/contacts",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+def add_mobile_job_customer_contact(
+    job_id: str,
+    payload: CustomerContactBody,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add a person at this customer — the contact follows the account."""
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    tenant_id = _tenant_id(request)
+    user_id = _user_id(current_user or {})
+    _assert_job_access(db, request, current_user, job_id)
+    job, customer = _customer_for_job(db, tenant_id, job_id)
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+    if customer is None:
+        return jsonable_response({"detail": "job has no customer"}, 404)
+
+    name = (payload.name or "").strip()
+    if not name:
+        return jsonable_response({"detail": "name is required"}, 400)
+
+    contact = CustomerContact(
+        id=str(uuid.uuid4()),
+        company_id=tenant_id,
+        customer_id=customer.id,
+        name=name,
+        phone=(payload.phone or "").strip() or None,
+        email=(payload.email or "").strip() or None,
+        label=(payload.label or "").strip() or None,
+        created_by=user_id or None,
+        created_at=datetime.now(UTC),
+    )
+    db.add(contact)
+    db.commit()
+    _audit_mobile(
+        db, request, current_user,
+        action="mobile_customer_contact_added",
+        entity_id=str(contact.id),
+        details={"job_id": job_id, "customer_id": str(customer.id)},
+    )
+    return jsonable_response({"ok": True, "contact": _serialize_contact(contact)}, 201)
+
+
+@router.delete(
+    "/jobs/{job_id}/customer/contacts/{contact_id}",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+def delete_mobile_job_customer_contact(
+    job_id: str,
+    contact_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete — a wrong number a tech typed should be removable, but the
+    row stays for the audit trail."""
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
+    job, customer = _customer_for_job(db, tenant_id, job_id)
+    if not job or customer is None:
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    contact = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.id == str(contact_id),
+            # Scoped to THIS job's customer: a contact id alone must not be a
+            # key to any contact in the tenant.
+            CustomerContact.customer_id == customer.id,
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if contact is None:
+        return jsonable_response({"detail": "contact not found"}, 404)
+
+    contact.deleted_at = datetime.now(UTC)
+    db.commit()
+    _audit_mobile(
+        db, request, current_user,
+        action="mobile_customer_contact_deleted",
+        entity_id=str(contact_id),
+        details={"job_id": job_id},
+    )
+    return jsonable_response({"ok": True})
 
 
 @router.post("/jobs/{job_id}/parts-used", response_model=None)

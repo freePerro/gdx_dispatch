@@ -354,13 +354,40 @@ function toggleUserMenu(event) {
 
 <style scoped>
 .app-topbar {
-  height: var(--topbar-height);
+  /* min-height, NOT height. This is a PrimeVue Toolbar, which flex-wraps by
+     default: on a phone the brand and the action icons can't share one line,
+     so the icons wrapped to a second row — and a fixed height meant that row
+     overflowed the bar's box entirely. It then painted over the scrolling
+     content below it with no background behind it, so the page's text and the
+     topbar icons rendered on top of each other (Doug, 2026-07-16). The header
+     is its own `auto` grid row in AppLayout, so letting the bar grow to fit
+     its content pushes the content down correctly instead. */
+  min-height: var(--topbar-height);
   border: none;
   border-bottom: 1px solid var(--border-subtle);
   border-radius: 0;
   background: var(--surface-header);
   padding-inline: var(--space-4);
   color: var(--text-primary);
+}
+
+/* Keep it to one row at phone widths: the brand yields space and ellipsises
+   rather than shoving the icons onto a second line. p-toolbar sets
+   flex-wrap: wrap, which is what let the icons drop in the first place — and
+   with a fixed height that dropped row had nowhere to go but on top of the
+   page. min-width:0 is required alongside it: a flex item defaults to
+   min-width:auto and refuses to shrink below its text, so without it nowrap
+   would overflow instead of truncating. */
+.app-topbar {
+  flex-wrap: nowrap;
+}
+.app-topbar :deep(.p-toolbar-start) {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+.app-topbar :deep(.p-toolbar-end) {
+  flex: 0 0 auto;
 }
 
 /* Force visible icon color on every text-button in the topbar.
@@ -389,10 +416,28 @@ function toggleUserMenu(event) {
   gap: var(--space-2);
 }
 
+/* min-width:0 on the flex container too, not just on .p-toolbar-start. A flex
+   item defaults to min-width:auto and will not shrink below its content, so
+   without this the brand keeps its full width, start+end overflow the row by a
+   few px, and the icons wrap to a second line — the ellipsis on .company-name
+   never gets a chance to do its job. */
+.topbar-left {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.topbar-right {
+  flex: 0 0 auto;
+}
+
 .company-name {
   font-size: 0.9375rem;
   font-weight: 600;
   color: var(--text-primary);
+  /* A long tenant name shortens instead of pushing the icons to a new row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .search-wrap {
@@ -488,6 +533,23 @@ function toggleUserMenu(event) {
 .user-avatar {
   background: var(--interactive-primary-soft);
   color: var(--interactive-primary);
+}
+
+/* At phone widths the icon buttons carry desktop padding — 4 of them ate 282
+   of 412px, leaving the brand 66px when it needed 142, so it ellipsised to
+   "Garage Door Xp…" purely to make room for whitespace. 44px is the tap-target
+   floor from e2e/mobile-touch-targets.spec.js; hold that exactly and the name
+   fits whole. */
+@media (max-width: 600px) {
+  .app-topbar :deep(.p-button.p-button-text) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .topbar-right {
+    gap: 0.15rem;
+  }
 }
 
 @media (max-width: 960px) {

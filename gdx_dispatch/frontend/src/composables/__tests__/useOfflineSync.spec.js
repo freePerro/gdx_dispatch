@@ -10,6 +10,11 @@
  *   - online, 4xx       → THROWS (status + body preserved), row FAILED —
  *                         the pre-audit behavior returned the queued stub
  *                         here, telling callers a dead request was saved
+ *   - online, 401       → { queued: true } stub, row PENDING. NOT a verdict on
+ *                         the work: this queue replays hours later, so a stale
+ *                         token is expected. (2026-07-16 — until then a 401
+ *                         marked the row FAILED forever and the write vanished
+ *                         with no toast and no trace.)
  *   - online, 5xx       → { queued: true } stub, row PENDING (retryable)
  *   - syncNow()         → drains PENDING rows FIFO with Idempotency-Key
  */
@@ -60,6 +65,37 @@ describe('queueAction', () => {
     const rows = await db.sync_queue.toArray()
     expect(rows[0].status).toBe(QUEUE_STATUS.PENDING)
     expect(rows[0].attempt_count).toBe(1)
+  })
+
+  it('online + 401 → queued stub, row stays PENDING (expired token, not a verdict)', async () => {
+    // The whole point of this queue is that writes sit for hours before they
+    // replay, so meeting an expired token on reconnect is the NORMAL case, not
+    // an error. Treating 401 like any other 4xx marked the row FAILED forever:
+    // a tech's arrival — or the note they wrote in a dead zone — was one token
+    // expiry away from silently disappearing. This replay path uses a bare
+    // fetch and cannot refresh the token itself (useApi.request can, and
+    // usePhotoQueue routes through it for exactly this reason), so the row must
+    // survive for the next drain.
+    global.fetch.mockResolvedValueOnce(jsonResponse(401, { detail: 'expired' }))
+
+    const r = await queueAction('POST', '/api/mobile/jobs/9/arrived', { lat: 1 })
+
+    expect(r.queued).toBe(true)
+    const rows = await db.sync_queue.toArray()
+    expect(rows[0].status).toBe(QUEUE_STATUS.PENDING)
+    expect(rows[0].attempt_count).toBe(1)
+  })
+
+  it('online + 401 then 2xx on the next drain → the write lands', async () => {
+    global.fetch.mockResolvedValueOnce(jsonResponse(401, { detail: 'expired' }))
+    await queueAction('POST', '/api/mobile/jobs/9/notes', { note: 'spring is 2in' })
+
+    // The app refreshed its token in the meantime; the queue drains again.
+    global.fetch.mockResolvedValueOnce(jsonResponse(201, { id: 'n1' }))
+    await syncNow()
+
+    const rows = await db.sync_queue.toArray()
+    expect(rows[0].status).toBe(QUEUE_STATUS.SYNCED)
   })
 
   it('online + 2xx → returns the server JSON and marks the row synced', async () => {
