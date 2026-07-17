@@ -28,6 +28,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import { ref } from "vue";
 
 const getMock = vi.fn();
 const postQueuedMock = vi.fn();
@@ -40,6 +41,18 @@ vi.mock("vue-router", () => ({
 vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
 vi.mock("../../composables/useApi", () => ({
   useApi: () => ({ get: getMock, post: vi.fn(), patch: vi.fn(), postQueued: postQueuedMock }),
+}));
+
+const capturePhotoMock = vi.fn();
+// A real ref, not { value } — the template relies on Vue auto-unwrapping it.
+const pendingPhotosRef = ref(0);
+vi.mock("../../composables/usePhotoQueue", () => ({
+  usePhotoQueue: () => ({
+    pendingPhotos: pendingPhotosRef,
+    uploadingPhotos: ref(false),
+    capturePhoto: capturePhotoMock,
+    drainPhotos: vi.fn(),
+  }),
 }));
 
 const stubs = {
@@ -66,9 +79,19 @@ function jobPayload(overrides = {}) {
   };
 }
 
-async function mountWith(overrides = {}) {
+// The view fetches the job AND the tech-mobile settings on mount; route by URL
+// so a settings call can't consume the job's mock (the old spec used
+// mockResolvedValueOnce and any extra GET would have broken it).
+function routeGet(overrides = {}, settings = {}) {
+  getMock.mockImplementation(async (url) => {
+    if (String(url).includes("tech-mobile-settings")) return { settings };
+    return jobPayload(overrides);
+  });
+}
+
+async function mountWith(overrides = {}, settings = {}) {
   const { default: View } = await import("../MobileJobDetailView.vue");
-  getMock.mockResolvedValue(jobPayload(overrides));
+  routeGet(overrides, settings);
   const w = mount(View, { global: { stubs } });
   await flushPromises();
   return w;
@@ -77,6 +100,8 @@ async function mountWith(overrides = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   postQueuedMock.mockResolvedValue({ ok: true });
+  capturePhotoMock.mockResolvedValue({ queued: false, id: "p1" });
+  pendingPhotosRef.value = 0;
 });
 
 describe("status actions", () => {
@@ -211,6 +236,84 @@ describe("offline behaviour", () => {
     expect(toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ severity: "error" }),
     );
+  });
+});
+
+describe("photo capture", () => {
+  function pick(w, files) {
+    const input = w.find('[data-testid="mjd-photo-add"] input[type="file"]');
+    Object.defineProperty(input.element, "files", { value: files, configurable: true });
+    return input.trigger("change");
+  }
+  const file = () => new File(["x"], "door.jpg", { type: "image/jpeg" });
+
+  it("offers a camera control on a job with no photos", async () => {
+    const w = await mountWith();
+    const input = w.find('[data-testid="mjd-photo-add"] input[type="file"]');
+    expect(input.exists()).toBe(true);
+    expect(input.attributes("accept")).toBe("image/*");
+    // NO `capture` attribute, deliberately: Android honours it by forcing a
+    // single shot straight to the lens, which kills `multiple` AND locks the
+    // tech out of the gallery — so a photo taken before the app was open could
+    // never be attached. Bare accept="image/*" offers Camera or Files.
+    expect(input.attributes("capture")).toBeUndefined();
+    expect(input.attributes("multiple")).toBeDefined();
+  });
+
+  it("stores the photo through the offline queue", async () => {
+    const w = await mountWith();
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(capturePhotoMock).toHaveBeenCalledWith("job-123", expect.any(File), null);
+  });
+
+  it("says 'saved on your phone' when there's no signal — never 'uploaded'", async () => {
+    capturePhotoMock.mockResolvedValue({ queued: true, id: "p1" });
+    const w = await mountWith();
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: "warn", summary: "Saved on your phone" }),
+    );
+  });
+
+  it("refetches after upload — the 201 carries no url to render", async () => {
+    const w = await mountWith();
+    getMock.mockClear();
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(getMock).toHaveBeenCalledWith("/api/mobile/job/job-123");
+  });
+
+  it("shows how many photos are still waiting for signal", async () => {
+    pendingPhotosRef.value = 3;
+    const w = await mountWith();
+    expect(w.find('[data-testid="mjd-photo-pending"]').text()).toContain("3 waiting for signal");
+  });
+
+  it("hides the slot picker when the tenant leaves tagging optional", async () => {
+    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "optional" });
+    expect(w.find('[data-testid="mjd-photo-kinds"]').exists()).toBe(false);
+  });
+
+  it("requires a slot when the tenant demands one, rather than eating the 400", async () => {
+    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "required" });
+    expect(w.find('[data-testid="mjd-photo-kinds"]').exists()).toBe(true);
+
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(capturePhotoMock).not.toHaveBeenCalled();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: "warn" }),
+    );
+  });
+
+  it("sends the chosen slot", async () => {
+    const w = await mountWith({}, { "tech_mobile.photo_slot_tagging": "required" });
+    await w.find('[data-testid="mjd-photo-kind-after"]').trigger("click");
+    await pick(w, [file()]);
+    await flushPromises();
+    expect(capturePhotoMock).toHaveBeenCalledWith("job-123", expect.any(File), "after");
   });
 });
 

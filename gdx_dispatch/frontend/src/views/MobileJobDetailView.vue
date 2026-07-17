@@ -85,9 +85,16 @@
         </ul>
       </div>
 
-      <div v-if="photos.length" class="detail-card">
-        <h2>Photos</h2>
-        <div class="photo-strip">
+      <div class="detail-card">
+        <div class="photo-head">
+          <h2>Photos</h2>
+          <span v-if="pendingPhotos" class="photo-pending" data-testid="mjd-photo-pending">
+            <i class="pi pi-cloud-upload" />
+            {{ pendingPhotos }} waiting for signal
+          </span>
+        </div>
+
+        <div v-if="photos.length" class="photo-strip">
           <a
             v-for="p in photos"
             :key="p.id"
@@ -100,6 +107,45 @@
             <span v-else class="photo-name">{{ p.filename || 'Photo' }}</span>
           </a>
         </div>
+        <div v-else class="detail-meta detail-meta-muted">No photos yet.</div>
+
+        <!-- The tenant can require a slot. When it's optional the server
+             defaults to "during", so don't make the tech choose for nothing. -->
+        <div v-if="photoSlotRequired" class="photo-kinds" data-testid="mjd-photo-kinds">
+          <Button
+            v-for="k in PHOTO_KINDS"
+            :key="k"
+            :label="k"
+            size="small"
+            :outlined="photoKind !== k"
+            :severity="photoKind === k ? 'primary' : 'secondary'"
+            :data-testid="`mjd-photo-kind-${k}`"
+            @click="photoKind = k"
+          />
+        </div>
+
+        <!-- A real file input, not a Button — only an input can open the
+             camera. Deliberately NO `capture` attribute: Android honours it by
+             forcing a single shot straight to the lens, which kills `multiple`
+             AND locks the tech out of the gallery, so a photo taken before the
+             app was open can never be attached. Bare accept="image/*" makes
+             Android offer Camera or Files, which is both. -->
+        <label class="photo-add" data-testid="mjd-photo-add">
+          <input
+            ref="photoInput"
+            type="file"
+            accept="image/*"
+            multiple
+            @change="onPhotoPicked"
+          />
+          <span>
+            <i class="pi pi-camera" />
+            {{ photoBusy ? 'Saving…' : 'Add photo' }}
+          </span>
+        </label>
+        <small v-if="photoSlotRequired && !photoKind" class="photo-hint">
+          Pick before / during / after first.
+        </small>
       </div>
 
       <!-- Time is shown, never edited here. Arriving starts the job clock and
@@ -194,6 +240,7 @@ import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { usePhotoQueue } from '../composables/usePhotoQueue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 
@@ -201,6 +248,13 @@ const api = useApi()
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
+const { pendingPhotos, capturePhoto } = usePhotoQueue()
+
+const PHOTO_KINDS = ['before', 'during', 'after']
+const photoInput = ref(null)
+const photoKind = ref(null)
+const photoBusy = ref(false)
+const photoSlotRequired = ref(false)
 
 const loading = ref(true)
 const error = ref(null)
@@ -328,6 +382,75 @@ function onCloseoutDone() {
   refresh()
 }
 
+// Cached, because this is a network GET that fails precisely when the tech is
+// offline — which is the whole use case. Failing open there would hide the slot
+// picker, send kind=null, and the server would 400 the photo hours later at
+// drain time, long after the tech drove away. Remember the last known answer.
+const SLOT_CACHE_KEY = 'gdx_photo_slot_required'
+
+async function loadPhotoSettings() {
+  try {
+    photoSlotRequired.value = localStorage.getItem(SLOT_CACHE_KEY) === '1'
+  } catch { /* private mode */ }
+  try {
+    const r = await api.get('/api/me/tech-mobile-settings')
+    const required =
+      (r?.settings || {})['tech_mobile.photo_slot_tagging'] === 'required'
+    photoSlotRequired.value = required
+    try { localStorage.setItem(SLOT_CACHE_KEY, required ? '1' : '0') } catch { /* ignore */ }
+  } catch {
+    // Offline or unreachable: keep whatever the cache said rather than
+    // guessing "optional" and setting the tech up for a rejected upload.
+  }
+}
+
+async function onPhotoPicked(e) {
+  const files = Array.from(e?.target?.files || [])
+  if (!files.length) return
+  if (photoSlotRequired.value && !photoKind.value) {
+    toast.add({ severity: 'warn', summary: 'Pick before / during / after first', life: 3000 })
+    if (photoInput.value) photoInput.value.value = ''
+    return
+  }
+
+  photoBusy.value = true
+  let queued = 0
+  try {
+    for (const f of files) {
+      const r = await capturePhoto(job.value.id, f, photoKind.value)
+      if (r?.queued) queued += 1
+    }
+    // The photo is SAVED either way — that's the point of storing the blob
+    // before uploading. Say which happened; "Uploaded" when it's sitting in
+    // IndexedDB is the lie that makes a tech re-shoot a door.
+    if (queued) {
+      toast.add({
+        severity: 'warn',
+        summary: queued === files.length ? 'Saved on your phone' : 'Some saved on your phone',
+        detail: 'Uploads when you have signal',
+        life: 3500,
+      })
+    } else {
+      toast.add({ severity: 'success', summary: files.length > 1 ? 'Photos added' : 'Photo added', life: 2000 })
+    }
+    // The 201 carries no url — the strip can only render after a refetch.
+    await refresh()
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: err?.code === 'photo_backlog_full' ? 'Too many photos waiting' : 'Could not save photo',
+      detail: err?.code === 'photo_backlog_full'
+        ? 'Get some signal so these upload before adding more.'
+        : (err?.message || ''),
+      life: 5000,
+    })
+  } finally {
+    photoBusy.value = false
+    // Let the same file be picked again (Chrome won't re-fire change otherwise).
+    if (photoInput.value) photoInput.value.value = ''
+  }
+}
+
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/mobile/jobs')
@@ -353,7 +476,12 @@ function formatScheduled(iso) {
   } catch { return iso }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  // Not awaited: it only decides whether the slot picker shows, and the job
+  // must render even if settings are unreachable.
+  loadPhotoSettings()
+})
 </script>
 
 <style scoped>
@@ -382,6 +510,26 @@ onMounted(load)
 .note-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .note-body { font-size: 0.95rem; white-space: pre-wrap; }
 .note-when { font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); }
+.photo-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.photo-pending {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.75rem; font-weight: 600;
+  color: var(--p-amber-600, #b45309);
+}
+.photo-kinds { display: flex; gap: 0.4rem; }
+.photo-kinds :deep(.p-button) { flex: 1; min-height: 44px; text-transform: capitalize; }
+/* A styled <label> wrapping a hidden file input — capture="environment" is
+   what jumps straight to the back camera, and only a real input gets that. */
+.photo-add {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; border-radius: 0.5rem; cursor: pointer;
+  border: 1px dashed var(--p-content-border-color, #d1d5db);
+  color: var(--p-primary-color, #2563eb);
+  font-size: 0.95rem; font-weight: 600;
+}
+.photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.photo-add span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.photo-hint { color: var(--p-text-muted-color, #6b7280); font-size: 0.75rem; }
 .photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; }
 .photo-thumb { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 0.4rem; overflow: hidden; border: 1px solid var(--p-content-border-color, #e5e7eb); display: flex; align-items: center; justify-content: center; }
 .photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
