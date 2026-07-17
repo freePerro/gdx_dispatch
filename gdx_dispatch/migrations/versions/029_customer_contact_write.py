@@ -27,64 +27,40 @@ in Roles & Permissions.
 Revision ID: 029_customer_contact_write
 Revises: 028_parts_needed_sku_255
 """
+import logging
+
 from alembic import op
+
+from gdx_dispatch.migrations.grant_helpers import grant_permission_to_seeded_roles
+
+log = logging.getLogger("alembic.runtime.migration")
 
 revision = "029_customer_contact_write"
 down_revision = "028_parts_needed_sku_255"
 branch_labels = None
 depends_on = None
 
-_ROLES = ("technician", "dispatcher", "sales")
 _KEY = "customers.contact_write"
+# The seeded builtin roles that get this key by default. Kept in lockstep with
+# BUILTIN_ROLES by test_customer_contact_write_migration — if permissions.py and
+# this list disagree, a role is silently over- or under-granted, so that test
+# fails loudly at PR time rather than in prod.
+_ROLES = ("technician", "dispatcher", "sales")
 
 
 def upgrade() -> None:
-    # tenant_roles.permissions is **text** holding a JSON string, NOT jsonb.
-    # That matters more than it looks: on text, `||` is string CONCATENATION, so
-    # the obvious `permissions || '["key"]'` would staple a literal onto the end
-    # of the JSON and corrupt every role it touched. Cast to jsonb to do the
-    # work, cast back to text to store it.
-    #
-    # pg_input_is_valid, not a LIKE. The first draft guarded with
-    # `permissions LIKE '[%%]'` and a comment claiming that kept malformed rows
-    # away from ::jsonb. It does not, and one line of SQL disproves it:
-    #
-    #   '[oops]' LIKE '[%]'  -> true, then ::jsonb RAISES
-    #     invalid input syntax for type json
-    #
-    # LIKE filters things that don't LOOK like an array; anything shaped [...]
-    # sails through and raises, and because env.py wraps the upgrade in one
-    # transaction it takes the whole run down. Nor does WHERE-clause order save
-    # it: the planner puts `~~` first because it is cheap, not because SQL
-    # promises to evaluate the guard before the cast. pg_input_is_valid answers
-    # the actual question — "will this cast" — and both prod and dev are PG
-    # 16.13, so it's available. (Caught in review, 2026-07-17.)
-    #
-    # '%%' escaping is still needed on any literal % here: exec_driver_sql
-    # passes params, so psycopg2 reads a bare % as a placeholder and fails with
-    # "immutabledict is not a sequence" — verified, and it is exactly what this
-    # migration did on its first run.
-    op.get_bind().exec_driver_sql(
-        f"""
-        DO $$ BEGIN
-          IF EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'tenant_roles'
-          ) THEN
-            UPDATE tenant_roles
-               SET permissions = ((permissions::jsonb) || '["{_KEY}"]'::jsonb)::text
-             WHERE name IN {_ROLES!r}
-               AND permissions IS NOT NULL
-               AND pg_input_is_valid(permissions, 'jsonb')
-               AND jsonb_typeof(permissions::jsonb) = 'array'
-               -- Not already granted, and not a wildcard role (owner holds "*"
-               -- and appending a key to it would be noise).
-               AND NOT ((permissions::jsonb) @> '["{_KEY}"]'::jsonb)
-               AND NOT ((permissions::jsonb) @> '["*"]'::jsonb);
-          END IF;
-        END $$;
-        """
-    )
+    # All the sharp edges of amending this text-JSON column — string-concat vs
+    # jsonb, malformed rows that pass a LIKE guard and then raise on ::jsonb, the
+    # is_system gate that keeps a tenant's custom same-named role untouched, and
+    # the %-escaping footguns — live in one tested helper now, so this migration
+    # (and the next one) can't re-derive them wrong. See grant_helpers.py.
+    granted = grant_permission_to_seeded_roles(op.get_bind(), permission=_KEY, roles=_ROLES)
+    # Log the count so a skipped tenant is visible, not silent. The gate is
+    # is_system=true (verified: every builtin row on prod is), but if a tenant's
+    # builtin rows were ever seeded is_system=false this grants 0 and the feature
+    # would 403 for them — an operator needs to see that in the deploy log rather
+    # than discover it as a support ticket. (The leads.* tool logs the same way.)
+    log.info("029_customer_contact_write: granted %s to %s seeded role row(s)", _KEY, granted)
 
 
 def downgrade() -> None:
