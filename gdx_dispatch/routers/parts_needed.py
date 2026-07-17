@@ -545,13 +545,35 @@ def sku_suggest(
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """C7 — SKU autocomplete, tenant-scoped, two-source merged.
+    """SKU autocomplete — the same catalog the estimate builder searches.
 
-    Sources (in order of suggestion priority):
-      1. ``inventory.parts`` — the tenant's own parts catalog (with on-hand
-         qty so the tech can see "we have it on the truck/warehouse").
-      2. ``chi_door_catalog`` — door-line catalog for door requests that
-         aren't kept as bench inventory.
+    Sources, in suggestion priority. **Parts before doors**: a tech mid-job
+    wants a spring, not a door, and the door rows carry long marketing
+    descriptions that match almost any needle and crowd everything else out
+    of ``limit``.
+
+      1. ``inventory.parts`` — tenant bench/truck stock, the only source that
+         carries a real ``part_id`` (see ``source`` note below).
+      2. ``custom_catalog_items`` (non-door) — the tenant's own catalog, and
+         where the real parts actually are: 2,561 ``product_class='parts'``
+         rows in production.
+      3. ``chi_parts_catalog`` — CHI's parts line (springs, rollers, cable).
+      4. ``chi_door_catalog`` — CHI's door line.
+      5. ``custom_catalog_items`` (``product_class='door'``) — custom doors.
+
+    Sources 2 and 3 were unreachable before 2026-07-16, which made this
+    endpoint incapable of suggesting a part. Source 2 was filtered to
+    ``product_class == 'door'`` — a value that matches **zero** rows in
+    production — and source 3 was never queried at all. With ``parts`` empty,
+    the only source that could return anything was the door catalog: searching
+    "spring" returned 8 doors whose marketing copy says "spring" while all 90
+    real springs (12 custom + 78 CHI) stayed invisible.
+
+    ``source`` is load-bearing, not a label: MobileJobCloseoutDialog keeps
+    ``part_id`` only when ``source == 'parts'``, because ``job_parts.part_id``
+    is an FK to ``parts.id`` and rejects an id from any other table. Catalog
+    rows therefore ride as ``source='catalog'`` with no ``part_id`` and are
+    snapshotted by value.
 
     No match → caller falls back to free-text typing; the create endpoint
     accepts ``sku=null`` and the request is still saved.
@@ -566,12 +588,43 @@ def sku_suggest(
     # parts router to the inventory module's import side-effects.
     from gdx_dispatch.models.tenant_models import (
         ChiDoorCatalog,
+        ChiPartsCatalog,
         CustomCatalogItem,
         DoorSpec,
     )
     from gdx_dispatch.modules.inventory.models import Part
 
     suggestions: list[dict[str, Any]] = []
+    seen_skus: set[str] = set()
+
+    def _add(row: dict[str, Any]) -> None:
+        """Append unless a higher-priority source already claimed this sku.
+
+        The same sku legitimately exists in more than one catalog (a CHI part
+        the tenant also stocks). First writer wins, which is why source order
+        above is priority order.
+        """
+        sku = (row.get("sku") or "").strip().lower()
+        if sku and sku in seen_skus:
+            return
+        if sku:
+            seen_skus.add(sku)
+        suggestions.append(row)
+
+    def _name(*candidates: Any) -> str:
+        """First non-empty candidate, trimmed to something a phone can show.
+
+        pickSuggestion() assigns this straight to the part name it saves, so an
+        untrimmed value is not just ugly — it is what lands in the job record.
+        The CHI door rows carry ~900-char marketing paragraphs in
+        ``description``, which is how a part came to be named three sentences
+        about curb appeal.
+        """
+        for c in candidates:
+            text = str(c).strip() if c is not None else ""
+            if text:
+                return text if len(text) <= 120 else text[:117].rstrip() + "..."
+        return ""
 
     # Source 1 — parts catalog. Three-plane: tenant connection IS the filter.
     part_rows = (
@@ -591,7 +644,7 @@ def sku_suggest(
         .all()
     )
     for p in part_rows:
-        suggestions.append(
+        _add(
             {
                 "source": "parts",
                 # Phase 2 / C5 (Doug 2026-05-10): the closeout dialog
@@ -610,6 +663,83 @@ def sku_suggest(
             }
         )
 
+    # Source 2 — the tenant's own catalog, everything that is not a door.
+    # This is the same table the estimate builder searches via
+    # /api/catalogs/all-items, which is Doug's rule for this picker: the tech
+    # searches what the estimate searches.
+    #
+    # No NULL guard on product_class: the column is NOT NULL with a 'parts'
+    # server default, verified on prod — a NULL leg here would be dead code.
+    remaining = max(0, limit - len(suggestions))
+    if remaining:
+        custom_part_rows = (
+            db.query(CustomCatalogItem)
+            .filter(
+                CustomCatalogItem.deleted_at.is_(None),
+                CustomCatalogItem.active.is_(True),
+                CustomCatalogItem.product_class != "door",
+                or_(
+                    CustomCatalogItem.sku.ilike(like),
+                    CustomCatalogItem.name.ilike(like),
+                    CustomCatalogItem.description.ilike(like),
+                    CustomCatalogItem.category.ilike(like),
+                ),
+            )
+            .order_by(CustomCatalogItem.sku.asc())
+            .limit(remaining)
+            .all()
+        )
+        for cci in custom_part_rows:
+            _add(
+                {
+                    # Not 'parts': job_parts.part_id is an FK to parts.id and a
+                    # custom_catalog_items id would violate it. 'catalog' keeps
+                    # part_id null and snapshots by value.
+                    "source": "catalog",
+                    "sku": cci.sku,
+                    # name first — it is the short human label ("#4 hinge");
+                    # description is where the paragraphs live.
+                    "name": _name(cci.name, cci.description, cci.sku),
+                    "vendor": cci.vendor,
+                    "category": cci.category,
+                    "qty_on_hand": None,
+                }
+            )
+
+    # Source 3 — CHI's parts line. Never queried before 2026-07-16; it holds
+    # 78 of the 90 springs in the system.
+    remaining = max(0, limit - len(suggestions))
+    if remaining:
+        chi_part_rows = (
+            db.query(ChiPartsCatalog)
+            .filter(
+                ChiPartsCatalog.is_active.is_(True),
+                or_(
+                    ChiPartsCatalog.sku.ilike(like),
+                    ChiPartsCatalog.name.ilike(like),
+                    ChiPartsCatalog.description.ilike(like),
+                    ChiPartsCatalog.part_type.ilike(like),
+                ),
+            )
+            .order_by(ChiPartsCatalog.sku.asc())
+            .limit(remaining)
+            .all()
+        )
+        for cp in chi_part_rows:
+            _add(
+                {
+                    "source": "catalog",
+                    "sku": cp.sku,
+                    "name": _name(cp.name, cp.description, cp.sku),
+                    "vendor": cp.brand or cp.manufacturer,
+                    "category": cp.part_type,
+                    "qty_on_hand": None,
+                }
+            )
+
+    # Source 4 — CHI doors. Behind the parts sources now: these descriptions
+    # are marketing paragraphs that match nearly any needle, so in front they
+    # ate the whole `limit`.
     remaining = max(0, limit - len(suggestions))
     if remaining:
         door_rows = (
@@ -633,11 +763,14 @@ def sku_suggest(
             .all()
         )
         for d in door_rows:
-            suggestions.append(
+            _add(
                 {
                     "source": "door_catalog",
                     "sku": d.sku,
-                    "name": d.description or d.model_number or d.sku,
+                    # model_number ahead of description: the description is the
+                    # marketing paragraph, and pickSuggestion() saves this as
+                    # the part name.
+                    "name": _name(d.model_number, d.description, d.sku),
                     "vendor": d.brand or d.manufacturer,
                     "model_number": d.model_number,
                     "qty_on_hand": None,
@@ -672,11 +805,11 @@ def sku_suggest(
             .all()
         )
         for cci, ds in custom_door_rows:
-            suggestions.append(
+            _add(
                 {
                     "source": "door_catalog",
                     "sku": cci.sku,
-                    "name": cci.description or cci.name or cci.sku,
+                    "name": _name(cci.name, cci.description, cci.sku),
                     "vendor": (ds.manufacturer if ds else None),
                     "model_number": (ds.model_number if ds else None),
                     "qty_on_hand": None,
