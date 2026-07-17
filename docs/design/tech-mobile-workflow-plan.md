@@ -66,7 +66,7 @@ So: **nested `job.customer` only.** `notes`/`photos` stay siblings (they aren't 
 
 **Also unify `navigation_link`:** `_build_navigation_link` emits `https://maps.google.com/?q=`; `MobileJobDetailView` hand-builds `/maps/dir/?api=1&destination=`. Two formats. Pick the backend one; delete the client-side builder.
 
-**Tests:** detail endpoint returns nested `job.customer` + `navigation_link` + `arrived_at`; sibling keys still present (back-compat); parity test asserting `/today` card and `/job/{id}` card have the same keys for the same job.
+**Tests:** detail endpoint returns nested `job.customer` + `navigation_link` + `arrived_at`; `notes`/`photos` remain siblings; **the duplicate sibling `customer` is GONE** (the divergence trap — assert it, don't just stop emitting it); parity test asserting `/today` and `/job/{id}` produce the same card keys for the same job, so the two surfaces cannot drift apart again.
 
 ---
 
