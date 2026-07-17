@@ -1,4 +1,4 @@
-# Tech Mobile Job Workflow — Implementation Plan (v2, audit round 1 folded in)
+# Tech Mobile Job Workflow — Implementation Plan (v3)
 
 **Date:** 2026-07-17 · **Status:** awaiting Doug's approval. No code written.
 **Audit round 1 [AR1]:** adversarial review of the v1 plan verified every claim against code. Five substantive corrections, all folded in below — v1's central recommendation was **inverted**:
@@ -94,7 +94,13 @@ Three options. **None is free.**
 
 **~~Recommendation: Option 3~~ — WITHDRAWN. [AR1] measured the duplication at ≈270 lines, not ~40.** That number was the whole argument, and it was a 6× understatement: `onMyWay`+`imHere` = 86, quote/invoice/CO/chat handlers = 73, `.job-actions` template = 78, dialog refs/mounts ≈ 30.
 
-**Recommendation: Option 2 — `useJobActions(job, {onUpdated})` composable, now.**
+**Recommendation: `useJobActions(job, {onUpdated})` composable for the logic + `<MobileJobActionBar>` for the markup.**
+
+**[v3 correction] A composable alone only halves the duplication.** It shares the handlers (86 + 73 = 159 lines), but the 78-line `.job-actions` template and ~30 lines of dialog mounts **cannot live in a composable** — so ~108 lines would still fork. v2 pushed from Option 3 → Option 2 on a line count and didn't finish the arithmetic. The markup needs a component too; the composable is what lets that component stay thin and lets each view opt out of the bits it doesn't want.
+
+Split:
+- **`useJobActions(job, {onUpdated})`** — every API call, guard, offline semantic, optimistic update. One definition.
+- **`<MobileJobActionBar :job :layout="'row'|'bar'">`** — the buttons + dialog mounts. `row` = Today's in-card strip, `bar` = Detail's sticky bottom bar. Same children either way; only the container differs.
 
 Rationale, corrected:
 - 270 duplicated lines is not "a few status handlers" — it *is* the workflow, and it sits on **exactly the en-route/arrived paths #154 just fixed**. Duplicating them means the next timer fix lands in one copy while the other rots — on the path Michael actually takes, with Today's green tests reporting all clear.
@@ -135,20 +141,32 @@ Header comment: *"photos — captured photo blobs awaiting upload… Photos use 
 
 A tech photographs a door in a garage or on a rural drive — the dead zones are *where the feature lives*. Shipping it online-only and printing an apology is not a design, and "0 photos across 205 jobs" is not going to be fixed by a feature that fails where it's used. **Write the Blob to `db.photos`, add a FormData branch to `_drainOne`, drain on reconnect** (the same `online`/`visibilitychange` hooks the JSON queue uses). Surface the pending count so the tech knows it's saved, not lost.
 
+**[v3] Prove the store before building on it — it is UNPROVEN, not merely unused.** Zero writers and zero readers means no byte has ever gone through it. This is the same "exists ≠ works" trap this plan criticises in the clock endpoints, and IndexedDB Blob storage has a real history of bugs on mobile Safari/Chrome (blob detachment across sessions, quota eviction). **Gate the whole offline-photo leg on a spike**: write a Blob, reload the page, read it back, upload it as FormData — on the actual Pixel emulator (`/androidTesting`), not jsdom. jsdom's IndexedDB shim will happily pass a test that fails on a real phone. If it doesn't survive, fall back to online-only *deliberately*, with the tech told — but do not assume the failure without checking, which is v1's mistake in reverse.
+
 Setting read: `GET /api/me/tech-mobile-settings` → `settings['tech_mobile.photo_slot_tagging']`. **No composable exists** (`TimeclockView.vue:410` inlines it). Extract `useTechMobileSettings()` rather than write a third copy.
 
-### Clock in/out — IN this PR [AR1 reversal]
+### Clock in/out — IN this PR [AR1 reversal]. **BOTH clocks** (Doug, 2026-07-17)
 
 v1 deferred it, arguing a manual timer would re-introduce invented hours. **[AR1]: category error, and it quietly failed to deliver what Doug asked for.**
 
 The rule from #154 is that labor code may not **invent** hours. A tech tapping *clock in* and later *clock out* **attests both ends** — that IS the attestation. The bugs #154/#155 killed were a Celery sweep acting with no human involved, and a 12h clamp that was itself the fabrication. A human tap is the opposite of those.
 
-So: ship it, with the #154 rule intact.
+**Doug's answer (2026-07-17): both clocks, both visible on the job screen.**
 
-- `POST /api/mobile/jobs/{id}/clock-in` / `clock-out` (exist, zero callers today — so their behaviour is *unproven*, not merely unused; test them for real).
-- **Fix `_close_open_time_entry` (mobile.py:497) first**: it closes with unclamped elapsed and sets no `hourly_rate` — the same shape #154 fixed in closeout. A tap-attested span is payable; it still must not be clamped, invented, or silently mis-costed.
-- **Never clamp. Never block the tech** (Doug 2026-05-10). An implausible span is real data the tech attested — it goes to the **office exceptions surface** (PR #155's card), which is exactly Doug's rule: *"it should be the dispatcher or office personel that get told about the discrepency."*
-- Show the running timer. Today the arrival auto-clock-in is invisible; the tech has no idea a clock is running on them.
+| Clock | Source | Means | Endpoints |
+|---|---|---|---|
+| **Day / shift** | `timeclock_entries_router` | **This is your paid time.** Start-of-day → end-of-day. Already real: 39 shifts, 5 techs. | `/api/timeclock/*` (works) |
+| **This job** | `time_entries` (`entry_type='job'`) | Job costing / attribution only. **Does not pay.** | `/api/mobile/jobs/{id}/clock-in\|clock-out` (zero callers) |
+
+**The disambiguation is load-bearing, not cosmetic.** Two visible clocks must never leave a tech guessing which one pays them — that is the one way this feature does harm. Label them outright ("Day — your paid time" vs "This job — for costing"), never show them in the same visual weight, and never let the job timer imply pay.
+
+**[v3] Resolve the collision the plan didn't address.** Arrival ALREADY auto-starts the per-job timer (`mobile_job_arrived`), and `mobile_clock_in` returns *"Already clocked in on this job"* when one is open. So a naive "Clock in" button on a job you've arrived at either errors or double-starts. The control must be a **state-reflecting toggle**, not a Start button: read the live timer state, render Stop when running. Three writers now touch this row — arrival (start), the manual toggle (start/stop), closeout (end, per #154) — and they must agree. Pin that with a test.
+
+**Fix `_close_open_time_entry` (mobile.py:497) first**: it closes with unclamped elapsed and sets no `hourly_rate` — the same shape #154 fixed in closeout, still live on this path. A tap-attested span IS payable-quality data; it still must not be clamped, invented, or silently mis-costed at the $95 `job_costing` default.
+
+**Never clamp. Never block the tech** (Doug 2026-05-10). An implausible span is real data a human attested — it goes to the **office exceptions surface** (PR #155's card), which is exactly Doug's rule: *"it should be the dispatcher or office personel that get told about the discrepency."*
+
+**Show the running timer.** Today the arrival auto-clock-in is invisible — a clock runs on the tech and nothing tells them.
 
 ### Explicitly NOT in this PR
 
