@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
 
 log = logging.getLogger(__name__)
@@ -167,6 +168,21 @@ def _build_file_path(tenant_id: str, entity_type: str, entity_id: str, filename:
     return Path(candidate)
 
 
+def _flat_document_path(stored_filename: str) -> Path:
+    """Where the download route actually reads: <upload root>/<filename>.
+
+    `stored_filename` is already `<uuid4 hex>-<sanitized>`, so it cannot
+    traverse — but resolve and fence it against the root anyway, because that
+    realpath + startswith form is what CodeQL's py/path-injection recognizes as
+    a barrier.
+    """
+    base = os.path.realpath(_upload_dir())
+    candidate = os.path.realpath(os.path.join(base, stored_filename))
+    if not candidate.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid upload path")
+    return Path(candidate)
+
+
 def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
     data = file.file.read()
     if len(data) > max_bytes:
@@ -221,54 +237,6 @@ def _insert_document(
     return row
 
 
-def _link_job_photo(
-    db: Session,
-    *,
-    tenant_id: str,
-    job_id: str,
-    document_id: str,
-    filename: str,
-    content_type: str,
-    size_bytes: int,
-    uploaded_by: str,
-    kind: str | None = None,
-    caption: str | None = None,
-) -> None:
-    """Create the JobPhoto record for a just-stored file.
-
-    The url points at the document's download route — the same shape the Photos
-    page builds by hand today. Best-effort: a photo that stored its bytes must
-    not 500 because the index row failed, but it MUST be logged, because a
-    silently-missing record is exactly the failure this closes.
-    """
-    from uuid import UUID as _UUID
-
-    from gdx_dispatch.models.tenant_models import JobPhoto
-
-    try:
-        # SAVEPOINT: a failure here must not take the document down with it.
-        # Bare try/except is not enough — a failed flush leaves the session
-        # unusable, so the outer commit would fail too and the tech would lose
-        # the upload they were told succeeded.
-        with db.begin_nested():
-            # JobPhoto.job_id is a Uuid column — binding the raw path string
-            # raises rather than parsing.
-            db.add(JobPhoto(
-                company_id=tenant_id,
-                job_id=_UUID(str(job_id)),
-                kind=(kind or "during"),  # untagged defaults to the server's slot
-                url=f"/api/documents/{document_id}/download",
-                filename=filename,
-                mime_type=content_type,
-                size_bytes=size_bytes,
-                caption=caption,
-                uploaded_by=uploaded_by,
-            ))
-    except Exception:
-        log.exception(
-            "job_photo_link_failed job=%s document=%s", job_id, document_id
-        )
-
 
 @router.post("/api/jobs/{job_id}/photos", status_code=201, response_model=DocumentOut)
 def upload_job_photo(
@@ -298,7 +266,13 @@ def upload_job_photo(
 
         sanitized = _sanitize_filename(file.filename)
         stored = f"{uuid4().hex}-{sanitized}"
-        output_path = _build_file_path(tenant_id, "job_photo", job_id, stored)
+        # FLAT, next to every other document — because that is where the
+        # download route looks (`_upload_dir() / doc.filename`, documents.py).
+        # This used to write <root>/<tenant>/job_photo/<job>/<file>, so every
+        # photo it stored 404'd on download even with a valid token: the bytes
+        # were on disk and nothing could serve them. A tidy directory tree is
+        # worth nothing if the reader can't find it.
+        output_path = _flat_document_path(stored)
         _write_bytes_to_storage(output_path, data)
 
         row = _insert_document(

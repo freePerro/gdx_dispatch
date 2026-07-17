@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -139,6 +141,49 @@ def test_upload_photo_creates_the_photo_record(tenant_db_session):
     assert row.url == f"/api/documents/{out.id}/download"
     assert row.kind == "before"
     assert row.caption == "Spring snapped"
+
+
+def test_uploaded_photo_lands_where_the_download_route_reads(tenant_db_session, tmp_path):
+    """A photo record whose url 404s is worse than no photo at all.
+
+    This route wrote to <root>/<tenant>/job_photo/<job>/<file> while the
+    download route reads <root>/<file> — so every photo it stored was
+    unservable: the bytes on disk, and a permanent grey box on screen. Caught by
+    driving a real phone; no test looked, because they all asserted the DB row
+    and never that the file could be fetched back.
+    """
+    out = uploads_router.upload_job_photo(
+        job_id=str(uuid.uuid4()),
+        request=_request("tenant-a"),
+        file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
+        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        db=tenant_db_session,
+    )
+    # Exactly where documents.py's download does `_upload_dir() / doc.filename`.
+    served = Path(os.environ["UPLOAD_DIR"]) / out.filename
+    assert served.exists(), f"download reads {served}, nothing is there"
+
+
+def test_upload_photo_rejects_a_junk_slot_rather_than_losing_the_photo(tenant_db_session):
+    """kind is String(20): an over-long value raises on flush, the savepoint
+    swallows it, and the photo disappears — the original bug wearing the error
+    handler meant to fix it. Unknown slots fall back instead."""
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    job_id = str(uuid.uuid4())
+    uploads_router.upload_job_photo(
+        job_id=job_id,
+        request=_request("tenant-a"),
+        file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
+        kind="definitely-not-a-real-slot-and-far-too-long",
+        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        db=tenant_db_session,
+    )
+    row = tenant_db_session.query(JobPhoto).filter(
+        JobPhoto.job_id == uuid.UUID(job_id)
+    ).first()
+    assert row is not None, "a junk slot silently ate the photo"
+    assert row.kind == "during"
 
 
 def test_upload_photo_defaults_the_slot_when_the_tech_does_not_pick(tenant_db_session):

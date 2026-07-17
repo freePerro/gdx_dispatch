@@ -95,17 +95,16 @@
         </div>
 
         <div v-if="photos.length" class="photo-strip">
-          <a
-            v-for="p in photos"
-            :key="p.id"
-            :href="p.url"
-            target="_blank"
-            rel="noopener"
-            class="photo-thumb"
-          >
-            <img v-if="p.url" :src="p.url" :alt="p.caption || p.filename || 'Job photo'" loading="lazy" />
-            <span v-else class="photo-name">{{ p.filename || 'Photo' }}</span>
-          </a>
+          <!-- AuthedImage, not a bare <img>: the url needs a Bearer token
+               and an <img src> can't send one — it 401s and paints a broken
+               icon, which is exactly what a real phone showed. -->
+          <div v-for="p in photos" :key="p.id" class="photo-thumb">
+            <AuthedImage :src="p.url" :alt="p.caption || p.filename || 'Job photo'">
+              <template #fallback>
+                <span class="photo-name">{{ p.filename || 'Photo' }}</span>
+              </template>
+            </AuthedImage>
+          </div>
         </div>
         <div v-else class="detail-meta detail-meta-muted">No photos yet.</div>
 
@@ -223,6 +222,7 @@ import Button from 'primevue/button'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { usePhotoQueue } from '../composables/usePhotoQueue'
+import AuthedImage from '../components/AuthedImage.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 
@@ -476,7 +476,7 @@ onMounted(load)
 .photo-add span { display: inline-flex; align-items: center; gap: 0.4rem; }
 .photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; }
 .photo-thumb { flex: 0 0 auto; width: 96px; height: 96px; border-radius: 0.4rem; overflow: hidden; border: 1px solid var(--p-content-border-color, #e5e7eb); display: flex; align-items: center; justify-content: center; }
-.photo-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.photo-thumb :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 .photo-name { font-size: 0.7rem; padding: 0.25rem; word-break: break-all; }
 .status-pill {
   display: inline-flex; align-items: center; gap: 0.3rem;

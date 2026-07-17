@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder, User
 
@@ -292,9 +293,29 @@ async def upload_document(
     job_id: str | None = Form(default=None),
     customer_id: str | None = Form(default=None),
     tags: str | None = Form(default=None),
+    # Documents and photos are different things (Doug 2026-07-17): a receipt or
+    # a spec sheet is a document; a picture of the door is a photo. This flag is
+    # the caller SAYING which — do not infer it from the mime type. A scanned
+    # contract attached to a job is an image with a job_id, and it has no
+    # business appearing in the job's photo strip.
+    as_photo: bool = Form(default=False),
+    # Only meaningful alongside as_photo: before / during / after. Optional —
+    # a tech shooting a door in a hurry never has to choose.
+    kind: str | None = Form(default=None),
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DocumentOut:
+    # Called directly (tests, other handlers) the Form(...) defaults arrive as
+    # FastAPI marker objects, not None — and a marker reaching uuid.UUID() or
+    # the DB raises. Normalize once, here.
+    def _s(v):
+        return v if isinstance(v, str) else None
+
+    title, description = _s(title), _s(description)
+    folder_id, job_id, customer_id = _s(folder_id), _s(job_id), _s(customer_id)
+    tags, kind = _s(tags), _s(kind)
+    as_photo = as_photo is True
+
     ext = Path(file.filename or "").suffix
     stored_filename = f"{uuid4()}{ext.lower()}"
 
@@ -324,6 +345,36 @@ async def upload_document(
     db.refresh(doc)
 
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+
+    # A photo the caller explicitly says is a photo. Documents hold the bytes;
+    # job_photos is the record every photo surface reads (the Photos page, the
+    # job's strip, the mobile job screen). Creating it here means one upload
+    # does the whole job, and — since this route already takes job_id and
+    # customer_id — it is tagged to both automatically: the tech is on a job,
+    # so the job IS the tagging.
+    #
+    # Gated on as_photo, NOT on the mime type: a receipt or a scanned spec sheet
+    # is an image with a job_id too, and it is a document, not a photo.
+    #
+    # The Photos page used to create this record in a second call, which has
+    # 422'd since it shipped (a multipart handler in uploads.py claims that path
+    # and is included first), so job_photos sat empty while uploads "succeeded".
+    file_content_type = file.content_type or "application/octet-stream"
+    if as_photo and job_id and file_content_type.lower().startswith("image/"):
+        _link_job_photo(
+            db,
+            tenant_id=tenant_id,
+            job_id=job_id,
+            document_id=str(doc.id),
+            filename=file.filename or stored_filename,
+            content_type=file_content_type,
+            size_bytes=len(data),
+            uploaded_by=str(user.get("sub") or user.get("user_id") or "system"),
+            kind=kind,
+            caption=description,
+        )
+        db.commit()
+
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,

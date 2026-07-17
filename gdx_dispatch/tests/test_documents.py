@@ -467,6 +467,90 @@ async def test_upload_document_success(tenant_db_session, tmp_path, monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_job_image_is_not_a_photo_unless_the_caller_says_so(tenant_db_session, tmp_path, monkeypatch):
+    """Documents and photos are different things (Doug 2026-07-17).
+
+    A receipt or a scanned spec sheet attached to a job is an image WITH a
+    job_id — and it is a document. Inferring "photo" from the mime type would
+    drop it into the job's photo strip, which is the wrong drawer. The caller
+    says which; the server does not guess.
+    """
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    await documents_router.upload_document(
+        request=_mock_request(),
+        file=UploadFile(
+            io.BytesIO(b"jpeg-bytes"),
+            filename="receipt.jpg",
+            headers=Headers({"content-type": "image/jpeg"}),
+        ),
+        title="Supplier receipt",
+        job_id=job_id,
+        user={"user_id": "user-1"},
+        db=tenant_db_session,
+    )
+    assert tenant_db_session.query(JobPhoto).count() == 0, "a receipt landed in the photo strip"
+
+
+@pytest.mark.anyio
+async def test_job_photo_creates_the_photo_record(tenant_db_session, tmp_path, monkeypatch):
+    """One upload stores the bytes AND creates the record every photo surface
+    reads. The Photos page used to need a second call for this, which has 422'd
+    since it shipped (a multipart handler claims that path and is included
+    first) — so job_photos sat empty in production while uploads "succeeded"."""
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    job_id = str(uuid.uuid4())
+    out = await documents_router.upload_document(
+        request=_mock_request(),
+        file=UploadFile(
+            io.BytesIO(b"jpeg-bytes"),
+            filename="door.jpg",
+            headers=Headers({"content-type": "image/jpeg"}),
+        ),
+        job_id=job_id,
+        as_photo=True,
+        kind="before",
+        user={"user_id": "user-1"},
+        db=tenant_db_session,
+    )
+
+    photo = tenant_db_session.query(JobPhoto).filter(
+        JobPhoto.job_id == uuid.UUID(job_id)
+    ).first()
+    assert photo is not None, "bytes stored but the photo record was never created"
+    # Must point at the download route — the only url that actually serves the
+    # bytes. uploads.py's own route writes to a nested path the download route
+    # never reads, so its photos 404 even with a valid token.
+    assert photo.url == f"/api/documents/{out.id}/download"
+    assert photo.kind == "before"
+
+
+@pytest.mark.anyio
+async def test_non_image_marked_as_photo_is_still_not_a_photo(tenant_db_session, tmp_path, monkeypatch):
+    """as_photo on a PDF is a caller mistake, not an instruction."""
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    await documents_router.upload_document(
+        request=_mock_request(),
+        file=UploadFile(
+            io.BytesIO(b"fake-pdf"),
+            filename="spec.pdf",
+            headers=Headers({"content-type": "application/pdf"}),
+        ),
+        job_id=str(uuid.uuid4()),
+        as_photo=True,
+        user={"user_id": "user-1"},
+        db=tenant_db_session,
+    )
+    assert tenant_db_session.query(JobPhoto).count() == 0
+
+
+@pytest.mark.anyio
 async def test_upload_document_defaults_content_type(tenant_db_session, tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
     upload = UploadFile(io.BytesIO(b"hello"), filename="plain.txt")

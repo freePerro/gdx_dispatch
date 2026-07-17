@@ -97,10 +97,17 @@ describe("online capture", () => {
     expect(r.queued).toBe(false);
 
     const [url, body] = postMock.mock.calls[0];
-    // The SAME route the desktop posts to — a tech photo and an office
-    // photo must land in one place, or the office can never find it.
-    expect(url).toBe("/api/jobs/job-1/photos");
+    // The canonical upload — the one route that is proven end to end (stores
+    // flat where download looks, takes job_id, 1078 live files). Both
+    // job-photo-specific routes were broken.
+    expect(url).toBe("/api/documents");
     expect(body).toBeInstanceOf(FormData);
+    // job_id IS the tagging: the job knows its customer.
+    expect(body.get("job_id")).toBe("job-1");
+    // Without as_photo the server stores the bytes and creates NO photo record
+    // — a 201 that leaves job_photos empty, byte-identical to the original bug.
+    // Deleting this one line must not stay invisible.
+    expect(body.get("as_photo")).toBe("true");
     expect(body.get("kind")).toBe("before");
     expect(body.get("file")).toBeTruthy();
   });
