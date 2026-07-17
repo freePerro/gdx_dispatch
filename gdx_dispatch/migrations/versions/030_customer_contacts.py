@@ -55,4 +55,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.get_bind().exec_driver_sql("DROP TABLE IF EXISTS customer_contacts;")
+    """Deliberately a no-op — a rollback must not delete the customer's people.
+
+    The first draft dropped the table. Rolling a deploy back is an operational
+    event; it is not a decision to destroy data. By the time anyone rolls back,
+    techs have typed in the contacts they learned in driveways, and DROP TABLE
+    throws every one of them away with no inverse — re-upgrading recreates an
+    empty table and the names are simply gone.
+
+    An orphaned table on an older schema costs nothing: no older code selects
+    from it. Leave it. If someone genuinely wants it gone they can drop it by
+    hand, having decided to. (Review, 2026-07-17.)
+    """
+    pass
