@@ -182,9 +182,13 @@ function statusSeverity(s) {
 </script>
 
 <template>
+  <!-- "Bill / collect", not "Close out": the job screen puts this button right
+       next to Complete, which opens the ACTUAL close-out dialog. Two adjacent
+       buttons opening two dialogs both titled "Close out" is how a tech
+       invoices a job they meant to finish. -->
   <Dialog
     v-model:visible="open"
-    header="Close out"
+    header="Bill / collect"
     modal
     :style="{ width: '94vw', maxWidth: '480px' }"
   >

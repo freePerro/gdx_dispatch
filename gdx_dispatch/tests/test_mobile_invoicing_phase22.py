@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -129,6 +129,66 @@ def test_financial_summary_no_quote_no_invoice(session_factory):
         assert body["accepted_quote"] is None
         assert body["invoices"] == []
         assert body["payment_status"] == "no_invoice"
+    finally:
+        db.close()
+
+
+def test_financial_summary_reports_real_parts_and_labor(session_factory):
+    """The summary must carry actual numbers, not silently-zero ones.
+
+    Found by driving a real phone: this endpoint 500'd for EVERY job in
+    production, so the invoice dialog rendered blank and offered to "Generate
+    empty invoice" — a tech could not show a customer their bill at all. Three
+    separate bugs, and the tests never saw any of them because they only
+    asserted the response SHAPE and ran on SQLite, where all three are benign:
+
+      * `parts_needed` has never existed (it is `job_parts_needed`), and it has
+        no `estimated_cost`/`deleted_at` either. On SQLite the try/except just
+        swallowed it; on Postgres a failed statement ABORTS the transaction, so
+        every later query in the request died with InFailedSqlTransaction.
+      * labor used `julianday()` — SQLite-only, absent on Postgres — against
+        `timeclock_entries`, which is neither the right name
+        (`timeclock_entries_router`) nor the right table (that one is the
+        DAY-level shift and has no job_id). So labor read 0 on prod, always.
+
+    Asserting the VALUES catches all of it on SQLite too.
+    """
+    from gdx_dispatch.models.tenant_models import JobPartNeeded, TimeEntry
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        # 90 minutes of attested, closed labor -> 1.5h.
+        db.add(TimeEntry(
+            id=uuid4(),
+            company_id="tenant-a",
+            job_id=UUID(seed["job_id"]),
+            tech_id="tech-1",
+            user_id="user-1",
+            clock_in=datetime.now(UTC),
+            clock_out=datetime.now(UTC),
+            duration_minutes=90,
+            entry_type="work",
+            created_at=datetime.now(UTC),
+        ))
+        # 2 x $45 of parts the tech recorded.
+        db.add(JobPartNeeded(
+            id=str(uuid4()),
+            company_id="tenant-a",
+            job_id=seed["job_id"],
+            part_name="Torsion spring",
+            quantity=2,
+            unit_price=45,
+            source="closeout",
+            created_at=datetime.now(UTC),
+        ))
+        db.commit()
+
+        body = _as_json(mobile_invoicing.job_financial_summary(
+            job_id=seed["job_id"], request=_request(), current_user=_TEST_USER, db=db,
+        ))
+        assert body["labor_hours"] == 1.5, "labor silently read zero"
+        assert body["parts_cost"] == 90.0, "parts silently read zero"
     finally:
         db.close()
 

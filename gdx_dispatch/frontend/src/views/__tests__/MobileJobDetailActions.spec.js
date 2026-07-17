@@ -242,4 +242,22 @@ describe("time is shown, never edited", () => {
     });
     expect(w.text()).toContain("paid hours come from the day clock");
   });
+
+  it("never implies a duration from arrival and close-out stamps", async () => {
+    // Caught on a real phone: a job arrived at in May and closed out in July
+    // rendered "Tracked May 19 → Jul 16" — two months, for work the tech
+    // attested at 1.5 hours. The stamps don't bound the work, so they must not
+    // be joined with an arrow and called tracked time.
+    const w = await mountWith({
+      dispatch_status: "done",
+      billed: false,
+      arrived_at: "2026-05-19T20:19:00+00:00",
+      completed_at: "2026-07-16T20:16:00+00:00",
+    });
+    const timer = w.find('[data-testid="mobile-job-detail-timer"]');
+    expect(timer.exists()).toBe(true);
+    expect(timer.text()).not.toMatch(/Tracked.*→/);
+    expect(timer.text()).toContain("Arrived");
+    expect(timer.text()).toContain("closed out");
+  });
 });

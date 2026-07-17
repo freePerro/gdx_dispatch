@@ -111,13 +111,19 @@
         <h2>Time</h2>
         <div class="detail-meta" data-testid="mobile-job-detail-timer">
           <i class="pi pi-clock" />
+          <!-- Deliberately NOT "arrived → completed". A job arrived at in May
+               and closed out in July spans two months, and labelling that span
+               "tracked" reads as two months of work — the hours the tech
+               actually attested at closeout were 1.5. Never imply a duration
+               from two stamps that don't bound the work. -->
           <span v-if="job.completed_at">
-            Tracked {{ formatScheduled(job.arrived_at) }} → {{ formatScheduled(job.completed_at) }}
+            Arrived {{ formatScheduled(job.arrived_at) }} · closed out {{ formatScheduled(job.completed_at) }}
           </span>
           <span v-else>Tracking since you arrived, {{ formatScheduled(job.arrived_at) }}</span>
         </div>
         <div class="detail-meta detail-meta-muted">
-          Your paid hours come from the day clock, not this.
+          Hours for this job come from what you entered at close-out. Your paid
+          hours come from the day clock.
         </div>
       </div>
 

@@ -26,7 +26,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
@@ -34,7 +34,14 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    Invoice,
+    InvoiceLine,
+    Job,
+    JobPartNeeded,
+    TimeEntry,
+)
 from gdx_dispatch.modules.ledger.service import transition_invoice_status
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
@@ -217,37 +224,61 @@ def job_financial_summary(
     if not _job_belongs_to_tech(db, job_id, user_id):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
-    # parts_needed is in inventory module, optional in some tenant DBs.
+    # The parts a tech recorded for this job. Three things were wrong here and
+    # each one alone 500s the whole endpoint on Postgres:
+    #   * the table is `job_parts_needed` — `parts_needed` has never existed;
+    #   * it has no `estimated_cost` (price is unit_price × quantity);
+    #   * it has no `deleted_at` either.
+    # The except below was meant to degrade gracefully ("optional in some
+    # tenant DBs"), but a failed statement ABORTS the Postgres transaction, so
+    # swallowing it just meant every later query in the request died with
+    # InFailedSqlTransaction. Net effect: /financial 500'd for every job, so
+    # the mobile invoice dialog rendered blank and offered to "Generate empty
+    # invoice" — the tech could not show a customer their bill at all.
+    # Roll back so a genuinely-missing table degrades instead of poisoning.
+    # Via the ORM, not raw SQL: JobPartNeeded.job_id is a String while
+    # TimeEntry.job_id below is a Uuid, and a Uuid column stores 32-hex on
+    # SQLite vs dashed on Postgres — a hand-written `job_id = :jid` matches on
+    # one and silently nothing on the other. Let the mapper handle the dialect.
     try:
         parts_cost = float(db.execute(
-            _text(
-                """
-                SELECT COALESCE(SUM(COALESCE(estimated_cost, 0)), 0)
-                FROM parts_needed
-                WHERE job_id = :jid AND deleted_at IS NULL
-                """
-            ),
-            {"jid": job_id},
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(JobPartNeeded.unit_price, 0)
+                        * func.coalesce(JobPartNeeded.quantity, 1)
+                    ),
+                    0,
+                )
+            ).where(JobPartNeeded.job_id == str(job_id))
         ).scalar() or 0)
     except Exception:
+        db.rollback()
         log.exception("financial_summary_parts_cost_unavailable job=%s", job_id)
         parts_cost = 0.0
 
-    # time_entries / timeclock_entries: portable across SQLite + PG.
+    # Per-job labor. The previous version claimed to be "portable across SQLite
+    # + PG" and was neither portable nor pointed at a real table:
+    #   * julianday() is SQLite-only — it does not exist on Postgres;
+    #   * the table is `timeclock_entries_router`, not `timeclock_entries`;
+    #   * and that table is the DAY-level shift anyway — it has no job_id.
+    # So this silently reported 0 labor hours on every job in production, the
+    # same defect the 2026-07-15 walk found in mobile_day_summary and fixed
+    # only there. Per-job time lives in `time_entries`, and duration_minutes is
+    # already computed and portable — no dialect maths needed. Only closed,
+    # attested rows count (PR #154: an open timer is not evidence of work).
     try:
-        labor_hours = float(db.execute(
-            _text(
-                """
-                SELECT COALESCE(SUM(
-                    (julianday(clock_out) - julianday(clock_in)) * 24.0
-                ), 0)
-                FROM timeclock_entries
-                WHERE job_id = :jid AND clock_out IS NOT NULL
-                """
-            ),
-            {"jid": job_id},
-        ).scalar() or 0)
+        labor_minutes = db.execute(
+            select(func.coalesce(func.sum(func.coalesce(TimeEntry.duration_minutes, 0)), 0))
+            .where(
+                TimeEntry.job_id == _UUID(str(job_id)),
+                TimeEntry.clock_out.is_not(None),
+                TimeEntry.deleted_at.is_(None),
+            )
+        ).scalar() or 0
+        labor_hours = round(float(labor_minutes) / 60.0, 2)
     except Exception:
+        db.rollback()
         log.exception("financial_summary_labor_hours_unavailable job=%s", job_id)
         labor_hours = 0.0
 
