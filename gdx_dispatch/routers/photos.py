@@ -173,7 +173,20 @@ def list_job_photos(
     return [_serialize(r) for r in rows]
 
 
-@router.post("/api/jobs/{job_id}/photos", response_model=None, status_code=201)
+# DEAD ROUTE — kept only so its history is legible; DO NOT reach for it.
+#
+# It has never been reachable: uploads.py declares POST on this exact path with
+# a multipart signature and is included first (app.py:1551 vs :1602), so
+# FastAPI matches that one and this never runs. The Photos page dutifully
+# POSTed JSON here and got 422 "field required: file" every single time — which
+# is why job_photos has 0 rows despite a working upload and a working UI.
+#
+# Adding a THIRD handler on the same path would not have helped. The upload
+# route now creates the JobPhoto record itself (uploads.py::_link_job_photo),
+# so there is one way to add a photo: POST the file to /api/jobs/{id}/photos.
+# The GET/PATCH/DELETE below are NOT shadowed (uploads.py only claims POST) and
+# remain the live read/edit surface.
+@router.post("/api/jobs/{job_id}/photos", response_model=None, status_code=201, include_in_schema=False)
 def create_job_photo(
     job_id: UUID,
     payload: PhotoIn,

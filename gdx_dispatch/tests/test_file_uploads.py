@@ -48,6 +48,13 @@ def tenant_db_session() -> Generator[Session, None, None]:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    # job_photos comes from the real ORM metadata rather than a hand-written
+    # CREATE — the photo record is half of what this route produces, and the
+    # table was simply absent here, which is why "the upload works" could stay
+    # true while the photo went nowhere.
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    JobPhoto.__table__.create(bind=engine, checkfirst=True)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = SessionLocal()
     _create_schema(db)
@@ -90,6 +97,67 @@ def test_upload_photo_success(tenant_db_session):
     assert row is not None
     assert row["entity_type"] == "job_photo"
     assert row["deleted_at"] is None
+
+
+def test_upload_photo_creates_the_photo_record(tenant_db_session):
+    """Storing the bytes is not the job — the photo has to be findable.
+
+    A document holds the bytes; a JobPhoto is the photo record, and every photo
+    surface (the Photos page, the job's strip, the mobile job screen) reads
+    job_photos. This route stored the file and never created that record, so
+    the upload "succeeded" and the photo appeared nowhere — job_photos has 0
+    rows in production despite a working UI. The old test asserted only the
+    documents row, which is exactly why nobody noticed.
+
+    The Photos page's second step (a JSON POST that was meant to create this
+    record) has 422'd since it shipped: uploads.py claims the same path with a
+    multipart signature and is included first, so the JSON hit a handler
+    demanding a file.
+    """
+    job_id = str(uuid.uuid4())
+    out = uploads_router.upload_job_photo(
+        job_id=job_id,
+        request=_request("tenant-a"),
+        file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
+        kind="before",
+        caption="Spring snapped",
+        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        db=tenant_db_session,
+    )
+
+    # Via the ORM: JobPhoto.job_id is a Uuid column, and SQLite stores that
+    # 32-hex while Postgres stores it dashed — a raw `WHERE job_id = '<dashed>'`
+    # matches nothing here and everything in prod.
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    row = tenant_db_session.query(JobPhoto).filter(
+        JobPhoto.job_id == uuid.UUID(job_id)
+    ).first()
+    assert row is not None, "bytes stored but the photo record was never created"
+    # Points at the document's download route — the same url the Photos page
+    # used to build by hand in its (broken) second step.
+    assert row.url == f"/api/documents/{out.id}/download"
+    assert row.kind == "before"
+    assert row.caption == "Spring snapped"
+
+
+def test_upload_photo_defaults_the_slot_when_the_tech_does_not_pick(tenant_db_session):
+    """A tech shooting a door in a hurry never has to choose a slot."""
+    job_id = str(uuid.uuid4())
+    uploads_router.upload_job_photo(
+        job_id=job_id,
+        request=_request("tenant-a"),
+        file=_file("door.jpg", b"jpeg-bytes", "image/jpeg"),
+        user={"tenant_id": "tenant-a", "user_id": "user-a"},
+        db=tenant_db_session,
+    )
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    row = tenant_db_session.query(JobPhoto).filter(
+        JobPhoto.job_id == uuid.UUID(job_id)
+    ).first()
+    assert row is not None
+    assert row.kind == "during"
 
 
 def test_upload_too_large_rejected(tenant_db_session):

@@ -37,10 +37,7 @@ const MOBILE_ROUTES = [
   '/mobile/parts-to-order',
 ];
 
-for (const route of MOBILE_ROUTES) {
-  test(`mobile tap targets ≥ ${MIN_SIZE}px on ${route}`, async ({ page }) => {
-    await page.setViewportSize(VIEWPORT);
-    await page.goto(route, { waitUntil: 'networkidle' });
+async function auditTapTargets(page, label) {
     // Dismiss any active driver.js tour so its known-already-flagged
     // popover doesn't pollute the audit.
     await page
@@ -86,9 +83,34 @@ for (const route of MOBILE_ROUTES) {
     if (tooSmall.length > 0) {
       const lines = tooSmall.map((f) => `  - ${f.tag} "${f.text}" (${f.w}x${f.h}) class="${f.cls}"`);
       throw new Error(
-        `[${route}] ${tooSmall.length} touch target(s) below ${MIN_SIZE}px:\n${lines.join('\n')}`
+        `[${label}] ${tooSmall.length} touch target(s) below ${MIN_SIZE}px:\n${lines.join('\n')}`
       );
     }
     expect(tooSmall.length).toBe(0);
+}
+
+for (const route of MOBILE_ROUTES) {
+  test(`mobile tap targets ≥ ${MIN_SIZE}px on ${route}`, async ({ page }) => {
+    await page.setViewportSize(VIEWPORT);
+    await page.goto(route, { waitUntil: 'networkidle' });
+    await auditTapTargets(page, route);
   });
 }
+
+// The job detail screen needs a real job id, so it can't sit in MOBILE_ROUTES —
+// which is exactly why it went uncovered while it grew an action bar. It is the
+// screen a tech actually works from; walk it by opening the first job.
+test(`mobile tap targets ≥ ${MIN_SIZE}px on /mobile/jobs/:id`, async ({ page }) => {
+  await page.setViewportSize(VIEWPORT);
+  await page.goto('/mobile/jobs', { waitUntil: 'networkidle' });
+
+  const firstJob = page.locator('[data-testid^="mobile-job-card-"], .job-card, a[href^="/mobile/jobs/"]').first();
+  if ((await firstJob.count()) === 0) {
+    test.skip(true, 'no jobs available to open');
+    return;
+  }
+  await firstJob.click();
+  await page.waitForURL(/\/mobile\/jobs\/.+/, { timeout: 5000 });
+  await page.waitForLoadState('networkidle');
+  await auditTapTargets(page, '/mobile/jobs/:id');
+});
