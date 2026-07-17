@@ -61,7 +61,17 @@ def session_factory():
     engine.dispose()
 
 
-def test_sweep_closes_stale_shift_and_audits(session_factory):
+def test_sweep_closes_stale_shift_with_unknown_duration_and_audits(session_factory):
+    """This test used to assert `minutes ≈ 95040` — it pinned the bug.
+
+    This sweep is the writer that manufactured prod's fabricated shifts: the
+    only `timeclock_auto_close` audit row on prod is `reason=sweep_max_shift`
+    (2026-07-08), the clock-out date of the 1584h row this fixture imitates.
+    A tech who forgets to clock out went home hours ago, so elapsed measures
+    how long the clock ran unattended, not work — and a tech is paid
+    start-of-day to end-of-day (Doug 2026-07-17). The shift closes so a new
+    one can start, but its duration is UNKNOWN until the office sets it.
+    """
     stale_id = _entry(session_factory, hours_ago=66 * 24)  # the prod shift
     fresh_id = _entry(session_factory, hours_ago=2)
 
@@ -72,8 +82,8 @@ def test_sweep_closes_stale_shift_and_audits(session_factory):
     stale = db.get(TimeclockEntry, stale_id)
     fresh = db.get(TimeclockEntry, fresh_id)
     assert stale.clock_out_at is not None
-    expected_minutes = 66 * 24 * 60
-    assert abs(stale.minutes - expected_minutes) <= 2
+    assert stale.minutes is None, "sweep invented a shift length"
+    assert "office review" in (stale.notes or ""), "not flagged for the office"
     assert fresh.clock_out_at is None  # under the 16h cap — untouched
 
     audit = db.execute(
@@ -83,6 +93,10 @@ def test_sweep_closes_stale_shift_and_audits(session_factory):
     assert audit.user_id == "system"
     assert audit.details["reason"] == "sweep_max_shift"
     assert audit.details["max_shift_hours"] == MAX_SHIFT_HOURS
+    assert audit.details["minutes"] is None
+    # Elapsed is kept as evidence so the office has a bound when they set the
+    # real end time — recorded in the audit trail, never on the row.
+    assert abs(audit.details["unattended_minutes"] - 66 * 24 * 60) <= 2
     # The canonical writer must keep the hash chain intact — the raw-SQL
     # version inserted no hashes at all.
     assert audit.row_hash and verify_audit_chain(db) is True

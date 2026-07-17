@@ -124,9 +124,16 @@ def test_fresh_open_shift_still_blocks_clock_in(client):
 
 
 def test_stale_open_shift_auto_closes_and_new_clock_in_succeeds(client):
-    """A shift open longer than MAX_SHIFT_HOURS at clock-in time should
-    be closed (stamped clock_out_at + minutes) and the new clock-in
-    should land normally."""
+    """A shift open longer than MAX_SHIFT_HOURS at clock-in time is closed so
+    the new clock-in lands normally — but with an UNKNOWN duration.
+
+    This test previously asserted `minutes > 0`, i.e. it pinned the bug: MH-7b
+    stamped `minutes = now - clock_in`, which is how prod ended up with closed
+    shifts of 72h, 215h, 266h, 323h and 1584h. The tech went home hours ago;
+    elapsed measures how long the clock ran unattended, not work. `minutes`
+    now stays NULL (every reader coalesces it to 0) until the office sets the
+    real end time via PATCH, which recomputes it. GET /exceptions surfaces it.
+    """
     tc_client, Session = client
     stale_id = _seed_open_entry(Session, hours_ago=MAX_SHIFT_HOURS + 5)
 
@@ -141,7 +148,8 @@ def test_stale_open_shift_auto_closes_and_new_clock_in_succeeds(client):
             select(TimeclockEntry).where(TimeclockEntry.id == stale_id)
         ).scalar_one()
         assert closed.clock_out_at is not None, "stale entry must be closed"
-        assert closed.minutes is not None and closed.minutes > 0
+        assert closed.minutes is None, "auto-close invented a shift length"
+        assert "office review" in (closed.notes or ""), "not flagged for the office"
         # New shift should be open.
         fresh = db.execute(
             select(TimeclockEntry).where(TimeclockEntry.id == new_id)
