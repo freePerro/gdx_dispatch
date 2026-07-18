@@ -689,8 +689,14 @@
         <div v-if="installLoading" class="muted">Loading install specs...</div>
         <div v-else-if="!installData" class="muted">No install specs available. Create an estimate with door catalog items first.</div>
         <template v-else>
-          <!-- Door Specs -->
-          <div v-if="installData.door_specs" class="card" style="margin-bottom:1rem">
+          <!-- Door Specs — captured doors as a by-size clickable list (a job can
+               carry several; each opens to its own build spec). -->
+          <div v-if="installData.doors && installData.doors.length" class="card" style="margin-bottom:1rem">
+            <div class="card-header"><h3>Door Specifications</h3></div>
+            <DoorSpecList :doors="installData.doors" />
+          </div>
+          <!-- Fallback: a non-CHI catalogued door (single flat spec). -->
+          <div v-else-if="installData.door_specs" class="card" style="margin-bottom:1rem">
             <div class="card-header"><h3>Door Specifications</h3></div>
             <div class="specs-grid">
               <div class="spec-item" v-for="(val, key) in installData.door_specs" :key="key">
@@ -895,6 +901,7 @@ import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import JobStateChip from "../components/JobStateChip.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
+import DoorSpecList from "../components/DoorSpecList.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 
 const route = useRoute();

@@ -40,6 +40,9 @@ CHI_SOURCE = "chi_hubx"
 _DOOR_SIGNATURE = ("Spring", "Track", "Cyclage", "Sections", "Sprung Weight")
 
 # Ordered identity fields — who/what/how-much, shown first on every surface.
+# NOTE: "Price" (CHI's price = our cost) stays in the domain data — the PO
+# "Doors expected" panel legitimately wants the cost. Hiding it is a per-surface
+# DISPLAY decision (the install/mobile views drop it), not a domain one.
 IDENTITY_FIELDS = (
     "Number", "Cart Name", "Model", "Description",
     "Size", "Width", "Height", "Color", "Price",

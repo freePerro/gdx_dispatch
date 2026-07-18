@@ -270,6 +270,10 @@ def install_specs(
             pass
 
     return {
+        # The captured door(s), role-split, one per door — the UI renders these
+        # as a by-size clickable list (a job can have several doors). Empty for
+        # non-CHI jobs, which fall back to the single flat `door_specs` below.
+        "doors": captured_doors,
         "door_specs": door_specs,
         "lines": lines,
         "notes": estimate_obj.notes if estimate_obj else None,
