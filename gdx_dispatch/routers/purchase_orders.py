@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, Uuid, select
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
@@ -49,6 +49,12 @@ class PurchaseOrder(TenantBase):
     # should arrive + how heavy. Added by migration 031; create_all builds it on
     # a fresh DB. See gdx_dispatch/core/door_specs.py.
     job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    # The door receiving specs FROZEN at the moment this PO was linked to a job —
+    # {doors: [receiving_view...], estimate_number, job_number}. Receiving must
+    # validate against what THIS PO ordered, not whatever the job's latest quote
+    # says now: revising an accepted estimate after the PO is cut must not move
+    # the target. Nullable — set only for job-linked POs; migration 032.
+    door_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     subtotal: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     tax: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
@@ -137,28 +143,48 @@ def _serialize_po(po: PurchaseOrder) -> dict[str, Any]:
     }
 
 
-def _po_receiving(db: Session, po: PurchaseOrder) -> dict[str, Any]:
-    """Door receiving info for a PO tied to a job: what should arrive + how
-    heavy, plus the job/estimate numbers the operator recognizes it by. Empty
-    when the PO has no job or the job has no captured door. Detail/receive
-    surfaces only — kept off the list to avoid a per-row query fan-out."""
-    if not po.job_id:
-        return {"door_specs": [], "job_number": None, "estimate_number": None}
+def _resolve_receiving(db: Session, job_id) -> dict[str, Any]:
+    """Live-compute a job's receiving snapshot: its captured door(s) as a
+    receiving view + the numbers it's known by. This is what gets FROZEN onto the
+    PO at link time (via door_snapshot) and the fallback for POs that predate it.
+    Shape: {doors: [...], estimate_number, job_number}."""
+    if not job_id:
+        return {"doors": [], "job_number": None, "estimate_number": None}
     from gdx_dispatch.models.tenant_models import Job
     from gdx_dispatch.modules.proposals.models import Estimate
 
-    doors = [receiving_view(d) for d in door_specs_for_job(db, po.job_id)]
-    job = db.get(Job, po.job_id)
+    doors = [receiving_view(d) for d in door_specs_for_job(db, job_id)]
+    job = db.get(Job, job_id)
     est = db.execute(
         select(Estimate)
-        .where(Estimate.job_id == po.job_id, Estimate.deleted_at.is_(None))
+        .where(Estimate.job_id == job_id, Estimate.deleted_at.is_(None))
         .order_by(Estimate.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
     return {
-        "door_specs": doors,
+        "doors": doors,
         "job_number": getattr(job, "job_number", None) if job else None,
         "estimate_number": getattr(est, "estimate_number", None) if est else None,
+    }
+
+
+def _po_receiving(db: Session, po: PurchaseOrder) -> dict[str, Any]:
+    """The receiving info returned with a PO. Prefer the snapshot frozen at
+    link time — what THIS PO actually ordered, immune to later quote revisions.
+    Fall back to a live resolve only for POs created before door_snapshot
+    existed. Detail/receive surfaces only — kept off the list to avoid a
+    per-row query fan-out."""
+    # A frozen snapshot WITH doors is authoritative — that's what the PO ordered.
+    # An empty/missing snapshot (PO linked before the door was captured, or a PO
+    # predating door_snapshot) falls back to a live resolve so a later capture
+    # still surfaces.
+    snap = po.door_snapshot
+    if not isinstance(snap, dict) or not snap.get("doors"):
+        snap = _resolve_receiving(db, po.job_id)
+    return {
+        "door_specs": snap.get("doors", []),
+        "job_number": snap.get("job_number"),
+        "estimate_number": snap.get("estimate_number"),
     }
 
 
@@ -208,6 +234,9 @@ def create_po(
         vendor_id=UUID(payload.vendor_id) if payload.vendor_id else None,
         vendor_name=payload.vendor_name,
         job_id=_job_uuid,
+        # Freeze the door receiving specs at PO-creation time — what THIS PO
+        # ordered, immune to later quote revisions.
+        door_snapshot=_resolve_receiving(db, _job_uuid) if _job_uuid else None,
         status=payload.status if payload.status in PO_STATUSES else "draft",
         order_date=payload.order_date or date.today(),
         expected_date=payload.expected_date,
@@ -289,11 +318,18 @@ def update_po(
     # Always set from the payload (unlike vendor_id) so the form's "clear" —
     # which PATCHes job_id: null — actually unlinks the job. An invalid uuid is
     # ignored rather than clearing, so a malformed value can't silently unlink.
+    _old_job_id = po.job_id
     if payload.job_id:
         with contextlib.suppress(ValueError):
             po.job_id = UUID(payload.job_id)
     else:
         po.job_id = None
+    # Only (re)freeze the door snapshot when the job link actually CHANGED. A
+    # plain edit — draft→sent, a note, a line tweak — must NOT re-absorb a quote
+    # that was revised since the PO was cut; that would silently defeat the whole
+    # point of the freeze. Re-link → re-freeze against the new job; clear → drop.
+    if po.job_id != _old_job_id:
+        po.door_snapshot = _resolve_receiving(db, po.job_id) if po.job_id else None
     if payload.status in PO_STATUSES:
         po.status = payload.status
     po.tax = Decimal(str(payload.tax or 0))
