@@ -158,6 +158,37 @@
         <p class="detail-description">{{ job.description }}</p>
       </div>
 
+      <!-- Install/build spec for the door(s) on this job, captured at quote
+           time and carried on the linked estimate. Only renders when there IS
+           a captured door — service calls and hand-built installs show nothing.
+           This is what stops the tech installing blind: model, size, color and
+           the build detail (spring, track, rollers) plus the window layout. -->
+      <div v-if="doorSpecs.length" class="detail-card" data-testid="mjd-door-specs">
+        <h2>Install Specs</h2>
+        <div v-for="(door, di) in doorSpecs" :key="door.line_id || di" class="door-spec">
+          <div class="door-spec-head">
+            <span class="door-spec-title">{{ door.label || door.description || 'Door' }}</span>
+            <span v-if="door.quantity > 1" class="door-spec-qty">×{{ door.quantity }}</span>
+          </div>
+          <dl class="spec-grid">
+            <div
+              v-for="(val, key) in { ...door.identity, ...door.installer }"
+              :key="key"
+              class="spec-row"
+            >
+              <dt>{{ key }}</dt>
+              <dd>{{ formatSpecValue(val) }}</dd>
+            </div>
+          </dl>
+          <div v-if="door.windows && door.windows.length" class="door-windows">
+            <div class="door-windows-head">Windows / sections</div>
+            <ul>
+              <li v-for="(w, wi) in door.windows" :key="wi">{{ formatSpecValue(w) }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <!-- Always rendered, never `v-if="notes.length"`: the tech with nothing
            written yet is exactly the one who needs somewhere to write. -->
       <div class="detail-card">
@@ -509,6 +540,9 @@ const job = ref(null)
 const notes = ref([])
 const photos = ref([])
 const parts = ref([])
+// Captured door build spec(s) for an install, carried from the estimate. Empty
+// for service calls — the section only renders when there's a door to show.
+const doorSpecs = ref([])
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 const invoiceOpen = ref(false)
@@ -630,6 +664,7 @@ async function load() {
     notes.value = r?.notes || []
     photos.value = r?.photos || []
     parts.value = r?.parts || []
+    doorSpecs.value = r?.door_specs || []
     if (!job.value) error.value = 'Job not found'
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.
@@ -652,6 +687,7 @@ async function refresh() {
       notes.value = await withStillQueued(r.notes || [], notes.value)
       photos.value = r.photos || []
       parts.value = await withStillQueued(r.parts || [], parts.value)
+      doorSpecs.value = r.door_specs || []
     }
   } catch {
     // Offline or a blip. The queued write still lands on reconnect.
@@ -1040,6 +1076,20 @@ function formatScheduled(iso) {
   } catch { return iso }
 }
 
+// A captured spec value is usually a plain string, but Load Information and each
+// window/section arrive as objects (and occasionally a list). Render those as
+// readable "key: value" text rather than "[object Object]".
+function formatSpecValue(val) {
+  if (val == null) return '—'
+  if (Array.isArray(val)) return val.map(formatSpecValue).join('; ')
+  if (typeof val === 'object') {
+    return Object.entries(val)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ')
+  }
+  return String(val)
+}
+
 // Draining is silent — it happens in the queue, not here — so without this the
 // tech watches "waiting for signal" sit there after the write has already
 // landed. Refetch whenever the queue shrinks: withStillQueued() then finds the
@@ -1072,6 +1122,27 @@ onMounted(() => {
 .detail-meta { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
 .detail-meta-muted { font-style: italic; }
 .detail-description { margin: 0; white-space: pre-wrap; font-size: 0.95rem; }
+/* Install specs — one block per captured door. Themed via PrimeVue vars so it
+   reads correctly in both light and dark. */
+.door-spec { display: flex; flex-direction: column; gap: 0.4rem; }
+.door-spec + .door-spec { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--p-content-border-color, #e5e7eb); }
+.door-spec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.door-spec-title { font-weight: 700; font-size: 0.95rem; color: var(--p-text-color, #111827); }
+.door-spec-qty { font-size: 0.85rem; font-weight: 600; color: var(--p-text-muted-color, #6b7280); }
+.spec-grid { margin: 0; display: grid; grid-template-columns: minmax(6.5rem, auto) 1fr; gap: 0.15rem 0.75rem; }
+.spec-row { display: contents; }
+.spec-row dt {
+  font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280);
+  text-transform: uppercase; letter-spacing: 0.02em;
+}
+.spec-row dd { margin: 0; font-size: 0.9rem; color: var(--p-text-color, #111827); word-break: break-word; }
+.door-windows { margin-top: 0.35rem; }
+.door-windows-head {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--p-text-muted-color, #9ca3af); margin-bottom: 0.2rem;
+}
+.door-windows ul { margin: 0; padding-left: 1.1rem; }
+.door-windows li { font-size: 0.85rem; color: var(--p-text-color, #111827); }
 .contact-row {
   display: flex; align-items: center; gap: 0.5rem;
   color: var(--p-primary-color, #2563eb); text-decoration: none;

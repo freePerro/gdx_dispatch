@@ -68,6 +68,36 @@
   </div>
 </div>
 
+{# Captured door(s) — the real spec quoted on this job (source=chi_hubx),
+   preferred over the fuzzy catalog match below. One block per door. #}
+{% if captured_doors %}
+{% for door in captured_doors %}
+<div class="section">
+  <div class="section-title">Door Specifications{% if door.label %} — {{ door.label }}{% endif %}{% if door.quantity and door.quantity > 1 %} (×{{ door.quantity }}){% endif %}</div>
+  <div class="specs-grid">
+    {% for key, val in door.identity.items() %}
+    <div class="spec"><div class="spec-label">{{ key }}</div><div class="spec-value">{{ val }}</div></div>
+    {% endfor %}
+    {% for key, val in door.installer.items() %}
+    <div class="spec"><div class="spec-label">{{ key }}</div><div class="spec-value">{{ val }}</div></div>
+    {% endfor %}
+  </div>
+  {% if door.receiving %}
+  <div style="margin-top:8px;font-size:10pt"><strong>Receiving:</strong>
+    {% for key, val in door.receiving.items() %}{{ key }}: {% if val is mapping %}{% for lk, lv in val.items() %}{{ lk }}={{ lv }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}{{ val }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+  {% if door.windows %}
+  <div style="margin-top:8px;font-size:10pt"><strong>Windows / sections:</strong>
+    <ul style="margin:4px 0 0;padding-left:18px">
+    {% for w in door.windows %}<li>{% if w is mapping %}{% for wk, wv in w.items() %}{{ wk }}: {{ wv }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}{{ w }}{% endif %}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
 {% if door_specs %}
 <div class="section">
   <div class="section-title">Door Specifications</div>
