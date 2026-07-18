@@ -266,6 +266,20 @@ try:
 except ImportError:
     pass
 try:
+    # 2026-07-17 — Bank feeds (Banno Consumer API): institutions, OAuth
+    # connections, accounts, transactions, statement archive, sync schedule.
+    # All tables ORM-created; no migration.
+    from gdx_dispatch.modules.bank_feeds.models import (  # noqa: F401
+        BankFeedAccount,
+        BankFeedDocument,
+        BankFeedSyncSchedule,
+        BankFeedTransaction,
+        BannoConnection,
+        BannoInstitution,
+    )
+except ImportError:
+    pass
+try:
     from gdx_dispatch.routers.change_orders import ChangeOrder  # noqa: F401
 except ImportError:
     pass
