@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.door_specs import door_specs_for_job, flatten_door_spec
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Customer, Job, Technician
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -219,9 +220,18 @@ def install_specs(
             price = float(lr.unit_price or 0)
             lines.append({"description": lr.description, "quantity": int(qty), "unit_price": price})
 
+    # Prefer the ACTUAL captured door(s) carried on the estimate line_metadata
+    # (source=chi_hubx) over a catalog lookup — the catalog match below returns a
+    # generic catalogued door by fuzzy description, not the specific door that
+    # was quoted (its real color, spring, track, windows, price). Fall back to
+    # the catalog match only for non-CHI doors, so nothing regresses.
+    captured_doors = door_specs_for_job(db, job_id)
+    door_specs = flatten_door_spec(captured_doors[0]) if captured_doors else None
+
     # Find door specs from line items — CHI feed + tenant-custom doors.
-    door_specs = None
     for line in lines:
+        if door_specs is not None:
+            break
         desc = (line["description"] or "").strip()
         if not desc:
             continue
@@ -333,9 +343,17 @@ def install_sheet(
             lines.append({"description": lr.description, "quantity": int(qty), "unit_price": price, "total": total})
             estimate_total += total
 
-    # Try to find door specs (CHI + custom) from line item descriptions
+    # The ACTUAL captured door(s) quoted on this job, from the estimate
+    # line_metadata — the real spec (color/spring/track/windows), not a
+    # fuzzy-matched catalogued door. Rendered as a dedicated block on the sheet.
+    captured_doors = door_specs_for_job(db, job_id)
+
+    # Try to find door specs (CHI + custom) from line item descriptions — only
+    # when there's no captured door to show (non-CHI installs).
     door_specs = None
     for line in lines:
+        if captured_doors:
+            break
         desc = (line["description"] or "").strip()
         if not desc:
             continue
@@ -435,6 +453,7 @@ def install_sheet(
                 phone=_val(job.get("phone")), scheduled_at=_fdate(job.get("scheduled_at")),
                 technician=tech_name, job_type=_val(job.get("job_type"), "Service"),
                 priority=_val(job.get("priority"), "Normal"), door_specs=door_specs,
+                captured_doors=captured_doors,
                 parts=parts, estimate_total=estimate_total,
                 hide_line_prices=hide_line_prices,
                 notes=_val(estimate_obj.notes if estimate_obj else job.get("description"), "No special instructions."),
@@ -454,6 +473,7 @@ def install_sheet(
         phone=_val(job.get("phone")), scheduled_at=_fdate(job.get("scheduled_at")),
         technician=tech_name, job_type=_val(job.get("job_type"), "Service"),
         priority=_val(job.get("priority"), "Normal"), door_specs=door_specs,
+        captured_doors=captured_doors,
         parts=parts, estimate_total=estimate_total,
         hide_line_prices=hide_line_prices,
         notes=_val(estimate_obj.notes if estimate_obj else job.get("description"), "No special instructions."),

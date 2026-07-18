@@ -27,6 +27,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.door_specs import door_specs_for_job
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -1982,12 +1983,20 @@ def get_mobile_job_detail(
         {"job_id": job_id},
     ).mappings().all()
 
+    # Install/build spec for the door(s) on this job, captured at quote time and
+    # carried on the linked estimate's line_metadata (source=chi_hubx). Empty for
+    # service calls and any install that wasn't quoted from a CHI capture. The
+    # tech gets the identity + build detail (spring/track/rollers) + windows so
+    # they're not installing blind — see gdx_dispatch/core/door_specs.py.
+    door_specs = door_specs_for_job(db, job_id)
+
     return jsonable_response(
         {
             "job": job,
             "notes": [dict(r) for r in notes],
             "photos": [dict(r) for r in photos],
             "parts": [dict(r) for r in parts],
+            "door_specs": door_specs,
         }
     )
 
