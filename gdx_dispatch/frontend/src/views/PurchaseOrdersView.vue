@@ -63,6 +63,13 @@
             <Select v-model="form.vendor_id" :options="vendors" optionLabel="name" optionValue="id"
               placeholder="Select vendor" filter showClear @change="onVendorSelect" class="w-full" />
           </div>
+          <div class="form-field">
+            <!-- Ties the PO to a job so receiving can see what door should
+                 arrive. Optional — vendor-stock POs leave it blank. -->
+            <label>For job</label>
+            <Select v-model="form.job_id" :options="jobs" optionLabel="label" optionValue="id"
+              placeholder="(optional) link a job" filter showClear class="w-full" data-testid="po-job-select" />
+          </div>
           <FormField v-model="form.status" label="Status" as="select" :options="poStatusOptions" />
           <div class="form-field">
             <label>Order Date</label>
@@ -73,6 +80,33 @@
             <DatePicker v-model="form.expected_date" dateFormat="yy-mm-dd" class="w-full" />
           </div>
           <FormField v-model="form.notes" label="Notes" as="textarea" :rows="2" class="full-width" />
+        </div>
+
+        <!-- What door(s) this PO should bring in, from the linked job's captured
+             spec — so whoever checks in the delivery knows what to expect and how
+             heavy. Only shows for a job-linked PO with a captured door. -->
+        <div v-if="detailReceiving.door_specs.length" class="doors-expected" data-testid="po-doors-expected">
+          <h3>
+            Doors expected
+            <span v-if="detailReceiving.job_number" class="doors-ref">· {{ detailReceiving.job_number }}</span>
+            <span v-if="detailReceiving.estimate_number" class="doors-ref">· {{ detailReceiving.estimate_number }}</span>
+          </h3>
+          <div v-for="(door, di) in detailReceiving.door_specs" :key="door.line_id || di" class="door-expected">
+            <div class="door-expected-title">
+              {{ door.identity.Model || door.label || 'Door' }}
+              <span v-if="door.quantity > 1" class="door-expected-qty">×{{ door.quantity }}</span>
+            </div>
+            <dl class="door-expected-grid">
+              <template v-for="(val, key) in { ...door.identity, ...door.receiving }" :key="key">
+                <dt>{{ key }}</dt>
+                <dd>{{ fmtVal(val) }}</dd>
+              </template>
+              <template v-if="door.window_count">
+                <dt>Windows</dt>
+                <dd>{{ door.window_count }} section(s) — check glass</dd>
+              </template>
+            </dl>
+          </div>
         </div>
 
         <h3 style="margin-top:1.5rem;">Line Items</h3>
@@ -178,11 +212,24 @@ const poStatusOptions = ["draft", "sent"].map((s) => ({ label: s, value: s }));
 
 const emptyLine = () => ({ description: "", sku: "", quantity_ordered: 1, unit_cost: 0 });
 const emptyForm = () => ({
-  vendor_id: null, vendor_name: "", status: "draft",
+  vendor_id: null, vendor_name: "", job_id: null, status: "draft",
   order_date: new Date(), expected_date: null, notes: "",
   tax: 0, shipping: 0, lines: [emptyLine()],
 });
 const form = ref(emptyForm());
+
+// Jobs for the "For job" picker, and the door receiving info for the PO
+// currently open in the dialog (fetched on open — the list omits it).
+const jobs = ref([]);
+const detailReceiving = ref({ door_specs: [], job_number: null, estimate_number: null });
+
+// A captured spec value is usually a string; Load Information arrives as an
+// object. Render it readably rather than "[object Object]".
+function fmtVal(val) {
+  if (val == null) return "—";
+  if (typeof val === "object") return Object.entries(val).map(([k, v]) => `${k}: ${v}`).join(", ");
+  return String(val);
+}
 
 const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(() => form.value);
 const { exportCsv } = useTableExport();
@@ -241,6 +288,20 @@ async function loadVendors() {
   }
 }
 
+async function loadJobs() {
+  try {
+    const data = await api.get("/api/jobs?per_page=500");
+    const arr = Array.isArray(data) ? data : data?.jobs || data?.items || [];
+    jobs.value = arr.map((j) => ({
+      id: j.id,
+      // What the operator recognizes it by: job number first, then title/customer.
+      label: [j.job_number, j.title || j.customer_name || j.customer?.name].filter(Boolean).join(" · ") || j.id,
+    }));
+  } catch {
+    jobs.value = [];
+  }
+}
+
 function onVendorSelect() {
   const v = vendors.value.find((x) => x.id === form.value.vendor_id);
   if (v) form.value.vendor_name = v.name;
@@ -249,6 +310,7 @@ function onVendorSelect() {
 function openCreate() {
   editingPo.value = null;
   form.value = emptyForm();
+  detailReceiving.value = { door_specs: [], job_number: null, estimate_number: null };
   snapshot();
   showDialog.value = true;
 }
@@ -257,15 +319,26 @@ function cancelDialog() {
   if (confirmDiscard()) showDialog.value = false;
 }
 
-function openDetail(po) {
+async function openDetail(po) {
   editingPo.value = po;
   form.value = {
-    vendor_id: po.vendor_id, vendor_name: po.vendor_name, status: po.status,
+    vendor_id: po.vendor_id, vendor_name: po.vendor_name, job_id: po.job_id, status: po.status,
     order_date: po.order_date ? new Date(po.order_date) : new Date(),
     expected_date: po.expected_date ? new Date(po.expected_date) : null,
     notes: po.notes, tax: po.tax, shipping: po.shipping,
     lines: po.lines?.length ? [...po.lines] : [emptyLine()],
   };
+  // The list omits door specs; fetch the full PO so the receiver sees what's
+  // expected. Best-effort — the dialog still works if this fails.
+  detailReceiving.value = { door_specs: [], job_number: null, estimate_number: null };
+  try {
+    const full = await api.get(`/api/purchase-orders/${po.id}`);
+    detailReceiving.value = {
+      door_specs: full?.door_specs || [],
+      job_number: full?.job_number || null,
+      estimate_number: full?.estimate_number || null,
+    };
+  } catch { /* leave empty */ }
   snapshot();
   showDialog.value = true;
 }
@@ -314,7 +387,7 @@ async function confirmDelete(po) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadPos(), loadVendors()]);
+  await Promise.all([loadPos(), loadVendors(), loadJobs()]);
 });
 </script>
 
@@ -327,6 +400,21 @@ onMounted(async () => {
 .full-width { grid-column: 1 / -1; }
 .w-full { width: 100%; }
 .clickable-row { cursor: pointer; }
+
+/* "Doors expected" — themed via PrimeVue vars so it reads in light + dark. */
+.doors-expected {
+  margin-top: 1.25rem; padding: 0.85rem 1rem;
+  border: 1px solid var(--p-content-border-color); border-radius: 8px;
+  background: var(--p-content-hover-background);
+}
+.doors-expected h3 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+.doors-ref { font-weight: 500; color: var(--p-text-muted-color); font-size: 0.85rem; }
+.door-expected + .door-expected { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--p-content-border-color); }
+.door-expected-title { font-weight: 700; font-size: 0.9rem; color: var(--p-text-color); margin-bottom: 0.3rem; }
+.door-expected-qty { font-weight: 600; color: var(--p-text-muted-color); }
+.door-expected-grid { margin: 0; display: grid; grid-template-columns: minmax(6rem, auto) 1fr; gap: 0.12rem 0.75rem; }
+.door-expected-grid dt { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.02em; color: var(--p-text-muted-color); }
+.door-expected-grid dd { margin: 0; font-size: 0.88rem; color: var(--p-text-color); word-break: break-word; }
 
 .totals-row {
   display: flex; gap: 2rem; justify-content: flex-end;
