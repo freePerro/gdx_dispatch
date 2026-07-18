@@ -5,27 +5,51 @@
         <i class="pi pi-building" style="font-size: 1.5rem" />
         <span class="company-name">{{ company.name }}</span>
       </div>
+      <div v-if="jwt && !error" class="header-actions">
+        <Button icon="pi pi-key" label="Password" text size="small" @click="openSetPassword" data-testid="set-password-btn" />
+        <Button icon="pi pi-sign-out" label="Sign out" text size="small" @click="signOut" data-testid="sign-out-btn" />
+      </div>
     </header>
 
     <main class="portal-content">
       <div v-if="loading" class="loading-wrap"><ProgressSpinner /></div>
 
-      <div v-else-if="error" class="auth-error" data-testid="error-message">
-        <Message severity="warn" class="m-3">{{ error }}</Message>
-        <Card class="request-link-card" data-testid="request-link-card">
-          <template #title>Get a new sign-in link</template>
+      <div v-else-if="!jwt" class="login-wrap" data-testid="portal-login">
+        <Card class="login-card" data-testid="portal-login-card">
+          <template #title>Sign in to your portal</template>
           <template #content>
-            <p class="meta">Enter the email address your service provider has on file and we'll send you a fresh link.</p>
-            <div class="request-link-row">
-              <InputText v-model="requestEmail" placeholder="you@example.com" class="flex-1" data-testid="request-link-email" @keyup.enter="requestNewLink" />
-              <Button label="Send Link" icon="pi pi-envelope" :loading="requestSending" @click="requestNewLink" data-testid="request-link-btn" />
+            <Message v-if="error" severity="warn" class="mb-3" data-testid="login-notice">{{ error }}</Message>
+            <div class="login-form">
+              <label class="field">
+                <span>Email</span>
+                <InputText v-model="email" type="email" placeholder="you@example.com" data-testid="login-email" @keyup.enter="passwordLogin" />
+              </label>
+              <label class="field">
+                <span>Password</span>
+                <Password v-model="password" :feedback="false" toggleMask inputClass="w-full" placeholder="Your password" data-testid="login-password" @keyup.enter="passwordLogin" />
+              </label>
+              <label class="remember-row">
+                <Checkbox v-model="remember" :binary="true" data-testid="login-remember" />
+                <span>Keep me signed in on this device</span>
+              </label>
+              <Message v-if="loginError" severity="error" class="mb-2" data-testid="login-error">{{ loginError }}</Message>
+              <Button label="Sign in" icon="pi pi-sign-in" :loading="signingIn" @click="passwordLogin" data-testid="login-submit" />
             </div>
-            <p v-if="requestSent" class="meta sent-note" data-testid="request-link-sent">If that email is on file, a sign-in link is on its way.</p>
+            <Divider />
+            <div class="magic-fallback">
+              <p class="meta">Forgot your password, or don't have one yet?</p>
+              <Button label="Email me a sign-in link" icon="pi pi-envelope" text :loading="requestSending" @click="requestNewLink" data-testid="request-link-btn" />
+              <p v-if="requestSent" class="meta sent-note" data-testid="request-link-sent">If that email is on file, a sign-in link is on its way.</p>
+            </div>
           </template>
         </Card>
       </div>
 
       <div v-else>
+        <Message v-if="error" severity="warn" class="mb-3" data-testid="portal-error">{{ error }}</Message>
+        <Message v-if="showSetPwPrompt" severity="info" :closable="true" class="mb-3" data-testid="set-pw-prompt" @close="showSetPwPrompt = false">
+          Want faster sign-in next time? <a href="#" @click.prevent="openSetPassword">Set a password</a>.
+        </Message>
         <Tabs value="estimates" data-testid="portal-tabs">
           <TabList>
             <Tab value="estimates">Estimates</Tab>
@@ -147,6 +171,25 @@
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
           </div>
         </Dialog>
+
+        <Dialog
+          v-model:visible="setPwVisible"
+          header="Set a password"
+          :modal="true"
+          :style="{ width: 'min(420px, 94vw)' }"
+          data-testid="set-password-dialog"
+        >
+          <p class="meta">Set a password so you can sign in without waiting for an email link next time.</p>
+          <label class="field">
+            <span>New password</span>
+            <Password v-model="newPassword" toggleMask inputClass="w-full" :feedback="true" data-testid="new-password" @keyup.enter="setPassword" />
+          </label>
+          <p class="meta">At least 8 characters.</p>
+          <template #footer>
+            <Button label="Cancel" text @click="setPwVisible = false" />
+            <Button label="Save password" icon="pi pi-check" :loading="settingPw" :disabled="newPassword.length < 8" @click="setPassword" data-testid="save-password-btn" />
+          </template>
+        </Dialog>
       </div>
     </main>
   </div>
@@ -163,7 +206,10 @@ import DataTable from "primevue/datatable";
 import Dialog from "primevue/dialog";
 import Image from "primevue/image";
 import InputText from "primevue/inputtext";
+import Checkbox from "primevue/checkbox";
+import Divider from "primevue/divider";
 import Message from "primevue/message";
+import Password from "primevue/password";
 import ProgressSpinner from "primevue/progressspinner";
 import Tab from "primevue/tab";
 import TabList from "primevue/tablist";
@@ -190,9 +236,17 @@ const detail = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailImages = ref([]);
-const requestEmail = ref("");
+const email = ref("");
+const password = ref("");
+const remember = ref(false);
+const signingIn = ref(false);
+const loginError = ref("");
 const requestSending = ref(false);
 const requestSent = ref(false);
+const setPwVisible = ref(false);
+const newPassword = ref("");
+const settingPw = ref(false);
+const showSetPwPrompt = ref(false);
 
 function currency(v) { return formatMoney(Number(v) || 0); }
 function statusSeverity(s) {
@@ -203,13 +257,35 @@ function jobStatusLabel(job) {
   return (job.lifecycle_stage || "").replace(/_/g, " ") || "-";
 }
 
+// "Remember me" persists the session in localStorage (survives a browser
+// restart); otherwise it lives in sessionStorage and ends with the tab.
+function storeJwt(token, rememberMe) {
+  if (!token) { clearStoredJwt(); return; }
+  jwt.value = token;
+  if (rememberMe) {
+    localStorage.setItem(JWT_STORAGE_KEY, token);
+    sessionStorage.removeItem(JWT_STORAGE_KEY);
+  } else {
+    sessionStorage.setItem(JWT_STORAGE_KEY, token);
+    localStorage.removeItem(JWT_STORAGE_KEY);
+  }
+}
+function readStoredJwt() {
+  return localStorage.getItem(JWT_STORAGE_KEY) || sessionStorage.getItem(JWT_STORAGE_KEY) || "";
+}
+function clearStoredJwt() {
+  jwt.value = "";
+  localStorage.removeItem(JWT_STORAGE_KEY);
+  sessionStorage.removeItem(JWT_STORAGE_KEY);
+}
+
 async function authedFetch(path, options = {}) {
   const res = await fetch(path, {
     ...options,
     headers: { ...(options.headers || {}), Authorization: `Bearer ${jwt.value}` },
   });
   if (res.status === 401) {
-    sessionStorage.removeItem(JWT_STORAGE_KEY);
+    clearStoredJwt();
     throw Object.assign(new Error("unauthorized"), { auth: true });
   }
   if (!res.ok) throw new Error(`request failed: ${res.status}`);
@@ -239,39 +315,42 @@ async function init() {
       const res = await fetch(`/portal/verify?token=${encodeURIComponent(magicToken)}`);
       if (res.ok) {
         const body = await res.json();
-        jwt.value = body.access_token || "";
-        sessionStorage.setItem(JWT_STORAGE_KEY, jwt.value);
+        storeJwt(body.access_token || "", false); // magic-link → per-session, not "remember"
+        showSetPwPrompt.value = true; // nudge them to set a password for next time
+      } else {
+        error.value = "This sign-in link is invalid or has expired.";
       }
-    } catch { /* fall through to any stored session */ }
+    } catch {
+      error.value = "This sign-in link is invalid or has expired.";
+    }
     router.replace({ query: {} });
   }
-  if (!jwt.value) jwt.value = sessionStorage.getItem(JWT_STORAGE_KEY) || "";
-  if (!jwt.value) {
-    error.value = "This sign-in link is invalid or has expired.";
-    loading.value = false;
-    return;
-  }
+  if (!jwt.value) jwt.value = readStoredJwt();
+  if (!jwt.value) { loading.value = false; return; } // not signed in → login card
+  await loadPortal();
+}
+
+async function loadPortal() {
   try {
     await fetchAll();
     error.value = null;
   } catch (e) {
-    error.value = e?.auth
-      ? "Your portal session has expired."
-      : "Failed to load portal data. Please try again later.";
+    if (e?.auth) { clearStoredJwt(); error.value = "Your portal session has expired."; }
+    else error.value = "Failed to load portal data. Please try again later.";
   } finally {
     loading.value = false;
   }
 }
 
 async function requestNewLink() {
-  const email = requestEmail.value.trim();
-  if (!email) return;
+  const em = email.value.trim();
+  if (!em) { loginError.value = "Enter your email first."; return; }
   requestSending.value = true;
   try {
     await fetch("/portal/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email: em }),
     });
     requestSent.value = true;
   } catch {
@@ -279,6 +358,66 @@ async function requestNewLink() {
   } finally {
     requestSending.value = false;
   }
+}
+
+async function passwordLogin() {
+  const em = email.value.trim();
+  if (!em || !password.value) { loginError.value = "Enter your email and password."; return; }
+  signingIn.value = true;
+  loginError.value = "";
+  try {
+    const res = await fetch("/portal/login/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: em, password: password.value, remember: remember.value }),
+    });
+    if (!res.ok) { loginError.value = "Invalid email or password."; return; }
+    const body = await res.json();
+    storeJwt(body.access_token || "", remember.value);
+    password.value = "";
+    error.value = null;
+    loading.value = true;
+    await loadPortal();
+  } catch {
+    loginError.value = "Could not sign in. Please try again.";
+  } finally {
+    signingIn.value = false;
+  }
+}
+
+function openSetPassword() {
+  newPassword.value = "";
+  setPwVisible.value = true;
+}
+
+async function setPassword() {
+  if (newPassword.value.length < 8) return;
+  settingPw.value = true;
+  try {
+    await authedFetch("/portal/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: newPassword.value }),
+    });
+    setPwVisible.value = false;
+    showSetPwPrompt.value = false;
+    newPassword.value = "";
+    toast.add({ severity: "success", summary: "Password saved", detail: "You can now sign in with your email and password.", life: 4000 });
+  } catch (e) {
+    if (e?.auth) { error.value = "Your portal session has expired."; return; }
+    toast.add({ severity: "error", summary: "Error", detail: "Could not save password.", life: 4000 });
+  } finally {
+    settingPw.value = false;
+  }
+}
+
+function signOut() {
+  clearStoredJwt();
+  error.value = null;
+  showSetPwPrompt.value = false;
+  estimates.value = [];
+  invoices.value = [];
+  jobs.value = [];
 }
 
 async function estimateAction(id, action, successMsg) {
