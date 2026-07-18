@@ -157,6 +157,16 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*/5"),
             "options": {"queue": "priority:low"},
         },
+        "bank-feeds-schedule-dispatcher-every-5m": {
+            # 2026-07-17 Bank feeds (Banno). Same shape as the QB
+            # dispatcher: polls the bank_feed_sync_schedule singleton and
+            # queues bank_feeds_sync_task when next_run_at has passed;
+            # cadence is encoded in how far next_run_at jumps. Manual
+            # frequency is skipped (next_run_at NULL).
+            "task": "gdx_dispatch.modules.bank_feeds.tasks.bank_feeds_schedule_dispatcher",
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": "priority:low"},
+        },
         "forecasting-observed-recurring-nightly": {
             # 2026-05-20 observed-recurring sprint. Walks every tenant DB and
             # runs the detector against qb_bank_transactions. Output is

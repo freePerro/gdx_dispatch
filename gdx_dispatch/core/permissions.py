@@ -81,6 +81,10 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     ("accounting.write", "Edit accounting", "accounting"),
     ("accounting.export", "Export accounting", "accounting"),
 
+    # Bank feeds (Banno) — 2026-07-17
+    ("bank_feeds.read", "View bank accounts, transactions, and statements", "bank_feeds"),
+    ("bank_feeds.manage", "Connect bank accounts and manage feed settings", "bank_feeds"),
+
     # Settings
     ("settings.read", "View settings", "settings"),
     ("settings.write", "Edit settings", "settings"),
@@ -197,6 +201,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "payments.read", "payments.process",
         "payroll.read", "payroll.write", "payroll.export",
         "accounting.read", "accounting.write", "accounting.export",
+        "bank_feeds.read",
         "reports.read", "reports.export",
         "billing.read",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",

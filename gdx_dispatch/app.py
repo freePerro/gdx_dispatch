@@ -575,6 +575,13 @@ except Exception:
     ledger_router = None  # type: ignore
 
 try:
+    # Bank feeds (Banno Consumer API) — /api/bank-feeds/*.
+    from gdx_dispatch.modules.bank_feeds import router as bank_feeds_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: bank_feeds_router")
+    bank_feeds_router = None  # type: ignore
+
+try:
     from gdx_dispatch.modules.quickbooks import qb_router as quickbooks
 except Exception:
     # 2026-05-20: legacy `gdx_dispatch/routers/quickbooks.py` file DELETED. S122-10
@@ -1684,6 +1691,8 @@ def create_app() -> FastAPI:
         app.include_router(forecasting_router.router)
     if ledger_router is not None:
         app.include_router(ledger_router.router)
+    if bank_feeds_router is not None:
+        app.include_router(bank_feeds_router.router)
     # NOTE: gdx_dispatch/modules/*/router.py (legacy) and gdx_dispatch/routers/*.py (newer) both
     # register some overlapping paths with the same function names. The newer
     # versions are richer and tenant-scoped; the legacy modules have some
