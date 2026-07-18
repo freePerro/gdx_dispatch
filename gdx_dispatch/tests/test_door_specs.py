@@ -162,6 +162,37 @@ def test_flatten_produces_readable_strings(db):
     assert "_raw" not in flat and "source" not in flat
 
 
+def test_detects_captured_door_without_source_tag(db):
+    """The real prod shape: the deployed plugin leaves source=null but writes the
+    full spec. Detection must fall back to the signature keys, or the whole
+    feature matches zero real data (the bug this fixes)."""
+    job_id = uuid4()
+    prod_spec = {k: v for k, v in CHI_SPEC.items() if k != "source"}  # no source tag
+    assert "source" not in prod_spec
+    est = Estimate(
+        id=uuid4(), job_id=job_id, estimate_number=f"EST-{uuid4().hex[:8]}",
+        company_id="tenant-test", public_token=uuid4().hex, status="accepted", total=0,
+    )
+    db.add(est); db.flush()
+    db.add(EstimateLine(
+        id=uuid4(), estimate_id=est.id, company_id="tenant-test",
+        description="Timeless Collection, Raised Panel", quantity=1, unit_price=2000,
+        sort_order=1, line_metadata=prod_spec,
+    ))
+    # An ordinary manually-typed door line — sku/vendor/color only, NOT a spec.
+    db.add(EstimateLine(
+        id=uuid4(), estimate_id=est.id, company_id="tenant-test",
+        description="CHI Door 16x7", quantity=1, unit_price=1800, sort_order=2,
+        line_metadata={"sku": "CHI-2216", "vendor": "CHI", "color": "white"},
+    ))
+    db.commit()
+
+    doors = door_specs_for_job(db, job_id)
+    assert len(doors) == 1, "the untagged captured door is detected; the sku/vendor line is not"
+    assert doors[0]["identity"]["Model"] == "Timeless 2283"
+    assert doors[0]["installer"]["Spring"] == "Torsion"
+
+
 def test_no_estimate_returns_empty(db):
     # A job with no linked estimate at all.
     assert door_specs_for_job(db, uuid4()) == []

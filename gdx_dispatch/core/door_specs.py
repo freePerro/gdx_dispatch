@@ -27,8 +27,17 @@ from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
 
-# The line_metadata.source tag the CHI plugin writes on every drafted door line.
+# The line_metadata.source tag the CHI plugin's estimate-line draft SETS IN
+# SOURCE — but the DEPLOYED plugin does not reliably persist it (every captured
+# door on prod carries source=null). So the tag is a hint, not the gate; see
+# _is_captured_door, which falls back to the capture's signature keys.
 CHI_SOURCE = "chi_hubx"
+
+# CHI-capture signature: fields present on every real captured door and absent
+# from ordinary line_metadata (a manually-typed line's sku/vendor/color). A
+# "Model" plus any one of these is a captured door — this is what makes the
+# feature work on real data, not just chi_hubx-tagged rows.
+_DOOR_SIGNATURE = ("Spring", "Track", "Cyclage", "Sections", "Sprung Weight")
 
 # Ordered identity fields — who/what/how-much, shown first on every surface.
 IDENTITY_FIELDS = (
@@ -50,6 +59,22 @@ def _is_internal(key: str) -> bool:
 
 def _present(value: Any) -> bool:
     return value not in (None, "")
+
+
+def _is_captured_door(md: Any) -> bool:
+    """True if this estimate line's line_metadata is a captured CHI door.
+
+    Prefer the explicit source tag, but fall back to the capture's signature
+    keys because the deployed plugin leaves source=null on real captures — the
+    full spec (Model, Spring, Track, Sections, weights) is all there, just
+    untagged. Ordinary line_metadata (sku/vendor/color from a manual line) has
+    no Model + build field, so it's excluded.
+    """
+    if not isinstance(md, dict):
+        return False
+    if md.get("source") == CHI_SOURCE:
+        return True
+    return "Model" in md and any(k in md for k in _DOOR_SIGNATURE)
 
 
 def _door_from_metadata(md: dict, line: EstimateLine) -> dict:
@@ -110,9 +135,8 @@ def door_specs_for_job(db: Session, job_id: Any) -> list[dict]:
 
     doors: list[dict] = []
     for line in lines:
-        md = line.line_metadata
-        if isinstance(md, dict) and md.get("source") == CHI_SOURCE:
-            doors.append(_door_from_metadata(md, line))
+        if _is_captured_door(line.line_metadata):
+            doors.append(_door_from_metadata(line.line_metadata, line))
     return doors
 
 
