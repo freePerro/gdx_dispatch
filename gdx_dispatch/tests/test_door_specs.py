@@ -261,3 +261,130 @@ def test_install_specs_endpoint_prefers_captured_door(install_client):
     assert ds["Color"] == "Walnut"
     assert ds["Spring"] == "Torsion"
     assert ds["Windows"] == "1 section(s)"
+
+
+# --- PO receiving: a PO tied to a job exposes the door's receiving view ---
+
+@pytest.fixture()
+def po_client():
+    """Mounts the real purchase_orders router so we exercise the wired receive
+    path — a PO carrying job_id resolves the job's door receiving specs."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import text
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.routers.auth import get_current_user
+    from gdx_dispatch.routers.purchase_orders import router as po_router
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    setup = Session()
+    for ddl in (
+        "CREATE TABLE IF NOT EXISTS tenant_module_grants (id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)",
+        "CREATE TABLE IF NOT EXISTS company_module_grants (id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT, UNIQUE(company_id, module_key))",
+    ):
+        setup.execute(text(ddl))
+    setup.execute(text("INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at) VALUES ('g1','tenant-test','inventory',datetime('now'),datetime('now'))"))
+    setup.execute(text("INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at) VALUES ('g2','tenant-test','inventory',datetime('now'),datetime('now'))"))
+    setup.commit(); setup.close()
+
+    def _override_db():
+        s = Session()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _tenant(request, call_next):
+        request.state.tenant = {"id": "tenant-test"}
+        return await call_next(request)
+
+    app.include_router(po_router)
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u1", "role": "admin", "email": "a@b.c", "tenant_id": "tenant-test"}
+    tc = TestClient(app, raise_server_exceptions=True)
+    tc._Session = Session
+    yield tc
+    app.dependency_overrides.clear()
+    engine.dispose()
+
+
+def test_po_for_job_exposes_door_receiving_specs(po_client):
+    from gdx_dispatch.models.tenant_models import Job
+
+    job_id = uuid4()
+    db = po_client._Session()
+    try:
+        # A real Job row so the job_number resolution path runs (the prod case),
+        # not just the estimate.
+        db.add(Job(id=job_id, title="Garage Door Install", job_number="JOB-2026-001",
+                   company_id="tenant-test"))
+        db.commit()
+        _seed(db, job_id)
+    finally:
+        db.close()
+
+    # Create a PO ordered for that job.
+    r = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "CHI Overhead Doors", "job_id": str(job_id),
+        "lines": [{"description": "CHI Timeless 2283", "quantity_ordered": 1, "unit_cost": 1462.68}],
+    })
+    assert r.status_code == 201, r.text
+    po_id = r.json()["id"]
+    assert r.json()["job_id"] == str(job_id)
+
+    # Detail carries the receiving view of the door: identity + weights, no build detail.
+    detail = po_client.get(f"/api/purchase-orders/{po_id}").json()
+    doors = detail["door_specs"]
+    assert len(doors) == 1
+    door = doors[0]
+    assert door["identity"]["Model"] == "Timeless 2283"
+    assert door["receiving"]["Shipping Weight"] == "251.30"
+    assert "Spring" not in door["receiving"] and "installer" not in door
+    assert door["window_count"] == 1
+    # The numbers the operator recognizes it by — BOTH resolve.
+    assert detail["job_number"] == "JOB-2026-001"
+    assert detail["estimate_number"]
+
+
+def test_po_job_link_can_be_cleared(po_client):
+    from gdx_dispatch.models.tenant_models import Job
+
+    job_id = uuid4()
+    db = po_client._Session()
+    try:
+        db.add(Job(id=job_id, title="Install", job_number="JOB-1", company_id="tenant-test"))
+        db.commit()
+    finally:
+        db.close()
+
+    po_id = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "V", "job_id": str(job_id),
+        "lines": [{"description": "x", "quantity_ordered": 1, "unit_cost": 1}],
+    }).json()["id"]
+
+    # Re-save the form with job_id cleared (null) — the link must actually drop.
+    r = po_client.patch(f"/api/purchase-orders/{po_id}", json={
+        "vendor_name": "V", "job_id": None,
+        "lines": [{"description": "x", "quantity_ordered": 1, "unit_cost": 1}],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["job_id"] is None
+    assert po_client.get(f"/api/purchase-orders/{po_id}").json()["job_id"] is None
+
+
+def test_po_without_job_has_no_door_specs(po_client):
+    r = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "Bolt Depot",
+        "lines": [{"description": "Lag bolts", "quantity_ordered": 100, "unit_cost": 0.25}],
+    })
+    assert r.status_code == 201, r.text
+    po_id = r.json()["id"]
+    assert r.json()["job_id"] is None
+    detail = po_client.get(f"/api/purchase-orders/{po_id}").json()
+    assert detail["door_specs"] == []

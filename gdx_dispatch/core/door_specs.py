@@ -116,6 +116,22 @@ def door_specs_for_job(db: Session, job_id: Any) -> list[dict]:
     return doors
 
 
+def receiving_view(door: dict) -> dict:
+    """The receiving slice of a captured door: what should arrive + how heavy.
+
+    Drops the installer build detail (spring/track/rollers) — the person checking
+    in the delivery cares about identity + weights + quantity, not how it gets
+    hung. Used by the PO receive flow to show what a door PO should bring in."""
+    return {
+        "line_id": door.get("line_id"),
+        "label": door.get("label"),
+        "quantity": door.get("quantity", 1),
+        "identity": door.get("identity") or {},
+        "receiving": door.get("receiving") or {},
+        "window_count": len(door.get("windows") or []),
+    }
+
+
 def _stringify(value: Any) -> str:
     if isinstance(value, dict):
         return ", ".join(f"{k}: {v}" for k, v in value.items())

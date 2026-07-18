@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.door_specs import door_specs_for_job, receiving_view
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import InventoryItem
 from gdx_dispatch.modules.inventory.stock import apply_stock_delta
@@ -43,6 +44,11 @@ class PurchaseOrder(TenantBase):
     order_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
     expected_date: Mapped[date] = mapped_column(Date, nullable=True)
     received_date: Mapped[date] = mapped_column(Date, nullable=True)
+    # The job this PO was ordered for (nullable — vendor-stock POs have none).
+    # Lets receiving follow the thread to the job's captured door specs: what
+    # should arrive + how heavy. Added by migration 031; create_all builds it on
+    # a fresh DB. See gdx_dispatch/core/door_specs.py.
+    job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     subtotal: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     tax: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
@@ -85,6 +91,7 @@ class POLineIn(BaseModel):
 class PurchaseOrderIn(BaseModel):
     vendor_id: str | None = Field(default=None, max_length=64)
     vendor_name: str | None = Field(default=None, max_length=200)
+    job_id: str | None = Field(default=None, max_length=64)  # PO ordered for this job
     status: str = Field(default="draft", max_length=50)
     order_date: date | None = None
     expected_date: date | None = None
@@ -114,6 +121,7 @@ def _serialize_po(po: PurchaseOrder) -> dict[str, Any]:
         "po_number": po.po_number,
         "vendor_id": str(po.vendor_id) if po.vendor_id else None,
         "vendor_name": po.vendor_name,
+        "job_id": str(po.job_id) if po.job_id else None,
         "status": po.status,
         "order_date": po.order_date.isoformat() if po.order_date else None,
         "expected_date": po.expected_date.isoformat() if po.expected_date else None,
@@ -126,6 +134,31 @@ def _serialize_po(po: PurchaseOrder) -> dict[str, Any]:
         "created_by": po.created_by,
         "created_at": po.created_at.isoformat() if po.created_at else None,
         "lines": [_serialize_line(l) for l in po.lines],
+    }
+
+
+def _po_receiving(db: Session, po: PurchaseOrder) -> dict[str, Any]:
+    """Door receiving info for a PO tied to a job: what should arrive + how
+    heavy, plus the job/estimate numbers the operator recognizes it by. Empty
+    when the PO has no job or the job has no captured door. Detail/receive
+    surfaces only — kept off the list to avoid a per-row query fan-out."""
+    if not po.job_id:
+        return {"door_specs": [], "job_number": None, "estimate_number": None}
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    doors = [receiving_view(d) for d in door_specs_for_job(db, po.job_id)]
+    job = db.get(Job, po.job_id)
+    est = db.execute(
+        select(Estimate)
+        .where(Estimate.job_id == po.job_id, Estimate.deleted_at.is_(None))
+        .order_by(Estimate.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return {
+        "door_specs": doors,
+        "job_number": getattr(job, "job_number", None) if job else None,
+        "estimate_number": getattr(est, "estimate_number", None) if est else None,
     }
 
 
@@ -166,10 +199,15 @@ def create_po(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    _job_uuid = None
+    if payload.job_id:
+        with contextlib.suppress(ValueError):
+            _job_uuid = UUID(payload.job_id)
     po = PurchaseOrder(
         po_number=_next_po_number(db),
         vendor_id=UUID(payload.vendor_id) if payload.vendor_id else None,
         vendor_name=payload.vendor_name,
+        job_id=_job_uuid,
         status=payload.status if payload.status in PO_STATUSES else "draft",
         order_date=payload.order_date or date.today(),
         expected_date=payload.expected_date,
@@ -225,7 +263,7 @@ def get_po(
     po = db.get(PurchaseOrder, po_id)
     if not po or po.deleted_at:
         raise HTTPException(status_code=404, detail="PO not found")
-    return _serialize_po(po)
+    return {**_serialize_po(po), **_po_receiving(db, po)}
 
 
 @router.patch("/api/purchase-orders/{po_id}", response_model=None)
@@ -248,6 +286,14 @@ def update_po(
     if payload.vendor_id:
         with contextlib.suppress(ValueError):
             po.vendor_id = UUID(payload.vendor_id)
+    # Always set from the payload (unlike vendor_id) so the form's "clear" —
+    # which PATCHes job_id: null — actually unlinks the job. An invalid uuid is
+    # ignored rather than clearing, so a malformed value can't silently unlink.
+    if payload.job_id:
+        with contextlib.suppress(ValueError):
+            po.job_id = UUID(payload.job_id)
+    else:
+        po.job_id = None
     if payload.status in PO_STATUSES:
         po.status = payload.status
     po.tax = Decimal(str(payload.tax or 0))
@@ -290,7 +336,7 @@ def update_po(
             _audit_db.commit()
         except Exception:
             log.exception('update_po_audit_failed')
-    return _serialize_po(po)
+    return {**_serialize_po(po), **_po_receiving(db, po)}
 
 
 @router.post("/api/purchase-orders/{po_id}/receive", response_model=None)
@@ -347,7 +393,7 @@ def receive_po(
             _audit_db.commit()
         except Exception:
             log.exception('receive_po_audit_failed')
-    return _serialize_po(po)
+    return {**_serialize_po(po), **_po_receiving(db, po)}
 
 
 @router.delete("/api/purchase-orders/{po_id}", response_model=None, status_code=204)
