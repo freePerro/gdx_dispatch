@@ -44,6 +44,7 @@ MODULES = {
     "chrome_extension": {"name": "Supplier Portal Bridge", "tier": "business", "default": False},
     "phone_com": {"name": "Phone.com Voice & SMS", "tier": "professional", "default": False},
     "email": {"name": "Email Integration", "tier": "professional", "default": False},
+    "bank_feeds": {"name": "Bank Feeds", "tier": "professional", "default": False},
 }
 
 # Legacy keys still referenced by older routers are mapped to canonical module keys.

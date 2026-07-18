@@ -45,6 +45,8 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             # timeclock_sweep additionally bound to the vestigial Sprint-1
             # gdx_dispatch/celery_app.py (now deleted) which no worker ran.
             "gdx_dispatch.modules.quickbooks.tasks",
+            # 2026-07-17 — Bank feeds (Banno): scheduled dispatcher + sync.
+            "gdx_dispatch.modules.bank_feeds.tasks",
             "gdx_dispatch.tasks.tech_locations_prune",
             "gdx_dispatch.tasks.timeclock_sweep",
             # Registered so it CAN run, but has no beat entry and no
@@ -100,6 +102,7 @@ from gdx_dispatch.modules.campaigns import tasks as _campaign_tasks  # noqa: E40
 from gdx_dispatch.modules.forecasting import tasks as _forecasting_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.outlook import tasks as _outlook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.phone_com import tasks as _phone_com_tasks  # noqa: E402,F401
+from gdx_dispatch.modules.bank_feeds import tasks as _bank_feeds_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.quickbooks import tasks as _quickbooks_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import email_poller as _email_poller_tasks  # noqa: E402,F401

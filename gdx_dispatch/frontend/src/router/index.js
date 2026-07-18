@@ -129,6 +129,7 @@ const VendorStatementDetailView = () => import('../views/VendorStatementDetailVi
 const VendorBillsView = () => import('../views/VendorBillsView.vue');
 const VendorBillDetailView = () => import('../views/VendorBillDetailView.vue');
 const QuickbooksView = () => import('../views/QuickbooksView.vue');
+const BankFeedsView = () => import('../views/BankFeedsView.vue');
 const PdfTemplateEditorView = () => import('../views/PdfTemplateEditorView.vue');
 const PartsToOrderView = () => import('../views/PartsToOrderView.vue');
 const CommissionsView = () => import('../views/CommissionsView.vue');
@@ -255,6 +256,7 @@ export const routes = [
   { path: '/vendor-bills', name: 'vendor-bills', component: VendorBillsView, meta: { requiresPermission: 'vendor_invoices.read' } },
   { path: '/vendor-bills/:id', name: 'vendor-bill-detail', component: VendorBillDetailView, meta: { requiresPermission: 'vendor_invoices.read' } },
   { path: '/quickbooks', name: 'quickbooks', component: QuickbooksView },
+  { path: '/bank-feeds', name: 'bank-feeds', component: BankFeedsView, meta: { requiresPermission: 'bank_feeds.read' } },
   { path: '/documents', name: 'documents', component: DocumentsView },
   // /uploads → /documents (merged 2026-04-29). Bookmark redirect.
   { path: '/uploads', redirect: '/documents' },
