@@ -24,6 +24,7 @@ from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
+from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 
 log = logging.getLogger(__name__)
@@ -389,28 +390,6 @@ def portal_invoice_pay(
         currency="usd",
         metadata={"invoice_id": str(invoice.id), "customer_id": str(principal.customer_id)},
     )
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="portal_invoice_pay",
-                entity_type="portal_invoice_pay",
-                entity_id=str(invoice_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('portal_invoice_pay_audit_failed')
     return {
         "payment_intent_id": intent.id,
         "client_secret": intent.client_secret,
@@ -631,6 +610,7 @@ def portal_estimates(
 @router.get("/estimates/{estimate_id}", response_model=None)
 def portal_estimate_detail(
     estimate_id: UUID,
+    request: Request,
     principal: PortalPrincipal = Depends(get_current_portal_customer),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -643,6 +623,16 @@ def portal_estimate_detail(
     body["declined_reason"] = estimate.declined_reason
     body["totals"] = totals
 
+    # Per-line prices are a customer-facing surface: honor the tri-state
+    # hide_line_prices (per-estimate override wins, else the tenant default).
+    # This is a JSON API, so the values are STRIPPED server-side, not just
+    # hidden in the template — otherwise they'd leak in the network response.
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
+    hide_prices = effective_hide_line_prices(
+        getattr(estimate, "hide_line_prices", None), get_features(tenant_id).hide_line_prices
+    )
+    body["hide_line_prices"] = hide_prices
+
     lines = db.execute(
         select(EstimateLine)
         .where(EstimateLine.estimate_id == estimate.id)
@@ -653,8 +643,14 @@ def portal_estimate_detail(
             "id": str(line.id),
             "description": line.description,
             "quantity": float(line.quantity or 0),
-            "unit_price": float(line.unit_price or 0),
-            "line_total": float(line.line_total or 0),
+            **(
+                {}
+                if hide_prices
+                else {
+                    "unit_price": float(line.unit_price or 0),
+                    "line_total": float(line.line_total or 0),
+                }
+            ),
         }
         for line in lines
     ]

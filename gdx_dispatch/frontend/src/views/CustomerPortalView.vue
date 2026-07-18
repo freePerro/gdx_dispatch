@@ -126,8 +126,8 @@
               <template #empty>No line items.</template>
               <Column field="description" header="Item" />
               <Column field="quantity" header="Qty" :style="{ width: '70px' }" />
-              <Column field="unit_price" header="Price" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
-              <Column field="line_total" header="Total" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
+              <Column v-if="!detail.hide_line_prices" field="unit_price" header="Price" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.unit_price) }}</template></Column>
+              <Column v-if="!detail.hide_line_prices" field="line_total" header="Total" :style="{ width: '110px' }"><template #body="{ data }">{{ currency(data.line_total) }}</template></Column>
             </DataTable>
 
             <div class="totals-block" v-if="detail.totals" data-testid="estimate-totals">

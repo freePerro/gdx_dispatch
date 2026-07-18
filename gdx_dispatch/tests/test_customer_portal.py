@@ -426,7 +426,7 @@ def test_estimate_detail_includes_lines_and_totals(tenant_db_session):
     est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
     principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
 
-    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session)
     assert [line["description"] for line in body["lines"]] == ["16x7 insulated door", "Haul away"]
     assert body["totals"]["subtotal"] == 2600.0
     assert body["totals"]["tax_unavailable"] is False
@@ -436,7 +436,7 @@ def test_estimate_detail_includes_lines_and_totals(tenant_db_session):
 
     principal_b = _principal(seeded["user_b_id"], seeded["customer_b_id"])
     with pytest.raises(Exception) as exc:
-        portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal_b, db=tenant_db_session)
+        portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal_b, db=tenant_db_session)
     assert getattr(exc.value, "status_code", None) == 404
 
 
@@ -452,7 +452,7 @@ def test_estimate_detail_lists_only_renderable_image_attachments(tenant_db_sessi
     tenant_db_session.commit()
     principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
 
-    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session)
     assert [img["original_name"] for img in body["images"]] == ["door.png"]
     assert body["images"][0]["url"] == f"/portal/estimates/{est.id}/attachments/{photo.id}"
 
@@ -494,11 +494,34 @@ def test_estimate_detail_degraded_totals_are_flagged(tenant_db_session, monkeypa
 
     monkeypatch.setattr("gdx_dispatch.modules.proposals.totals.compute_estimate_totals", _boom)
 
-    body = portal_router.portal_estimate_detail(estimate_id=est.id, principal=principal, db=tenant_db_session)
+    body = portal_router.portal_estimate_detail(estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session)
     # Degraded path: pre-tax subtotal shown, but flagged so the UI can say
     # "final total may differ" instead of presenting it as authoritative.
     assert body["totals"]["tax_unavailable"] is True
     assert body["totals"]["total"] == 2600.0
+    assert body["total"] == body["totals"]["total"]
+
+
+def test_estimate_detail_strips_line_prices_when_hidden(tenant_db_session):
+    # hide_line_prices is a customer-facing privacy control. The portal is a
+    # JSON API, so per-line prices must be ABSENT from the payload — not merely
+    # hidden in the template — or they'd leak in the raw network response.
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate_with_lines(tenant_db_session, seeded["customer_a_id"])
+    est.hide_line_prices = True  # per-estimate override wins over the tenant default
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_detail(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert body["hide_line_prices"] is True
+    # Descriptions + quantities still show; per-line prices are stripped.
+    assert [line["description"] for line in body["lines"]] == ["16x7 insulated door", "Haul away"]
+    for line in body["lines"]:
+        assert "unit_price" not in line
+        assert "line_total" not in line
+    # The grand total is NOT hidden — only the per-line breakdown is.
     assert body["total"] == body["totals"]["total"]
 
 
