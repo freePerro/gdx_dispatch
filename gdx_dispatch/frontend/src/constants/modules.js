@@ -118,6 +118,7 @@ export const MODULE_CATEGORIES = [
       { key: 'vendor_bills', label: 'Vendor Bills', icon: 'pi pi-inbox', to: '/vendor-bills', type: 'Invoices', permission: 'vendor_invoices.read' },
       { key: 'exports', label: 'Exports', icon: 'pi pi-download', to: '/exports', type: 'Invoices', permission: 'nav.admin' },
       { key: 'quickbooks', label: 'QuickBooks', icon: 'pi pi-plug', to: '/quickbooks', type: 'Invoices', permission: 'nav.admin' },
+      { key: 'bank_feeds', label: 'Bank Feeds', icon: 'pi pi-building-columns', to: '/bank-feeds', type: 'Invoices', permission: 'bank_feeds.read', description: 'Connected bank accounts, synced transactions, and statement archive' },
       { key: 'accounting_ledger', label: 'Ledger', icon: 'pi pi-book', to: '/accounting-ledger', type: 'Invoices', permission: 'accounting.read', description: 'Trial balance, P&L, balance sheet, and the journal' },
       { key: 'accounting_settings', label: 'Accounting Settings', icon: 'pi pi-sliders-h', to: '/accounting-settings', type: 'Invoices', permission: 'accounting.read', description: 'Chart of accounts, posting maps, and the ledger master switch' },
     ],
