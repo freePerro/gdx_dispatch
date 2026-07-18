@@ -110,11 +110,12 @@ def test_returns_role_split_captured_door(db):
     assert len(doors) == 1, "only the CHI line is a door; the labor line is excluded"
     door = doors[0]
 
-    # identity — who/what/how-much
+    # identity — who/what/how-much. Price (CHI's cost) stays in the domain data
+    # for the PO panel; the install/mobile VIEW hides it (see DoorSpecList).
     assert door["identity"]["Model"] == "Timeless 2283"
     assert door["identity"]["Color"] == "Walnut"
-    assert door["identity"]["Price"] == "1462.68"
     assert door["identity"]["Number"] == "QCD3807063"
+    assert door["identity"]["Price"] == "1462.68"
 
     # installer — the build detail, and NOT the identity/receiving/window fields
     assert door["installer"]["Spring"] == "Torsion"
@@ -191,6 +192,30 @@ def test_detects_captured_door_without_source_tag(db):
     assert len(doors) == 1, "the untagged captured door is detected; the sku/vendor line is not"
     assert doors[0]["identity"]["Model"] == "Timeless 2283"
     assert doors[0]["installer"]["Spring"] == "Torsion"
+
+
+def test_multiple_doors_returned_each_with_size(db):
+    """A job with two doors (like the Swenstad job) returns BOTH, each with its
+    own Size — the by-size list the UI renders depends on this."""
+    job_id = uuid4()
+    est = Estimate(
+        id=uuid4(), job_id=job_id, estimate_number=f"EST-{uuid4().hex[:8]}",
+        company_id="tenant-test", public_token=uuid4().hex, status="accepted", total=0,
+    )
+    db.add(est); db.flush()
+    for size, w, h in (('14\'0" x 12\'0"', "168", "144"), ('10\'0" x 10\'0"', "120", "120")):
+        md = {k: v for k, v in CHI_SPEC.items() if not k.startswith("_")}
+        md.update({"Size": size, "Width": w, "Height": h})
+        db.add(EstimateLine(
+            id=uuid4(), estimate_id=est.id, company_id="tenant-test",
+            description=f"CHI door {size}", quantity=1, unit_price=3000,
+            sort_order=1, line_metadata=md,
+        ))
+    db.commit()
+
+    doors = door_specs_for_job(db, job_id)
+    assert len(doors) == 2
+    assert {d["identity"]["Size"] for d in doors} == {'14\'0" x 12\'0"', '10\'0" x 10\'0"'}
 
 
 def test_no_estimate_returns_empty(db):
@@ -285,13 +310,14 @@ def test_install_specs_endpoint_prefers_captured_door(install_client):
     r = install_client.get(f"/api/jobs/{job_id}/install-specs")
     assert r.status_code == 200, r.text
     body = r.json()
+    # The by-size door LIST the UI renders — the REAL captured door(s).
+    doors = body["doors"]
+    assert len(doors) == 1
+    assert doors[0]["identity"]["Model"] == "Timeless 2283"
+    assert doors[0]["installer"]["Spring"] == "Torsion"
+    # Legacy flat door_specs still populated for the catalog fallback path.
     ds = body["door_specs"]
-    assert ds is not None, "captured door should populate door_specs"
-    # The REAL quoted door (from line_metadata), not a fuzzy catalog match.
     assert ds["Model"] == "Timeless 2283"
-    assert ds["Color"] == "Walnut"
-    assert ds["Spring"] == "Torsion"
-    assert ds["Windows"] == "1 section(s)"
 
 
 # --- PO receiving: a PO tied to a job exposes the door's receiving view ---
