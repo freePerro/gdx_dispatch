@@ -30,6 +30,7 @@ from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 log = logging.getLogger(__name__)
 
 ACCESS_TTL_SECONDS = 60 * 60
+REMEMBER_ME_TTL_SECONDS = 60 * 60 * 24 * 30  # "Remember me" — 30-day session
 MAGIC_LINK_TTL_MINUTES = 15
 INVITE_LINK_TTL_DAYS = 7
 # Statuses a customer may see. Drafts stay internal until staff hits Send.
@@ -52,6 +53,17 @@ router = APIRouter(
 
 class PortalLoginIn(BaseModel):
     email: str = Field(min_length=3, max_length=254)
+
+
+class PortalPasswordLoginIn(BaseModel):
+    # Bounds mirror the staff LoginBody: 254 = RFC 5321 max, 128 = bcrypt-safe ceiling.
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+    remember: bool = False
+
+
+class PortalSetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class BookingIn(BaseModel):
@@ -150,15 +162,42 @@ def _normalize_dt(value: datetime | None) -> datetime | None:
     return value
 
 
-def issue_customer_access_token(customer_user: CustomerUser) -> str:
+def issue_customer_access_token(customer_user: CustomerUser, *, remember: bool = False) -> str:
+    ttl = REMEMBER_ME_TTL_SECONDS if remember else ACCESS_TTL_SECONDS
     claims = {
         "sub": str(customer_user.id),
         "role": "customer",
         "customer_id": str(customer_user.customer_id),
         "typ": "access",
-        "exp": int((_now_utc() + timedelta(seconds=ACCESS_TTL_SECONDS)).timestamp()),
+        "exp": int((_now_utc() + timedelta(seconds=ttl)).timestamp()),
     }
     return jwt.encode(claims, SIGN_KEY, algorithm=ALG)
+
+
+def _hash_portal_password(password: str) -> str:
+    """bcrypt — the same scheme the rest of the app writes (admin_ops, bootstrap)."""
+    import bcrypt
+
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_portal_password(password: str, pw_hash: str | None) -> bool:
+    """Prefix-dispatch verify, mirroring the staff verifier in routers/auth/core.py:
+    ``$2`` → bcrypt, ``pbkdf2:``/``scrypt:`` → werkzeug."""
+    if not pw_hash:
+        return False
+    if pw_hash.startswith("$2"):
+        import bcrypt
+
+        try:
+            return bcrypt.checkpw(password.encode(), pw_hash.encode())
+        except ValueError:
+            return False
+    if pw_hash.startswith(("pbkdf2:", "scrypt:")):
+        from werkzeug.security import check_password_hash
+
+        return check_password_hash(pw_hash, password)
+    return False
 
 
 def _payment_status(invoice: Invoice) -> str:
@@ -284,6 +323,90 @@ def portal_verify(token: str, request: Request, db: Session = Depends(get_db)) -
     db.commit()
 
     return {"access_token": issue_customer_access_token(user), "token_type": "bearer"}
+
+
+@router.post("/login/password", response_model=None)
+def portal_password_login(
+    payload: PortalPasswordLoginIn, request: Request, db: Session = Depends(get_db)
+) -> dict[str, str]:
+    # Password sign-in (opt-in). Magic-link stays the onboarding + forgot-password
+    # path. Brute-force throttling is the strict per-IP `auth` limit — this path is
+    # covered by TenantRateLimitMiddleware._AUTH_PREFIXES ("/portal/login").
+    email = payload.email.strip().lower()
+    user = db.execute(
+        select(CustomerUser)
+        .where(func.lower(CustomerUser.email) == email, CustomerUser.is_active.is_(True))
+        .order_by(CustomerUser.created_at.desc())
+    ).scalars().first()
+    ok = _verify_portal_password(payload.password, user.password_hash) if user else False
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    if not ok:
+        # Audit BEFORE raising so the trail captures the attempt + source IP. One
+        # generic 401 for no-user / no-password / bad-password — anti-enumeration.
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=str(user.id) if user else "anonymous",
+            action="portal_password_login_failed",
+            entity_type="customer_user",
+            entity_id=email,
+            details={"email": email},
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    user.last_login_at = _now_utc()
+    db.commit()
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=str(user.id),
+        action="portal_password_login",
+        entity_type="customer_user",
+        entity_id=str(user.id),
+        details={"remember": bool(payload.remember)},
+        request=request,
+    )
+    db.commit()
+    return {
+        "access_token": issue_customer_access_token(user, remember=payload.remember),
+        "token_type": "bearer",
+    }
+
+
+@router.post("/password", response_model=None)
+def portal_set_password(
+    payload: PortalSetPasswordIn,
+    request: Request,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    # Any authenticated portal session may set/rotate the password. This is what
+    # lets magic-link double as "forgot password": sign in via link, set a new one.
+    # No current-password challenge — a valid session already has full account
+    # access, so requiring it would only break recovery.
+    user = db.execute(
+        select(CustomerUser).where(
+            CustomerUser.id == principal.user_id, CustomerUser.is_active.is_(True)
+        )
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Customer user not found")
+    user.password_hash = _hash_portal_password(payload.new_password)
+    db.commit()
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=str(user.id),
+        action="portal_password_set",
+        entity_type="customer_user",
+        entity_id=str(user.id),
+        details={},
+        request=request,
+    )
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/dashboard", response_model=None)
