@@ -7,28 +7,47 @@ import DoorSpecList from "../DoorSpecList.vue";
 const doors = [
   {
     line_id: "a", quantity: 1,
-    identity: { Size: "14'0\" x 12'0\"", Model: "Skyline 2127", Color: "Sandstone", Price: "2890.00" },
+    identity: { Number: "QCD100", Size: "14'0\" x 12'0\"", Model: "Skyline 2127", Color: "Sandstone", Price: "2890.00" },
     installer: { Spring: "Torsion", "Spring Count": "1 PR", "Wire Size": "0.273", Track: "3 IN.", "Date Created": "07/16/2026" },
     windows: [],
   },
   {
     line_id: "b", quantity: 1,
-    identity: { Size: "10'0\" x 10'0\"", Model: "Skyline 2127", Color: "Sandstone", Price: "1980.00" },
+    identity: { Number: "QCD200", Size: "10'0\" x 10'0\"", Model: "Skyline 2127", Color: "Sandstone", Price: "1980.00" },
     installer: { Spring: "Torsion" }, windows: [],
   },
 ];
 
 describe("DoorSpecList", () => {
-  it("lists every door by size, collapsed, and never shows price", () => {
+  it("lists every door by size with its QCD, collapsed, and never shows price", () => {
     const w = mount(DoorSpecList, { props: { doors } });
     expect(w.findAll('[data-testid^="door-toggle-"]')).toHaveLength(2);
     expect(w.text()).toContain("14'0\" x 12'0\"");
     expect(w.text()).toContain("10'0\" x 10'0\"");
+    // QCD number is shown in each header (cross-references the CHI order)
+    expect(w.text()).toContain("QCD100");
+    expect(w.text()).toContain("QCD200");
     // multiple doors start collapsed
     expect(w.find('[data-testid="door-body-0"]').exists()).toBe(false);
     // price is hidden even when collapsed AND (below) when expanded
     expect(w.text()).not.toContain("2890");
     expect(w.text()).not.toContain("1980");
+  });
+
+  it("distinguishes two doors of the SAME size by their QCD number", () => {
+    const pair = [
+      { line_id: "p1", quantity: 1, identity: { Number: "QCD777", Size: "9'0\" x 7'0\"", Model: "2283", Color: "White" }, installer: { Spring: "Torsion" }, windows: [] },
+      { line_id: "p2", quantity: 1, identity: { Number: "QCD888", Size: "9'0\" x 7'0\"", Model: "2283", Color: "White" }, installer: { Spring: "Torsion" }, windows: [] },
+    ];
+    const w = mount(DoorSpecList, { props: { doors: pair } });
+    // Two distinct rows, both 9x7, told apart by QCD.
+    expect(w.findAll('[data-testid^="door-toggle-"]')).toHaveLength(2);
+    const h0 = w.find('[data-testid="door-toggle-0"]').text();
+    const h1 = w.find('[data-testid="door-toggle-1"]').text();
+    expect(h0).toContain("9'0\" x 7'0\"");
+    expect(h1).toContain("9'0\" x 7'0\"");
+    expect(h0).toContain("QCD777");
+    expect(h1).toContain("QCD888");
   });
 
   it("expands a door on click to reveal its build spec, still no price", async () => {

@@ -13,6 +13,7 @@
       >
         <i class="pi door-chevron" :class="isOpen(door, i) ? 'pi-chevron-down' : 'pi-chevron-right'" />
         <span class="door-size">{{ doorSize(door) }}</span>
+        <span v-if="doorNumber(door)" class="door-qcd">{{ doorNumber(door) }}</span>
         <span v-if="doorSub(door)" class="door-sub">{{ doorSub(door) }}</span>
         <span v-if="door.quantity > 1" class="door-qty">×{{ door.quantity }}</span>
       </button>
@@ -86,11 +87,18 @@ function doorSub(door) {
   return [id.Model, id.Color].filter(Boolean).join(" · ");
 }
 
+// The CHI order number (QCD…) — shown in the header so two doors of the SAME
+// size (a matched pair) are still distinct rows that cross-reference the order.
+function doorNumber(door) {
+  return (door.identity || {}).Number || "";
+}
+
 // The spec grid for the expanded door: identity + build detail, merged in that
 // order. Not shown here: Model/Color (in the header); Price (CHI's cost — kept
 // in the domain data for the PO panel, hidden on the install view); Date Created
 // (capture metadata, not a door spec).
-const HIDDEN = ["Model", "Color", "Price", "Date Created"];
+// Number lives in the header (the QCD tag); the rest are non-spec fields.
+const HIDDEN = ["Number", "Model", "Color", "Price", "Date Created"];
 function doorSpecs(door) {
   const out = { ...(door.identity || {}), ...(door.installer || {}) };
   HIDDEN.forEach((k) => delete out[k]);
@@ -124,6 +132,12 @@ function fmtVal(val) {
 .door-toggle:hover { background: var(--p-content-hover-background, #f3f4f6); }
 .door-chevron { font-size: 0.75rem; color: var(--p-text-muted-color, #9ca3af); align-self: center; }
 .door-size { font-weight: 700; font-size: 1rem; }
+.door-qcd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem; color: var(--p-text-muted-color, #6b7280);
+  background: var(--p-content-hover-background, #f3f4f6);
+  padding: 0.05rem 0.35rem; border-radius: 0.35rem; white-space: nowrap;
+}
 .door-sub { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 .door-qty { margin-left: auto; font-weight: 600; color: var(--p-text-muted-color, #6b7280); }
 .door-body {
