@@ -8,7 +8,8 @@ const doors = [
   {
     line_id: "a", quantity: 1,
     identity: { Size: "14'0\" x 12'0\"", Model: "Skyline 2127", Color: "Sandstone", Price: "2890.00" },
-    installer: { Spring: "Torsion", Track: "3 IN." }, windows: [],
+    installer: { Spring: "Torsion", "Spring Count": "1 PR", "Wire Size": "0.273", Track: "3 IN.", "Date Created": "07/16/2026" },
+    windows: [],
   },
   {
     line_id: "b", quantity: 1,
@@ -33,11 +34,15 @@ describe("DoorSpecList", () => {
   it("expands a door on click to reveal its build spec, still no price", async () => {
     const w = mount(DoorSpecList, { props: { doors } });
     await w.find('[data-testid="door-toggle-0"]').trigger("click");
-    expect(w.find('[data-testid="door-body-0"]').exists()).toBe(true);
-    expect(w.text()).toContain("Torsion"); // Spring surfaces
+    const body = w.find('[data-testid="door-body-0"]');
+    expect(body.exists()).toBe(true);
+    // The full spring detail surfaces — not just "Torsion".
+    expect(body.text()).toContain("Spring Count");
+    expect(body.text()).toContain("Wire Size");
     expect(w.text()).not.toContain("2890"); // price stays hidden
+    expect(body.text()).not.toContain("Date Created"); // capture metadata hidden
     // Model/Color are in the header, not repeated in the grid rows
-    expect(w.find('[data-testid="door-body-0"]').text()).not.toContain("Skyline 2127");
+    expect(body.text()).not.toContain("Skyline 2127");
   });
 
   it("opens a lone door by default (nothing to choose between)", () => {

@@ -87,16 +87,13 @@ function doorSub(door) {
 }
 
 // The spec grid for the expanded door: identity + build detail, merged in that
-// order. Model/Color live in the header (skip to avoid repeating); Price is
-// CHI's cost — hidden here on the install/mobile view (but kept in the domain
-// data for the PO panel, which wants it).
+// order. Not shown here: Model/Color (in the header); Price (CHI's cost — kept
+// in the domain data for the PO panel, hidden on the install view); Date Created
+// (capture metadata, not a door spec).
+const HIDDEN = ["Model", "Color", "Price", "Date Created"];
 function doorSpecs(door) {
-  const out = {};
-  const id = { ...(door.identity || {}) };
-  delete id.Model;
-  delete id.Color;
-  delete id.Price;
-  Object.assign(out, id, door.installer || {});
+  const out = { ...(door.identity || {}), ...(door.installer || {}) };
+  HIDDEN.forEach((k) => delete out[k]);
   return out;
 }
 
