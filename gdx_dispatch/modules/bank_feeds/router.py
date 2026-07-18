@@ -525,9 +525,20 @@ def oauth_callback(
             token_data=token_data,
             connected_by=str(payload.get("user_id") or "") or None,
         )
-    except oauth.BankFeedsAuthError as exc:
+    except oauth.BankFeedsAuthError:
         db.rollback()
-        return HTMLResponse(_callback_html("error", str(exc)), status_code=409)
+        # Fixed string — exception text never flows into the response
+        # (CWE-209 house rule, see modules/ledger/reports.py precedent).
+        # The only raiser here is the different-sub rejection.
+        log.warning("bank_feeds_connection_conflict institution=%s", inst.id, exc_info=True)
+        return HTMLResponse(
+            _callback_html(
+                "error",
+                "This institution is already connected as another bank user. "
+                "Disconnect it first.",
+            ),
+            status_code=409,
+        )
 
     log_audit_event_sync(
         db,

@@ -91,6 +91,11 @@ def _encrypt(value: str) -> str:
     return value
 
 
+# One warning per process — this module was born encrypted, so the
+# passthrough only fires for keyless-dev rows; no need for per-value dedupe.
+_PASSTHROUGH_WARNED = False
+
+
 def _decrypt(value: str) -> str:
     f = getattr(pii, "_FERNET", None)
     if not value or not f:
@@ -101,7 +106,17 @@ def _decrypt(value: str) -> str:
     except InvalidToken:
         # This module never wrote plaintext rows (born encrypted), but the
         # keyless-dev fallback means dev-created rows can be plaintext.
-        pii._emit_passthrough_warning("bank_feeds.oauth._decrypt", value)
+        # Deliberately NOT pii._emit_passthrough_warning: that helper logs a
+        # 6-char prefix of the value, and these values are live bank OAuth
+        # tokens — no derivative of them may reach the log stream
+        # (CodeQL py/clear-text-logging-sensitive-data, PR #164).
+        global _PASSTHROUGH_WARNED
+        if not _PASSTHROUGH_WARNED:
+            _PASSTHROUGH_WARNED = True
+            log.warning(
+                "bank_feeds.oauth._decrypt: InvalidToken — passthrough returning "
+                "raw value. Further events suppressed for this process."
+            )
         return value
 
 
