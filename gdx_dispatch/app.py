@@ -1713,6 +1713,9 @@ def create_app() -> FastAPI:
     app.include_router(
         customer_portal_router.router if hasattr(customer_portal_router, "router") else customer_portal_router
     )
+    # Staff-side portal management (/api/portal) — real endpoints behind the
+    # PortalView screen; falls back to an empty router if the import failed.
+    app.include_router(getattr(customer_portal_router, "staff_router", APIRouter()))
     app.include_router(custom_fields_router.router if hasattr(custom_fields_router, "router") else custom_fields_router)
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())

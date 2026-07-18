@@ -8,8 +8,6 @@ from gdx_dispatch.control.models import Tenant
 from gdx_dispatch.core.custom_fields import validate_custom_fields
 from gdx_dispatch.core.gdpr import delete_customer_data, export_customer_data
 from gdx_dispatch.models.tenant_models import Customer
-from gdx_dispatch.modules.customer_portal.auth import send_magic_link, verify_magic_link
-from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.fleet.models import Vehicle
 from gdx_dispatch.modules.fleet.service import get_due_maintenance, log_service
 from gdx_dispatch.modules.inventory.aliases import create_alias, resolve_local_sku, resolve_upstream_sku
@@ -67,9 +65,6 @@ def test_custom_fields_cx_prefix_validation():
         validate_custom_fields({"bad_key": "value"}, "job", db)
 
 
-def test_magic_link_verify(tenant_db):
-    c = Customer(name="Portal User", email="portal@example.com", company_id="tenant-test"); tenant_db.add(c); tenant_db.commit(); tenant_db.refresh(c)  # noqa: E701,E702
-    u = CustomerUser(customer_id=c.id, email="portal@example.com", is_active=True); tenant_db.add(u); tenant_db.commit()  # noqa: E701,E702
-    url = send_magic_link("portal@example.com", c.id, tenant_db); token = url.rsplit("/", 1)[-1]  # noqa: E701,E702
-    assert verify_magic_link(token, tenant_db).email == "portal@example.com"
-    assert verify_magic_link(token, tenant_db) is None
+# test_magic_link_verify removed per ADR-018: it exercised the deleted
+# cookie-flow helpers. The live equivalents are covered in
+# test_customer_portal.py (verify round-trip, single-use, invite flow).

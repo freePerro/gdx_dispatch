@@ -54,12 +54,15 @@
         <Column header="Customer" :style="{ minWidth: '200px' }">
           <template #body="{ data }">{{ data.customer_name || data.customer }}</template>
         </Column>
+        <Column header="Email" :style="{ minWidth: '200px' }">
+          <template #body="{ data }">{{ data.email || '—' }}</template>
+        </Column>
         <Column header="Portal Enabled" :style="{ width: '160px' }">
           <template #body="{ data }">
             <ToggleSwitch
               :model-value="data.portal_enabled"
               :disabled="toggleLoading[data.id]"
-              @change="(val) => togglePortal(data, val)"
+              @update:model-value="(val) => togglePortal(data, val)"
               :data-testid="`portal-toggle-${data.id}`"
             />
           </template>
@@ -67,7 +70,6 @@
         <Column header="Last Login" :style="{ width: '160px' }">
           <template #body="{ data }">{{ formatDate(data.last_login) }}</template>
         </Column>
-        <Column field="invoices_viewed" header="Invoices Viewed" :style="{ width: '170px' }" />
         <Column field="payments_made" header="Payments Made" :style="{ width: '150px' }" />
         <Column header="Actions" :style="{ width: '160px' }">
           <template #body="{ data }">
@@ -126,6 +128,33 @@
           />
         </template>
       </Dialog>
+
+      <Dialog
+        v-model:visible="inviteResultVisible"
+        header="Portal Invite"
+        :modal="true"
+        :style="{ width: '480px' }"
+        data-testid="portal-invite-result-dialog"
+      >
+        <div v-if="inviteResult" class="invite-result">
+          <p v-if="inviteResult.invite_sent" data-testid="invite-result-sent">
+            <i class="pi pi-check-circle" style="color: var(--p-green-500)" />
+            Invite emailed to <strong>{{ inviteResult.email }}</strong>.
+          </p>
+          <p v-else data-testid="invite-result-not-sent">
+            <i class="pi pi-exclamation-triangle" style="color: var(--p-amber-500)" />
+            Email delivery isn't configured, so nothing was sent automatically.
+            Share this sign-in link with the customer directly (valid 7 days):
+          </p>
+          <div class="invite-link-row">
+            <InputText :model-value="inviteResult.magic_link" readonly class="w-full" data-testid="invite-result-link" @focus="$event.target.select()" />
+            <Button icon="pi pi-copy" severity="secondary" aria-label="Copy link" @click="copyInviteLink" data-testid="invite-result-copy" />
+          </div>
+        </div>
+        <template #footer>
+          <Button label="Done" @click="inviteResultVisible = false" />
+        </template>
+      </Dialog>
     </section>
 </template>
 
@@ -151,6 +180,8 @@ const loading = ref(true);
 const statusFilter = ref('enabled');
 const inviteDialogVisible = ref(false);
 const inviteSending = ref(false);
+const inviteResultVisible = ref(false);
+const inviteResult = ref(null);
 const toggleLoading = reactive({});
 
 const portalTabs = ['enabled', 'disabled'];
@@ -221,17 +252,34 @@ const sendInvite = async () => {
   if (!inviteForm.value.customer_id) return;
   inviteSending.value = true;
   try {
-    await api.post('/api/portal/invite', {
+    const result = await api.post('/api/portal/invite', {
       customer_id: inviteForm.value.customer_id,
       email: inviteForm.value.email || undefined,
     });
     inviteDialogVisible.value = false;
     inviteForm.value = { customer_id: null, email: '' };
+    inviteResult.value = result;
+    inviteResultVisible.value = true;
     await loadPortal();
   } finally {
     inviteSending.value = false;
   }
 };
 
+const copyInviteLink = async () => {
+  if (!inviteResult.value?.magic_link) return;
+  try {
+    await navigator.clipboard.writeText(inviteResult.value.magic_link);
+  } catch {
+    // Clipboard API unavailable (http origin) — the readonly input
+    // self-selects on focus so manual copy still works.
+  }
+};
+
 onMounted(loadPortal);
 </script>
+
+<style scoped>
+.invite-result p { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
+.invite-link-row { display: flex; gap: 0.5rem; align-items: center; }
+</style>

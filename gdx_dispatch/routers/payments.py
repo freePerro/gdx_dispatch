@@ -29,6 +29,8 @@ from gdx_dispatch.core.stripe_payments import (
 )
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.routers.portal import PortalPrincipal
+from gdx_dispatch.routers.portal import get_current_portal_customer as _get_portal_principal
 
 logger = logging.getLogger(__name__)
 
@@ -69,19 +71,23 @@ class ACHSetupRequest(BaseModel):
 # Auth dependency
 # ---------------------------------------------------------------------------
 
-def _current_portal_user(request: Request, db: Session = Depends(get_db)) -> CustomerUser:
-    """Require an authenticated customer portal session."""
-    user_id = request.cookies.get("customer_portal_user_id")
-    user = (
-        db.execute(
-            select(CustomerUser).where(
-                CustomerUser.id == user_id,
-                CustomerUser.is_active.is_(True),
-            )
-        ).scalar_one_or_none()
-        if user_id
-        else None
-    )
+def _current_portal_user(
+    principal: PortalPrincipal = Depends(_get_portal_principal),
+    db: Session = Depends(get_db),
+) -> CustomerUser:
+    """Require an authenticated customer portal session (JWT bearer).
+
+    ADR-018 follow-up: this used to trust the raw `customer_portal_user_id`
+    cookie — an unsigned user id anyone could forge — and the only route that
+    ever *set* that cookie was dead code. Now rides the same JWT the portal
+    SPA holds, so a forged cookie buys nothing.
+    """
+    user = db.execute(
+        select(CustomerUser).where(
+            CustomerUser.id == principal.user_id,
+            CustomerUser.is_active.is_(True),
+        )
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="Customer portal authentication required")
     return user
