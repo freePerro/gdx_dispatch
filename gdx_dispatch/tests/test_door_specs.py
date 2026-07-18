@@ -352,6 +352,119 @@ def test_po_for_job_exposes_door_receiving_specs(po_client):
     assert detail["estimate_number"]
 
 
+def test_po_door_snapshot_frozen_against_quote_revision(po_client):
+    """The whole point of the snapshot: receiving validates against what the PO
+    ORDERED, not whatever the job's estimate says later. Revise the accepted
+    quote after the PO is cut — receiving must not move."""
+    from sqlalchemy import select as _sel
+
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.proposals.models import EstimateLine
+
+    job_id = uuid4()
+    db = po_client._Session()
+    try:
+        db.add(Job(id=job_id, title="Install", job_number="JOB-9", company_id="tenant-test"))
+        db.commit()
+        _seed(db, job_id)  # captured CHI door, Color=Walnut
+    finally:
+        db.close()
+
+    # Cut the PO now — this freezes Walnut onto the PO.
+    po_id = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "CHI", "job_id": str(job_id),
+        "lines": [{"description": "door", "quantity_ordered": 1, "unit_cost": 1}],
+    }).json()["id"]
+
+    # Someone revises the accepted quote AFTER the PO: Walnut -> Almond.
+    db = po_client._Session()
+    try:
+        lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
+        chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
+        md = dict(chi.line_metadata); md["Color"] = "Almond"; chi.line_metadata = md
+        db.commit()
+    finally:
+        db.close()
+
+    # Receiving still shows what the PO ordered — Walnut, not the revised Almond.
+    detail = po_client.get(f"/api/purchase-orders/{po_id}").json()
+    assert detail["door_specs"][0]["identity"]["Color"] == "Walnut"
+
+
+def test_po_snapshot_survives_a_status_patch(po_client):
+    """The lifecycle path: a PO is drafted, the quote is revised, then the PO is
+    PATCHed (draft->sent) WITHOUT changing its job. The snapshot must NOT
+    re-absorb the revision — an unrelated edit can't re-melt the freeze."""
+    from sqlalchemy import select as _sel
+
+    from gdx_dispatch.models.tenant_models import Job
+    from gdx_dispatch.modules.proposals.models import EstimateLine
+
+    job_id = uuid4()
+    db = po_client._Session()
+    try:
+        db.add(Job(id=job_id, title="Install", job_number="JOB-7", company_id="tenant-test"))
+        db.commit()
+        _seed(db, job_id)  # Color=Walnut
+    finally:
+        db.close()
+
+    po_id = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "CHI", "job_id": str(job_id),
+        "lines": [{"description": "door", "quantity_ordered": 1, "unit_cost": 1}],
+    }).json()["id"]
+
+    # Revise the quote AFTER the PO is cut.
+    db = po_client._Session()
+    try:
+        lines = db.execute(_sel(EstimateLine).where(EstimateLine.company_id == "tenant-test")).scalars().all()
+        chi = next(l for l in lines if isinstance(l.line_metadata, dict) and l.line_metadata.get("source") == "chi_hubx")
+        md = dict(chi.line_metadata); md["Color"] = "Almond"; chi.line_metadata = md
+        db.commit()
+    finally:
+        db.close()
+
+    # A normal status edit that does NOT touch the job link.
+    r = po_client.patch(f"/api/purchase-orders/{po_id}", json={
+        "vendor_name": "CHI", "job_id": str(job_id), "status": "sent",
+        "lines": [{"description": "door", "quantity_ordered": 1, "unit_cost": 1}],
+    })
+    assert r.status_code == 200, r.text
+    # The snapshot held — still Walnut, not re-frozen to Almond.
+    assert r.json()["door_specs"][0]["identity"]["Color"] == "Walnut"
+    assert po_client.get(f"/api/purchase-orders/{po_id}").json()["door_specs"][0]["identity"]["Color"] == "Walnut"
+
+
+def test_po_relink_to_different_job_refreezes(po_client):
+    """Re-linking to a DIFFERENT job DOES re-freeze — the snapshot follows the
+    job the PO is actually for."""
+    from gdx_dispatch.models.tenant_models import Job
+
+    job_a, job_b = uuid4(), uuid4()
+    db = po_client._Session()
+    try:
+        for j, num in ((job_a, "JOB-A"), (job_b, "JOB-B")):
+            db.add(Job(id=j, title="Install", job_number=num, company_id="tenant-test"))
+        db.commit()
+        _seed(db, job_a)  # only job A has a captured door
+    finally:
+        db.close()
+
+    po_id = po_client.post("/api/purchase-orders", json={
+        "vendor_name": "CHI", "job_id": str(job_a),
+        "lines": [{"description": "door", "quantity_ordered": 1, "unit_cost": 1}],
+    }).json()["id"]
+    assert len(po_client.get(f"/api/purchase-orders/{po_id}").json()["door_specs"]) == 1
+
+    # Re-link to job B (no captured door) — snapshot must re-freeze to empty.
+    r = po_client.patch(f"/api/purchase-orders/{po_id}", json={
+        "vendor_name": "CHI", "job_id": str(job_b),
+        "lines": [{"description": "door", "quantity_ordered": 1, "unit_cost": 1}],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["door_specs"] == []
+
+
 def test_po_job_link_can_be_cleared(po_client):
     from gdx_dispatch.models.tenant_models import Job
 
