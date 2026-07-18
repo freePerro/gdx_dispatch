@@ -495,7 +495,7 @@ onMounted(init);
 <style scoped>
 /* PrimeVue v4 --p-* tokens flip with data-theme; the --surface-* names do not exist here. */
 .portal-wrapper { min-height: 100vh; background: color-mix(in srgb, var(--p-content-background, #f3f4f6) 96%, var(--p-text-color, #000)); color: var(--p-text-color, #1e293b); }
-.portal-header { background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }
+.portal-header { position: relative; background: var(--p-content-background, #fff); padding: 1rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: center; border-bottom: 1px solid var(--p-content-border-color, transparent); }
 .logo-container { display: flex; align-items: center; gap: 0.75rem; }
 .company-name { font-size: 1.25rem; font-weight: 700; color: var(--p-text-color, #1e293b); }
 .portal-content { max-width: 900px; margin: 0 auto; padding: 1rem; }
@@ -524,5 +524,14 @@ onMounted(init);
 .request-link-card { margin-top: 1rem; }
 .request-link-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
 .sent-note { margin-top: 0.75rem; color: var(--p-primary-color); }
+.header-actions { position: absolute; right: 1.25rem; top: 50%; transform: translateY(-50%); display: flex; gap: 0.25rem; align-items: center; }
+.login-wrap { max-width: 460px; margin: 2rem auto; }
+.login-form { display: flex; flex-direction: column; gap: 0.9rem; }
+.field { display: flex; flex-direction: column; gap: 0.35rem; }
+.field > span { font-size: 0.85rem; font-weight: 600; color: var(--p-text-color, #374151); }
+.field :deep(.p-inputtext) { width: 100%; }
+.field :deep(.p-password), .field :deep(.p-password input) { width: 100%; }
+.remember-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; }
+.magic-fallback { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; }
 @media (max-width: 640px) { .card-grid { grid-template-columns: 1fr; } .company-name { font-size: 1rem; } }
 </style>
