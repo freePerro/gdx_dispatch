@@ -64,6 +64,8 @@ async def test_invocation_happy_path():
     mid = uuid4()
     db = MagicMock()
     db.get.return_value = _mock_msg(mid)
+    # No OutlookSettings row → default visibility rules for the agent gate.
+    db.query.return_value.filter.return_value.first.return_value = None
     # Attachment query — return empty list.
     result = MagicMock()
     scalars = MagicMock()

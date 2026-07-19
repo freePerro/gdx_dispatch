@@ -57,7 +57,16 @@ async def handler(
 
     capped_limit = max(1, min(int(limit or 25), 100))
 
-    stmt = select(OutlookMessage)
+    # Agent privacy gate, in the WHERE clause so hidden rows never consume
+    # the page window (audit round 2: a post-fetch filter after LIMIT made
+    # personal-heavy windows return short/empty pages with truncated=False).
+    rules = _load_rules(db)
+    stmt = select(OutlookMessage).where(OutlookMessage.is_personal.is_(False))
+    if rules.get("tagged_visibility_above_role") == "owner_only":
+        stmt = stmt.where(
+            OutlookMessage.linked_customer_id.is_(None),
+            OutlookMessage.linked_job_id.is_(None),
+        )
     if from_address:
         stmt = stmt.where(OutlookMessage.from_address.ilike(f"%{from_address}%"))
     if subject:
@@ -73,11 +82,9 @@ async def handler(
 
     stmt = stmt.order_by(desc(OutlookMessage.received_at)).limit(capped_limit + 1)
     rows = list(db.execute(stmt).scalars().all())
-    # Agent privacy gate: MCP principals are machine callers with no human
-    # viewer identity — personal messages and fully-private (owner_only)
-    # tagged mail must never reach them. Filter BEFORE the truncation cut so
-    # hidden rows don't consume the page. (visibility.visible_to_agent)
-    rules = _load_rules(db)
+    # Belt to the WHERE-clause braces above: visible_to_agent re-checks each
+    # row in Python so the privacy rules can't silently drift apart from the
+    # SQL translation of them (and so mock-DB tests exercise the gate).
     rows = [m for m in rows if visible_to_agent(m, db, rules=rules)]
     truncated = len(rows) > capped_limit
     rows = rows[:capped_limit]

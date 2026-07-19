@@ -22,6 +22,7 @@ from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import OutlookMessage
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
+from gdx_dispatch.modules.outlook.visibility import can_view
 from gdx_dispatch.routers.auth import get_current_user
 
 
@@ -163,7 +164,17 @@ def send_mail(
                 .filter(OutlookMessage.id == parent_uuid)
                 .one_or_none()
             )
-            if parent is not None and parent.graph_message_id:
+            # ACL on the parent: a viewer must be able to SEE a message to
+            # thread a reply off it. Without this, replying to an arbitrary
+            # UUID was an existence oracle for hidden (personal/owner_only)
+            # mail — reply-vs-sendMail behavior differed. A hidden parent now
+            # behaves exactly like a missing one (plain send, no threading).
+            role = (user.get("role") or "viewer").lower()
+            if (
+                parent is not None
+                and can_view(parent, uid, role, tenant_db)
+                and parent.graph_message_id
+            ):
                 parent_graph_id = parent.graph_message_id
 
     try:

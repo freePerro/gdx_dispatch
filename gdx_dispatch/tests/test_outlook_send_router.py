@@ -134,7 +134,8 @@ def test_send_reply_routes_to_messages_reply_endpoint(app):
     fake_parent.graph_message_id = "AAMkAGI=GRAPH-ID"
     fake_gc = MagicMock()
     with patch("gdx_dispatch.modules.outlook.send_router.with_outlook_client") as ctx, \
-         patch("gdx_dispatch.modules.outlook.send_router.OutlookMessage"):
+         patch("gdx_dispatch.modules.outlook.send_router.OutlookMessage"), \
+         patch("gdx_dispatch.modules.outlook.send_router.can_view", return_value=True):
         ctx.return_value.__enter__.return_value = fake_gc
         # tenant_db.query(OutlookMessage).filter(...).one_or_none() → parent
         tdb_mock = app.app.dependency_overrides[get_db_for_send]()
@@ -151,6 +152,32 @@ def test_send_reply_routes_to_messages_reply_endpoint(app):
     method, path = fake_gc._request.call_args.args[0:2]
     assert method == "POST"
     assert path == "/me/messages/AAMkAGI=GRAPH-ID/reply"
+
+
+def test_send_reply_hidden_parent_falls_back_to_plain_send(app):
+    """ACL-hidden reply parent behaves exactly like a MISSING one: plain
+    /me/sendMail, no threading — so reply-vs-sendMail can't be used as an
+    existence oracle for personal/owner_only mail (audit round 2)."""
+    parent_uuid = uuid4()
+    fake_parent = MagicMock()
+    fake_parent.graph_message_id = "AAMkAGI=GRAPH-ID"
+    fake_gc = MagicMock()
+    with patch("gdx_dispatch.modules.outlook.send_router.with_outlook_client") as ctx, \
+         patch("gdx_dispatch.modules.outlook.send_router.OutlookMessage"), \
+         patch("gdx_dispatch.modules.outlook.send_router.can_view", return_value=False):
+        ctx.return_value.__enter__.return_value = fake_gc
+        tdb_mock = app.app.dependency_overrides[get_db_for_send]()
+        tdb_mock.query.return_value.filter.return_value.one_or_none.return_value = fake_parent
+        r = app.post(
+            "/api/outlook/send",
+            json={
+                "to": ["doug@gdx.com"], "subject": "Re: hi",
+                "body_html": "<p>thanks</p>", "in_reply_to": str(parent_uuid),
+            },
+        )
+    assert r.status_code == 200
+    method, path = fake_gc._request.call_args.args[0:2]
+    assert path == "/me/sendMail"  # identical to nonexistent-parent behavior
 
 
 def test_send_validation_rejects_extra_fields(app):

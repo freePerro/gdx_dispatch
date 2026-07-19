@@ -35,6 +35,8 @@ def _setup(folder_present: bool = True):
     folder = SimpleNamespace(graph_folder_id="archive", display_name="Archive") if folder_present else None
     db = MagicMock()
     db.get.return_value = msg
+    # No OutlookSettings row → default visibility rules for the agent gate.
+    db.query.return_value.filter.return_value.first.return_value = None
     result = MagicMock()
     result.scalar_one_or_none.return_value = folder
     db.execute.return_value = result

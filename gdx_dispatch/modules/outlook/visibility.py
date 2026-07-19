@@ -100,10 +100,12 @@ def _load_rules(tenant_db: Session) -> dict[str, Any]:
     """Load rules from OutlookSettings; fall back to defaults if missing."""
     settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
     rules = dict(_DEFAULT_RULES)
-    # isinstance guard: a real row's visibility_rules is a JSON dict or None;
-    # anything else (corrupt row, test double) falls back to the fail-closed
-    # defaults instead of raising inside the ACL.
-    if settings is not None and isinstance(settings.visibility_rules, dict):
+    # Corrupt rules FAIL LOUD, not silently-default: for a tenant that chose
+    # owner_only, the defaults are the OPEN position — substituting them on a
+    # bad row (e.g. JSON-as-string after a manual ALTER) would silently
+    # un-privatize the mailbox. A raise here 500s the read, which is the
+    # correct failure for a privacy control. (Audit round 2.)
+    if settings is not None and settings.visibility_rules:
         rules.update(settings.visibility_rules)
     return rules
 

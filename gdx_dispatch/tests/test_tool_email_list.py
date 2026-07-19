@@ -47,6 +47,10 @@ def _mock_db(rows: list[SimpleNamespace]) -> Any:
     scalars.all.return_value = rows
     result.scalars.return_value = scalars
     db.execute.return_value = result
+    # No OutlookSettings row → visibility rules resolve to defaults.
+    # (_load_rules fails LOUD on a non-dict rules value, so the double must
+    # model a real DB state, not a bare MagicMock.)
+    db.query.return_value.filter.return_value.first.return_value = None
     return db
 
 

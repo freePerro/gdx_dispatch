@@ -101,3 +101,37 @@ async def test_capability_denied():
     )
     assert r.ok is False
     assert "capability" in (r.error_type or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_reply_parent_hidden_from_agent_not_harvested():
+    """Agent privacy gate on the reply-parent lookup: a personal parent is
+    treated exactly like a missing one — its internet_message_id must NOT
+    be harvested into the draft (existence-probe hole, audit round 2)."""
+    from types import SimpleNamespace as _NS
+
+    db, _account = _mock_db_with_account()
+    hidden_parent = _NS(
+        is_personal=True,
+        linked_customer_id=None,
+        linked_job_id=None,
+        internet_message_id="<secret@example.com>",
+    )
+    db.get.return_value = hidden_parent
+    # No OutlookSettings row → default visibility rules for the agent gate.
+    db.query.return_value.filter.return_value.first.return_value = None
+    p = _Principal(capabilities=[("write", "email.draft")])
+    r = await invoke_tool(
+        "email.draft",
+        {
+            "to": ["x@example.com"],
+            "subject": "re: hi",
+            "body": "reply text",
+            "in_reply_to_message_id": str(uuid4()),
+        },
+        principal=p,
+        db=db,
+    )
+    assert r.ok is True, f"unexpected: {r.error_type} {r.error_body}"
+    # hidden parent yields NO threading header — same as a missing parent
+    assert r.result["draft"]["in_reply_to"] is None

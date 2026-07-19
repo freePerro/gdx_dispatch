@@ -234,9 +234,10 @@ def test_detail_viewer_is_owner_false_for_non_owner(app):
 
 
 def test_set_personal_hidden_by_real_acl_404(app):
-    """No can_view patch — the REAL ACL runs: a personal message owned by
-    someone else must 404 (never 403) for a non-owner, proving the
-    check ordering (visibility before ownership) with the genuine chokepoint."""
+    """No can_view patch — the real can_view PERSONAL branch runs (rules are
+    never loaded; is_personal short-circuits first): a personal message owned
+    by someone else must 404 (never 403) for a non-owner, pinning the check
+    ordering (visibility before ownership) through the genuine chokepoint."""
     client, tdb = app
     msg = _msg(is_personal=True)
     _wire_msg_and_account(tdb, msg, uuid4())  # someone else's mailbox
