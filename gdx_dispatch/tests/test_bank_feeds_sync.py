@@ -172,7 +172,13 @@ def _finish_backfill(tenant_db, acct, cursor: datetime):
 @respx.mock
 def test_incremental_updated_since_and_cursor_advance(respx_mock, tenant_db, setup):
     _, conn, acct = setup
-    cursor = datetime.now(timezone.utc) - timedelta(days=2)
+    # ABSOLUTE seed, deliberately older than the fixture lastUpdated dates
+    # below. The service only advances the cursor when (their timebase −
+    # overlap) > old cursor; a now-relative seed (the original `now − 2d`)
+    # overtakes the fixed 2026-07-17 fixtures ~48h after they were written
+    # and the advance stops happening — this exact test went red in CI two
+    # days after PR #164 merged, by pure passage of time.
+    cursor = datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)
     _finish_backfill(tenant_db, acct, cursor)
 
     def responder(request):
