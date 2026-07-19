@@ -155,3 +155,91 @@ def test_get_message_detail_returns_full_shape_when_visible(app):
     assert "conversation_id" in body
     assert "internet_message_id" in body
     assert "cc_addresses" in body
+
+
+# ── POST /messages/{id}/personal (owner-only privacy toggle) ────────────
+
+
+def _wire_msg_and_account(tdb, msg, owner_user_id):
+    """tenant_db.get dispatch: OutlookMessage → msg, OutlookAccount → account."""
+    account = MagicMock()
+    account.user_id = str(owner_user_id)
+    def _get(model, pk):
+        return msg if model.__name__ == "OutlookMessage" else account
+    tdb.get.side_effect = _get
+    return account
+
+
+def test_set_personal_owner_flips_flag_and_persists(app):
+    client, tdb = app
+    msg = _msg(is_personal=False)
+    _wire_msg_and_account(tdb, msg, UID)  # viewer IS the mailbox owner
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/personal", json={"is_personal": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_personal"] is True
+    assert body["viewer_is_owner"] is True
+    assert msg.is_personal is True
+    tdb.commit.assert_called()
+
+
+def test_set_personal_non_owner_403(app):
+    client, tdb = app
+    msg = _msg(is_personal=False)
+    _wire_msg_and_account(tdb, msg, uuid4())  # someone else owns the mailbox
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/personal", json={"is_personal": True})
+    assert r.status_code == 403
+    assert msg.is_personal is False
+    tdb.commit.assert_not_called()
+
+
+def test_set_personal_invisible_message_404_not_403(app):
+    """Never confirm existence to a viewer the ACL hides the message from."""
+    client, tdb = app
+    msg = _msg(is_personal=False)
+    _wire_msg_and_account(tdb, msg, UID)
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.post(f"/api/outlook/messages/{msg.id}/personal", json={"is_personal": True})
+    assert r.status_code == 404
+
+
+def test_set_personal_unknown_message_404(app):
+    client, tdb = app
+    tdb.get.side_effect = None
+    tdb.get.return_value = None
+    r = client.post(f"/api/outlook/messages/{uuid4()}/personal", json={"is_personal": True})
+    assert r.status_code == 404
+
+
+def test_detail_reports_viewer_is_owner(app):
+    client, tdb = app
+    msg = _msg()
+    _wire_msg_and_account(tdb, msg, UID)
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.get(f"/api/outlook/messages/{msg.id}")
+    assert r.status_code == 200
+    assert r.json()["viewer_is_owner"] is True
+
+
+def test_detail_viewer_is_owner_false_for_non_owner(app):
+    client, tdb = app
+    msg = _msg()
+    _wire_msg_and_account(tdb, msg, uuid4())
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.get(f"/api/outlook/messages/{msg.id}")
+    assert r.status_code == 200
+    assert r.json()["viewer_is_owner"] is False
+
+
+def test_set_personal_hidden_by_real_acl_404(app):
+    """No can_view patch — the REAL ACL runs: a personal message owned by
+    someone else must 404 (never 403) for a non-owner, proving the
+    check ordering (visibility before ownership) with the genuine chokepoint."""
+    client, tdb = app
+    msg = _msg(is_personal=True)
+    _wire_msg_and_account(tdb, msg, uuid4())  # someone else's mailbox
+    r = client.post(f"/api/outlook/messages/{msg.id}/personal", json={"is_personal": False})
+    assert r.status_code == 404
+    assert msg.is_personal is True  # untouched

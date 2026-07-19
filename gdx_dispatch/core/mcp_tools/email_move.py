@@ -62,6 +62,13 @@ async def handler(
     msg = db.get(OutlookMessage, mid)
     if msg is None:
         return {"error": "message not found"}
+    # Agent privacy gate — a machine caller may not act on (or learn the
+    # existence of) personal / owner_only-hidden mail. Same "not found" as
+    # truly-missing so hidden ids can't be probed. (visibility.py)
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+
+    if not visible_to_agent(msg, db):
+        return {"error": "message not found"}
 
     folder = db.execute(
         select(OutlookFolder).where(OutlookFolder.graph_folder_id == target_folder_id).limit(1)

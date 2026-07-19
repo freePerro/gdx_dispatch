@@ -25,6 +25,7 @@ class _Principal:
 def _msg(subject: str, *, from_addr: str = "alice@example.com", folder: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
+        is_personal=False,  # DB rows always carry the column; the agent privacy gate reads it
         subject=subject,
         from_address=from_addr,
         to_addresses=["doug@example.com"],
@@ -80,3 +81,33 @@ async def test_capability_denied_without_read_email():
     r = await invoke_tool("email.list", {}, principal=p, db=db)
     assert r.ok is False
     assert r.error_type and "capability" in r.error_type.lower()
+
+
+@pytest.mark.asyncio
+async def test_personal_messages_excluded_from_agent_listing():
+    visible = _msg("normal one")
+    hidden = _msg("secret")
+    hidden.is_personal = True
+    db = _mock_db([visible, hidden])
+    db.query.return_value.filter.return_value.first.return_value = None  # default rules
+    p = _Principal(capabilities=[("read", "email")])
+    r = await invoke_tool("email.list", {}, principal=p, db=db)
+    assert r.ok is True
+    subjects = [m["subject"] for m in r.result["messages"]]
+    assert "normal one" in subjects
+    assert "secret" not in subjects
+
+
+@pytest.mark.asyncio
+async def test_owner_only_rule_hides_tagged_from_agent_listing():
+    from uuid import uuid4 as _u
+    tagged = _msg("customer thread")
+    tagged.linked_customer_id = _u()
+    settings = MagicMock()
+    settings.visibility_rules = {"tagged_visibility_above_role": "owner_only"}
+    db = _mock_db([tagged])
+    db.query.return_value.filter.return_value.first.return_value = settings
+    p = _Principal(capabilities=[("read", "email")])
+    r = await invoke_tool("email.list", {}, principal=p, db=db)
+    assert r.ok is True
+    assert r.result["messages"] == []

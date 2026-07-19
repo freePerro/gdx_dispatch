@@ -9,8 +9,10 @@ Configuration lives on ``OutlookSettings.visibility_rules`` (JSON). Defaults
 match Doug's 2026-04-27 spec; admins can change every rule.
 
 Six rules:
-  - ``tagged_visibility_above_role``: enum {tech, tech_plus_one, admin_only}
-    — minimum role to see tagged emails. Default ``tech_plus_one``.
+  - ``tagged_visibility_above_role``: enum {tech, tech_plus_one, admin_only,
+    owner_only} — minimum role to see tagged emails. Default
+    ``tech_plus_one``. ``owner_only`` = nobody but the mailbox owner, ever
+    (true single-person privacy — other admins/owners included).
   - ``tech_recipient_visible_to_all_techs``: bool — if a tech is in to/cc/bcc,
     all techs see it. Default true.
   - ``tech_outbound_no_tag_visibility``: enum {only_sender, all_techs, above_tech}
@@ -98,15 +100,21 @@ def _load_rules(tenant_db: Session) -> dict[str, Any]:
     """Load rules from OutlookSettings; fall back to defaults if missing."""
     settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
     rules = dict(_DEFAULT_RULES)
-    if settings is not None and settings.visibility_rules:
+    # isinstance guard: a real row's visibility_rules is a JSON dict or None;
+    # anything else (corrupt row, test double) falls back to the fail-closed
+    # defaults instead of raising inside the ACL.
+    if settings is not None and isinstance(settings.visibility_rules, dict):
         rules.update(settings.visibility_rules)
     return rules
 
 
 def _accounts_to_user(tenant_db: Session, account_id: UUID) -> UUID | None:
-    """Return the user_id that owns this OutlookAccount, or None."""
+    """Return the user_id that owns this OutlookAccount, or None.
+
+    getattr, not attribute access: fail CLOSED (no owner → no visibility)
+    on odd shapes rather than 500ing the read path."""
     account = tenant_db.get(OutlookAccount, account_id)
-    return account.user_id if account else None
+    return getattr(account, "user_id", None) if account else None
 
 
 def _is_message_recipient_a_tech(
@@ -195,6 +203,10 @@ def can_view(
     if is_tagged:
         # Tagged email visibility — check tagged_visibility_above_role.
         min_role = rules.get("tagged_visibility_above_role", "tech_plus_one")
+        if min_role == "owner_only":
+            # Fully private mailbox: is_self already returned True above, so
+            # everyone else — other admins and owners included — is hidden.
+            return False
         if min_role == "tech":
             return True  # all roles see tagged
         if min_role == "tech_plus_one":
@@ -319,6 +331,47 @@ def build_visibility_context(
             # the fast path is degraded — slowdown could otherwise be invisible.
             log.exception("visibility: build_visibility_context user-role preload failed — falling back to per-row lookups")
     return ctx
+
+
+def mailbox_owner_id(message: OutlookMessage, tenant_db: Session) -> str | None:
+    """Public owner-resolution: the user_id owning the account a message was
+    synced from, or None. Single source of truth — views_router's ownership
+    check routes through here so the two paths can't drift."""
+    owner = _resolve_owner(message, tenant_db, None)
+    return str(owner) if owner is not None else None
+
+
+def visible_to_agent(
+    message: OutlookMessage,
+    tenant_db: Session,
+    *,
+    rules: dict[str, Any] | None = None,
+) -> bool:
+    """Privacy gate for MACHINE principals (MCP tools / AI workers).
+
+    MCP bearers are tenant-wide agent principals — the FastMCP bridge sets
+    ``principal_role="agent"`` and deliberately drops the human ``sub``
+    claim, so the per-role rules in :func:`can_view` have no viewer to
+    apply to. This enforces only the HARD privacy promises, the ones a
+    human explicitly opted into:
+
+    - ``is_personal`` — owner-only, period. No agent may read or act on it.
+    - ``tagged_visibility_above_role == "owner_only"`` — a fully-private
+      mailbox is dark to agents too.
+
+    Everything else keeps today's agent behavior. Full per-user fidelity
+    (running can_view as the token's minting user) needs ``claims.sub``
+    plumbed through Principal — tracked as a follow-up, not silently
+    approximated here.
+    """
+    if message.is_personal:
+        return False
+    if rules is None:
+        rules = _load_rules(tenant_db)
+    is_tagged = bool(message.linked_customer_id or message.linked_job_id)
+    if is_tagged and rules.get("tagged_visibility_above_role") == "owner_only":
+        return False
+    return True
 
 
 def filter_visible(

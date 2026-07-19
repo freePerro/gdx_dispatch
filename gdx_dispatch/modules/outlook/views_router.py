@@ -7,8 +7,10 @@ Four endpoints, every one filters through ``visibility.can_view``:
   customer detail page.
 - ``GET /api/outlook/messages/by-job/{job_id}`` — Email tab on job detail.
 - ``GET /api/outlook/messages/{message_id}`` — single-message detail.
+- ``POST /api/outlook/messages/{message_id}/personal`` — owner-only toggle of
+  the per-message ``is_personal`` privacy override.
 
-All four require the ``email`` module gate + an authed user. ALL row
+All require the ``email`` module gate + an authed user. ALL row
 visibility is enforced server-side via ``visibility.filter_visible``.
 """
 from __future__ import annotations
@@ -25,7 +27,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.models import OutlookMessage
-from gdx_dispatch.modules.outlook.visibility import can_view, filter_visible
+from gdx_dispatch.modules.outlook.visibility import can_view, filter_visible, mailbox_owner_id
 from gdx_dispatch.routers.auth import get_current_user
 
 
@@ -63,6 +65,15 @@ class MessageDetailOut(MessageOut):
     conversation_id: str | None = None
     internet_message_id: str | None = None
     body_r2_key: str | None = None
+    # True when the CURRENT VIEWER owns the mailbox this message belongs to.
+    # Drives owner-only UI affordances (the "mark personal" toggle) without a
+    # second round-trip. List serialization always leaves it False — only the
+    # detail endpoint computes it.
+    viewer_is_owner: bool = False
+
+
+class PersonalIn(BaseModel):
+    is_personal: bool
 
 
 def _to_out(m: OutlookMessage) -> MessageOut:
@@ -84,7 +95,7 @@ def _to_out(m: OutlookMessage) -> MessageOut:
     )
 
 
-def _to_detail(m: OutlookMessage) -> MessageDetailOut:
+def _to_detail(m: OutlookMessage, *, viewer_is_owner: bool = False) -> MessageDetailOut:
     base = _to_out(m).model_dump()
     return MessageDetailOut(
         **base,
@@ -93,7 +104,19 @@ def _to_detail(m: OutlookMessage) -> MessageDetailOut:
         conversation_id=m.conversation_id,
         internet_message_id=m.internet_message_id,
         body_r2_key=m.body_r2_key,
+        viewer_is_owner=viewer_is_owner,
     )
+
+
+def _viewer_owns_mailbox(tenant_db: Session, msg: OutlookMessage, uid: UUID) -> bool:
+    """True when `uid` owns the OutlookAccount this message was synced from.
+
+    Delegates to visibility.mailbox_owner_id — ONE owner-resolution codepath
+    (string-compared: OutlookAccount.user_id is String(36) and
+    `UUID('abc…') == 'abc…'` is False in Python).
+    """
+    owner = mailbox_owner_id(msg, tenant_db)
+    return owner is not None and owner == str(uid)
 
 
 # ── auth helpers ────────────────────────────────────────────────────────
@@ -240,4 +263,43 @@ def get_message_detail(
     if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
         # 404 (not 403) — never confirm existence to unauthorized callers.
         raise HTTPException(status_code=404, detail="message not found")
-    return _to_detail(msg)
+    return _to_detail(msg, viewer_is_owner=_viewer_owns_mailbox(tenant_db, msg, uid))
+
+
+@router.post(
+    "/messages/{message_id}/personal",
+    response_model=MessageDetailOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def set_message_personal(
+    message_id: UUID,
+    payload: PersonalIn,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+) -> MessageDetailOut:
+    """Mark/unmark a message personal — OWNER ONLY.
+
+    ``is_personal=True`` is the per-message privacy override: the ACL
+    chokepoint (visibility.can_view) shows a personal message to nobody but
+    the mailbox owner, regardless of every tenant rule. Only the owner may
+    flip it — matching the existing write-action posture (mark-read/move are
+    owner-only too), and because letting an admin mark someone ELSE's mail
+    personal would hide it from every other admin.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        # 404 (not 403) — never confirm existence to unauthorized callers.
+        raise HTTPException(status_code=404, detail="message not found")
+    if not _viewer_owns_mailbox(tenant_db, msg, uid):
+        raise HTTPException(
+            status_code=403,
+            detail="only the mailbox owner can mark a message personal",
+        )
+    msg.is_personal = payload.is_personal
+    tenant_db.commit()
+    return _to_detail(msg, viewer_is_owner=True)

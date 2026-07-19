@@ -49,6 +49,12 @@ async def handler(
     msg = db.get(OutlookMessage, mid)
     if msg is None:
         return {"error": "message not found"}
+    # Agent privacy gate — same "not found" as truly-missing, so a machine
+    # caller can't probe whether a hidden message exists. (visibility.py)
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+
+    if not visible_to_agent(msg, db):
+        return {"error": "message not found"}
 
     attachments = []
     try:

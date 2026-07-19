@@ -53,6 +53,7 @@ async def handler(
     **_: Any,
 ) -> dict[str, Any]:
     from gdx_dispatch.modules.outlook.models import OutlookMessage
+    from gdx_dispatch.modules.outlook.visibility import _load_rules, visible_to_agent
 
     capped_limit = max(1, min(int(limit or 25), 100))
 
@@ -72,6 +73,12 @@ async def handler(
 
     stmt = stmt.order_by(desc(OutlookMessage.received_at)).limit(capped_limit + 1)
     rows = list(db.execute(stmt).scalars().all())
+    # Agent privacy gate: MCP principals are machine callers with no human
+    # viewer identity — personal messages and fully-private (owner_only)
+    # tagged mail must never reach them. Filter BEFORE the truncation cut so
+    # hidden rows don't consume the page. (visibility.visible_to_agent)
+    rules = _load_rules(db)
+    rows = [m for m in rows if visible_to_agent(m, db, rules=rules)]
     truncated = len(rows) > capped_limit
     rows = rows[:capped_limit]
 
