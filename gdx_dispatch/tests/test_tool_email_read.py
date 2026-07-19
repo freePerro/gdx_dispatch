@@ -25,6 +25,7 @@ class _Principal:
 def _mock_msg(mid):
     return SimpleNamespace(
         id=mid,
+        is_personal=False,  # DB rows always carry the column; the agent privacy gate reads it
         subject="hi",
         from_address="alice@example.com",
         to_addresses=["doug@example.com"],
@@ -63,6 +64,8 @@ async def test_invocation_happy_path():
     mid = uuid4()
     db = MagicMock()
     db.get.return_value = _mock_msg(mid)
+    # No OutlookSettings row → default visibility rules for the agent gate.
+    db.query.return_value.filter.return_value.first.return_value = None
     # Attachment query — return empty list.
     result = MagicMock()
     scalars = MagicMock()
@@ -92,5 +95,21 @@ async def test_message_not_found():
     db.get.return_value = None
     p = _Principal(capabilities=[("read", "email")])
     r = await invoke_tool("email.read", {"message_id": str(uuid4())}, principal=p, db=db)
+    assert r.ok is True
+    assert r.result.get("error") == "message not found"
+
+
+@pytest.mark.asyncio
+async def test_personal_message_hidden_from_agent():
+    """Agent privacy gate: is_personal mail reads as 'not found' — an MCP
+    caller can neither read it nor learn it exists."""
+    mid = uuid4()
+    msg = _mock_msg(mid)
+    msg.is_personal = True
+    db = MagicMock()
+    db.get.return_value = msg
+    db.query.return_value.filter.return_value.first.return_value = None  # default rules
+    p = _Principal(capabilities=[("read", "email")])
+    r = await invoke_tool("email.read", {"message_id": str(mid)}, principal=p, db=db)
     assert r.ok is True
     assert r.result.get("error") == "message not found"

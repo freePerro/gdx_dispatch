@@ -25,6 +25,9 @@ def _setup(folder_present: bool = True):
     mid = uuid4()
     msg = SimpleNamespace(
         id=mid,
+        is_personal=False,  # DB rows always carry the column; the agent privacy gate reads it
+        linked_customer_id=None,
+        linked_job_id=None,
         subject="hi",
         folder_id="inbox",
         folder_display_name="Inbox",
@@ -32,6 +35,8 @@ def _setup(folder_present: bool = True):
     folder = SimpleNamespace(graph_folder_id="archive", display_name="Archive") if folder_present else None
     db = MagicMock()
     db.get.return_value = msg
+    # No OutlookSettings row → default visibility rules for the agent gate.
+    db.query.return_value.filter.return_value.first.return_value = None
     result = MagicMock()
     result.scalar_one_or_none.return_value = folder
     db.execute.return_value = result

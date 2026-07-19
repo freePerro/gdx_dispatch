@@ -43,6 +43,7 @@ const ROLE_OPTIONS = [
   { label: 'Tech and above (everyone)', value: 'tech' },
   { label: 'CSR/Dispatcher and above (default)', value: 'tech_plus_one' },
   { label: 'Admin/Owner only', value: 'admin_only' },
+  { label: 'Mailbox owner only (fully private)', value: 'owner_only' },
 ]
 
 const TECH_OUTBOUND_OPTIONS = [

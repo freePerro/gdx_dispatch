@@ -193,6 +193,23 @@ async function openMessage(m) {
   }
 }
 
+const personalSaving = ref(false)
+
+async function togglePersonal() {
+  if (!detail.value) return
+  personalSaving.value = true
+  try {
+    detail.value = await api.post(
+      `/api/outlook/messages/${detail.value.id}/personal`,
+      { is_personal: !detail.value.is_personal },
+    )
+  } catch (err) {
+    error.value = err.message || 'Failed to update message privacy'
+  } finally {
+    personalSaving.value = false
+  }
+}
+
 // ── compose ──────────────────────────────────────────────────────────
 
 function startNewCompose() {
@@ -659,6 +676,7 @@ onMounted(async () => {
           <div v-if="detail.cc_addresses?.length"><span class="muted">Cc:</span> {{ detail.cc_addresses.join(', ') }}</div>
           <div><span class="muted">Date:</span> {{ fmtDate(detail.sent_at || detail.received_at) }}</div>
           <div v-if="detail.has_attachments" class="muted">📎 Has attachments</div>
+          <div v-if="detail.is_personal" class="muted" data-test="inbox-personal-flag">🔒 Personal — visible only to you</div>
         </div>
         <div class="detail-body">
           <pre>{{ detail.body_preview || '(no body preview available)' }}</pre>
@@ -666,6 +684,17 @@ onMounted(async () => {
         <div class="detail-actions">
           <Button label="Reply" icon="pi pi-reply" data-test="inbox-reply" @click="startReply" />
           <Button label="Move" icon="pi pi-folder-open" outlined data-test="inbox-move" @click="promptMoveMessage" />
+          <!-- Owner-only: the per-message privacy override. Server 403s
+               non-owners; viewer_is_owner hides the control from them. -->
+          <Button
+            v-if="detail.viewer_is_owner"
+            :label="detail.is_personal ? 'Make shared' : 'Make personal'"
+            :icon="detail.is_personal ? 'pi pi-lock-open' : 'pi pi-lock'"
+            outlined
+            :loading="personalSaving"
+            data-test="inbox-personal-toggle"
+            @click="togglePersonal"
+          />
         </div>
       </div>
 

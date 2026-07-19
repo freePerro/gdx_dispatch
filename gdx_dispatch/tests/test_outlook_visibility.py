@@ -189,3 +189,73 @@ def test_filter_visible_admin_sees_tagged():
     tdb = _tdb_with_account(sender)
     out = filter_visible([msg_tagged_a, msg_tagged_b, msg_untagged], other, "admin", tdb)
     assert len(out) == 2
+
+
+# ── tagged_visibility_above_role: owner_only ───────────────────────────
+
+
+def _owner_only_settings():
+    settings = MagicMock()
+    settings.visibility_rules = {
+        "tagged_visibility_above_role": "owner_only",
+        "tech_recipient_visible_to_all_techs": True,
+        "tech_outbound_no_tag_visibility": "only_sender",
+        "tech_to_tech_internal_visibility": "only_participants",
+        "above_tech_scope": "all_tagged",
+        "untagged_visibility": "only_owner",
+    }
+    return settings
+
+
+def test_owner_only_rule_hides_tagged_from_every_other_role():
+    """owner_only = true single-person privacy: other admins/owners included."""
+    sender = uuid4()
+    other = uuid4()
+    msg = _msg(linked_customer_id=uuid4())
+    account = MagicMock(); account.user_id = sender
+    user = MagicMock(); user.role = "technician"
+    tdb = MagicMock()
+    tdb.get.side_effect = lambda model, pk: account if model.__name__ == "OutlookAccount" else user
+    tdb.query.return_value.filter.return_value.first.return_value = _owner_only_settings()
+    for role in ("owner", "admin", "dispatcher", "csr", "technician", "viewer"):
+        assert can_view(msg, other, role, tdb) is False, f"{role} must NOT see owner_only tagged mail"
+
+
+def test_owner_only_rule_owner_still_sees_tagged():
+    sender = uuid4()
+    msg = _msg(linked_customer_id=uuid4())
+    account = MagicMock(); account.user_id = sender
+    user = MagicMock(); user.role = "admin"
+    tdb = MagicMock()
+    tdb.get.side_effect = lambda model, pk: account if model.__name__ == "OutlookAccount" else user
+    tdb.query.return_value.filter.return_value.first.return_value = _owner_only_settings()
+    assert can_view(msg, sender, "admin", tdb) is True
+
+
+# ── visible_to_agent (machine-principal privacy gate) ──────────────────
+
+
+def test_agent_gate_hides_personal_always():
+    msg = _msg(is_personal=True)
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+    assert visible_to_agent(msg, MagicMock(), rules={}) is False
+
+
+def test_agent_gate_hides_tagged_when_owner_only():
+    msg = _msg(linked_customer_id=uuid4())
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+    rules = {"tagged_visibility_above_role": "owner_only"}
+    assert visible_to_agent(msg, MagicMock(), rules=rules) is False
+
+
+def test_agent_gate_passes_tagged_under_default_rules():
+    msg = _msg(linked_customer_id=uuid4())
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+    rules = {"tagged_visibility_above_role": "tech_plus_one"}
+    assert visible_to_agent(msg, MagicMock(), rules=rules) is True
+
+
+def test_agent_gate_passes_untagged_non_personal():
+    msg = _msg()
+    from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+    assert visible_to_agent(msg, MagicMock(), rules={}) is True

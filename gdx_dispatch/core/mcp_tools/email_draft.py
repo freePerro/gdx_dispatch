@@ -92,7 +92,12 @@ async def handler(
             from uuid import UUID
 
             parent = db.get(OutlookMessage, UUID(str(in_reply_to_message_id)))
-            if parent is not None:
+            # Agent privacy gate — a hidden (personal / owner_only) parent is
+            # treated exactly like a missing one, so a machine caller can't
+            # probe existence or harvest its internet_message_id.
+            from gdx_dispatch.modules.outlook.visibility import visible_to_agent
+
+            if parent is not None and visible_to_agent(parent, db):
                 in_reply_to_internet_id = parent.internet_message_id
         except (ValueError, TypeError):
             pass

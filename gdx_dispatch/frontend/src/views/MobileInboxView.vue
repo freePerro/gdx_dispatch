@@ -72,6 +72,17 @@
         <template #footer>
           <Button v-if="detail && composeMode !== 'reply'" label="Reply" icon="pi pi-reply" @click="startReply" data-test="mi-reply-open" />
           <Button v-if="detail && !detail.is_read" label="Mark unread later" icon="pi pi-eye-slash" severity="secondary" text @click="markUnread" data-test="mi-mark-unread" />
+          <!-- Owner-only privacy override; server 403s non-owners. -->
+          <Button
+            v-if="detail && detail.viewer_is_owner"
+            :label="detail.is_personal ? 'Make shared' : 'Make personal'"
+            :icon="detail.is_personal ? 'pi pi-lock-open' : 'pi pi-lock'"
+            severity="secondary"
+            text
+            :loading="personalSaving"
+            data-test="mi-personal-toggle"
+            @click="togglePersonal"
+          />
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
       </Dialog>
@@ -250,6 +261,23 @@ async function sendReply() {
     toast.add({ severity: 'error', summary: 'Send failed', detail: err.message, life: 4000 })
   } finally {
     replySaving.value = false
+  }
+}
+
+const personalSaving = ref(false)
+
+async function togglePersonal() {
+  if (!detail.value) return
+  personalSaving.value = true
+  try {
+    detail.value = await api.post(
+      `/api/outlook/messages/${detail.value.id}/personal`,
+      { is_personal: !detail.value.is_personal },
+    )
+  } catch (err) {
+    error.value = err.message || 'Failed to update message privacy'
+  } finally {
+    personalSaving.value = false
   }
 }
 
