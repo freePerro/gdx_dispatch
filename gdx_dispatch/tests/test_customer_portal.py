@@ -133,6 +133,14 @@ def _issue_token(user_id: UUID, customer_id: UUID) -> str:
     return portal_router.issue_customer_access_token(user)
 
 
+def _get_user(db, user_id):
+    return db.execute(select(CustomerUser).where(CustomerUser.id == user_id)).scalar_one()
+
+
+def _decode_portal_jwt(token: str) -> dict:
+    return jwt.decode(token, portal_router.VERIFY_KEY, algorithms=[portal_router.ALG])
+
+
 def test_module_gate_requires_customer_portal():
     dep_calls = [d.dependency for d in portal_router.router.dependencies]
     from gdx_dispatch.core.modules import require_module
@@ -523,6 +531,104 @@ def test_estimate_detail_strips_line_prices_when_hidden(tenant_db_session):
         assert "line_total" not in line
     # The grand total is NOT hidden — only the per-line breakdown is.
     assert body["total"] == body["totals"]["total"]
+
+
+# --- Password login (opt-in; magic-link stays as onboarding + forgot-password) ---
+
+def test_password_login_succeeds_and_issues_customer_jwt(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    user = _get_user(tenant_db_session, seeded["user_a_id"])
+    user.password_hash = portal_router._hash_portal_password("hunter2-strong")
+    tenant_db_session.commit()
+
+    out = portal_router.portal_password_login(
+        payload=portal_router.PortalPasswordLoginIn(email="A@Example.com", password="hunter2-strong"),
+        request=_mock_request(),
+        db=tenant_db_session,
+    )
+    assert out["token_type"] == "bearer"
+    claims = _decode_portal_jwt(out["access_token"])
+    assert claims["role"] == "customer"
+    assert claims["sub"] == str(seeded["user_a_id"])
+    assert claims["customer_id"] == str(seeded["customer_a_id"])
+
+
+def test_password_login_wrong_password_is_401(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    user = _get_user(tenant_db_session, seeded["user_a_id"])
+    user.password_hash = portal_router._hash_portal_password("correct-horse")
+    tenant_db_session.commit()
+
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_password_login(
+            payload=portal_router.PortalPasswordLoginIn(email="a@example.com", password="wrong"),
+            request=_mock_request(),
+            db=tenant_db_session,
+        )
+    assert getattr(exc.value, "status_code", None) == 401
+
+
+def test_password_login_unknown_email_matches_bad_password_401(tenant_db_session):
+    # Anti-enumeration: unknown email and wrong password return the identical 401.
+    _seed_customer_data(tenant_db_session)
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_password_login(
+            payload=portal_router.PortalPasswordLoginIn(email="nobody@example.com", password="whatever"),
+            request=_mock_request(),
+            db=tenant_db_session,
+        )
+    assert getattr(exc.value, "status_code", None) == 401
+    assert exc.value.detail == "Invalid email or password"
+
+
+def test_password_login_rejected_when_no_password_set(tenant_db_session):
+    # Seeded users have password_hash=None — password login must not work until set.
+    _seed_customer_data(tenant_db_session)
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_password_login(
+            payload=portal_router.PortalPasswordLoginIn(email="a@example.com", password="anything"),
+            request=_mock_request(),
+            db=tenant_db_session,
+        )
+    assert getattr(exc.value, "status_code", None) == 401
+
+
+def test_password_login_remember_extends_token_ttl(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    user = _get_user(tenant_db_session, seeded["user_a_id"])
+    user.password_hash = portal_router._hash_portal_password("remember-me-pw")
+    tenant_db_session.commit()
+
+    short = portal_router.portal_password_login(
+        payload=portal_router.PortalPasswordLoginIn(email="a@example.com", password="remember-me-pw", remember=False),
+        request=_mock_request(), db=tenant_db_session,
+    )
+    long = portal_router.portal_password_login(
+        payload=portal_router.PortalPasswordLoginIn(email="a@example.com", password="remember-me-pw", remember=True),
+        request=_mock_request(), db=tenant_db_session,
+    )
+    exp_short = _decode_portal_jwt(short["access_token"])["exp"]
+    exp_long = _decode_portal_jwt(long["access_token"])["exp"]
+    # remember=True must outlive the default 1h session by a wide margin (30d).
+    assert exp_long - exp_short > 60 * 60 * 24
+
+
+def test_set_password_then_password_login_roundtrip(tenant_db_session):
+    # Set a password from an authenticated (e.g. magic-link) session, then use it.
+    seeded = _seed_customer_data(tenant_db_session)
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    out = portal_router.portal_set_password(
+        payload=portal_router.PortalSetPasswordIn(new_password="brand-new-pass"),
+        request=_mock_request(), principal=principal, db=tenant_db_session,
+    )
+    assert out["ok"] is True
+
+    login = portal_router.portal_password_login(
+        payload=portal_router.PortalPasswordLoginIn(email="a@example.com", password="brand-new-pass"),
+        request=_mock_request(), db=tenant_db_session,
+    )
+    assert _decode_portal_jwt(login["access_token"])["sub"] == str(seeded["user_a_id"])
 
 
 def test_estimate_accept_cannot_cross_customers(tenant_db_session):
