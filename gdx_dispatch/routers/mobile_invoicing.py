@@ -614,6 +614,7 @@ def _send_invoice_email(
         attachments = None
         try:
             import base64 as _b64
+
             from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
             from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
             from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload

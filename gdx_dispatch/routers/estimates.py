@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from decimal import ROUND_HALF_UP, Decimal
-from uuid import UUID, uuid4
-
-import os
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select, text as _text
+from sqlalchemy import func, select
+from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
@@ -216,8 +216,8 @@ def _resolve_customer_for_engine(estimate: Estimate, db: Session):
     if the customer disappeared mid-flight or the SUM fails, we fall back
     to 0 (no discount) rather than blowing up the estimate.
     """
-    from gdx_dispatch.services.pricing_engine import CustomerView
     from gdx_dispatch.services.customer_rolling_volume import get_or_refresh
+    from gdx_dispatch.services.pricing_engine import CustomerView
 
     if not estimate.customer_id:
         return CustomerView(pricing_class="retail", margin_override_pct=None)
@@ -1202,8 +1202,8 @@ def _render_template(tpl: str, ctx: dict[str, str]) -> str:
 
 def _estimate_pdf_bytes(
     db: Session,
-    estimate: "Estimate",
-    customer: "Customer | None",
+    estimate: Estimate,
+    customer: Customer | None,
     tenant_id: str,
 ) -> bytes:
     """Render the customer-facing estimate PDF — the same bytes /pdf serves
@@ -1456,6 +1456,7 @@ def send_estimate(
                 attachments = None
                 try:
                     import base64 as _b64
+
                     from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
                     pdf_bytes = _estimate_pdf_bytes(db, estimate, cust, tid)
                     # Estimate PDFs embed job photos — the one attach site that

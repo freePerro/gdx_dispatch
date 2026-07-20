@@ -1198,10 +1198,11 @@ def invoice_email_compose(
     the mailto fallback) without a second roundtrip.
     """
     import base64 as _b64
+
     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
-    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
-    from gdx_dispatch.routers.estimates import _render_template
     from gdx_dispatch.models.tenant_models import AppSettings, Customer
+    from gdx_dispatch.routers.estimates import _render_template
+    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
 
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
 
@@ -1397,6 +1398,7 @@ def send_invoice(
                 attachments: list[dict[str, object]] | None = None
                 try:
                     import base64 as _b64
+
                     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
                     from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
                     from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload

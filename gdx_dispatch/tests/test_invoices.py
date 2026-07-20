@@ -493,6 +493,7 @@ def test_send_invoice_attaches_the_invoice_pdf(tenant_db_session, monkeypatch):
     pdf_bytes = _b64.b64decode(att["content_base64"])
     assert pdf_bytes[:4] == b"%PDF"
     import io
+
     from pypdf import PdfReader
     rendered = "".join(
         p.extract_text() or "" for p in PdfReader(io.BytesIO(pdf_bytes)).pages
@@ -547,6 +548,7 @@ def test_invoice_email_compose_returns_pdf_and_template(tenant_db_session):
     assert payload["pdf"]["size_bytes"] > 1000  # real PDFs of this fixture are ~3-10KB
     import base64 as _b64
     import io
+
     from pypdf import PdfReader
     pdf_bytes = _b64.b64decode(payload["pdf"]["content_base64"])
     assert pdf_bytes[:4] == b"%PDF"
@@ -1140,7 +1142,7 @@ def test_patch_invoice_line_clears_cost_when_set_to_null(tenant_db_session):
     """Auditor round-2 catch: blanking a cost in InvoiceDetailView's edit
     table sends `cost: null`, and the backend must clear it (not ignore).
     Pin: PATCH with cost=None nulls the column."""
-    from gdx_dispatch.routers.invoices import add_invoice_line, patch_invoice_line, InvoiceLinePatchIn
+    from gdx_dispatch.routers.invoices import InvoiceLinePatchIn, add_invoice_line, patch_invoice_line
 
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
