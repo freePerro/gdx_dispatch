@@ -401,7 +401,17 @@ class OutlookGraphClient:
     # ── attachments ─────────────────────────────────────────────────────
 
     def list_attachments(self, message_id: str) -> list[dict[str, Any]]:
-        body = self._request("GET", f"/me/messages/{message_id}/attachments").json()
+        # $select the METADATA only. Without it, Graph returns `contentBytes`
+        # (full base64) for every fileAttachment inline, so a plain list of a
+        # message with big attachments buffers them all into memory + JSON on
+        # open. Bytes are fetched on demand via download_attachment(/$value).
+        # No caller reads contentBytes off this listing (D4 downloads lazily;
+        # vendor_bill_ingest also downloads separately).
+        body = self._request(
+            "GET",
+            f"/me/messages/{message_id}/attachments",
+            params={"$select": "id,name,contentType,size,isInline"},
+        ).json()
         return body.get("value", [])
 
     def download_attachment(self, message_id: str, attachment_id: str) -> bytes:

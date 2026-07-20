@@ -485,3 +485,150 @@ def test_unlink_forbidden_for_viewer(app):
     tdb.get.return_value = msg
     r = client.delete(f"/api/outlook/messages/{msg.id}/link")
     assert r.status_code == 403
+
+
+# ── attachments list + download (D4) ────────────────────────────────────
+
+
+def _patch_owner_graph(return_value=None, side_effect=None):
+    return patch(
+        "gdx_dispatch.modules.outlook.views_router._owner_graph",
+        return_value=return_value, side_effect=side_effect,
+    )
+
+
+def test_attachments_list_ok(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    graph_atts = [
+        {"id": "a1", "name": "quote.pdf", "contentType": "application/pdf", "size": 1024, "isInline": False},
+        {"id": "a2", "name": None, "contentType": "image/png", "size": 50, "isInline": True},
+        {"name": "noid.txt"},  # dropped — no id
+    ]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(return_value=graph_atts):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["fetched"] is True
+    assert [a["id"] for a in body["attachments"]] == ["a1", "a2"]
+    assert body["attachments"][0]["content_type"] == "application/pdf"
+    assert body["attachments"][1]["is_inline"] is True
+
+
+def test_attachments_list_404_when_not_visible(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments")
+    assert r.status_code == 404
+
+
+def test_attachments_list_reconnect_falls_back(app):
+    from gdx_dispatch.modules.outlook.views_router import _OwnerFetchError
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(side_effect=_OwnerFetchError("reconnect_required")):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments")
+    assert r.status_code == 200
+    assert r.json() == {"fetched": False, "attachments": [], "reason": "reconnect_required"}
+
+
+def test_attachment_download_streams_bytes(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    listing = [{"id": "a1", "name": "quote.pdf", "contentType": "application/pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
+    assert r.status_code == 200
+    assert r.content == b"%PDF"
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert 'filename="quote.pdf"' in r.headers["content-disposition"]
+
+
+def test_attachment_download_404_for_unknown_id(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    listing = [{"id": "a1", "name": "quote.pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(return_value=listing):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/NOPE")
+    assert r.status_code == 404
+
+
+def test_attachment_download_413_when_too_large(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    listing = [{"id": "a1", "name": "big.zip", "size": 999 * 1024 * 1024}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(return_value=listing):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
+    assert r.status_code == 413
+
+
+def test_attachment_download_sanitizes_filename_header(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    listing = [{"id": "a1", "name": 'ev"il\r\nX-Injected: 1.pdf', "size": 3}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"pdf"]):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
+    assert r.status_code == 200
+    cd = r.headers["content-disposition"]
+    assert "\r" not in cd and "\n" not in cd
+    assert "injected" not in {k.lower() for k in r.headers}  # not a real header
+
+
+def test_attachment_download_nonascii_filename_no_500(app):
+    """A CJK/accented filename must not 500 on latin-1 header encoding —
+    RFC 5987 filename* carries UTF-8, filename= is an ASCII fallback."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    listing = [{"id": "a1", "name": "契約書.pdf", "size": 3}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"pdf"]):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
+    assert r.status_code == 200
+    cd = r.headers["content-disposition"]
+    assert "filename*=UTF-8''" in cd
+    assert "%E5%A5%91" in cd or "%" in cd  # percent-encoded utf-8
+
+
+def test_attachments_list_excludes_item_and_reference(app):
+    """Only fileAttachments have downloadable bytes; item/reference are hidden."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    graph_atts = [
+        {"id": "a1", "name": "real.pdf", "size": 10, "@odata.type": "#microsoft.graph.fileAttachment"},
+        {"id": "a2", "name": "fwd.eml", "@odata.type": "#microsoft.graph.itemAttachment"},
+        {"id": "a3", "name": "onedrive", "@odata.type": "#microsoft.graph.referenceAttachment"},
+    ]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(return_value=graph_atts):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments")
+    assert [a["id"] for a in r.json()["attachments"]] == ["a1"]
+
+
+def test_attachment_download_502_on_graph_error(app):
+    from gdx_dispatch.modules.outlook.views_router import _OwnerFetchError
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         _patch_owner_graph(side_effect=_OwnerFetchError("graph_error")):
+        r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
+    assert r.status_code == 502

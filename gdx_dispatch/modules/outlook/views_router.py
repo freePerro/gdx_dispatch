@@ -19,7 +19,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -104,6 +104,22 @@ class MessageBodyOut(BaseModel):
     body_html: str | None = None
     body_preview: str | None = None
     reason: str | None = None  # populated when fetched is False
+
+
+class AttachmentItem(BaseModel):
+    id: str
+    name: str | None = None
+    content_type: str | None = None
+    size: int | None = None
+    is_inline: bool = False
+
+
+class AttachmentsOut(BaseModel):
+    """Lazy attachment listing for one message (D4). ``fetched`` is False when
+    the owner-token Graph call couldn't run — caller shows ``reason``."""
+    fetched: bool
+    attachments: list[AttachmentItem] = []
+    reason: str | None = None
 
 
 def _to_out(m: OutlookMessage) -> MessageOut:
@@ -438,6 +454,66 @@ def _tenant_id(user: dict[str, Any]) -> UUID:
     return raw if isinstance(raw, UUID) else UUID(str(raw))
 
 
+class _OwnerFetchError(Exception):
+    """A live-fetch against the mailbox owner's Graph token could not complete.
+
+    ``reason`` is a stable machine code the caller maps to UX:
+    no_remote_copy | no_account_owner | reconnect_required | message_gone |
+    graph_error.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _owner_graph(msg, control_db, tenant_db, tid, op):
+    """Run ``op(gc, graph_message_id)`` against the MAILBOX OWNER's Graph token.
+
+    The single owner-token path shared by the body (D1) and attachment (D4)
+    endpoints so they can't drift. Shared mailbox → resolve the owner
+    (``mailbox_owner_id``) and use THEIR token, never the viewer's; honor the
+    retry-once ``OutlookTransientRetry`` contract; translate every Graph
+    failure into ``_OwnerFetchError(reason)`` instead of a 500.
+    """
+    graph_id = getattr(msg, "graph_message_id", None) or ""
+    if not graph_id or graph_id.startswith("local-draft-"):
+        raise _OwnerFetchError("no_remote_copy")
+    owner_id = mailbox_owner_id(msg, tenant_db)
+    if not owner_id:
+        raise _OwnerFetchError("no_account_owner")
+
+    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError  # noqa: PLC0415
+    from gdx_dispatch.modules.outlook.token_refresh import (  # noqa: PLC0415
+        OutlookReconnectRequired,
+        OutlookTransientRetry,
+        with_outlook_client,
+    )
+
+    owner_uid = UUID(str(owner_id))
+
+    def _once():
+        with with_outlook_client(control_db, tenant_db, owner_uid, tid) as gc:
+            return op(gc, graph_id)
+
+    try:
+        try:
+            return _once()
+        except OutlookTransientRetry:
+            return _once()
+    except OutlookReconnectRequired:
+        raise _OwnerFetchError("reconnect_required") from None
+    except OutlookGraphAPIError as exc:
+        reason = "message_gone" if getattr(exc, "status_code", None) == 404 else "graph_error"
+        log.info("owner graph fetch failed reason=%s", reason)
+        raise _OwnerFetchError(reason) from None
+    except _OwnerFetchError:
+        raise
+    except Exception:  # noqa: BLE001 — never 500 a read pane on a live fetch
+        log.exception("owner graph fetch: unexpected error")
+        raise _OwnerFetchError("graph_error") from None
+
+
 @router.get(
     "/messages/{message_id}/body",
     response_model=MessageBodyOut,
@@ -478,52 +554,12 @@ def get_message_body(
 
     preview = msg.body_preview
 
-    # A local draft never existed on Graph — nothing to fetch.
-    graph_id = msg.graph_message_id or ""
-    if not graph_id or graph_id.startswith("local-draft-"):
-        return MessageBodyOut(
-            fetched=False, body_preview=preview, reason="no_remote_copy"
-        )
-
-    owner_id = mailbox_owner_id(msg, tenant_db)
-    if not owner_id:
-        return MessageBodyOut(
-            fetched=False, body_preview=preview, reason="no_account_owner"
-        )
-
-    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError  # noqa: PLC0415
-    from gdx_dispatch.modules.outlook.token_refresh import (  # noqa: PLC0415
-        OutlookReconnectRequired,
-        OutlookTransientRetry,
-        with_outlook_client,
-    )
-
-    owner_uid = UUID(str(owner_id))
-
-    def _fetch_once() -> dict:
-        with with_outlook_client(control_db, tenant_db, owner_uid, tid) as gc:
-            return gc.get_message(graph_id)
-
     try:
-        try:
-            remote = _fetch_once()
-        except OutlookTransientRetry:
-            # Documented contract (token_refresh.py): a 401 mid-call after a
-            # successful refresh deserves exactly one re-issue. Same as
-            # transactional_email._send_once.
-            remote = _fetch_once()
-    except OutlookReconnectRequired:
-        return MessageBodyOut(
-            fetched=False, body_preview=preview, reason="reconnect_required"
+        remote = _owner_graph(
+            msg, control_db, tenant_db, tid, lambda gc, gid: gc.get_message(gid)
         )
-    except OutlookGraphAPIError as exc:
-        # 404 = moved/deleted on Graph; anything else = transient upstream.
-        reason = "message_gone" if getattr(exc, "status_code", None) == 404 else "graph_error"
-        log.info("get_message_body: graph fetch failed id=%s reason=%s", message_id, reason)
-        return MessageBodyOut(fetched=False, body_preview=preview, reason=reason)
-    except Exception:  # noqa: BLE001 — never 500 the read pane on a body fetch
-        log.exception("get_message_body: unexpected error id=%s", message_id)
-        return MessageBodyOut(fetched=False, body_preview=preview, reason="graph_error")
+    except _OwnerFetchError as exc:
+        return MessageBodyOut(fetched=False, body_preview=preview, reason=exc.reason)
 
     body = (remote or {}).get("body") or {}
     raw = body.get("content")
@@ -535,4 +571,164 @@ def get_message_body(
         content_type="text" if ctype == "text" else "html",
         body_html=raw,
         body_preview=preview,
+    )
+
+
+# Largest attachment we'll stream through the app. download_attachment buffers
+# the whole blob in memory, so refuse oversized files rather than OOM the
+# worker; the pane still lists them (with size) so the user isn't surprised.
+_MAX_ATTACHMENT_BYTES = 35 * 1024 * 1024
+
+
+def _attachments_of(msg, control_db, tenant_db, tid) -> list[dict]:
+    """Owner-token list of a message's attachments (raw Graph dicts)."""
+    raw = _owner_graph(
+        msg, control_db, tenant_db, tid, lambda gc, gid: gc.list_attachments(gid)
+    )
+    return raw or []
+
+
+def _is_file_attachment(a: dict) -> bool:
+    """Only fileAttachments have downloadable bytes at /$value. item- and
+    reference-attachments (an email-as-attachment, a OneDrive link) would 502
+    on download, so keep them out of the tray. Absent discriminator → assume
+    file (Graph omits it only for a homogeneous fileAttachment collection)."""
+    otype = a.get("@odata.type") or ""
+    return not otype or "fileattachment" in otype.lower()
+
+
+@router.get(
+    "/messages/{message_id}/attachments",
+    response_model=AttachmentsOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def list_message_attachments(
+    message_id: UUID,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+    control_db: Session = Depends(get_db),
+) -> AttachmentsOut:
+    """List a message's attachments (D4), lazily on open.
+
+    Not fetched during bulk sync (that would fire an extra Graph call per
+    message every poll). Owner-token + can_view gated, same as the body.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    tid = _tenant_id(user)
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        raise HTTPException(status_code=404, detail="message not found")
+
+    try:
+        raw = _attachments_of(msg, control_db, tenant_db, tid)
+    except _OwnerFetchError as exc:
+        return AttachmentsOut(fetched=False, reason=exc.reason)
+
+    items = [
+        AttachmentItem(
+            id=str(a.get("id") or ""),
+            name=a.get("name"),
+            content_type=a.get("contentType"),
+            size=a.get("size"),
+            is_inline=bool(a.get("isInline")),
+        )
+        for a in raw
+        if a.get("id") and _is_file_attachment(a)
+    ]
+    return AttachmentsOut(fetched=True, attachments=items)
+
+
+def _safe_filename(name: str | None) -> str:
+    """Strip CR/LF/quotes so a crafted attachment name can't inject a header,
+    and fall back to a generic name when empty. May still contain non-ASCII —
+    _content_disposition handles that."""
+    cleaned = "".join(c for c in (name or "") if c not in '\r\n"\\' and ord(c) >= 32)
+    cleaned = cleaned.strip()
+    return cleaned or "attachment"
+
+
+def _content_disposition(name: str | None) -> str:
+    """Build a Content-Disposition safe for BOTH the header codec and browsers.
+
+    Starlette encodes header values as latin-1, so a raw CJK/emoji/accented
+    filename in filename="…" 500s (UnicodeEncodeError). RFC 5987 fixes it: an
+    ASCII-only `filename=` fallback for old clients plus a UTF-8 percent-encoded
+    `filename*=` that modern browsers prefer.
+    """
+    import urllib.parse  # noqa: PLC0415
+
+    safe = _safe_filename(name)
+    ascii_fallback = safe.encode("ascii", "ignore").decode("ascii").strip() or "attachment"
+    utf8 = urllib.parse.quote(safe, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8}"
+
+
+@router.get(
+    "/messages/{message_id}/attachments/{attachment_id}",
+    dependencies=[Depends(require_module("email"))],
+)
+def download_message_attachment(
+    message_id: UUID,
+    attachment_id: str,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+    control_db: Session = Depends(get_db),
+):
+    """Download one attachment (D4). Owner-token + can_view gated.
+
+    Looks the attachment up in the message's listing first (to get its name,
+    content-type, and declared size) so we can refuse oversized files BEFORE
+    pulling the bytes, then streams the blob back as an attachment download.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    tid = _tenant_id(user)
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        raise HTTPException(status_code=404, detail="message not found")
+
+    try:
+        listing = _attachments_of(msg, control_db, tenant_db, tid)
+    except _OwnerFetchError as exc:
+        # message_gone → 404; anything else (reconnect / graph) → 502 upstream.
+        code = 404 if exc.reason in ("message_gone", "no_remote_copy") else 502
+        raise HTTPException(status_code=code, detail=f"attachment unavailable: {exc.reason}") from None
+
+    att = next((a for a in listing if str(a.get("id")) == attachment_id), None)
+    if att is None:
+        raise HTTPException(status_code=404, detail="attachment not found")
+
+    size = att.get("size")
+    if isinstance(size, int) and size > _MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="attachment too large to download here")
+
+    try:
+        data = _owner_graph(
+            msg, control_db, tenant_db, tid,
+            lambda gc, gid: gc.download_attachment(gid, attachment_id),
+        )
+    except _OwnerFetchError as exc:
+        code = 404 if exc.reason in ("message_gone", "no_remote_copy") else 502
+        raise HTTPException(status_code=code, detail=f"attachment unavailable: {exc.reason}") from None
+
+    if not isinstance(data, (bytes, bytearray)):
+        raise HTTPException(status_code=502, detail="attachment unavailable: bad_response")
+    if len(data) > _MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="attachment too large to download here")
+
+    media_type = att.get("contentType") or "application/octet-stream"
+    # Buffered Response, not StreamingResponse: download_attachment already
+    # pulled the whole blob into memory, so a single-chunk "stream" would be
+    # theater — a plain Response is honest and sets Content-Length.
+    return Response(
+        content=bytes(data),
+        media_type=media_type,
+        headers={"Content-Disposition": _content_disposition(att.get("name"))},
     )
