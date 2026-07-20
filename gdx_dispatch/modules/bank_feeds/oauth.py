@@ -61,9 +61,15 @@ STATE_SALT = "bank-feeds-oauth-state"
 REFRESH_MARGIN = timedelta(minutes=2)
 DISCOVERY_TTL_S = 3600
 
+# Scopes audited against the published endpoint specs (accounts/transactions/
+# documents swagger + task-events/aggregation: fetch + task polling need only
+# openid). GET /users/{id}/accounts 403s without accounts.readonly — found
+# live on Garden 2026-07-20; adding a scope here requires a reconnect so the
+# user re-consents to the new grant.
 OAUTH_SCOPES = (
     "openid "
     "https://api.banno.com/consumer/auth/offline_access "
+    "https://api.banno.com/consumer/auth/accounts.readonly "
     "https://api.banno.com/consumer/auth/transactions.detail.readonly "
     "https://api.banno.com/consumer/auth/documents.readonly"
 )

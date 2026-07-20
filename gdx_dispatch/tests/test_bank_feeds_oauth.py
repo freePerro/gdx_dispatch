@@ -164,6 +164,21 @@ def test_state_tampered_rejected():
         oauth.load_state("garbage")
 
 
+def test_oauth_scopes_cover_every_client_endpoint():
+    """Per the published endpoint specs: accounts needs accounts.readonly
+    (403s live without it), transactions needs transactions.detail.readonly,
+    documents needs documents.readonly, fetch/task polling need only openid."""
+    granted = oauth.OAUTH_SCOPES.split()
+    for required in (
+        "openid",
+        "https://api.banno.com/consumer/auth/offline_access",
+        "https://api.banno.com/consumer/auth/accounts.readonly",
+        "https://api.banno.com/consumer/auth/transactions.detail.readonly",
+        "https://api.banno.com/consumer/auth/documents.readonly",
+    ):
+        assert required in granted
+
+
 # ── PKCE (RFC 7636) ────────────────────────────────────────────────────
 
 
