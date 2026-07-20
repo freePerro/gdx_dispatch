@@ -300,6 +300,13 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret })
         <!-- Auto-Email -->
         <TabPanel :value="TAB_KEYS.AUTO_EMAIL">
           <div class="flex flex-col gap-4 mt-4">
+            <div class="ae-inactive-notice" data-test="auto-email-inactive">
+              <strong>⚠ Not active yet.</strong> These auto-email triggers are
+              <strong>not currently wired to any event</strong> — saving a template here
+              does not send anything. Estimate/invoice emails are already sent by the
+              existing send flows; whether to enable this separate per-user automation is
+              still under review. Configure it only once it's turned on.
+            </div>
             <p class="text-sm hint-text">
               Configure templates that auto-email users on domain events. Each user
               opts in per trigger from their Profile. Templates use Mustache-style
@@ -356,6 +363,16 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret })
   border-radius: 6px;
   padding: 0.75rem;
   background: var(--p-content-hover-background);
+}
+.ae-inactive-notice {
+  border: 1px solid var(--p-content-border-color);
+  border-left: 4px solid #d97706;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  background: var(--p-content-hover-background);
+  color: var(--p-text-color);
+  font-size: 0.85rem;
+  line-height: 1.45;
 }
 .template-textarea {
   border: 1px solid var(--p-content-border-color);
