@@ -1106,6 +1106,7 @@ import MarginTiersPanel from "../components/MarginTiersPanel.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { getIdleTimeoutMin, setIdleTimeoutMin } from "../composables/useIdleLogout";
 import { useQBSync } from "../composables/useQBSync";
+import { useTenantModules } from "../composables/useTenantModules";
 import { formatDateTime } from "../composables/useFormatters";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
@@ -1245,6 +1246,9 @@ async function saveBranding() {
 
 // ── Modules ──
 const modules = ref([]);
+// Sidebar/nav share a session-cached copy of /api/settings/modules; grab the
+// loader so Save can force-refresh it (see saveModuleChanges).
+const { loadTenantModules } = useTenantModules();
 // pendingModuleState[key] = boolean override of mod.enabled until Save/Revert.
 // Keys absent here mean "no pending change for that module".
 const pendingModuleState = ref({});
@@ -1323,8 +1327,14 @@ async function saveModuleChanges() {
       }
     }
     // Refresh from the server regardless — any successful change should
-    // reflect, and failures should snap back to the server's truth.
-    await loadModules();
+    // reflect, and failures should snap back to the server's truth. The
+    // sidebar caches its module list once per session, so force that copy
+    // to refetch too — otherwise a newly enabled module doesn't appear in
+    // nav until a full page reload.
+    await Promise.all([
+      loadModules(),
+      loadTenantModules({ force: true }),
+    ]);
     pendingModuleState.value = {};
     if (failed.length === 0) {
       toast.add({ severity: "success", summary: "Modules saved", detail: `${keys.length} change${keys.length === 1 ? '' : 's'} applied`, life: 3000 });
