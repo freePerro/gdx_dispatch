@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -69,11 +70,20 @@ def state_dir() -> str:
 
 def _file_for(key: str, suffix: str) -> str | None:
     """Path for a plugin-keyed file, or None if the key yields nothing.
-    The key is sanitized to [a-z0-9_-] so it can't traverse out of state_dir."""
+
+    The key is sanitized to [a-z0-9_-], then the joined path is normalized and
+    containment-checked against the state dir. The realpath + startswith(base +
+    os.sep) shape is deliberate: it's the guard CodeQL's py/path-injection
+    recognizes as a barrier — a regex-only sanitizer stays flagged even when
+    correct (see memory codeql-pathinjection-recognized-guards)."""
     safe = re.sub(r"[^a-z0-9_-]", "", (key or "").lower())
     if not safe:
         return None
-    return os.path.join(state_dir(), safe + suffix)
+    base = os.path.realpath(state_dir())
+    path = os.path.realpath(os.path.join(base, safe + suffix))
+    if not path.startswith(base + os.sep):
+        return None
+    return path
 
 
 def state_file_for(key: str) -> str | None:
@@ -145,13 +155,43 @@ def nav_should_block(url: str, is_navigation: bool) -> bool:
     allowlisted-but-hostile page can pivot via `<iframe src=http://169.254…>` or
     `window.open(...)`. Only http(s) navigations egress to a host; about:/data:/
     blob: have no network host so they pass (the next real navigation is caught).
-    Non-navigation sub-resource requests pass so pages still render.
+    Non-navigation sub-resource requests pass so pages still render — but see
+    subresource_should_block for the internal-host exception.
     """
     if not is_navigation:
         return False
     if urlparse(url).scheme not in ("http", "https"):
         return False
     return not host_allowed(url)
+
+
+def subresource_should_block(url: str) -> bool:
+    """True if ANY request (sub-resources included) must be aborted because it
+    targets an internal/private host.
+
+    Sub-resources normally pass un-allowlisted (pages need their CDN assets to
+    render), but the streamed Chromium runs INSIDE the plugin-host container —
+    so an allowlisted-but-hostile page could otherwise fetch() the host's own
+    unauthenticated /internal/* API (which stores the remembered credentials),
+    sibling containers, or cloud metadata (169.254.169.254). Explicitly
+    allowlisted hosts pass, so a dev allowlist of 127.0.0.1 still works.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if host_allowed(url):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or host == "localhost":
+        return True
+    if "." not in host:
+        return True  # bare compose-network names: plugin-host, db, redis, …
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # dotted public hostname — a normal CDN asset
+    return (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_reserved or ip.is_unspecified)
 
 
 # Native <select> popups render in a separate compositor surface that
@@ -361,8 +401,9 @@ async def stream_browser(ws, url: str, key: str = "") -> None:
                 try:
                     # ANY frame (main, iframe, popup) — not just main_frame, or an
                     # embedded <iframe src=http://169.254.169.254/> would egress.
-                    if nav_should_block(req.url, req.is_navigation_request()):
-                        log.warning("browser-stream blocked off-allowlist nav: %s", req.url)
+                    if (nav_should_block(req.url, req.is_navigation_request())
+                            or subresource_should_block(req.url)):
+                        log.warning("browser-stream blocked request: %s", req.url)
                         await route.abort()
                         return
                     await route.continue_()

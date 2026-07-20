@@ -48,6 +48,29 @@ def test_nav_guard_ignores_non_http_schemes():
     assert not bs.nav_should_block("data:text/html,hi", True)
 
 
+def test_subresource_guard_blocks_internal_hosts():
+    # The streamed Chromium lives in the plugin-host container: a hostile page
+    # must not be able to fetch() the host's own internal API, sibling
+    # containers, or cloud metadata as "sub-resources".
+    assert bs.subresource_should_block("http://localhost:8000/internal/browser/credentials")
+    assert bs.subresource_should_block("http://127.0.0.1:8000/internal/restart")
+    assert bs.subresource_should_block("http://plugin-host:8000/internal/browser/credentials")
+    assert bs.subresource_should_block("http://db:5432/")
+    assert bs.subresource_should_block("http://169.254.169.254/latest/meta-data/")
+    assert bs.subresource_should_block("http://10.0.0.7/admin")
+    assert bs.subresource_should_block("http://[::1]:8000/internal/restart")
+
+
+def test_subresource_guard_allows_normal_assets(monkeypatch):
+    # Public CDN assets keep pages rendering…
+    assert not bs.subresource_should_block("https://cdn.example.com/app.js")
+    assert not bs.subresource_should_block("https://aadcdn.msftauth.net/x.css")
+    assert not bs.subresource_should_block("data:image/png;base64,AAAA")
+    # …and an EXPLICITLY allowlisted private host (dev/test) still passes.
+    monkeypatch.setenv("PLUGIN_BROWSER_ALLOWED_HOSTS", "127.0.0.1")
+    assert not bs.subresource_should_block("http://127.0.0.1:8765/login")
+
+
 def test_state_file_sanitizes_key(tmp_path, monkeypatch):
     monkeypatch.setenv("PLUGIN_BROWSER_STATE_DIR", str(tmp_path))
     # A hostile key cannot traverse out of the state dir.
