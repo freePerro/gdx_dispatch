@@ -55,6 +55,18 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*/30"),
             "options": {"queue": "priority:low"},
         },
+        "outlook-retag-untagged-hourly": {
+            # D3: forward-tagging only tags NEW mail. This picks up (a) the
+            # historical backlog synced before tagging existed, and (b) any
+            # message that became matchable only after its customer/job was
+            # created in GDX (an initial auto-tag can't match a customer that
+            # doesn't exist yet). Idempotent + batched; unmatchable rows are
+            # simply retried next hour, manually-linked/cleared rows are
+            # skipped (tag_strategy not NULL).
+            "task": "outlook.retag_untagged_messages",
+            "schedule": crontab(minute=20),
+            "options": {"queue": "priority:low"},
+        },
         "phone-com-reconcile-nightly": {
             # P1.5 — webhooks cover the live path; this is a daily backstop
             # for missed deliveries (transient Phone.com outages, brief

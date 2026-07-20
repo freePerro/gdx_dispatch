@@ -37,6 +37,7 @@ from gdx_dispatch.modules.outlook.models import (
     OutlookSettings,
     OutlookSubscription,
 )
+from gdx_dispatch.modules.outlook.tagger import tag_message
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
 from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
     ingest_message_attachments,
@@ -101,6 +102,10 @@ def _persist_messages(
     folder_id the upsert path defaulted to.
     """
     upserted = 0
+    # Load tag settings ONCE per batch, not once per message (D3 auto-tag runs
+    # inside this loop; the per-message OutlookSettings query was an N+1 on a
+    # large backfill folder).
+    tag_settings = tdb.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
     for m in graph_messages:
         graph_id = m.get("id")
         if not graph_id:
@@ -113,6 +118,7 @@ def _persist_messages(
             )
             .one_or_none()
         )
+        is_new = existing is None
         if existing is None:
             row = OutlookMessage()
             row.account_id = account.id
@@ -165,6 +171,19 @@ def _persist_messages(
             row.folder_id = folder_id
         if folder_display_name is not None:
             row.folder_display_name = folder_display_name
+
+        # D3 — auto-tag newly-synced mail so the by-customer/by-job tabs
+        # actually fill. Only NEW rows (tag_message self-skips already-tagged
+        # ones anyway); runs the cheap tenant-DB strategies (auto_match email
+        # match + job_thread subject regex). The AI strategy needs control_db
+        # and is a stub — deliberately not wired through the sync stack here.
+        # Tagging MUST NOT break the upsert: a lookup failure logs + continues.
+        if is_new:
+            try:
+                tag_message(row, tdb, settings=tag_settings)
+            except Exception:  # noqa: BLE001
+                log.exception("auto-tag failed for graph_id=%s (upsert kept)", graph_id)
+
         upserted += 1
     return upserted
 
@@ -475,6 +494,55 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             "failed_folders": failed,
             "vendor_bills": ingest_totals,
         }
+
+
+def _retag_untagged(tdb: Session, *, batch: int = 200, max_rows: int = 20000) -> dict:
+    """Run tag_message over already-synced, still-untagged messages.
+
+    D3 forward-tags NEW mail, but everything synced BEFORE tagging existed
+    stays untagged and invisible to the by-customer/by-job tabs. This one-shot
+    walks those rows (tag_strategy IS NULL, not deleted), tags what now
+    matches, and commits in batches so a big mailbox doesn't hold one giant
+    transaction. Idempotent: rows that don't match stay NULL and are simply
+    re-tried on the next run — cheap (one indexed email_hash lookup + a regex).
+    """
+    scanned = tagged = 0
+    last_id = None
+    tag_settings = tdb.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
+    while scanned < max_rows:
+        # OutlookMessage is hard-deleted (no deleted_at column) — the only
+        # filter that matters is "not yet tagged".
+        q = (
+            tdb.query(OutlookMessage)
+            .filter(OutlookMessage.tag_strategy.is_(None))
+            .order_by(OutlookMessage.id)
+        )
+        if last_id is not None:
+            q = q.filter(OutlookMessage.id > last_id)
+        rows = q.limit(batch).all()
+        if not rows:
+            break
+        for row in rows:
+            last_id = row.id
+            scanned += 1
+            try:
+                if tag_message(row, tdb, settings=tag_settings):
+                    tagged += 1
+            except Exception:  # noqa: BLE001
+                log.exception("retag failed for id=%s (skipped)", row.id)
+        tdb.commit()
+    return {"scanned": scanned, "tagged": tagged}
+
+
+@celery_app.task(name="outlook.retag_untagged_messages", bind=True)
+def retag_untagged_messages(self, tenant_id: str | None = None, max_rows: int = 20000) -> dict:
+    """One-shot re-tag of already-synced untagged mail (D3 backfill).
+
+    Single-tenant: rows are scoped by the session, so tenant_id is accepted
+    for call-site symmetry but not required to isolate.
+    """
+    with contextlib.closing(SessionLocal()) as tdb:
+        return _retag_untagged(tdb, max_rows=max_rows)
 
 
 @celery_app.task(name="outlook.backfill_outlook_mailbox", bind=True)

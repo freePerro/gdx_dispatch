@@ -404,3 +404,84 @@ def test_body_transient_retry_reissues_once(app):
     assert r.status_code == 200
     assert r.json()["fetched"] is True
     assert calls["n"] == 2  # retried exactly once
+
+
+# ── POST/DELETE /messages/{id}/link (D3 manual tag) ─────────────────────
+
+
+def _as_role(client, role):
+    client.app.dependency_overrides[get_user_for_views] = lambda: {
+        "user_id": str(UID), "tenant_id": str(TID), "role": role,
+    }
+
+
+def test_link_sets_manual_tag(app):
+    client, tdb = app
+    msg = _msg()
+    _wire_msg_and_account(tdb, msg, UID)
+    cid = uuid4()
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/link", json={"customer_id": str(cid)})
+    assert r.status_code == 200
+    assert str(msg.linked_customer_id) == str(cid)
+    assert msg.tag_strategy == "manual"
+
+
+def test_link_requires_customer_or_job(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    r = client.post(f"/api/outlook/messages/{msg.id}/link", json={})
+    assert r.status_code == 422
+
+
+def test_link_forbidden_for_tech(app):
+    client, tdb = app
+    _as_role(client, "technician")
+    msg = _msg()
+    tdb.get.return_value = msg
+    r = client.post(f"/api/outlook/messages/{msg.id}/link", json={"customer_id": str(uuid4())})
+    assert r.status_code == 403
+
+
+def test_link_404_when_not_visible(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.post(f"/api/outlook/messages/{msg.id}/link", json={"job_id": str(uuid4())})
+    assert r.status_code == 404
+
+
+def test_link_422_for_unknown_customer(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    # Customer lookup returns None → 422 (not a 500 on insert).
+    tdb.query.return_value.filter.return_value.first.return_value = None
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/link", json={"customer_id": str(uuid4())})
+    assert r.status_code == 422
+
+
+def test_unlink_pins_as_manual_no_link(app):
+    client, tdb = app
+    msg = _msg(linked_customer_id=uuid4())
+    msg.tag_strategy = "auto_match"
+    _wire_msg_and_account(tdb, msg, UID)
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.delete(f"/api/outlook/messages/{msg.id}/link")
+    assert r.status_code == 200
+    assert msg.linked_customer_id is None
+    assert msg.linked_job_id is None
+    # Pinned 'manual' (not NULL) so the hourly retag can't re-apply the auto-tag.
+    assert msg.tag_strategy == "manual"
+
+
+def test_unlink_forbidden_for_viewer(app):
+    client, tdb = app
+    _as_role(client, "viewer")
+    msg = _msg()
+    tdb.get.return_value = msg
+    r = client.delete(f"/api/outlook/messages/{msg.id}/link")
+    assert r.status_code == 403
