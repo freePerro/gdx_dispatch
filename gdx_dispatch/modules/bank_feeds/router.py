@@ -373,6 +373,8 @@ def connect(
         "scope": oauth.OAUTH_SCOPES,
         "state": state,
         "nonce": nonce,
+        "code_challenge": oauth.pkce_challenge(oauth.pkce_verifier_for_nonce(nonce)),
+        "code_challenge_method": "S256",
     })
     authorize_endpoint = str(discovery["authorization_endpoint"])
     _audit(db, request, current_user, "bank_feeds_connect_started", str(inst.id))
@@ -494,6 +496,7 @@ def oauth_callback(
         token_data = oauth.exchange_code_for_tokens(
             inst.fi_host, inst.client_id, client_secret,
             code=code, redirect_uri=_build_redirect_uri(),
+            code_verifier=oauth.pkce_verifier_for_nonce(str(payload["nonce"])),
         )
     except oauth.BankFeedsAuthError:
         log.exception("bank_feeds_token_exchange_failed institution=%s", inst.id)
