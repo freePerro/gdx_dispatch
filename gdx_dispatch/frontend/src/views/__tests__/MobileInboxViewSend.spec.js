@@ -164,3 +164,37 @@ describe('MobileInboxView reply payload (D2)', () => {
     expect(payload.in_reply_to).toBe('m1');
   });
 });
+
+
+describe('MobileInboxView pagination / load-more (D7)', () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiPost.mockReset().mockResolvedValue({ ok: true });
+    apiPatch.mockReset().mockResolvedValue({});
+  });
+
+  it('appends the next page and hides Load more when has_more is false', async () => {
+    apiGet
+      .mockResolvedValueOnce({ items: [{ id: 'a', subject: 'A', is_read: true }], has_more: true, next_offset: 50 })
+      .mockResolvedValueOnce({ items: [{ id: 'b', subject: 'B', is_read: true }], has_more: false, next_offset: 100 });
+    const w = mountView();
+    await flushPromises();
+    expect(w.findAll('[data-test="mi-msg-row"]')).toHaveLength(1);
+    const more = w.find('[data-test="mi-load-more"]');
+    expect(more.exists()).toBe(true);
+
+    await more.trigger('click');
+    await flushPromises();
+
+    expect(apiGet.mock.calls[1][0]).toContain('offset=50');
+    expect(w.findAll('[data-test="mi-msg-row"]')).toHaveLength(2);
+    expect(w.find('[data-test="mi-load-more"]').exists()).toBe(false);
+  });
+
+  it('does not show Load more when the first page is the last', async () => {
+    apiGet.mockResolvedValue({ items: [{ id: 'a', subject: 'A', is_read: true }], has_more: false, next_offset: 50 });
+    const w = mountView();
+    await flushPromises();
+    expect(w.find('[data-test="mi-load-more"]').exists()).toBe(false);
+  });
+});

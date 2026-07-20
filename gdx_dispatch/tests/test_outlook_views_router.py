@@ -70,25 +70,62 @@ def app(monkeypatch):
 # ── unified inbox ───────────────────────────────────────────────────────
 
 
+def _set_raw_rows(tdb, rows):
+    tdb.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = rows
+
+
 def test_list_messages_returns_visible_only(app):
     client, tdb = app
     msgs = [_msg(linked_customer_id=uuid4()), _msg(linked_customer_id=uuid4())]
-    tdb.query.return_value.order_by.return_value.limit.return_value.offset.return_value.all.return_value = msgs
+    _set_raw_rows(tdb, msgs)
     with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=msgs):
         r = client.get("/api/outlook/messages")
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 2
-    assert body[0]["subject"] == "Re: estimate"
-    assert body[0]["from_address"] == "alice@x.com"
+    assert len(body["items"]) == 2
+    assert body["items"][0]["subject"] == "Re: estimate"
+    assert body["items"][0]["from_address"] == "alice@x.com"
 
 
-def test_list_messages_paginates(app):
+def test_list_messages_full_window_has_more(app):
+    """A full raw window that yields visible items → has_more True, next_offset
+    advanced by the window size."""
     client, tdb = app
-    tdb.query.return_value.order_by.return_value.limit.return_value.offset.return_value.all.return_value = []
-    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=[]):
-        r = client.get("/api/outlook/messages?limit=10&offset=20")
-    assert r.status_code == 200
+    raw = [_msg() for _ in range(10)]  # full window of 10 (== limit)
+    _set_raw_rows(tdb, raw)
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=raw):
+        r = client.get("/api/outlook/messages?limit=10&offset=0")
+    body = r.json()
+    assert len(body["items"]) == 10
+    assert body["has_more"] is True
+    assert body["next_offset"] == 10
+
+
+def test_list_messages_skips_fully_hidden_window(app):
+    """A window the visibility filter empties is skipped SERVER-SIDE so the
+    client never gets a blank 'Load more' page while more rows remain."""
+    client, tdb = app
+    win1 = [_msg() for _ in range(10)]   # full window, all hidden
+    win2 = [_msg(), _msg(), _msg()]      # short window, visible
+    tdb.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.side_effect = [win1, win2]
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible",
+               side_effect=[[], win2]):
+        r = client.get("/api/outlook/messages?limit=10&offset=0")
+    body = r.json()
+    assert len(body["items"]) == 3       # skipped win1, returned win2's visible
+    assert body["has_more"] is False     # win2 was short → end reached
+    assert body["next_offset"] == 13     # consumed 10 + 3 raw rows
+
+
+def test_list_messages_no_more_when_raw_window_short(app):
+    client, tdb = app
+    raw = [_msg(), _msg()]  # fewer than limit → end reached
+    _set_raw_rows(tdb, raw)
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=raw):
+        r = client.get("/api/outlook/messages?limit=10&offset=0")
+    body = r.json()
+    assert body["has_more"] is False
+    assert len(body["items"]) == 2
 
 
 # ── by-customer ─────────────────────────────────────────────────────────

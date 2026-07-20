@@ -199,4 +199,52 @@ describe('InboxView', () => {
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0].in_reply_to).toBeUndefined();
   });
+
+  it('paginates: Load more appends the next page then disappears (D7)', async () => {
+    const page1 = {
+      items: [FAKE_MESSAGES[0], FAKE_MESSAGES[1]],
+      has_more: true, next_offset: 50,
+    };
+    const page2 = {
+      items: [{ ...FAKE_MESSAGES[0], id: '33333333-3333-3333-3333-333333333333', subject: 'Third subject' }],
+      has_more: false, next_offset: 100,
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith('/api/outlook/folders')) return mkResponse(FAKE_FOLDERS);
+      if (url.includes('/api/outlook/messages?')) {
+        return mkResponse(url.includes('offset=50') ? page2 : page1);
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    expect(wrapper.findAll('[data-test="inbox-row"]')).toHaveLength(2);
+    const more = wrapper.find('[data-test="inbox-load-more"]');
+    expect(more.exists()).toBe(true);
+
+    await more.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-test="inbox-row"]')).toHaveLength(3); // appended
+    expect(wrapper.find('[data-test="inbox-load-more"]').exists()).toBe(false); // no more
+  });
+
+  it('paginate append dedupes overlapping ids (D7)', async () => {
+    const page1 = { items: [FAKE_MESSAGES[0], FAKE_MESSAGES[1]], has_more: true, next_offset: 50 };
+    // page2 re-includes FAKE_MESSAGES[1] (mail shifted between calls)
+    const page2 = { items: [FAKE_MESSAGES[1]], has_more: false, next_offset: 100 };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith('/api/outlook/folders')) return mkResponse(FAKE_FOLDERS);
+      if (url.includes('/api/outlook/messages?')) {
+        return mkResponse(url.includes('offset=50') ? page2 : page1);
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    await wrapper.find('[data-test="inbox-load-more"]').trigger('click');
+    await flushPromises();
+    // Still 2 rows — the duplicate id was not appended again.
+    expect(wrapper.findAll('[data-test="inbox-row"]')).toHaveLength(2);
+  });
 });
