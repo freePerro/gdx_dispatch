@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from decimal import ROUND_HALF_UP, Decimal
-from uuid import UUID, uuid4
-
-import os
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select, text as _text
+from sqlalchemy import func, select
+from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
@@ -216,8 +216,8 @@ def _resolve_customer_for_engine(estimate: Estimate, db: Session):
     if the customer disappeared mid-flight or the SUM fails, we fall back
     to 0 (no discount) rather than blowing up the estimate.
     """
-    from gdx_dispatch.services.pricing_engine import CustomerView
     from gdx_dispatch.services.customer_rolling_volume import get_or_refresh
+    from gdx_dispatch.services.pricing_engine import CustomerView
 
     if not estimate.customer_id:
         return CustomerView(pricing_class="retail", margin_override_pct=None)
@@ -1200,6 +1200,43 @@ def _render_template(tpl: str, ctx: dict[str, str]) -> str:
     return out
 
 
+def _estimate_pdf_bytes(
+    db: Session,
+    estimate: Estimate,
+    customer: Customer | None,
+    tenant_id: str,
+) -> bytes:
+    """Render the customer-facing estimate PDF — the same bytes /pdf serves
+    and the composer attaches. Shared by email-compose and /send so every
+    outbound email carries the identical document."""
+    from gdx_dispatch.core.pdf_generator import generate_estimate_pdf
+    from gdx_dispatch.routers.pdf import _branding_payload, _estimate_attachments_for_pdf, _estimate_payload
+
+    images, files = _estimate_attachments_for_pdf(db, estimate.id, tenant_id)
+    default_terms = ""
+    deposit_pct = 0
+    hide_line_prices_default = False
+    try:
+        from gdx_dispatch.modules.estimates_features import get_features
+        if tenant_id:
+            features = get_features(tenant_id)
+            default_terms = features.default_terms
+            deposit_pct = features.deposit_pct
+            hide_line_prices_default = features.hide_line_prices
+    except Exception:
+        default_terms = ""
+        deposit_pct = 0
+        hide_line_prices_default = False
+    return generate_estimate_pdf(
+        estimate_data=_estimate_payload(
+            estimate, customer, default_terms=default_terms,
+            attachment_images=images, attachment_files=files,
+            deposit_pct=deposit_pct, hide_line_prices_default=hide_line_prices_default, db=db,
+        ),
+        tenant_branding=_branding_payload(db),
+    )
+
+
 @router.get("/{estimate_id}/email-compose", response_model=None)
 def estimate_email_compose(
     estimate_id: UUID,
@@ -1212,8 +1249,6 @@ def estimate_email_compose(
     Subject/body come from per-tenant templates configurable in
     Settings → Feature Settings."""
     import base64 as _b64
-    from gdx_dispatch.core.pdf_generator import generate_estimate_pdf
-    from gdx_dispatch.routers.pdf import _branding_payload, _estimate_attachments_for_pdf, _estimate_payload
 
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
     customer = None
@@ -1268,29 +1303,7 @@ def estimate_email_compose(
     }
     subject = _render_template(subject_tpl, ctx).strip() or label_or_job
     body_text = _render_template(body_tpl, ctx)
-    images, files = _estimate_attachments_for_pdf(db, estimate.id, tenant_id)
-    default_terms = ""
-    deposit_pct = 0
-    hide_line_prices_default = False
-    try:
-        from gdx_dispatch.modules.estimates_features import get_features
-        if tenant_id:
-            features = get_features(tenant_id)
-            default_terms = features.default_terms
-            deposit_pct = features.deposit_pct
-            hide_line_prices_default = features.hide_line_prices
-    except Exception:
-        default_terms = ""
-        deposit_pct = 0
-        hide_line_prices_default = False
-    pdf_bytes = generate_estimate_pdf(
-        estimate_data=_estimate_payload(
-            estimate, customer, default_terms=default_terms,
-            attachment_images=images, attachment_files=files,
-            deposit_pct=deposit_pct, hide_line_prices_default=hide_line_prices_default, db=db,
-        ),
-        tenant_branding=_branding_payload(db),
-    )
+    pdf_bytes = _estimate_pdf_bytes(db, estimate, customer, tenant_id)
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
     pdf_name = f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf"
 
@@ -1436,6 +1449,32 @@ def send_estimate(
                     notes=estimate.notes or "",
                     description=estimate.description or "",
                 )
+                # 2026-07-20 — actually attach the estimate PDF (same bytes
+                # the composer flow sends). The email body has referenced an
+                # "attached PDF" since S110 without ever attaching one.
+                # Best-effort: a render failure downgrades to html-only.
+                attachments = None
+                try:
+                    import base64 as _b64
+
+                    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+                    pdf_bytes = _estimate_pdf_bytes(db, estimate, cust, tid)
+                    # Estimate PDFs embed job photos — the one attach site that
+                    # can realistically blow the Graph inline limit. Oversized →
+                    # keep the html-only delivery guarantee.
+                    if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+                        log.warning(
+                            "estimate_send_pdf_too_large_to_attach estimate=%s bytes=%s",
+                            estimate.id, len(pdf_bytes),
+                        )
+                    else:
+                        attachments = [{
+                            "name": f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf",
+                            "content_type": "application/pdf",
+                            "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
+                        }]
+                except Exception:
+                    log.exception("estimate_send_pdf_attach_failed")
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
@@ -1444,6 +1483,7 @@ def send_estimate(
                     to_name=cust.name or "",
                     subject=f"Estimate #{estimate.estimate_number} from {company_name}",
                     html_body=html,
+                    attachments=attachments,
                 )
             elif cust:
                 email_skip_reason = "customer_has_no_email"

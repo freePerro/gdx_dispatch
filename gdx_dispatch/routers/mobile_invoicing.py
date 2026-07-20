@@ -606,6 +606,36 @@ def _send_invoice_email(
         except Exception:
             log.exception("mobile_invoice_email_company_name_lookup_failed")
 
+        # 2026-07-20 — attach the invoice PDF (built BEFORE the body so the
+        # fallback wording can be honest about whether it's really attached).
+        # Best-effort + size-guarded: a render failure or an oversized PDF
+        # downgrades to the html-only mail rather than blocking the send or
+        # having Graph reject the whole message.
+        attachments = None
+        try:
+            import base64 as _b64
+
+            from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
+            from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+            from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
+            pdf_bytes = generate_invoice_pdf(
+                invoice_data=_invoice_payload(invoice, cust),
+                tenant_branding=_branding_payload(db),
+            )
+            if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+                log.warning(
+                    "mobile_invoice_pdf_too_large_to_attach invoice=%s bytes=%s",
+                    invoice.id, len(pdf_bytes),
+                )
+            else:
+                attachments = [{
+                    "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}.pdf",
+                    "content_type": "application/pdf",
+                    "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
+                }]
+        except Exception:
+            log.exception("mobile_invoice_pdf_attach_failed invoice=%s", invoice.id)
+
         # Build a simple email body if no specialised builder exists.
         if build_invoice_email_html is not None:
             lines = db.execute(
@@ -633,7 +663,7 @@ def _send_invoice_email(
             html = (
                 f"<p>Hi {cust.name or 'there'},</p>"
                 f"<p>Please find your invoice <strong>#{invoice.invoice_number}</strong> "
-                f"from {company_name} attached.</p>"
+                f"from {company_name} {'attached' if attachments else 'summarized below'}.</p>"
                 f"<p><strong>Total: ${float(invoice.total or 0):,.2f}</strong></p>"
                 f"<p>Due {invoice.due_date.isoformat() if invoice.due_date else 'on receipt'}.</p>"
             )
@@ -645,6 +675,7 @@ def _send_invoice_email(
             to_name=cust.name or "",
             subject=f"Invoice #{invoice.invoice_number} from {company_name}",
             html_body=html,
+            attachments=attachments,
         )
     except Exception:
         log.exception("mobile_invoice_email_failed invoice=%s", invoice.id)

@@ -281,11 +281,15 @@
              "Send" an invoice whose draft edits haven't been committed yet
              — confusing at best, error-prone at worst. -->
         <div v-if="!editing" class="actions" data-testid="invoice-actions">
+          <!-- Re-send is allowed on sent/overdue (2026-07-20): the composer
+               already gates on an explicit click, and the concrete need is
+               re-sending an invoice whose first email went out without the
+               PDF. Only paid/void stay locked. -->
           <Button
-            label="Send Invoice"
+            :label="['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) ? 'Re-send Invoice' : 'Send Invoice'"
             icon="pi pi-send"
             data-testid="send-invoice-btn"
-            :disabled="['sent','paid','void','overdue'].includes(String(invoice.status || '').toLowerCase())"
+            :disabled="['paid','void'].includes(String(invoice.status || '').toLowerCase())"
             @click="sendInvoice"
           />
           <Button
@@ -393,6 +397,7 @@
                 <small class="muted">{{ formatBytes(att.file_size) }}</small>
               </label>
             </div>
+            <ComposerPdfPreview :pdf="composer.pdf" />
           </div>
         </div>
         <template #footer>
@@ -494,6 +499,7 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import LineItemEditor from "../components/LineItemEditor.vue";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
+import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 
 const api = useApi();
 const route = useRoute();
@@ -1205,7 +1211,20 @@ async function loadTaxRate() {
 }
 
 onMounted(() => {
-  fetchInvoice();
+  // ?compose=1 — the Billing list's per-row Send lands here so every send
+  // goes through the composer (preview + explicit click) instead of the
+  // old fire-and-forget POST /send. Strip the flag so refresh/back doesn't
+  // reopen the dialog, and gate on the loaded status so a hand-typed URL
+  // can't open the composer on a paid/void invoice (mirrors the button).
+  const autoCompose = !!route.query?.compose;
+  if (autoCompose) {
+    const { compose, ...rest } = route.query;
+    router.replace({ query: rest })?.catch?.(() => {});
+  }
+  Promise.resolve(fetchInvoice()).then(() => {
+    const st = String(invoice.value.status || "").toLowerCase();
+    if (autoCompose && !["paid", "void"].includes(st)) sendInvoice();
+  });
   loadTaxRate();
   loadQbStatus();
 });

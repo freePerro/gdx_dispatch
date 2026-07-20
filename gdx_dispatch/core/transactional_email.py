@@ -33,6 +33,13 @@ from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
 
+# Graph /me/sendMail rejects the WHOLE message (not just the attachment) when
+# inline fileAttachments push the request past ~4MB — and base64 inflates the
+# raw bytes by ~33%. Callers attaching generated PDFs must skip the attachment
+# above this raw-byte cap so an oversized render degrades to the html-only
+# email instead of silently delivering nothing.
+MAX_INLINE_ATTACHMENT_BYTES = 2_500_000
+
 
 def _to_uuid(value: Any) -> UUID | None:
     if value is None:
@@ -53,6 +60,7 @@ def _try_outlook_graph(
     to_email: str,
     subject: str,
     html_body: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None]:
     # One retry on the documented OutlookTransientRetry contract — a 401
     # mid-call after a successful refresh deserves exactly one re-issue.
@@ -63,12 +71,24 @@ def _try_outlook_graph(
         with_outlook_client,
     )
 
+    message: dict[str, Any] = {
+        "subject": subject,
+        "body": {"contentType": "html", "content": html_body},
+        "toRecipients": [{"emailAddress": {"address": to_email}}],
+    }
+    if attachments:
+        # Same wire shape as modules/outlook/send_router._graph_attachments.
+        message["attachments"] = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": a.get("name") or "attachment",
+                "contentType": a.get("content_type") or "application/octet-stream",
+                "contentBytes": a["content_base64"],
+            }
+            for a in attachments
+        ]
     body = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "html", "content": html_body},
-            "toRecipients": [{"emailAddress": {"address": to_email}}],
-        },
+        "message": message,
         # Save to sent items so the rep can see it in their Outlook history
         # and the customer's reply lands in the same thread.
         "saveToSentItems": True,
@@ -121,6 +141,7 @@ def _try_smtp(
     to_name: str,
     subject: str,
     html_body: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None]:
     # Returns (sent, skip_reason). skip_reason is set when SMTP is just
     # not configured so the caller can distinguish "tried and failed"
@@ -130,7 +151,12 @@ def _try_smtp(
         cfg = get_email_config(tenant_db, tenant_id)
         if cfg is None:
             return False, "smtp_not_configured"
-        sent = bool(send_email(tenant_db, tenant_id, to_email, subject, html_body, to_name))
+        sent = bool(
+            send_email(
+                tenant_db, tenant_id, to_email, subject, html_body, to_name,
+                attachments=attachments,
+            )
+        )
         if sent:
             return True, None
         return False, "smtp_send_failed"
@@ -148,6 +174,7 @@ def send_transactional_email(
     to_name: str,
     subject: str,
     html_body: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Send a transactional email. Returns (sent, provider, skip_reason).
 
@@ -156,6 +183,8 @@ def send_transactional_email(
     - skip_reason: a short stable code naming why nothing went out, or
       None on success. Used by the UI to give the user an actionable
       message instead of a generic error.
+    - attachments: [{name, content_type, content_base64}] — delivered by
+      whichever provider wins (Graph fileAttachment / SMTP MIME part).
     """
     if not to_email:
         return False, None, "no_recipient_email"
@@ -174,6 +203,7 @@ def send_transactional_email(
             to_email=to_email,
             subject=subject,
             html_body=html_body,
+            attachments=attachments,
         )
         if sent_ol:
             return True, "outlook_graph", None
@@ -186,6 +216,7 @@ def send_transactional_email(
         to_name=to_name,
         subject=subject,
         html_body=html_body,
+        attachments=attachments,
     )
     if sent_smtp:
         return True, "smtp", None

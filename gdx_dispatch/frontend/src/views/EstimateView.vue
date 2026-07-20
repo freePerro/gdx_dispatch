@@ -577,6 +577,7 @@
                 <small class="muted">{{ formatBytes(att.file_size) }}</small>
               </label>
             </div>
+            <ComposerPdfPreview :pdf="composer.pdf" />
           </div>
         </div>
         <template #footer>
@@ -598,6 +599,7 @@ import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
+import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";

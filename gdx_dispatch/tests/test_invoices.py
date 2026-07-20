@@ -384,6 +384,124 @@ def test_send_invoice_marks_sent_and_sets_public_token(tenant_db_session):
     assert sent["sent_at"] is not None
 
 
+def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, monkeypatch):
+    """2026-07-20 (audit catch) — Graph rejects the WHOLE message when inline
+    attachments blow the ~4MB request cap, which would turn 'html-only email'
+    into 'no email at all'. An oversized PDF must be skipped (pdf_attached
+    False) while the email itself still goes out."""
+    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+    from gdx_dispatch.models.tenant_models import Customer
+
+    captured = {}
+
+    def fake_send(**kwargs):
+        captured.update(kwargs)
+        return True, "outlook_graph", None
+
+    monkeypatch.setattr(
+        "gdx_dispatch.core.transactional_email.send_transactional_email", fake_send
+    )
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf",
+        lambda **kw: b"%PDF-1.4 " + b"x" * (MAX_INLINE_ATTACHMENT_BYTES + 1),
+    )
+
+    cust = Customer(
+        name="Big PDF Customer", email="bigpdf@example.com",
+        phone="555-0400", company_id="tenant-test",
+    )
+    tenant_db_session.add(cust)
+    tenant_db_session.commit()
+    tenant_db_session.refresh(cust)
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id, customer_id=cust.id,
+            due_date=date.today() + timedelta(days=30),
+        ),
+        _=_current_user(), db=tenant_db_session,
+    )
+
+    sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert sent["email_sent"] is True
+    assert sent["pdf_attached"] is False
+    assert captured["attachments"] is None
+
+
+def test_send_invoice_twice_is_a_valid_resend(tenant_db_session):
+    """2026-07-20 — re-send must work: the concrete case is an invoice whose
+    first email went out without the PDF. sent→sent transitions again without
+    a 409 and re-stamps sent_at (only paid/void are locked)."""
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
+
+    first = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+    second = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert first["status"] == "sent"
+    assert second["status"] == "sent"
+    assert second["sent_at"] >= first["sent_at"]
+
+
+def test_send_invoice_attaches_the_invoice_pdf(tenant_db_session, monkeypatch):
+    """2026-07-20 — the direct /send email must carry the invoice PDF.
+
+    Before this, /send (Billing bulk-send, mobile) emailed an HTML body only;
+    a real customer received an invoice email with no PDF attached. Pin that
+    the transactional send now gets a generated PDF whose bytes render the
+    invoice, and that the response reports pdf_attached."""
+    from gdx_dispatch.models.tenant_models import Customer
+
+    captured = {}
+
+    def fake_send(**kwargs):
+        captured.update(kwargs)
+        return True, "outlook_graph", None
+
+    monkeypatch.setattr(
+        "gdx_dispatch.core.transactional_email.send_transactional_email", fake_send
+    )
+
+    cust = Customer(
+        name="Attach Customer", email="attach@example.com",
+        phone="555-0300", company_id="tenant-test",
+    )
+    tenant_db_session.add(cust)
+    tenant_db_session.commit()
+    tenant_db_session.refresh(cust)
+
+    job = _seed_job(tenant_db_session, title="Opener replacement")
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id, customer_id=cust.id,
+            due_date=date.today() + timedelta(days=30),
+            line_items=[{"description": "Opener", "quantity": 1, "unit_price": 450.00}],
+        ),
+        _=_current_user(), db=tenant_db_session,
+    )
+
+    sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert sent["email_sent"] is True
+    assert sent["pdf_attached"] is True
+    (att,) = captured["attachments"]
+    assert att["name"] == f"invoice-{inv['invoice_number']}.pdf"
+    assert att["content_type"] == "application/pdf"
+    import base64 as _b64
+    pdf_bytes = _b64.b64decode(att["content_base64"])
+    assert pdf_bytes[:4] == b"%PDF"
+    import io
+
+    from pypdf import PdfReader
+    rendered = "".join(
+        p.extract_text() or "" for p in PdfReader(io.BytesIO(pdf_bytes)).pages
+    )
+    assert inv["invoice_number"] in rendered
+    assert "Attach Customer" in rendered
+
+
 def test_invoice_email_compose_returns_pdf_and_template(tenant_db_session):
     """2026-05-15 — composer payload mirrors estimates: to/subject/body_text +
     base64 PDF that the in-app dialog auto-attaches. Drives the new
@@ -430,6 +548,7 @@ def test_invoice_email_compose_returns_pdf_and_template(tenant_db_session):
     assert payload["pdf"]["size_bytes"] > 1000  # real PDFs of this fixture are ~3-10KB
     import base64 as _b64
     import io
+
     from pypdf import PdfReader
     pdf_bytes = _b64.b64decode(payload["pdf"]["content_base64"])
     assert pdf_bytes[:4] == b"%PDF"
@@ -1023,7 +1142,7 @@ def test_patch_invoice_line_clears_cost_when_set_to_null(tenant_db_session):
     """Auditor round-2 catch: blanking a cost in InvoiceDetailView's edit
     table sends `cost: null`, and the backend must clear it (not ignore).
     Pin: PATCH with cost=None nulls the column."""
-    from gdx_dispatch.routers.invoices import add_invoice_line, patch_invoice_line, InvoiceLinePatchIn
+    from gdx_dispatch.routers.invoices import InvoiceLinePatchIn, add_invoice_line, patch_invoice_line
 
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)

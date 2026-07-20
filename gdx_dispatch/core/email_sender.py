@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import logging
 import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -37,9 +39,13 @@ def send_email(
     subject: str,
     html_body: str,
     to_name: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Send an email using the tenant's configured SMTP settings.
     Returns True on success, False on failure.
+
+    attachments: [{name, content_type, content_base64}] — the same wire shape
+    the Outlook send path uses, so callers build one list for both providers.
     """
     config = get_email_config(db, tenant_id)
     if not config:
@@ -49,12 +55,26 @@ def send_email(
     try:
         pw = base64.b64decode(config["password_enc"]).decode() if config["password_enc"] else ""
 
-        msg = MIMEMultipart("alternative")
+        # "mixed" is required for file attachments; keep "alternative" for the
+        # plain html-only mail so existing rendering behavior is untouched.
+        msg = MIMEMultipart("mixed" if attachments else "alternative")
         msg["Subject"] = subject
         msg["From"] = f"{config['from_name']} <{config['from_email']}>"
         msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
 
         msg.attach(MIMEText(html_body, "html"))
+        for att in attachments or []:
+            ctype = att.get("content_type") or "application/octet-stream"
+            maintype, _, subtype = ctype.partition("/")
+            if not subtype:
+                maintype, subtype = "application", "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(base64.b64decode(att["content_base64"]))
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition", "attachment", filename=att.get("name") or "attachment"
+            )
+            msg.attach(part)
 
         with smtplib.SMTP(config["smtp_host"], config["smtp_port"], timeout=15) as server:
             server.starttls()
