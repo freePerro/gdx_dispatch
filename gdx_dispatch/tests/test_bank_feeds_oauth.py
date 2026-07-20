@@ -213,7 +213,7 @@ def test_connect_authorize_url_carries_pkce_challenge(respx_mock, tenant_db):
 
 
 @respx.mock
-def test_callback_token_exchange_sends_pkce_verifier(respx_mock, tenant_db, callback_app, test_app_keypair):
+def test_callback_token_exchange_sends_pkce_verifier(respx_mock, tenant_db, callback_app, test_app_keypair):  # noqa: F811
     inst = _make_institution(tenant_db)
     state, nonce = oauth.make_state(user_id="u1", tenant_id=TENANT_ID, institution_id=str(inst.id))
     token_route = _mock_banno(respx_mock, test_app_keypair, nonce=nonce)

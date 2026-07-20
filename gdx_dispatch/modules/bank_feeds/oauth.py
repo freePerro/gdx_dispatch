@@ -197,7 +197,7 @@ def load_state(state: str) -> dict:
 def pkce_verifier_for_nonce(nonce: str) -> str:
     digest = hmac.new(
         _signing_secret().encode("utf-8"),
-        f"bank-feeds-pkce:{nonce}".encode("utf-8"),
+        f"bank-feeds-pkce:{nonce}".encode(),
         hashlib.sha256,
     ).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
