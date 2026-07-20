@@ -327,3 +327,35 @@ def test_full_resync_flag_rewinds_to_backfill(respx_mock, tenant_db, setup):
     assert seen["windowed"] is True
     tenant_db.refresh(acct)
     assert acct.full_resync_required is False
+
+
+@respx.mock
+def test_sync_accounts_maps_spec_shaped_payload(respx_mock, tenant_db, setup):
+    """Field names per accounts.swagger.yaml — notably `numbers` (a plain
+    string) is the masked account number; maskedNumber/lastFour don't exist."""
+    _, conn, _ = setup
+    respx_mock.get(f"https://{FI_HOST}/a/consumer/api/v0/users/{SUB}/accounts").mock(
+        return_value=Response(200, json={
+            "accounts": [{
+                "id": "acct-ext-2",
+                "name": "Primary Checking",
+                "accountType": "Deposit",
+                "accountSubType": "Checking",
+                "numbers": "x1234",
+                "balance": "1517.25",
+                "availableBalance": "1490.00",
+                "fetchedDate": "2026-07-20T12:00:00Z",
+            }],
+            "inactivatedAccountIds": [],
+        })
+    )
+    stats = service.sync_accounts(tenant_db, _client(), conn)
+    assert stats["created"] == 1
+    row = tenant_db.execute(
+        select(BankFeedAccount).where(BankFeedAccount.external_account_id == "acct-ext-2")
+    ).scalar_one()
+    assert row.name == "Primary Checking"
+    assert row.account_type == "Deposit"
+    assert row.account_number_masked == "x1234"
+    assert row.balance == Decimal("1517.25")
+    assert row.is_inactive is False
