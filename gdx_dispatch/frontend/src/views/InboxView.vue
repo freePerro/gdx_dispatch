@@ -172,20 +172,40 @@ async function fetchFolders() {
   }
 }
 
-async function fetchMessages(folderId = selectedFolderId.value) {
+const MSG_PAGE_SIZE = 50
+const msgOffset = ref(0)
+const hasMoreMessages = ref(false)
+
+async function fetchMessages(folderId = selectedFolderId.value, { append = false } = {}) {
   loadingMessages.value = true
   error.value = null
   try {
-    const url = folderId
-      ? `/api/outlook/messages?limit=200&folder_id=${encodeURIComponent(folderId)}`
-      : '/api/outlook/messages?limit=200'
+    // Page over RAW rows (offset), not visible count — the server filters
+    // visibility after the window, so a page may be short; has_more/next_offset
+    // let us keep loading until every message is reachable (D7).
+    const offset = append ? msgOffset.value : 0
+    const base = `/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`
+    const url = folderId ? `${base}&folder_id=${encodeURIComponent(folderId)}` : base
     const r = await api.get(url)
-    messages.value = Array.isArray(r) ? r : (r.items || [])
+    const items = Array.isArray(r) ? r : (r.items || [])
+    if (append) {
+      // Dedupe by id — offset pages can overlap if mail arrived between calls.
+      const seen = new Set(messages.value.map((m) => m.id))
+      messages.value = [...messages.value, ...items.filter((m) => !seen.has(m.id))]
+    } else {
+      messages.value = items
+    }
+    msgOffset.value = (r && typeof r.next_offset === 'number') ? r.next_offset : offset + MSG_PAGE_SIZE
+    hasMoreMessages.value = !!(r && r.has_more)
   } catch (err) {
     error.value = err.message || 'Failed to load messages'
   } finally {
     loadingMessages.value = false
   }
+}
+
+function loadMoreMessages() {
+  return fetchMessages(selectedFolderId.value, { append: true })
 }
 
 async function selectFolder(folder) {
@@ -195,8 +215,12 @@ async function selectFolder(folder) {
   detail.value = null
   composeMode.value = null
   if (folder?.is_system && LIVE_FETCH_FOLDERS.has(folder.well_known_name)) {
-    // Live-fetch path: show a banner + skip DB query
+    // Live-fetch path: show a banner + skip DB query. Reset pagination too, or
+    // a stale "Load more" from the previous folder would render under the
+    // banner and, on click, query the DB folder this path deliberately skips.
     messages.value = []
+    hasMoreMessages.value = false
+    msgOffset.value = 0
     error.value = `${folder.display_name} is shown but not synced. (Live fetch coming in a follow-up slice — open in Outlook for now.)`
     return
   }
@@ -681,6 +705,15 @@ onMounted(async () => {
           <div class="row-subject">{{ m.subject || '(no subject)' }}</div>
           <div class="row-preview muted">{{ m.body_preview || '(no preview)' }}</div>
         </button>
+        <button
+          v-if="hasMoreMessages"
+          class="msg-loadmore"
+          data-test="inbox-load-more"
+          :disabled="loadingMessages"
+          @click="loadMoreMessages"
+        >
+          {{ loadingMessages ? 'Loading…' : 'Load more' }}
+        </button>
       </div>
 
       <!-- ── compose pane ── -->
@@ -978,6 +1011,23 @@ onMounted(async () => {
 }
 
 /* ── message list ── */
+.msg-loadmore {
+  width: 100%;
+  padding: 0.6rem;
+  border: none;
+  border-top: 1px solid var(--p-content-border-color);
+  background: var(--p-content-background);
+  color: var(--p-primary-color);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.msg-loadmore:hover:not(:disabled) {
+  background: var(--p-content-hover-background);
+}
+.msg-loadmore:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 .msg-list {
   background: var(--surface-card);
   border: 1px solid var(--surface-border);

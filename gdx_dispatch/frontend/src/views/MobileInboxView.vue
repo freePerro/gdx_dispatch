@@ -39,6 +39,15 @@
           <div class="msg-preview">{{ m.body_preview || '' }}</div>
         </li>
       </ol>
+      <button
+        v-if="hasMoreMessages"
+        class="mi-loadmore"
+        data-test="mi-load-more"
+        :disabled="loading"
+        @click="loadMoreMessages"
+      >
+        {{ loading ? 'Loading…' : 'Load more' }}
+      </button>
 
       <!-- Detail / reply -->
       <Dialog
@@ -217,17 +226,37 @@ function fmtFull(iso) {
   }
 }
 
-async function fetchMessages() {
+const MSG_PAGE_SIZE = 50
+const msgOffset = ref(0)
+const hasMoreMessages = ref(false)
+
+async function fetchMessages({ append = false } = {}) {
   loading.value = true
   error.value = null
   try {
-    const r = await api.get('/api/outlook/messages?limit=100')
-    messages.value = Array.isArray(r) ? r : r?.items || []
+    // Page over RAW rows (offset); the server filters visibility after the
+    // window, so has_more/next_offset drive load-more until all mail is
+    // reachable (D7).
+    const offset = append ? msgOffset.value : 0
+    const r = await api.get(`/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`)
+    const items = Array.isArray(r) ? r : (r?.items || [])
+    if (append) {
+      const seen = new Set(messages.value.map((m) => m.id))
+      messages.value = [...messages.value, ...items.filter((m) => !seen.has(m.id))]
+    } else {
+      messages.value = items
+    }
+    msgOffset.value = (r && typeof r.next_offset === 'number') ? r.next_offset : offset + MSG_PAGE_SIZE
+    hasMoreMessages.value = !!(r && r.has_more)
   } catch (err) {
     error.value = err.message || 'Failed to load inbox'
   } finally {
     loading.value = false
   }
+}
+
+function loadMoreMessages() {
+  return fetchMessages({ append: true })
 }
 
 async function openMessage(m) {
@@ -502,6 +531,19 @@ onMounted(fetchMessages)
   font-weight: 700;
 }
 
+.mi-loadmore {
+  width: 100%;
+  padding: 0.8rem;
+  border: none;
+  border-top: 1px solid var(--p-content-border-color);
+  background: var(--p-content-background);
+  color: var(--p-primary-color);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.mi-loadmore:disabled {
+  opacity: 0.6;
+}
 .msg-preview {
   font-size: 0.82rem;
   color: var(--p-text-muted-color, #6b7280);

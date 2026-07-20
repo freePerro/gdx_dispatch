@@ -212,9 +212,28 @@ def _load_tech_emails(tenant_db: Session) -> set[str]:
 # ── endpoints ───────────────────────────────────────────────────────────
 
 
+# Worst-case windows one /messages request will scan skipping fully-hidden
+# pages. limit≤200, so ≤ 200*_MAX_PAGE_SCANS rows examined per request.
+_MAX_PAGE_SCANS = 8
+
+
+class MessageListOut(BaseModel):
+    """Paginated inbox page (D7).
+
+    ``offset`` paginates the RAW rows BEFORE the Python visibility filter, so
+    every message is reachable by paging even though a given page may return
+    fewer than ``per_page`` visible items (some are filtered out). Hence
+    ``has_more`` is derived from the raw window being full, and per-page
+    ``len(items)`` is approximate under the visibility filter.
+    """
+    items: list[MessageOut]
+    has_more: bool
+    next_offset: int
+
+
 @router.get(
     "/messages",
-    response_model=list[MessageOut],
+    response_model=MessageListOut,
     dependencies=[Depends(require_module("email"))],
 )
 def list_messages(
@@ -223,22 +242,46 @@ def list_messages(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     folder_id: str | None = Query(None, description="Graph folder id; None = all folders"),
-) -> list[MessageOut]:
-    """Folder-scoped or unified inbox. Returns messages visible to the user."""
+) -> MessageListOut:
+    """Folder-scoped or unified inbox, paginated.
+
+    D7: the old version applied ``.offset().limit()`` in SQL and THEN
+    ``filter_visible`` in Python, so a page could silently drop rows and there
+    was no way to reach page 2 — mail fell off the bottom. Now ``offset``/
+    ``limit`` page the raw rows and the response carries ``has_more`` +
+    ``next_offset`` so the client can load every message.
+    """
     uid = _user_id(user)
     role = _user_role(user)
     q = tenant_db.query(OutlookMessage)
     if folder_id:
         q = q.filter(OutlookMessage.folder_id == folder_id)
-    rows = (
-        q.order_by(desc(OutlookMessage.received_at))
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    # id is a tiebreaker so equal received_at rows have a STABLE order across
+    # pages (else offset pagination can skip/duplicate them).
+    q = q.order_by(desc(OutlookMessage.received_at), desc(OutlookMessage.id))
     tech_emails = _load_tech_emails(tenant_db)
-    visible = filter_visible(rows, uid, role, tenant_db, tech_emails=tech_emails)
-    return [_to_out(m) for m in visible]
+
+    # Skip windows the visibility filter empties, SERVER-SIDE, so a restricted
+    # viewer never gets a run of empty "Load more" pages (a tech seeing 30 of
+    # 5000 rows would otherwise click through ~100 blank pages). Bounded by
+    # _MAX_PAGE_SCANS so one request can't walk the whole mailbox.
+    cur = offset
+    visible: list[OutlookMessage] = []
+    reached_end = False
+    for _ in range(_MAX_PAGE_SCANS):
+        rows = q.offset(cur).limit(limit).all()
+        cur += len(rows)
+        if len(rows) < limit:
+            reached_end = True
+        visible = filter_visible(rows, uid, role, tenant_db, tech_emails=tech_emails)
+        if visible or reached_end:
+            break
+        # whole window hidden but more rows remain → advance to the next window
+    return MessageListOut(
+        items=[_to_out(m) for m in visible],
+        has_more=not reached_end,
+        next_offset=cur,
+    )
 
 
 @router.get(
