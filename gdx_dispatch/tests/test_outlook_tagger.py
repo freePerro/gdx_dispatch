@@ -6,13 +6,15 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 from gdx_dispatch.core.pii import HashColumn
-from gdx_dispatch.modules.outlook.models import OutlookMessage
+from gdx_dispatch.models.tenant_models import Customer
+from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage
 from gdx_dispatch.modules.outlook.tagger import (
     auto_match_strategy,
     job_thread_strategy,
     manual_tag,
     tag_message,
 )
+from gdx_dispatch.modules.outlook.tasks import _retag_untagged
 
 
 def _msg(**overrides):
@@ -199,9 +201,6 @@ def test_manual_tag_overrides_with_full_confidence():
 def test_auto_match_persists_link_through_real_commit(tenant_db):
     """The anti-theater test: a real Customer + real OutlookMessage, tag via
     tag_message, COMMIT, re-query — prove linked_customer_id actually lands."""
-    from gdx_dispatch.models.tenant_models import Customer
-    from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage as OM
-
     cust = Customer(name="Acme Doors", email="alice@x.com", company_id="c-1")
     tenant_db.add(cust)
     tenant_db.commit()  # @validates sets email_hash on assignment; commit persists
@@ -210,7 +209,7 @@ def test_auto_match_persists_link_through_real_commit(tenant_db):
     tenant_db.add(acct)
     tenant_db.commit()
 
-    msg = OM()
+    msg = OutlookMessage()
     msg.account_id = acct.id
     msg.graph_message_id = "g-real-1"
     msg.from_address = "alice@x.com"
@@ -222,17 +221,13 @@ def test_auto_match_persists_link_through_real_commit(tenant_db):
     tenant_db.commit()
 
     tenant_db.expire_all()
-    got = tenant_db.get(OM, msg.id)
+    got = tenant_db.get(OutlookMessage, msg.id)
     assert got.linked_customer_id == cust.id
     assert got.tag_strategy == "auto_match"
 
 
 def test_retag_untagged_tags_backlog_through_real_commit(tenant_db):
     """Prove the hourly backfill actually links a pre-existing untagged row."""
-    from gdx_dispatch.models.tenant_models import Customer
-    from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookMessage as OM
-    from gdx_dispatch.modules.outlook.tasks import _retag_untagged
-
     cust = Customer(name="Beta", email="bob@y.com", company_id="c-1")
     tenant_db.add(cust)
     acct = OutlookAccount(user_id="u-2", upn="me@x.com")
@@ -240,7 +235,7 @@ def test_retag_untagged_tags_backlog_through_real_commit(tenant_db):
     tenant_db.commit()
 
     # A message synced BEFORE its customer existed → still untagged.
-    msg = OM()
+    msg = OutlookMessage()
     msg.account_id = acct.id
     msg.graph_message_id = "g-backlog-1"
     msg.from_address = "bob@y.com"
@@ -252,5 +247,5 @@ def test_retag_untagged_tags_backlog_through_real_commit(tenant_db):
     assert out["tagged"] == 1
 
     tenant_db.expire_all()
-    got = tenant_db.get(OM, msg.id)
+    got = tenant_db.get(OutlookMessage, msg.id)
     assert got.linked_customer_id == cust.id
