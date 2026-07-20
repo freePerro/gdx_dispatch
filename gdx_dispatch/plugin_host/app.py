@@ -114,6 +114,56 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
         threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         return {"status": "restarting"}
 
+    @app.post("/internal/browser/credentials")
+    def set_browser_credentials(body: dict):
+        """Store a plugin's remembered login ({key, username, password}) —
+        autofilled into the remote sign-in form by the browser stream. Written
+        encrypted (see browser_stream.save_state). Internal-only: no host port;
+        the core proxy enforces auth + owner role + consent before calling."""
+        from gdx_dispatch.plugin_host.browser_stream import (
+            creds_file_for, load_state, save_state,
+        )
+
+        path = creds_file_for(str(body.get("key", "")))
+        if not path:
+            raise HTTPException(400, "invalid plugin key")
+        username = str(body.get("username", ""))[:200]
+        password = str(body.get("password", ""))[:200]
+        if not username and not password:
+            raise HTTPException(400, "provide a username and/or password")
+        # A blank field keeps its stored value (the UI shows the password as
+        # "unchanged" when re-saving); DELETE is how a login is cleared.
+        existing = load_state(path) or {}
+        save_state(path, {"username": username or existing.get("username", ""),
+                          "password": password or existing.get("password", "")})
+        return {"saved": True, "username": username or existing.get("username", "")}
+
+    @app.get("/internal/browser/credentials")
+    def browser_credentials_status(key: str):
+        """Whether a remembered login exists for this plugin. NEVER returns the
+        password — only the username and a has_password flag for the UI."""
+        from gdx_dispatch.plugin_host.browser_stream import creds_file_for, load_state
+
+        path = creds_file_for(key)
+        creds = load_state(path) if path else None
+        if not creds:
+            return {"saved": False}
+        return {"saved": True, "username": creds.get("username", ""),
+                "has_password": bool(creds.get("password"))}
+
+    @app.delete("/internal/browser/credentials")
+    def delete_browser_credentials(key: str):
+        """Forget a plugin's remembered login."""
+        from gdx_dispatch.plugin_host.browser_stream import creds_file_for
+
+        path = creds_file_for(key)
+        if path:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        return {"saved": False}
+
     @app.websocket("/internal/browser/ws")
     async def browser_ws(ws: WebSocket, url: str, key: str = ""):
         """Stream a headless browser to the operator (ADR-014). Internal-only —

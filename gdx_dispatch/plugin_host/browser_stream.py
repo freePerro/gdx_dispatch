@@ -67,13 +67,23 @@ def state_dir() -> str:
     return os.path.join(tempfile.gettempdir(), "gdx-browser-state")  # dev
 
 
-def state_file_for(key: str) -> str | None:
-    """Path for a plugin's saved session, or None if the key yields nothing.
+def _file_for(key: str, suffix: str) -> str | None:
+    """Path for a plugin-keyed file, or None if the key yields nothing.
     The key is sanitized to [a-z0-9_-] so it can't traverse out of state_dir."""
     safe = re.sub(r"[^a-z0-9_-]", "", (key or "").lower())
     if not safe:
         return None
-    return os.path.join(state_dir(), safe + ".session")
+    return os.path.join(state_dir(), safe + suffix)
+
+
+def state_file_for(key: str) -> str | None:
+    return _file_for(key, ".session")
+
+
+def creds_file_for(key: str) -> str | None:
+    """The plugin's remembered login credentials ({username, password}) —
+    autofilled into the remote sign-in form, same encryption as the session."""
+    return _file_for(key, ".creds")
 
 
 def _fernet():
@@ -301,9 +311,46 @@ async def stream_browser(ws, url: str, key: str = "") -> None:
                     log.warning("could not persist browser session: %s", e)
 
             persist = _persist_session
+
+            # Remembered credentials: whenever a page with a password field
+            # shows up (the B2C sign-in after the saved session expired), fill
+            # username + password so the operator only clicks "Sign in". FILL
+            # ONLY — never auto-submit: a stale password that auto-submits in a
+            # loop can lock the remote account, and any MFA step stays human.
+            # Only allowlisted hosts can ever load here (nav guard), so the
+            # fill can't leak the credential to an arbitrary site.
+            creds_path = creds_file_for(key)
+            creds = load_state(creds_path) if creds_path else None
+
+            async def _autofill() -> None:
+                if not creds or not (creds.get("username") or creds.get("password")):
+                    return
+                try:
+                    pw_box = page.locator("input[type=password]:visible").first
+                    await pw_box.wait_for(state="visible", timeout=4_000)
+                except Exception:
+                    return  # no sign-in form on this page — the common case
+                try:
+                    if creds.get("username"):
+                        # B2C's ids first, then generic username/email inputs.
+                        user_box = page.locator(
+                            "#signInName, #email, input[type=email]:visible, "
+                            "input[autocomplete=username]:visible, "
+                            "input[type=text]:visible"
+                        ).first
+                        await user_box.fill(creds["username"], timeout=2_000)
+                    if creds.get("password"):
+                        await pw_box.fill(creds["password"], timeout=2_000)
+                    log.info("browser-stream autofilled the sign-in form")
+                except Exception as e:
+                    log.debug("autofill skipped: %s", e)
+
             # Make native <select> dropdowns visible in the screencast (see shim).
             await ctx.add_init_script(_SELECT_SHIM)
             page = await ctx.new_page()
+            # Try the autofill on every navigation — the sign-in page can appear
+            # at connect (expired session) or mid-session (B2C re-auth bounce).
+            page.on("domcontentloaded", lambda _p: asyncio.create_task(_autofill()))
 
             # SSRF hardening: block any TOP-LEVEL navigation off the allowlist —
             # redirects, JS `location=`, meta-refresh. Sub-resources pass so pages

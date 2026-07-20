@@ -12,6 +12,7 @@ from pathlib import Path
 
 _BS = Path(__file__).resolve().parents[1] / "plugin_host" / "browser_stream.py"
 _spec = importlib.util.spec_from_file_location("browser_stream", _BS)
+assert _spec is not None and _spec.loader is not None
 bs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bs)
 
@@ -56,6 +57,16 @@ def test_state_file_sanitizes_key(tmp_path, monkeypatch):
     # Keys that sanitize to nothing yield no path → no persistence.
     assert bs.state_file_for("") is None
     assert bs.state_file_for("!!!") is None
+
+
+def test_creds_file_is_contained_and_distinct(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLUGIN_BROWSER_STATE_DIR", str(tmp_path))
+    p = bs.creds_file_for("../../etc/shadow")
+    assert p is not None and Path(p).parent == tmp_path
+    # Credentials and session state must never share a file.
+    assert bs.creds_file_for("chipricing") != bs.state_file_for("chipricing")
+    assert bs.creds_file_for("chipricing") == str(tmp_path / "chipricing.creds")
+    assert bs.creds_file_for("!!!") is None
 
 
 def test_state_roundtrip_plaintext(tmp_path, monkeypatch):

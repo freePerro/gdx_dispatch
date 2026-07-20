@@ -24,9 +24,10 @@ import os
 import time
 from urllib.parse import quote
 
+import httpx
 import jwt
 import websockets
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from jwt.exceptions import InvalidTokenError as JWTError
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -56,19 +57,25 @@ class TicketReq(BaseModel):
     url: str = Field(min_length=1, max_length=2000)
 
 
+def _gate_browser(user: dict, db: Session, key: str) -> None:
+    """The browser-permission gate stack, shared by every _browser route:
+    owner role + the plugin LIVE-declares "browser" + recorded owner consent."""
+    if user.get("role") not in _OWNER_ROLES:
+        raise HTTPException(403, "browser stream is owner-only")
+    # Re-check the LIVE declared permission, not just a stored consent row.
+    if "browser" not in fetch_permissions(key):
+        raise HTTPException(403, f"plugin {key!r} does not declare the browser permission")
+    if not has_permission_consent(db, key, "browser"):
+        raise HTTPException(403, "owner consent required for the browser permission")
+
+
 @router.post("/api/plugins/_browser/ticket")
 def issue_ticket(
     body: TicketReq,
     user: dict = Depends(get_current_user),  # full gate stack runs here
     db: Session = Depends(get_db),
 ) -> dict:
-    if user.get("role") not in _OWNER_ROLES:
-        raise HTTPException(403, "browser stream is owner-only")
-    # Re-check the LIVE declared permission, not just a stored consent row.
-    if "browser" not in fetch_permissions(body.key):
-        raise HTTPException(403, f"plugin {body.key!r} does not declare the browser permission")
-    if not has_permission_consent(db, body.key, "browser"):
-        raise HTTPException(403, "owner consent required for the browser permission")
+    _gate_browser(user, db, body.key)
     if not host_allowed(body.url):
         raise HTTPException(400, "url host is not on the allowlist")
     ticket = jwt.encode(
@@ -87,6 +94,68 @@ def issue_ticket(
         algorithm=ALG,
     )
     return {"ticket": ticket}
+
+
+def _host_http_url() -> str:
+    return os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
+
+
+class CredsReq(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    username: str = Field(default="", max_length=200)
+    password: str = Field(default="", max_length=200)
+
+
+async def _creds_call(method: str, **kwargs) -> dict:
+    """Relay a credentials op to the plugin-host's internal store."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.request(
+            method, f"{_host_http_url()}/internal/browser/credentials", **kwargs
+        )
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, r.text[:500])
+    return r.json()
+
+
+@router.post("/api/plugins/_browser/credentials")
+async def save_browser_credentials(
+    body: CredsReq,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Remember the sign-in for a plugin's browser workspace. Same gate stack
+    as the stream ticket; stored encrypted on the plugin-host (never in core),
+    and only ever autofilled into allowlisted hosts inside the stream."""
+    _gate_browser(user, db, body.key)
+    if not (body.username or body.password):
+        raise HTTPException(400, "provide a username and/or password")
+    return await _creds_call(
+        "POST",
+        json={"key": body.key, "username": body.username, "password": body.password},
+    )
+
+
+@router.get("/api/plugins/_browser/credentials")
+async def browser_credentials_status(
+    key: str = Query(min_length=1, max_length=64),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Whether a remembered login exists (username + has_password flag only —
+    the password itself never leaves the plugin-host)."""
+    _gate_browser(user, db, key)
+    return await _creds_call("GET", params={"key": key})
+
+
+@router.delete("/api/plugins/_browser/credentials")
+async def forget_browser_credentials(
+    key: str = Query(min_length=1, max_length=64),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Forget a plugin's remembered sign-in."""
+    _gate_browser(user, db, key)
+    return await _creds_call("DELETE", params={"key": key})
 
 
 def _decode_ticket(ticket: str) -> dict | None:

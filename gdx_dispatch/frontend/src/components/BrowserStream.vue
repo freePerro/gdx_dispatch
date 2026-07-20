@@ -23,8 +23,66 @@
         :disabled="!connected"
         @click="onCapture"
       />
+      <Button
+        :label="credsSaved ? 'Login remembered' : 'Remember login'"
+        :icon="credsSaved ? 'pi pi-check' : 'pi pi-key'"
+        size="small"
+        severity="secondary"
+        outlined
+        data-testid="browser-creds-btn"
+        @click="credsOpen = true"
+      />
       <span v-if="error" class="browser-stream__error">{{ error }}</span>
     </div>
+
+    <!-- Remembered sign-in: stored encrypted server-side and auto-filled into
+         the remote site's login form. Fill only — the operator still clicks
+         the site's own Sign in button. -->
+    <Dialog
+      v-model:visible="credsOpen"
+      modal
+      header="Remember sign-in"
+      :style="{ width: '24rem' }"
+      data-testid="browser-creds-dialog"
+    >
+      <p class="browser-stream__creds-hint">
+        Saved securely on your server and typed into the site's sign-in form
+        for you — you just click its Sign&nbsp;in button.
+      </p>
+      <div class="browser-stream__creds-form">
+        <InputText
+          v-model="credsUsername"
+          placeholder="Username / email"
+          autocomplete="off"
+          data-testid="browser-creds-user"
+        />
+        <Password
+          v-model="credsPassword"
+          :feedback="false"
+          toggle-mask
+          :placeholder="credsSaved ? '••••••• (unchanged)' : 'Password'"
+          input-class="browser-stream__creds-pw"
+          data-testid="browser-creds-pass"
+        />
+      </div>
+      <template #footer>
+        <Button
+          v-if="credsSaved"
+          label="Forget"
+          severity="danger"
+          text
+          data-testid="browser-creds-forget"
+          @click="onForgetCreds"
+        />
+        <Button
+          label="Save"
+          :loading="credsSaving"
+          :disabled="!credsUsername && !credsPassword"
+          data-testid="browser-creds-save"
+          @click="onSaveCreds"
+        />
+      </template>
+    </Dialog>
 
     <img
       ref="screen"
@@ -69,6 +127,9 @@
 // here. All logic is in useBrowserStream so it unit-tests; this is the template.
 import { onMounted, onBeforeUnmount, ref } from 'vue';
 import Button from 'primevue/button';
+import Dialog from 'primevue/dialog';
+import InputText from 'primevue/inputtext';
+import Password from 'primevue/password';
 import Select from 'primevue/select';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useBrowserStream } from '../composables/useBrowserStream';
@@ -116,6 +177,50 @@ async function loadFolders() {
   }
 }
 
+// ---- Remembered sign-in (login autofill) ----
+const credsOpen = ref(false);
+const credsSaved = ref(false);
+const credsSaving = ref(false);
+const credsUsername = ref('');
+const credsPassword = ref('');
+const credsUrl = `/api/plugins/_browser/credentials?key=${encodeURIComponent(props.pluginKey)}`;
+
+async function loadCredsStatus() {
+  try {
+    const s = await api.get(credsUrl);
+    credsSaved.value = !!s?.saved;
+    credsUsername.value = s?.username || '';
+  } catch {
+    credsSaved.value = false; // non-owner / no consent — dialog will just 403 on save
+  }
+}
+
+async function onSaveCreds() {
+  credsSaving.value = true;
+  try {
+    // Blank password on an existing save keeps the stored one (the placeholder
+    // says "unchanged"); Forget is the only way to clear.
+    await api.post('/api/plugins/_browser/credentials', {
+      key: props.pluginKey,
+      username: credsUsername.value,
+      password: credsPassword.value,
+    }, { successMessage: 'Sign-in remembered — it will be pre-filled for you' });
+    credsSaved.value = true;
+    credsPassword.value = '';
+    credsOpen.value = false;
+  } finally {
+    credsSaving.value = false;
+  }
+}
+
+async function onForgetCreds() {
+  await api.del(credsUrl);
+  credsSaved.value = false;
+  credsUsername.value = '';
+  credsPassword.value = '';
+  credsOpen.value = false;
+}
+
 async function onCapture() {
   capturing.value = true;
   try {
@@ -133,6 +238,7 @@ async function onCapture() {
 onMounted(() => {
   connect({ key: props.pluginKey, url: props.url, api });
   loadFolders();
+  loadCredsStatus();
 });
 onBeforeUnmount(disconnect);
 </script>
@@ -154,6 +260,10 @@ onBeforeUnmount(disconnect);
 .browser-stream__dot.is-on { background: var(--color-success-500); }
 .browser-stream__dot.is-off { background: var(--color-warning-500); }
 .browser-stream__error { color: var(--color-danger-500); }
+.browser-stream__creds-hint { margin: 0 0 0.75rem; color: var(--p-text-muted-color, #666); }
+.browser-stream__creds-form { display: flex; flex-direction: column; gap: 0.75rem; }
+.browser-stream__creds-form :deep(.p-password),
+.browser-stream__creds-form :deep(.p-password-input) { width: 100%; }
 .browser-stream__screen {
   width: 100%; max-width: 1280px; aspect-ratio: 1280 / 800;
   border: 1px solid var(--surface-border, #ccc); background: #000;
