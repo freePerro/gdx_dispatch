@@ -355,3 +355,62 @@ def test_sync_one_folder_bootstraps_delta_token_on_first_sync():
     assert state.delta_token == "tok123"
     assert state.full_resync_required is False
     assert (upserted, removed) == (0, 0)
+
+
+# ── D3: auto-tag on persist + re-tag backfill ──────────────────────────
+
+
+def test_persist_tags_new_row():
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = None
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
+    with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
+        _persist_messages(tdb, account, [
+            {"id": "g1", "subject": "Re: estimate",
+             "from": {"emailAddress": {"address": "alice@x.com"}}},
+        ])
+    tag.assert_called_once()
+
+
+def test_persist_does_not_tag_existing_row():
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = MagicMock()
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
+    with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
+        _persist_messages(tdb, account, [{"id": "g1", "subject": "updated"}])
+    tag.assert_not_called()
+
+
+def test_persist_tag_failure_does_not_break_upsert():
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = None
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
+    with patch("gdx_dispatch.modules.outlook.tasks.tag_message", side_effect=RuntimeError("boom")):
+        n = _persist_messages(tdb, account, [
+            {"id": "g1", "subject": "x", "from": {"emailAddress": {"address": "a@x.com"}}},
+        ])
+    assert n == 1  # upsert survives a tagging failure
+
+
+def test_retag_untagged_walks_and_commits():
+    from gdx_dispatch.modules.outlook.tasks import _retag_untagged
+    r1, r2 = MagicMock(), MagicMock()
+    r1.id, r2.id = uuid4(), uuid4()
+    qm = MagicMock()
+    qm.filter.return_value = qm
+    qm.order_by.return_value = qm
+    qm.limit.return_value = qm
+    qm.all.side_effect = [[r1, r2], []]  # one batch, then drained
+    tdb = MagicMock()
+    tdb.query.return_value = qm
+    with patch("gdx_dispatch.modules.outlook.tasks.tag_message", side_effect=[True, False]) as tag:
+        out = _retag_untagged(tdb, batch=200)
+    assert out == {"scanned": 2, "tagged": 1}
+    assert tag.call_count == 2
+    tdb.commit.assert_called()

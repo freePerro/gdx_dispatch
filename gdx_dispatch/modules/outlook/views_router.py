@@ -79,6 +79,17 @@ class PersonalIn(BaseModel):
     is_personal: bool
 
 
+class LinkIn(BaseModel):
+    customer_id: UUID | None = None
+    job_id: UUID | None = None
+
+
+# Roles allowed to (re)assign a message's customer/job link. Office staff, not
+# field techs — matching the tagged-visibility posture (techs consume tags,
+# they don't curate them).
+_TAG_MANAGER_ROLES = {"owner", "admin", "dispatcher", "csr", "manager", "sales"}
+
+
 class MessageBodyOut(BaseModel):
     """Live-fetched full body for one message (D1).
 
@@ -322,6 +333,102 @@ def set_message_personal(
     msg.is_personal = payload.is_personal
     tenant_db.commit()
     return _to_detail(msg, viewer_is_owner=True)
+
+
+@router.post(
+    "/messages/{message_id}/link",
+    response_model=MessageDetailOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def link_message(
+    message_id: UUID,
+    payload: LinkIn,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+) -> MessageDetailOut:
+    """Manually link a message to a customer and/or job (D3).
+
+    Sets the tag to ``manual`` (confidence 1.0), overriding any auto-tag —
+    the correction path when auto_match/job_thread guessed wrong or missed.
+    Office roles only; the viewer must also be able to see the message.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    if payload.customer_id is None and payload.job_id is None:
+        raise HTTPException(status_code=422, detail="provide customer_id and/or job_id")
+    if role not in _TAG_MANAGER_ROLES:
+        raise HTTPException(status_code=403, detail="not permitted to link messages")
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        raise HTTPException(status_code=404, detail="message not found")
+
+    # Validate the targets exist and aren't soft-deleted — otherwise a typo'd
+    # id 500s on insert and a deleted customer links silently (auto_match
+    # excludes deleted_at; the manual path must too).
+    from gdx_dispatch.models.tenant_models import Customer, Job  # noqa: PLC0415
+
+    if payload.customer_id is not None:
+        cust = (
+            tenant_db.query(Customer.id)
+            .filter(Customer.id == payload.customer_id, Customer.deleted_at.is_(None))
+            .first()
+        )
+        if cust is None:
+            raise HTTPException(status_code=422, detail="customer_id not found")
+    if payload.job_id is not None:
+        job = (
+            tenant_db.query(Job.id)
+            .filter(Job.id == payload.job_id, Job.deleted_at.is_(None))
+            .first()
+        )
+        if job is None:
+            raise HTTPException(status_code=422, detail="job_id not found")
+
+    from gdx_dispatch.modules.outlook.tagger import manual_tag  # noqa: PLC0415
+
+    manual_tag(msg, customer_id=payload.customer_id, job_id=payload.job_id)
+    tenant_db.commit()
+    return _to_detail(msg, viewer_is_owner=_viewer_owns_mailbox(tenant_db, msg, uid))
+
+
+@router.delete(
+    "/messages/{message_id}/link",
+    response_model=MessageDetailOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def unlink_message(
+    message_id: UUID,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+) -> MessageDetailOut:
+    """Clear a message's customer/job link (D3).
+
+    Records a MANUAL 'no link' (tag_strategy='manual', links NULL) rather than
+    resetting to NULL — otherwise the hourly retag would just re-apply the very
+    auto-tag the user is rejecting. The human decision is durable; re-link with
+    POST /link to change it. Office roles + can_view, same as link.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    if role not in _TAG_MANAGER_ROLES:
+        raise HTTPException(status_code=403, detail="not permitted to unlink messages")
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        raise HTTPException(status_code=404, detail="message not found")
+    from gdx_dispatch.modules.outlook.tagger import manual_tag  # noqa: PLC0415
+
+    # manual_tag with no ids: links NULL, strategy 'manual' — pins it so
+    # neither tag_message (skips tagged) nor the retag (WHERE tag_strategy IS
+    # NULL) re-links it.
+    manual_tag(msg)
+    tenant_db.commit()
+    return _to_detail(msg, viewer_is_owner=_viewer_owns_mailbox(tenant_db, msg, uid))
 
 
 def _tenant_id(user: dict[str, Any]) -> UUID:

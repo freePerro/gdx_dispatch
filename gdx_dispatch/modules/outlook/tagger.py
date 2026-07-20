@@ -173,15 +173,22 @@ def tag_message(
     message: OutlookMessage,
     tenant_db: Session,
     control_db: Session | None = None,
+    *,
+    settings: OutlookSettings | None = None,
 ) -> bool:
     """Apply the configured strategy chain to a message. Mutates the message
     in place (sets linked_customer_id, linked_job_id, tag_strategy, tag_confidence).
     Returns True if any strategy matched. Idempotent.
+
+    ``settings`` may be pre-loaded by a batch caller (sync / backfill) to avoid
+    re-querying OutlookSettings once per message — pass ``_load_tag_settings``.
+    Omit it and the row is loaded here (per-call), which is fine for one-offs.
     """
     if message.tag_strategy:
         return False  # already tagged
 
-    settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
+    if settings is None:
+        settings = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
     if settings is None:
         order = ["auto_match", "job_thread", "ai"]
         enabled = {"auto_match": True, "job_thread": True, "ai": True}
