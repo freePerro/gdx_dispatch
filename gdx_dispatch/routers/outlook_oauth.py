@@ -355,7 +355,7 @@ def oauth_callback(
     except OutlookGraphAPIError as exc:
         log.warning("outlook /me failed for user %s: %s", user_id, exc)
 
-    key_storage.set_user_tokens(
+    account = key_storage.set_user_tokens(
         tenant_db, user_id,
         access_token=access_token,
         refresh_token=refresh_token,
@@ -364,7 +364,14 @@ def oauth_callback(
         display_name=display_name,
         scopes=tok.get("scope"),
     )
+    # Snapshot "was this account ever synced?" BEFORE commit expires the
+    # instance — this is a real in-session read (None for a brand-new row).
+    is_fresh_connect = account.last_sync_at is None
     tenant_db.commit()
+    # account.id is assigned by SQLAlchemy at FLUSH (mapped_column default=uuid4),
+    # NOT at construction — so it must be read AFTER commit. Reading it before
+    # would enqueue backfill with "None" and crash the worker on UUID("None").
+    account_id = str(account.id)
 
     # Best-effort Graph webhook subscription so real-time notifications
     # start immediately. 2026-07-07 audit: despite create_subscription's
@@ -386,6 +393,33 @@ def oauth_callback(
     except Exception:
         tenant_db.rollback()
         log.exception("outlook callback: subscription create failed (fallback poll still covers sync)")
+
+    # D5: pull mail on connect. REQUIRED, not just nice — create_subscription
+    # above just made a HEALTHY subscription, and the fallback poller
+    # explicitly skips healthy-subscription accounts, so without this a
+    # freshly-connected mailbox stays EMPTY until the first new mail webhook
+    # fires. Fresh connect → date-bounded backfill (honors backfill_days and
+    # primes the delta tokens the webhook/poller resume from). Reconnect →
+    # an immediate delta sync to catch mail missed while disconnected. Both
+    # are enqueued (non-blocking); failure is non-fatal (the 6h self-heal +
+    # manual sync still catch up).
+    try:
+        from gdx_dispatch.modules.outlook.models import OutlookSettings
+        from gdx_dispatch.modules.outlook.tasks import (
+            backfill_outlook_mailbox,
+            sync_outlook_mailbox,
+        )
+
+        if is_fresh_connect:
+            settings_row = (
+                tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
+            )
+            days = (settings_row.backfill_days if settings_row else None) or 90
+            backfill_outlook_mailbox.delay(account_id, str(tenant_id), days=days)
+        else:
+            sync_outlook_mailbox.delay(account_id, str(tenant_id))
+    except Exception:
+        log.exception("outlook callback: initial sync enqueue failed (poll/manual catches up)")
 
     return _safe_redirect(status_q="ok")
 
