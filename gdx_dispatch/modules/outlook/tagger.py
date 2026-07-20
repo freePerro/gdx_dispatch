@@ -174,7 +174,7 @@ def tag_message(
     tenant_db: Session,
     control_db: Session | None = None,
     *,
-    settings: "OutlookSettings | None" = None,
+    settings: OutlookSettings | None = None,
 ) -> bool:
     """Apply the configured strategy chain to a message. Mutates the message
     in place (sets linked_customer_id, linked_job_id, tag_strategy, tag_confidence).

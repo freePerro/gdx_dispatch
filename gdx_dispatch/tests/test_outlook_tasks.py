@@ -363,7 +363,9 @@ def test_sync_one_folder_bootstraps_delta_token_on_first_sync():
 def test_persist_tags_new_row():
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = None
-    account = MagicMock(); account.id = uuid4(); account.upn = "me@x.com"
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
     with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
         _persist_messages(tdb, account, [
             {"id": "g1", "subject": "Re: estimate",
@@ -375,7 +377,9 @@ def test_persist_tags_new_row():
 def test_persist_does_not_tag_existing_row():
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = MagicMock()
-    account = MagicMock(); account.id = uuid4(); account.upn = "me@x.com"
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
     with patch("gdx_dispatch.modules.outlook.tasks.tag_message") as tag:
         _persist_messages(tdb, account, [{"id": "g1", "subject": "updated"}])
     tag.assert_not_called()
@@ -384,7 +388,9 @@ def test_persist_does_not_tag_existing_row():
 def test_persist_tag_failure_does_not_break_upsert():
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.one_or_none.return_value = None
-    account = MagicMock(); account.id = uuid4(); account.upn = "me@x.com"
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "me@x.com"
     with patch("gdx_dispatch.modules.outlook.tasks.tag_message", side_effect=RuntimeError("boom")):
         n = _persist_messages(tdb, account, [
             {"id": "g1", "subject": "x", "from": {"emailAddress": {"address": "a@x.com"}}},
