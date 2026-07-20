@@ -11,6 +11,7 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import TreeSelect from 'primevue/treeselect'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
+import EmailAttachments from '../components/EmailAttachments.vue'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -719,9 +720,13 @@ onMounted(async () => {
           <div><span class="muted">To:</span> {{ (detail.to_addresses || []).join(', ') }}</div>
           <div v-if="detail.cc_addresses?.length"><span class="muted">Cc:</span> {{ detail.cc_addresses.join(', ') }}</div>
           <div><span class="muted">Date:</span> {{ fmtDate(detail.sent_at || detail.received_at) }}</div>
-          <div v-if="detail.has_attachments" class="muted">📎 Has attachments</div>
           <div v-if="detail.is_personal" class="muted" data-test="inbox-personal-flag">🔒 Personal — visible only to you</div>
         </div>
+        <EmailAttachments
+          v-if="detail.has_attachments"
+          :message-id="detail.id"
+          :has-attachments="detail.has_attachments"
+        />
         <EmailBodyFrame
           :html="bodyData.body_html || bodyData.body_preview || detail.body_preview || ''"
           :content-type="bodyFrameType"

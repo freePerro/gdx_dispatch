@@ -64,6 +64,11 @@
             :loading="bodyLoading"
             :note="bodyNote"
           />
+          <EmailAttachments
+            v-if="detail.has_attachments"
+            :message-id="detail.id"
+            :has-attachments="detail.has_attachments"
+          />
 
           <div v-if="composeMode === 'reply'" class="reply-block">
             <h3>Reply</h3>
@@ -144,6 +149,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import EmailBodyFrame from '../components/EmailBodyFrame.vue'
+import EmailAttachments from '../components/EmailAttachments.vue'
 
 const api = useApi()
 const toast = useToast()
