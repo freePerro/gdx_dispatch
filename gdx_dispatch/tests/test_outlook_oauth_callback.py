@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import respx
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -164,3 +165,84 @@ def test_callback_redirects_only_to_relative_settings_url(app):
     loc = r.headers["location"]
     assert loc.startswith("/settings?")
     assert "://" not in loc, "must not redirect to absolute URL — open-redirect risk"
+
+
+# ── D5: sync on connect ─────────────────────────────────────────────────
+
+
+def _mock_token_and_me():
+    respx.post(
+        "https://login.microsoftonline.com/ms-tenant-guid/oauth2/v2.0/token"
+    ).mock(return_value=Response(200, json={
+        "access_token": "acc1", "refresh_token": "ref1",
+        "expires_in": 3600, "scope": "Mail.Read offline_access",
+    }))
+    respx.get("https://graph.microsoft.com/v1.0/me").mock(return_value=Response(
+        200, json={"id": "ms-uid", "userPrincipalName": "doug@gdx", "displayName": "Doug B"}
+    ))
+
+
+@respx.mock
+def test_callback_fresh_connect_enqueues_backfill(app):
+    client, _, _ = app
+    _mock_token_and_me()
+    acct = MagicMock()
+    acct.id = uuid4()
+    acct.last_sync_at = None  # never synced
+    with patch("gdx_dispatch.routers.outlook_oauth.key_storage.get_client_secret",
+               return_value="secret"), \
+         patch("gdx_dispatch.routers.outlook_oauth.key_storage.set_user_tokens", return_value=acct), \
+         patch("gdx_dispatch.modules.outlook.subscriptions.create_subscription"), \
+         patch("gdx_dispatch.modules.outlook.tasks.backfill_outlook_mailbox") as backfill, \
+         patch("gdx_dispatch.modules.outlook.tasks.sync_outlook_mailbox") as sync:
+        r = client.get(f"/api/oauth/outlook/callback?code=abc&state={_good_state()}")
+    assert r.status_code == 302
+    backfill.delay.assert_called_once()
+    args = backfill.delay.call_args
+    assert args[0][0] == str(acct.id)
+    assert args[0][1] == str(TID)
+    sync.delay.assert_not_called()
+
+
+@respx.mock
+def test_callback_reconnect_enqueues_delta_sync_not_backfill(app):
+    client, _, _ = app
+    _mock_token_and_me()
+    from datetime import datetime, timezone
+    acct = MagicMock()
+    acct.id = uuid4()
+    acct.last_sync_at = datetime(2026, 7, 1, tzinfo=timezone.utc)  # synced before
+    with patch("gdx_dispatch.routers.outlook_oauth.key_storage.get_client_secret",
+               return_value="secret"), \
+         patch("gdx_dispatch.routers.outlook_oauth.key_storage.set_user_tokens", return_value=acct), \
+         patch("gdx_dispatch.modules.outlook.subscriptions.create_subscription"), \
+         patch("gdx_dispatch.modules.outlook.tasks.backfill_outlook_mailbox") as backfill, \
+         patch("gdx_dispatch.modules.outlook.tasks.sync_outlook_mailbox") as sync:
+        r = client.get(f"/api/oauth/outlook/callback?code=abc&state={_good_state()}")
+    assert r.status_code == 302
+    sync.delay.assert_called_once()
+    backfill.delay.assert_not_called()
+
+
+@respx.mock
+def test_callback_fresh_connect_enqueues_a_real_account_uuid(app, tenant_db, monkeypatch):
+    """The anti-theater test: run the REAL set_user_tokens against a real DB so
+    the callback reads a real (flush-assigned) account.id. Guards the bug where
+    capturing account.id BEFORE commit yields None → backfill.delay('None') →
+    UUID('None') crashes the worker → the mailbox stays empty."""
+    monkeypatch.setenv("GDX_FERNET_KEY", Fernet.generate_key().decode())
+    client, _, _ = app
+    client.app.dependency_overrides[get_db_for_oauth_callback] = lambda: tenant_db
+    _mock_token_and_me()
+    with patch("gdx_dispatch.routers.outlook_oauth.key_storage.get_client_secret",
+               return_value="secret"), \
+         patch("gdx_dispatch.modules.outlook.subscriptions.create_subscription"), \
+         patch("gdx_dispatch.modules.outlook.tasks.backfill_outlook_mailbox") as backfill, \
+         patch("gdx_dispatch.modules.outlook.tasks.sync_outlook_mailbox"):
+        r = client.get(f"/api/oauth/outlook/callback?code=abc&state={_good_state()}")
+    assert r.status_code == 302
+    backfill.delay.assert_called_once()
+    account_id_arg = backfill.delay.call_args[0][0]
+    # Load-bearing: a real UUID, NEVER the pre-flush 'None'.
+    assert account_id_arg != "None"
+    UUID(account_id_arg)  # raises if not a valid UUID

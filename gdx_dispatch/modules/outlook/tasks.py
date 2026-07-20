@@ -47,7 +47,11 @@ from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.tasks")
 
-MAX_MESSAGES_PER_RUN = 500
+# Per-backfill-folder page cap (D5). The incremental delta sync is bounded by
+# Graph's delta paging, not a count; only the initial backfill needs a cap so a
+# giant mailbox can't walk forever. (A prior MAX_MESSAGES_PER_RUN=500 constant
+# was defined but never referenced — removed to stop implying an unenforced
+# limit.)
 BACKFILL_MAX_MESSAGES_PER_RUN = 5000
 
 # Folders we cache + show in the rail but do NOT actively sync messages from.
