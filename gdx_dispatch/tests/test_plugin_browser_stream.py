@@ -1,14 +1,18 @@
 """Security-logic tests for the plugin browser stream (ADR-014).
 
 Covers the allowlist + SSRF navigation guard — the parts that, if wrong, let the
-server browser egress to an arbitrary/internal host. Loaded by path so it needs
-no DB/app context.
+server browser egress to an arbitrary/internal host — and the remembered-login
+session store (path containment + encryption at rest). Loaded by path so it
+needs no DB/app context.
 """
 import importlib.util
+import json
+import os
 from pathlib import Path
 
 _BS = Path(__file__).resolve().parents[1] / "plugin_host" / "browser_stream.py"
 _spec = importlib.util.spec_from_file_location("browser_stream", _BS)
+assert _spec is not None and _spec.loader is not None
 bs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bs)
 
@@ -44,9 +48,95 @@ def test_nav_guard_ignores_non_http_schemes():
     assert not bs.nav_should_block("data:text/html,hi", True)
 
 
+def test_subresource_guard_blocks_internal_hosts():
+    # The streamed Chromium lives in the plugin-host container: a hostile page
+    # must not be able to fetch() the host's own internal API, sibling
+    # containers, or cloud metadata as "sub-resources".
+    assert bs.subresource_should_block("http://localhost:8000/internal/browser/credentials")
+    assert bs.subresource_should_block("http://127.0.0.1:8000/internal/restart")
+    assert bs.subresource_should_block("http://plugin-host:8000/internal/browser/credentials")
+    assert bs.subresource_should_block("http://db:5432/")
+    assert bs.subresource_should_block("http://169.254.169.254/latest/meta-data/")
+    assert bs.subresource_should_block("http://10.0.0.7/admin")
+    assert bs.subresource_should_block("http://[::1]:8000/internal/restart")
+
+
+def test_subresource_guard_allows_normal_assets(monkeypatch):
+    # Public CDN assets keep pages rendering…
+    assert not bs.subresource_should_block("https://cdn.example.com/app.js")
+    assert not bs.subresource_should_block("https://aadcdn.msftauth.net/x.css")
+    assert not bs.subresource_should_block("data:image/png;base64,AAAA")
+    # …and an EXPLICITLY allowlisted private host (dev/test) still passes.
+    monkeypatch.setenv("PLUGIN_BROWSER_ALLOWED_HOSTS", "127.0.0.1")
+    assert not bs.subresource_should_block("http://127.0.0.1:8765/login")
+
+
+def test_state_file_sanitizes_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLUGIN_BROWSER_STATE_DIR", str(tmp_path))
+    # A hostile key cannot traverse out of the state dir.
+    p = bs.state_file_for("../../etc/passwd")
+    assert p is not None and Path(p).parent == tmp_path
+    assert bs.state_file_for("chipricing") == str(tmp_path / "chipricing.session")
+    # Keys that sanitize to nothing yield no path → no persistence.
+    assert bs.state_file_for("") is None
+    assert bs.state_file_for("!!!") is None
+
+
+def test_creds_file_is_contained_and_distinct(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLUGIN_BROWSER_STATE_DIR", str(tmp_path))
+    p = bs.creds_file_for("../../etc/shadow")
+    assert p is not None and Path(p).parent == tmp_path
+    # Credentials and session state must never share a file.
+    assert bs.creds_file_for("chipricing") != bs.state_file_for("chipricing")
+    assert bs.creds_file_for("chipricing") == str(tmp_path / "chipricing.creds")
+    assert bs.creds_file_for("!!!") is None
+
+
+def test_state_roundtrip_plaintext(tmp_path, monkeypatch):
+    # Keyless dev: save/load round-trips, file is owner-only.
+    monkeypatch.setattr(bs, "_fernet", lambda: None)
+    path = str(tmp_path / "sub" / "chipricing.session")
+    state = {"cookies": [{"name": "auth", "value": "abc"}], "origins": []}
+    bs.save_state(path, state)
+    assert bs.load_state(path) == state
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_state_roundtrip_encrypted(tmp_path, monkeypatch):
+    # With a key, the bytes on disk are ciphertext, and load decrypts them.
+    from cryptography.fernet import Fernet
+
+    f = Fernet(Fernet.generate_key())
+    monkeypatch.setattr(bs, "_fernet", lambda: f)
+    path = str(tmp_path / "chipricing.session")
+    state = {"cookies": [{"name": "auth", "value": "s3cret"}], "origins": []}
+    bs.save_state(path, state)
+    raw = Path(path).read_bytes()
+    assert b"s3cret" not in raw
+    assert bs.load_state(path) == state
+
+
+def test_load_state_failures_return_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(bs, "_fernet", lambda: None)
+    assert bs.load_state(str(tmp_path / "missing.session")) is None
+    corrupt = tmp_path / "corrupt.session"
+    corrupt.write_bytes(b"\x00not json")
+    assert bs.load_state(str(corrupt)) is None
+    # A non-dict JSON payload is rejected too (Playwright needs a dict).
+    lst = tmp_path / "list.session"
+    lst.write_text(json.dumps([1, 2]))
+    assert bs.load_state(str(lst)) is None
+
+
 if __name__ == "__main__":
+    import inspect
+
     for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok: {name}")
+        if not (name.startswith("test_") and callable(fn)):
+            continue
+        if inspect.signature(fn).parameters:  # fixture-based — pytest only
+            print(f"skip (needs pytest): {name}")
+            continue
+        fn()
+        print(f"ok: {name}")
     print("ALL PASS")
