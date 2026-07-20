@@ -116,7 +116,13 @@ async def browser_stream_proxy(websocket: WebSocket, ticket: str = "") -> None:
         return
 
     await websocket.accept()
-    upstream = f"{_ws_host_url()}/internal/browser/ws?url={quote(claims['u'], safe='')}"
+    # `k` (the plugin key) rides along so the host can reload/persist that
+    # plugin's remembered login session. It came from the signed ticket, which
+    # was minted only after the full auth + consent gate stack.
+    upstream = (
+        f"{_ws_host_url()}/internal/browser/ws"
+        f"?url={quote(claims['u'], safe='')}&key={quote(str(claims.get('k', '')), safe='')}"
+    )
     try:
         async with websockets.connect(upstream, max_size=None) as up:
             await asyncio.gather(

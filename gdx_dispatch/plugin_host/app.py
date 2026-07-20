@@ -115,13 +115,14 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
         return {"status": "restarting"}
 
     @app.websocket("/internal/browser/ws")
-    async def browser_ws(ws: WebSocket, url: str):
+    async def browser_ws(ws: WebSocket, url: str, key: str = ""):
         """Stream a headless browser to the operator (ADR-014). Internal-only —
-        reached solely via the core proxy, which enforces owner role + consent
-        before relaying here. `url` is allowlist-checked in stream_browser."""
+        reached solely via the core proxy, which enforces auth + owner role +
+        consent before relaying here. `url` is allowlist-checked in
+        stream_browser; `key` scopes the remembered login to one plugin."""
         from gdx_dispatch.plugin_host.browser_stream import stream_browser
 
-        await stream_browser(ws, url)
+        await stream_browser(ws, url, key)
 
     @app.get("/api/plugins/{key}/ui")
     def plugin_ui(key: str):

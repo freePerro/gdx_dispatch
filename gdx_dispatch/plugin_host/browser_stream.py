@@ -24,6 +24,8 @@ import base64
 import json
 import logging
 import os
+import re
+import tempfile
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
@@ -39,6 +41,91 @@ def allowed_hosts() -> set[str]:
 def host_allowed(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host in allowed_hosts()
+
+
+# ── Remembered login (session persistence) ──────────────────────────────────
+# The workspace used to start a FRESH browser every open, so the operator had to
+# log into HubX each time. Now the post-login session (cookies/localStorage) is
+# persisted per plugin key and reloaded on the next open — the operator stays
+# signed in until the remote site expires the session, then just logs in once
+# more. We deliberately do NOT store the username/password: scripting the Azure
+# B2C password flow is brittle and can trip MFA (see the chi plugin's client),
+# and a session file is a far smaller liability than a credential.
+#
+# At rest the state is Fernet-encrypted with the app's MASTER_ENCRYPTION_KEY
+# (same key that guards QB OAuth tokens); keyless dev falls back to plaintext,
+# mirroring core.pii. Default location is under the /plugins volume so it
+# survives container recreation without a compose change.
+
+
+def state_dir() -> str:
+    d = os.environ.get("PLUGIN_BROWSER_STATE_DIR")
+    if d:
+        return d
+    if os.path.isdir("/plugins"):  # the plugin-host volume (persists)
+        return "/plugins/.browser-state"
+    return os.path.join(tempfile.gettempdir(), "gdx-browser-state")  # dev
+
+
+def state_file_for(key: str) -> str | None:
+    """Path for a plugin's saved session, or None if the key yields nothing.
+    The key is sanitized to [a-z0-9_-] so it can't traverse out of state_dir."""
+    safe = re.sub(r"[^a-z0-9_-]", "", (key or "").lower())
+    if not safe:
+        return None
+    return os.path.join(state_dir(), safe + ".session")
+
+
+def _fernet():
+    """The app's Fernet, or None in keyless dev. Lazy: this module must stay
+    importable with no app context (see test_plugin_browser_stream.py)."""
+    try:
+        from gdx_dispatch.core import pii
+        return getattr(pii, "_FERNET", None)
+    except Exception:  # pragma: no cover - core not importable standalone
+        return None
+
+
+def load_state(path: str) -> dict | None:
+    """Read + decrypt a saved session. Any failure (missing, corrupt, wrong
+    key) returns None — the stream then starts fresh and the operator logs in."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        f = _fernet()
+        if f is not None:
+            try:
+                raw = f.decrypt(raw)
+            except Exception:
+                pass  # plaintext-legacy / keyless-dev file — try it as JSON
+        state = json.loads(raw)
+        return state if isinstance(state, dict) else None
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        log.warning("saved browser session unreadable (%s) — starting fresh", e)
+        return None
+
+
+def save_state(path: str, state: dict) -> None:
+    """Encrypt + write a session atomically, private to the service user."""
+    raw = json.dumps(state).encode()
+    f = _fernet()
+    if f is not None:
+        raw = f.encrypt(raw)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def nav_should_block(url: str, is_navigation: bool) -> bool:
@@ -168,10 +255,13 @@ async def _capture_door_image(page):
         return None, None
 
 
-async def stream_browser(ws, url: str) -> None:
+async def stream_browser(ws, url: str, key: str = "") -> None:
     """Drive a headless page and relay screencast frames <-> input over `ws`.
 
     `ws` is a Starlette/FastAPI WebSocket (accept/send_text/receive_text/close).
+    `key` is the plugin key — when given, the browser session is reloaded from /
+    persisted to that plugin's saved state, so a HubX login survives across
+    workspace opens (the "remember me" path).
     """
     if not host_allowed(url):
         await ws.close(code=4403)
@@ -181,12 +271,36 @@ async def stream_browser(ws, url: str) -> None:
 
     from playwright.async_api import async_playwright
 
+    state_path = state_file_for(key)
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True, args=["--disable-dev-shm-usage"]
         )
+        persist = None  # set once the context exists; called again on disconnect
         try:
-            ctx = await browser.new_context(viewport={"width": 1280, "height": 800})
+            ctx_kwargs: dict = {"viewport": {"width": 1280, "height": 800}}
+            saved = load_state(state_path) if state_path else None
+            if saved:
+                ctx_kwargs["storage_state"] = saved
+            try:
+                ctx = await browser.new_context(**ctx_kwargs)
+            except Exception:
+                # A malformed saved session must never brick the workspace.
+                if "storage_state" not in ctx_kwargs:
+                    raise
+                log.warning("saved browser session rejected — starting fresh")
+                del ctx_kwargs["storage_state"]
+                ctx = await browser.new_context(**ctx_kwargs)
+
+            async def _persist_session() -> None:
+                if not state_path:
+                    return
+                try:
+                    save_state(state_path, await ctx.storage_state())
+                except Exception as e:
+                    log.warning("could not persist browser session: %s", e)
+
+            persist = _persist_session
             # Make native <select> dropdowns visible in the screencast (see shim).
             await ctx.add_init_script(_SELECT_SHIM)
             page = await ctx.new_page()
@@ -275,15 +389,24 @@ async def stream_browser(ws, url: str) -> None:
                     await ws.send_text(json.dumps(
                         {"type": "capture", "url": page.url, "text": str(txt)[:500_000],
                          "image": image, "image_meta": image_meta}))
+                    # A capture proves a logged-in session — snapshot it now, in
+                    # case the container dies before the disconnect save runs.
+                    await _persist_session()
                 elif kind == "key":
                     await cdp.send("Input.dispatchKeyEvent", ev["payload"])
                 elif kind == "nav" and host_allowed(ev.get("url", "")):
                     await page.goto(ev["url"], wait_until="domcontentloaded")
                 elif kind == "save_session":
-                    # Dump the post-login session so the caller can persist it.
+                    # Dump the post-login session so the caller can persist it,
+                    # and persist it server-side too (the remember-me file).
                     state = await ctx.storage_state()
+                    await _persist_session()
                     await ws.send_text(json.dumps({"type": "session", "state": state}))
                 elif kind == "close":
                     break
         finally:
+            # Save the session on EVERY disconnect (close message, tab closed,
+            # socket error) — this is what keeps the operator logged in next time.
+            if persist is not None:
+                await persist()
             await browser.close()
