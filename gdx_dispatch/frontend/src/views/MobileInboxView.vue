@@ -125,7 +125,7 @@
             label="Send"
             icon="pi pi-send"
             :loading="composeSaving"
-            :disabled="!composeForm.to.trim() || !composeForm.subject.trim()"
+            :disabled="!composeForm.to.trim() || !composeForm.subject.trim() || !composeForm.body.trim()"
             @click="sendCompose"
             data-test="mi-compose-send"
           />
@@ -282,16 +282,40 @@ function startReply() {
   replyBody.value = quoted
 }
 
+// Split a comma/semicolon address string into the array SendMailIn wants.
+// Mirrors the desktop InboxView helper.
+function splitAddrs(s) {
+  return (s || '').split(/[,;]/).map((x) => x.trim()).filter(Boolean)
+}
+
+// body_html is HTML: escape the user's plaintext so "cost < $500 & up" reaches
+// the recipient intact (not swallowed as a bogus tag), THEN turn newlines into
+// <br>. Order matters — escape & before < >.
+function plaintextToHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+}
+
 async function sendReply() {
   if (!detail.value || !replyBody.value.trim()) return
+  const to = splitAddrs(detail.value.from_address)
+  if (!to.length) {
+    toast.add({ severity: 'error', summary: 'No reply address', life: 3000 })
+    return
+  }
   replySaving.value = true
   try {
     const subj = detail.value.subject || ''
     const replySubj = subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`
+    // SendMailIn is extra=forbid: `to` must be a list, body field is
+    // `body_html` (not `body`). Sending strings/`body` here was the 422.
     await api.post('/api/outlook/send', {
-      to: detail.value.from_address || detail.value.from_name,
+      to,
       subject: replySubj,
-      body: replyBody.value,
+      body_html: plaintextToHtml(replyBody.value),
       in_reply_to: detail.value.id,
     })
     toast.add({ severity: 'success', summary: 'Reply sent', life: 2500 })
@@ -340,10 +364,27 @@ function startCompose() {
 }
 
 async function sendCompose() {
-  if (!composeForm.value.to.trim() || !composeForm.value.subject.trim()) return
+  const form = composeForm.value
+  const to = splitAddrs(form.to)
+  // Guard on the SPLIT result, not raw .trim(): a "to" of only separators
+  // (";") is truthy-trimmed but yields [], which SendMailIn (to min_length=1)
+  // would 422 on.
+  if (!to.length || !form.subject.trim() || !form.body.trim()) {
+    toast.add({ severity: 'error', summary: 'A recipient, subject, and body are required', life: 3000 })
+    return
+  }
   composeSaving.value = true
   try {
-    await api.post('/api/outlook/send', { ...composeForm.value })
+    // Build EXACTLY the SendMailIn shape — never spread composeForm, whose
+    // string `to`/`cc` + `body` field all trip extra=forbid (the 422).
+    const payload = {
+      to,
+      subject: form.subject,
+      body_html: plaintextToHtml(form.body),
+    }
+    const cc = splitAddrs(form.cc)
+    if (cc.length) payload.cc = cc
+    await api.post('/api/outlook/send', payload)
     toast.add({ severity: 'success', summary: 'Sent', life: 2500 })
     composeOpen.value = false
     composeForm.value = { to: '', cc: '', subject: '', body: '' }
