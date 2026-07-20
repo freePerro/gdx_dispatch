@@ -183,7 +183,11 @@ def sync_accounts(db: Session, client: BannoClient, connection: BannoConnection)
         row.account_subtype = (
             str(acct.get("accountSubType") or acct.get("subType") or "") or row.account_subtype
         )
-        masked = str(acct.get("maskedNumber") or acct.get("accountNumberMasked") or "")
+        # Spec: the masked account number is the string field `numbers`
+        # (accounts.swagger.yaml); the other keys are legacy fallbacks.
+        masked = str(
+            acct.get("numbers") or acct.get("maskedNumber") or acct.get("accountNumberMasked") or ""
+        )
         if not masked:
             number_tail = str(acct.get("lastFour") or "")
             masked = f"•{number_tail}" if number_tail else ""
