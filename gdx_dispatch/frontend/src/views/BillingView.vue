@@ -538,15 +538,19 @@ async function bulkSend() {
   bulkProgress.value = { active: true, label: 'Send', completed: 0, total };
   for (const inv of selectedInvoices.value) {
     try {
-      await api.post(`/api/invoices/${inv.id}/send`, {});
-      ok += 1;
-    } catch (e) {
-      try {
-        await api.patch(`/api/invoices/${inv.id}`, { status: "Sent" });
+      // 2026-07-20 (audit catch): the old catch-block "fallback" PATCHed the
+      // status to Sent and counted it a success even when NO email went out —
+      // and a 200 with email_sent=false was also counted as delivered. Now
+      // only an acknowledged delivery counts; everything else is reported.
+      const res = await api.post(`/api/invoices/${inv.id}/send`, {});
+      const data = res?.data || res;
+      if (data && data.email_sent === false) {
+        failed.push({ id: inv.id, number: inv.invoice_number, err: data.email_skip_reason || "email not delivered" });
+      } else {
         ok += 1;
-      } catch (e2) {
-        failed.push({ id: inv.id, number: inv.invoice_number, err: String(e2?.message || e?.message || e2 || e) });
       }
+    } catch (e) {
+      failed.push({ id: inv.id, number: inv.invoice_number, err: String(e?.message || e) });
     }
     bulkProgress.value.completed += 1;
   }
@@ -557,8 +561,8 @@ async function bulkSend() {
     toast.add({
       severity: ok > 0 ? "warn" : "error",
       summary: ok > 0 ? "Bulk Send — partial failure" : "Bulk Send failed",
-      detail: `${ok}/${total} sent. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
-      life: 6000,
+      detail: `${ok}/${total} emailed. Not delivered: ${failed.map((f) => f.number || f.id).join(", ")} — open each and use Re-send.`,
+      life: 8000,
     });
   }
   selectedInvoices.value = [];
@@ -1039,21 +1043,13 @@ async function recordPayment() {
   }
 }
 
-async function sendInvoice(inv) {
-  try {
-    await api.post(`/api/invoices/${inv.id}/send`);
-    inv.status = "Sent";
-    toast.add({ severity: "success", summary: "Sent", detail: "Invoice sent to customer", life: 3000 });
-  } catch (e) {
-    console.warn("invoice_send_primary_failed", inv?.id, e);
-    try {
-      await api.patch(`/api/invoices/${inv.id}`, { status: "Sent" });
-      inv.status = "Sent";
-      toast.add({ severity: "success", summary: "Sent", detail: "Invoice marked as sent", life: 3000 });
-    } catch (err) {
-      toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to send", life: 3000 });
-    }
-  }
+function sendInvoice(inv) {
+  // 2026-07-20 — no more fire-and-forget POST /send from the list row. Sending
+  // now goes through the invoice detail composer (?compose=1 auto-opens it):
+  // the operator sees the recipient, the message, and a preview of the actual
+  // PDF before anything leaves the building. Status flips via mark-sent on a
+  // real send, not optimistically here.
+  if (inv?.id) router.push(`/billing/${inv.id}?compose=1`);
 }
 
 async function downloadPdf(inv) {

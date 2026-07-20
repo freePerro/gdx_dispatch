@@ -1113,12 +1113,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # - Sentry telemetry goes to regional ingest endpoints (e.g. o<id>.ingest.us.sentry.io,
         #   which is a subdomain of sentry.io, NOT of ingest.sentry.io — the old wildcard
         #   pattern missed this because CSP host matching follows DNS suffix rules)
+        # - The email composers render the outgoing PDF in a blob: iframe
+        #   (ComposerPdfPreview.vue) — without frame-src, framing falls back to
+        #   default-src and the preview would break the day this is enforced
         response.headers["Content-Security-Policy-Report-Only"] = (
             "default-src 'self'; "
             "script-src 'self' https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "worker-src 'self' blob:; "
+            "frame-src 'self' blob:; "
             "connect-src 'self' https://*.sentry.io https://static.cloudflareinsights.com https://cloudflareinsights.com"
         )
         return response

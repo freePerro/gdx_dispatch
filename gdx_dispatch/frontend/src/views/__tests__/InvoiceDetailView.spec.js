@@ -9,7 +9,7 @@
  *     with the full customer record so notes/access_notes survive a save).
  *  4. Tel/mailto/maps links are wired when fields are present.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { nextTick } from 'vue';
 
@@ -37,9 +37,12 @@ vi.mock('primevue/usetoast', () => ({
 vi.mock('primevue/useconfirm', () => ({
   useConfirm: () => ({ require: confirmRequire }),
 }));
+const routerReplace = vi.fn();
+const routeMock = { params: { id: 'inv-1' }, query: {} };
+
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { id: 'inv-1' } }),
-  useRouter: () => ({ push: routerPush }),
+  useRoute: () => routeMock,
+  useRouter: () => ({ push: routerPush, replace: routerReplace }),
 }));
 
 import InvoiceDetailView from '../InvoiceDetailView.vue';
@@ -136,9 +139,26 @@ function mountView() {
   return mount(InvoiceDetailView, { global: { stubs: baseStubs } });
 }
 
+function buildComposePayload(overrides = {}) {
+  return {
+    to: ['ops@acme.example'],
+    subject: 'Invoice INV-0001 from Acme',
+    body_text: 'Hi,\n\nYour invoice is attached.',
+    pdf: {
+      name: 'INV-0001.pdf',
+      content_type: 'application/pdf',
+      content_base64: btoa('%PDF-1.4 test-bytes'),
+      size_bytes: 18,
+    },
+    extra_attachments: [],
+    ...overrides,
+  };
+}
+
 function mockApi(invoicePayload, customerPayload = null) {
   apiGet.mockImplementation((url) => {
     if (url === '/api/invoices/inv-1') return Promise.resolve(invoicePayload);
+    if (url === '/api/invoices/inv-1/email-compose') return Promise.resolve(buildComposePayload());
     if (url === '/api/customers/cust-1') return Promise.resolve(customerPayload || { id: 'cust-1', name: 'Acme Door Co' });
     if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0.07 });
     if (url === '/api/qb/dashboard') return Promise.resolve({ connected: false });
@@ -154,7 +174,9 @@ beforeEach(() => {
   apiDel.mockReset();
   toastAdd.mockReset();
   routerPush.mockReset();
+  routerReplace.mockReset();
   confirmRequire.mockReset();
+  routeMock.query = {};
 });
 
 describe('InvoiceDetailView — Bill-To card', () => {
@@ -224,5 +246,90 @@ describe('InvoiceDetailView — edit save tax rate', () => {
       '/api/invoices/inv-1',
       expect.objectContaining({ tax_rate: 0 }),
     );
+  });
+});
+
+describe('InvoiceDetailView — send composer PDF preview (2026-07-20)', () => {
+  // jsdom has no URL.createObjectURL — install a stub so the preview iframe
+  // branch renders, and restore whatever was there after each test.
+  const ORIG_CREATE = URL.createObjectURL;
+  const ORIG_REVOKE = URL.revokeObjectURL;
+
+  afterEach(() => {
+    URL.createObjectURL = ORIG_CREATE;
+    URL.revokeObjectURL = ORIG_REVOKE;
+  });
+
+  it('Send Invoice opens the composer with an inline preview of the attached PDF', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:mock-pdf');
+    URL.revokeObjectURL = vi.fn();
+    mockApi(buildInvoicePayload());
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="send-invoice-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/api/invoices/inv-1/email-compose');
+    expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(true);
+    const frame = wrapper.get('[data-testid="composer-pdf-frame"]');
+    expect(frame.attributes('src')).toContain('blob:mock-pdf');
+    // Nothing is sent by opening the dialog — the POST only fires on the
+    // explicit Send click.
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it('degrades to a "still attached" note when inline preview is unavailable', async () => {
+    URL.createObjectURL = undefined;
+    mockApi(buildInvoicePayload());
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="send-invoice-btn"]').trigger('click');
+    await flushPromises();
+
+    const preview = wrapper.get('[data-testid="composer-pdf-preview"]');
+    expect(preview.text()).toMatch(/still attached/i);
+    expect(wrapper.find('[data-testid="composer-pdf-frame"]').exists()).toBe(false);
+  });
+
+  it('already-sent invoices get an enabled "Re-send Invoice" button (first send may have gone out PDF-less)', async () => {
+    mockApi(buildInvoicePayload({ status: 'sent', effective_status: 'sent' }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    const btn = wrapper.get('[data-testid="send-invoice-btn"]');
+    expect(btn.text()).toBe('Re-send Invoice');
+    expect(btn.attributes('disabled')).toBeUndefined();
+  });
+
+  it('paid invoices keep the send button disabled', async () => {
+    mockApi(buildInvoicePayload({ status: 'paid', effective_status: 'paid' }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    const btn = wrapper.get('[data-testid="send-invoice-btn"]');
+    expect(btn.attributes('disabled')).toBeDefined();
+  });
+
+  it('?compose=1 auto-opens the composer (Billing list Send lands here) and strips the flag', async () => {
+    routeMock.query = { compose: '1' };
+    mockApi(buildInvoicePayload());
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/api/invoices/inv-1/email-compose');
+    expect(routerReplace).toHaveBeenCalledWith({ query: {} });
+    expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(true);
+  });
+
+  it('?compose=1 on a paid invoice does NOT auto-open the composer (mirrors the disabled button)', async () => {
+    routeMock.query = { compose: '1' };
+    mockApi(buildInvoicePayload({ status: 'paid', effective_status: 'paid' }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(apiGet).not.toHaveBeenCalledWith('/api/invoices/inv-1/email-compose');
+    expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(false);
   });
 });

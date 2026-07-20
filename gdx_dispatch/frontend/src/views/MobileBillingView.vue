@@ -291,9 +291,16 @@ async function sendInvoice() {
   if (!detail.value) return
   actionSaving.value = true
   try {
-    await api.post(`/api/invoices/${detail.value.id}/send`, {})
-    await api.patch(`/api/invoices/${detail.value.id}`, { status: 'Sent' }).catch(() => {})
-    toast.add({ severity: 'success', summary: 'Invoice sent', life: 2500 })
+    // 2026-07-20 (audit catch): read the delivery result instead of toasting
+    // success unconditionally; the redundant status PATCH is gone (the server
+    // flips status itself).
+    const res = await api.post(`/api/invoices/${detail.value.id}/send`, {})
+    const data = res?.data || res
+    if (data && data.email_sent === false) {
+      toast.add({ severity: 'warn', summary: 'Marked sent — email not delivered', detail: data.email_skip_reason || 'No email provider accepted the message', life: 5000 })
+    } else {
+      toast.add({ severity: 'success', summary: 'Invoice sent', life: 2500 })
+    }
     detail.value = await api.get(`/api/invoices/${detail.value.id}`)
     await fetchInvoices()
   } catch (err) {

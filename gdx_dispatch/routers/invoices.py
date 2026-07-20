@@ -1343,6 +1343,7 @@ def send_invoice(
     email_sent = False
     email_provider: str | None = None
     email_skip_reason: str | None = None
+    pdf_attached = False
     try:
         from gdx_dispatch.core.email_sender import build_invoice_email_html
         from gdx_dispatch.core.transactional_email import send_transactional_email
@@ -1387,6 +1388,35 @@ def send_invoice(
                     notes=invoice.notes or "",
                     tax_rate=tax_rate_val,
                 )
+                # 2026-07-20 — attach the actual invoice PDF (same generator
+                # the composer flow uses). This path shipped html-only for
+                # months; a real customer got an invoice email with no PDF.
+                # Best-effort like the rest of this block: a render failure
+                # downgrades to html-only (pdf_attached=False in the response)
+                # rather than blocking the send.
+                attachments: list[dict[str, object]] | None = None
+                try:
+                    import base64 as _b64
+                    from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
+                    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
+                    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
+                    pdf_bytes = generate_invoice_pdf(
+                        invoice_data=_invoice_payload(invoice, cust),
+                        tenant_branding=_branding_payload(db),
+                    )
+                    if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
+                        log.warning(
+                            "invoice_send_pdf_too_large_to_attach invoice=%s bytes=%s",
+                            invoice.id, len(pdf_bytes),
+                        )
+                    else:
+                        attachments = [{
+                            "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}.pdf",
+                            "content_type": "application/pdf",
+                            "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
+                        }]
+                except Exception:
+                    log.exception("invoice_send_pdf_attach_failed")
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
@@ -1395,7 +1425,9 @@ def send_invoice(
                     to_name=cust.name or "",
                     subject=f"Invoice #{invoice.invoice_number} from {company_name}",
                     html_body=html,
+                    attachments=attachments,
                 )
+                pdf_attached = email_sent and bool(attachments)
             elif cust:
                 email_skip_reason = "customer_has_no_email"
             else:
@@ -1408,6 +1440,7 @@ def send_invoice(
 
     payload = _serialize_invoice(invoice)
     payload["email_sent"] = email_sent
+    payload["pdf_attached"] = pdf_attached
     if email_provider:
         payload["email_provider"] = email_provider
     if email_skip_reason:
