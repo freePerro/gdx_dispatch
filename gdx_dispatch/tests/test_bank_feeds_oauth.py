@@ -2,8 +2,12 @@
 the connection lifecycle. Hostnames are Garden/RFC-2606 only."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 import jwt as pyjwt
 import pytest
@@ -158,6 +162,67 @@ def test_state_tampered_rejected():
         oauth.load_state(state[:-4] + "AAAA")
     with pytest.raises(oauth.BankFeedsAuthError):
         oauth.load_state("garbage")
+
+
+# ── PKCE (RFC 7636) ────────────────────────────────────────────────────
+
+
+def test_pkce_verifier_deterministic_and_rfc_shape():
+    v = oauth.pkce_verifier_for_nonce("nonce-a")
+    assert v == oauth.pkce_verifier_for_nonce("nonce-a")  # callback re-derives it
+    assert v != oauth.pkce_verifier_for_nonce("nonce-b")
+    assert re.fullmatch(r"[A-Za-z0-9_-]{43}", v)  # RFC 7636 minimum, no padding
+    expected = base64.urlsafe_b64encode(
+        hashlib.sha256(v.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    assert oauth.pkce_challenge(v) == expected
+
+
+def test_pkce_verifier_depends_on_signing_secret(monkeypatch):
+    before = oauth.pkce_verifier_for_nonce("n")
+    monkeypatch.setenv("JWT_SECRET", "y" * 64)
+    assert oauth.pkce_verifier_for_nonce("n") != before
+
+
+@respx.mock
+def test_connect_authorize_url_carries_pkce_challenge(respx_mock, tenant_db):
+    from starlette.requests import Request as StarletteRequest
+
+    from gdx_dispatch.modules.bank_feeds import router as r
+
+    respx_mock.get(f"https://{FI_HOST}/.well-known/openid-configuration").mock(
+        return_value=Response(200, json=_discovery_doc())
+    )
+    inst = _make_institution(tenant_db)
+    scope = {
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "query_string": b"", "client": ("127.0.0.1", 80), "state": {},
+    }
+    req = StarletteRequest(scope)
+    req.state.tenant = {"id": TENANT_ID}
+    out = r.connect(
+        r.ConnectIn(institution_id=str(inst.id)), req,
+        current_user={"sub": "tester"}, _perm=None, db=tenant_db,
+    )
+    q = parse_qs(urlparse(out["redirect_url"]).query)
+    nonce = oauth.load_state(q["state"][0])["nonce"]
+    assert q["code_challenge_method"] == ["S256"]
+    assert q["code_challenge"] == [
+        oauth.pkce_challenge(oauth.pkce_verifier_for_nonce(nonce))
+    ]
+
+
+@respx.mock
+def test_callback_token_exchange_sends_pkce_verifier(respx_mock, tenant_db, callback_app, test_app_keypair):
+    inst = _make_institution(tenant_db)
+    state, nonce = oauth.make_state(user_id="u1", tenant_id=TENANT_ID, institution_id=str(inst.id))
+    token_route = _mock_banno(respx_mock, test_app_keypair, nonce=nonce)
+
+    resp = callback_app.get(f"/api/bank-feeds/oauth/callback?code=abc&state={state}")
+    assert resp.status_code == 200
+    form = parse_qs(token_route.calls[0].request.content.decode())
+    assert form["grant_type"] == ["authorization_code"]
+    assert form["code_verifier"] == [oauth.pkce_verifier_for_nonce(nonce)]
 
 
 def test_fi_host_validation_rejects_urls_and_ips():

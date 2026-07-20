@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -140,17 +141,21 @@ def validate_fi_host(host: str) -> str:
 # ── signed single-use state ────────────────────────────────────────────
 
 
-def _state_signer() -> URLSafeTimedSerializer:
+def _signing_secret() -> str:
     """Outlook `_state_signer` pattern: STATE_SIGNING_KEY | JWT_SECRET |
-    SECRET_KEY (≥32 bytes), module-specific salt."""
+    SECRET_KEY (≥32 bytes)."""
     for env_name in ("STATE_SIGNING_KEY", "JWT_SECRET", "SECRET_KEY"):
         secret = os.getenv(env_name)
         if secret and len(secret) >= 32:
-            return URLSafeTimedSerializer(secret, salt=STATE_SALT)
+            return secret
     raise BankFeedsAuthError(
         "OAuth state signing key not configured. Set STATE_SIGNING_KEY, "
         "JWT_SECRET, or SECRET_KEY (>=32 bytes)."
     )
+
+
+def _state_signer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(_signing_secret(), salt=STATE_SALT)
 
 
 def make_state(*, user_id: str, tenant_id: str, institution_id: str) -> tuple[str, str]:
@@ -177,6 +182,30 @@ def load_state(state: str) -> dict:
     if not isinstance(payload, dict) or not payload.get("nonce"):
         raise BankFeedsAuthError("malformed OAuth state")
     return payload
+
+
+# ── PKCE (RFC 7636, S256) ──────────────────────────────────────────────
+#
+# Banno's authorization server REQUIRES PKCE (Garden rejects a bare
+# auth-code request with "policy requires PKCE"). The verifier is DERIVED
+# from the state nonce with the signing secret rather than stored: the
+# nonce is public in the authorize URL, but computing the verifier needs
+# the server secret, so an intercepted redirect still can't redeem the
+# code. 32 HMAC bytes → 43-char base64url, the RFC 7636 minimum length.
+
+
+def pkce_verifier_for_nonce(nonce: str) -> str:
+    digest = hmac.new(
+        _signing_secret().encode("utf-8"),
+        f"bank-feeds-pkce:{nonce}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 # In-process fallback nonce store for dev/tests without Redis. Maps
@@ -308,11 +337,22 @@ def _token_request(fi_host: str, client_id: str, client_secret: str, form: dict)
 
 
 def exchange_code_for_tokens(
-    fi_host: str, client_id: str, client_secret: str, *, code: str, redirect_uri: str
+    fi_host: str,
+    client_id: str,
+    client_secret: str,
+    *,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
 ) -> dict:
     return _token_request(
         fi_host, client_id, client_secret,
-        {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        },
     )
 
 
