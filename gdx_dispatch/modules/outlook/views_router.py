@@ -30,6 +30,9 @@ from gdx_dispatch.modules.outlook.models import OutlookMessage
 from gdx_dispatch.modules.outlook.visibility import can_view, filter_visible, mailbox_owner_id
 from gdx_dispatch.routers.auth import get_current_user
 
+# D1 body live-fetch — imported lazily inside the handler to keep module load
+# cheap and avoid a Graph/httpx import on every views_router import.
+
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.views_router")
 
@@ -74,6 +77,22 @@ class MessageDetailOut(MessageOut):
 
 class PersonalIn(BaseModel):
     is_personal: bool
+
+
+class MessageBodyOut(BaseModel):
+    """Live-fetched full body for one message (D1).
+
+    ``fetched`` is False when the Graph fetch could not run (mailbox needs
+    reconnect, message gone from Graph, no account) — the caller then falls
+    back to ``body_preview`` and shows ``reason``. ``body_html`` is the RAW
+    Graph body; the frontend MUST render it in a sandboxed iframe (never
+    v-html), because it is attacker-controlled HTML.
+    """
+    fetched: bool
+    content_type: str | None = None  # "html" | "text"
+    body_html: str | None = None
+    body_preview: str | None = None
+    reason: str | None = None  # populated when fetched is False
 
 
 def _to_out(m: OutlookMessage) -> MessageOut:
@@ -303,3 +322,110 @@ def set_message_personal(
     msg.is_personal = payload.is_personal
     tenant_db.commit()
     return _to_detail(msg, viewer_is_owner=True)
+
+
+def _tenant_id(user: dict[str, Any]) -> UUID:
+    raw = user.get("tenant_id")
+    if not raw:
+        raise HTTPException(status_code=400, detail="missing tenant context")
+    return raw if isinstance(raw, UUID) else UUID(str(raw))
+
+
+@router.get(
+    "/messages/{message_id}/body",
+    response_model=MessageBodyOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def get_message_body(
+    message_id: UUID,
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+    control_db: Session = Depends(get_db),
+) -> MessageBodyOut:
+    """Live-fetch the full HTML body for one message (D1).
+
+    Rather than persist bodies (R2), we fetch on open: no migration, always
+    fresh. Two load-bearing rules:
+
+    * **Visibility first.** Same ``can_view`` chokepoint + 404 (never 403) as
+      the detail endpoint — a viewer who can't see the message can't read its
+      body.
+    * **Owner token, not viewer token.** This is a SHARED mailbox: the viewer
+      is frequently not the account owner, and ``with_outlook_client`` keys
+      tokens off the passed user_id. We resolve the mailbox OWNER
+      (``mailbox_owner_id`` → the account's user_id) and fetch as them, so a
+      tech/second-office viewer gets the body instead of "reconnect".
+
+    Never raises on a Graph problem — falls back to ``body_preview`` with
+    ``fetched=False`` + a reason, so the pane degrades instead of erroring.
+    """
+    uid = _user_id(user)
+    role = _user_role(user)
+    tid = _tenant_id(user)
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    tech_emails = _load_tech_emails(tenant_db)
+    if not can_view(msg, uid, role, tenant_db, tech_emails=tech_emails):
+        raise HTTPException(status_code=404, detail="message not found")
+
+    preview = msg.body_preview
+
+    # A local draft never existed on Graph — nothing to fetch.
+    graph_id = msg.graph_message_id or ""
+    if not graph_id or graph_id.startswith("local-draft-"):
+        return MessageBodyOut(
+            fetched=False, body_preview=preview, reason="no_remote_copy"
+        )
+
+    owner_id = mailbox_owner_id(msg, tenant_db)
+    if not owner_id:
+        return MessageBodyOut(
+            fetched=False, body_preview=preview, reason="no_account_owner"
+        )
+
+    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError  # noqa: PLC0415
+    from gdx_dispatch.modules.outlook.token_refresh import (  # noqa: PLC0415
+        OutlookReconnectRequired,
+        OutlookTransientRetry,
+        with_outlook_client,
+    )
+
+    owner_uid = UUID(str(owner_id))
+
+    def _fetch_once() -> dict:
+        with with_outlook_client(control_db, tenant_db, owner_uid, tid) as gc:
+            return gc.get_message(graph_id)
+
+    try:
+        try:
+            remote = _fetch_once()
+        except OutlookTransientRetry:
+            # Documented contract (token_refresh.py): a 401 mid-call after a
+            # successful refresh deserves exactly one re-issue. Same as
+            # transactional_email._send_once.
+            remote = _fetch_once()
+    except OutlookReconnectRequired:
+        return MessageBodyOut(
+            fetched=False, body_preview=preview, reason="reconnect_required"
+        )
+    except OutlookGraphAPIError as exc:
+        # 404 = moved/deleted on Graph; anything else = transient upstream.
+        reason = "message_gone" if getattr(exc, "status_code", None) == 404 else "graph_error"
+        log.info("get_message_body: graph fetch failed id=%s reason=%s", message_id, reason)
+        return MessageBodyOut(fetched=False, body_preview=preview, reason=reason)
+    except Exception:  # noqa: BLE001 — never 500 the read pane on a body fetch
+        log.exception("get_message_body: unexpected error id=%s", message_id)
+        return MessageBodyOut(fetched=False, body_preview=preview, reason="graph_error")
+
+    body = (remote or {}).get("body") or {}
+    raw = body.get("content")
+    ctype = (body.get("contentType") or "").lower()
+    if not raw:
+        return MessageBodyOut(fetched=False, body_preview=preview, reason="empty_body")
+    return MessageBodyOut(
+        fetched=True,
+        content_type="text" if ctype == "text" else "html",
+        body_html=raw,
+        body_preview=preview,
+    )

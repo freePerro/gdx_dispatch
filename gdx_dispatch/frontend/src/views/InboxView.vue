@@ -10,6 +10,7 @@ import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import TreeSelect from 'primevue/treeselect'
+import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
@@ -28,6 +29,29 @@ const error = ref(null)
 const selectedMsgId = ref(null)
 const detail = ref(null)
 const detailLoading = ref(false)
+// D1 — full body is live-fetched separately from metadata so the pane paints
+// instantly with the preview, then swaps in the real body when it lands.
+const bodyData = ref({})
+const bodyLoading = ref(false)
+const _BODY_NOTES = {
+  reconnect_required: 'Showing preview — reconnect this mailbox to load the full message.',
+  message_gone: 'Showing preview — this message is no longer in the mailbox.',
+  no_remote_copy: 'Showing preview — this message has no server copy.',
+  no_account_owner: 'Showing preview — no connected mailbox owns this message.',
+  graph_error: 'Showing preview — could not reach the mail server.',
+  empty_body: '',
+}
+const bodyNote = computed(() =>
+  bodyData.value.fetched === false ? (_BODY_NOTES[bodyData.value.reason] ?? '') : '',
+)
+// Honor the server's content_type (a fetched PLAIN-TEXT body still populates
+// body_html, so deriving type from "has body_html" would render text as HTML).
+// Fallback path (no fetch → showing preview) is plain text.
+const bodyFrameType = computed(() =>
+  bodyData.value.fetched && bodyData.value.content_type
+    ? bodyData.value.content_type
+    : 'text',
+)
 
 const composeMode = ref(null)   // null | 'new' | 'reply'
 const composeForm = ref({ to: '', cc: '', subject: '', body: '' })
@@ -181,15 +205,35 @@ async function selectFolder(folder) {
 async function openMessage(m) {
   selectedMsgId.value = m.id
   detail.value = null
+  bodyData.value = {}
   composeMode.value = null
   composeStatus.value = null
   detailLoading.value = true
   try {
-    detail.value = await api.get(`/api/outlook/messages/${m.id}`)
+    const meta = await api.get(`/api/outlook/messages/${m.id}`)
+    // Guard the race: a fast second click must not let message A's metadata
+    // overwrite the pane the user has already moved to.
+    if (selectedMsgId.value !== m.id) return
+    detail.value = meta
   } catch (err) {
-    error.value = err.message || 'Failed to load message'
+    if (selectedMsgId.value === m.id) error.value = err.message || 'Failed to load message'
   } finally {
-    detailLoading.value = false
+    if (selectedMsgId.value === m.id) detailLoading.value = false
+  }
+  if (detail.value && selectedMsgId.value === m.id) loadBody(m.id)
+}
+
+async function loadBody(id) {
+  bodyLoading.value = true
+  try {
+    const data = await api.get(`/api/outlook/messages/${id}/body`)
+    // Guard against a race: user may have opened another message meanwhile.
+    if (selectedMsgId.value === id) bodyData.value = data || {}
+  } catch {
+    // Non-fatal: the pane already shows the preview from `detail`.
+    if (selectedMsgId.value === id) bodyData.value = { fetched: false, reason: 'graph_error' }
+  } finally {
+    bodyLoading.value = false
   }
 }
 
@@ -678,9 +722,12 @@ onMounted(async () => {
           <div v-if="detail.has_attachments" class="muted">📎 Has attachments</div>
           <div v-if="detail.is_personal" class="muted" data-test="inbox-personal-flag">🔒 Personal — visible only to you</div>
         </div>
-        <div class="detail-body">
-          <pre>{{ detail.body_preview || '(no body preview available)' }}</pre>
-        </div>
+        <EmailBodyFrame
+          :html="bodyData.body_html || bodyData.body_preview || detail.body_preview || ''"
+          :content-type="bodyFrameType"
+          :loading="bodyLoading"
+          :note="bodyNote"
+        />
         <div class="detail-actions">
           <Button label="Reply" icon="pi pi-reply" data-test="inbox-reply" @click="startReply" />
           <Button label="Move" icon="pi pi-folder-open" outlined data-test="inbox-move" @click="promptMoveMessage" />

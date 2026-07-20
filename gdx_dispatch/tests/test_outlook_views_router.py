@@ -244,3 +244,163 @@ def test_set_personal_hidden_by_real_acl_404(app):
     r = client.post(f"/api/outlook/messages/{msg.id}/personal", json={"is_personal": False})
     assert r.status_code == 404
     assert msg.is_personal is True  # untouched
+
+
+# ── GET /messages/{id}/body (D1 live body fetch) ────────────────────────
+
+
+def _graph_cm(gc):
+    """Wrap a mock graph client as a with_outlook_client context manager."""
+    cm = MagicMock()
+    cm.__enter__.return_value = gc
+    cm.__exit__.return_value = False
+    return cm
+
+
+def test_body_fetches_html_for_owner(app):
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    gc = MagicMock()
+    gc.get_message.return_value = {"body": {"contentType": "html", "content": "<b>hi</b>"}}
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client", return_value=_graph_cm(gc)):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["fetched"] is True
+    assert b["content_type"] == "html"
+    assert b["body_html"] == "<b>hi</b>"
+    gc.get_message.assert_called_once_with("AAMkREMOTE")
+
+
+def test_body_text_contenttype_preserved(app):
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    gc = MagicMock()
+    gc.get_message.return_value = {"body": {"contentType": "text", "content": "plain hi"}}
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client", return_value=_graph_cm(gc)):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.json()["content_type"] == "text"
+
+
+def test_body_404_when_not_visible(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.status_code == 404
+
+
+def test_body_404_when_missing(app):
+    client, tdb = app
+    tdb.get.return_value = None
+    r = client.get(f"/api/outlook/messages/{uuid4()}/body")
+    assert r.status_code == 404
+
+
+def test_body_local_draft_no_remote_no_graph_call(app):
+    client, tdb = app
+    msg = _msg(body_preview="draft text")
+    msg.graph_message_id = "local-draft-abc"
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client") as woc:
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["fetched"] is False
+    assert b["reason"] == "no_remote_copy"
+    assert b["body_preview"] == "draft text"
+    woc.assert_not_called()  # never touch Graph for a local draft
+
+
+def test_body_no_owner_falls_back(app):
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=None):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.json()["reason"] == "no_account_owner"
+
+
+def test_body_reconnect_required_falls_back_to_preview(app):
+    from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired
+    client, tdb = app
+    msg = _msg(body_preview="the preview")
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client",
+               side_effect=OutlookReconnectRequired("reconnect")):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["fetched"] is False
+    assert b["reason"] == "reconnect_required"
+    assert b["body_preview"] == "the preview"
+
+
+def test_body_graph_404_reports_message_gone(app):
+    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    gc = MagicMock()
+    gc.get_message.side_effect = OutlookGraphAPIError(404, "not found")
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client", return_value=_graph_cm(gc)):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.json()["reason"] == "message_gone"
+
+
+def test_body_empty_content_reports_empty(app):
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    gc = MagicMock()
+    gc.get_message.return_value = {"body": {"contentType": "html", "content": ""}}
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client", return_value=_graph_cm(gc)):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.json()["reason"] == "empty_body"
+
+
+def test_body_transient_retry_reissues_once(app):
+    from gdx_dispatch.modules.outlook.token_refresh import OutlookTransientRetry
+    client, tdb = app
+    msg = _msg()
+    msg.graph_message_id = "AAMkREMOTE"
+    tdb.get.return_value = msg
+    gc = MagicMock()
+    gc.get_message.return_value = {"body": {"contentType": "html", "content": "<p>ok</p>"}}
+    calls = {"n": 0}
+
+    def _woc(*a, **k):
+        # First open raises the transient-retry contract, second succeeds.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OutlookTransientRetry("401 mid-call")
+        return _graph_cm(gc)
+
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.mailbox_owner_id", return_value=str(UID)), \
+         patch("gdx_dispatch.modules.outlook.token_refresh.with_outlook_client", side_effect=_woc):
+        r = client.get(f"/api/outlook/messages/{msg.id}/body")
+    assert r.status_code == 200
+    assert r.json()["fetched"] is True
+    assert calls["n"] == 2  # retried exactly once

@@ -58,7 +58,12 @@
             <div v-if="detail.to_addresses?.length || detail.to_address"><strong>To:</strong> {{ detail.to_addresses?.join(', ') || detail.to_address }}</div>
             <div class="muted">{{ fmtFull(detail.received_at || detail.sent_at) }}</div>
           </div>
-          <div class="detail-body-text" v-html="detailBodyHtml" />
+          <EmailBodyFrame
+            :html="bodyData.body_html || bodyData.body_preview || detail.body_preview || ''"
+            :content-type="bodyFrameType"
+            :loading="bodyLoading"
+            :note="bodyNote"
+          />
 
           <div v-if="composeMode === 'reply'" class="reply-block">
             <h3>Reply</h3>
@@ -138,6 +143,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
+import EmailBodyFrame from '../components/EmailBodyFrame.vue'
 
 const api = useApi()
 const toast = useToast()
@@ -158,17 +164,30 @@ const composeOpen = ref(false)
 const composeForm = ref({ to: '', cc: '', subject: '', body: '' })
 const composeSaving = ref(false)
 
-const detailBodyHtml = computed(() => {
-  if (!detail.value) return ''
-  const html = detail.value.body_html || detail.value.body || detail.value.body_preview || ''
-  if (detail.value.body_html) return html
-  // Plain text fallback — escape and preserve newlines
-  return String(html)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br/>')
-})
+// D1 — full body is live-fetched into bodyData; EmailBodyFrame renders it in
+// a sandboxed iframe. (Replaces a v-html that would have become a live XSS
+// vector the moment body_html was populated.)
+const bodyData = ref({})
+const bodyLoading = ref(false)
+const activeMsgId = ref(null)
+const _BODY_NOTES = {
+  reconnect_required: 'Showing preview — reconnect this mailbox to load the full message.',
+  message_gone: 'Showing preview — this message is no longer in the mailbox.',
+  no_remote_copy: 'Showing preview — this message has no server copy.',
+  no_account_owner: 'Showing preview — no connected mailbox owns this message.',
+  graph_error: 'Showing preview — could not reach the mail server.',
+  empty_body: '',
+}
+const bodyNote = computed(() =>
+  bodyData.value.fetched === false ? (_BODY_NOTES[bodyData.value.reason] ?? '') : '',
+)
+// Honor server content_type — a fetched plain-text body still fills body_html,
+// so "has body_html ? html : text" would render text as HTML.
+const bodyFrameType = computed(() =>
+  bodyData.value.fetched && bodyData.value.content_type
+    ? bodyData.value.content_type
+    : 'text',
+)
 
 function fmtAgo(iso) {
   if (!iso) return ''
@@ -207,12 +226,18 @@ async function fetchMessages() {
 
 async function openMessage(m) {
   detail.value = null
+  bodyData.value = {}
+  activeMsgId.value = m.id
   detailOpen.value = true
   detailLoading.value = true
   composeMode.value = null
   replyBody.value = ''
   try {
-    detail.value = await api.get(`/api/outlook/messages/${m.id}`)
+    const meta = await api.get(`/api/outlook/messages/${m.id}`)
+    // Race guard: a fast re-tap must not let an earlier message's metadata
+    // land in the pane the user has moved to.
+    if (activeMsgId.value !== m.id) return
+    detail.value = meta
     // Mark as read on open (best-effort)
     if (!m.is_read) {
       try {
@@ -221,15 +246,30 @@ async function openMessage(m) {
       } catch { /* ignore */ }
     }
   } catch (err) {
-    error.value = err.message || 'Failed to load message'
+    if (activeMsgId.value === m.id) error.value = err.message || 'Failed to load message'
   } finally {
-    detailLoading.value = false
+    if (activeMsgId.value === m.id) detailLoading.value = false
+  }
+  if (detail.value && activeMsgId.value === m.id) loadBody(m.id)
+}
+
+async function loadBody(id) {
+  bodyLoading.value = true
+  try {
+    const data = await api.get(`/api/outlook/messages/${id}/body`)
+    if (activeMsgId.value === id) bodyData.value = data || {}
+  } catch {
+    if (activeMsgId.value === id) bodyData.value = { fetched: false, reason: 'graph_error' }
+  } finally {
+    bodyLoading.value = false
   }
 }
 
 function closeDetail() {
   detailOpen.value = false
   detail.value = null
+  bodyData.value = {}
+  activeMsgId.value = null
   composeMode.value = null
   replyBody.value = ''
 }
@@ -437,17 +477,6 @@ onMounted(fetchMessages)
   font-size: 0.85rem;
   padding-bottom: 0.6rem;
   border-bottom: 1px solid var(--p-content-border-color, #e5e7eb);
-}
-
-.detail-body-text {
-  font-size: 0.95rem;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.detail-body-text :deep(img) {
-  max-width: 100%;
-  height: auto;
 }
 
 .reply-block {
