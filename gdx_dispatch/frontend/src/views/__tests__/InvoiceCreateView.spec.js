@@ -104,7 +104,7 @@ function setupApiDefaults() {
   apiGet.mockImplementation((url) => {
     if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
     if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-    if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0.0738 });
+    if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0738, rate_pct: 7.38 });
     if (url.startsWith('/api/estimates?')) return Promise.resolve([]);
     return Promise.resolve([]);
   });
@@ -120,23 +120,49 @@ beforeEach(() => {
 });
 
 describe('InvoiceCreateView — tax rate', () => {
-  it('hydrates tax_rate_pct from /api/tax/config default_rate', async () => {
+  it('hydrates tax_rate_pct from /api/tax/resolve', async () => {
     const wrapper = mount(InvoiceCreateView, { global: { stubs } });
     await flushPromises();
     // 0.0738 decimal → 7.38%
     expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('7.38');
   });
 
-  it('leaves tax_rate at 0 when /api/tax/config fails or returns 0', async () => {
+  it('leaves tax_rate at 0 when /api/tax/resolve fails or returns 0', async () => {
     apiGet.mockImplementation((url) => {
       if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0 });
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
       return Promise.resolve([]);
     });
     const wrapper = mount(InvoiceCreateView, { global: { stubs } });
     await flushPromises();
     expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('0');
+  });
+
+  it('re-resolves to 0 for an exempt customer and POSTs tax_rate 0', async () => {
+    routeQuery.value = { job_id: 'job-1' };  // derives customer cust-1
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      // Exempt customer → 0; the customer-less default is 7.38%.
+      if (url.startsWith('/api/tax/resolve?customer_id=cust-1')) {
+        return Promise.resolve({ rate: 0, rate_pct: 0 });
+      }
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0738, rate_pct: 7.38 });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-3', invoice_number: 'INV-0003' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="invoice-tax-rate"]').element.value).toBe('0');
+
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost.mock.calls[0][1].tax_rate).toBe(0);
   });
 });
 
@@ -146,7 +172,7 @@ describe('InvoiceCreateView — query prefill', () => {
     apiGet.mockImplementation((url) => {
       if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0 });
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
       if (url.startsWith('/api/estimates?job_id=job-1')) {
         return Promise.resolve([{ id: 'est-1', notes: 'Original quote' }]);
       }
@@ -182,7 +208,7 @@ describe('InvoiceCreateView — submit', () => {
     apiGet.mockImplementation((url) => {
       if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0.0825 });
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0825, rate_pct: 8.25 });
       return Promise.resolve([]);
     });
     apiPost.mockResolvedValue({ id: 'inv-1', invoice_number: 'INV-0001' });
@@ -241,12 +267,12 @@ describe('InvoiceCreateView — submit', () => {
     expect(routerPush).toHaveBeenCalledWith('/billing/inv-99');
   });
 
-  it('omits tax_rate from the POST when the form value is zero', async () => {
+  it('sends an EXPLICIT tax_rate of 0 when the form value is zero (null would make the backend re-apply the default)', async () => {
     routeQuery.value = { job_id: 'job-1' };
     apiGet.mockImplementation((url) => {
       if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0 });
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
       return Promise.resolve([]);
     });
     apiPost.mockResolvedValue({ id: 'inv-2', invoice_number: 'INV-0002' });
@@ -259,7 +285,7 @@ describe('InvoiceCreateView — submit', () => {
     await flushPromises();
 
     const payload = apiPost.mock.calls[0][1];
-    expect(payload.tax_rate).toBeNull();
+    expect(payload.tax_rate).toBe(0);
   });
 });
 
@@ -293,7 +319,7 @@ describe('InvoiceCreateView — bulk-fetch query contract', () => {
       }
       if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS); // bulk list — no cust-missing
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
-      if (url === '/api/tax/config') return Promise.resolve({ default_rate: 0 });
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
       return Promise.resolve([]);
     });
 

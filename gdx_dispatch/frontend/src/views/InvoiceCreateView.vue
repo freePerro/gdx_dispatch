@@ -8,6 +8,12 @@
   notes, from_part_ids}` — backend marks pulled parts as billed in the same
   transaction.
 
+  tax_rate is ALWAYS sent as the number displayed in the field, including an
+  explicit 0. Sending null instead of 0 makes the backend re-resolve the
+  tenant default and put the tax back — the "tax keeps coming back" bug.
+  The field seeds from /api/tax/resolve (customer-aware: 0 for exempt
+  customers), not the raw tenant default.
+
   Mounted at /billing/new. The "+ New Invoice" button on /billing and the
   per-row "Create Invoice" button push here with optional ?job_id=&customer_id=.
 -->
@@ -105,7 +111,7 @@
               class="w-full"
               data-testid="invoice-tax-rate"
             />
-            <small class="muted">Tenant default applied; override per-invoice.</small>
+            <small class="muted">Auto-filled for the selected customer; override per-invoice. 0% = no tax.</small>
           </div>
 
           <div class="form-field full-width">
@@ -377,16 +383,25 @@ async function ensureJobLoaded(jobId) {
   }
 }
 
-async function loadTaxConfig() {
+// Guards against out-of-order responses when the customer changes quickly.
+let taxResolveSeq = 0;
+async function resolveTaxRate() {
+  const seq = ++taxResolveSeq;
   try {
-    const r = await api.get('/api/tax/config', { suppressErrorToast: true });
-    const defaultRate = Number(r?.default_rate);
-    if (Number.isFinite(defaultRate) && defaultRate > 0) {
+    const cid = form.value.customer_id;
+    // Customer-aware: returns 0 for tax-exempt customers, else the tenant
+    // default. The field stays editable — this only seeds it.
+    const url = cid
+      ? `/api/tax/resolve?customer_id=${encodeURIComponent(cid)}`
+      : '/api/tax/resolve';
+    const r = await api.get(url, { suppressErrorToast: true });
+    const rate = Number(r?.rate);
+    if (seq === taxResolveSeq && Number.isFinite(rate) && rate >= 0) {
       // Backend stores as a decimal fraction (0.0825); the form is in %.
-      form.value.tax_rate_pct = Math.round(defaultRate * 10000) / 100;
+      form.value.tax_rate_pct = Math.round(rate * 10000) / 100;
     }
   } catch (e) {
-    // tax config optional — leave at 0
+    // tax resolve optional — leave the field as-is
   }
 }
 
@@ -398,6 +413,7 @@ function onCustomerChange() {
       form.value.job_id = null;
     }
   }
+  resolveTaxRate();
 }
 
 function onJobChange() {
@@ -472,6 +488,9 @@ async function createInvoice() {
         return out;
       });
 
+    // Send exactly what the field shows, INCLUDING 0 — the server honors an
+    // explicit 0 as "exempt sale", whereas null makes it re-resolve the
+    // tenant default and re-apply tax the user just removed.
     const taxRateDecimal = toNum(form.value.tax_rate_pct) / 100;
 
     const payload = {
@@ -485,7 +504,7 @@ async function createInvoice() {
         : form.value.due_date || null,
       notes: form.value.notes || null,
       line_items: lineItems,
-      tax_rate: taxRateDecimal > 0 ? taxRateDecimal : null,
+      tax_rate: Number.isFinite(taxRateDecimal) ? taxRateDecimal : 0,
       from_part_ids: form.value.from_part_ids || [],
       from_change_order_ids: form.value.from_change_order_ids || [],
     };
@@ -522,7 +541,7 @@ async function createInvoice() {
 
 onMounted(async () => {
   loading.value = true;
-  await Promise.all([loadCustomers(), loadJobs(), loadTaxConfig()]);
+  await Promise.all([loadCustomers(), loadJobs(), resolveTaxRate()]);
   // Apply ?job_id= / ?customer_id= from query (BillingView's pre-fill path).
   const q = route.query || {};
   const qJobId = q.job_id ? String(q.job_id) : '';

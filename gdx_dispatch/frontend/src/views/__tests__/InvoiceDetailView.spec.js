@@ -205,3 +205,24 @@ describe('InvoiceDetailView — Bill-To card', () => {
     expect(dialog.text()).toContain('cust-1');
   });
 });
+
+describe('InvoiceDetailView — edit save tax rate', () => {
+  it('PATCHes an EXPLICIT tax_rate of 0 when the rate is zeroed (null would preserve the old tax dollars)', async () => {
+    mockApi(buildInvoicePayload());
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-tax-rate"]').setValue('0');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/api/invoices/inv-1',
+      expect.objectContaining({ tax_rate: 0 }),
+    );
+  });
+});
