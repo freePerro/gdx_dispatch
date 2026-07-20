@@ -161,6 +161,7 @@
           class="col-qty"
           :data-testid="`line-qty-${idx}`"
           @update:modelValue="emitLines"
+          @input="onQtyInput(item, $event)"
         />
         <InputNumber
           v-if="showCost"
@@ -172,6 +173,7 @@
           class="col-cost"
           :data-testid="`line-cost-${idx}`"
           @update:modelValue="onCostChange(item)"
+          @input="onCostInput(item, $event)"
         />
         <InputNumber
           v-model="item.unit_price"
@@ -182,6 +184,7 @@
           class="col-price"
           :data-testid="`line-price-${idx}`"
           @update:modelValue="markPriceOverride(item)"
+          @input="onPriceInput(item, $event)"
         />
         <span
           v-if="showTaxable"
@@ -205,6 +208,7 @@
           class="col-margin"
           :data-testid="`line-margin-${idx}`"
           @update:modelValue="onMarginOverrideChange(item)"
+          @input="onMarginInput(item, $event)"
         />
         <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
           {{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}
@@ -297,7 +301,7 @@ function defaultLine() {
     base.margin_pct_override = null;
     base._priceOverridden = false;
     base._marginUserEdited = false;
-    base._suppressMarginUserEdit = false;
+    base._autoMargin = null;
   }
   return base;
 }
@@ -417,8 +421,12 @@ function recomputeSell(item) {
     if (margin != null && margin < 1
         && editorFeatures.value.estimates_allow_line_margin_override) {
       const pct = Math.round(margin * 1000) / 10;
+      // Programmatic fill. InputNumber never emits update:modelValue for a
+      // model write, so record the value instead — onMarginOverrideChange
+      // uses _autoMargin to tell a blur echo / tab-through apart from a
+      // genuine user override.
+      item._autoMargin = pct;
       if (Number(item.margin_pct_override) !== pct) {
-        item._suppressMarginUserEdit = true;
         item.margin_pct_override = pct;
       }
     }
@@ -443,22 +451,28 @@ function onCategoryChange(item) {
 }
 
 function onMarginOverrideChange(item) {
-  // Suppression flag set by recomputeSell after a programmatic margin write —
-  // don't treat that round-trip as a user edit.
-  if (item._suppressMarginUserEdit) {
-    item._suppressMarginUserEdit = false;
+  const v = item.margin_pct_override;
+  if (v == null || v === '') {
+    item._marginUserEdited = false;
+    item._priceOverridden = false;
+    item._autoMargin = null;
+    recomputeSell(item);
     emitLines();
     return;
   }
-  if (item.margin_pct_override == null || item.margin_pct_override === '') {
-    item._marginUserEdited = false;
-    item._priceOverridden = false;
-    recomputeSell(item);
+  // InputNumber commits on EVERY blur — changed or not — and programmatic
+  // tier fills never emit at all. So a commit equal to the last auto-filled
+  // value is a tab-through/blur echo, not a user override. (The old
+  // _suppressMarginUserEdit flag waited for an emit that never came, then
+  // swallowed the user's NEXT real edit — and tab-through froze the tier
+  // margin as a fake override so cost edits stopped refreshing it.)
+  if (item._autoMargin != null && Number(v) === Number(item._autoMargin)) {
     emitLines();
     return;
   }
   item._marginUserEdited = true;
   item._priceOverridden = false;
+  item._autoMargin = null;
   recomputeSell(item);
   emitLines();
 }
@@ -480,13 +494,49 @@ function markPriceOverride(item) {
   if (editorFeatures.value.estimates_allow_line_margin_override
       && cost > 0 && sell > 0) {
     const actualPct = Math.round(((sell - cost) / sell) * 1000) / 10;
+    // Programmatic reflection of the actual margin — same _autoMargin
+    // bookkeeping as the tier fill in recomputeSell.
+    item._autoMargin = actualPct;
     if (Number(item.margin_pct_override) !== actualPct) {
-      item._suppressMarginUserEdit = true;
       item.margin_pct_override = actualPct;
     }
     item._marginUserEdited = false;
   }
   emitLines();
+}
+
+// PrimeVue InputNumber only commits v-model on blur/Enter; its `input` event
+// fires per keystroke with the parsed value. Assign it live so line totals,
+// the margin column, and the parent's tax/profit math track WHILE the user
+// types instead of appearing frozen until focus leaves the field.
+function onQtyInput(item, e) {
+  item.quantity = e.value;
+  emitLines();
+}
+
+function onCostInput(item, e) {
+  item.cost = e.value;
+  onCostChange(item);
+}
+
+function onPriceInput(item, e) {
+  item.unit_price = e.value;
+  markPriceOverride(item);
+}
+
+function onMarginInput(item, e) {
+  item.margin_pct_override = e.value;
+  if (e.value == null) {
+    // Mid-edit clear: reset the override flags but DEFER the tier refill to
+    // the blur commit — refilling now would rewrite the field under the
+    // user's cursor while they type a replacement number.
+    item._marginUserEdited = false;
+    item._priceOverridden = false;
+    item._autoMargin = null;
+    emitLines();
+    return;
+  }
+  onMarginOverrideChange(item);
 }
 
 function toNum(v) {

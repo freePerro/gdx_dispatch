@@ -31,9 +31,14 @@ const stubs = {
     inheritAttrs: false,
   },
   InputNumber: {
+    // Mirrors the real component's payloads: `input` fires with { value }
+    // (parsed number, null when cleared) and update:modelValue carries the
+    // parsed number. The real component only commits v-model on blur/Enter;
+    // the stub commits per keystroke, which the handlers must tolerate
+    // (they are idempotent — each event re-runs the same recompute).
     props: ['modelValue'],
     emits: ['update:modelValue', 'input'],
-    template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value)); $emit(\'input\', $event)" />',
+    template: '<input :data-testid="$attrs[\'data-testid\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value === \'\' ? null : Number($event.target.value)); $emit(\'input\', { value: $event.target.value === \'\' ? null : Number($event.target.value) })" />',
     inheritAttrs: false,
   },
   Select: {
@@ -375,6 +380,109 @@ describe('LineItemEditor — tier-aware recompute (estimate parity)', () => {
 
     const last = wrapper.emitted('update:lines').slice(-1)[0][0];
     expect(last[0].unit_price).toBe(200);  // 100 / (1 - 0.50)
+  });
+
+  it('margin edit AFTER a tier auto-fill recomputes immediately (regression: suppress flag swallowed it)', async () => {
+    // Doug 2026-07-20: "profit margins do not always refresh". Root cause:
+    // the tier auto-fill set _suppressMarginUserEdit expecting the model
+    // write to echo back through update:modelValue — PrimeVue never emits
+    // for programmatic writes, so the stale flag ate the user's NEXT real
+    // margin edit and the price didn't move until a second attempt.
+    apiGet.mockResolvedValueOnce(RETAIL_PARTS_35);
+    const wrapper = mountEditor({
+      lines: [{ description: 'Nickle Chain', quantity: 1, unit_price: 0, cost: null, margin_pct_override: null, category: 'Parts' }],
+      categories: [{ label: 'Parts', value: 'Parts' }],
+      showCost: true,
+      showMargin: true,
+    });
+    await flushPromises();
+
+    // Cost first → tier fills margin 35 / price 153.85.
+    const costInput = wrapper.find('[data-testid="line-cost-0"]');
+    costInput.element.value = '100';
+    await costInput.trigger('input');
+    let last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].margin_pct_override).toBe(35);
+
+    // NOW edit the margin — the very next edit must recompute the price.
+    const marginInput = wrapper.find('[data-testid="line-margin-0"]');
+    marginInput.element.value = '50';
+    await marginInput.trigger('input');
+    last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].unit_price).toBe(200);  // 100 / (1 - 0.50), not stale 153.85
+  });
+
+  it('re-committing the auto-filled margin (tab-through blur echo) does NOT freeze it as an override', async () => {
+    // InputNumber commits on every blur even when unchanged. Tabbing through
+    // the margin column used to flip _marginUserEdited and freeze the tier
+    // value as a fake override — cost edits stopped refreshing the margin.
+    apiGet.mockResolvedValueOnce(RETAIL_PARTS_35);
+    const wrapper = mountEditor({
+      lines: [{ description: 'Nickle Chain', quantity: 1, unit_price: 0, cost: null, margin_pct_override: null, category: 'Parts' }],
+      categories: [{ label: 'Parts', value: 'Parts' }],
+      showCost: true,
+      showMargin: true,
+    });
+    await flushPromises();
+
+    const costInput = wrapper.find('[data-testid="line-cost-0"]');
+    costInput.element.value = '100';
+    await costInput.trigger('input');
+
+    // Simulate the unchanged blur echo: same 35 committed again.
+    const marginInput = wrapper.find('[data-testid="line-margin-0"]');
+    marginInput.element.value = '35';
+    await marginInput.trigger('input');
+
+    // Cost changes again — tier must still drive the recompute.
+    costInput.element.value = '200';
+    await costInput.trigger('input');
+    const last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].unit_price).toBeCloseTo(200 / 0.65, 2);  // 307.69, tier still live
+    expect(last[0].margin_pct_override).toBe(35);
+  });
+
+  it('the input event alone (pre-blur keystroke) updates the line live', async () => {
+    // The real InputNumber only commits v-model on blur/Enter — mid-typing
+    // refresh rides the `input` event. Emit it in isolation to prove the
+    // live path works without a v-model commit.
+    const wrapper = mountEditor({
+      lines: [{ description: 'Door', quantity: 1, unit_price: 100 }],
+    });
+    const qtyStub = wrapper.findComponent('[data-testid="line-qty-0"]');
+    qtyStub.vm.$emit('input', { value: 5 });
+    await flushPromises();
+    const last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].quantity).toBe(5);
+    expect(wrapper.find('[data-testid="line-total-0"]').text()).toBe('$500.00');
+  });
+
+  it('clearing the margin mid-edit defers the tier refill to blur (no rewrite under the cursor)', async () => {
+    apiGet.mockResolvedValueOnce(RETAIL_PARTS_35);
+    const wrapper = mountEditor({
+      lines: [{ description: 'Nickle Chain', quantity: 1, unit_price: 0, cost: null, margin_pct_override: null, category: 'Parts' }],
+      categories: [{ label: 'Parts', value: 'Parts' }],
+      showCost: true,
+      showMargin: true,
+    });
+    await flushPromises();
+
+    const costInput = wrapper.find('[data-testid="line-cost-0"]');
+    costInput.element.value = '100';
+    await costInput.trigger('input');
+
+    // Mid-edit clear (input event only, no blur yet): field must stay empty.
+    const marginStub = wrapper.findComponent('[data-testid="line-margin-0"]');
+    marginStub.vm.$emit('input', { value: null });
+    await flushPromises();
+    let last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].margin_pct_override).toBeNull();
+
+    // Blur commit of the empty value → tier refills.
+    marginStub.vm.$emit('update:modelValue', null);
+    await flushPromises();
+    last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(last[0].margin_pct_override).toBe(35);
   });
 
   it('non-retail tier sets are dropped (retail-only by design)', async () => {
