@@ -191,3 +191,62 @@ def test_legacy_flat_tax_amount_path_unchanged(db):
     )
     assert updated["tax_rate"] is None
     assert round(updated["tax_amount"], 2) == 99.99
+
+def test_explicit_zero_rate_beats_configured_default(db):
+    # Doug 2026-07-20: the create form used to translate an entered 0% into
+    # tax_rate=null, which made the server re-resolve the tenant default and
+    # put the tax back. An EXPLICIT 0 must win over a configured default.
+    from gdx_dispatch.modules.tax.models import TaxConfig
+
+    db.add(TaxConfig(name="Default", default_rate=Decimal("0.0738")))
+    db.commit()
+
+    inv = _create_with_lines(
+        db,
+        tax_rate=0.0,
+        lines=[
+            {"description": "Door 10x8", "quantity": 1, "unit_price": 1000.0, "taxable": True},
+        ],
+    )
+    assert inv["tax_rate"] == 0.0
+    assert round(inv["tax_amount"], 2) == 0.00
+    assert round(inv["total"], 2) == 1000.00
+
+    # And it must STAY 0 across a line edit (rate-mode recalc with rate=0).
+    line_row = db.execute(
+        InvoiceLine.__table__.select().where(InvoiceLine.invoice_id == UUID(inv["id"]))
+    ).mappings().first()
+    patch_invoice_line(
+        invoice_id=UUID(inv["id"]),
+        line_id=line_row["id"],
+        payload=InvoiceLinePatchIn(quantity=3),
+        user=_user(),
+        db=db,
+    )
+    db.expire_all()
+    inv_row = db.get(Invoice, UUID(inv["id"]))
+    assert round(float(inv_row.subtotal), 2) == 3000.00
+    assert round(float(inv_row.tax_amount), 2) == 0.00
+    assert round(float(inv_row.total), 2) == 3000.00
+
+
+def test_patch_zero_rate_zeroes_existing_tax(db):
+    # Zeroing the rate on an existing rate-mode invoice must wipe the tax
+    # dollars, not preserve them (PATCH tax_rate=null preserves; 0 must not).
+    inv = _create_with_lines(
+        db,
+        tax_rate=0.0738,
+        lines=[
+            {"description": "Door", "quantity": 1, "unit_price": 1000.0, "taxable": True},
+        ],
+    )
+    assert round(inv["tax_amount"], 2) == 73.80
+
+    updated = patch_invoice(
+        invoice_id=UUID(inv["id"]),
+        payload=InvoicePatchIn(tax_rate=0.0),
+        _=_user(), db=db,
+    )
+    assert updated["tax_rate"] == 0.0
+    assert round(updated["tax_amount"], 2) == 0.00
+    assert round(updated["total"], 2) == 1000.00

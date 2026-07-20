@@ -1078,11 +1078,13 @@ async function saveEdit() {
       }
     }
 
-    // 3. Tax rate / dates / notes via PATCH on the invoice. Empty rate
-    // (0%) clears rate-mode by sending null so the server falls back to
-    // flat tax_amount mode (rare, but supported).
+    // 3. Tax rate / dates / notes via PATCH on the invoice. The rate is
+    // sent exactly as displayed, INCLUDING an explicit 0 — the server then
+    // recomputes tax_amount to $0. (Sending null here instead used to
+    // PRESERVE the previously computed tax dollars, so zeroing the field
+    // looked like it silently reverted.)
     const ratePct = toNum(editTaxRatePct.value);
-    const ratePayload = ratePct > 0 ? ratePct / 100 : null;
+    const ratePayload = Number.isFinite(ratePct) ? ratePct / 100 : 0;
     await api.patch(`/api/invoices/${id}`, {
       tax_rate: ratePayload,
       invoice_date: editInvoiceDate.value || null,
