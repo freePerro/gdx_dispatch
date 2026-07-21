@@ -22,11 +22,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
@@ -91,11 +93,25 @@ class OutlookMessage(TenantBase):
     in_reply_to: Mapped[str | None] = mapped_column(String(998), nullable=True)
     folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     folder_display_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Vendor-bill ingest checkpoint: set once this message's PDF attachments
+    # have been fully processed by the vendor-bills pipeline (delta or sweep),
+    # so a repeated history sweep never re-downloads them. NULL = not yet
+    # processed to the pipeline's current capability.
+    vendor_bills_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     __table_args__ = (
         UniqueConstraint("account_id", "graph_message_id", name="uq_email_account_graph_id"),
+        # Partial index for the sweep's candidate scan: unprocessed messages
+        # with attachments, newest first.
+        Index(
+            "ix_email_vendor_bill_sweep",
+            "account_id",
+            "received_at",
+            postgresql_where=text("has_attachments AND vendor_bills_ingested_at IS NULL"),
+            sqlite_where=text("has_attachments AND vendor_bills_ingested_at IS NULL"),
+        ),
     )
 
 

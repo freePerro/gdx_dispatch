@@ -88,7 +88,7 @@ def test_ingest_skips_non_allowlisted_sender(monkeypatch):
     monkeypatch.setattr(vbi, "upload_midwest_invoice", lambda *a, **k: called.append(1))
     gc = _FakeGC([_pdf_att()], {"a1": b"x"})
     result = vbi.ingest_message_attachments(None, gc, _msg(sender="ar@stranger.com"), ["midwest.com"])
-    assert result == {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+    assert result == vbi.new_totals()
     assert called == []
 
 
@@ -145,5 +145,68 @@ def test_isolated_ingest_helper_short_circuits_without_touching_a_session():
     # one (so this is safe to call even with no DB configured).
     from gdx_dispatch.modules.outlook.tasks import _ingest_vendor_bills
     assert _ingest_vendor_bills(None, [], ["midwest.com"]) == {
-        "ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0,
+        **vbi.new_totals(),
+        "skipped_no_budget": 0,
+        "skipped_already_ingested": 0,
+        "quarantined": 0,
     }
+
+
+# --------------------------------------------------------------------------- #
+# max_downloads budget (D3 — the sweep's per-run download cap)
+# --------------------------------------------------------------------------- #
+def test_ingest_budget_cuts_message_short_and_flags_capped(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", lambda *a, **k: SimpleNamespace(created=True))
+    gc = _FakeGC(
+        [_pdf_att("a1"), _pdf_att("a2"), _pdf_att("a3")],
+        {"a1": b"1", "a2": b"2", "a3": b"3"},
+    )
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], max_downloads=2)
+    assert result["downloads"] == 2
+    assert result["ingested"] == 2
+    assert result["capped"] == 1          # a3 was never fetched
+    assert gc.downloads == ["a1", "a2"]
+
+
+def test_ingest_zero_budget_downloads_nothing(monkeypatch):
+    called = []
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", lambda *a, **k: called.append(1))
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"1"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], max_downloads=0)
+    assert result["downloads"] == 0
+    assert result["capped"] == 1
+    assert called == []
+    assert gc.downloads == []
+
+
+def test_ingest_failed_download_still_consumes_budget(monkeypatch):
+    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", lambda *a, **k: SimpleNamespace(created=True))
+
+    class _FlakyGC(_FakeGC):
+        def download_attachment(self, msg_id, att_id):
+            if att_id == "a1":
+                self.downloads.append(att_id)
+                raise OutlookGraphAPIError(500, "boom")
+            return super().download_attachment(msg_id, att_id)
+
+    gc = _FlakyGC([_pdf_att("a1"), _pdf_att("a2")], {"a2": b"2"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], max_downloads=2)
+    # The failed attempt spent a Graph call: budget counts it.
+    assert result["downloads"] == 2
+    assert result["errors"] == 1
+    assert result["ingested"] == 1
+    assert result["capped"] == 0
+
+
+def test_ingest_no_budget_means_unlimited(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", lambda *a, **k: SimpleNamespace(created=True))
+    gc = _FakeGC(
+        [_pdf_att("a1"), _pdf_att("a2"), _pdf_att("a3")],
+        {"a1": b"1", "a2": b"2", "a3": b"3"},
+    )
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+    assert result["downloads"] == 3
+    assert result["ingested"] == 3
+    assert result["capped"] == 0

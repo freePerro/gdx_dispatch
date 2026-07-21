@@ -669,3 +669,266 @@ def test_retag_untagged_walks_and_commits():
     assert out == {"scanned": 2, "tagged": 1}
     assert tag.call_count == 2
     tdb.commit.assert_called()
+
+
+# ── sweep_vendor_bill_history (Phase 2, D3) ────────────────────────────
+#
+# Real in-memory SQLite (shared StaticPool connection, so the task's three
+# SessionLocal() sessions see one database): the checkpoint + repeatability
+# semantics are exactly what MagicMock query chains can't prove.
+
+
+def _sweep_env(allowlist=("midwest.com",)):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from gdx_dispatch.core.audit import TenantBase
+    from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
+
+    eng = create_engine(
+        "sqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    TenantBase.metadata.create_all(eng)
+    maker = sessionmaker(bind=eng)
+    db = maker()
+    account = OutlookAccount(user_id=str(uuid4()))
+    db.add(account)
+    db.add(OutlookSettings(id=1, vendor_bill_sender_allowlist=list(allowlist)))
+    db.commit()
+    account_id = account.id
+    db.close()
+    return maker, account_id
+
+
+def _mirror_msg(maker, account_id, gid, sender, *, has_att=True, days_ago=1, stamped=False):
+    from gdx_dispatch.modules.outlook.models import OutlookMessage
+
+    db = maker()
+    db.add(OutlookMessage(
+        account_id=account_id,
+        graph_message_id=gid,
+        from_address=sender,
+        has_attachments=has_att,
+        received_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        vendor_bills_ingested_at=datetime.now(timezone.utc) if stamped else None,
+    ))
+    db.commit()
+    db.close()
+
+
+def _stamps(maker, account_id):
+    """{graph_message_id: bool(checkpointed)} for every mirror row."""
+    from gdx_dispatch.modules.outlook.models import OutlookMessage
+
+    db = maker()
+    try:
+        rows = db.query(OutlookMessage).filter(OutlookMessage.account_id == account_id).all()
+        return {r.graph_message_id: r.vendor_bills_ingested_at is not None for r in rows}
+    finally:
+        db.close()
+
+
+class _SweepGC:
+    """PDF attachments per message (default 1, override via counts); records downloads."""
+
+    def __init__(self, counts=None):
+        self.downloads = []
+        self._counts = counts or {}
+
+    def list_attachments(self, msg_id):
+        return [{
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": f"att-{msg_id}-{i}",
+            "contentType": "application/pdf",
+            "name": f"{msg_id}-{i}.pdf",
+        } for i in range(self._counts.get(msg_id, 1))]
+
+    def download_attachment(self, msg_id, att_id):
+        self.downloads.append(att_id)
+        return b"%PDF-1.4 " + att_id.encode()
+
+
+def _run_sweep(maker, account_id, gc, monkeypatch, *, days=365, upload=None):
+    from types import SimpleNamespace
+
+    from gdx_dispatch.modules.outlook import tasks
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.outlook.vendor_bill_ingest.upload_midwest_invoice",
+        upload or (lambda *a, **k: SimpleNamespace(created=True)),
+    )
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()), \
+         patch("gdx_dispatch.modules.outlook.tasks.with_outlook_client") as ctx:
+        ctx.return_value.__enter__.return_value = gc
+        return tasks.sweep_vendor_bill_history.run(str(account_id), str(uuid4()), days=days)
+
+
+def test_sweep_filters_candidates_ingests_and_checkpoints(monkeypatch):
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-bill", "billing@midwest.com", days_ago=10)
+    _mirror_msg(maker, aid, "m-stranger", "x@stranger.com", days_ago=10)
+    _mirror_msg(maker, aid, "m-noatt", "billing@midwest.com", has_att=False, days_ago=10)
+    _mirror_msg(maker, aid, "m-done", "billing@midwest.com", days_ago=10, stamped=True)
+    _mirror_msg(maker, aid, "m-ancient", "billing@midwest.com", days_ago=400)
+
+    gc = _SweepGC()
+    result = _run_sweep(maker, aid, gc, monkeypatch)
+
+    assert result["candidates"] == 1
+    assert result["ingested"] == 1
+    assert result["downloads"] == 1
+    assert result["cap_hit"] is False
+    assert gc.downloads == ["att-m-bill-0"]
+    stamps = _stamps(maker, aid)
+    assert stamps["m-bill"] is True          # processed → checkpointed
+    assert stamps["m-stranger"] is False     # never a candidate
+    assert stamps["m-ancient"] is False      # outside the window
+    # 400-day-old mirror row exists, so the 365-day window IS fully mirrored.
+    assert result["window_covered"] is True
+
+    # Repeatability: a second run finds nothing left to do.
+    gc2 = _SweepGC()
+    result2 = _run_sweep(maker, aid, gc2, monkeypatch)
+    assert result2["candidates"] == 0
+    assert gc2.downloads == []
+
+
+def test_sweep_noop_when_allowlist_empty(monkeypatch):
+    maker, aid = _sweep_env(allowlist=())
+    _mirror_msg(maker, aid, "m1", "billing@midwest.com")
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch)
+    assert result == {"skipped": "allowlist empty"}
+
+
+def test_sweep_download_budget_stops_run_and_next_run_resumes(monkeypatch):
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, aid = _sweep_env()
+    for i in range(3):
+        _mirror_msg(maker, aid, f"m{i}", "billing@midwest.com", days_ago=i + 1)
+    monkeypatch.setattr(tasks, "SWEEP_MAX_DOWNLOADS_PER_RUN", 2)
+
+    gc = _SweepGC()
+    result = _run_sweep(maker, aid, gc, monkeypatch)
+    assert result["downloads"] == 2
+    assert result["ingested"] == 2
+    assert result["skipped_no_budget"] == 1
+    assert result["cap_hit"] is True
+    assert sum(_stamps(maker, aid).values()) == 2  # only the processed two
+
+    # The next run picks up exactly the remainder.
+    gc2 = _SweepGC()
+    result2 = _run_sweep(maker, aid, gc2, monkeypatch)
+    assert result2["candidates"] == 1
+    assert result2["downloads"] == 1
+    assert result2["cap_hit"] is False
+    assert sum(_stamps(maker, aid).values()) == 3
+
+
+def test_sweep_error_leaves_message_unstamped_for_retry(monkeypatch):
+    from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-err", "billing@midwest.com")
+
+    class _BrokenGC(_SweepGC):
+        def list_attachments(self, msg_id):
+            raise OutlookGraphAPIError(500, "boom")
+
+    result = _run_sweep(maker, aid, _BrokenGC(), monkeypatch)
+    assert result["errors"] == 1
+    assert result["ingested"] == 0
+    assert _stamps(maker, aid)["m-err"] is False  # retryable next run
+
+
+def test_sweep_skips_when_no_account(monkeypatch):
+    maker, _aid = _sweep_env()
+    from gdx_dispatch.modules.outlook import tasks
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()):
+        result = tasks.sweep_vendor_bill_history.run(str(uuid4()), str(uuid4()))
+    assert result == {"skipped": "no account"}
+
+
+def test_sweep_multi_pdf_message_cut_mid_run_is_not_stamped_and_resumes(monkeypatch):
+    """The load-bearing checkpoint rule, end-to-end: a message whose PDF set is
+    cut short by the RUN budget (not a full-budget overflow) must NOT be
+    checkpointed — the next, bigger run completes it."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-small", "billing@midwest.com", days_ago=1)
+    _mirror_msg(maker, aid, "m-big", "billing@midwest.com", days_ago=2)
+    counts = {"m-small": 1, "m-big": 3}
+
+    monkeypatch.setattr(tasks, "SWEEP_MAX_DOWNLOADS_PER_RUN", 2)
+    gc = _SweepGC(counts)
+    result = _run_sweep(maker, aid, gc, monkeypatch)
+    # m-small (newest) used 1; m-big started with remaining=1 < full budget →
+    # cut short, retryable, NOT quarantined, NOT stamped.
+    assert result["downloads"] == 2
+    assert result["capped"] == 1
+    assert result["quarantined"] == 0
+    assert result["cap_hit"] is True
+    stamps = _stamps(maker, aid)
+    assert stamps["m-small"] is True
+    assert stamps["m-big"] is False
+
+    monkeypatch.setattr(tasks, "SWEEP_MAX_DOWNLOADS_PER_RUN", 5)
+    gc2 = _SweepGC(counts)
+    result2 = _run_sweep(maker, aid, gc2, monkeypatch)
+    assert result2["candidates"] == 1
+    assert result2["downloads"] == 3
+    assert result2["ingested"] == 3
+    assert _stamps(maker, aid)["m-big"] is True
+
+
+def test_sweep_quarantines_message_bigger_than_entire_budget(monkeypatch):
+    """A message needing more downloads than the WHOLE per-run budget can never
+    complete — it must be parked (checkpointed incomplete), not allowed to eat
+    every future run's budget from the head of the queue."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-monster", "billing@midwest.com")
+    monkeypatch.setattr(tasks, "SWEEP_MAX_DOWNLOADS_PER_RUN", 2)
+
+    gc = _SweepGC({"m-monster": 3})
+    result = _run_sweep(maker, aid, gc, monkeypatch)
+    assert result["downloads"] == 2
+    assert result["quarantined"] == 1
+    assert _stamps(maker, aid)["m-monster"] is True  # parked
+
+    # It does NOT come back next run.
+    gc2 = _SweepGC({"m-monster": 3})
+    assert _run_sweep(maker, aid, gc2, monkeypatch)["candidates"] == 0
+
+
+def test_ingest_helper_skips_already_stamped_candidates(monkeypatch):
+    """The delta path re-surfaces a message on every isRead/flag change; the
+    checkpoint must be READ there, not just written — no re-download."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-done", "billing@midwest.com", stamped=True)
+    gc = _SweepGC()
+    cand = [{"id": "m-done", "hasAttachments": True,
+             "from": {"emailAddress": {"address": "billing@midwest.com"}}}]
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()):
+        totals = tasks._ingest_vendor_bills(gc, cand, ["midwest.com"], stamp_account_id=aid)
+    assert totals["skipped_already_ingested"] == 1
+    assert totals["downloads"] == 0
+    assert gc.downloads == []
+
+
+def test_sweep_reports_uncovered_window_when_mirror_is_shallow(monkeypatch):
+    """backfill_days defaults to 90; a 365-day sweep over a 90-day mirror must
+    say so — cap_hit:false alone must never read as 'the whole year is in'."""
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m1", "billing@midwest.com", days_ago=10)
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch, days=365)
+    assert result["window_covered"] is False
+    assert result["mirror_oldest"] is not None

@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.control.models import TenantSettings
 from gdx_dispatch.core.database import get_db, get_db
 from gdx_dispatch.modules.outlook import key_storage
-from gdx_dispatch.modules.outlook.models import OutlookSettings
+from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
+from gdx_dispatch.modules.outlook.vendor_bill_ingest import normalize_allowlist
 from gdx_dispatch.routers.auth import get_current_user
 
 
@@ -249,3 +250,66 @@ def delete_credentials(
     control_db.commit()
     log.info("outlook credentials cleared for tenant %s", tenant_id)
     return None
+
+
+# ── /api/admin/outlook/vendor-bills/sweep ──────────────────────────────
+
+
+class VendorBillSweepIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    days: int = Field(default=365, ge=1, le=3650)
+
+
+class VendorBillSweepOut(BaseModel):
+    queued: list[dict[str, str]]
+    days: int
+
+
+@router.post(
+    "/vendor-bills/sweep",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=VendorBillSweepOut,
+)
+def trigger_vendor_bill_sweep(
+    payload: VendorBillSweepIn | None = None,
+    user: dict[str, Any] = Depends(get_admin_principal),
+    db: Session = Depends(get_db_for_admin),
+) -> VendorBillSweepOut:
+    """Queue the repeatable vendor-bill history sweep (Phase 2, D3) for every
+    connected Outlook account. Per-run download/message budgets live in the
+    task; the admin re-triggers until the report's ``cap_hit`` is false.
+    Guarded: refuses when the sender allowlist is empty (feature off) so the
+    button can't silently no-op."""
+    tenant_id = _coerce_tenant_uuid(user)
+    settings = db.get(OutlookSettings, 1)
+    allowlist = normalize_allowlist(
+        settings.vendor_bill_sender_allowlist if settings else None
+    )
+    if not allowlist:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="vendor_bill_sender_allowlist is empty — the sweep would ingest nothing. "
+                   "Configure allowlisted supplier senders first.",
+        )
+    accounts = (
+        db.query(OutlookAccount)
+        .filter(OutlookAccount.refresh_token_enc.isnot(None))
+        .all()
+    )
+    if not accounts:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no connected Outlook account",
+        )
+    days = payload.days if payload is not None else VendorBillSweepIn().days
+    from gdx_dispatch.modules.outlook.tasks import sweep_vendor_bill_history
+
+    queued: list[dict[str, str]] = []
+    for a in accounts:
+        res = sweep_vendor_bill_history.delay(str(a.id), str(tenant_id), days=days)
+        queued.append({"account_id": str(a.id), "task_id": str(getattr(res, "id", "") or "")})
+    log.info(
+        "vendor-bill history sweep queued for %d account(s), days=%d, tenant %s",
+        len(queued), days, tenant_id,
+    )
+    return VendorBillSweepOut(queued=queued, days=days)

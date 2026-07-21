@@ -12,13 +12,15 @@ Safety posture:
   senders' PDFs reach the pipeline; a stranger's attachment is never processed.
 - **Idempotent by content hash.** Re-seeing a message re-runs the pipeline,
   which dedups on the document hash + (vendor, invoice_number) — no duplicate
-  records. (A per-message "already ingested" checkpoint to avoid re-DOWNLOADING
-  is a later optimization for the backfill sweep; the forward delta only returns
-  changed messages, so re-download is rare here.)
+  records. The ``OutlookMessage.vendor_bills_ingested_at`` checkpoint (stamped
+  by the callers in tasks.py) additionally makes re-runs cost-idempotent: a
+  fully-processed message is never re-DOWNLOADED by the history sweep.
+- **Bounded downloads.** ``max_downloads`` caps attachment downloads per call
+  so the history sweep (``sweep_vendor_bill_history``) can enforce a per-run
+  download budget against Graph throttling / runaway cost.
 
-NOT here (still gated / a later increment): the repeatable historical backfill
-sweep with a download cap, and the Claude-vision extraction rung with a per-run
-cost ceiling. This is the ongoing-new-mail bridge only.
+NOT here (still gated / a later increment): the Claude-vision extraction rung
+with a per-run cost ceiling.
 """
 from __future__ import annotations
 
@@ -81,6 +83,12 @@ def is_candidate(message: dict[str, Any], allowlist: list[str]) -> bool:
     return sender_allowed(_from_address(message), allowlist)
 
 
+def new_totals() -> dict[str, int]:
+    """The zero counters every ingest call/aggregate uses. ``capped`` counts
+    messages whose PDF set was cut short by ``max_downloads``."""
+    return {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0, "downloads": 0, "capped": 0}
+
+
 def ingest_message_attachments(
     tdb: Session,
     gc,
@@ -88,13 +96,20 @@ def ingest_message_attachments(
     allowlist: list[str],
     *,
     uploaded_by: str = "outlook",
+    max_downloads: int | None = None,
 ) -> dict[str, int]:
     """Ingest the PDF attachments of one message if its sender is allowlisted.
 
-    Returns counts: {ingested, duplicate, unparseable, errors}. Never raises for
-    a single bad attachment — the sync must continue.
+    Returns ``new_totals()``-shaped counts. Never raises for a single bad
+    attachment — the sync must continue.
+
+    ``max_downloads`` (None = unlimited) bounds attachment downloads for this
+    call; a failed download attempt still consumes budget (the Graph call was
+    spent). When the budget cuts a message short, ``capped`` is 1 and the
+    remaining PDFs were not processed — the caller must NOT checkpoint the
+    message as done.
     """
-    result = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+    result = new_totals()
     if not allowlist or not message.get("hasAttachments"):
         return result
     if not sender_allowed(_from_address(message), allowlist):
@@ -114,6 +129,10 @@ def ingest_message_attachments(
     for att in attachments:
         if not is_pdf_attachment(att):
             continue
+        if max_downloads is not None and result["downloads"] >= max_downloads:
+            result["capped"] = 1
+            break
+        result["downloads"] += 1
         try:
             data = gc.download_attachment(graph_id, att["id"])
         except OutlookGraphAPIError as exc:
@@ -153,7 +172,7 @@ def ingest_messages(
     uploaded_by: str = "outlook",
 ) -> dict[str, int]:
     """Ingest a page of messages. Aggregates per-message counts."""
-    totals = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+    totals = new_totals()
     if not allowlist:
         return totals
     for m in messages:
