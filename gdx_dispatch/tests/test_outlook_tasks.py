@@ -932,3 +932,119 @@ def test_sweep_reports_uncovered_window_when_mirror_is_shallow(monkeypatch):
     result = _run_sweep(maker, aid, _SweepGC(), monkeypatch, days=365)
     assert result["window_covered"] is False
     assert result["mirror_oldest"] is not None
+
+
+# ── LLM rung threading through the sweep (D4) ──────────────────────────
+
+
+def _llm_env(monkeypatch, *, client="dummy", midwest_fails=True):
+    """Patch the parser to reject, the LLM upload to succeed, and get_client."""
+    from types import SimpleNamespace
+
+    from gdx_dispatch.core.llm.anthropic_client import LLMNotConfigured
+
+    if midwest_fails:
+        from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import (
+            MidwestInvoiceParseError,
+        )
+
+        def _fail(*a, **k):
+            raise MidwestInvoiceParseError("nope")
+
+        monkeypatch.setattr(
+            "gdx_dispatch.modules.outlook.vendor_bill_ingest.upload_midwest_invoice", _fail,
+        )
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.outlook.vendor_bill_ingest.upload_invoice_via_llm",
+        lambda *a, **k: SimpleNamespace(created=True),
+    )
+    if client is None:
+        def _no_key(db, tid):
+            raise LLMNotConfigured("no key")
+        monkeypatch.setattr("gdx_dispatch.core.llm.anthropic_client.get_client", _no_key)
+    else:
+        monkeypatch.setattr(
+            "gdx_dispatch.core.llm.anthropic_client.get_client", lambda db, tid: object(),
+        )
+
+
+def test_sweep_llm_rung_ingests_and_stamps(monkeypatch):
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-scan", "billing@midwest.com")
+    _llm_env(monkeypatch)
+
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch,
+                        upload=_raise_midwest_parse_error)
+    assert result["ingested_llm"] == 1
+    assert result["llm_extractions"] == 1
+    assert result["unparseable"] == 0
+    assert _stamps(maker, aid)["m-scan"] is True
+
+
+def test_sweep_llm_ceiling_blocks_stamp_and_next_run_finishes(monkeypatch):
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-new", "billing@midwest.com", days_ago=1)
+    _mirror_msg(maker, aid, "m-old", "billing@midwest.com", days_ago=2)
+    _llm_env(monkeypatch)
+    monkeypatch.setattr(tasks, "LLM_MAX_EXTRACTIONS_PER_RUN", 1)
+
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch,
+                        upload=_raise_midwest_parse_error)
+    assert result["ingested_llm"] == 1
+    assert result["llm_capped"] == 1
+    assert result["cap_hit"] is True        # the ceiling must say "run again"
+    stamps = _stamps(maker, aid)
+    assert stamps["m-new"] is True
+    assert stamps["m-old"] is False         # ceiling-cut → retried later
+
+    result2 = _run_sweep(maker, aid, _SweepGC(), monkeypatch,
+                         upload=_raise_midwest_parse_error)
+    assert result2["candidates"] == 1
+    assert result2["ingested_llm"] == 1
+    assert result2["cap_hit"] is False
+    assert _stamps(maker, aid)["m-old"] is True
+
+
+def test_sweep_without_llm_key_stamps_unparseable_as_before(monkeypatch):
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-scan", "billing@midwest.com")
+    _llm_env(monkeypatch, client=None)
+
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch,
+                        upload=_raise_midwest_parse_error)
+    assert result["unparseable"] == 1
+    assert result["llm_extractions"] == 0
+    # Feature-off semantics: processed to current capability → checkpointed.
+    # (Re-arm with UPDATE ... SET vendor_bills_ingested_at = NULL after
+    # configuring a key, as documented in the D3 commit.)
+    assert _stamps(maker, aid)["m-scan"] is True
+
+
+def _raise_midwest_parse_error(*a, **k):
+    from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import (
+        MidwestInvoiceParseError,
+    )
+    raise MidwestInvoiceParseError("nope")
+
+
+def test_sweep_broken_llm_key_leaves_messages_unstamped(monkeypatch):
+    """A key-rotation incident (LLMKeyStorageError) must NOT stamp scans as
+    processed — they wait, retryable, until the key is fixed."""
+    from gdx_dispatch.core.llm.key_storage import LLMKeyStorageError
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-scan", "billing@midwest.com")
+    _llm_env(monkeypatch)  # sets up parser-fails + llm-succeeds
+
+    def _broken(db, tid):
+        raise LLMKeyStorageError("cannot decrypt with current GDX_FERNET_KEY")
+
+    monkeypatch.setattr("gdx_dispatch.core.llm.anthropic_client.get_client", _broken)
+    result = _run_sweep(maker, aid, _SweepGC(), monkeypatch,
+                        upload=_raise_midwest_parse_error)
+    assert result["errors"] == 1
+    assert result["llm_extractions"] == 0
+    assert result["unparseable"] == 0
+    assert _stamps(maker, aid)["m-scan"] is False   # retried after the fix

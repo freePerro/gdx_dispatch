@@ -210,3 +210,165 @@ def test_ingest_no_budget_means_unlimited(monkeypatch):
     assert result["downloads"] == 3
     assert result["ingested"] == 3
     assert result["capped"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# LLM rung 2 (D4) — parser-rejected PDFs go to Claude-vision, bounded
+# --------------------------------------------------------------------------- #
+def _parse_fails(*a, **k):
+    raise MidwestInvoiceParseError("not a midwest invoice")
+
+
+def test_llm_rung_ingests_parser_rejected_pdf(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    llm_calls = []
+
+    def fake_llm_upload(tdb, *, pdf_bytes, llm_client, **k):
+        llm_calls.append(pdf_bytes)
+        return SimpleNamespace(created=True)
+
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", fake_llm_upload)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"scan"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(),
+    )
+    assert result["ingested"] == 1
+    assert result["ingested_llm"] == 1
+    assert result["llm_extractions"] == 1
+    assert result["unparseable"] == 0
+    assert llm_calls == [b"scan"]
+
+
+def test_llm_rung_off_without_client_keeps_old_behavior(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    called = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: called.append(1))
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"scan"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+    assert result["unparseable"] == 1
+    assert result["llm_extractions"] == 0
+    assert called == []
+
+
+def test_llm_rung_cost_ceiling_caps_and_flags(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    monkeypatch.setattr(
+        vbi, "upload_invoice_via_llm",
+        lambda *a, **k: SimpleNamespace(created=True),
+    )
+    gc = _FakeGC(
+        [_pdf_att("a1"), _pdf_att("a2")],
+        {"a1": b"s1", "a2": b"s2"},
+    )
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(), max_llm_extractions=1,
+    )
+    assert result["llm_extractions"] == 1
+    assert result["ingested_llm"] == 1
+    assert result["llm_capped"] == 1        # a2 hit the ceiling → retry later
+    assert result["unparseable"] == 0
+
+
+def test_llm_rung_duplicate_counts_as_duplicate(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    monkeypatch.setattr(
+        vbi, "upload_invoice_via_llm",
+        lambda *a, **k: SimpleNamespace(created=False),
+    )
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(),
+    )
+    assert result["duplicate"] == 1
+    assert result["ingested"] == 0
+
+
+def test_llm_rung_extraction_error_is_unparseable(monkeypatch):
+    from gdx_dispatch.modules.vendor_invoices.llm_extract import LLMExtractionError
+
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+
+    def boom(*a, **k):
+        raise LLMExtractionError("model couldn't read it")
+
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", boom)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(),
+    )
+    assert result["unparseable"] == 1
+    assert result["errors"] == 0            # deterministic — do NOT retry
+
+
+def test_llm_rung_api_failure_is_retryable_error(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+
+    def boom(*a, **k):
+        raise RuntimeError("anthropic 529 overloaded")
+
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", boom)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(),
+    )
+    assert result["errors"] == 1            # blocks checkpoint → retried
+    assert result["unparseable"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# LLM rung — real SDK exception taxonomy (audit fix: deterministic 4xx must
+# not loop as retryable forever)
+# --------------------------------------------------------------------------- #
+def _anthropic_error(cls, status):
+    import anthropic
+    import httpx
+
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    resp = httpx.Response(status, request=req)
+    return getattr(anthropic, cls)("boom", response=resp, body=None)
+
+
+def test_llm_rung_deterministic_400_is_unparseable_not_retryable(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+
+    def boom(*a, **k):
+        raise _anthropic_error("BadRequestError", 400)  # encrypted / >100 pages
+
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", boom)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object(),
+    )
+    assert result["unparseable"] == 1       # stamped — never re-burns budget
+    assert result["errors"] == 0
+
+
+def test_llm_rung_auth_and_ratelimit_and_5xx_are_retryable(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    for cls, status in [("AuthenticationError", 401),
+                        ("RateLimitError", 429),
+                        ("InternalServerError", 500)]:
+        def boom(*a, _c=cls, _s=status, **k):
+            raise _anthropic_error(_c, _s)
+
+        monkeypatch.setattr(vbi, "upload_invoice_via_llm", boom)
+        gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+        result = vbi.ingest_message_attachments(
+            None, gc, _msg(), ["midwest.com"], llm_client=object(),
+        )
+        assert result["errors"] == 1, f"{cls} must be retryable"
+        assert result["unparseable"] == 0, f"{cls} must not stamp"
+
+
+def test_llm_rung_broken_client_counts_error_without_api_call(monkeypatch):
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", _parse_fails)
+    called = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: called.append(1))
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"s"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=vbi.LLM_BROKEN,
+    )
+    assert result["errors"] == 1            # retryable after the key is fixed
+    assert result["unparseable"] == 0
+    assert result["llm_extractions"] == 0
+    assert called == []

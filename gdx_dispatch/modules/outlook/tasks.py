@@ -48,6 +48,7 @@ from gdx_dispatch.modules.outlook.models import (
 from gdx_dispatch.modules.outlook.tagger import tag_message
 from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired, with_outlook_client
 from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
+    LLM_BROKEN,
     ingest_message_attachments,
     is_candidate,
     new_totals,
@@ -71,6 +72,12 @@ BACKFILL_MAX_MESSAGES_PER_RUN = 5000
 # expensive, throttle-prone call — design cap from [AUDIT-R3]).
 SWEEP_MAX_MESSAGES_PER_RUN = 500
 SWEEP_MAX_DOWNLOADS_PER_RUN = 50
+
+# Per-RUN ceiling on Claude-vision extractions (rung 2) — the cost cap from
+# [AUDIT-R3]: a big history sweep must not push hundreds of PDFs to the LLM at
+# once. Applies to both the delta sync and the history sweep; PDFs past the
+# ceiling stay un-checkpointed and are retried by a later run.
+LLM_MAX_EXTRACTIONS_PER_RUN = 10
 
 # Folders we cache + show in the rail but do NOT actively sync messages from.
 # Live-fetched on click via the views_router live-fetch path. Per Doug's
@@ -442,6 +449,8 @@ def _ingest_vendor_bills(
     *,
     stamp_account_id: UUID | None = None,
     max_downloads: int | None = None,
+    tenant_id: UUID | None = None,
+    max_llm_extractions: int | None = None,
 ) -> dict[str, int]:
     """Download + pipeline the collected vendor-bill candidates in a session
     fully isolated from the sync's tenant session. Each message commits on its
@@ -470,7 +479,29 @@ def _ingest_vendor_bills(
     if not candidates or not allowlist:
         return totals
     remaining = max_downloads
+    llm_remaining = max_llm_extractions
     idb = SessionLocal()
+    llm_client = None
+    if tenant_id is not None:
+        # Rung 2 (Claude-vision) is per-tenant opt-in via the stored LLM key.
+        # A failure to build the client must never break the mail sync — but
+        # "no key" and "broken key" degrade DIFFERENTLY: no key = rung off
+        # (unparseables stamp, pre-LLM behavior); broken key = LLM_BROKEN
+        # (parser-rejected PDFs count as retryable errors and stay
+        # un-checkpointed, so a key-rotation incident can't permanently
+        # stamp-skip bills).
+        try:
+            from gdx_dispatch.core.llm.anthropic_client import LLMNotConfigured, get_client
+            llm_client = get_client(idb, tenant_id)
+        except LLMNotConfigured:
+            llm_client = None
+        except Exception:  # noqa: BLE001
+            # Includes LLMKeyStorageError — keep its fail-loud contract.
+            log.exception(
+                "vendor_bill_ingest: LLM key present but client construction FAILED — "
+                "rung 2 marked BROKEN this run; parser-rejected PDFs will be retried"
+            )
+            llm_client = LLM_BROKEN
     try:
         already_stamped: set[str] = set()
         if stamp_account_id is not None:
@@ -493,21 +524,32 @@ def _ingest_vendor_bills(
                 totals["skipped_no_budget"] = len(candidates) - i
                 break
             had_full_budget = remaining is not None and remaining == max_downloads
+            had_full_llm = llm_remaining is not None and llm_remaining == max_llm_extractions
             try:
-                r = ingest_message_attachments(idb, gc, m, allowlist, max_downloads=remaining)
+                r = ingest_message_attachments(
+                    idb, gc, m, allowlist,
+                    max_downloads=remaining,
+                    llm_client=llm_client,
+                    max_llm_extractions=llm_remaining,
+                )
                 if remaining is not None:
                     remaining -= r["downloads"]
-                clean = r["errors"] == 0 and r["capped"] == 0
+                if llm_remaining is not None:
+                    llm_remaining -= r["llm_extractions"]
+                clean = r["errors"] == 0 and r["capped"] == 0 and r["llm_capped"] == 0
                 # A message the FULL budget couldn't finish will never finish:
                 # park it (checkpoint + loud log) instead of letting it eat
                 # every future run's budget from the head of the queue.
-                quarantine = bool(r["capped"]) and had_full_budget
+                quarantine = (bool(r["capped"]) and had_full_budget) or (
+                    bool(r["llm_capped"]) and had_full_llm
+                )
                 if quarantine:
                     totals["quarantined"] += 1
                     log.warning(
-                        "vendor_bill_ingest: message %s needs more downloads than the "
-                        "entire per-run budget (%s) — quarantined (checkpointed incomplete)",
-                        m.get("id"), max_downloads,
+                        "vendor_bill_ingest: message %s needs more downloads/LLM "
+                        "extractions than an entire per-run budget (%s/%s) — "
+                        "quarantined (checkpointed incomplete)",
+                        m.get("id"), max_downloads, max_llm_extractions,
                     )
                 if stamp_account_id is not None and m.get("id") and (clean or quarantine):
                     idb.query(OutlookMessage).filter(
@@ -528,6 +570,10 @@ def _ingest_vendor_bills(
                     # mid-download; its Graph spend is unaccounted. Charge at
                     # least one download so a flaky run can't blow past the cap.
                     remaining -= 1
+                if llm_remaining is not None:
+                    # Same for the LLM ceiling — an exception after an LLM call
+                    # (e.g. the commit) would otherwise leave it uncharged.
+                    llm_remaining -= 1
                 with contextlib.suppress(Exception):
                     idb.rollback()
                 idb.close()
@@ -624,7 +670,10 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                 # mirror or advance a delta token past un-mirrored messages.
                 if allowlist and vb_candidates:
                     ingest_totals = _ingest_vendor_bills(
-                        gc, vb_candidates, allowlist, stamp_account_id=account.id,
+                        gc, vb_candidates, allowlist,
+                        stamp_account_id=account.id,
+                        tenant_id=tid,
+                        max_llm_extractions=LLM_MAX_EXTRACTIONS_PER_RUN,
                     )
         except OutlookReconnectRequired as exc:
             log.warning("sync_outlook_mailbox: reconnect required for %s: %s", aid, exc)
@@ -876,6 +925,8 @@ def sweep_vendor_bill_history(self, account_id: str, tenant_id: str, days: int =
                         gc, candidates, allowlist,
                         stamp_account_id=account.id,
                         max_downloads=SWEEP_MAX_DOWNLOADS_PER_RUN,
+                        tenant_id=tid,
+                        max_llm_extractions=LLM_MAX_EXTRACTIONS_PER_RUN,
                     )
             except OutlookReconnectRequired as exc:
                 log.warning("sweep_vendor_bill_history: reconnect required for %s: %s", aid, exc)
@@ -886,6 +937,7 @@ def sweep_vendor_bill_history(self, account_id: str, tenant_id: str, days: int =
 
         cap_hit = bool(
             totals["capped"]
+            or totals.get("llm_capped", 0)
             or totals.get("skipped_no_budget", 0)
             or len(candidates) >= SWEEP_MAX_MESSAGES_PER_RUN
         )

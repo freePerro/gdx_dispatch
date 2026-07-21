@@ -18,24 +18,43 @@ Safety posture:
 - **Bounded downloads.** ``max_downloads`` caps attachment downloads per call
   so the history sweep (``sweep_vendor_bill_history``) can enforce a per-run
   download budget against Graph throttling / runaway cost.
-
-NOT here (still gated / a later increment): the Claude-vision extraction rung
-with a per-run cost ceiling.
+- **LLM rung 2, bounded.** When the deterministic parser can't read a PDF and
+  the tenant has an Anthropic key configured, the PDF goes to Claude-vision
+  extraction (``upload_invoice_via_llm``) — capped per run via
+  ``max_llm_extractions`` (the cost ceiling from [AUDIT-R3]). No key = rung
+  off = unparseables queue for manual entry, exactly as before.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+import anthropic
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import MidwestInvoiceParseError
-from gdx_dispatch.modules.vendor_invoices.service import upload_midwest_invoice
+from gdx_dispatch.modules.vendor_invoices.service import (
+    LLMExtractionError,
+    upload_invoice_via_llm,
+    upload_midwest_invoice,
+)
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.vendor_bill_ingest")
 
 _FILE_ATTACHMENT = "#microsoft.graph.fileAttachment"
+
+# Sentinel for "the tenant HAS an LLM key but the client couldn't be built"
+# (Fernet rotation incident, SDK failure). Distinct from None (= no key = rung
+# deliberately off): a broken rung counts parser-rejected PDFs as retryable
+# ERRORS so their messages stay un-checkpointed until the incident is fixed —
+# never as unparseable, which would stamp them permanently skipped.
+LLM_BROKEN = object()
+
+# Anthropic status codes that mean THIS DOCUMENT is unprocessable (encrypted,
+# corrupt, >100 pages, oversized request) — deterministic, no point retrying.
+# Everything else (401/403 key incident, 429 throttle, 5xx) is retryable.
+_LLM_DETERMINISTIC_STATUS = frozenset({400, 404, 413, 422})
 
 
 def normalize_allowlist(allowlist: list[str] | None) -> list[str]:
@@ -85,8 +104,14 @@ def is_candidate(message: dict[str, Any], allowlist: list[str]) -> bool:
 
 def new_totals() -> dict[str, int]:
     """The zero counters every ingest call/aggregate uses. ``capped`` counts
-    messages whose PDF set was cut short by ``max_downloads``."""
-    return {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0, "downloads": 0, "capped": 0}
+    messages whose PDF set was cut short by ``max_downloads``; ``llm_capped``
+    counts messages with parser-unreadable PDFs left unprocessed because the
+    per-run LLM ceiling was reached."""
+    return {
+        "ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0,
+        "downloads": 0, "capped": 0,
+        "llm_extractions": 0, "ingested_llm": 0, "llm_capped": 0,
+    }
 
 
 def ingest_message_attachments(
@@ -97,6 +122,8 @@ def ingest_message_attachments(
     *,
     uploaded_by: str = "outlook",
     max_downloads: int | None = None,
+    llm_client=None,
+    max_llm_extractions: int | None = None,
 ) -> dict[str, int]:
     """Ingest the PDF attachments of one message if its sender is allowlisted.
 
@@ -108,6 +135,14 @@ def ingest_message_attachments(
     spent). When the budget cuts a message short, ``capped`` is 1 and the
     remaining PDFs were not processed — the caller must NOT checkpoint the
     message as done.
+
+    ``llm_client`` (None = rung 2 off) enables Claude-vision extraction for
+    PDFs the deterministic parser rejects, bounded by ``max_llm_extractions``
+    (the per-run cost ceiling; None = unlimited). A PDF skipped because the
+    ceiling was hit sets ``llm_capped`` — like ``capped``, it blocks the
+    checkpoint so a later run retries. LLM API/transport failures count as
+    ``errors`` (retryable); a model that can't read the document counts as
+    ``unparseable`` (deterministic — manual queue).
     """
     result = new_totals()
     if not allowlist or not message.get("hasAttachments"):
@@ -153,14 +188,90 @@ def ingest_message_attachments(
             else:
                 result["duplicate"] += 1
         except MidwestInvoiceParseError:
-            # Not a recognized vendor invoice (or a scan) — the LLM rung + manual
-            # queue will handle these in a later increment. Skip for now.
-            result["unparseable"] += 1
+            # Rung 2: not a parseable Midwest invoice — try LLM extraction if
+            # the tenant configured a key and the run's cost ceiling allows.
+            _llm_rung(
+                tdb, result,
+                pdf_bytes=data,
+                original_filename=att.get("name") or "bill.pdf",
+                uploaded_by=uploaded_by,
+                graph_id=graph_id,
+                llm_client=llm_client,
+                max_llm_extractions=max_llm_extractions,
+            )
         except Exception:  # noqa: BLE001
             log.exception("vendor_bill_ingest: pipeline failed for %s", graph_id)
             result["errors"] += 1
 
     return result
+
+
+def _llm_rung(
+    tdb: Session,
+    result: dict[str, int],
+    *,
+    pdf_bytes: bytes,
+    original_filename: str,
+    uploaded_by: str,
+    graph_id: str,
+    llm_client,
+    max_llm_extractions: int | None,
+) -> None:
+    """Rung 2 for one parser-rejected PDF. Mutates ``result`` counters."""
+    if llm_client is None:
+        # No key configured — the PDF waits for manual entry (no bill row is
+        # created), exactly the pre-LLM behavior.
+        result["unparseable"] += 1
+        return
+    if llm_client is LLM_BROKEN:
+        # Key exists but the client couldn't be built (rotation incident).
+        # Retryable: keep the message un-checkpointed until the key is fixed.
+        result["errors"] += 1
+        return
+    if max_llm_extractions is not None and result["llm_extractions"] >= max_llm_extractions:
+        result["llm_capped"] = 1  # cost ceiling — blocks checkpoint, retried later
+        return
+    result["llm_extractions"] += 1
+    try:
+        res = upload_invoice_via_llm(
+            tdb,
+            pdf_bytes=pdf_bytes,
+            original_filename=original_filename,
+            content_type="application/pdf",
+            uploaded_by=uploaded_by,
+            source="email",
+            llm_client=llm_client,
+        )
+        if res.created:
+            result["ingested"] += 1
+            result["ingested_llm"] += 1
+        else:
+            result["duplicate"] += 1
+    except LLMExtractionError as exc:
+        log.info("vendor_bill_ingest: LLM couldn't read %s/%s: %s", graph_id, original_filename, exc)
+        result["unparseable"] += 1
+    except anthropic.APIStatusError as exc:
+        if getattr(exc, "status_code", 0) in _LLM_DETERMINISTIC_STATUS:
+            # The API deterministically rejects THIS document (encrypted,
+            # corrupt, >100 pages). Retrying would burn budget on a guaranteed
+            # failure every run — treat like unparseable (manual entry).
+            log.warning(
+                "vendor_bill_ingest: LLM rejected document %s/%s (HTTP %s) — not retryable",
+                graph_id, original_filename, exc.status_code,
+            )
+            result["unparseable"] += 1
+        else:
+            # 401/403 (key incident), 429 (throttle), 5xx — retryable.
+            log.warning(
+                "vendor_bill_ingest: LLM API error for %s (HTTP %s) — will retry",
+                graph_id, getattr(exc, "status_code", "?"),
+            )
+            result["errors"] += 1
+    except Exception:  # noqa: BLE001
+        # Transport failure / anything unclassified — retryable, must NOT
+        # checkpoint the message.
+        log.exception("vendor_bill_ingest: LLM rung failed for %s", graph_id)
+        result["errors"] += 1
 
 
 def ingest_messages(
