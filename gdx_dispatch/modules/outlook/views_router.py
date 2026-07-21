@@ -257,8 +257,10 @@ def list_messages(
     if folder_id:
         q = q.filter(OutlookMessage.folder_id == folder_id)
     # id is a tiebreaker so equal received_at rows have a STABLE order across
-    # pages (else offset pagination can skip/duplicate them).
-    q = q.order_by(desc(OutlookMessage.received_at), desc(OutlookMessage.id))
+    # pages (else offset pagination can skip/duplicate them). nulls_last:
+    # Postgres sorts NULLs FIRST on DESC — a row missing received_at (e.g. a
+    # partial-sync remnant) would otherwise pin itself above all real mail.
+    q = q.order_by(desc(OutlookMessage.received_at).nulls_last(), desc(OutlookMessage.id))
     tech_emails = _load_tech_emails(tenant_db)
 
     # Skip windows the visibility filter empties, SERVER-SIDE, so a restricted
@@ -300,7 +302,7 @@ def list_by_customer(
     rows = (
         tenant_db.query(OutlookMessage)
         .filter(OutlookMessage.linked_customer_id == customer_id)
-        .order_by(desc(OutlookMessage.received_at))
+        .order_by(desc(OutlookMessage.received_at).nulls_last())
         .all()
     )
     tech_emails = _load_tech_emails(tenant_db)
@@ -324,7 +326,7 @@ def list_by_job(
     rows = (
         tenant_db.query(OutlookMessage)
         .filter(OutlookMessage.linked_job_id == job_id)
-        .order_by(desc(OutlookMessage.received_at))
+        .order_by(desc(OutlookMessage.received_at).nulls_last())
         .all()
     )
     tech_emails = _load_tech_emails(tenant_db)

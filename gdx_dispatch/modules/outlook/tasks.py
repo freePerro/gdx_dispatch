@@ -10,6 +10,8 @@ Four tasks ship in this module:
 - ``poll_outlook_mailboxes_fallback()``: beat task — runs every 15min,
   triggers sync for any connected mailbox whose subscription is missing,
   expired, or errored. Safety net for webhook drops.
+- ``repair_blank_outlook_messages(account_id, tenant_id)``: one-shot manual
+  repair for rows blanked by the 2026-07 partial-delta overwrite bug.
 
 Body persistence to R2 is deferred to a future slice (the column
 ``body_r2_key`` is set; actual write is a no-op until R2 client lands).
@@ -90,6 +92,16 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+# Envelope keys whose collective ABSENCE marks a partial delta item (a resume
+# with a bare $deltatoken carries no $select, so changed messages come back as
+# id + changed flags only). A full $select response always has these keys.
+_ENVELOPE_KEYS = ("subject", "from", "bodyPreview", "receivedDateTime")
+
+
+def _is_partial_item(m: dict[str, Any]) -> bool:
+    return not any(k in m for k in _ENVELOPE_KEYS)
+
+
 def _persist_messages(
     tdb: Session,
     account: OutlookAccount,
@@ -97,6 +109,7 @@ def _persist_messages(
     *,
     folder_id: str | None = None,
     folder_display_name: str | None = None,
+    gc=None,
 ) -> int:
     """Upsert OutlookMessage rows from a Graph response. Returns count touched.
 
@@ -104,6 +117,13 @@ def _persist_messages(
     filter by folder. Pass None when the call site is folder-agnostic
     (legacy callers pre-folder-sync); rows from such calls inherit whatever
     folder_id the upsert path defaulted to.
+
+    A field is only written when its key is PRESENT in the Graph payload.
+    Delta pages can carry partial items (id + changed flags, no envelope);
+    the pre-2026-07 unconditional ``m.get(...)`` assignment blanked
+    sender/subject/preview/received_at on every message whose read state
+    changed, and the NULL received_at then floated those rows to the top of
+    /inbox (NULLs sort first under ORDER BY received_at DESC).
     """
     upserted = 0
     # Load tag settings ONCE per batch, not once per message (D3 auto-tag runs
@@ -123,6 +143,17 @@ def _persist_messages(
             .one_or_none()
         )
         is_new = existing is None
+        if is_new and gc is not None and _is_partial_item(m):
+            # A NEW message arriving as a partial item would be born blank —
+            # fetch the full envelope instead. Existing rows don't need this:
+            # key-gating below already preserves their populated fields.
+            try:
+                m = gc.get_message(graph_id)
+            except OutlookGraphAPIError as exc:
+                log.warning(
+                    "hydration failed for graph_id=%s — persisting partial row: %s",
+                    graph_id, exc,
+                )
         if existing is None:
             row = OutlookMessage()
             row.account_id = account.id
@@ -130,38 +161,52 @@ def _persist_messages(
             tdb.add(row)
         else:
             row = existing
-        row.internet_message_id = m.get("internetMessageId")
-        row.conversation_id = m.get("conversationId")
-        row.subject = m.get("subject")
-        from_field = (m.get("from") or {}).get("emailAddress") or {}
-        row.from_address = from_field.get("address")
-        row.to_addresses = [
-            r.get("emailAddress", {}).get("address")
-            for r in (m.get("toRecipients") or [])
-        ]
-        row.cc_addresses = [
-            r.get("emailAddress", {}).get("address")
-            for r in (m.get("ccRecipients") or [])
-        ]
-        row.bcc_addresses = [
-            r.get("emailAddress", {}).get("address")
-            for r in (m.get("bccRecipients") or [])
-        ]
-        row.body_preview = m.get("bodyPreview")
-        row.has_attachments = bool(m.get("hasAttachments"))
-        row.is_read = bool(m.get("isRead"))
+        if "internetMessageId" in m:
+            row.internet_message_id = m["internetMessageId"]
+        if "conversationId" in m:
+            row.conversation_id = m["conversationId"]
+        if "subject" in m:
+            row.subject = m["subject"]
+        if "from" in m:
+            from_field = (m["from"] or {}).get("emailAddress") or {}
+            row.from_address = from_field.get("address")
+        if "toRecipients" in m:
+            row.to_addresses = [
+                r.get("emailAddress", {}).get("address")
+                for r in (m["toRecipients"] or [])
+            ]
+        if "ccRecipients" in m:
+            row.cc_addresses = [
+                r.get("emailAddress", {}).get("address")
+                for r in (m["ccRecipients"] or [])
+            ]
+        if "bccRecipients" in m:
+            row.bcc_addresses = [
+                r.get("emailAddress", {}).get("address")
+                for r in (m["bccRecipients"] or [])
+            ]
+        if "bodyPreview" in m:
+            row.body_preview = m["bodyPreview"]
+        if "hasAttachments" in m:
+            row.has_attachments = bool(m["hasAttachments"])
+        if "isRead" in m:
+            row.is_read = bool(m["isRead"])
         # in_reply_to: Graph doesn't expose this as a selectable property;
         # threading is via conversation_id. Leave NULL until/unless the
         # singleValueExtendedProperties expansion is wired.
-        row.received_at = _parse_iso(m.get("receivedDateTime"))
-        row.sent_at = _parse_iso(m.get("sentDateTime"))
+        if "receivedDateTime" in m:
+            row.received_at = _parse_iso(m["receivedDateTime"])
+        if "sentDateTime" in m:
+            row.sent_at = _parse_iso(m["sentDateTime"])
         # direction: outbound when sender == mailbox owner; inbound otherwise.
-        # Default in model is "inbound", but explicit derivation prevents
-        # sent-folder syncs from being mislabeled as inbound.
-        if account.upn and row.from_address and account.upn.lower() == row.from_address.lower():
-            row.direction = "outbound"
-        else:
-            row.direction = "inbound"
+        # Explicit derivation prevents sent-folder syncs from being mislabeled
+        # as inbound — but only when this payload carries sender info, else a
+        # partial item would reset outbound rows to the inbound default.
+        if is_new or "from" in m:
+            if account.upn and row.from_address and account.upn.lower() == row.from_address.lower():
+                row.direction = "outbound"
+            else:
+                row.direction = "inbound"
         body = m.get("body") or {}
         if body.get("content"):
             # NOTE: body_r2_key is set here but no R2 upload code exists in
@@ -302,7 +347,7 @@ def _sync_one_folder(
         tdb.add(state)
         tdb.flush()
 
-    delta_token = None if state.full_resync_required else state.delta_token
+    stored = None if state.full_resync_required else state.delta_token
     upserted = removed = 0
     next_link: str | None = None
     last_resp: dict[str, Any] = {}
@@ -310,13 +355,25 @@ def _sync_one_folder(
         while True:
             if next_link:
                 last_resp = gc._request("GET", next_link).json()
+            elif stored and stored.startswith("http"):
+                # Stored value is the FULL deltaLink from the previous sync.
+                # Graph's contract is to replay it verbatim — the URL carries
+                # the encoded $select, so changed messages come back with
+                # their envelope fields instead of as bare partial items.
+                last_resp = gc._request("GET", stored).json()
             else:
+                # No state (bootstrap / full resync) or a legacy bare token
+                # from before deltaLinks were stored whole. The bare-token
+                # resume drops $select — _persist_messages tolerates the
+                # resulting partial items, and the deltaLink stored below
+                # upgrades this folder to full-URL replay from now on.
+                #
                 # list_messages_delta, not list_messages: the plain listing
                 # never returns a deltaLink, so a token could never
                 # bootstrap and every sync walked the whole mailbox.
                 last_resp = gc.list_messages_delta(
                     folder=folder.graph_folder_id,
-                    delta_token=delta_token,
+                    delta_token=stored,
                     top=100,
                 )
             page_msgs = last_resp.get("value") or []
@@ -326,6 +383,7 @@ def _sync_one_folder(
                 tdb, account, non_removed,
                 folder_id=folder.graph_folder_id,
                 folder_display_name=folder.display_name,
+                gc=gc,
             )
             # Vendor-bill auto-ingest: only COLLECT candidates here (cheap, no
             # Graph call). The actual download + pipeline runs AFTER this folder's
@@ -337,9 +395,12 @@ def _sync_one_folder(
                 break
         delta_link = last_resp.get("@odata.deltaLink")
         if delta_link:
-            tok = _extract_delta_token(delta_link)
-            if tok:
-                state.delta_token = tok
+            # Store the WHOLE deltaLink, not the extracted $deltatoken. The
+            # bare token loses the encoded $select; resuming with it made
+            # Graph return partial items, whose absent fields the old persist
+            # path then wrote over good rows as NULLs (prod 2026-07: blank
+            # sender/subject/preview at the top of /inbox).
+            state.delta_token = delta_link
         state.last_sync_at = datetime.now(timezone.utc)
         state.last_error = None
         state.full_resync_required = False
@@ -410,13 +471,6 @@ def _apply_message_deletes(
         )
         deleted += n
     return deleted
-
-
-def _extract_delta_token(delta_link: str | None) -> str | None:
-    if not delta_link:
-        return None
-    from urllib.parse import parse_qs, urlparse
-    return parse_qs(urlparse(delta_link).query).get("$deltatoken", [None])[0]
 
 
 # ── tasks ──────────────────────────────────────────────────────────────
@@ -606,6 +660,7 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
                                 tdb, account, page_msgs,
                                 folder_id=f.graph_folder_id,
                                 folder_display_name=f.display_name,
+                                gc=gc,
                             )
                             next_link = resp.get("@odata.nextLink")
                             if not next_link:
@@ -617,33 +672,10 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
                                     BACKFILL_MAX_MESSAGES_PER_RUN, f.display_name, days,
                                 )
                                 break
-                        # Prime per-folder delta token.
-                        try:
-                            delta_resp = gc.list_messages(
-                                folder=f.graph_folder_id, delta_token=None, top=1,
-                            )
-                            tok = _extract_delta_token(delta_resp.get("@odata.deltaLink"))
-                            if tok:
-                                state = (
-                                    tdb.query(OutlookFolderSyncState)
-                                    .filter(
-                                        OutlookFolderSyncState.account_id == account.id,
-                                        OutlookFolderSyncState.folder_id == f.graph_folder_id,
-                                    )
-                                    .one_or_none()
-                                )
-                                if state is None:
-                                    state = OutlookFolderSyncState()
-                                    state.account_id = account.id
-                                    state.folder_id = f.graph_folder_id
-                                    tdb.add(state)
-                                state.delta_token = tok
-                                state.last_sync_at = datetime.now(timezone.utc)
-                                state.last_error = None
-                                state.full_resync_required = False
-                        except OutlookGraphAPIError as exc:
-                            log.warning("delta-prime failed for folder %s: %s", f.display_name, exc)
-                            # Backfill data is in; delta will fall back to full resync next cycle.
+                        # No delta-prime here: it called the PLAIN listing, which
+                        # never returns a deltaLink, so it never primed anything —
+                        # every folder's first real deltaLink comes from
+                        # _sync_one_folder's bootstrap walk on the next sync.
                         folder_results[f.display_name] = folder_total
                         total_upserted += folder_total
                         tdb.commit()
@@ -667,6 +699,79 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
             "per_folder": folder_results,
             "failed_folders": failed,
         }
+
+
+@celery_app.task(name="outlook.repair_blank_outlook_messages", bind=True)
+def repair_blank_outlook_messages(self, account_id: str, tenant_id: str, batch: int = 100) -> dict:
+    """One-shot repair for rows blanked by the partial-delta overwrite bug.
+
+    Rows where subject, from_address, AND body_preview are all NULL were
+    populated once and then overwritten by partial delta items (bare-token
+    resume, 2026-07). Each still has its graph_message_id: re-fetch the full
+    message and re-persist the envelope. 404 → the message is gone from the
+    mailbox → delete the row. Other Graph errors are counted and skipped so
+    one bad message can't abort the pass. Idempotent — repaired rows no
+    longer match the filter.
+    """
+    aid = UUID(account_id)
+    tid = UUID(tenant_id)
+    with contextlib.closing(SessionLocal()) as tdb, \
+         contextlib.closing(SessionLocal()) as cdb2:
+        account = tdb.get(OutlookAccount, aid)
+        if account is None:
+            return {"repaired": 0, "skipped": "no account"}
+
+        repaired = deleted = errors = 0
+        failed_ids: set = set()
+        try:
+            with with_outlook_client(cdb2, tdb, account.user_id, tid) as gc:
+                while True:
+                    q = (
+                        tdb.query(OutlookMessage)
+                        .filter(
+                            OutlookMessage.account_id == account.id,
+                            OutlookMessage.subject.is_(None),
+                            OutlookMessage.from_address.is_(None),
+                            OutlookMessage.body_preview.is_(None),
+                        )
+                        .order_by(OutlookMessage.id)
+                    )
+                    if failed_ids:
+                        q = q.filter(OutlookMessage.id.notin_(failed_ids))
+                    rows = q.limit(batch).all()
+                    if not rows:
+                        break
+                    for row in rows:
+                        try:
+                            full = gc.get_message(row.graph_message_id)
+                        except OutlookGraphAPIError as exc:
+                            if exc.status_code == 404:
+                                tdb.delete(row)
+                                deleted += 1
+                            else:
+                                log.warning(
+                                    "repair fetch failed for graph_id=%s: %s",
+                                    row.graph_message_id, exc,
+                                )
+                                errors += 1
+                                failed_ids.add(row.id)
+                            continue
+                        _persist_messages(tdb, account, [full])
+                        if (row.subject is None and row.from_address is None
+                                and row.body_preview is None):
+                            # Graph really has no envelope for this message
+                            # (e.g. an empty draft) — it would match the
+                            # filter forever, so park it instead.
+                            failed_ids.add(row.id)
+                        else:
+                            repaired += 1
+                    tdb.commit()
+        except OutlookReconnectRequired as exc:
+            log.warning("repair: reconnect required for %s: %s", aid, exc)
+            tdb.commit()
+            return {"repaired": repaired, "deleted": deleted, "errors": errors,
+                    "error": str(exc)[:200]}
+        return {"repaired": repaired, "deleted": deleted, "errors": errors}
 
 
 @celery_app.task(name="outlook.renew_all_outlook_subscriptions", bind=True)
