@@ -98,7 +98,8 @@
         data-testid="payments-dialog"
       >
         <div class="form-grid">
-          <div class="form-field">
+          <!-- Refunds are stamped server-side at creation; no date picker. -->
+          <div class="form-field" v-if="!isRefund">
             <label for="payments-date">Date</label>
             <InputText
               id="payments-date"
@@ -148,7 +149,19 @@
             />
           </div>
           <div class="form-field">
-            <label for="payments-method">Method</label>
+            <label for="payments-type">Type</label>
+            <Select
+              id="payments-type"
+              v-model="form.entry_type"
+              :options="entryTypeOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="w-full"
+              data-testid="payments-type-select"
+            />
+          </div>
+          <div class="form-field">
+            <label for="payments-method">{{ isRefund ? 'Refund Method' : 'Method' }}</label>
             <Select
               id="payments-method"
               v-model="form.method"
@@ -159,20 +172,8 @@
               data-testid="payments-method-select"
             />
           </div>
-          <div class="form-field">
-            <label for="payments-status">Status</label>
-            <Select
-              id="payments-status"
-              v-model="form.status"
-              :options="statusOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="w-full"
-              data-testid="payments-status-select"
-            />
-          </div>
           <div class="form-field full-width">
-            <label for="payments-processor">Processor Ref</label>
+            <label for="payments-processor">{{ isRefund ? 'Reason' : 'Reference (check #, transaction ID…)' }}</label>
             <InputText
               id="payments-processor"
               v-model="form.processor_ref"
@@ -197,6 +198,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue';
+import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDate, formatMoney as formatCurrency } from '../composables/useFormatters';
 import EmptyState from '../components/EmptyState.vue';
@@ -213,6 +215,7 @@ import Tag from 'primevue/tag';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const toast = useToast();
 
 const payments = ref([]);
 const loading = ref(true);
@@ -226,25 +229,25 @@ const methodOptions = [
   { label: 'Cash', value: 'cash' },
   { label: 'Check', value: 'check' },
 ];
-const statusOptions = [
-  { label: 'Pending', value: 'pending' },
-  { label: 'Completed', value: 'completed' },
-  { label: 'Failed', value: 'failed' },
-  { label: 'Refunded', value: 'refunded' },
+const entryTypeOptions = [
+  { label: 'Payment', value: 'payment' },
+  { label: 'Refund', value: 'refund' },
 ];
-const paymentTabs = ['All', 'Pending', 'Completed', 'Failed', 'Refunded'];
+const paymentTabs = ['All', 'Completed', 'Voided', 'Refunded'];
 
 const emptyForm = () => ({
   date: new Date().toISOString().split('T')[0],
   customer: '',
   invoice_id: '',
+  invoice_uuid: '',
   amount: null,
-  method: 'card',
-  status: 'completed',
+  method: 'check',
+  entry_type: 'payment',
   processor_ref: '',
 });
 
 const form = ref(emptyForm());
+const isRefund = computed(() => form.value.entry_type === 'refund');
 
 const filteredPayments = computed(() => {
   if (statusFilter.value === 'All') return payments.value;
@@ -261,9 +264,8 @@ const counts = computed(() => {
 
 const statusSeverity = (status) => {
   return {
-    Pending: 'warning',
     Completed: 'success',
-    Failed: 'danger',
+    Voided: 'warning',
     Refunded: 'info',
   }[status] || 'secondary';
 };
@@ -353,6 +355,7 @@ const onInvoiceSelect = (event) => {
   const inv = event.value;
   if (!inv) return;
   form.value.invoice_id = inv.invoice_number || inv.number || inv.id;
+  form.value.invoice_uuid = inv.id || '';
   if (inv.customer_name || inv.customer) {
     form.value.customer = inv.customer_name || inv.customer;
   }
@@ -370,10 +373,41 @@ const openDialog = () => {
 };
 
 const savePayment = async () => {
+  // Canonical endpoints, not the old POST /api/payments shim — that shim
+  // returned 201 and wrote nothing for months. Resolve the invoice UUID
+  // from the picker (or by matching a typed invoice number to the catalog).
   if (!form.value.invoice_id?.trim() || !form.value.amount) return;
+  const uuid =
+    form.value.invoice_uuid ||
+    invoicePick.value?.id ||
+    invoiceCatalog.value.find(
+      (i) => (i.invoice_number || i.number) === form.value.invoice_id,
+    )?.id;
+  if (!uuid) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Pick an invoice',
+      detail: 'Select an invoice from the list so the payment lands on the right record.',
+      life: 4000,
+    });
+    return;
+  }
   saving.value = true;
   try {
-    await api.post('/api/payments', { ...form.value });
+    if (form.value.entry_type === 'refund') {
+      await api.post(`/api/invoices/${uuid}/refund`, {
+        amount: form.value.amount,
+        reason: form.value.processor_ref || '',
+        refund_method: form.value.method,
+      });
+    } else {
+      await api.post(`/api/invoices/${uuid}/payments`, {
+        amount: form.value.amount,
+        method: form.value.method,
+        date: form.value.date,
+        reference: form.value.processor_ref || undefined,
+      });
+    }
     showDialog.value = false;
     await loadPayments();
   } finally {

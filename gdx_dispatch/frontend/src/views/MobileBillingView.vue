@@ -105,6 +105,11 @@
             <div class="total-row" v-if="detail.amount_paid != null"><span>Paid</span><span>${{ fmtMoney(detail.amount_paid) }}</span></div>
             <div class="total-row total-grand"><span>Balance</span><span>${{ fmtMoney(detail.balance_due ?? (Number(detail.total || 0) - Number(detail.amount_paid || 0))) }}</span></div>
           </div>
+
+          <div v-if="canMarkPaid" class="pay-method-row">
+            <span class="muted">Payment method</span>
+            <SelectButton v-model="payMethod" :options="['Cash', 'Check', 'Card']" :allow-empty="false" data-test="mb-pay-method" />
+          </div>
         </div>
         <template #footer>
           <Button v-if="detail && canSend" label="Send" icon="pi pi-send" :loading="actionSaving" @click="sendInvoice" data-test="mb-send" />
@@ -144,6 +149,7 @@ const detailOpen = ref(false)
 const detail = ref(null)
 const detailLoading = ref(false)
 const actionSaving = ref(false)
+const payMethod = ref('Check')
 
 const visibleInvoices = computed(() => {
   if (filter.value === 'all') return invoices.value
@@ -311,16 +317,34 @@ async function sendInvoice() {
 }
 
 async function markPaid() {
+  // Records a real payment for the remaining balance — the old PATCH
+  // {status: 'Paid'} 422'd every time (the patch schema forbids status),
+  // and status must stay derived from balance_due anyway.
   if (!detail.value) return
-  if (!(await confirmAsync({ header: 'Confirm', message: 'Mark this invoice as paid?' }))) return
+  const balance = Number(
+    detail.value.balance_due ?? (Number(detail.value.total || 0) - Number(detail.value.amount_paid || 0)),
+  )
+  if (!(balance > 0)) {
+    toast.add({ severity: 'info', summary: 'No balance due', detail: 'This invoice has nothing left to pay.', life: 3000 })
+    return
+  }
+  const method = payMethod.value || 'Check'
+  if (!(await confirmAsync({
+    header: 'Confirm',
+    message: `Record a ${method.toLowerCase()} payment of $${balance.toFixed(2)} and mark this invoice paid?`,
+  }))) return
   actionSaving.value = true
   try {
-    await api.patch(`/api/invoices/${detail.value.id}`, { status: 'Paid' })
-    toast.add({ severity: 'success', summary: 'Marked paid', life: 2500 })
+    await api.post(`/api/invoices/${detail.value.id}/payments`, {
+      amount: balance,
+      method,
+      date: new Date().toISOString().slice(0, 10),
+    })
+    toast.add({ severity: 'success', summary: 'Payment recorded', life: 2500 })
     detail.value = await api.get(`/api/invoices/${detail.value.id}`)
     await fetchInvoices()
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Update failed', detail: err.message, life: 4000 })
+    toast.add({ severity: 'error', summary: 'Payment failed', detail: err.message, life: 4000 })
   } finally {
     actionSaving.value = false
   }
@@ -554,6 +578,14 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   font-size: 0.9rem;
+}
+
+.pay-method-row {
+  margin-top: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .total-grand {

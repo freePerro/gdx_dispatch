@@ -124,4 +124,57 @@ describe('PaymentsView Record Payment dialog — invoice AutoComplete', () => {
     // amount auto-fills from balance_due (250) when previously null.
     expect(form.amount).toBe(250.0);
   });
+
+  it('savePayment POSTs the canonical invoice payment endpoint (2026-07-21: the old /api/payments shim wrote nothing)', async () => {
+    const w = mount(PaymentsView, { global: { stubs } });
+    await flushPromises();
+    const openBtn = w.findAll('button').find((b) => /Record Payment/.test(b.text()));
+    await openBtn.trigger('click');
+    await flushPromises();
+    await capturedOnItemSelect({
+      value: {
+        id: 'inv-uuid-1',
+        invoice_number: 'INV-000123',
+        customer_name: 'Acme Co',
+        balance_due: 250.0,
+        total: 500.0,
+      },
+    });
+    await flushPromises();
+
+    apiPostMock.mockResolvedValueOnce({ id: 'pay-1' });
+    await w.vm.savePayment();
+    await flushPromises();
+
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    const [url, payload] = apiPostMock.mock.calls[0];
+    expect(url).toBe('/api/invoices/inv-uuid-1/payments');
+    expect(payload.amount).toBe(250.0);
+    expect(payload.method).toBeTruthy();
+    expect(payload.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('savePayment routes refunds to the canonical refund endpoint', async () => {
+    const w = mount(PaymentsView, { global: { stubs } });
+    await flushPromises();
+    const openBtn = w.findAll('button').find((b) => /Record Payment/.test(b.text()));
+    await openBtn.trigger('click');
+    await flushPromises();
+    await capturedOnItemSelect({
+      value: { id: 'inv-uuid-2', invoice_number: 'INV-000124', balance_due: 100.0 },
+    });
+    await flushPromises();
+
+    w.vm.form.entry_type = 'refund';
+    w.vm.form.amount = 40.0;
+    w.vm.form.processor_ref = 'double charge';
+    apiPostMock.mockResolvedValueOnce({ id: 'adj-1' });
+    await w.vm.savePayment();
+    await flushPromises();
+
+    const [url, payload] = apiPostMock.mock.calls[0];
+    expect(url).toBe('/api/invoices/inv-uuid-2/refund');
+    expect(payload).toMatchObject({ amount: 40.0, reason: 'double charge' });
+    expect(payload.refund_method).toBeTruthy();
+  });
 });

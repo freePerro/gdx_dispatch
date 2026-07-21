@@ -48,3 +48,26 @@ describe('BillingView — row Send opens the composer flow', () => {
     expect(body).toMatch(/email_sent === false/);
   });
 });
+
+describe('BillingView — office payment paths are real (2026-07-21 billing audit)', () => {
+  it('the pay button copies a real pay link instead of hitting the dead intent stub', () => {
+    // /api/payments/intent was a shim returning an empty client_secret — the
+    // old "Pay $X" button always dead-ended with a success-ish toast.
+    expect(SRC).not.toMatch(/api\/payments\/intent/);
+    const start = SRC.indexOf('async function copyPayLink');
+    expect(start).toBeGreaterThan(-1);
+    const body = SRC.slice(start, SRC.indexOf('\nasync function', start + 1));
+    expect(body).toMatch(/api\.post\(`\/api\/invoices\/\$\{invoice\.id\}\/pay-link`/);
+  });
+
+  it('bulk Mark Paid records real payments, never a status PATCH', () => {
+    const start = SRC.indexOf('async function confirmBulkMarkPaid');
+    expect(start).toBeGreaterThan(-1);
+    const body = SRC.slice(start, SRC.indexOf('\nfunction bulkExport', start));
+    // PATCH {status: 'Paid'} always 422'd (InvoicePatchIn forbids status) —
+    // and status must stay derived from balance_due via recorded payments.
+    expect(body).not.toMatch(/api\.patch/);
+    expect(body).toMatch(/api\.post\(`\/api\/invoices\/\$\{inv\.id\}\/payments`/);
+    expect(body).toMatch(/balance/);
+  });
+});

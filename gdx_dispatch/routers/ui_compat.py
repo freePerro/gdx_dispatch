@@ -296,7 +296,7 @@ def onboarding_complete(_: dict = Depends(get_current_user)) -> dict:
 @router.get("/api/payments", response_model=None)
 def list_payments(
     _: dict = Depends(get_current_user),
-    db: "_Session" = Depends(get_db),
+    db: _Session = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
 ) -> dict:
@@ -306,31 +306,60 @@ def list_payments(
     Was returning empty stub even though 505 payment rows exist on prod GDX
     and the invoice detail view already showed payment history. Same shape
     as F-42 from the 2026-04-29 audit."""
-    from sqlalchemy import select as _select, text as _sa_text
+    from sqlalchemy import text as _sa_text
+    # Refunds live on invoice_adjustments (kind='refund'), not payments —
+    # without the UNION the page could record a refund it then never showed.
     sql = _sa_text(
         """
-        SELECT
-            p.id::text          AS id,
-            p.invoice_id::text  AS invoice_id,
-            p.amount            AS amount,
-            p.method            AS method,
-            p.payment_date      AS payment_date,
-            p.created_at        AS created_at,
-            i.invoice_number    AS invoice_number,
-            i.status            AS invoice_status,
-            COALESCE(c1.name, c2.name) AS customer_name,
-            COALESCE(c1.id, c2.id)::text AS customer_id
-        FROM payments p
-        LEFT JOIN invoices i ON i.id = p.invoice_id
-        LEFT JOIN customers c1 ON c1.id = i.customer_id AND c1.deleted_at IS NULL
-        LEFT JOIN jobs j ON j.id = i.job_id
-        LEFT JOIN customers c2 ON c2.id = j.customer_id AND c2.deleted_at IS NULL
-        ORDER BY p.payment_date DESC NULLS LAST, p.created_at DESC
+        SELECT * FROM (
+            SELECT
+                p.id::text          AS id,
+                p.invoice_id::text  AS invoice_id,
+                p.amount            AS amount,
+                p.method            AS method,
+                p.payment_date::timestamp AS payment_date,
+                p.created_at        AS created_at,
+                i.invoice_number    AS invoice_number,
+                i.status            AS invoice_status,
+                COALESCE(c1.name, c2.name) AS customer_name,
+                COALESCE(c1.id, c2.id)::text AS customer_id,
+                'payment'           AS entry_kind,
+                (p.voided_at IS NOT NULL) AS voided
+            FROM payments p
+            LEFT JOIN invoices i ON i.id = p.invoice_id
+            LEFT JOIN customers c1 ON c1.id = i.customer_id AND c1.deleted_at IS NULL
+            LEFT JOIN jobs j ON j.id = i.job_id
+            LEFT JOIN customers c2 ON c2.id = j.customer_id AND c2.deleted_at IS NULL
+            UNION ALL
+            SELECT
+                a.id::text,
+                a.invoice_id::text,
+                -a.amount,
+                COALESCE(a.refund_method, 'refund'),
+                a.created_at,
+                a.created_at,
+                i.invoice_number,
+                i.status,
+                COALESCE(c1.name, c2.name),
+                COALESCE(c1.id, c2.id)::text,
+                'refund',
+                FALSE
+            FROM invoice_adjustments a
+            JOIN invoices i ON i.id = a.invoice_id
+            LEFT JOIN customers c1 ON c1.id = i.customer_id AND c1.deleted_at IS NULL
+            LEFT JOIN jobs j ON j.id = i.job_id
+            LEFT JOIN customers c2 ON c2.id = j.customer_id AND c2.deleted_at IS NULL
+            WHERE a.kind = 'refund'
+        ) u
+        ORDER BY u.payment_date DESC NULLS LAST, u.created_at DESC
         LIMIT :limit OFFSET :offset
         """
     )
     rows = db.execute(sql, {"limit": per_page, "offset": (page - 1) * per_page}).mappings().all()
-    total = db.execute(_sa_text("SELECT COUNT(*) FROM payments")).scalar() or 0
+    total = db.execute(_sa_text(
+        "SELECT (SELECT COUNT(*) FROM payments)"
+        " + (SELECT COUNT(*) FROM invoice_adjustments WHERE kind = 'refund')"
+    )).scalar() or 0
     items = [
         {
             "id": r["id"],
@@ -341,7 +370,11 @@ def list_payments(
             "customer_name": r["customer_name"] or "Unknown",
             "amount": float(r["amount"] or 0),
             "method": r["method"] or "manual",
-            "status": "completed",  # payments table has no status; existence = completed
+            "status": (
+                "refunded" if r["entry_kind"] == "refund"
+                else "voided" if r["voided"]
+                else "completed"  # payments table has no status; existence = completed
+            ),
             "source": "manual" if (r["method"] or "").lower() == "manual" else "quickbooks",
             "payment_date": r["payment_date"].isoformat() if r["payment_date"] else None,
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
@@ -351,14 +384,85 @@ def list_payments(
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
 
+class _PaymentCompatIn(BaseModel):
+    # The Payments page's Record Payment form. invoice_id may be either the
+    # invoice UUID or the human invoice_number (the AutoComplete historically
+    # stored the number). Extra fields (customer, status, …) are accepted and
+    # ignored so older clients don't 422.
+    model_config = {"extra": "allow"}
+    invoice_id: str
+    amount: float
+    method: str = "other"
+    date: str | None = None
+    reference: str | None = None
+    processor_ref: str | None = None
+
+
 @router.post("/api/payments", response_model=None, status_code=201)
-def create_payment(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_payment(
+    payload: _PaymentCompatIn,
+    user: dict = Depends(get_current_user),
+    db: _Session = Depends(get_db),
+) -> dict:
+    """Real create — resolves the invoice (UUID or invoice number) and
+    delegates to the canonical POST /api/invoices/{id}/payments logic, so
+    the void guard, GL posting, and balance recalc all apply.
+
+    Was a silent no-op: the dialog returned 201, wrote nothing, and the
+    operator believed the payment was recorded (2026-07-21 billing audit).
+    """
+    from uuid import UUID as _UUID
+
+    from fastapi import HTTPException
+
+    from gdx_dispatch.models.tenant_models import Invoice as _Invoice
+    from gdx_dispatch.routers.invoices import PaymentCreateIn as _PaymentCreateIn
+    from gdx_dispatch.routers.invoices import record_payment as _record_payment
+
+    raw = (payload.invoice_id or "").strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail="invoice_id is required")
+    invoice = None
+    try:
+        invoice = (
+            db.query(_Invoice)
+            .filter(_Invoice.id == _UUID(raw), _Invoice.deleted_at.is_(None))
+            .first()
+        )
+    except ValueError:
+        invoice = (
+            db.query(_Invoice)
+            .filter(_Invoice.invoice_number == raw, _Invoice.deleted_at.is_(None))
+            .order_by(_Invoice.created_at.desc())
+            .first()
+        )
+    if invoice is None:
+        raise HTTPException(status_code=404, detail=f"Invoice not found: {raw}")
+
+    try:
+        body = _PaymentCreateIn(
+            amount=payload.amount,
+            method=(payload.method or "other").strip() or "other",
+            reference=(payload.reference or payload.processor_ref or None),
+            **({"date": payload.date} if payload.date else {}),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    return _record_payment(invoice_id=invoice.id, payload=body, _=user, db=db)
 
 
 @router.post("/api/payments/intent", response_model=None)
 def create_payment_intent(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"client_secret": "", "checkout_url": None}
+    """Dead stub, now honest: it used to return an empty client_secret and
+    a null checkout_url, so the Billing "Pay" button always no-opped with a
+    success toast. Office pay links come from POST /api/invoices/{id}/pay-link."""
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=501,
+        detail="not implemented — use POST /api/invoices/{invoice_id}/pay-link",
+    )
 
 
 # ── Payroll summary (pay periods + stubs) ─────────────────────────────────
