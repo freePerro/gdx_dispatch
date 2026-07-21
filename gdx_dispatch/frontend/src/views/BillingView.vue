@@ -282,12 +282,15 @@
                 v-tooltip="'Download PDF'" :data-testid="`pdf-invoice-${data.id}`" @click.stop="downloadPdf(data)" />
               <Button
                 v-if="data.status !== 'Paid'"
-                :label="`Pay ${currency(data.balance_due ?? data.total)}`"
+                icon="pi pi-link"
+                aria-label="Copy pay link"
                 severity="primary"
+                text
                 size="small"
+                v-tooltip="'Copy online pay link'"
                 :loading="payingInvoiceId === data.id"
                 :data-testid="`pay-invoice-${data.id}`"
-                @click.stop="payInvoiceOnline(data)"
+                @click.stop="copyPayLink(data)"
               />
               <Button v-if="data.status !== 'Paid'" icon="pi pi-dollar" aria-label="Record Payment" severity="success" text size="small"
                 v-tooltip="'Record Payment'" :data-testid="`record-payment-${data.id}`" @click.stop="openPaymentDialog(data)" />
@@ -379,6 +382,38 @@
             :disabled="!newPayment.amount || !newPayment.method"
             :loading="recordingPayment"
             @click="recordPayment"
+          />
+        </template>
+      </Dialog>
+
+      <Dialog
+        v-model:visible="showBulkPaidDialog"
+        header="Mark Paid — record payments"
+        modal
+        :style="{ width: '420px' }"
+        data-testid="bulk-mark-paid-dialog"
+      >
+        <p>
+          Records a payment for each selected invoice's remaining balance
+          ({{ selectedInvoices.length }} selected; already-paid and void
+          invoices are skipped).
+        </p>
+        <div class="form-field">
+          <label for="bulk-paid-method">Payment Method *</label>
+          <Select
+            id="bulk-paid-method"
+            v-model="bulkPaidMethod"
+            :options="paymentMethods"
+            data-testid="bulk-paid-method"
+          />
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showBulkPaidDialog = false" />
+          <Button
+            label="Record Payments"
+            data-testid="bulk-mark-paid-confirm"
+            :disabled="!bulkPaidMethod"
+            @click="confirmBulkMarkPaid"
           />
         </template>
       </Dialog>
@@ -569,15 +604,43 @@ async function bulkSend() {
   await loadData();
 }
 
+// "Mark Paid" records a real payment for each remaining balance — PATCHing
+// {status: 'Paid'} always 422'd (InvoicePatchIn forbids status) and would
+// desync status from balance_due even if it worked. The dialog asks for the
+// payment method because that's what feeds the GL cash account.
+const showBulkPaidDialog = ref(false);
+const bulkPaidMethod = ref('Check');
+
 async function bulkMarkPaid() {
-  const total = selectedInvoices.value.length;
-  if (!(await confirmAsync({ header: 'Confirm', message: `Mark ${total} invoice(s) as paid?` }))) return;
+  bulkPaidMethod.value = 'Check';
+  showBulkPaidDialog.value = true;
+}
+
+async function confirmBulkMarkPaid() {
+  showBulkPaidDialog.value = false;
+  const targets = selectedInvoices.value.filter(
+    (inv) => inv.status !== 'Paid' && inv.status !== 'Void',
+  );
+  const total = targets.length;
   let ok = 0;
+  let skipped = selectedInvoices.value.length - total;
   const failed = [];
+  const today = new Date().toISOString().slice(0, 10);
   bulkProgress.value = { active: true, label: 'Mark Paid', completed: 0, total };
-  for (const inv of selectedInvoices.value) {
+  for (const inv of targets) {
+    const balance = toNum(inv.balance_due ?? inv.total);
+    if (balance <= 0) {
+      skipped += 1;
+      bulkProgress.value.completed += 1;
+      continue;
+    }
     try {
-      await api.patch(`/api/invoices/${inv.id}`, { status: "Paid" });
+      await api.post(`/api/invoices/${inv.id}/payments`, {
+        amount: balance,
+        method: bulkPaidMethod.value,
+        date: today,
+        reference: 'bulk mark-paid',
+      });
       ok += 1;
     } catch (e) {
       failed.push({ id: inv.id, number: inv.invoice_number, err: String(e?.message || e) });
@@ -585,13 +648,14 @@ async function bulkMarkPaid() {
     bulkProgress.value.completed += 1;
   }
   bulkProgress.value = { active: false, label: '', completed: 0, total: 0 };
+  const skippedNote = skipped > 0 ? ` (${skipped} already paid/void skipped)` : '';
   if (failed.length === 0) {
-    toast.add({ severity: "success", summary: "Marked Paid", detail: `${ok} invoice(s) marked paid`, life: 3000 });
+    toast.add({ severity: "success", summary: "Marked Paid", detail: `${ok} payment(s) recorded${skippedNote}`, life: 4000 });
   } else {
     toast.add({
       severity: ok > 0 ? "warn" : "error",
       summary: ok > 0 ? "Mark Paid — partial failure" : "Mark Paid failed",
-      detail: `${ok}/${total} marked paid. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
+      detail: `${ok}/${total} recorded${skippedNote}. Failed: ${failed.map((f) => f.number || f.id).join(", ")}`,
       life: 6000,
     });
   }
@@ -645,30 +709,43 @@ async function bulkDelete() {
   await loadData();
 }
 
-async function payInvoiceOnline(invoice) {
+async function copyPayLink(invoice) {
+  // Replaces payInvoiceOnline, which POSTed a payments-intent stub that
+  // never returned a checkout URL, so the old "Pay $X" button was a dead
+  // end. The office's real move is handing the customer a link.
   if (!invoice?.id || payingInvoiceId.value) return;
   payingInvoiceId.value = invoice.id;
   try {
-    const payload = {
-      invoice_id: invoice.id,
-      amount: toNum(invoice.balance_due ?? invoice.total),
-    };
-    const result = await api.post('/api/payments/intent', payload);
-    const redirectUrl =
-      result?.checkout_url ||
-      result?.checkoutUrl ||
-      result?.redirect_url ||
-      result?.url;
-    if (redirectUrl && typeof window !== 'undefined') {
-      window.location.href = redirectUrl;
+    const result = await api.post(`/api/invoices/${invoice.id}/pay-link`, {});
+    if (result?.url) {
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(result.url);
+        copied = true;
+      } catch (_) { /* clipboard denied — still show the link */ }
+      toast.add({
+        severity: 'success',
+        summary: copied ? 'Pay link copied' : 'Pay link ready',
+        detail: copied ? 'Paste it into a text or email to the customer.' : result.url,
+        life: 6000,
+      });
     } else {
       toast.add({
-        severity: 'info',
-        summary: 'Payment Intent Created',
-        detail: 'Payment link not returned. Please try again.',
-        life: 4000,
+        severity: 'warn',
+        summary: 'Online payments not configured',
+        detail: result?.stripe_configured
+          ? 'GDX_PUBLIC_BASE_URL is not set on the server.'
+          : 'Add Stripe API keys to enable customer pay links.',
+        life: 6000,
       });
     }
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: 'Pay link failed',
+      detail: err?.message || 'Could not create the pay link',
+      life: 4000,
+    });
   } finally {
     payingInvoiceId.value = null;
   }

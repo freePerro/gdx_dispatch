@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select, update
 from sqlalchemy import text as _text
@@ -1307,6 +1307,37 @@ def mark_invoice_sent(
     return _serialize_invoice(invoice)
 
 
+@router.post("/{invoice_id}/pay-link", response_model=None)
+def get_invoice_pay_link(
+    invoice_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Mint (idempotently) and return the customer-facing online-payment
+    link for an invoice, for the office to text/email out.
+
+    `url` is null unless the link would actually work end-to-end: the
+    public base URL is set AND Stripe keys are configured. The flags let
+    the UI say precisely which piece is missing instead of handing the
+    operator a dead link.
+    """
+    from gdx_dispatch.core.payments import public_pay_url, stripe_configured
+
+    invoice = _get_invoice_or_404(invoice_id, db)
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void")
+    if _to_float(invoice.balance_due) <= 0:
+        raise HTTPException(status_code=409, detail="invoice has no balance due")
+    if not invoice.public_token:
+        invoice.public_token = secrets.token_urlsafe(48)[:64]
+        db.commit()
+        db.refresh(invoice)
+    return {
+        "stripe_configured": stripe_configured(),
+        "url": public_pay_url(invoice.public_token),
+    }
+
+
 @router.post("/{invoice_id}/send", response_model=None)
 def send_invoice(
     invoice_id: UUID,
@@ -1377,6 +1408,16 @@ def send_invoice(
                 except Exception:
                     log.exception("send_invoice_company_name_lookup_failed")
                 tax_rate_val = float(invoice.tax_rate) if invoice.tax_rate is not None else None
+                # The "View & Pay Invoice" CTA. public_pay_url returns None
+                # unless the link would actually charge (base URL + Stripe
+                # keys present), so an unconfigured install still sends a
+                # clean PDF email with no dead link.
+                from gdx_dispatch.core.payments import public_pay_url
+                pay_url = (
+                    public_pay_url(invoice.public_token)
+                    if _to_float(invoice.balance_due) > 0
+                    else None
+                )
                 html = build_invoice_email_html(
                     company_name=company_name,
                     invoice_number=invoice.invoice_number or str(invoice.id)[:8],
@@ -1388,6 +1429,7 @@ def send_invoice(
                     balance_due=_to_float(invoice.balance_due),
                     due_date=invoice.due_date.isoformat() if invoice.due_date else "",
                     notes=invoice.notes or "",
+                    portal_url=pay_url or "",
                     tax_rate=tax_rate_val,
                 )
                 # 2026-07-20 — attach the actual invoice PDF (same generator
@@ -1917,7 +1959,7 @@ def batch_create_invoices(
             db.add(invoice)
             db.flush()
             created.append(str(invoice.id))
-        except Exception as e:
+        except Exception:
             log.exception("batch_invoice_create_failed")
             # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
             errors.append({"job_id": job_id, "error": "Invoice creation failed"})

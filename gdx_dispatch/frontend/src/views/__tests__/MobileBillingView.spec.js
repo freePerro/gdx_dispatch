@@ -133,3 +133,20 @@ describe('MobileBillingView KPI strip', () => {
     expect(alertKpis.length).toBe(2);
   });
 });
+
+describe('MobileBillingView — Mark paid records a real payment (2026-07-21)', () => {
+  it('markPaid POSTs a payment for the remaining balance, never a status PATCH', async () => {
+    // Source-scan pin (same style as BillingViewSendComposer): the old
+    // implementation PATCHed {status: 'Paid'}, which 422s (schema forbids
+    // status) — the button could never work.
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const src = readFileSync(join(__dirname, '..', 'MobileBillingView.vue'), 'utf8');
+    const start = src.indexOf('async function markPaid');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\nonMounted', start));
+    expect(body).not.toMatch(/api\.patch/);
+    expect(body).toMatch(/api\.post\(`\/api\/invoices\/\$\{detail\.value\.id\}\/payments`/);
+    expect(body).toMatch(/balance/);
+  });
+});

@@ -38,12 +38,11 @@ from gdx_dispatch.models.tenant_models import (
     Customer,
     Invoice,
     InvoiceLine,
-    Job,
     JobPartNeeded,
     TimeEntry,
 )
 from gdx_dispatch.modules.ledger.service import transition_invoice_status
-from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+from gdx_dispatch.modules.proposals.models import Estimate
 
 log = logging.getLogger(__name__)
 
@@ -637,6 +636,19 @@ def _send_invoice_email(
         except Exception:
             log.exception("mobile_invoice_pdf_attach_failed invoice=%s", invoice.id)
 
+        # Same "View & Pay" CTA as the desktop send path; None (→ no
+        # button) unless base URL + Stripe keys make the link chargeable.
+        from gdx_dispatch.core.payments import public_pay_url
+        if not invoice.public_token and float(invoice.balance_due or 0) > 0:
+            invoice.public_token = secrets.token_urlsafe(48)[:64]
+            db.commit()
+            db.refresh(invoice)
+        pay_url = (
+            public_pay_url(invoice.public_token)
+            if float(invoice.balance_due or 0) > 0
+            else None
+        )
+
         # Build a simple email body if no specialised builder exists.
         if build_invoice_email_html is not None:
             lines = db.execute(
@@ -659,6 +671,7 @@ def _send_invoice_email(
                 ],
                 total=float(invoice.total or 0),
                 notes=invoice.notes or "",
+                portal_url=pay_url or "",
             )
         else:
             html = (
@@ -667,6 +680,7 @@ def _send_invoice_email(
                 f"from {company_name} {'attached' if attachments else 'summarized below'}.</p>"
                 f"<p><strong>Total: ${float(invoice.total or 0):,.2f}</strong></p>"
                 f"<p>Due {invoice.due_date.isoformat() if invoice.due_date else 'on receipt'}.</p>"
+                + (f'<p><a href="{pay_url}">Pay this invoice online</a></p>' if pay_url else "")
             )
         send_transactional_email(
             tenant_db=db,

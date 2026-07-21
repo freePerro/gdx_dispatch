@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Payment
+from gdx_dispatch.models.tenant_models import Invoice, Payment
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,21 @@ class ACHChargeRequest(BaseModel):
 def _init_stripe() -> None:
     """Set Stripe API key from environment."""
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+
+
+def stripe_configured() -> bool:
+    """Whether online payments can actually charge (a Stripe key is set)."""
+    return bool(os.getenv("STRIPE_SECRET_KEY"))
+
+
+def public_pay_url(public_token: str | None) -> str | None:
+    """Absolute customer-facing /pay/{token} URL, or None when the link
+    would be dead: no token, no public base URL, or Stripe unconfigured
+    (the pay page renders but Stripe.js can't charge without keys)."""
+    base = os.getenv("GDX_PUBLIC_BASE_URL", "").rstrip("/")
+    if not (public_token and base and stripe_configured()):
+        return None
+    return f"{base}/pay/{public_token}"
 
 
 def _stripe_extra(tenant: dict) -> dict[str, Any]:
