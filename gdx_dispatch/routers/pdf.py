@@ -63,6 +63,24 @@ def _branding_payload(db: Session) -> dict[str, str]:
     }
 
 
+def _signature_payload(estimate: Any) -> dict[str, str]:
+    """Captured quote-acceptance signature (signed on the tech's phone).
+    signature_data is free Text — only a data:image/* URI is ever forwarded
+    to the renderer, so a stray/hostile value degrades to the blank
+    signature line instead of landing in the PDF markup."""
+    raw = getattr(estimate, "signature_data", None) or ""
+    # png/jpeg only — svg is a script container and WeasyPrint fetches its
+    # sub-resources (audit round 5); the capture pad only produces PNG.
+    if not isinstance(raw, str) or not raw.startswith(("data:image/png;", "data:image/jpeg;")):
+        return {"image": "", "signed_by": "", "signed_at": ""}
+    signed_at = getattr(estimate, "signed_at", None)
+    return {
+        "image": raw,
+        "signed_by": getattr(estimate, "signed_by", None) or "",
+        "signed_at": signed_at.date().isoformat() if signed_at else "",
+    }
+
+
 def _template_config(db: Session, template_type: str) -> dict[str, Any] | None:
     """Load the tenant's saved PDF-template config (Settings → PDF Templates)
     for the renderer. None → tenant never saved one → pdf_generator falls back
@@ -148,11 +166,16 @@ def _estimate_payload(
     hide_line_prices = effective_hide_line_prices(
         getattr(estimate, "hide_line_prices", None), hide_line_prices_default
     )
+    valid_until = getattr(estimate, "valid_until", None)
     return {
         "estimate_number": estimate.estimate_number,
         "customer": _customer_payload(customer),
         "jobsite_address": getattr(estimate, "jobsite_address", None) or "",
         "description": getattr(estimate, "description", None) or "",
+        "valid_until": valid_until.date().isoformat() if valid_until else "",
+        # Captured acceptance signature — rendered as the image + signed-by
+        # line instead of the blank signature line when present.
+        "signature": _signature_payload(estimate),
         "lines": [
             {
                 "description": line.description,
@@ -182,9 +205,32 @@ def _estimate_payload(
 
 def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, Any]:
     lines = sorted(invoice.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
+    invoice_date = getattr(invoice, "invoice_date", None)
+    if invoice_date is None:
+        # App-created invoices often leave invoice_date NULL (it's optional on
+        # the create form); the creation day is the honest fallback.
+        created = getattr(invoice, "created_at", None)
+        invoice_date = created.date() if created else None
+    total = _to_float(invoice.total)
+    balance_due = _to_float(invoice.balance_due)
+    # Paid to Date = Σ non-voided Payment rows. NOT total - balance_due: the
+    # recalc subtracts credit memos/applied credits from balance_due too, so
+    # that difference would print "Paid" for money never received (audit
+    # round 5). NOT amount_paid either — that column is deprecated. A voided
+    # invoice zeroes its balance without payments, so the row is suppressed
+    # outright there.
+    paid_to_date = 0.0
+    if (getattr(invoice, "status", "") or "") != "void":
+        paid_to_date = sum(
+            _to_float(p.amount)
+            for p in (getattr(invoice, "payments", None) or [])
+            if getattr(p, "voided_at", None) is None
+        )
     return {
         "invoice_number": invoice.invoice_number,
         "customer": _customer_payload(customer),
+        "invoice_date": invoice_date.isoformat() if invoice_date else "",
+        "paid_to_date": round(max(paid_to_date, 0.0), 2),
         "lines": [
             {
                 "description": line.description,
@@ -214,11 +260,14 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, A
                 if _to_float(invoice.subtotal) > 0 else 0.0
             )
         ),
-        "total": _to_float(invoice.total),
-        "balance_due": _to_float(invoice.balance_due),
+        "total": total,
+        "balance_due": balance_due,
         "status": invoice.status,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else "",
-        "terms": invoice.notes or "",
+        # invoice.notes is per-invoice text the operator typed — it used to be
+        # shipped as "terms" and printed under a "Terms" heading (mislabel,
+        # Phase 3 fix). The template's Notes block owns it now.
+        "notes": invoice.notes or "",
         # "Total-only" display — hides per-line prices + Subtotal/Tax rows,
         # keeping Total + Balance Due. Snapshotted from the source estimate.
         "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),
@@ -289,7 +338,9 @@ def estimate_pdf(
 @router.get("/api/invoices/{invoice_id}/pdf")
 def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingResponse:
     invoice = db.execute(
-        select(Invoice).options(selectinload(Invoice.lines)).where(Invoice.id == invoice_id, Invoice.deleted_at.is_(None))
+        select(Invoice)
+        .options(selectinload(Invoice.lines), selectinload(Invoice.payments))
+        .where(Invoice.id == invoice_id, Invoice.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
