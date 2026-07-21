@@ -163,7 +163,12 @@ class OutlookFolder(TenantBase):
 class OutlookFolderSyncState(TenantBase):
     """Per-folder delta sync metadata. Folder delta is folder-scoped; each
     folder has its own delta_token. 410 Gone (token expired) → drop and
-    full-resync that folder."""
+    full-resync that folder.
+
+    Since 2026-07, ``delta_token`` stores the FULL @odata.deltaLink URL
+    (replayed verbatim per the Graph contract, preserving the encoded
+    $select). Legacy rows may still hold a bare token; the sync accepts
+    both and upgrades to a URL after one cycle."""
     __tablename__ = "outlook_folder_sync_state"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
