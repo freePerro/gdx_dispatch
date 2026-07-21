@@ -137,6 +137,17 @@ def test_unsaved_type_returns_8_default_blocks(ctx):
     assert len(t["blocks"]) == 8
 
 
+def test_saved_empty_blocks_serializes_as_defaults(ctx):
+    """Rows saved while the editor was decorative (pre-2026-07) can carry
+    blocks="[]". The editor must get defaults back, not an empty block list
+    with no way to recover (found on a real row from 2026-04-08)."""
+    db, req, user, _ = ctx
+    save_template(template_type="invoice", request=req,
+                  payload=_make_payload(blocks=[]), user=user, db=db)
+    t = get_template(template_type="invoice", request=req, user=user, db=db)
+    assert len(t["blocks"]) == 8
+
+
 def test_save_update_existing(ctx):
     db, req, user, _ = ctx
     save_template(template_type="estimate", request=req,

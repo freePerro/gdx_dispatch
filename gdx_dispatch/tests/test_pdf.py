@@ -356,7 +356,11 @@ async def test_endpoint_requires_auth(pdf_app: FastAPI):
 async def test_endpoint_returns_pdf(pdf_app: FastAPI, monkeypatch):
     estimate_id, _ = _seed_documents_data(pdf_app)
 
-    monkeypatch.setattr(pdf_router, "generate_estimate_pdf", lambda estimate_data, tenant_branding: b"%PDF-1.7\ntest")
+    monkeypatch.setattr(
+        pdf_router,
+        "generate_estimate_pdf",
+        lambda estimate_data, tenant_branding, template_config=None: b"%PDF-1.7\ntest",
+    )
 
     db = pdf_app.dependency_overrides[get_db]()
     try:

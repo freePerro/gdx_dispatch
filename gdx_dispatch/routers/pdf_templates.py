@@ -15,6 +15,10 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+# default_blocks lives in pdf_generator (the consumer) so editor defaults and
+# rendered defaults can never drift. Per-type: estimate defaults signature ON
+# (the estimate PDF always printed a signature line), everything else OFF.
+from gdx_dispatch.core.pdf_generator import default_blocks
 from gdx_dispatch.models.tenant_models import PdfTemplate
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -28,17 +32,6 @@ router = APIRouter(
 TEMPLATE_TYPES = [
     "estimate", "invoice", "work_order",
     "install_sheet", "safety_checklist", "purchase_order",
-]
-
-DEFAULT_BLOCKS = [
-    {"id": "logo", "type": "logo", "order": 1, "visible": True, "styles": {}, "settings": {}},
-    {"id": "company_info", "type": "company_info", "order": 2, "visible": True, "styles": {}, "settings": {}},
-    {"id": "customer_info", "type": "customer_info", "order": 3, "visible": True, "styles": {}, "settings": {}},
-    {"id": "line_items", "type": "line_items", "order": 4, "visible": True, "styles": {}, "settings": {"show_unit_price": True, "show_tax": True}},
-    {"id": "totals", "type": "totals", "order": 5, "visible": True, "styles": {}, "settings": {}},
-    {"id": "notes", "type": "notes", "order": 6, "visible": True, "styles": {}, "settings": {}},
-    {"id": "terms", "type": "terms", "order": 7, "visible": True, "styles": {}, "settings": {}},
-    {"id": "signature", "type": "signature", "order": 8, "visible": False, "styles": {}, "settings": {}},
 ]
 
 
@@ -75,9 +68,14 @@ def _serialize(tmpl: PdfTemplate) -> dict[str, Any]:
             blocks = json.loads(blocks_raw)
         except (json.JSONDecodeError, TypeError):
             logging.getLogger(__name__).exception("_serialize caught exception")
-            blocks = DEFAULT_BLOCKS
+            blocks = default_blocks(tmpl.template_type)
     else:
-        blocks = blocks_raw or DEFAULT_BLOCKS
+        blocks = blocks_raw
+    # Rows saved while the editor was decorative (pre-2026-07) can carry
+    # blocks="[]" — an empty editor with no way to recover. Treat empty the
+    # same as missing; the renderer (_normalize_template_config) already does.
+    if not blocks:
+        blocks = default_blocks(tmpl.template_type)
 
     return {
         "id": str(tmpl.id),
@@ -120,7 +118,7 @@ def list_templates(
                 "font_family": "Helvetica",
                 "header_content": None,
                 "footer_content": None,
-                "blocks": DEFAULT_BLOCKS,
+                "blocks": default_blocks(tt),
                 "logo_url": None,
                 "updated_at": None,
             })
@@ -154,7 +152,7 @@ def get_template(
         "font_family": "Helvetica",
         "header_content": None,
         "footer_content": None,
-        "blocks": DEFAULT_BLOCKS,
+        "blocks": default_blocks(template_type),
         "logo_url": None,
         "updated_at": None,
     }

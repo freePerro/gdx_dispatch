@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gdx_dispatch.core.pdf_generator import _JINJA_ENV
+from gdx_dispatch.core.pdf_generator import _render_template as _render_pdf_html
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices
 from gdx_dispatch.modules.estimates_features.router import FeaturesPayload, _COLS
 from gdx_dispatch.routers.install_sheet import _load_template
@@ -78,9 +78,14 @@ def test_estimate_total_unchanged_when_hidden():
 # ── Estimate PDF template ───────────────────────────────────────────────────
 def _render_estimate_pdf(hide):
     payload = _estimate_payload(_fake_estimate(hide), None, hide_line_prices_default=False)
-    return _JINJA_ENV.get_template("estimate_pdf.html").render(
-        data=payload,
-        branding={"company_name": "GDX", "primary_color": "#000", "secondary_color": "#111", "address": "", "logo": ""},
+    # Through the real render path (still hermetic — returns the HTML string,
+    # never touches WeasyPrint) so the template gets its `tpl` context.
+    return _render_pdf_html(
+        "estimate_pdf.html",
+        payload,
+        {"company_name": "GDX", "primary_color": "#000", "secondary_color": "#111", "address": "", "logo": ""},
+        None,
+        "estimate",
     )
 
 
@@ -111,7 +116,7 @@ def test_estimate_pdf_hides_prices_when_flagged():
 def _fake_invoice(hide):
     return SimpleNamespace(
         invoice_number="INV-000001",
-        lines=[SimpleNamespace(description="Double door", quantity=1, unit_price=100.0, line_total=100.0, sort_order=1, created_at=None, id=1)],
+        lines=[SimpleNamespace(description="Double door", quantity=1, unit_price=100.0, line_total=100.0, sort_order=1, created_at=None, id=1, category=None, taxable=True)],
         subtotal=100.0, tax_amount=0.0, tax_rate=None, total=100.0, balance_due=100.0,
         status="draft", due_date=None, notes="", hide_line_prices=hide,
     )
@@ -124,9 +129,12 @@ def test_invoice_payload_carries_flag():
 
 def _render_invoice_pdf(hide):
     payload = _invoice_payload(_fake_invoice(hide), None)
-    return _JINJA_ENV.get_template("invoice_pdf.html").render(
-        data=payload,
-        branding={"company_name": "GDX", "primary_color": "#000", "secondary_color": "#111", "address": "", "logo": ""},
+    return _render_pdf_html(
+        "invoice_pdf.html",
+        payload,
+        {"company_name": "GDX", "primary_color": "#000", "secondary_color": "#111", "address": "", "logo": ""},
+        None,
+        "invoice",
     )
 
 

@@ -64,17 +64,22 @@
               <Select v-model="selectedBlock.styles.alignment" :options="['left', 'center', 'right']" class="w-full" />
             </div>
             <div v-if="selectedBlock.type === 'line_items'" class="form-field">
-              <label>Show Unit Price</label>
-              <ToggleSwitch v-model="selectedBlock.settings.show_unit_price" />
+              <label>Show Category</label>
+              <ToggleSwitch v-model="selectedBlock.settings.show_category" data-testid="li-show-category" />
             </div>
-            <div v-if="selectedBlock.type === 'line_items'" class="form-field">
-              <label>Show Tax</label>
-              <ToggleSwitch v-model="selectedBlock.settings.show_tax" />
+            <div v-if="selectedBlock.type === 'line_items' && selectedBlock.settings.show_category" class="form-field">
+              <label>Category Display</label>
+              <Select v-model="selectedBlock.settings.category_display" :options="categoryDisplayOptions"
+                optionLabel="label" optionValue="value" class="w-full" data-testid="li-category-display" />
             </div>
-            <div v-if="selectedBlock.type === 'signature'" class="form-field">
-              <label>Require Signature</label>
-              <ToggleSwitch v-model="selectedBlock.settings.required" />
+            <div v-if="selectedBlock.type === 'line_items' && selectedType === 'invoice'" class="form-field">
+              <label>Mark Non-taxable Lines</label>
+              <ToggleSwitch v-model="selectedBlock.settings.show_taxable_marker" data-testid="li-taxable-marker" />
             </div>
+            <small v-if="selectedBlock.type === 'line_items'" class="field-hint">
+              Price visibility is controlled by the “hide line prices” setting on the
+              estimate/invoice itself, not here.
+            </small>
           </div>
         </div>
 
@@ -87,6 +92,7 @@
 
             <div v-for="block in visibleBlocks" :key="block.id" class="pdf-block"
               :class="{ 'selected': selectedBlock?.id === block.id }"
+              :style="blockStyle(block)"
               @click="selectedBlock = block">
               <div class="block-type-label">{{ formatName(block.type) }}</div>
               <div v-if="block.type === 'logo'" class="preview-logo">
@@ -100,12 +106,32 @@
                 <strong>Bill To:</strong><br>John Smith<br>456 Oak Ave<br>john@example.com
               </div>
               <div v-else-if="block.type === 'line_items'" class="preview-items">
-                <table>
-                  <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+                <table data-testid="preview-line-items">
+                  <thead>
+                    <tr>
+                      <th v-if="liCategoryColumn" data-testid="preview-cat-th">Category</th>
+                      <th>Item</th><th>Qty</th><th>Price</th><th>Total</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    <tr><td>CHI 2283 16x7 Door</td><td>1</td><td>$1,200</td><td>$1,200</td></tr>
-                    <tr><td>Torsion Springs (pair)</td><td>1</td><td>$180</td><td>$180</td></tr>
-                    <tr><td>Labor — Installation</td><td>1</td><td>$450</td><td>$450</td></tr>
+                    <template v-if="liGrouped">
+                      <template v-for="group in previewGroups" :key="group.category">
+                        <tr class="preview-cat-row" data-testid="preview-cat-row">
+                          <td colspan="4">{{ group.category }}</td>
+                        </tr>
+                        <tr v-for="row in group.lines" :key="row.desc">
+                          <td>{{ row.desc }}<span v-if="liNontaxMarker && !row.taxable" class="preview-nontax">non-taxable</span></td>
+                          <td>{{ row.qty }}</td><td>{{ row.price }}</td><td>{{ row.total }}</td>
+                        </tr>
+                      </template>
+                    </template>
+                    <template v-else>
+                      <tr v-for="row in previewLines" :key="row.desc">
+                        <td v-if="liCategoryColumn">{{ row.category }}</td>
+                        <td>{{ row.desc }}<span v-if="liNontaxMarker && !row.taxable" class="preview-nontax">non-taxable</span></td>
+                        <td>{{ row.qty }}</td><td>{{ row.price }}</td><td>{{ row.total }}</td>
+                      </tr>
+                    </template>
                   </tbody>
                 </table>
               </div>
@@ -168,6 +194,16 @@ const templateTypes = [
 
 const fontOptions = ["Helvetica", "Arial", "Times New Roman", "Georgia", "Courier New"];
 
+const categoryDisplayOptions = [
+  { label: "Column", value: "column" },
+  { label: "Grouped sections", value: "grouped" },
+];
+
+// Templates saved before the category/taxable options existed lack these
+// keys; merge defaults so the toggles bind to real booleans (a missing key
+// would make ToggleSwitch start undefined and never round-trip).
+const LINE_ITEM_DEFAULTS = { show_category: false, category_display: "column", show_taxable_marker: false };
+
 const sortedBlocks = computed(() =>
   [...(config.value.blocks || [])].sort((a, b) => a.order - b.order)
 );
@@ -176,15 +212,70 @@ const visibleBlocks = computed(() =>
   sortedBlocks.value.filter((b) => b.visible)
 );
 
+// Sample rows mirror what the real renderer does with EstimateLine/InvoiceLine
+// category + taxable data. The non-taxable labor line matches MN reality:
+// goods taxed, labor not.
+const previewLines = [
+  { category: "Door", desc: "CHI 2283 16x7 Door", qty: 1, price: "$1,200", total: "$1,200", taxable: true },
+  { category: "Parts", desc: "Torsion Springs (pair)", qty: 1, price: "$180", total: "$180", taxable: true },
+  { category: "Labor", desc: "Labor — Installation", qty: 1, price: "$450", total: "$450", taxable: false },
+];
+
+const lineItemsSettings = computed(() => {
+  const block = (config.value.blocks || []).find((b) => b.type === "line_items");
+  return { ...LINE_ITEM_DEFAULTS, ...(block?.settings || {}) };
+});
+const liCategoryColumn = computed(
+  () => lineItemsSettings.value.show_category && lineItemsSettings.value.category_display === "column"
+);
+const liGrouped = computed(
+  () => lineItemsSettings.value.show_category && lineItemsSettings.value.category_display === "grouped"
+);
+// Estimate lines carry no taxable flag server-side, so the marker is
+// invoice-only — mirror that here rather than previewing something the
+// renderer would never print.
+const liNontaxMarker = computed(
+  () => lineItemsSettings.value.show_taxable_marker && selectedType.value === "invoice"
+);
+const previewGroups = computed(() => {
+  const groups = [];
+  const index = {};
+  for (const row of previewLines) {
+    if (!(row.category in index)) {
+      index[row.category] = groups.length;
+      groups.push({ category: row.category, lines: [] });
+    }
+    groups[index[row.category]].lines.push(row);
+  }
+  return groups;
+});
+
+function blockStyle(block) {
+  const styles = block?.styles || {};
+  const out = {};
+  if (styles.font_size) out.fontSize = `${styles.font_size}pt`;
+  if (styles.alignment) out.textAlign = styles.alignment;
+  return out;
+}
+
 function formatName(type) {
   return (type || "").split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function normalizeConfig(data) {
+  data.blocks = (data.blocks || []).map((b) =>
+    b.type === "line_items"
+      ? { ...b, settings: { ...LINE_ITEM_DEFAULTS, ...(b.settings || {}) } }
+      : b
+  );
+  return data;
 }
 
 async function loadTemplate() {
   loading.value = true;
   try {
     const data = await api.get(`/api/pdf-templates/${selectedType.value}`);
-    config.value = data;
+    config.value = normalizeConfig(data);
     selectedBlock.value = null;
   } catch (e) {
     toast.add({ severity: "error", summary: "Error", detail: "Failed to load template", life: 4000 });
@@ -240,6 +331,9 @@ onMounted(() => {
 .preview-items table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .preview-items th, .preview-items td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; text-align: left; } /* printed-page preview: intentionally light */
 .preview-items th { font-weight: 600; border-bottom: 2px solid #ccc; } /* printed-page preview: intentionally light */
+.preview-cat-row td { background: #f9fafb; font-weight: 700; color: #374151; } /* printed-page preview: intentionally light */
+.preview-nontax { font-size: 0.65rem; color: #6b7280; border: 1px solid #d1d5db; border-radius: 3px; padding: 0 3px; margin-left: 0.35rem; white-space: nowrap; } /* printed-page preview: intentionally light */
+.field-hint { display: block; color: var(--p-text-muted-color); margin-top: 0.25rem; }
 .preview-totals { text-align: right; font-size: 0.9rem; }
 .preview-signature { margin-top: 2rem; }
 .preview-logo { display: flex; align-items: center; gap: 0.5rem; color: #999; } /* printed-page preview: intentionally light */
