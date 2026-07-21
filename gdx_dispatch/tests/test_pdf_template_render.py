@@ -25,7 +25,9 @@ from gdx_dispatch.core import pdf_generator
 from gdx_dispatch.routers import pdf as pdf_router
 
 # Reuse the SQLite app fixture (creates pdf_templates via shared metadata).
-from gdx_dispatch.tests.test_pdf import pdf_app  # noqa: F401  (pytest fixture)
+# The F811 noqas on the test defs below exist because pytest resolves the
+# fixture by parameter NAME, which ruff reads as shadowing this import.
+from gdx_dispatch.tests.test_pdf import pdf_app  # noqa: F401
 
 
 @pytest.fixture()
@@ -304,7 +306,7 @@ def _seed_template_row(db, template_type="estimate", **overrides):
     return row
 
 
-def test_template_config_loader_roundtrip(pdf_app):
+def test_template_config_loader_roundtrip(pdf_app):  # noqa: F811
     from gdx_dispatch.core.database import get_db
 
     db = pdf_app.dependency_overrides[get_db]()
@@ -320,7 +322,7 @@ def test_template_config_loader_roundtrip(pdf_app):
     assert isinstance(cfg["blocks"], list) and len(cfg["blocks"]) == 8
 
 
-def test_template_config_loader_tolerates_bad_blocks_json(pdf_app):
+def test_template_config_loader_tolerates_bad_blocks_json(pdf_app):  # noqa: F811
     from gdx_dispatch.core.database import get_db
 
     db = pdf_app.dependency_overrides[get_db]()
@@ -332,7 +334,7 @@ def test_template_config_loader_tolerates_bad_blocks_json(pdf_app):
     assert cfg["blocks"] is None  # renderer falls back to defaults
 
 
-def test_estimate_endpoint_passes_saved_config(pdf_app, monkeypatch):
+def test_estimate_endpoint_passes_saved_config(pdf_app, monkeypatch):  # noqa: F811
     from gdx_dispatch.core.database import get_db
     from gdx_dispatch.tests.test_pdf import _seed_documents_data
 
@@ -353,7 +355,7 @@ def test_estimate_endpoint_passes_saved_config(pdf_app, monkeypatch):
     assert captured["config"]["brand_color"] == "#ff6600"
 
 
-def test_estimate_payload_lines_include_category(pdf_app):
+def test_estimate_payload_lines_include_category(pdf_app):  # noqa: F811
     from gdx_dispatch.core.database import get_db
     from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 

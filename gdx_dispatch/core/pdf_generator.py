@@ -77,6 +77,13 @@ _BODY_BLOCK_TYPES = ("customer_info", "line_items", "totals", "terms", "notes")
 _ALIGNMENTS = {"left", "center", "right"}
 
 
+def _block_sort_key(block: dict[str, Any]) -> float:
+    value = block.get("order")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return 0.0
+
+
 def _style_css(styles: Any) -> str:
     if not isinstance(styles, dict):
         return ""
@@ -99,7 +106,7 @@ def _normalize_template_config(template_config: dict[str, Any] | None, template_
     by_type: dict[str, dict[str, Any]] = {}
     saved_order: list[str] = []
     sortable = [b for b in raw_blocks if isinstance(b, dict) and isinstance(b.get("type"), str)]
-    for block in sorted(sortable, key=lambda b: b.get("order") if isinstance(b.get("order"), (int, float)) else 0):
+    for block in sorted(sortable, key=_block_sort_key):
         btype = block["type"]
         if btype in by_type:
             continue

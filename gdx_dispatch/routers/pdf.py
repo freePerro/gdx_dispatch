@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -76,19 +77,21 @@ def _template_config(db: Session, template_type: str) -> dict[str, Any] | None:
         # A failed SELECT aborts the Postgres transaction; without a rollback
         # the same session is poisoned for whatever the caller does next
         # (e.g. the invoice-send email that shares this db) — audit catch.
-        try:
+        with contextlib.suppress(Exception):
             db.rollback()
-        except Exception:
-            pass
         return None
     if not row:
         return None
-    blocks = row.blocks
-    if isinstance(blocks, str):
+    raw_blocks = row.blocks
+    blocks: list[Any] | None
+    if isinstance(raw_blocks, str):
         try:
-            blocks = json.loads(blocks)
+            parsed = json.loads(raw_blocks)
         except (json.JSONDecodeError, TypeError):
-            blocks = None
+            parsed = None
+        blocks = parsed if isinstance(parsed, list) else None
+    else:
+        blocks = raw_blocks if isinstance(raw_blocks, list) else None
     return {
         "brand_color": row.brand_color,
         "font_family": row.font_family,
@@ -100,7 +103,7 @@ def _template_config(db: Session, template_type: str) -> dict[str, Any] | None:
 
 def _estimate_attachments_for_pdf(
     db: Session, estimate_id: UUID, tenant_id: str
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return image attachments as file:// data URIs for WeasyPrint embedding,
     plus a flat list of non-image attachment names so the PDF can reference them."""
     rows = db.execute(
