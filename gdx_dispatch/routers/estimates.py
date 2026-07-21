@@ -1210,7 +1210,12 @@ def _estimate_pdf_bytes(
     and the composer attaches. Shared by email-compose and /send so every
     outbound email carries the identical document."""
     from gdx_dispatch.core.pdf_generator import generate_estimate_pdf
-    from gdx_dispatch.routers.pdf import _branding_payload, _estimate_attachments_for_pdf, _estimate_payload
+    from gdx_dispatch.routers.pdf import (
+        _branding_payload,
+        _estimate_attachments_for_pdf,
+        _estimate_payload,
+        _template_config,
+    )
 
     images, files = _estimate_attachments_for_pdf(db, estimate.id, tenant_id)
     default_terms = ""
@@ -1234,6 +1239,7 @@ def _estimate_pdf_bytes(
             deposit_pct=deposit_pct, hide_line_prices_default=hide_line_prices_default, db=db,
         ),
         tenant_branding=_branding_payload(db),
+        template_config=_template_config(db, "estimate"),
     )
 
 

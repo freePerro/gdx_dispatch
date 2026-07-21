@@ -2,13 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  {%- import "_pdf_line_items.html" as li -%}
+  {#- Accent precedence: a saved PDF-template brand color wins; otherwise the
+     tenant branding primary from Settings. tpl.* is always the normalized
+     config from pdf_generator — with no saved template it reproduces the
+     legacy layout exactly (signature hidden by default on invoices). -#}
+  {%- set accent = tpl.accent or branding.primary_color %}
   <title>Invoice {{ data.invoice_number or '' }}</title>
   <style>
     @page { size: A4; margin: 24px; }
-    body { font-family: Arial, sans-serif; color: #1f2937; font-size: 12px; }
-    .header { border-bottom: 2px solid {{ branding.primary_color }}; padding-bottom: 10px; margin-bottom: 16px; }
+    body { color: #1f2937; font-size: 12px; }
+    .custom-header { text-align: center; font-weight: 600; border-bottom: 3px solid {{ accent }}; padding-bottom: 6px; margin-bottom: 10px; }
+    .custom-footer { text-align: center; margin-top: 24px; padding-top: 8px; border-top: 1px solid #d1d5db; font-size: 10px; color: #6b7280; }
+    .header { border-bottom: 2px solid {{ accent }}; padding-bottom: 10px; margin-bottom: 16px; }
     .brand { display: flex; align-items: center; justify-content: space-between; }
-    .brand h1 { margin: 0; color: {{ branding.primary_color }}; font-size: 22px; }
+    .brand h1 { margin: 0; color: {{ accent }}; font-size: 22px; }
     .logo { max-height: 48px; max-width: 200px; }
     .meta-grid { margin-top: 10px; display: flex; gap: 22px; color: #4b5563; }
     .section { margin-top: 14px; }
@@ -16,21 +24,35 @@
     th { text-align: left; background: #f3f4f6; padding: 8px; }
     td { padding: 8px; border-bottom: 1px solid #e5e7eb; }
     .num { text-align: right; }
+    .cat { color: #4b5563; white-space: nowrap; }
+    .cat-row td { background: #f9fafb; font-weight: 700; color: #374151; }
+    .nontax { font-size: 9px; color: #6b7280; border: 1px solid #d1d5db; border-radius: 3px; padding: 0 3px; white-space: nowrap; }
     .totals { margin-top: 12px; width: 320px; margin-left: auto; }
     .totals td { border: none; padding: 4px 0; }
     .totals .label { color: #4b5563; }
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
     .status { margin-top: 10px; color: #4b5563; }
+    .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
   </style>
 </head>
-<body>
+{# font-family goes in the style ATTRIBUTE, not the <style> block: quoted
+   family names ('Times New Roman') get entity-escaped by Jinja autoescape,
+   and entities are only decoded in attributes — a <style> block would see
+   the raw &#39;. #}
+<body style="font-family: {{ tpl.font_stack }}">
+  {% if tpl.header_content %}
+  <div class="custom-header">{{ tpl.header_content }}</div>
+  {% endif %}
+
   <div class="header">
     <div class="brand">
       <div>
+        {% if tpl.show_company_info %}
         <h1>{{ branding.company_name }}</h1>
         <div>{{ branding.address }}</div>
+        {% endif %}
       </div>
-      {% if branding.logo %}
+      {% if tpl.show_logo and branding.logo %}
       <img class="logo" src="{{ branding.logo }}" alt="Company logo">
       {% endif %}
     </div>
@@ -40,40 +62,19 @@
     </div>
   </div>
 
-  <div class="section">
+  {% for block in tpl.body_blocks %}
+    {% if block.type == 'customer_info' %}
+  <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
     <strong>Customer</strong><br>
     {{ data.customer.name or '' }}<br>
     {{ data.customer.address or '' }}
   </div>
 
-  <div class="section">
-    <table>
-      <thead>
-        <tr>
-          <th>Description</th>
-          <th class="num">Qty</th>
-          {% if not data.hide_line_prices %}
-          <th class="num">Unit Price</th>
-          <th class="num">Line Total</th>
-          {% endif %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for line in data.lines %}
-        <tr>
-          <td>{{ line.description }}</td>
-          <td class="num">{{ line.quantity }}</td>
-          {% if not data.hide_line_prices %}
-          <td class="num">${{ '%.2f'|format(line.unit_price or 0) }}</td>
-          <td class="num">${{ '%.2f'|format(line.line_total or 0) }}</td>
-          {% endif %}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+    {% elif block.type == 'line_items' %}
+  {{ li.line_items_table(data, tpl, block.style) }}
 
-  <table class="totals">
+    {% elif block.type == 'totals' %}
+  <table class="totals"{% if block.style %} style="{{ block.style }}"{% endif %}>
     {# Tax stays separately stated even when per-line prices are hidden — an
        invoice must disclose tax. Only the per-line columns above are gated. #}
     <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
@@ -86,9 +87,21 @@
     Payment Status: {{ data.status or '' }}
   </div>
 
-  <div class="section">
+    {% elif block.type == 'terms' %}
+  <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
     <strong>Terms</strong>
     <div>{{ data.terms or '' }}</div>
   </div>
+
+    {% endif %}
+  {% endfor %}
+
+  {% if tpl.signature.visible %}
+  <div class="signature"{% if tpl.signature.style %} style="{{ tpl.signature.style }}"{% endif %}>Customer Signature</div>
+  {% endif %}
+
+  {% if tpl.footer_content %}
+  <div class="custom-footer">{{ tpl.footer_content }}</div>
+  {% endif %}
 </body>
 </html>

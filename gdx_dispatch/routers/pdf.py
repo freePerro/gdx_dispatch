@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -13,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pdf_generator import generate_estimate_pdf, generate_invoice_pdf
-from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job, PdfTemplate
 from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.routers.auth import get_current_user
@@ -57,6 +59,42 @@ def _branding_payload(db: Session) -> dict[str, str]:
         "primary_color": settings.primary_color or "#0f172a",
         "secondary_color": settings.secondary_color or "#2563eb",
         "address": settings.address or "",
+    }
+
+
+def _template_config(db: Session, template_type: str) -> dict[str, Any] | None:
+    """Load the tenant's saved PDF-template config (Settings → PDF Templates)
+    for the renderer. None → tenant never saved one → pdf_generator falls back
+    to the legacy layout. Best-effort by design: a malformed row or a tenant DB
+    that predates the pdf_templates table must never block PDF generation."""
+    try:
+        row = db.execute(
+            select(PdfTemplate).where(PdfTemplate.template_type == template_type)
+        ).scalar_one_or_none()
+    except Exception:
+        logging.getLogger(__name__).exception("pdf_template_config_load_failed type=%s", template_type)
+        # A failed SELECT aborts the Postgres transaction; without a rollback
+        # the same session is poisoned for whatever the caller does next
+        # (e.g. the invoice-send email that shares this db) — audit catch.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+    if not row:
+        return None
+    blocks = row.blocks
+    if isinstance(blocks, str):
+        try:
+            blocks = json.loads(blocks)
+        except (json.JSONDecodeError, TypeError):
+            blocks = None
+    return {
+        "brand_color": row.brand_color,
+        "font_family": row.font_family,
+        "header_content": row.header_content or "",
+        "footer_content": row.footer_content or "",
+        "blocks": blocks,
     }
 
 
@@ -115,6 +153,7 @@ def _estimate_payload(
         "lines": [
             {
                 "description": line.description,
+                "category": line.category or "",
                 "quantity": line.quantity,
                 "unit_price": _to_float(line.unit_price),
                 "line_total": _to_float(line.line_total),
@@ -146,6 +185,10 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, A
         "lines": [
             {
                 "description": line.description,
+                "category": line.category or "",
+                # taxable default-True mirrors the column default — legacy rows
+                # created before the column existed read as taxable.
+                "taxable": True if line.taxable is None else bool(line.taxable),
                 "quantity": line.quantity,
                 "unit_price": _to_float(line.unit_price),
                 "line_total": _to_float(line.line_total),
@@ -230,6 +273,7 @@ def estimate_pdf(
             db=db,
         ),
         tenant_branding=_branding_payload(db),
+        template_config=_template_config(db, "estimate"),
     )
     filename = f"estimate-{estimate.estimate_number}.pdf"
     return StreamingResponse(
@@ -261,6 +305,7 @@ def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingRes
     pdf_bytes = generate_invoice_pdf(
         invoice_data=_invoice_payload(invoice, customer),
         tenant_branding=_branding_payload(db),
+        template_config=_template_config(db, "invoice"),
     )
     filename = f"invoice-{invoice.invoice_number}.pdf"
     return StreamingResponse(

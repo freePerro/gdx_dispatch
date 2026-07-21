@@ -1202,7 +1202,7 @@ def invoice_email_compose(
     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
     from gdx_dispatch.models.tenant_models import AppSettings, Customer
     from gdx_dispatch.routers.estimates import _render_template
-    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
+    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
 
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
 
@@ -1242,6 +1242,7 @@ def invoice_email_compose(
     pdf_bytes = generate_invoice_pdf(
         invoice_data=_invoice_payload(invoice, customer),
         tenant_branding=_branding_payload(db),
+        template_config=_template_config(db, "invoice"),
     )
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
     pdf_name = f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}.pdf"
@@ -1401,10 +1402,11 @@ def send_invoice(
 
                     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
                     from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
-                    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
+                    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
                     pdf_bytes = generate_invoice_pdf(
                         invoice_data=_invoice_payload(invoice, cust),
                         tenant_branding=_branding_payload(db),
+                        template_config=_template_config(db, "invoice"),
                     )
                     if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
                         log.warning(

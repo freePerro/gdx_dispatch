@@ -1,0 +1,59 @@
+{# Shared line-items table for estimate_pdf.html / invoice_pdf.html.
+
+   Modes (tpl.line_items from the PDF Template Editor):
+   - show_category + category_display='column'  → Category column before Description
+   - show_category + category_display='grouped' → heading row per category
+     (data.line_groups is precomputed in pdf_generator to keep operator line
+     order; the '' group renders without a heading)
+   - show_taxable_marker → 'non-taxable' tag on lines where taxable is False.
+     Estimate lines carry no taxable key, so the tag is invoice-only by data.
+
+   Per-line price columns stay gated by data.hide_line_prices — that flag is
+   owned by the estimates feature settings / invoice snapshot, NOT the
+   template editor. #}
+
+{% macro line_row(line, show_cat_col, hide_prices, show_nontax) -%}
+<tr>
+  {% if show_cat_col %}<td class="cat">{{ line.category or '' }}</td>{% endif %}
+  <td>{{ line.description }}{% if show_nontax and line.taxable is defined and not line.taxable %} <span class="nontax">non-taxable</span>{% endif %}</td>
+  <td class="num">{{ line.quantity }}</td>
+  {% if not hide_prices %}
+  <td class="num">${{ '%.2f'|format(line.unit_price or 0) }}</td>
+  <td class="num">${{ '%.2f'|format(line.line_total or 0) }}</td>
+  {% endif %}
+</tr>
+{%- endmacro %}
+
+{% macro line_items_table(data, tpl, block_style) -%}
+{% set show_cat_col = tpl.line_items.show_category and tpl.line_items.category_display == 'column' %}
+{% set grouped = tpl.line_items.show_category and tpl.line_items.category_display == 'grouped' %}
+{% set show_nontax = tpl.line_items.show_taxable_marker %}
+{% set n_cols = 2 + (1 if show_cat_col else 0) + (0 if data.hide_line_prices else 2) %}
+<div class="section"{% if block_style %} style="{{ block_style }}"{% endif %}>
+  <table>
+    <thead>
+      <tr>
+        {% if show_cat_col %}<th>Category</th>{% endif %}
+        <th>Description</th>
+        <th class="num">Qty</th>
+        {% if not data.hide_line_prices %}
+        <th class="num">Unit Price</th>
+        <th class="num">Line Total</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% if grouped %}
+        {% for group in data.line_groups %}
+          {% if group.category %}
+          <tr class="cat-row"><td colspan="{{ n_cols }}">{{ group.category }}</td></tr>
+          {% endif %}
+          {% for line in group.lines %}{{ line_row(line, False, data.hide_line_prices, show_nontax) }}{% endfor %}
+        {% endfor %}
+      {% else %}
+        {% for line in data.lines %}{{ line_row(line, show_cat_col, data.hide_line_prices, show_nontax) }}{% endfor %}
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}

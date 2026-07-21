@@ -617,10 +617,11 @@ def _send_invoice_email(
 
             from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
             from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
-            from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload
+            from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
             pdf_bytes = generate_invoice_pdf(
                 invoice_data=_invoice_payload(invoice, cust),
                 tenant_branding=_branding_payload(db),
+                template_config=_template_config(db, "invoice"),
             )
             if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
                 log.warning(
