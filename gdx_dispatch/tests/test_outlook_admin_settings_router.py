@@ -167,3 +167,73 @@ def test_settings_blocked_for_non_admin():
     client = TestClient(monkey_app)
     r = client.get("/api/admin/outlook/settings")
     assert r.status_code == 403
+
+
+# ── POST /vendor-bills/sweep (Phase 2, D3) ─────────────────────────────
+
+
+def test_sweep_queues_task_per_connected_account(app):
+    client, _, tdb = app
+    settings = MagicMock()
+    settings.vendor_bill_sender_allowlist = ["midwest.com"]
+    tdb.get.return_value = settings
+    acct = MagicMock()
+    acct.id = uuid4()
+    tdb.query.return_value.filter.return_value.all.return_value = [acct]
+    with patch("gdx_dispatch.modules.outlook.tasks.sweep_vendor_bill_history") as task:
+        task.delay.return_value = MagicMock(id="celery-task-1")
+        r = client.post("/api/admin/outlook/vendor-bills/sweep", json={"days": 180})
+    assert r.status_code == 202
+    body = r.json()
+    assert body["days"] == 180
+    assert body["queued"] == [{"account_id": str(acct.id), "task_id": "celery-task-1"}]
+    task.delay.assert_called_once_with(str(acct.id), str(TID), days=180)
+
+
+def test_sweep_defaults_to_365_days_with_no_body(app):
+    client, _, tdb = app
+    settings = MagicMock()
+    settings.vendor_bill_sender_allowlist = ["midwest.com"]
+    tdb.get.return_value = settings
+    acct = MagicMock()
+    acct.id = uuid4()
+    tdb.query.return_value.filter.return_value.all.return_value = [acct]
+    with patch("gdx_dispatch.modules.outlook.tasks.sweep_vendor_bill_history") as task:
+        task.delay.return_value = MagicMock(id="t")
+        r = client.post("/api/admin/outlook/vendor-bills/sweep")
+    assert r.status_code == 202
+    assert r.json()["days"] == 365
+    task.delay.assert_called_once_with(str(acct.id), str(TID), days=365)
+
+
+def test_sweep_400_when_allowlist_empty(app):
+    client, _, tdb = app
+    settings = MagicMock()
+    settings.vendor_bill_sender_allowlist = []
+    tdb.get.return_value = settings
+    with patch("gdx_dispatch.modules.outlook.tasks.sweep_vendor_bill_history") as task:
+        r = client.post("/api/admin/outlook/vendor-bills/sweep", json={})
+    assert r.status_code == 400
+    assert "allowlist" in r.json()["detail"]
+    task.delay.assert_not_called()
+
+
+def test_sweep_400_when_no_settings_row(app):
+    client, _, tdb = app
+    tdb.get.return_value = None  # feature never configured
+    with patch("gdx_dispatch.modules.outlook.tasks.sweep_vendor_bill_history") as task:
+        r = client.post("/api/admin/outlook/vendor-bills/sweep", json={})
+    assert r.status_code == 400
+    task.delay.assert_not_called()
+
+
+def test_sweep_404_when_no_connected_account(app):
+    client, _, tdb = app
+    settings = MagicMock()
+    settings.vendor_bill_sender_allowlist = ["midwest.com"]
+    tdb.get.return_value = settings
+    tdb.query.return_value.filter.return_value.all.return_value = []
+    with patch("gdx_dispatch.modules.outlook.tasks.sweep_vendor_bill_history") as task:
+        r = client.post("/api/admin/outlook/vendor-bills/sweep", json={})
+    assert r.status_code == 404
+    task.delay.assert_not_called()

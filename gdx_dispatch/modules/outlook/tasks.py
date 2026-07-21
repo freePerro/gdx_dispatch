@@ -12,6 +12,11 @@ Four tasks ship in this module:
   expired, or errored. Safety net for webhook drops.
 - ``repair_blank_outlook_messages(account_id, tenant_id)``: one-shot manual
   repair for rows blanked by the 2026-07 partial-delta overwrite bug.
+- ``sweep_vendor_bill_history(account_id, tenant_id, days)``: repeatable,
+  admin-triggered vendor-bill history sweep over the LOCAL message mirror —
+  downloads allowlisted senders' PDF attachments (bounded per run) and feeds
+  the vendor-invoice pipeline. Checkpointed per message, so re-running only
+  processes what previous runs didn't reach.
 
 Body persistence to R2 is deferred to a future slice (the column
 ``body_r2_key`` is set; actual write is a no-op until R2 client lands).
@@ -25,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.celery_app import celery_app
@@ -44,7 +50,9 @@ from gdx_dispatch.modules.outlook.token_refresh import OutlookReconnectRequired,
 from gdx_dispatch.modules.outlook.vendor_bill_ingest import (
     ingest_message_attachments,
     is_candidate,
+    new_totals,
     normalize_allowlist,
+    sender_allowed,
 )
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.tasks")
@@ -55,6 +63,14 @@ log = logging.getLogger("gdx_dispatch.modules.outlook.tasks")
 # was defined but never referenced — removed to stop implying an unenforced
 # limit.)
 BACKFILL_MAX_MESSAGES_PER_RUN = 5000
+
+# Vendor-bill history sweep bounds (Phase 2, increment D3). Both are per-RUN
+# budgets, not coverage limits — the per-message checkpoint makes repeat runs
+# pick up exactly where the last one stopped. Messages bounds Graph
+# list_attachments calls; downloads bounds attachment-content fetches (the
+# expensive, throttle-prone call — design cap from [AUDIT-R3]).
+SWEEP_MAX_MESSAGES_PER_RUN = 500
+SWEEP_MAX_DOWNLOADS_PER_RUN = 50
 
 # Folders we cache + show in the rail but do NOT actively sync messages from.
 # Live-fetched on click via the views_router live-fetch path. Per Doug's
@@ -419,26 +435,99 @@ def _sync_one_folder(
     return upserted, removed
 
 
-def _ingest_vendor_bills(gc, candidates: list[dict], allowlist: list[str]) -> dict[str, int]:
+def _ingest_vendor_bills(
+    gc,
+    candidates: list[dict],
+    allowlist: list[str],
+    *,
+    stamp_account_id: UUID | None = None,
+    max_downloads: int | None = None,
+) -> dict[str, int]:
     """Download + pipeline the collected vendor-bill candidates in a session
     fully isolated from the sync's tenant session. Each message commits on its
     own, and a poisoned session is discarded + replaced — so the pipeline's
     flush/rollback/disk-I/O can never reach the sync mirror, and one bad bill
-    can't abort the whole sync."""
-    totals = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+    can't abort the whole sync.
+
+    ``stamp_account_id``: when given, each cleanly-processed message (no
+    errors, not budget-cut) has its mirror row checkpointed
+    (``vendor_bills_ingested_at``) so the history sweep never re-downloads it —
+    and candidates whose mirror row is ALREADY checkpointed are skipped without
+    any Graph call (the delta sync re-surfaces a message on every isRead/flag/
+    move change; without this read-side check the hot path would re-download
+    its PDFs each time).
+    ``max_downloads``: shared download budget across all candidates; the ones
+    left unattempted when it runs out are counted in ``skipped_no_budget`` and
+    stay un-checkpointed for the next run. A message that gets budget-cut while
+    holding the ENTIRE run budget can never complete under this budget — it is
+    checkpointed anyway and counted in ``quarantined`` (loudly logged) so it
+    can't starve every later run.
+    """
+    totals = new_totals()
+    totals["skipped_no_budget"] = 0
+    totals["skipped_already_ingested"] = 0
+    totals["quarantined"] = 0
     if not candidates or not allowlist:
         return totals
+    remaining = max_downloads
     idb = SessionLocal()
     try:
-        for m in candidates:
+        already_stamped: set[str] = set()
+        if stamp_account_id is not None:
+            ids = [m["id"] for m in candidates if m.get("id")]
+            if ids:
+                already_stamped = {
+                    gid for (gid,) in idb.query(OutlookMessage.graph_message_id)
+                    .filter(
+                        OutlookMessage.account_id == stamp_account_id,
+                        OutlookMessage.graph_message_id.in_(ids),
+                        OutlookMessage.vendor_bills_ingested_at.isnot(None),
+                    )
+                    .all()
+                }
+        for i, m in enumerate(candidates):
+            if m.get("id") in already_stamped:
+                totals["skipped_already_ingested"] += 1
+                continue
+            if remaining is not None and remaining <= 0:
+                totals["skipped_no_budget"] = len(candidates) - i
+                break
+            had_full_budget = remaining is not None and remaining == max_downloads
             try:
-                r = ingest_message_attachments(idb, gc, m, allowlist)
+                r = ingest_message_attachments(idb, gc, m, allowlist, max_downloads=remaining)
+                if remaining is not None:
+                    remaining -= r["downloads"]
+                clean = r["errors"] == 0 and r["capped"] == 0
+                # A message the FULL budget couldn't finish will never finish:
+                # park it (checkpoint + loud log) instead of letting it eat
+                # every future run's budget from the head of the queue.
+                quarantine = bool(r["capped"]) and had_full_budget
+                if quarantine:
+                    totals["quarantined"] += 1
+                    log.warning(
+                        "vendor_bill_ingest: message %s needs more downloads than the "
+                        "entire per-run budget (%s) — quarantined (checkpointed incomplete)",
+                        m.get("id"), max_downloads,
+                    )
+                if stamp_account_id is not None and m.get("id") and (clean or quarantine):
+                    idb.query(OutlookMessage).filter(
+                        OutlookMessage.account_id == stamp_account_id,
+                        OutlookMessage.graph_message_id == m["id"],
+                    ).update(
+                        {"vendor_bills_ingested_at": datetime.now(timezone.utc)},
+                        synchronize_session=False,
+                    )
                 idb.commit()
                 for k, v in r.items():
-                    totals[k] += v
+                    totals[k] = totals.get(k, 0) + v
             except Exception:  # noqa: BLE001
                 log.exception("vendor_bill_ingest: message %s failed", m.get("id"))
                 totals["errors"] += 1
+                if remaining is not None:
+                    # A non-Graph exception (timeout, poisoned session) can fire
+                    # mid-download; its Graph spend is unaccounted. Charge at
+                    # least one download so a flaky run can't blow past the cap.
+                    remaining -= 1
                 with contextlib.suppress(Exception):
                     idb.rollback()
                 idb.close()
@@ -493,7 +582,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             return {"messages_upserted": 0, "skipped": "no account"}
 
         folders_up = folders_del = msgs_up = msgs_rem = 0
-        ingest_totals = {"ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0}
+        ingest_totals = new_totals()
         failed: list[dict] = []
         try:
             with with_outlook_client(cdb2, tdb, account.user_id, tid) as gc:
@@ -534,7 +623,9 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                 # so the pipeline's flush/rollback/disk-I/O can't reach the sync
                 # mirror or advance a delta token past un-mirrored messages.
                 if allowlist and vb_candidates:
-                    ingest_totals = _ingest_vendor_bills(gc, vb_candidates, allowlist)
+                    ingest_totals = _ingest_vendor_bills(
+                        gc, vb_candidates, allowlist, stamp_account_id=account.id,
+                    )
         except OutlookReconnectRequired as exc:
             log.warning("sync_outlook_mailbox: reconnect required for %s: %s", aid, exc)
             account.last_error = str(exc)[:500]
@@ -699,6 +790,111 @@ def backfill_outlook_mailbox(self, account_id: str, tenant_id: str, days: int = 
             "per_folder": folder_results,
             "failed_folders": failed,
         }
+
+
+@celery_app.task(name="outlook.sweep_vendor_bill_history", bind=True)
+def sweep_vendor_bill_history(self, account_id: str, tenant_id: str, days: int = 365) -> dict:
+    """Repeatable vendor-bill history sweep (Phase 2, increment D3).
+
+    Walks the LOCAL ``outlook_messages`` mirror — NOT a Graph listing — for
+    un-checkpointed messages with attachments from allowlisted senders inside
+    the ``days`` window, then downloads + pipelines their PDFs with a per-run
+    download budget. History beyond the mirror is out of scope by design:
+    extend the mirror first (bump backfill_days + re-run backfill), then sweep.
+
+    Repeatable by construction: every cleanly-processed message is stamped
+    (``vendor_bills_ingested_at``), so the next run only touches what previous
+    runs didn't reach (budget-cut, errored, or newly mirrored). The report's
+    ``cap_hit`` tells the admin another run is worth it. Empty allowlist =
+    feature off = no-op.
+    """
+    aid = UUID(account_id)
+    tid = UUID(tenant_id)
+    with contextlib.closing(SessionLocal()) as tdb, \
+         contextlib.closing(SessionLocal()) as cdb2:
+        account = tdb.get(OutlookAccount, aid)
+        if account is None:
+            return {"skipped": "no account"}
+        _settings = tdb.get(OutlookSettings, 1)
+        allowlist = normalize_allowlist(
+            getattr(_settings, "vendor_bill_sender_allowlist", None) if _settings else None
+        )
+        if not allowlist:
+            return {"skipped": "allowlist empty"}
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        # The sweep can only see what the mirror holds. Surface the mirror's
+        # floor so "cap_hit: false" is never read as "the whole window is in"
+        # when the mirror is shallower than the requested days (backfill_days
+        # defaults to 90). window_covered=False => extend the mirror (bump
+        # backfill_days + re-run backfill), then sweep again.
+        mirror_oldest = (
+            tdb.query(sa_func.min(OutlookMessage.received_at))
+            .filter(OutlookMessage.account_id == account.id)
+            .scalar()
+        )
+        if mirror_oldest is not None and mirror_oldest.tzinfo is None:
+            mirror_oldest = mirror_oldest.replace(tzinfo=timezone.utc)
+        window_covered = mirror_oldest is not None and mirror_oldest <= cutoff
+        scanned = 0
+        candidates: list[dict] = []
+        q = (
+            tdb.query(OutlookMessage)
+            .filter(
+                OutlookMessage.account_id == account.id,
+                OutlookMessage.has_attachments.is_(True),
+                OutlookMessage.vendor_bills_ingested_at.is_(None),
+                OutlookMessage.from_address.isnot(None),
+                OutlookMessage.received_at >= cutoff,
+            )
+            .order_by(OutlookMessage.received_at.desc())
+        )
+        # Sender allowlisting supports domain + subdomain matching, which SQL
+        # can't express cleanly — scan the (index-served) candidate window and
+        # filter in Python. The message cap bounds the batch, not coverage:
+        # un-collected rows stay un-checkpointed for the next run.
+        for row in q.yield_per(200):
+            scanned += 1
+            if not sender_allowed(row.from_address, allowlist):
+                continue
+            candidates.append({
+                "id": row.graph_message_id,
+                "hasAttachments": True,
+                "from": {"emailAddress": {"address": row.from_address}},
+            })
+            if len(candidates) >= SWEEP_MAX_MESSAGES_PER_RUN:
+                break
+
+        totals = new_totals()
+        totals["skipped_no_budget"] = 0
+        totals["skipped_already_ingested"] = 0
+        totals["quarantined"] = 0
+        if candidates:
+            try:
+                with with_outlook_client(cdb2, tdb, account.user_id, tid) as gc:
+                    totals = _ingest_vendor_bills(
+                        gc, candidates, allowlist,
+                        stamp_account_id=account.id,
+                        max_downloads=SWEEP_MAX_DOWNLOADS_PER_RUN,
+                    )
+            except OutlookReconnectRequired as exc:
+                log.warning("sweep_vendor_bill_history: reconnect required for %s: %s", aid, exc)
+                account.last_error = str(exc)[:500]
+                tdb.commit()
+                return {"error": str(exc)[:200], "scanned": scanned,
+                        "candidates": len(candidates), **totals}
+
+        cap_hit = bool(
+            totals["capped"]
+            or totals.get("skipped_no_budget", 0)
+            or len(candidates) >= SWEEP_MAX_MESSAGES_PER_RUN
+        )
+        result = {"scanned": scanned, "candidates": len(candidates),
+                  "cap_hit": cap_hit, "days": days,
+                  "mirror_oldest": mirror_oldest.isoformat() if mirror_oldest else None,
+                  "window_covered": window_covered, **totals}
+        log.info("sweep_vendor_bill_history %s: %s", aid, result)
+        return result
 
 
 @celery_app.task(name="outlook.repair_blank_outlook_messages", bind=True)
