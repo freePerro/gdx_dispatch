@@ -21,6 +21,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder
+from gdx_dispatch.modules.vendor_invoices.llm_extract import (
+    LLM_EXTRACTION_MODEL,
+    LLMExtractionError,
+    extract_invoice_via_llm,
+)
 from gdx_dispatch.modules.vendor_invoices.matching import (
     compute_vendor_key,
     find_duplicate_invoice,
@@ -145,6 +150,27 @@ def build_lines_from_parsed(parsed: ParsedInvoice) -> list[VendorInvoiceLine]:
     return lines
 
 
+def _layer1_content_hash(
+    db: Session, content_hash: str
+) -> tuple[Document | None, InvoiceUploadResult | None]:
+    """Layer 1 — content hash. A hash hit on a Document that already has an
+    invoice short-circuits (second element); a hash hit on a Document WITHOUT
+    one (same PDF was earlier attached to a job) reuses the Document and
+    proceeds. Runs BEFORE any extraction, so a re-seen PDF costs neither a
+    parse nor an LLM call."""
+    existing_doc = find_existing_document(db, content_hash)
+    if existing_doc is not None:
+        existing_inv = _invoice_for_document(db, existing_doc.id)
+        if existing_inv is not None:
+            return existing_doc, InvoiceUploadResult(
+                invoice=existing_inv,
+                document=existing_doc,
+                created=False,
+                duplicate_reason="content_hash",
+            )
+    return existing_doc, None
+
+
 def upload_midwest_invoice(
     db: Session,
     *,
@@ -159,29 +185,93 @@ def upload_midwest_invoice(
     (vendor, invoice_number).
 
     Raises ``MidwestInvoiceParseError`` if the PDF isn't a parseable Midwest
-    invoice (there's nothing to queue in that case).
+    invoice (rung 2 — ``upload_invoice_via_llm`` — is the caller's fallback).
     """
     if not pdf_bytes:
         raise MidwestInvoiceParseError("empty file")
 
     content_hash = compute_sha256(pdf_bytes)
-
-    # Layer 1 — content hash. A hash hit on a Document that already has an
-    # invoice returns it; a hash hit on a Document WITHOUT one (same PDF was
-    # earlier attached to a job) reuses the Document and proceeds.
-    existing_doc = find_existing_document(db, content_hash)
-    if existing_doc is not None:
-        existing_inv = _invoice_for_document(db, existing_doc.id)
-        if existing_inv is not None:
-            return InvoiceUploadResult(
-                invoice=existing_inv,
-                document=existing_doc,
-                created=False,
-                duplicate_reason="content_hash",
-            )
+    existing_doc, early = _layer1_content_hash(db, content_hash)
+    if early is not None:
+        return early
 
     parsed = parse_midwest_invoice(pdf_bytes)
-    vendor_name_raw = MIDWEST_VENDOR_NAME
+    return _persist_parsed_invoice(
+        db,
+        pdf_bytes=pdf_bytes,
+        content_hash=content_hash,
+        existing_doc=existing_doc,
+        parsed=parsed,
+        vendor_name_raw=MIDWEST_VENDOR_NAME,
+        extraction_method="parser",
+        extractor_label=MIDWEST_INVOICE_PARSER,
+        original_filename=original_filename,
+        content_type=content_type,
+        uploaded_by=uploaded_by,
+        source=source,
+    )
+
+
+def upload_invoice_via_llm(
+    db: Session,
+    *,
+    pdf_bytes: bytes,
+    original_filename: str,
+    content_type: str | None,
+    uploaded_by: str | None,
+    source: str = "email",
+    llm_client,
+) -> InvoiceUploadResult:
+    """Rung 2: extract an arbitrary vendor's bill via the tenant's Anthropic
+    model, then run the IDENTICAL dedup + persist pipeline as the parser path.
+    The vendor name comes from the extraction (not a parser constant), so
+    resolve_vendor/vendor_key handle any supplier.
+
+    Raises ``LLMExtractionError`` when the model can't read the document as an
+    invoice; lets transport/API errors propagate (callers retry those).
+    """
+    if not pdf_bytes:
+        raise LLMExtractionError("empty file")
+
+    content_hash = compute_sha256(pdf_bytes)
+    existing_doc, early = _layer1_content_hash(db, content_hash)
+    if early is not None:
+        return early  # dedup BEFORE extraction — no token re-spend
+
+    vendor_name_raw, parsed = extract_invoice_via_llm(llm_client, pdf_bytes)
+    return _persist_parsed_invoice(
+        db,
+        pdf_bytes=pdf_bytes,
+        content_hash=content_hash,
+        existing_doc=existing_doc,
+        parsed=parsed,
+        vendor_name_raw=vendor_name_raw,
+        extraction_method="llm",
+        extractor_label=f"llm:{LLM_EXTRACTION_MODEL}",
+        original_filename=original_filename,
+        content_type=content_type,
+        uploaded_by=uploaded_by,
+        source=source,
+    )
+
+
+def _persist_parsed_invoice(
+    db: Session,
+    *,
+    pdf_bytes: bytes,
+    content_hash: str,
+    existing_doc: Document | None,
+    parsed: ParsedInvoice,
+    vendor_name_raw: str,
+    extraction_method: str,
+    extractor_label: str,
+    original_filename: str,
+    content_type: str | None,
+    uploaded_by: str | None,
+    source: str,
+) -> InvoiceUploadResult:
+    """Layers 2+3 and persistence, shared verbatim by the parser and LLM rungs
+    so dedup and review semantics can never drift between them."""
     vendor = resolve_vendor(db, vendor_name_raw)
     vendor_id = vendor.id if vendor else None
 
@@ -223,7 +313,7 @@ def upload_midwest_invoice(
             content_type=content_type or "application/pdf",
             uploaded_by=uploaded_by or "",
             title=f"{vendor_name_raw} Invoice {parsed.invoice_number}".strip(),
-            description=f"Auto-imported vendor bill (parser={MIDWEST_INVOICE_PARSER})",
+            description=f"Auto-imported vendor bill (extractor={extractor_label})",
             folder_id=folder.id,
             content_hash=content_hash,
         )
@@ -241,6 +331,17 @@ def upload_midwest_invoice(
     )
     invariant_ok = invariant_disc <= INVARIANT_TOLERANCE and worst_line_disc <= INVARIANT_TOLERANCE
 
+    note_parts: list[str] = []
+    if extraction_method == "llm":
+        # LLM output is data, not truth — flag it so the office verifies
+        # against the PDF before confirming any line.
+        note_parts.append(f"LLM_EXTRACTED ({extractor_label}): verify against the PDF")
+    if not invariant_ok:
+        note_parts.append(
+            f"INVARIANT_MISMATCH: header off by {invariant_disc}, "
+            f"worst line qty*unit vs total off by {worst_line_disc}"
+        )
+
     invoice = VendorInvoice(
         vendor_id=vendor_id,
         vendor_key=compute_vendor_key(vendor_id, vendor_name_raw),
@@ -256,16 +357,9 @@ def upload_midwest_invoice(
         total=parsed.total,
         document_id=document.id if document else None,
         source=source,
-        extraction_method="parser",
+        extraction_method=extraction_method,
         uploaded_by=uploaded_by,
-        notes=(
-            None
-            if invariant_ok
-            else (
-                f"INVARIANT_MISMATCH: header off by {invariant_disc}, "
-                f"worst line qty*unit vs total off by {worst_line_disc}"
-            )
-        ),
+        notes="; ".join(note_parts) or None,
     )
     invoice.lines = build_lines_from_parsed(parsed)
     db.add(invoice)
