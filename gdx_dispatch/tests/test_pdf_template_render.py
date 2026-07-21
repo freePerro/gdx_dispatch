@@ -283,6 +283,141 @@ def test_hide_line_prices_still_gates_price_columns(captured_html):
 
 
 # ---------------------------------------------------------------------------
+# 3b. Phase-3 document-level fields
+# ---------------------------------------------------------------------------
+
+def test_estimate_valid_until_renders_only_when_set(captured_html):
+    pdf_generator.generate_estimate_pdf(
+        _estimate_data(valid_until="2026-08-15"), _BRANDING)
+    assert "Valid until: 2026-08-15" in captured_html["html"]
+
+    pdf_generator.generate_estimate_pdf(_estimate_data(), _BRANDING)
+    assert "Valid until" not in captured_html["html"]
+
+
+def test_estimate_captured_signature_replaces_blank_line(captured_html):
+    data = _estimate_data(signature={
+        "image": "data:image/png;base64,iVBORw0KGgo=",
+        "signed_by": "Jane D", "signed_at": "2026-07-20",
+    })
+    pdf_generator.generate_estimate_pdf(data, _BRANDING)
+    html = captured_html["html"]
+    assert 'src="data:image/png;base64,iVBORw0KGgo="' in html
+    assert "Signed by Jane D on 2026-07-20" in html
+    # the blank line is replaced, not duplicated (img alt is lowercase)
+    assert "Customer Signature" not in html
+
+
+def test_signature_payload_forwards_only_png_or_jpeg_data_uris():
+    from types import SimpleNamespace
+
+    blocked = [
+        '"><script>alert(1)</script>',
+        "https://evil.example/sig.png",
+        # svg is a script container and WeasyPrint fetches its sub-resources
+        "data:image/svg+xml;base64,AAAA",
+        "data:image/png,notbase64butalsonosemicolonprefix",
+    ]
+    for value in blocked:
+        hostile = SimpleNamespace(signature_data=value, signed_by="X", signed_at=None)
+        assert pdf_router._signature_payload(hostile) == {
+            "image": "", "signed_by": "", "signed_at": ""}, value
+
+    signed = SimpleNamespace(
+        signature_data="data:image/png;base64,AAAA", signed_by="Jane",
+        signed_at=datetime(2026, 7, 20, 15, 30, tzinfo=timezone.utc))
+    payload = pdf_router._signature_payload(signed)
+    assert payload == {
+        "image": "data:image/png;base64,AAAA",
+        "signed_by": "Jane", "signed_at": "2026-07-20"}
+
+
+def test_invoice_date_renders(captured_html):
+    pdf_generator.generate_invoice_pdf(
+        _invoice_data(invoice_date="2026-07-15"), _BRANDING)
+    assert "Invoice Date: 2026-07-15" in captured_html["html"]
+
+
+def test_invoice_paid_to_date_row_only_when_paid(captured_html):
+    pdf_generator.generate_invoice_pdf(
+        _invoice_data(paid_to_date=500.0, balance_due=1238.56), _BRANDING)
+    html = captured_html["html"]
+    assert "Paid to Date" in html and "-$500.00" in html
+
+    pdf_generator.generate_invoice_pdf(_invoice_data(paid_to_date=0.0), _BRANDING)
+    assert "Paid to Date" not in captured_html["html"]
+
+
+def test_invoice_notes_heading_replaces_terms_mislabel(captured_html):
+    pdf_generator.generate_invoice_pdf(
+        _invoice_data(notes="Thanks for your business"), _BRANDING)
+    html = captured_html["html"]
+    assert "<strong>Notes</strong>" in html and "Thanks for your business" in html
+    # the old mislabeled heading is gone for good (pin the heading markup,
+    # not the bare word — 'Terms' could legitimately appear in notes text)
+    assert "<strong>Terms</strong>" not in html
+
+    pdf_generator.generate_invoice_pdf(_invoice_data(), _BRANDING)
+    html = captured_html["html"]
+    assert "<strong>Notes</strong>" not in html
+    assert "<strong>Terms</strong>" not in html
+
+
+def _fake_p3_invoice(**overrides):
+    from types import SimpleNamespace
+
+    defaults = dict(
+        invoice_number="INV-P3", lines=[],
+        subtotal=150.0, tax_amount=0.0, tax_rate=None,
+        total=150.0, balance_due=40.0, status="sent", due_date=None,
+        notes="call before delivery", hide_line_prices=False,
+        invoice_date=None,
+        created_at=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+        payments=[],
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _fake_payment(amount, voided=False):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        amount=amount,
+        voided_at=datetime(2026, 7, 2, tzinfo=timezone.utc) if voided else None,
+    )
+
+
+def test_invoice_payload_derives_dates_and_notes():
+    payload = pdf_router._invoice_payload(_fake_p3_invoice(), None)
+    assert payload["invoice_date"] == "2026-07-01"  # created_at fallback
+    assert payload["notes"] == "call before delivery"
+    assert "terms" not in payload  # mislabel key retired
+
+
+def test_paid_to_date_sums_only_live_payments():
+    invoice = _fake_p3_invoice(
+        payments=[_fake_payment(300.0), _fake_payment(200.0, voided=True)])
+    assert pdf_router._invoice_payload(invoice, None)["paid_to_date"] == 300.0
+
+
+def test_paid_to_date_ignores_credit_memos():
+    """A credit memo reduces balance_due without any money received —
+    total - balance_due would print "Paid to Date" for it (audit round 5).
+    Zero Payment rows must mean zero paid, whatever the balance says."""
+    invoice = _fake_p3_invoice(total=1000.0, balance_due=800.0, payments=[])
+    assert pdf_router._invoice_payload(invoice, None)["paid_to_date"] == 0.0
+
+
+def test_paid_to_date_suppressed_on_voided_invoice():
+    """Void zeroes balance_due; without the status gate the PDF would assert
+    full payment of an invoice nobody paid."""
+    invoice = _fake_p3_invoice(
+        status="void", balance_due=0.0, payments=[_fake_payment(150.0)])
+    assert pdf_router._invoice_payload(invoice, None)["paid_to_date"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # 4. Config loading + payload fields (router layer)
 # ---------------------------------------------------------------------------
 

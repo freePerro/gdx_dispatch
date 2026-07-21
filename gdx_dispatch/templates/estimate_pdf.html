@@ -32,6 +32,9 @@
     .totals .label { color: #4b5563; }
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
     .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
+    .signature-block { margin-top: 24px; }
+    .signature-img { max-height: 60px; max-width: 280px; display: block; }
+    .signature-block .signature.signed { margin-top: 4px; }
     .attachments-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
     .attachment-photo { width: 240px; }
     .attachment-photo img { width: 100%; max-height: 200px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 4px; }
@@ -60,6 +63,9 @@
       {% endif %}
     </div>
     <div class="meta">Estimate #: {{ data.estimate_number or '' }}</div>
+    {% if data.valid_until %}
+    <div class="meta">Valid until: {{ data.valid_until }}</div>
+    {% endif %}
   </div>
 
   {% for block in tpl.body_blocks %}
@@ -149,9 +155,18 @@
   {% endif %}
 
   {# Signature stays dead last — after the attachment sections — matching the
-     legacy layout. Visibility/style come from the template editor. #}
+     legacy layout. Visibility/style come from the template editor. When the
+     customer already signed on the tech's phone, print the captured signature
+     instead of a blank line (the payload only forwards data:image/* URIs). #}
   {% if tpl.signature.visible %}
+  {% if data.signature and data.signature.image %}
+  <div class="signature-block"{% if tpl.signature.style %} style="{{ tpl.signature.style }}"{% endif %}>
+    <img class="signature-img" src="{{ data.signature.image }}" alt="Customer signature">
+    <div class="signature signed">Signed by {{ data.signature.signed_by or 'Customer' }}{% if data.signature.signed_at %} on {{ data.signature.signed_at }}{% endif %}</div>
+  </div>
+  {% else %}
   <div class="signature"{% if tpl.signature.style %} style="{{ tpl.signature.style }}"{% endif %}>Customer Signature</div>
+  {% endif %}
   {% endif %}
 
   {% if tpl.footer_content %}

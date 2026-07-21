@@ -58,6 +58,9 @@
     </div>
     <div class="meta-grid">
       <div>Invoice #: {{ data.invoice_number or '' }}</div>
+      {% if data.invoice_date %}
+      <div>Invoice Date: {{ data.invoice_date }}</div>
+      {% endif %}
       <div>Due Date: {{ data.due_date or '' }}</div>
     </div>
   </div>
@@ -80,6 +83,9 @@
     <tr><td class="label">Subtotal</td><td class="num">${{ '%.2f'|format(data.subtotal or 0) }}</td></tr>
     <tr><td class="label">Tax{% if (data.tax_rate_pct or 0) > 0 %} ({{ '%g'|format(data.tax_rate_pct) }}%){% endif %}</td><td class="num">${{ '%.2f'|format(data.tax or 0) }}</td></tr>
     <tr><td class="label">Total</td><td class="num">${{ '%.2f'|format(data.total or 0) }}</td></tr>
+    {% if (data.paid_to_date or 0) > 0 %}
+    <tr><td class="label">Paid to Date</td><td class="num">-${{ '%.2f'|format(data.paid_to_date) }}</td></tr>
+    {% endif %}
     <tr class="grand"><td>Balance Due</td><td class="num">${{ '%.2f'|format(data.balance_due or 0) }}</td></tr>
   </table>
 
@@ -87,11 +93,17 @@
     Payment Status: {{ data.status or '' }}
   </div>
 
-    {% elif block.type == 'terms' %}
+    {% elif block.type == 'notes' %}
+  {# invoice.notes used to print under a "Terms" heading (mislabel) — it's
+     operator-typed per-invoice text, so it belongs to the Notes block. The
+     terms block renders nothing for invoices until a tenant-wide default
+     terms text exists for billing (estimates already have one). #}
+  {% if data.notes %}
   <div class="section"{% if block.style %} style="{{ block.style }}"{% endif %}>
-    <strong>Terms</strong>
-    <div>{{ data.terms or '' }}</div>
+    <strong>Notes</strong>
+    <div style="white-space: pre-line">{{ data.notes }}</div>
   </div>
+  {% endif %}
 
     {% endif %}
   {% endfor %}
