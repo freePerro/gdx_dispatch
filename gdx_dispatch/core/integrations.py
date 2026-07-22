@@ -907,7 +907,7 @@ def integrations_page(
     }
 
     if _HAS_TEMPLATES:
-        return _templates.TemplateResponse("integrations.html", ctx)
+        return _templates.TemplateResponse(request, "integrations.html", ctx)
     from fastapi.responses import JSONResponse
     return JSONResponse({"error": "templates not found"}, status_code=500)
 

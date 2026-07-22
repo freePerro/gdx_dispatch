@@ -1239,6 +1239,25 @@ def invoice_email_compose(
     subject = _render_template(_DEFAULT_INVOICE_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
     body_text = _render_template(_DEFAULT_INVOICE_BODY_TEMPLATE, ctx)
 
+    # The public pay link goes into the editable draft — the operator sees
+    # exactly what the customer gets, and deleting the line is opting out.
+    # public_pay_url returns None unless the link can actually charge
+    # (balance outstanding + GDX_PUBLIC_BASE_URL + Stripe keys), so
+    # unconfigured installs keep a clean draft with no dead link. The
+    # legacy-row token mint stays inside the balance gate so a zero-balance
+    # compose stays a pure read.
+    from gdx_dispatch.core.payments import public_pay_url
+
+    pay_url = None
+    if _to_float(invoice.balance_due) > 0:
+        if not invoice.public_token:
+            invoice.public_token = secrets.token_urlsafe(48)[:64]
+            db.commit()
+            db.refresh(invoice)
+        pay_url = public_pay_url(invoice.public_token)
+    if pay_url:
+        body_text = f"{body_text.rstrip()}\n\nPay online: {pay_url}\n"
+
     pdf_bytes = generate_invoice_pdf(
         invoice_data=_invoice_payload(invoice, customer),
         tenant_branding=_branding_payload(db),

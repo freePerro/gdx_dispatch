@@ -333,3 +333,24 @@ describe('InvoiceDetailView — send composer PDF preview (2026-07-20)', () => {
     expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(false);
   });
 });
+
+describe('InvoiceDetailView — composer body escapes then linkifies URLs (2026-07-21)', () => {
+  // Source pin: the "Pay online: https://…/pay/{token}" line the compose
+  // endpoint now prefills must arrive clickable — Outlook desktop does not
+  // auto-link plain text inside HTML bodies. Escaping must happen BEFORE
+  // linkifying or the injected <a> tags would themselves get escaped.
+  const { readFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const SRC = readFileSync(join(__dirname, '..', 'InvoiceDetailView.vue'), 'utf8');
+
+  it('sendComposer escapes the body, then wraps bare URLs in anchors', () => {
+    const start = SRC.indexOf('async function sendComposer');
+    expect(start).toBeGreaterThan(-1);
+    const body = SRC.slice(start, SRC.indexOf('/api/outlook/send', start));
+    const escapeAt = body.indexOf('&amp;');
+    const linkifyAt = body.indexOf('<a href=');
+    expect(escapeAt).toBeGreaterThan(-1);
+    expect(linkifyAt).toBeGreaterThan(escapeAt);
+    expect(body).toContain('https?:\\/\\/'); // the URL-matching regex is present
+  });
+});

@@ -142,7 +142,7 @@ def dashboard(
 
     ctx = _base_ctx(request, current_user)
     ctx.update({"stats": stats, "recent_jobs": recent_jobs, "onboarding": onboarding})
-    return templates.TemplateResponse("tenant_dashboard.html", ctx)
+    return templates.TemplateResponse(request, "tenant_dashboard.html", ctx)
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ def settings_page(
     settings = _load_settings(tenant_db)
     ctx = _base_ctx(request, current_user)
     ctx["settings"] = settings
-    return templates.TemplateResponse("tenant_settings.html", ctx)
+    return templates.TemplateResponse(request, "tenant_settings.html", ctx)
 
 
 @router.post("/settings", response_class=HTMLResponse)
@@ -294,7 +294,7 @@ def team_page(
 
     ctx = _base_ctx(request, current_user)
     ctx["team_members"] = team_members
-    return templates.TemplateResponse("tenant_team.html", ctx)
+    return templates.TemplateResponse(request, "tenant_team.html", ctx)
 
 
 @router.post("/team/invite")

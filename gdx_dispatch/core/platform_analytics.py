@@ -850,9 +850,9 @@ def analytics_dashboard_page(
         return RedirectResponse(url="/auth/login", status_code=302)
 
     return _templates.TemplateResponse(
+        request,
         "analytics.html",
         {
-            "request": request,
             "current_user": current_user,
             "page_title": "Analytics",
             "flash_messages": getattr(request.state, "flash_messages", []),

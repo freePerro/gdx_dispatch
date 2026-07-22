@@ -460,9 +460,9 @@ def pay_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found or expired")
 
     return templates.TemplateResponse(
+        request,
         "payment_form.html",
         {
-            "request": request,
             "invoice": invoice,
             "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
         },
