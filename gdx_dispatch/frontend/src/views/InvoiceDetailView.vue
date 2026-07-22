@@ -815,8 +815,21 @@ async function sendComposer() {
         toast.add({ severity: "warn", summary: "Skipping attachment", detail: ex.name, life: 3000 });
       }
     }
+    // Escape first (quotes included — a raw " in a URL would otherwise
+    // break out of the href attribute), then linkify bare URLs. Outlook
+    // desktop doesn't auto-link plain text inside HTML bodies, so the
+    // "Pay online:" link from the compose draft would arrive unclickable
+    // without the anchor. The URL match stops at any escaped entity except
+    // &amp;, so escaped quotes terminate the href cleanly.
+    const escapedBody = composer.value.body_text
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    const linkedBody = escapedBody.replace(
+      /(https?:\/\/[^\s&]+(?:&amp;[^\s&]+)*)/g,
+      '<a href="$1">$1</a>',
+    );
     const bodyHtml = `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap">${
-      composer.value.body_text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      linkedBody
     }</pre>`;
     try {
       // suppressErrorToast so a 409 (Outlook not connected) doesn't fire a

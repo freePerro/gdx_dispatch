@@ -289,3 +289,93 @@ def test_send_invoice_email_omits_pay_link_when_unconfigured(tenant_db_session, 
 
     assert sent["email_sent"] is True
     assert "/pay/" not in captured["html_body"]  # no dead link, no CTA
+
+
+# ── GET /pay/{token} page + GET /api/invoices/{id}/email-compose ───────────
+
+def test_pay_page_renders_on_current_starlette(tenant_db_session, monkeypatch):
+    """Regression: TemplateResponse must use the (request, name, ctx)
+    signature — the old (name, ctx) order raises TypeError on the shipped
+    Starlette, which surfaced as a 400 on every customer pay link the day
+    Stripe went live."""
+    from starlette.requests import Request as StarletteRequest
+
+    from gdx_dispatch.core.payments import pay_invoice
+
+    monkeypatch.setenv("STRIPE_PUBLISHABLE_KEY", "pk_test_page")
+    inv = _seed_invoice(tenant_db_session)
+    row = _fresh(tenant_db_session, inv["id"])
+
+    req = StarletteRequest(
+        {"type": "http", "method": "GET", "path": f"/pay/{row.public_token}", "headers": [], "query_string": b""}
+    )
+    resp = pay_invoice(invoice_token=row.public_token, request=req, db=tenant_db_session)
+
+    assert resp.status_code == 200
+    body = resp.body.decode()
+    assert "pk_test_page" in body
+    assert str(row.invoice_number) in body
+
+
+def test_email_compose_includes_pay_link_when_configured(tenant_db_session, monkeypatch):
+    """The composer flow (email-compose → /api/outlook/send) is how the
+    office actually emails invoices; the draft must carry the pay link so
+    the CTA doesn't silently vanish on the path #190 didn't cover."""
+    from gdx_dispatch.routers.invoices import invoice_email_compose
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf", lambda **_kw: b"%PDF-fake"
+    )
+
+    inv = _seed_invoice(tenant_db_session)
+    out = invoice_email_compose(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    token = _fresh(tenant_db_session, inv["id"]).public_token
+    assert f"Pay online: https://gdx.example.com/pay/{token}" in out["body_text"]
+
+
+def test_email_compose_omits_pay_link_when_unconfigured(tenant_db_session, monkeypatch):
+    from gdx_dispatch.routers.invoices import invoice_email_compose
+
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf", lambda **_kw: b"%PDF-fake"
+    )
+
+    inv = _seed_invoice(tenant_db_session)
+    out = invoice_email_compose(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert "/pay/" not in out["body_text"]  # no dead link in the draft
+
+
+def test_email_compose_zero_balance_is_a_pure_read(tenant_db_session, monkeypatch):
+    """A zero-balance invoice gets no pay line AND no token side effect —
+    GET /email-compose must stay a pure read when nothing is chargeable."""
+    from gdx_dispatch.routers.invoices import invoice_email_compose
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf", lambda **_kw: b"%PDF-fake"
+    )
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(  # no lines added: total = balance_due = 0
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    # Blank the creation-minted token so the mint branch is actually
+    # reachable — otherwise this test passes even against mint-outside-gate
+    # code (audit catch 2026-07-21: the assertion was non-discriminating).
+    row = _fresh(tenant_db_session, inv["id"])
+    row.public_token = ""
+    tenant_db_session.commit()
+
+    out = invoice_email_compose(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert "/pay/" not in out["body_text"]
+    assert _fresh(tenant_db_session, inv["id"]).public_token == ""  # no mint on a pure read
