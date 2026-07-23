@@ -32,6 +32,12 @@
             />
             <p>Due: <strong>{{ formatDate(invoice.due_date) }}</strong></p>
             <p>Created: {{ formatDate(invoice.created_at) }}</p>
+            <!-- formatStampDateTime: QB-backfilled stamps are UTC midnight
+                 ("day known, minute not") and render date-only on the
+                 correct calendar day; real sends show time-of-day. -->
+            <p v-if="invoice.sent_at" data-testid="invoice-last-sent">
+              Last sent: {{ formatStampDateTime(invoice.sent_at) }}
+            </p>
           </div>
         </header>
 
@@ -482,7 +488,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
-import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
+import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTime } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
@@ -679,6 +685,7 @@ function normalizeInvoice(payload) {
     invoice_date: payload.invoice_date || payload.invoiceDate || "",
     due_date: payload.due_date || payload.dueDate || "",
     created_at: payload.created_at || payload.createdAt || "",
+    sent_at: payload.sent_at || "",
     notes: payload.notes || "",
     // PR6 — drives the Pause/Resume reminders toggle.
     dunning_paused: Boolean(payload.dunning_paused),

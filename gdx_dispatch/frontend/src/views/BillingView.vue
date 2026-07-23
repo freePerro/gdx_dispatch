@@ -11,7 +11,7 @@
           <template #content><p class="stat-value overdue">{{ currency(overdueAmount) }}</p></template>
         </Card>
         <Card data-testid="billing-paid-this-month">
-          <template #title>Paid This Month</template>
+          <template #title>{{ dateFilterActive ? 'Paid in Range' : 'Paid This Month' }}</template>
           <template #content><p class="stat-value paid">{{ currency(paidThisMonth) }}</p></template>
         </Card>
         <!-- PR1-billing-capture: drafts are excluded from Outstanding (they
@@ -273,6 +273,18 @@
         <Column field="due_date" header="Due Date" sortable>
           <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
         </Column>
+        <!-- QB-backfilled invoices carry sent_at as UTC midnight of the
+             invoice date ("day known, minute not") — formatStampDate keeps
+             those on the right calendar day and the time-of-day tooltip
+             only appears for real send stamps. -->
+        <Column field="sent_at" header="Last Sent" sortable>
+          <template #body="{ data }">
+            <span
+              v-tooltip="data.sent_at && !isDateOnlyStamp(data.sent_at) ? formatDateTime(data.sent_at) : null"
+              :data-testid="`last-sent-${data.id}`"
+            >{{ formatStampDate(data.sent_at) }}</span>
+          </template>
+        </Column>
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
@@ -428,7 +440,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
-import { formatDate, formatMoney as currency } from "../composables/useFormatters";
+import { formatDate, formatDateTime, formatStampDate, isDateOnlyStamp, stampTime, formatMoney as currency } from "../composables/useFormatters";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
@@ -537,6 +549,25 @@ const dateRange = computed(() => {
     default: return [null, null];
   }
 });
+const dateFilterActive = computed(() => Boolean(dateRange.value[0] || dateRange.value[1]));
+
+// stampTime (useFormatters) handles both day-walk-back traps: date-only
+// invoice_date parses local, QB midnight-UTC backfill stamps count as
+// date-only.
+function issueTime(inv) {
+  return stampTime(inv.invoice_date || inv.created_at);
+}
+
+function inDateWindow(inv) {
+  const [start, end] = dateRange.value;
+  if (!start && !end) return true;
+  const t = issueTime(inv);
+  if (t == null) return false;
+  if (start && t < start.getTime()) return false;
+  if (end && t > end.getTime()) return false;
+  return true;
+}
+
 const currentPage = ref(1);
 const perPage = 20;
 const selectedInvoices = ref([]);
@@ -664,9 +695,9 @@ async function confirmBulkMarkPaid() {
 }
 
 function bulkExport() {
-  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date"];
+  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent"];
   const rows = selectedInvoices.value.map((i) => [
-    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "",
+    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "",
   ]);
   const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -799,17 +830,8 @@ const filteredInvoices = computed(() => {
       return hay.includes(q);
     });
   }
-  const [start, end] = dateRange.value;
-  if (start || end) {
-    list = list.filter((inv) => {
-      // Prefer invoice_date (issue date), fall back to created_at
-      const raw = inv.invoice_date || inv.created_at;
-      if (!raw) return false;
-      const t = new Date(raw).getTime();
-      if (start && t < start.getTime()) return false;
-      if (end && t > end.getTime()) return false;
-      return true;
-    });
+  if (dateFilterActive.value) {
+    list = list.filter(inDateWindow);
   }
   return list;
 });
@@ -859,6 +881,7 @@ function exportInvoices() {
       { field: "total", header: "Amount" },
       { field: "status", header: "Status" },
       { field: "due_date", header: "Due Date" },
+      { field: "sent_at", header: "Last Sent" },
     ],
     "invoices",
   );
@@ -908,28 +931,59 @@ async function loadBillingSummary() {
   }
 }
 
+// KPI population: when a date filter is active the cards follow it —
+// computed client-side over the full loaded book (GET /api/invoices is
+// unpaginated), scoped by ISSUE date. The status tab and search box
+// deliberately do NOT scope the cards: each card is its own status slice.
+// With no date filter, the server aggregator stays preferred as before.
+const kpiWindowInvoices = computed(() =>
+  dateFilterActive.value ? invoices.value.filter(inDateWindow) : invoices.value
+);
+
 // Outstanding = receivables only. Prefer server-side aggregator (full-table
 // SUM, no pagination cap) and fall back to client-side over the loaded
 // list. Drafts excluded — they aren't yet receivables.
 const totalOutstanding = computed(() => {
-  if (billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
+  if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.total_outstanding === 'number') {
     return billingSummary.value.total_outstanding;
   }
-  return invoices.value
-    .filter((inv) => inv.status !== "Paid" && inv.status !== "Draft")
+  return kpiWindowInvoices.value
+    // Void excluded to match the server aggregator (it filters
+    // status NOT IN paid/draft/void); voids normally carry a zeroed
+    // balance_due but legacy rows may not.
+    .filter((inv) => inv.status !== "Paid" && inv.status !== "Draft" && inv.status !== "Void")
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
 const overdueAmount = computed(() => {
-  if (billingSummary.value && typeof billingSummary.value.overdue === 'number') {
+  if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.overdue === 'number') {
     return billingSummary.value.overdue;
   }
-  return invoices.value
+  return kpiWindowInvoices.value
     .filter((inv) => inv.status === "Overdue")
     .reduce((sum, inv) => sum + toNum(inv.balance_due ?? inv.total), 0);
 });
 
+// With a date filter active this card becomes "Paid in Range": paid_at
+// (not issue date) inside the window — "paid this year" means money that
+// LANDED this year, whatever the invoice's issue date was.
 const paidThisMonth = computed(() => {
+  if (dateFilterActive.value) {
+    const [start, end] = dateRange.value;
+    return invoices.value
+      .filter((inv) => {
+        if (inv.status !== "Paid") return false;
+        // paid_at only — updated_at is never serialized on list rows, so a
+        // fallback to it would be dead code. A Paid row with no paid_at has
+        // no known landing date and can't honestly claim a slot in range.
+        const t = stampTime(inv.paid_at);
+        if (t == null) return false;
+        if (start && t < start.getTime()) return false;
+        if (end && t > end.getTime()) return false;
+        return true;
+      })
+      .reduce((sum, inv) => sum + toNum(inv.total), 0);
+  }
   if (billingSummary.value && typeof billingSummary.value.paid_this_month === 'number') {
     return billingSummary.value.paid_this_month;
   }
@@ -943,17 +997,17 @@ const paidThisMonth = computed(() => {
 // Unsent drafts (PR1-billing-capture). Server pair preferred; client-side
 // fallback mirrors the other KPI computeds.
 const draftCount = computed(() => {
-  if (billingSummary.value && typeof billingSummary.value.draft_count === 'number') {
+  if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.draft_count === 'number') {
     return billingSummary.value.draft_count;
   }
-  return invoices.value.filter((inv) => inv.status === "Draft").length;
+  return kpiWindowInvoices.value.filter((inv) => inv.status === "Draft").length;
 });
 
 const draftTotal = computed(() => {
-  if (billingSummary.value && typeof billingSummary.value.draft_total === 'number') {
+  if (!dateFilterActive.value && billingSummary.value && typeof billingSummary.value.draft_total === 'number') {
     return billingSummary.value.draft_total;
   }
-  return invoices.value
+  return kpiWindowInvoices.value
     .filter((inv) => inv.status === "Draft")
     .reduce((sum, inv) => sum + toNum(inv.total), 0);
 });
@@ -990,6 +1044,12 @@ function normalizeInvoice(raw, customerMap = {}) {
     balance_due: toNum(raw.balance_due ?? raw.total ?? raw.amount ?? 0),
     status: capitalize(raw.effective_status || raw.status) || "Draft",
     due_date: raw.due_date || raw.dueDate || "",
+    // The date filter matches on invoice_date (issue date) with created_at
+    // as fallback — dropping these here silently blanked EVERY date preset
+    // ("This year" showed no invoices at all, 2026-07-22).
+    invoice_date: raw.invoice_date || "",
+    created_at: raw.created_at || "",
+    sent_at: raw.sent_at || "",
     paid_at: raw.paid_at || "",
     updated_at: raw.updated_at || "",
     notes: raw.notes || "",

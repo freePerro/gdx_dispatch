@@ -1371,7 +1371,6 @@ def send_invoice(
         raise HTTPException(status_code=409, detail="invoice is void — un-void or recreate it before sending")
     if invoice.status != "paid":
         transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5
-    invoice.sent_at = datetime.now(UTC)
     if not invoice.public_token:
         invoice.public_token = secrets.token_urlsafe(48)[:64]
     db.commit()
@@ -1502,6 +1501,16 @@ def send_invoice(
     except Exception:
         log.exception("invoice_email_send_failed")
         email_skip_reason = "exception"
+
+    # sent_at is a DELIVERY fact, not an attempt fact — it feeds the Billing
+    # "Last Sent" column. Pre-2026-07-22 this stamped before the email went
+    # out, so a failed bulk-send showed "Last Sent: today" on the very rows
+    # the toast reported as not delivered. Status still flips above (the
+    # response's email_sent keeps the UI honest); only the stamp is gated.
+    if email_sent:
+        invoice.sent_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(invoice)
 
     payload = _serialize_invoice(invoice)
     payload["email_sent"] = email_sent

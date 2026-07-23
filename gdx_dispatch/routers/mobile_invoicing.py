@@ -554,9 +554,11 @@ def mobile_create_invoice(
 
     # Optionally send the invoice email immediately (S2-B2).
     if payload.send_email:
-        _send_invoice_email(db, invoice, tenant_id=tenant_id)
+        delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
         transition_invoice_status(db, invoice, "sent")  # GL S5: P1 posts here when the flag is on
-        invoice.sent_at = datetime.now(UTC)
+        # sent_at = delivery fact ("Last Sent" in Billing), not attempt fact.
+        if delivered:
+            invoice.sent_at = datetime.now(UTC)
         db.commit()
         db.refresh(invoice)
 
@@ -569,12 +571,15 @@ def _send_invoice_email(
     *,
     tenant_id: str,
     user_id: str | None = None,
-) -> None:
+) -> bool:
     """Send the invoice email to the customer, if email available.
 
     Mirrors the path in invoices.send_estimate (lines 743–795) but for
     invoices. Failures are logged not raised — invoice creation already
     succeeded; "email failed" must not undo the financial record.
+
+    Returns True only when a provider acknowledged delivery, so callers can
+    gate the sent_at stamp on a real send instead of an attempt.
     """
     try:
         cust = None
@@ -587,7 +592,7 @@ def _send_invoice_email(
             ).scalar_one_or_none()
         if cust is None or not cust.email:
             log.info("mobile_invoice_email_skipped no_customer_email invoice=%s", invoice.id)
-            return
+            return False
 
         from gdx_dispatch.core.transactional_email import send_transactional_email
         try:
@@ -682,7 +687,7 @@ def _send_invoice_email(
                 f"<p>Due {invoice.due_date.isoformat() if invoice.due_date else 'on receipt'}.</p>"
                 + (f'<p><a href="{pay_url}">Pay this invoice online</a></p>' if pay_url else "")
             )
-        send_transactional_email(
+        sent, _provider, _skip_reason = send_transactional_email(
             tenant_db=db,
             tenant_id=str(tenant_id),
             user_id=str(user_id) if user_id else None,
@@ -692,8 +697,10 @@ def _send_invoice_email(
             html_body=html,
             attachments=attachments,
         )
+        return bool(sent)
     except Exception:
         log.exception("mobile_invoice_email_failed invoice=%s", invoice.id)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +715,9 @@ def mobile_send_invoice(
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    """Re-send the invoice email (idempotent — updates sent_at)."""
+    """Re-send the invoice email. Stamps sent_at only when a provider
+    acknowledged delivery; the response carries email_sent so the tech
+    console can be honest about non-delivery."""
     invoice = db.execute(
         select(Invoice).where(Invoice.id == _UUID(invoice_id), Invoice.deleted_at.is_(None))
     ).scalar_one_or_none()
@@ -726,10 +735,11 @@ def mobile_send_invoice(
     if invoice.status == "void":
         return _jr({"detail": "invoice is void — it cannot be re-sent"}, 409)
 
-    _send_invoice_email(db, invoice, tenant_id=tenant_id)
+    delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
     if invoice.status == "draft":
         transition_invoice_status(db, invoice, "sent")  # GL S5
-    invoice.sent_at = datetime.now(UTC)
+    if delivered:
+        invoice.sent_at = datetime.now(UTC)
     db.commit()
     db.refresh(invoice)
 
@@ -744,7 +754,9 @@ def mobile_send_invoice(
         request=request,
     )
     db.commit()
-    return _jr(_serialize_invoice(invoice))
+    resend_payload = _serialize_invoice(invoice)
+    resend_payload["email_sent"] = bool(delivered)
+    return _jr(resend_payload)
 
 
 # ---------------------------------------------------------------------------
