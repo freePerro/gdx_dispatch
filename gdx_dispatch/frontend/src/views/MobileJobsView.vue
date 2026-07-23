@@ -2,7 +2,7 @@
     <section class="mobile-jobs">
       <header class="mobile-page-head">
         <div class="head-row">
-          <h1>My Jobs</h1>
+          <h1>{{ scope === 'company' ? 'All Jobs' : 'My Jobs' }}</h1>
           <Button
             v-if="canCreateJob"
             label="New"
@@ -10,6 +10,20 @@
             size="small"
             data-testid="mobile-jobs-new-btn"
             @click="createJob"
+          />
+        </div>
+        <!-- Company-wide scope (2026-07-22): only rendered when the tenant
+             option (or a dispatch role) allows it — the server 403s the
+             company fetch otherwise, so this toggle is presentation only. -->
+        <div v-if="allJobsEnabled" class="scope-row" data-testid="mobile-jobs-scope">
+          <SelectButton
+            v-model="scope"
+            :options="SCOPE_OPTIONS"
+            optionLabel="label"
+            optionValue="value"
+            :allowEmpty="false"
+            aria-label="Job scope"
+            @update:modelValue="load"
           />
         </div>
         <div class="filter-row">
@@ -49,7 +63,15 @@
         />
       </div>
 
-      <ol v-else class="job-list">
+      <template v-else>
+        <p
+          v-if="scope === 'company' && truncated"
+          class="truncated-note"
+          data-testid="mobile-jobs-truncated"
+        >
+          Showing the most recent jobs — older ones are cut off. Use desktop for the full list.
+        </p>
+        <ol class="job-list">
         <li v-for="job in visibleJobs" :key="job.id">
           <!-- 2026-07-16: cards used to be display-only — a tech had NO path
                from this list to notes/phone/description. The whole card is
@@ -70,6 +92,15 @@
               <i class="pi pi-calendar" />
               {{ formatScheduled(job.scheduled_at) }}
             </div>
+            <!-- Whose job? Only meaningful company-wide; in "mine" it's you. -->
+            <div
+              v-if="scope === 'company' && job.assigned_tech_name"
+              class="job-tech"
+              data-testid="mobile-job-tech"
+            >
+              <i class="pi pi-user" />
+              {{ job.assigned_tech_name }}
+            </div>
             <div
               class="job-address"
               :class="{ 'job-address-missing': !job.customer_address }"
@@ -84,6 +115,7 @@
           </router-link>
         </li>
       </ol>
+      </template>
 
       <MobileJobNewDialog v-model:visible="newDialogOpen" @created="onJobCreated" />
     </section>
@@ -120,7 +152,17 @@ const FILTER_OPTIONS = [
   { label: 'Done', value: 'done' },
   { label: 'All', value: 'all' },
 ]
+const SCOPE_OPTIONS = [
+  { label: 'My jobs', value: 'mine' },
+  { label: 'All jobs', value: 'company' },
+]
 const filter = ref('active')
+// 'mine' | 'company'. The company option only renders once the server has
+// said allJobsEnabled (tenant setting tech_mobile.techs_see_all_jobs, or a
+// dispatch-manager role) — and the server re-checks on every company fetch.
+const scope = ref('mine')
+const allJobsEnabled = ref(false)
+const truncated = ref(false)
 const loading = ref(true)
 const error = ref(null)
 const jobs = ref([])
@@ -128,8 +170,13 @@ const jobs = ref([])
 async function load() {
   loading.value = true
   error.value = null
+  let retrying = false
   try {
-    const r = await api.get('/api/mobile/jobs')
+    const r = await api.get(
+      scope.value === 'company' ? '/api/mobile/jobs?scope=company' : '/api/mobile/jobs'
+    )
+    allJobsEnabled.value = Boolean(r?.all_jobs_enabled)
+    truncated.value = Boolean(r?.truncated)
     jobs.value = (r?.jobs || r || []).map((j) => ({
       ...j,
       customer_name: j.customer_name || j.customer?.name || '',
@@ -137,8 +184,20 @@ async function load() {
     }))
   } catch (err) {
     error.value = err?.message || 'Could not load jobs'
+    // A 403 here means the tenant option was turned off mid-session —
+    // drop back to the personal list instead of stranding an error state.
+    // Cannot loop: scope is forced to 'mine' before the retry, and this
+    // branch requires scope === 'company'.
+    if (scope.value === 'company' && err?.status === 403) {
+      scope.value = 'mine'
+      allJobsEnabled.value = false
+      retrying = true
+      return load()
+    }
   } finally {
-    loading.value = false
+    // Skip the spinner reset when handing off to the retry — it manages
+    // its own loading lifecycle (else the spinner dies mid-retry).
+    if (!retrying) loading.value = false
   }
 }
 
@@ -152,8 +211,11 @@ const visibleJobs = computed(() => {
 })
 
 const emptyTitle = computed(() => {
+  if (scope.value === 'company') return 'No jobs in the company yet'
   if (filter.value === 'done') return 'Nothing closed yet'
-  if (filter.value === 'all') return 'No jobs assigned'
+  // "No jobs assigned" was a lie for creators: jobs you create show here
+  // (until dispatch assigns them), not only jobs assigned to you.
+  if (filter.value === 'all') return 'No jobs yet'
   return 'No active jobs'
 })
 
@@ -196,6 +258,11 @@ onMounted(load)
 .filter-row { display: flex; }
 .filter-row :deep(.p-selectbutton) { display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100%; }
 .filter-row :deep(.p-selectbutton .p-button) { padding-block: 0.5rem; }
+.scope-row { display: flex; }
+.scope-row :deep(.p-selectbutton) { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+.scope-row :deep(.p-selectbutton .p-button) { padding-block: 0.45rem; }
+.job-tech { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
+.truncated-note { margin: 0 0 0.6rem; font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280); font-style: italic; }
 .job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .job-card {
   background: var(--p-content-background, #fff);

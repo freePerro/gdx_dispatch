@@ -100,4 +100,54 @@ describe('MobileJobsView "+ New Job" affordance', () => {
 
     expect(apiGet).toHaveBeenCalledWith('/api/mobile/jobs');
   });
+
+  // ─── Company-wide scope (2026-07-22) ──────────────────────────────────
+
+  it('hides the scope switch when the server says all_jobs_enabled=false', async () => {
+    apiGet.mockResolvedValue({ jobs: [], all_jobs_enabled: false });
+    const wrapper = mount(MobileJobsView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mobile-jobs-scope"]').exists()).toBe(false);
+  });
+
+  it('shows the switch when enabled and fetches ?scope=company on flip', async () => {
+    apiGet.mockResolvedValue({ jobs: [], all_jobs_enabled: true });
+    const wrapper = mount(MobileJobsView, { global: { stubs: scopeStubs } });
+    await flushPromises();
+
+    const row = wrapper.find('[data-testid="mobile-jobs-scope"]');
+    expect(row.exists()).toBe(true);
+
+    apiGet.mockClear();
+    apiGet.mockResolvedValue({
+      jobs: [{ id: 'j1', title: 'X', dispatch_status: 'assigned', assigned_tech_name: 'Bob Tech' }],
+      all_jobs_enabled: true,
+      scope: 'company',
+    });
+    await row.find('[data-value="company"]').trigger('click');
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/api/mobile/jobs?scope=company');
+    // Company scope shows whose job each card is.
+    expect(wrapper.find('[data-testid="mobile-job-tech"]').text()).toContain('Bob Tech');
+    // Header flips to make the wider scope obvious.
+    expect(wrapper.find('h1').text()).toBe('All Jobs');
+  });
 });
+
+// SelectButton stub that actually emits selections, for the scope tests.
+const scopeStubs = {
+  ...stubs,
+  SelectButton: {
+    props: ['modelValue', 'options', 'optionLabel', 'optionValue', 'allowEmpty'],
+    emits: ['update:modelValue'],
+    template: `<div>
+      <button
+        v-for="o in options"
+        :key="o.value"
+        :data-value="o.value"
+        @click="$emit('update:modelValue', o.value)"
+      >{{ o.label }}</button>
+    </div>`,
+  },
+};

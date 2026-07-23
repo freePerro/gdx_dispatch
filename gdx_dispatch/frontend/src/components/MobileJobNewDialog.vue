@@ -35,6 +35,12 @@ import PhoneInput from './PhoneInput.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
+  // Optional pre-picked customer (e.g. "New job" from MobileCustomerDetailView
+  // — the tech is already looking at the customer; making them re-search the
+  // same person was the "pain to search customers" complaint). Applied in the
+  // open watcher BETWEEN _resetForm() and snapshot() so the dialog opens
+  // pristine (see the audit note there).
+  customer: { type: Object, default: null },
 })
 const emit = defineEmits(['update:visible', 'created'])
 
@@ -67,10 +73,19 @@ let _searchTimer = null
 // `q="aab"` response, leaving a stale option list under a fresh query.
 let _customerSearchSeq = 0
 const newCust = reactive({ name: '', phone: '', email: '', address: '' })
+// True once a search round-trip has completed for the CURRENT query text —
+// gates the "no matches → add as new customer" row so it can't flash during
+// the debounce window before the first fetch has answered.
+const searchDone = ref(false)
 
 watch(customerSearch, (q) => {
   if (newCustomer.value) return
+  // pickCustomer() writes the picked name back into the input; without this
+  // guard that programmatic write re-triggered the search and the dropdown
+  // popped back up over the picked chip 250ms after every pick.
+  if (selectedCustomer.value && q === (selectedCustomer.value.name || '')) return
   if (_searchTimer) clearTimeout(_searchTimer)
+  searchDone.value = false
   if (!q || q.trim().length < 2) {
     customerOptions.value = []
     return
@@ -82,14 +97,40 @@ watch(customerSearch, (q) => {
       const r = await api.get(`/api/customers/search?q=${encodeURIComponent(q.trim())}`)
       if (seq !== _customerSearchSeq) return  // a newer query has been issued
       customerOptions.value = Array.isArray(r) ? r : (r?.items || [])
+      searchDone.value = true
     } catch {
       if (seq !== _customerSearchSeq) return
       customerOptions.value = []
+      searchDone.value = true
     } finally {
       if (seq === _customerSearchSeq) customerSearching.value = false
     }
   }, 250)
 })
+
+// Zero-result dead end (2026-07-22): the old UI offered nothing when a
+// search came up empty — the tech had to notice the small "Create new"
+// toggle. This surfaces the escape hatch right where their eyes are.
+const showNoResultsAdd = computed(() =>
+  !newCustomer.value
+  && !selectedCustomer.value
+  && searchDone.value
+  && !customerSearching.value
+  && customerSearch.value.trim().length >= 2
+  && customerOptions.value.length === 0
+)
+
+function startNewCustomerFromSearch() {
+  const q = customerSearch.value.trim()
+  newCustomer.value = true
+  const digits = q.replace(/\D/g, '')
+  // A digits-ish query is a phone number off caller ID, not a name.
+  if (digits.length >= 7 && /^[\d\s().+-]+$/.test(q)) {
+    newCust.phone = digits
+  } else {
+    newCust.name = q
+  }
+}
 
 function pickCustomer(c) {
   selectedCustomer.value = c
@@ -309,8 +350,8 @@ async function submit() {
         severity: 'success',
         summary: 'Job created',
         detail: partsToSubmit.length
-          ? `Added ${partsToSubmit.length} part${partsToSubmit.length === 1 ? '' : 's'}.`
-          : 'Open the list to see it.',
+          ? `Added ${partsToSubmit.length} part${partsToSubmit.length === 1 ? '' : 's'}. Dispatch will schedule it.`
+          : 'It stays in your Jobs list until dispatch assigns it.',
         life: 3000,
       })
     }
@@ -327,6 +368,7 @@ function _resetForm() {
   newCustomer.value = false
   customerSearch.value = ''
   customerOptions.value = []
+  searchDone.value = false
   selectedCustomer.value = null
   newCust.name = ''
   newCust.phone = ''
@@ -370,9 +412,18 @@ function requestCancel() {
 
 // immediate: the dialog can be mounted already-visible; the pristine
 // snapshot must exist before the first user keystroke either way.
+// ORDER MATTERS: the customer preseed must land BETWEEN _resetForm() and
+// snapshot(). Earlier → _resetForm wipes it; later (e.g. a prop watcher) →
+// the dialog is born dirty, which disables X/Esc and throws a phantom
+// "Discard this new job?" at a tech who typed nothing (/audit 2026-07-22
+// predicted exactly this bug).
 watch(open, async (v) => {
   if (v) {
     _resetForm()
+    if (props.customer?.id) {
+      selectedCustomer.value = { ...props.customer }
+      customerSearch.value = props.customer.name || ''
+    }
     snapshot()
     await nextTick()
     titleInput.value?.$el?.focus?.()
@@ -422,6 +473,16 @@ watch(open, async (v) => {
               <span v-if="c.phone" class="muted"> · {{ formatPhone(c.phone) }}</span>
             </li>
           </ul>
+          <button
+            v-if="showNoResultsAdd"
+            type="button"
+            class="no-results-add"
+            data-testid="mjn-no-results-add"
+            @click="startNewCustomerFromSearch"
+          >
+            <i class="pi pi-user-plus" />
+            <span>No matches — add “{{ customerSearch.trim() }}” as a new customer</span>
+          </button>
           <div
             v-if="selectedCustomer"
             class="picked"
@@ -717,6 +778,24 @@ watch(open, async (v) => {
 .suggest-item:last-child { border-bottom: 0; }
 .suggest-item:hover, .suggest-item:active {
   background: var(--p-highlight-background, #f3f4f6);
+}
+
+.no-results-add {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.65rem 0.75rem;
+  min-height: 44px;
+  border: 1px dashed var(--p-primary-300, #a5b4fc);
+  border-radius: 0.5rem;
+  background: var(--p-primary-50, #eef2ff);
+  color: var(--p-primary-color, #4338ca);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
 }
 
 .picked {

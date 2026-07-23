@@ -21,6 +21,18 @@ vi.mock('../../composables/useApi', () => ({
 
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 
+// 2026-07-22 "New job" quick action: the view now imports usePermission
+// (which reads the Pinia auth store) — mock it like the dialog spec does.
+const hasPermission = vi.fn(() => true);
+vi.mock('../../composables/usePermission', () => ({
+  usePermission: () => ({
+    hasPermission,
+    permissions: { value: ['jobs.write'] },
+    permissionsLoaded: { value: true },
+    reloadPermissions: vi.fn(),
+  }),
+}));
+
 const routerPush = vi.fn();
 const routerBack = vi.fn();
 vi.mock('vue-router', () => ({
@@ -40,6 +52,13 @@ const stubs = {
   Dialog: { props: ['visible'], template: '<div v-if="visible"><slot /><slot name="footer" /></div>' },
   InputText: { props: ['modelValue'], template: '<input :value="modelValue" />' },
   Textarea: { props: ['modelValue'], template: '<textarea :value="modelValue"></textarea>' },
+  // The embedded new-job dialog has its own spec; here it just needs to
+  // mount quietly and surface its open state.
+  MobileJobNewDialog: {
+    props: ['visible', 'customer'],
+    emits: ['update:visible', 'created'],
+    template: '<div v-if="visible" data-test="stub-new-job-dialog">{{ customer && customer.name }}</div>',
+  },
 };
 
 const customerFixture = {
@@ -134,6 +153,40 @@ describe('MobileCustomerDetailView', () => {
     expect(wrapper.find('[data-test="mcd-call"]').classes()).toContain('disabled');
     expect(wrapper.find('[data-test="mcd-email"]').classes()).toContain('disabled');
     expect(wrapper.find('[data-test="mcd-navigate"]').classes()).toContain('disabled');
+  });
+
+  it('New job quick action opens the dialog preseeded with this customer', async () => {
+    // 2026-07-22: closes the create-customer → create-job loop; the tech
+    // never re-searches the person they're already looking at.
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+      return Promise.resolve([]);
+    });
+
+    const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="stub-new-job-dialog"]').exists()).toBe(false);
+    await wrapper.find('[data-test="mcd-new-job"]').trigger('click');
+
+    const dlg = wrapper.find('[data-test="stub-new-job-dialog"]');
+    expect(dlg.exists()).toBe(true);
+    expect(dlg.text()).toContain('Jeff Johnson');
+  });
+
+  it('New job quick action hidden without jobs.write', async () => {
+    hasPermission.mockReturnValue(false);
+    try {
+      apiGet.mockImplementation((url) => {
+        if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+        return Promise.resolve([]);
+      });
+      const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="mcd-new-job"]').exists()).toBe(false);
+    } finally {
+      hasPermission.mockReturnValue(true);
+    }
   });
 
   it('shows error state and retry when customer fetch fails', async () => {

@@ -82,6 +82,46 @@ async def invalidate(tenant_id: str, key: str) -> None:
         log.debug("cache INVALIDATE error for %s — skipping", cache_key, exc_info=True)
 
 
+async def invalidate_prefix(tenant_id: str, prefix: str) -> None:
+    """Drop every cache entry whose key starts with *prefix* for the tenant.
+
+    Needed where the cached key space fans out over query params (e.g. the
+    customers list caches per ``q``/``page``/``per_page``) and a mutation
+    must clear the whole family. The scan pattern stays anchored to one
+    tenant + one logical endpoint, so the iteration is over a handful of
+    keys, not the keyspace. Safe when Redis is down — errors swallowed,
+    same contract as :func:`invalidate`.
+    """
+    pattern = f"cache:{tenant_id}:{prefix}*"
+    try:
+        redis = get_redis_client()
+        async for key in redis.scan_iter(match=pattern, count=100):
+            await redis.delete(key)
+        log.debug("cache INVALIDATE-PREFIX %s", pattern)
+    except Exception:
+        log.debug("cache INVALIDATE-PREFIX error for %s — skipping", pattern, exc_info=True)
+
+
+def invalidate_prefix_sync(tenant_id: str, prefix: str) -> None:
+    """Sync fire-and-forget wrapper for :func:`invalidate_prefix` — for
+    sync handlers (e.g. ``merge_customers``), mirroring invalidate_sync."""
+    import asyncio
+
+    coro = invalidate_prefix(tenant_id, prefix)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(coro)
+        except Exception:
+            log.debug("invalidate_prefix_sync run-loop error — skipping", exc_info=True)
+        return
+    try:
+        loop.create_task(coro)
+    except Exception:
+        log.debug("invalidate_prefix_sync schedule error — skipping", exc_info=True)
+
+
 def invalidate_sync(tenant_id: str, key: str) -> None:
     """Sync wrapper around :func:`invalidate` for sync handlers.
 

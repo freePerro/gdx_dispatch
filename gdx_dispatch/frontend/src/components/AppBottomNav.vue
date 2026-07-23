@@ -154,12 +154,19 @@ const tabItems = computed(() => {
         // Photos takes the primary slot, Profile demotes to More.
         { key: 'today', label: 'Today', icon: 'pi pi-calendar', to: '/mobile' },
         { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/mobile/jobs' },
+        // 2026-07-22 (Doug: "pain to add/search customers on mobile"):
+        // Customers was reserved out of the More drawer (reservedKeys) but
+        // its tab never got added — it was unreachable from the bottom nav
+        // entirely. Both role rows get the tab; the grid CSS is
+        // count-agnostic (grid-auto-columns) so 6 tabs lay out evenly.
+        { key: 'customers', label: 'Customers', icon: 'pi pi-users', to: '/mobile/customers' },
         { key: 'timeclock', label: 'Clock', icon: 'pi pi-clock', to: '/mobile/timeclock' },
         { key: 'photos', label: 'Photos', icon: 'pi pi-images', to: '/photos' },
         { key: 'more', label: 'More', icon: 'pi pi-ellipsis-h', to: '' },
       ]
     : [
         { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/mobile/jobs' },
+        { key: 'customers', label: 'Customers', icon: 'pi pi-users', to: '/mobile/customers' },
         { key: 'timeclock', label: 'Clock', icon: 'pi pi-clock', to: '/mobile/timeclock' },
         { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/mobile/planner' },
         { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/mobile/dispatch' },
@@ -285,7 +292,10 @@ function handleTab(item) {
   bottom: 0;
   height: var(--bottom-nav-height);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Count-agnostic: every direct child gets an equal column, so adding a
+     tab (Customers, 2026-07-22) doesn't leave a dead 6th-of-the-bar. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   background: var(--surface-header);
   border-top: 1px solid var(--border-subtle);
   z-index: 120;
@@ -300,6 +310,25 @@ function handleTab(item) {
   gap: 0.125rem;
   font-size: 0.6875rem;
   cursor: pointer;
+  /* 6 tabs at 360px = 60px each; "Customers" must ellipsize, not wrap
+     or blow the column width. */
+  min-width: 0;
+}
+
+.tab-btn span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 6 tabs on a narrow phone: 390px/6 = 65px columns. "Customers" at the
+   default 11px measures ~72px and ellipsizes ("Custom…"); at 10px it
+   measures 48px and fits. Verified against the rendered DOM 2026-07-22. */
+@media (max-width: 430px) {
+  .tab-btn {
+    font-size: 0.625rem;
+  }
 }
 
 .tab-btn i {

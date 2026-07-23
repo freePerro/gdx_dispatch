@@ -324,6 +324,125 @@ describe('MobileJobNewDialog', () => {
     }
   });
 
+  // ─── 2026-07-22 mobile customer/job fix ───────────────────────────────
+
+  it('zero-result search offers "add as new customer" and prefills the name', async () => {
+    apiGet.mockResolvedValue([]);
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-customer-search', 'Zelda Nobody');
+    vi.advanceTimersByTime(300);
+    await flushPromises();
+
+    const addBtn = wrapper.find('[data-testid="mjn-no-results-add"]');
+    expect(addBtn.exists()).toBe(true);
+    expect(addBtn.text()).toContain('Zelda Nobody');
+
+    await addBtn.trigger('click');
+    // Toggle flipped: new-customer form visible, name prefilled from query.
+    const nameField = wrapper.find('[data-testid="mjn-newcust-name"]');
+    expect(nameField.exists()).toBe(true);
+    expect(nameField.element.value).toBe('Zelda Nobody');
+  });
+
+  it('zero-result digits search prefills phone, not name', async () => {
+    apiGet.mockResolvedValue([]);
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-customer-search', '(612) 555-1234');
+    vi.advanceTimersByTime(300);
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mjn-no-results-add"]').trigger('click');
+    expect(wrapper.find('[data-testid="mjn-newcust-phone"]').element.value).toBe('6125551234');
+    expect(wrapper.find('[data-testid="mjn-newcust-name"]').element.value).toBe('');
+  });
+
+  it('does not show the add-as-new row before the search settles', async () => {
+    apiGet.mockResolvedValue([]);
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-customer-search', 'Ze');
+    // Debounce window still open — no fetch yet, so no "no matches" claim.
+    expect(wrapper.find('[data-testid="mjn-no-results-add"]').exists()).toBe(false);
+  });
+
+  it('customer prop preseeds the pick and the dialog opens CLEAN', async () => {
+    // /audit 2026-07-22 predicted the shipped bug this pins: a preseed
+    // applied outside the _resetForm()→snapshot() window makes the dialog
+    // born-dirty — Cancel throws a phantom "Discard this new job?" at a
+    // tech who typed nothing. Clean = Cancel closes with NO confirm.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      const wrapper = mount(MobileJobNewDialog, {
+        props: {
+          visible: true,
+          customer: { id: 'cust-9', name: 'Preseed Person', phone: '555-0009' },
+        },
+        global: { stubs },
+      });
+      await flushPromises();
+
+      const picked = wrapper.find('[data-testid="mjn-customer-picked"]');
+      expect(picked.exists()).toBe(true);
+      expect(picked.text()).toContain('Preseed Person');
+
+      await wrapper.find('[data-testid="mjn-cancel"]').trigger('click');
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(wrapper.emitted('update:visible').at(-1)).toEqual([false]);
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('preseeded customer flows into the job payload without any search', async () => {
+    apiPost.mockImplementation((url) => {
+      if (url === '/api/jobs') return Promise.resolve({ id: 'job-9' });
+      return Promise.resolve({});
+    });
+    const wrapper = mount(MobileJobNewDialog, {
+      props: {
+        visible: true,
+        customer: { id: 'cust-9', name: 'Preseed Person' },
+      },
+      global: { stubs },
+    });
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-job-title', 'Panel replacement');
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiGet).not.toHaveBeenCalledWith(expect.stringMatching(/^\/api\/customers\/search/));
+    expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
+      customer_id: 'cust-9',
+    }));
+  });
+
+  it('picking a customer does not re-open the dropdown from the name echo', async () => {
+    // pickCustomer() writes the name back into the search input; the watcher
+    // used to re-fire on that programmatic write and pop the dropdown back
+    // up over the picked chip 250ms later.
+    apiGet.mockResolvedValue([{ id: 'cust-e', name: 'Echo Co', phone: '555-1000' }]);
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-customer-search', 'Echo');
+    vi.advanceTimersByTime(300);
+    await flushPromises();
+    await wrapper.find('[data-testid="mjn-customer-option"]').trigger('click');
+
+    apiGet.mockClear();
+    vi.advanceTimersByTime(500);
+    await flushPromises();
+
+    expect(apiGet).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="mjn-customer-option"]').exists()).toBe(false);
+  });
+
   it('SKU autocomplete pulls suggestions from /api/parts-needed/sku-suggest', async () => {
     apiGet.mockImplementation((url) => {
       if (url.startsWith('/api/parts-needed/sku-suggest')) {
