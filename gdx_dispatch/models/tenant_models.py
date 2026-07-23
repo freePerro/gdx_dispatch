@@ -282,6 +282,11 @@ class Job(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now())
+    # 2026-07-22 (035_job_created_by): users.id of whoever POSTed the job.
+    # Grants list/detail visibility to the creator ONLY while the job is
+    # unassigned — never write access (jobs.assigned_to & job_assignments
+    # stay the write-authorization source of truth in core/job_access.py).
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     # -- columns from production schema not yet in ORM --
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -437,3 +437,67 @@ async def test_create_customer_location_customer_not_found(tenant_db_session):
             db=tenant_db_session,
         )
     assert getattr(exc.value, "status_code", None) == 404
+
+
+# ─── Mobile customer-search fix (2026-07-22) ────────────────────────────────
+# Doug: "it is a pain to search customers [on mobile]". The mobile job
+# dialog uses GET /api/customers/search, which lacked the digit-stripped
+# phone matching that list_customers got — a tech typing digits off caller
+# ID against formatted stored numbers matched nothing. It also skipped the
+# legacy "(deleted)"-name filter the list applies.
+
+
+async def test_search_endpoint_digits_query_matches_formatted_phone(tenant_db_session):
+    _seed_customer(tenant_db_session, name="Formatted Mobile", phone="(612) 555-1234")
+    _seed_customer(tenant_db_session, name="Other Number", phone="555-999-0000")
+
+    hits = await search_customers(q="6125551234", _={}, db=tenant_db_session)
+    assert [c.name for c in hits] == ["Formatted Mobile"]
+
+    # No false positives on a non-matching digit string.
+    misses = await search_customers(q="6120000001", _={}, db=tenant_db_session)
+    assert misses == []
+
+
+async def test_search_endpoint_short_digit_queries_unchanged(tenant_db_session):
+    # <7 digits: the stripped-phone clause must NOT kick in (parity with
+    # list_customers) — plain substring semantics still apply.
+    _seed_customer(tenant_db_session, name="Area Code Only", phone="(612) 555-1234")
+    hits = await search_customers(q="612", _={}, db=tenant_db_session)
+    # "612" appears literally in the formatted phone, so plain LIKE finds it —
+    # the point is no error and no digit-stripping surprises.
+    assert [c.name for c in hits] == ["Area Code Only"]
+
+
+async def test_search_endpoint_excludes_deleted_marker_names(tenant_db_session):
+    _seed_customer(tenant_db_session, name="Keep Me", phone="555-0001")
+    _seed_customer(tenant_db_session, name="Old Row (deleted)", phone="555-0002")
+
+    hits = await search_customers(q="row", _={}, db=tenant_db_session)
+    assert all("(deleted)" not in c.name.lower() for c in hits)
+    assert [c.name for c in hits] == []
+
+
+async def test_list_customers_bypasses_cache_for_searches(tenant_db_session, monkeypatch):
+    """Search staleness fix: q≠'' must go straight to the DB (no 30s cache
+    window right when someone is checking whether their new customer
+    saved). q='' keeps the cached() path."""
+    import gdx_dispatch.routers.customers as customers_mod
+
+    calls: list[str] = []
+
+    async def _spy_cached(tenant_id, key, ttl_seconds, fetcher):
+        calls.append(key)
+        result = fetcher()
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
+
+    monkeypatch.setattr(customers_mod, "cached", _spy_cached)
+    _seed_customer(tenant_db_session, name="Cachey", phone="555-4242")
+
+    await list_customers(request=_mock_request(), q="cachey", page=1, per_page=50, _={}, db=tenant_db_session)
+    assert calls == [], "search queries must not flow through cached()"
+
+    await list_customers(request=_mock_request(), q=None, page=1, per_page=50, _={}, db=tenant_db_session)
+    assert len(calls) == 1, "the q='' default list should still be cached"

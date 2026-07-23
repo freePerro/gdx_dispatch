@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
-from gdx_dispatch.core.cache import cached
+from gdx_dispatch.core.cache import cached, invalidate_prefix, invalidate_prefix_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_redact import redact_email
 from gdx_dispatch.core.modules import require_module
@@ -309,7 +309,15 @@ async def list_customers(
             "per_page": per_page,
         }
 
-    data = await cached(tenant_id, cache_key, ttl_seconds=30, fetcher=_fetch)
+    # Searches bypass the cache entirely: they're cheap LIKEs over a
+    # few-hundred-row single-tenant table, and a 30 s stale window mid-typing
+    # is exactly the "did my new customer save?" confusion (2026-07-22 mobile
+    # fix). Only the q='' default list is worth caching — and mutations
+    # invalidate that family via invalidate_prefix("customers:q=:").
+    if q:
+        data = _fetch()
+    else:
+        data = await cached(tenant_id, cache_key, ttl_seconds=30, fetcher=_fetch)
     return CustomerListOut(
         items=[CustomerOut(**item) for item in data["items"]],
         total=data["total"],
@@ -369,6 +377,11 @@ async def create_customer(
     db.commit()
     log.info("customer_created", extra={"customer_id": customer_id})
 
+    # Bust the cached q='' list so the new customer shows up immediately —
+    # a 30 s stale window right after "Create" reads as "it didn't save"
+    # (2026-07-22 mobile fix). Searches (q≠'') are uncached.
+    await invalidate_prefix(_tenant_id(request), "customers:q=:")
+
     return CustomerOut(**_customer_dict(customer))
 
 
@@ -379,14 +392,29 @@ async def search_customers(
     db: Session = Depends(get_db),
 ) -> list[CustomerOut]:
     like_q = f"%{q.lower()}%"
+    match = (
+        func.lower(func.coalesce(Customer.name, "")).like(like_q)
+        | func.lower(func.coalesce(Customer.email, "")).like(like_q)
+        | func.lower(func.coalesce(Customer.phone, "")).like(like_q)
+    )
+    # Phone parity with list_customers (2026-07-22): numbers are stored
+    # formatted ("(612) 555-1234") but a tech types digits off caller ID —
+    # plain LIKE never matches, which is why phone search "didn't work" in
+    # the mobile job dialog. Compare against a separator-stripped phone via
+    # chained replace() (portable to sqlite tests + Postgres prod).
+    q_digits = "".join(ch for ch in q if ch.isdigit())
+    if len(q_digits) >= 7:
+        stripped_phone = Customer.phone
+        for sep in (" ", "-", "(", ")", ".", "+"):
+            stripped_phone = func.replace(stripped_phone, sep, "")
+        match = match | stripped_phone.like(f"%{q_digits}%")
     rows = db.execute(
         select(Customer).where(
             Customer.deleted_at.is_(None),
-            (
-                func.lower(func.coalesce(Customer.name, "")).like(like_q)
-                | func.lower(func.coalesce(Customer.email, "")).like(like_q)
-                | func.lower(func.coalesce(Customer.phone, "")).like(like_q)
-            ),
+            # Same legacy-data filter as list_customers: old rows carry a
+            # "(deleted)" name marker instead of deleted_at.
+            ~func.lower(func.coalesce(Customer.name, "")).like("%(deleted)%"),
+            match,
         ).order_by(Customer.name.asc()).limit(50)
     ).scalars().all()
     return [CustomerOut(**_customer_dict(r)) for r in rows]
@@ -515,6 +543,7 @@ async def update_customer(
         )
         db.commit()
 
+    await invalidate_prefix(_tenant_id(request), "customers:q=:")
     return CustomerOut(**_customer_dict(customer))
 
 
@@ -561,6 +590,7 @@ async def delete_customer(
         request=request,
     )
     db.commit()
+    await invalidate_prefix(_tenant_id(request), "customers:q=:")
     return Response(status_code=204)
 
 
@@ -1140,6 +1170,9 @@ def merge_customers(
         "customers_merged",
         extra={"keep_id": payload.keep_id, "merged_count": len(payload.merge_ids)},
     )
+    # Sync handler → fire-and-forget wrapper (merge soft-deletes losers,
+    # so the cached q='' list would show them for another 30 s otherwise).
+    invalidate_prefix_sync(_tenant_id(request), "customers:q=:")
     return MergeOut(
         keep_id=payload.keep_id,
         merged_count=len(payload.merge_ids),

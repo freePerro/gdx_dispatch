@@ -303,6 +303,52 @@ def _assert_job_access(db: Session, request: Request, current_user: Any, job_id:
         raise HTTPException(status_code=404, detail="job not found")
 
 
+def _creator_can_read(db: Session, tenant_id: str, job_id: str, user_id: str | None) -> bool:
+    """True while a job the caller created is still unassigned. Deliberately
+    NOT part of job_belongs_to_user: that helper is the WRITE gate for
+    start/complete/clock/status endpoints, and the creator must never keep a
+    pass-through onto a job dispatch has assigned to someone else (clock data
+    is payroll evidence). The moment assigned_to or a live job_assignments
+    row exists, this returns False and normal assignment rules are the only
+    path in. 2026-07-22 /audit of the mobile job-create fix demanded the
+    read/write split."""
+    if not job_id or not user_id:
+        return False
+    return bool(
+        db.execute(
+            _text(
+                "SELECT 1 FROM jobs j "
+                "WHERE j.id = :j AND j.company_id = :t AND j.deleted_at IS NULL "
+                "AND CAST(j.created_by AS TEXT) = :u "
+                "AND j.assigned_to IS NULL "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM job_assignments ja "
+                "  WHERE CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) "
+                "  AND ja.deleted_at IS NULL"
+                ") LIMIT 1"
+            ),
+            {"j": str(job_id), "t": tenant_id, "u": str(user_id)},
+        ).scalar()
+    )
+
+
+def _assert_job_read_access(db: Session, request: Request, current_user: Any, job_id: str) -> None:
+    """Read-only variant of _assert_job_access: assignment rules, plus the
+    creator of a still-unassigned job may view it (so a just-created job
+    from the mobile dialog can be opened from the Jobs list). Used ONLY by
+    GET endpoints — every mutating route keeps _assert_job_access."""
+    if is_dispatch_manager(current_user):
+        return
+    tenant_id = _tenant_id(request)
+    user_id = _user_id(current_user or {})
+    technician_id = _get_technician_id(db, tenant_id, user_id)
+    if _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
+        return
+    if _creator_can_read(db, tenant_id, job_id, user_id):
+        return
+    raise HTTPException(status_code=404, detail="job not found")
+
+
 def _get_technician_id(db: Session, tenant_id: str, user_id: str) -> str | None:
     row = (
         db.query(Technician.id)
@@ -1335,12 +1381,36 @@ def mobile_all_my_jobs(
     if not user_id:
         return jsonable_response({"detail": "unauthorized"}, 401)
     technician_id = _get_technician_id(db, tenant_id, user_id)
-    if not technician_id:
-        return jsonable_response({"jobs": [], "count": 0, "tech_id": None})
+
+    # Two ways a job is "mine": assigned to my technician record, or I
+    # created it and dispatch hasn't assigned it to anyone yet. The second
+    # clause is what makes a dialog-created job (no tech, no date) show up
+    # right after Create — before 2026-07-22 it vanished into the desktop
+    # "Ready to Schedule" lane and the tech concluded it never saved. The
+    # creator clause self-expires on assignment, so this list never becomes
+    # a permanent "everything I ever created" log. Callers with no
+    # technician row (e.g. an owner phone-testing) used to early-return
+    # empty; now they still see their own pending creations.
+    clauses = [
+        """(
+            CAST(j.created_by AS TEXT) = :user_id
+            AND j.assigned_to IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM job_assignments jx
+              WHERE CAST(jx.job_id AS TEXT) = CAST(j.id AS TEXT)
+              AND jx.deleted_at IS NULL
+            )
+        )"""
+    ]
+    params: dict[str, Any] = {"user_id": str(user_id)}
+    if technician_id:
+        clauses.append("CAST(j.assigned_to AS TEXT) = :tech_id")
+        clauses.append("ja.tech_id = :tech_id")
+        params["tech_id"] = str(technician_id)
 
     rows = db.execute(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
-            """
+            f"""
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
                    j.priority, j.job_type, j.created_at,
                    c.name AS customer_name,
@@ -1351,15 +1421,12 @@ def mobile_all_my_jobs(
               ON CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT)
               AND ja.deleted_at IS NULL
             WHERE j.deleted_at IS NULL
-              AND (
-                CAST(j.assigned_to AS TEXT) = :tech_id
-                OR ja.tech_id = :tech_id
-              )
+              AND ({" OR ".join(clauses)})
             ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC
             LIMIT 200
             """
         ),
-        {"tech_id": str(technician_id)},
+        params,
     ).mappings().all()
 
     jobs = []
@@ -1860,7 +1927,7 @@ def get_mobile_job_detail(
 ):
     _ = current_user
     tenant_id = _tenant_id(request)
-    _assert_job_access(db, request, current_user, job_id)
+    _assert_job_read_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)

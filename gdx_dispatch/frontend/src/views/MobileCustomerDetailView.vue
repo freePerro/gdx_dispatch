@@ -89,6 +89,20 @@
             <i class="pi pi-map-marker" />
             <span>Map</span>
           </a>
+          <!-- 2026-07-22: close the create-customer → create-job loop. The
+               dialog opens with THIS customer pre-picked, so nobody has to
+               re-find the person they're already looking at. -->
+          <button
+            v-if="canCreateJob"
+            type="button"
+            class="qa-btn qa-btn-primary"
+            aria-label="New job"
+            data-test="mcd-new-job"
+            @click="newJobOpen = true"
+          >
+            <i class="pi pi-briefcase" />
+            <span>New job</span>
+          </button>
         </div>
 
         <!-- Compact info card: phone/email/address shown inline if present. -->
@@ -347,6 +361,12 @@
           <Button label="Save" :loading="saving" :disabled="!editForm?.name?.trim()" @click="submitEdit" data-test="mcd-edit-save" />
         </template>
       </Dialog>
+
+      <MobileJobNewDialog
+        v-model:visible="newJobOpen"
+        :customer="customer"
+        @created="onJobCreatedHere"
+      />
     </section>
 </template>
 
@@ -354,9 +374,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { usePermission } from '../composables/usePermission'
 import { formatPhone } from '../composables/useFormatters'
 import { estimateStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
+import MobileJobNewDialog from '../components/MobileJobNewDialog.vue'
 
 import JobStateChip from '../components/JobStateChip.vue'
 import PhoneInput from '../components/PhoneInput.vue'
@@ -374,6 +396,18 @@ const toast = useToast()
 const customer = ref(null)
 const loading = ref(false)
 const error = ref('')
+
+// Same gate as MobileJobsView's New button — anyone with jobs.write,
+// techs included (Doug 2026-05-10).
+const { hasPermission } = usePermission()
+const canCreateJob = computed(() => hasPermission('jobs.write'))
+const newJobOpen = ref(false)
+
+function onJobCreatedHere(job) {
+  // The creator has read access to their unassigned job (2026-07-22), so
+  // land them on it — proof it saved beats a toast.
+  if (job?.id) router.push({ path: `/mobile/jobs/${job.id}` })
+}
 
 const tabs = ['Jobs', 'Estimates', 'Invoices', 'Locations', 'Notes', 'Equipment', 'Recurring', 'Communications', 'Portal']
 const activeTab = ref('Jobs')
@@ -643,9 +677,24 @@ onMounted(async () => {
 
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* auto-fit: the strip holds 4 links + the permission-gated "New job"
+     button, so the column count can't be hard-coded. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 0.4rem;
   margin-bottom: 0.75rem;
+}
+
+.qa-btn-primary {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  background: var(--p-primary-color, #2563eb);
+  color: #fff;
+}
+
+.qa-btn-primary i {
+  color: #fff;
 }
 .qa-btn {
   display: flex;

@@ -153,7 +153,9 @@ const visibleJobs = computed(() => {
 
 const emptyTitle = computed(() => {
   if (filter.value === 'done') return 'Nothing closed yet'
-  if (filter.value === 'all') return 'No jobs assigned'
+  // "No jobs assigned" was a lie for creators: jobs you create show here
+  // (until dispatch assigns them), not only jobs assigned to you.
+  if (filter.value === 'all') return 'No jobs yet'
   return 'No active jobs'
 })
 

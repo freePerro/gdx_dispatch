@@ -57,9 +57,17 @@ class JobCreate(BaseModel):
     # title: free-form, bounded against DoS. 200 chars fits the DB column.
     # status/job_type/priority are enum-ish values — tight upper bound.
     title: str | None = Field(default=None, max_length=200)
+    # 2026-07-22: the mobile dialog (and desktop create) always sent
+    # description, but pydantic silently dropped it — nothing declared the
+    # field, so typed-in descriptions were lost on every create.
+    description: str | None = Field(default=None, max_length=20000)
     customer_id: str | None = Field(default=None, max_length=36)
     scheduled_at: datetime | None = None
-    status: str = Field(default="Scheduled", min_length=1, max_length=50)
+    # No default: an omitted status must fall through to derived_status in
+    # create_job ("Service Call" for date-less jobs). The old
+    # default="Scheduled" made that derivation dead code and stamped
+    # phantom "Scheduled" on unscheduled service calls.
+    status: str | None = Field(default=None, max_length=50)
     job_type: str = Field(default="Service", min_length=1, max_length=50)
     priority: str = Field(default="Normal", min_length=1, max_length=50)
     assigned_tech_id: str | None = Field(default=None, max_length=36)
@@ -770,6 +778,8 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         job = Job(
             id=uuid.uuid4(),
             title=payload.title.strip()[:500],
+            description=(payload.description or "").strip() or None,
+            created_by=_user_id(current_user) or None,
             customer_id=uuid.UUID(payload.customer_id) if payload.customer_id else None,
             scheduled_at=payload.scheduled_at,
             status=payload.status or derived_status,
@@ -801,7 +811,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             )
         _sync_job_appointment(db, job, tenant_id, current_user, customer_name=customer_name)
         db.commit()
-        result = {"id": job.id, "title": job.title, "status": job.status, "customer_id": job.customer_id, "scheduled_at": job.scheduled_at, "created_at": job.created_at, "job_number": job.job_number}
+        result = {"id": job.id, "title": job.title, "description": job.description, "status": job.status, "customer_id": job.customer_id, "scheduled_at": job.scheduled_at, "created_at": job.created_at, "job_number": job.job_number}
         log_audit_event_sync(
             db=db,
             tenant_id=tenant_id,
