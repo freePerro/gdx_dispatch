@@ -197,10 +197,12 @@ def test_create_invoice_snapshots_estimate_hide_line_prices(tenant_db_session):
     assert created["hide_line_prices"] is True
 
     # A normal estimate (NULL override, no tenant default) → invoice shows prices.
+    # force=True: the job already carries the first invoice and the 2026-07-23
+    # double-billing guard would 409 a silent second create.
     est2 = _seed_estimate(tenant_db_session, job.id, Decimal("75.00"))
     _seed_estimate_line(tenant_db_session, est2.id, "Spring", 1, Decimal("75.00"))
     created2 = create_invoice(
-        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, estimate_id=est2.id),
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, estimate_id=est2.id, force=True),
         _=_current_user(),
         db=tenant_db_session,
     )
@@ -817,9 +819,11 @@ def test_billing_summary_excludes_drafts_from_outstanding(tenant_db_session):
         payload=InvoiceLineCreateIn(description="WIP", quantity=1, unit_price=1290.0),
         _=_current_user(), db=tenant_db_session,
     )
-    # Sent invoice — should be INCLUDED
+    # Sent invoice — should be INCLUDED. force=True: the draft above already
+    # bills the job ($>0 draft), and the 2026-07-23 guard 409s a silent
+    # second create.
     sent = create_invoice(
-        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, due_date=date.today() + timedelta(days=30)),
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id, due_date=date.today() + timedelta(days=30), force=True),
         _=_current_user(), db=tenant_db_session,
     )
     add_invoice_line(

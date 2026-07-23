@@ -298,8 +298,14 @@ def job_financial_summary(
         .order_by(Invoice.created_at.desc())
     ).scalars().all()
 
-    any_paid = any(inv.paid_at is not None for inv in invoices)
-    payment_status = "paid" if any_paid else ("pending" if invoices else "no_invoice")
+    # payment_status describes FINAL billing — deposit invoices are money
+    # BEFORE the work (2026-07-23) and must not flip this to "pending", or
+    # the Build-invoice CTA disappears for every deposit-taking job (same
+    # rule as core/billing_predicates.job_billed_exists). Deposit state is
+    # surfaced separately (job payload "deposit" + the invoices list below).
+    _final_invoices = [inv for inv in invoices if (inv.billing_type or "") != "deposit"]
+    any_paid = any(inv.paid_at is not None for inv in _final_invoices)
+    payment_status = "paid" if any_paid else ("pending" if _final_invoices else "no_invoice")
 
     return _jr({
         "job_id": job_id,
@@ -412,6 +418,8 @@ def mobile_create_invoice(
     invoice = Invoice(
         id=uuid4(),
         job_id=_UUID(job_id),
+        # Provenance for deposit netting (2026-07-23).
+        estimate_id=(estimate.id if estimate is not None else None),
         invoice_number=_next_invoice_number(db),
         billing_type="standard",
         sequence_number=1,
@@ -532,6 +540,19 @@ def mobile_create_invoice(
             invoice.subtotal = _money(new_subtotal)
             invoice.total = _money(new_subtotal)
             invoice.balance_due = _money(new_subtotal)
+
+    # Deposit netting (2026-07-23): the truck's final invoice subtracts the
+    # job's PAID deposit as a negative line and supersedes any unpaid
+    # deposit remainder — same rules as the office create paths. Totals
+    # hand-adjusted like the tier/line blocks above (this path never calls
+    # _recalculate_invoice).
+    from gdx_dispatch.modules.deposits import apply_deposits_to_final
+    _dep_result = apply_deposits_to_final(db, invoice, actor=user_id)
+    if _dep_result and float(_dep_result.get("deposit_paid_applied") or 0) > 0:
+        _dep_applied = float(_dep_result["deposit_paid_applied"])
+        invoice.subtotal = _money(float(invoice.subtotal or 0) - _dep_applied)
+        invoice.total = _money(float(invoice.total or 0) - _dep_applied)
+        invoice.balance_due = _money(float(invoice.total or 0))
 
     db.commit()
     db.refresh(invoice)

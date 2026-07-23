@@ -13,10 +13,17 @@ audit round 1):
     A job is BILLED iff it has an invoice with
         deleted_at IS NULL
         AND status != 'void'
+        AND billing_type != 'deposit'
         AND (total > 0 OR status != 'draft')
 
-Two deliberate exclusions:
-- **Void invoices don't bill a job.** The display state already treats void
+Three deliberate exclusions:
+- **Deposit invoices don't bill a job** (2026-07-23). A downpayment collected
+  at estimate acceptance is money BEFORE the work; treating it as "billed"
+  would silently remove every deposit-taking job from Ready-for-Billing and
+  hide the mobile Bill button — the company collects 50% and loses the
+  machinery for the other 50%. Final/standard/progress invoices still bill.
+- **Void invoices don't bill a job.**
+ The display state already treats void
   as dead money; the old RFB queries didn't — a job whose only invoice was
   voided silently vanished from Ready-for-Billing forever.
 - **$0 DRAFTS don't bill a job.** `create_invoice_from_job` fabricates a
@@ -49,11 +56,17 @@ def job_billed_exists():
         Invoice.job_id == Job.id,
         Invoice.deleted_at.is_(None),
         Invoice.status != "void",
+        Invoice.billing_type != "deposit",
         or_(Invoice.total > 0, Invoice.status != "draft"),
     )
 
 
-def invoice_bills_job(status: str | None, total: float | None, deleted_at) -> bool:
+def invoice_bills_job(
+    status: str | None,
+    total: float | None,
+    deleted_at,
+    billing_type: str | None = None,
+) -> bool:
     """Python-side twin of job_billed_exists() for already-loaded rows.
 
     Keep the two in lockstep — a test pins them against the same fixtures.
@@ -62,5 +75,12 @@ def invoice_bills_job(status: str | None, total: float | None, deleted_at) -> bo
         return False
     s = (status or "").strip().lower()
     if s == "void":
+        return False
+    # Deposit invoices (2026-07-23): a downpayment collected at estimate
+    # acceptance must NOT count as "the job is billed" — the work hasn't
+    # happened yet, and the whole point of Ready-for-Billing / the mobile
+    # Bill button is to produce the FINAL invoice later. Only standard/
+    # progress/final invoices bill a job.
+    if (billing_type or "").strip().lower() == "deposit":
         return False
     return float(total or 0) > 0 or s != "draft"

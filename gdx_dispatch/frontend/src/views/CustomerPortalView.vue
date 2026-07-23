@@ -80,6 +80,9 @@
                     <Button label="Accept" icon="pi pi-check" severity="success" class="flex-1" :loading="actionBusy[est.id]" @click.stop="acceptEstimate(est.id)" data-testid="accept-btn" />
                     <Button label="Decline" icon="pi pi-times" severity="danger" outlined class="flex-1" :loading="actionBusy[est.id]" @click.stop="declineEstimate(est.id)" data-testid="decline-btn" />
                   </div>
+                  <div v-else-if="est.deposit?.pay_url" class="action-row">
+                    <Button :label="`Pay ${currency(est.deposit.balance_due)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" @click.stop="openPayUrl(est.deposit.pay_url)" data-testid="pay-deposit-btn" />
+                  </div>
                 </template>
               </Card>
             </div>
@@ -93,6 +96,9 @@
               <Column field="balance_due" header="Balance Due"><template #body="{ data }">{{ currency(data.balance_due) }}</template></Column>
               <Column field="payment_status" header="Status"><template #body="{ data }"><Tag :value="data.payment_status" :severity="statusSeverity(data.payment_status)" /></template></Column>
               <Column field="due_date" header="Due"><template #body="{ data }">{{ formatDate(data.due_date) }}</template></Column>
+              <Column header="" :style="{ width: '110px' }"><template #body="{ data }">
+                <Button v-if="data.pay_url" label="Pay" icon="pi pi-credit-card" size="small" severity="success" data-testid="invoice-pay-btn" @click="openPayUrl(data.pay_url)" />
+              </template></Column>
             </DataTable>
           </TabPanel>
 
@@ -168,8 +174,30 @@
               <Button label="Accept" icon="pi pi-check" severity="success" class="flex-1" :loading="actionBusy[detail.id]" @click="acceptFromDetail" data-testid="detail-accept-btn" />
               <Button label="Decline" icon="pi pi-times" severity="danger" outlined class="flex-1" :loading="actionBusy[detail.id]" @click="declineFromDetail" data-testid="detail-decline-btn" />
             </div>
+            <div v-else-if="detail.deposit?.pay_url" class="action-row detail-actions">
+              <Button :label="`Pay ${currency(detail.deposit.balance_due)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" @click="openPayUrl(detail.deposit.pay_url)" data-testid="detail-pay-deposit-btn" />
+            </div>
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
           </div>
+        </Dialog>
+
+        <Dialog
+          v-model:visible="depositPromptOpen"
+          header="Deposit Due"
+          :modal="true"
+          :style="{ width: 'min(440px, 94vw)' }"
+          data-testid="deposit-pay-dialog"
+        >
+          <p class="meta">
+            Thanks for accepting! A deposit of <b>{{ currency(depositPrompt?.amount) }}</b> is due now
+            to get your job on the schedule (invoice {{ depositPrompt?.invoice_number }}).
+          </p>
+          <p class="meta">You can pay securely online by card — or pay later from the Invoices tab.</p>
+          <template #footer>
+            <Button label="Pay later" text @click="depositPrompt = null" data-testid="deposit-pay-later" />
+            <Button label="Pay deposit now" icon="pi pi-credit-card" severity="success"
+              data-testid="deposit-pay-now" @click="payDepositNow" />
+          </template>
         </Dialog>
 
         <Dialog
@@ -196,7 +224,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted, watch } from "vue";
+import { computed, reactive, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
@@ -420,12 +448,35 @@ function signOut() {
   jobs.value = [];
 }
 
+// One-motion deposit (2026-07-23): the accept response can carry a deposit
+// invoice + its public Stripe pay URL. Accepting flows straight into the
+// payment prompt; "Pay later" is always available — acceptance is never
+// blocked by payment, and the Pay button re-surfaces on the estimate card,
+// the detail dialog, and the Invoices tab until the deposit is settled.
+const depositPrompt = ref(null);
+const depositPromptOpen = computed({
+  get: () => !!depositPrompt.value,
+  set: (v) => { if (!v) depositPrompt.value = null; },
+});
+
+function openPayUrl(url) {
+  if (url) window.open(url, "_blank", "noopener");
+}
+
+function payDepositNow() {
+  openPayUrl(depositPrompt.value?.pay_url);
+  depositPrompt.value = null;
+}
+
 async function estimateAction(id, action, successMsg) {
   actionBusy[id] = true;
   try {
-    await authedFetch(`/portal/estimates/${id}/${action}`, { method: "POST" });
+    const resp = await authedFetch(`/portal/estimates/${id}/${action}`, { method: "POST" });
     toast.add({ severity: action === "accept" ? "success" : "warn", summary: successMsg, life: 3000 });
+    if (action === "accept" && resp?.deposit?.pay_url) depositPrompt.value = resp.deposit;
     estimates.value = await authedFetch("/portal/estimates");
+    // The deposit invoice lands on the Invoices tab immediately.
+    try { invoices.value = await authedFetch("/portal/invoices"); } catch { /* tab refresh is best-effort */ }
   } catch (e) {
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
     toast.add({ severity: "error", summary: "Error", detail: `Could not ${action} estimate`, life: 4000 });

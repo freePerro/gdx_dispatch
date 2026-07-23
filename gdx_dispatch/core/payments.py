@@ -235,6 +235,14 @@ def create_intent(
     invoice = db.get(Invoice, invoice_uuid)
     if not invoice or invoice.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    # 2026-07-23 (deposit-invoice audit catch, but correct universally): an
+    # open /pay tab can outlive the invoice — voided, or a deposit settled
+    # when the final invoice superseded it. Don't charge money nothing is
+    # owed on.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    if float(invoice.balance_due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
 
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
@@ -347,6 +355,14 @@ def ach_charge(
     invoice = db.get(Invoice, invoice_uuid)
     if not invoice or invoice.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    # 2026-07-23 (deposit-invoice audit catch, but correct universally): an
+    # open /pay tab can outlive the invoice — voided, or a deposit settled
+    # when the final invoice superseded it. Don't charge money nothing is
+    # owed on.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    if float(invoice.balance_due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
 
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 

@@ -268,6 +268,15 @@ class AcceptQuoteIn(BaseModel):
     chosen_tier_id: str = Field(min_length=1)
     signature_data: str | None = Field(default=None, max_length=1_400_000)
     signed_by: str | None = Field(default=None, max_length=200)
+    # Deposit at acceptance (2026-07-23, opt-IN on mobile). Unlike the
+    # portal — where estimates are the door-order flow — mobile quotes are
+    # often same-day service repairs where a 50% "due now" demand is
+    # nonsense (implementation-audit catch). The tech must flip the toggle:
+    # collect_deposit=True → tenant deposit percent (estimate_deposit_pct,
+    # the PDF's "% Down") × accepted tier total; an explicit positive
+    # deposit_amount overrides the percent. Both absent → no deposit.
+    deposit_amount: float | None = Field(default=None, ge=0, le=1_000_000)
+    collect_deposit: bool = False
 
 
 class DeclineQuoteIn(BaseModel):
@@ -609,7 +618,51 @@ def accept_quote(
         request=request,
     )
     db.commit()
-    return _jr(_serialize_quote(estimate, db=db, include_lines=True))
+
+    # Deposit at acceptance (2026-07-23) — opt-IN on mobile (see
+    # AcceptQuoteIn): the tech flips the Collect-deposit toggle (auto tenant
+    # percent) or sends an explicit amount. A deposit failure never
+    # un-accepts the quote.
+    deposit_payload: dict[str, Any] | None = None
+    deposit_skipped: str | None = None
+    try:
+        from gdx_dispatch.modules.deposits import (
+            DepositError,
+            create_deposit_invoice,
+            deposit_summary,
+        )
+        from gdx_dispatch.modules.estimates_features import get_features
+
+        amount = payload.deposit_amount
+        if amount is None and payload.collect_deposit:
+            pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
+            accepted_total = float(_money(tier.total_price) or 0)
+            amount = round(accepted_total * pct / 100.0, 2) if pct > 0 else 0.0
+        if amount and amount > 0:
+            try:
+                dep_inv = create_deposit_invoice(
+                    db,
+                    estimate=estimate,
+                    amount=float(amount),
+                    tenant_id=tenant_id,
+                    actor=user_id,
+                    source="mobile_accept",
+                )
+                deposit_payload = deposit_summary(dep_inv)
+            except DepositError as exc:
+                deposit_skipped = str(exc)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "mobile_accept_deposit_failed estimate=%s", estimate.id
+        )
+        deposit_skipped = "deposit invoice creation failed — office can bill it"
+
+    resp = _serialize_quote(estimate, db=db, include_lines=True)
+    if deposit_payload:
+        resp["deposit"] = deposit_payload
+    if deposit_skipped:
+        resp["deposit_skipped"] = deposit_skipped
+    return _jr(resp)
 
 
 # ---------------------------------------------------------------------------

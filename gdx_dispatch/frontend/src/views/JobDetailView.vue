@@ -30,8 +30,14 @@
           <Button v-if="job.status !== 'Complete' && job.status !== 'Invoiced'"
             label="Complete Job" icon="pi pi-check" severity="success"
             @click="completeJob" data-testid="job-detail-complete" />
-          <Button v-if="job.status === 'Complete'"
-            label="Create Invoice" icon="pi pi-dollar" severity="success"
+          <!-- 2026-07-23 deposit/progress billing: invoicing is no longer
+               gated on completion — deposits and progress invoices happen
+               mid-job. Green when Complete (the normal moment), muted
+               otherwise so mid-job invoicing reads as the exception. -->
+          <Button
+            label="Create Invoice" icon="pi pi-dollar"
+            :severity="job.status === 'Complete' ? 'success' : 'secondary'"
+            :outlined="job.status !== 'Complete'"
             @click="createInvoice" data-testid="job-detail-create-invoice" />
           <!-- F-32 / 2026-04-29: when a job is completed or cancelled, the
                next action almost always means "warranty / callback" — but
@@ -647,6 +653,29 @@
             </Column>
           </DataTable>
         </div>
+        <div v-if="financials" class="card financials-card" data-testid="job-financials-card">
+          <div class="card-header"><h3>Financials</h3></div>
+          <div style="display:flex; flex-wrap:wrap; gap:2rem; padding:.5rem 0;">
+            <div>
+              <div class="muted" style="font-size:.8rem;">Invoiced</div>
+              <div style="font-weight:600;" data-testid="fin-invoiced">{{ formatCurrency(financials.invoiced_total) }}</div>
+            </div>
+            <div v-if="financials.deposit_total">
+              <div class="muted" style="font-size:.8rem;">Deposit (paid / requested)</div>
+              <div style="font-weight:600;" data-testid="fin-deposit">
+                {{ formatCurrency(financials.deposit_paid) }} / {{ formatCurrency(financials.deposit_total) }}
+              </div>
+            </div>
+            <div>
+              <div class="muted" style="font-size:.8rem;">Paid</div>
+              <div style="font-weight:600;" data-testid="fin-paid">{{ formatCurrency(financials.paid_total) }}</div>
+            </div>
+            <div>
+              <div class="muted" style="font-size:.8rem;">Balance Due</div>
+              <div style="font-weight:600;" data-testid="fin-balance">{{ formatCurrency(financials.balance_due) }}</div>
+            </div>
+          </div>
+        </div>
         <div class="card estimates-card">
           <div class="card-header"><h3>Estimates ({{ relatedEstimates.length }})</h3></div>
           <DataTable :value="relatedEstimates" striped-rows responsive-layout="scroll" class="table-small">
@@ -668,7 +697,12 @@
         <div class="card invoices-card">
           <div class="card-header"><h3>Invoices ({{ relatedInvoices.length }})</h3></div>
           <DataTable :value="relatedInvoices" striped-rows responsive-layout="scroll" class="table-small">
-            <Column field="invoice_number" header="Invoice" />
+            <Column field="invoice_number" header="Invoice">
+              <template #body="{ data }">
+                {{ data.invoice_number }}
+                <Tag v-if="data.billing_type === 'deposit'" value="deposit" severity="info" />
+              </template>
+            </Column>
             <Column field="status" header="Status">
               <template #body="{ data }"><Tag :value="data.status" :severity="invoiceStatusSeverity(data.status)" /></template>
             </Column>
@@ -916,6 +950,7 @@ const error = ref("");
 const activeTab = ref("details");
 const relatedEstimates = ref([]);
 const relatedInvoices = ref([]);
+const financials = ref(null);
 const appointments = ref([]);
 const appointmentsLoading = ref(false);
 const timeEntries = ref([]);
@@ -1162,6 +1197,7 @@ async function refreshRelated() {
     fetchDiagnoses(),
     fetchHazards(),
     fetchReceipts(),
+    fetchFinancials(),
   ]);
 }
 
@@ -1180,6 +1216,14 @@ async function fetchRelatedInvoices() {
     relatedInvoices.value = Array.isArray(data) ? data : data?.items || [];
   } catch {
     relatedInvoices.value = [];
+  }
+}
+
+async function fetchFinancials() {
+  try {
+    financials.value = await api.get(`/api/jobs/${route.params.id}/financials`);
+  } catch {
+    financials.value = null;
   }
 }
 

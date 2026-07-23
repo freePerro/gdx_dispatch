@@ -52,7 +52,17 @@ const declineReasons = ref([])
 const declineReason = ref(null)
 const declineNotes = ref('')
 
+// Deposit step (2026-07-23): opt-IN — the tech flips the toggle before
+// handing the phone over (service repairs shouldn't demand 50% up front,
+// so the default is off). When on, the accept response carries a deposit
+// invoice + public pay URL; the phone is already in the customer's hand —
+// show the deposit panel and let them pay by card on the spot, or hand
+// back and let the office collect later.
+const collectDeposit = ref(false)
+const depositDue = ref(null)
+
 watch(() => props.visible, (v) => {
+  if (v) { depositDue.value = null; collectDeposit.value = false }
   if (v && props.quote?.tiers?.length) {
     // Default to "better" (middle tier) — sales-data common default.
     const better = props.quote.tiers.find(t => t.tier_name === 'better')
@@ -151,15 +161,24 @@ async function accept() {
       chosen_tier_id: chosenTierId.value,
       signature_data: sig,
       signed_by: signedBy.value || null,
+      collect_deposit: collectDeposit.value,
     })
     toast.add({ severity: 'success', summary: 'Quote accepted', life: 2500 })
     emit('accepted', updated)
-    open.value = false
+    if (updated?.deposit) {
+      depositDue.value = updated.deposit
+    } else {
+      open.value = false
+    }
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Could not accept', detail: e.message, life: 5000 })
   } finally {
     submitting.value = false
   }
+}
+
+function openDepositPay() {
+  if (depositDue.value?.pay_url) window.open(depositDue.value.pay_url, '_blank', 'noopener')
 }
 
 async function submitDecline() {
@@ -187,11 +206,27 @@ async function submitDecline() {
 <template>
   <Dialog
     v-model:visible="open"
-    :header="declining ? 'Decline quote' : 'Your options'"
+    :header="depositDue ? 'Deposit due' : (declining ? 'Decline quote' : 'Your options')"
     modal
     :style="{ width: '96vw', maxWidth: '560px' }"
   >
-    <div v-if="!declining" class="cust-quote">
+    <!-- DEPOSIT step — shown after a successful accept when a deposit
+         invoice was created. Phone is in the customer's hand: pay now by
+         card, or hand back and the office collects later. -->
+    <div v-if="depositDue" class="deposit-step" data-testid="mobile-deposit-step">
+      <p class="muted">Thanks! To get your job on the schedule, a deposit is due now.</p>
+      <div class="cust-summary">
+        <span>Deposit:</span>
+        <strong class="cust-total">{{ fmtMoney(depositDue.balance_due || depositDue.amount) }}</strong>
+        <span>·</span>
+        <span>Invoice {{ depositDue.invoice_number }}</span>
+      </div>
+      <p v-if="!depositDue.pay_url" class="muted" style="margin-top:.5rem;">
+        Card payment isn't set up — the office will collect the deposit.
+      </p>
+    </div>
+
+    <div v-else-if="!declining" class="cust-quote">
       <p class="muted cust-intro">{{ quote?.label || 'Service quote' }}</p>
 
       <div class="tier-grid">
@@ -247,10 +282,17 @@ async function submitDecline() {
         <span>·</span>
         <strong class="cust-total">{{ fmtMoney(chosenTier.total_price) }}</strong>
       </div>
+
+      <!-- Tech-facing, set before the phone handoff: door orders take a
+           deposit; same-day repairs don't. Off by default. -->
+      <label class="deposit-toggle" data-testid="mobile-collect-deposit">
+        <input v-model="collectDeposit" type="checkbox">
+        <span>Collect deposit at acceptance</span>
+      </label>
     </div>
 
     <!-- DECLINE form -->
-    <div v-else class="decline-form">
+    <div v-else-if="declining" class="decline-form">
       <p class="muted">No problem. Pick a reason — it helps us serve you better.</p>
       <div class="form-field">
         <label>Reason</label>
@@ -269,7 +311,19 @@ async function submitDecline() {
     </div>
 
     <template #footer>
-      <template v-if="!declining">
+      <template v-if="depositDue">
+        <Button label="Pay later" text severity="secondary" data-testid="mobile-deposit-later" @click="open = false" />
+        <Button
+          v-if="depositDue.pay_url"
+          label="Pay deposit by card"
+          icon="pi pi-credit-card"
+          severity="success"
+          data-testid="mobile-deposit-pay"
+          @click="openDepositPay"
+        />
+        <Button v-else label="Done" icon="pi pi-check" severity="success" @click="open = false" />
+      </template>
+      <template v-else-if="!declining">
         <Button label="Decline" text severity="secondary" @click="declining = true" />
         <Button
           label="Accept & sign"
@@ -351,4 +405,10 @@ async function submitDecline() {
 
 .decline-form { padding: 0.5rem 0; }
 .muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.8rem; }
+.deposit-toggle {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-top: 0.6rem; font-size: 0.85rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.deposit-toggle input { width: 18px; height: 18px; }
 </style>

@@ -26,7 +26,10 @@ describe('InvoiceCreateView — zero-price warnings toast', () => {
   it('surfaces created.warnings as a warn toast', () => {
     const postIdx = CREATE_SRC.indexOf("await api.post('/api/invoices', payload)");
     expect(postIdx).toBeGreaterThan(-1);
-    const span = CREATE_SRC.slice(postIdx, postIdx + 700);
+    // Window widened 700→1600 (2026-07-23): the double-billing 409
+    // confirm-retry and deposit-netting toast now sit between the POST and
+    // the warnings toast. The pin is "warnings are rendered", not distance.
+    const span = CREATE_SRC.slice(postIdx, postIdx + 1600);
     expect(span).toMatch(/created\.warnings/);
     expect(span).toMatch(/severity:\s*'warn'/);
     expect(span).toMatch(/created\.warnings\.join/);

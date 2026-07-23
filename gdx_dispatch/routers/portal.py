@@ -23,6 +23,12 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
+from gdx_dispatch.modules.deposits import (
+    DepositError,
+    create_deposit_invoice,
+    deposit_summary,
+    find_deposit_invoice_for_estimate,
+)
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -469,16 +475,26 @@ def portal_invoices(
         .where(Job.customer_id == principal.customer_id, Invoice.deleted_at.is_(None))
         .order_by(Invoice.created_at.desc())
     ).scalars()
+    from gdx_dispatch.core.payments import public_pay_url
+
     return [
         {
             "id": str(row.id),
             "invoice_number": row.invoice_number,
+            "billing_type": row.billing_type,
             "status": row.status,
             "payment_status": _payment_status(row),
             "total": float(row.total or 0),
             "balance_due": float(row.balance_due or 0),
             "due_date": row.due_date.isoformat() if row.due_date else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
+            # The E2E-verified public Stripe page — the portal's Pay button.
+            # None when Stripe/base-URL isn't configured or nothing is owed.
+            "pay_url": (
+                public_pay_url(row.public_token)
+                if float(row.balance_due or 0) > 0 and row.status in ("sent", "overdue")
+                else None
+            ),
         }
         for row in rows
     ]
@@ -698,7 +714,7 @@ def _serialize_portal_estimate(
     if totals is None:
         totals = _portal_estimate_totals(estimate, db)
     grand_total = totals["total"]
-    return {
+    body = {
         "id": str(estimate.id),
         "estimate_number": estimate.estimate_number,
         "label": estimate.label,
@@ -711,6 +727,17 @@ def _serialize_portal_estimate(
         "declined_at": estimate.declined_at.isoformat() if estimate.declined_at else None,
         "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
     }
+    # Accept-then-abandon recovery (2026-07-23): an accepted estimate with a
+    # still-owed deposit invoice re-surfaces its Pay link on every portal
+    # load — the one-motion accept response isn't the only door to payment.
+    if estimate.status == "accepted":
+        try:
+            dep = find_deposit_invoice_for_estimate(db, estimate.id)
+            if dep is not None and float(dep.balance_due or 0) > 0:
+                body["deposit"] = deposit_summary(dep)
+        except Exception:
+            log.exception("portal_estimate_deposit_lookup_failed")
+    return body
 
 
 @router.get("/estimates", response_model=None)
@@ -907,7 +934,40 @@ def portal_estimate_accept(
             except Exception:
                 log.exception("portal_accept_audit_failed")
 
-    return _serialize_portal_estimate(estimate, db)
+    # One-motion deposit (2026-07-23): when the tenant's deposit percent is
+    # set (estimate_deposit_pct — the same "% Down" the estimate PDF already
+    # shows the customer), acceptance creates a deposit invoice and the
+    # response carries its public /pay URL so the portal can put the Stripe
+    # payment form one tap away. Failures never un-accept the estimate.
+    deposit_payload: dict[str, Any] | None = None
+    try:
+        db.refresh(estimate)
+        pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
+        if pct > 0 and estimate.customer_id is not None:
+            from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+            est_total = float(compute_estimate_totals(estimate, db)["total"] or 0)
+            amount = round(est_total * pct / 100.0, 2)
+            if amount > 0:
+                dep_inv = create_deposit_invoice(
+                    db,
+                    estimate=estimate,
+                    amount=amount,
+                    tenant_id=tenant_id,
+                    actor=actor,
+                    source="portal_accept",
+                )
+                deposit_payload = deposit_summary(dep_inv)
+                deposit_payload["pct"] = pct
+    except DepositError as exc:
+        log.warning("portal_accept_deposit_skipped estimate=%s: %s", estimate.id, exc)
+    except Exception:
+        log.exception("portal_accept_deposit_failed estimate=%s", estimate.id)
+
+    resp = _serialize_portal_estimate(estimate, db)
+    if deposit_payload:
+        resp["deposit"] = deposit_payload
+    return resp
 
 
 @router.post("/estimates/{estimate_id}/decline", response_model=None)

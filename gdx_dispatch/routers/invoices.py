@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
@@ -391,6 +391,11 @@ class InvoiceCreateIn(BaseModel):
     # stamped billed_invoice_id in the same transaction. The stamp GATES the
     # copy (UPDATE…RETURNING): an already-billed CO 409s the whole request.
     from_change_order_ids: list[UUID] = Field(default_factory=list)
+    # 2026-07-23 — double-billing guard override. Now that invoicing is no
+    # longer UI-gated on job completion, a job that already has a
+    # billing-real non-deposit invoice 409s unless the operator confirms
+    # (the create page re-submits with force=true after a confirm dialog).
+    force: bool = False
 
 
 class InvoicePatchIn(BaseModel):
@@ -612,6 +617,34 @@ def create_invoice(
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
 
+    # Double-billing guard (2026-07-23): the old "Create Invoice only when
+    # Complete" button was the de-facto guard; with mid-job invoicing open,
+    # the guard is explicit here on the path the UI actually uses.
+    # Conditions mirror core/billing_predicates.job_billed_exists (lockstep):
+    # void invoices, $0 drafts, and DEPOSIT invoices don't count as billed.
+    if (
+        job is not None
+        and payload.billing_type != "deposit"
+        and not payload.force
+    ):
+        _existing = db.execute(
+            select(Invoice).where(
+                Invoice.job_id == payload.job_id,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+                Invoice.billing_type != "deposit",
+                or_(Invoice.total > 0, Invoice.status != "draft"),
+            ).order_by(Invoice.created_at.desc()).limit(1)
+        ).scalar_one_or_none()
+        if _existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Job is already billed on {_existing.invoice_number}. "
+                    "Confirm to create another invoice."
+                ),
+            )
+
     estimate: Estimate | None = None
     if payload.estimate_id:
         estimate = db.execute(
@@ -743,6 +776,9 @@ def create_invoice(
             invoice_hide_line_prices = False
     invoice = Invoice(
         job_id=payload.job_id,
+        # Provenance thread for deposit netting + "deposit taken" surfaces:
+        # which estimate this invoice was born from (2026-07-23).
+        estimate_id=payload.estimate_id,
         invoice_number=_next_invoice_number(db),
         billing_type=payload.billing_type,
         sequence_number=1,
@@ -972,6 +1008,19 @@ def create_invoice(
                 ),
             )
 
+    # Deposit netting (2026-07-23): a non-deposit invoice for a job (or
+    # estimate) that collected a deposit gets a negative "Less deposit paid"
+    # line for the PAID portion, and any unpaid deposit remainder is
+    # superseded via credit memo — otherwise the customer owes deposit +
+    # full total and the GL double-counts revenue. An exception here fails
+    # the whole create atomically (better no invoice than wrong money).
+    deposit_result: dict[str, object] | None = None
+    if payload.billing_type != "deposit" and (payload.job_id or payload.estimate_id):
+        from gdx_dispatch.modules.deposits import apply_deposits_to_final
+
+        db.flush()
+        deposit_result = apply_deposits_to_final(db, invoice, actor=_actor_id(_))
+
     # Run the tax + total recompute now that lines exist. For rate-mode
     # invoices this writes the correct tax_amount; for legacy flat-tax
     # callers it's a no-op since tax_amount was set above.
@@ -992,6 +1041,8 @@ def create_invoice(
     resp = _serialize_invoice(invoice)
     if zero_price_warnings:
         resp["warnings"] = zero_price_warnings
+    if deposit_result:
+        resp["deposit_netting"] = deposit_result
     return resp
 
 
@@ -1621,6 +1672,18 @@ def patch_invoice_line(
     if invoice.locked or invoice.status != "draft":
         raise HTTPException(status_code=409, detail="cannot modify lines on a locked/non-draft invoice")
     line = _get_line_or_404(invoice, line_id, db)
+    # Deposit netting line (2026-07-23): same protection as delete — editing
+    # "Less deposit paid" desyncs the invoice from the money that actually
+    # moved on the deposit invoice.
+    if (line.category or "") == "Deposit" and _to_float(line.line_total) < 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this is the deposit netting line — it mirrors the deposit "
+                "actually paid and can't be edited. Void the invoice and "
+                "re-create it if the netting is wrong."
+            ),
+        )
 
     updates = payload.model_dump(exclude_unset=True)
     if "description" in updates and updates["description"] is not None:
@@ -1680,6 +1743,18 @@ def delete_invoice_line(
     if invoice.locked or invoice.status != "draft":
         raise HTTPException(status_code=409, detail="cannot modify lines on a locked/non-draft invoice")
     line = _get_line_or_404(invoice, line_id, db)
+    # Deposit netting line (2026-07-23): deleting "Less deposit paid" would
+    # spring the total back up by the already-collected deposit and nothing
+    # would ever re-net it — a silent double-charge. Void the invoice and
+    # re-create if the netting is wrong.
+    if (line.category or "") == "Deposit" and _to_float(line.line_total) < 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this is the deposit netting line — deleting it would re-bill "
+                "an already-collected deposit. Void the invoice and re-create it instead."
+            ),
+        )
     # D-S122-line-removal-unbill: if this line was created from a parts-from-
     # job pull, release the part back into the unbilled pool now. Without this
     # the part stays "billed" forever even though no live line references it.
@@ -1723,6 +1798,27 @@ def record_payment(
     # payment door. Same class as the /send guard.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void it before recording a payment")
+
+    # Deposit invoices (2026-07-23, implementation-audit catch): a deposit
+    # superseded at final-invoice time (credit-memo'd remainder) reads as
+    # settled — a late-arriving check recorded HERE would double-charge the
+    # customer, whose final invoice already excludes only the PAID portion.
+    # Point the operator at the final invoice instead.
+    if (invoice.billing_type or "") == "deposit" and _to_float(invoice.balance_due) <= 0:
+        supersede_reason = db.execute(
+            select(InvoiceAdjustment.reason).where(
+                InvoiceAdjustment.invoice_id == invoice.id,
+                InvoiceAdjustment.kind == "credit_memo",
+            )
+        ).scalars().first()
+        if supersede_reason and "superseded" in supersede_reason.lower():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"this deposit was closed out ({supersede_reason.strip()}) — "
+                    "record the payment on the final invoice instead"
+                ),
+            )
 
     # GL S6: overpayment gate, active only when ledger posting is on (flag
     # off keeps today's permissive behavior — zero behavior change until

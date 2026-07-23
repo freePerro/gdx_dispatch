@@ -30,6 +30,7 @@ from gdx_dispatch.models.tenant_models import (
     JobCloseout,
     JobDependency,
     JobPartNeeded,
+    Payment,
     Technician,
     TimeEntry,
 )
@@ -1929,8 +1930,15 @@ def create_invoice_from_job(
     request: Request,
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
+    force: bool = False,
 ) -> dict[str, Any]:
-    """One-click invoice creation from a completed job."""
+    """One-click invoice creation from a job.
+
+    Historically the frontend only offered this for COMPLETED jobs; that
+    gate was the de-facto double-billing guard. Now that invoicing is
+    allowed mid-job (deposit/progress billing, 2026-07-23), the guard is
+    explicit: a job that already has a billing-real non-deposit invoice
+    409s unless ``force=true`` (the operator confirmed a second invoice)."""
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
     now_dt = datetime.now(timezone.utc)
     now_dt.isoformat()
@@ -1961,6 +1969,33 @@ def create_invoice_from_job(
             {"detail": "Job has no customer assigned — set a customer before invoicing"},
             400,
         )
+
+    # Double-billing guard (2026-07-23) — conditions mirror
+    # core/billing_predicates.job_billed_exists (kept in lockstep): void
+    # invoices, $0 drafts, and DEPOSIT invoices don't count as billed.
+    if not force:
+        from sqlalchemy import or_ as _or_guard
+        existing_inv = db.execute(
+            select(Invoice).where(
+                Invoice.job_id == _job_uuid,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+                Invoice.billing_type != "deposit",
+                _or_guard(Invoice.total > 0, Invoice.status != "draft"),
+            ).order_by(Invoice.created_at.desc()).limit(1)
+        ).scalar_one_or_none()
+        if existing_inv is not None:
+            return jsonable_response(
+                {
+                    "detail": (
+                        f"Job is already billed on {existing_inv.invoice_number}. "
+                        "Confirm to create another invoice."
+                    ),
+                    "existing_invoice_id": str(existing_inv.id),
+                    "existing_invoice_number": existing_inv.invoice_number,
+                },
+                409,
+            )
 
     # Get estimate line items if available via ORM
     lines = []
@@ -2235,8 +2270,26 @@ def create_invoice_from_job(
             total_value = round(subtotal_value + tax_amount_value, 2)
             invoice.subtotal = subtotal_value
             invoice.tax_amount = tax_amount_value
-            invoice.total = total_value
             invoice.balance_due = total_value
+
+        # Deposit netting (2026-07-23): subtract the PAID portion of this
+        # job's deposit invoices as a negative line and supersede any unpaid
+        # deposit remainder via credit memo. Totals hand-adjusted like the
+        # CO/parts blocks above — this path deliberately never calls
+        # _recalculate_invoice (estimate-derived totals carry discounts the
+        # line-sum recompute would drop).
+        from gdx_dispatch.modules.deposits import apply_deposits_to_final
+        invoice.total = total_value
+        _dep_result = apply_deposits_to_final(
+            db, invoice, actor=str(current_user.get("sub", "system"))
+        )
+        if _dep_result and float(_dep_result.get("deposit_paid_applied") or 0) > 0:
+            _dep_applied = float(_dep_result["deposit_paid_applied"])
+            subtotal_value = round(float(subtotal_value) - _dep_applied, 2)
+            total_value = round(float(total_value) - _dep_applied, 2)
+            invoice.subtotal = subtotal_value
+        invoice.total = total_value
+        invoice.balance_due = total_value
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -2252,7 +2305,88 @@ def create_invoice_from_job(
     )
     db.commit()
 
-    return {"invoice_id": str(invoice_id), "invoice_number": inv_num, "total": total_value}
+    resp: dict[str, Any] = {
+        "invoice_id": str(invoice_id),
+        "invoice_number": inv_num,
+        "total": total_value,
+    }
+    if _dep_result:
+        resp["deposit_netting"] = _dep_result
+    return resp
+
+
+@router.get("/{job_id}/financials", response_model=None)
+def get_job_financials(
+    job_id: str,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Money summary for one job (2026-07-23, deposit-invoices Phase 3).
+
+    Feeds the Financials card on the office job page and the mobile job
+    view: what's been invoiced (deposit vs. final), what's been paid, and
+    what's still owed. Derive-don't-cache: everything comes from live
+    invoice/payment rows, same exclusions as the billed predicate."""
+    try:
+        _job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "Job not found"}, 404)
+    job = db.execute(
+        select(Job).where(Job.id == _job_uuid, Job.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not job:
+        return jsonable_response({"detail": "Job not found"}, 404)
+
+    invoices = db.execute(
+        select(Invoice).where(
+            Invoice.job_id == _job_uuid,
+            Invoice.deleted_at.is_(None),
+        ).order_by(Invoice.created_at.asc())
+    ).scalars().all()
+
+    invoiced_total = 0.0     # non-deposit, non-void — what the work is billed at
+    deposit_total = 0.0      # deposit invoices, non-void
+    deposit_paid = 0.0
+    paid_total = 0.0         # all non-void payments incl. deposit money
+    balance_open = 0.0       # what the customer still owes (issued, unpaid)
+    rows: list[dict[str, Any]] = []
+    for inv in invoices:
+        is_void = inv.status == "void"
+        is_deposit = (inv.billing_type or "") == "deposit"
+        paid = float(db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.invoice_id == inv.id,
+                Payment.voided_at.is_(None),
+            )
+        ).scalar_one() or 0)
+        if not is_void:
+            paid_total += paid
+            if is_deposit:
+                deposit_total += float(inv.total or 0)
+                deposit_paid += paid
+            else:
+                invoiced_total += float(inv.total or 0)
+            if inv.status in ("sent", "overdue"):
+                balance_open += float(inv.balance_due or 0)
+        rows.append({
+            "id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "billing_type": inv.billing_type,
+            "status": inv.status,
+            "total": float(inv.total or 0),
+            "balance_due": float(inv.balance_due or 0),
+            "paid": round(paid, 2),
+        })
+
+    return {
+        "job_id": str(job.id),
+        "invoiced_total": round(invoiced_total, 2),
+        "deposit_total": round(deposit_total, 2),
+        "deposit_paid": round(deposit_paid, 2),
+        "paid_total": round(paid_total, 2),
+        "balance_due": round(balance_open, 2),
+        "invoices": rows,
+    }
 
 
 @router.get("/{job_id}/activity", response_model=None)

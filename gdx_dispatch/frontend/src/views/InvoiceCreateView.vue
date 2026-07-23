@@ -509,7 +509,23 @@ async function createInvoice() {
       from_change_order_ids: form.value.from_change_order_ids || [],
     };
 
-    const created = await api.post('/api/invoices', payload);
+    let created;
+    try {
+      created = await api.post('/api/invoices', payload);
+    } catch (e) {
+      // 2026-07-23 double-billing guard: now that invoicing isn't gated on
+      // job completion, the backend 409s when the job already has a real
+      // invoice. Confirm and re-submit with force — deliberate second
+      // invoices (progress billing, re-bill) stay one click away.
+      if (e.status === 409 && /already billed/i.test(e.message || '')) {
+        if (!window.confirm(`${e.message}\n\nCreate another invoice for this job anyway?`)) {
+          return;
+        }
+        created = await api.post('/api/invoices', { ...payload, force: true });
+      } else {
+        throw e;
+      }
+    }
     // PR1-billing-capture: surface zero-price policy warnings — the server
     // emits these in F-75 warn-mode, but nothing rendered them before.
     if (Array.isArray(created.warnings) && created.warnings.length) {
@@ -517,6 +533,22 @@ async function createInvoice() {
         severity: 'warn',
         summary: 'Review pricing',
         detail: created.warnings.join('; '),
+        life: 8000,
+      });
+    }
+    // Deposit netting (2026-07-23): tell the operator what came off the
+    // bill and whether anything is left over for a human to resolve.
+    const net = created.deposit_netting;
+    if (net && (net.deposit_paid_applied > 0 || (net.superseded || []).length || (net.voided || []).length)) {
+      const bits = [];
+      if (net.deposit_paid_applied > 0) bits.push(`$${net.deposit_paid_applied.toFixed(2)} deposit applied`);
+      if ((net.superseded || []).length) bits.push(`superseded ${net.superseded.join(', ')}`);
+      if ((net.voided || []).length) bits.push(`voided unpaid ${net.voided.join(', ')}`);
+      if (net.deposit_unapplied > 0) bits.push(`$${net.deposit_unapplied.toFixed(2)} deposit UNAPPLIED — resolve manually`);
+      toast.add({
+        severity: net.deposit_unapplied > 0 ? 'warn' : 'info',
+        summary: 'Deposit netted',
+        detail: bits.join(' · '),
         life: 8000,
       });
     }
