@@ -87,9 +87,12 @@ def test_dashboard_renders():
 
     assert resp.status_code == 200
     mock_resp.assert_called_once()
+    # Starlette's modern TemplateResponse signature is (request, name, ctx) —
+    # c992dc7 (PR #191) migrated tenant_ui's call sites but left these
+    # assertions on the removed (name, ctx) order, breaking main's CI.
     call_args = mock_resp.call_args
-    assert call_args[0][0] == "tenant_dashboard.html"
-    ctx = call_args[0][1]
+    assert call_args[0][1] == "tenant_dashboard.html"
+    ctx = call_args[0][2]
     assert "stats" in ctx
     assert "recent_jobs" in ctx
     assert "onboarding" in ctx
@@ -109,8 +112,8 @@ def test_settings_page_renders():
 
     assert resp.status_code == 200
     call_args = mock_resp.call_args
-    assert call_args[0][0] == "tenant_settings.html"
-    ctx = call_args[0][1]
+    assert call_args[0][1] == "tenant_settings.html"
+    ctx = call_args[0][2]
     assert "settings" in ctx
     settings = ctx["settings"]
     # All expected keys present
@@ -177,8 +180,8 @@ def test_team_page_renders():
 
     assert resp.status_code == 200
     call_args = mock_resp.call_args
-    assert call_args[0][0] == "tenant_team.html"
-    ctx = call_args[0][1]
+    assert call_args[0][1] == "tenant_team.html"
+    ctx = call_args[0][2]
     assert "team_members" in ctx
     assert len(ctx["team_members"]) == 2
     assert ctx["team_members"][0]["role"] == "owner"
