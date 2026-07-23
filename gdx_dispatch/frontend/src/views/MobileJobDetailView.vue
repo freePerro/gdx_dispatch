@@ -197,22 +197,26 @@
         </ul>
         <div v-else class="detail-meta detail-meta-muted">No notes yet.</div>
 
-        <Textarea
-          v-model="noteDraft"
-          rows="2"
-          auto-resize
-          placeholder="What did you find?"
-          data-testid="mjd-note-input"
-        />
-        <Button
-          label="Add note"
-          icon="pi pi-plus"
-          size="small"
-          :loading="noteBusy"
-          :disabled="!noteDraft.trim()"
-          data-testid="mjd-note-add"
-          @click="addNote"
-        />
+        <!-- readOnly (company-wide browsing): composers hidden — the write
+             endpoints would 404 a tech with no claim on this job anyway. -->
+        <template v-if="!readOnly">
+          <Textarea
+            v-model="noteDraft"
+            rows="2"
+            auto-resize
+            placeholder="What did you find?"
+            data-testid="mjd-note-input"
+          />
+          <Button
+            label="Add note"
+            icon="pi pi-plus"
+            size="small"
+            :loading="noteBusy"
+            :disabled="!noteDraft.trim()"
+            data-testid="mjd-note-add"
+            @click="addNote"
+          />
+        </template>
       </div>
 
       <div class="detail-card">
@@ -244,7 +248,7 @@
              AND locks the tech out of the gallery, so a photo taken before the
              app was open can never be attached. Bare accept="image/*" makes
              Android offer Camera or Files, which is both. -->
-        <label class="photo-add" data-testid="mjd-photo-add">
+        <label v-if="!readOnly" class="photo-add" data-testid="mjd-photo-add">
           <input
             ref="photoInput"
             type="file"
@@ -282,7 +286,7 @@
         </ul>
         <div v-else class="detail-meta detail-meta-muted">No parts requested yet.</div>
 
-        <div class="part-add">
+        <div v-if="!readOnly" class="part-add">
           <!-- Catalog chips, straight from /api/catalogs — never a hardcoded
                list. Custom catalogs are per-tenant data: every business running
                GDX Dispatch defines its own set and renames or adds to them
@@ -411,8 +415,10 @@
            z-index doesn't fix it — the app's bottom nav is a separate stacking
            context and still wins — but yielding the space does, and a tech
            mid-compose isn't reaching for these buttons anyway. -->
+      <!-- readOnly: company-wide browsing (techs_see_all_jobs) — the tech
+           has no claim on this job, so dispatch actions would only 404. -->
       <div
-        v-if="!partComposerOpen"
+        v-if="!partComposerOpen && !readOnly"
         class="action-bar"
         data-testid="mobile-job-detail-actions"
       >
@@ -522,6 +528,9 @@ const parts = ref([])
 // Captured door build spec(s) for an install, carried from the estimate. Empty
 // for service calls — the section only renders when there's a door to show.
 const doorSpecs = ref([])
+// True when the server granted company-wide (techs_see_all_jobs) viewing of
+// a job the tech has no claim on — hide dispatch actions, they'd only 404.
+const readOnly = ref(false)
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 const invoiceOpen = ref(false)
@@ -644,6 +653,7 @@ async function load() {
     photos.value = r?.photos || []
     parts.value = r?.parts || []
     doorSpecs.value = r?.door_specs || []
+    readOnly.value = Boolean(r?.read_only)
     if (!job.value) error.value = 'Job not found'
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.

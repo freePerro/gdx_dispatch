@@ -230,7 +230,7 @@ def _list_ids(SessionLocal, user) -> list[str]:
     db = SessionLocal()
     try:
         r = mobile_router.mobile_all_my_jobs(
-            request=_request(), current_user=user, db=db
+            request=_request(), scope="mine", current_user=user, db=db
         )
         assert r.status_code == 200
         return [j["id"] for j in _as_json(r)["jobs"]]

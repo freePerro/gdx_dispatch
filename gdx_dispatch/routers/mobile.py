@@ -332,20 +332,28 @@ def _creator_can_read(db: Session, tenant_id: str, job_id: str, user_id: str | N
     )
 
 
-def _assert_job_read_access(db: Session, request: Request, current_user: Any, job_id: str) -> None:
+def _assert_job_read_access(db: Session, request: Request, current_user: Any, job_id: str) -> str:
     """Read-only variant of _assert_job_access: assignment rules, plus the
     creator of a still-unassigned job may view it (so a just-created job
-    from the mobile dialog can be opened from the Jobs list). Used ONLY by
-    GET endpoints — every mutating route keeps _assert_job_access."""
+    from the mobile dialog can be opened from the Jobs list), plus — when
+    the tenant has turned on ``tech_mobile.techs_see_all_jobs`` — any tech
+    may view any job (the company-wide Jobs list links here). Used ONLY by
+    GET endpoints — every mutating route keeps _assert_job_access.
+
+    Returns the grant reason ("manager" | "assigned" | "creator" |
+    "company") so callers can redact by grant level — a company-grant view
+    must not ship the customer's raw signature blob (/audit 2026-07-22)."""
     if is_dispatch_manager(current_user):
-        return
+        return "manager"
     tenant_id = _tenant_id(request)
     user_id = _user_id(current_user or {})
     technician_id = _get_technician_id(db, tenant_id, user_id)
     if _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
-        return
+        return "assigned"
     if _creator_can_read(db, tenant_id, job_id, user_id):
-        return
+        return "creator"
+    if _company_jobs_scope_allowed(db, request, current_user):
+        return "company"
     raise HTTPException(status_code=404, detail="job not found")
 
 
@@ -1363,9 +1371,28 @@ def reorder_mobile_today(
     return {"ok": True, "changed": True, "order": after_order}
 
 
+def _company_jobs_scope_allowed(db: Session, request: Request, current_user: Any) -> bool:
+    """May this caller browse the company-wide jobs list?
+
+    Dispatch/admin: always. Techs: only when the tenant has turned on
+    ``tech_mobile.techs_see_all_jobs`` (Doug 2026-07-22: "company wide
+    option and a spot in mobile for tech to see all jobs"). Read-only —
+    write endpoints never consult this.
+    """
+    if is_dispatch_manager(current_user):
+        return True
+    from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting  # noqa: PLC0415
+    return bool(
+        get_tenant_mobile_setting(
+            db, "tech_mobile.techs_see_all_jobs", request=request
+        )
+    )
+
+
 @router.get("/jobs", response_model=None)
 def mobile_all_my_jobs(
     request: Request,
+    scope: str = Query(default="mine"),
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1382,31 +1409,64 @@ def mobile_all_my_jobs(
         return jsonable_response({"detail": "unauthorized"}, 401)
     technician_id = _get_technician_id(db, tenant_id, user_id)
 
-    # Two ways a job is "mine": assigned to my technician record, or I
-    # created it and dispatch hasn't assigned it to anyone yet. The second
-    # clause is what makes a dialog-created job (no tech, no date) show up
-    # right after Create — before 2026-07-22 it vanished into the desktop
-    # "Ready to Schedule" lane and the tech concluded it never saved. The
-    # creator clause self-expires on assignment, so this list never becomes
-    # a permanent "everything I ever created" log. Callers with no
-    # technician row (e.g. an owner phone-testing) used to early-return
-    # empty; now they still see their own pending creations.
-    clauses = [
-        """(
-            CAST(j.created_by AS TEXT) = :user_id
-            AND j.assigned_to IS NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM job_assignments jx
-              WHERE CAST(jx.job_id AS TEXT) = CAST(j.id AS TEXT)
-              AND jx.deleted_at IS NULL
-            )
-        )"""
-    ]
-    params: dict[str, Any] = {"user_id": str(user_id)}
-    if technician_id:
-        clauses.append("CAST(j.assigned_to AS TEXT) = :tech_id")
-        clauses.append("ja.tech_id = :tech_id")
-        params["tech_id"] = str(technician_id)
+    # Company-wide scope (2026-07-22, Doug: "company wide option and a spot
+    # in mobile for tech to see all jobs"). Server-authoritative: the 403
+    # fires even if a client shows the toggle it shouldn't.
+    all_jobs_enabled = _company_jobs_scope_allowed(db, request, current_user)
+    if scope not in ("mine", "company"):
+        return jsonable_response({"detail": "scope must be 'mine' or 'company'"}, 400)
+    if scope == "company" and not all_jobs_enabled:
+        return jsonable_response(
+            {"detail": "company-wide jobs view is not enabled for this tenant"}, 403
+        )
+
+    params: dict[str, Any] = {}
+    if scope == "company":
+        # Every live job in the tenant (isolation is the connection). No
+        # job_assignments join — it contributed nothing here but row
+        # multiplication for DISTINCT to undo (/audit 2026-07-22). Ordered
+        # by created_at (recency of existence), NOT scheduled_at: with the
+        # old NULLS LAST ordering, date-less ready-to-schedule work — the
+        # exact thing a tech opens "All jobs" to find — would be the first
+        # thing the LIMIT truncated on a big tenant.
+        where_mine = "1=1"
+        ja_join = ""
+        order_by = "j.created_at DESC"
+        limit = 500
+    else:
+        # Two ways a job is "mine": assigned to my technician record, or I
+        # created it and dispatch hasn't assigned it to anyone yet. The second
+        # clause is what makes a dialog-created job (no tech, no date) show up
+        # right after Create — before 2026-07-22 it vanished into the desktop
+        # "Ready to Schedule" lane and the tech concluded it never saved. The
+        # creator clause self-expires on assignment, so this list never becomes
+        # a permanent "everything I ever created" log. Callers with no
+        # technician row (e.g. an owner phone-testing) used to early-return
+        # empty; now they still see their own pending creations.
+        clauses = [
+            """(
+                CAST(j.created_by AS TEXT) = :user_id
+                AND j.assigned_to IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM job_assignments jx
+                  WHERE CAST(jx.job_id AS TEXT) = CAST(j.id AS TEXT)
+                  AND jx.deleted_at IS NULL
+                )
+            )"""
+        ]
+        params["user_id"] = str(user_id)
+        if technician_id:
+            clauses.append("CAST(j.assigned_to AS TEXT) = :tech_id")
+            clauses.append("ja.tech_id = :tech_id")
+            params["tech_id"] = str(technician_id)
+        where_mine = " OR ".join(clauses)
+        ja_join = (
+            "LEFT JOIN job_assignments ja "
+            "ON CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT) "
+            "AND ja.deleted_at IS NULL"
+        )
+        order_by = "j.scheduled_at DESC NULLS LAST, j.created_at DESC"
+        limit = 200
 
     rows = db.execute(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
@@ -1414,16 +1474,16 @@ def mobile_all_my_jobs(
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
                    j.priority, j.job_type, j.created_at,
                    c.name AS customer_name,
-                   COALESCE(c.address, '') AS customer_address
+                   COALESCE(c.address, '') AS customer_address,
+                   t.name AS assigned_tech_name
             FROM jobs j
             LEFT JOIN customers c ON c.id = j.customer_id
-            LEFT JOIN job_assignments ja
-              ON CAST(ja.job_id AS TEXT) = CAST(j.id AS TEXT)
-              AND ja.deleted_at IS NULL
+            LEFT JOIN technicians t ON t.id = j.assigned_to
+            {ja_join}
             WHERE j.deleted_at IS NULL
-              AND ({" OR ".join(clauses)})
-            ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC
-            LIMIT 200
+              AND ({where_mine})
+            ORDER BY {order_by}
+            LIMIT {limit}
             """
         ),
         params,
@@ -1446,8 +1506,20 @@ def mobile_all_my_jobs(
             # (the 2026-07-16 Jobs-tab "gAAAA… where the address should be" bug).
             "customer_address": decrypt_if_ciphertext(r.get("customer_address")) or "",
             "scheduled_at": scheduled_iso,
+            # Lead tech (jobs.assigned_to) — lets the company-wide list show
+            # whose job it is. NULL for unassigned; crews show the lead only.
+            "assigned_tech_name": r.get("assigned_tech_name"),
         })
-    return jsonable_response({"count": len(jobs), "jobs": jobs, "tech_id": technician_id})
+    return jsonable_response({
+        "count": len(jobs),
+        "jobs": jobs,
+        "tech_id": technician_id,
+        "scope": scope,
+        "all_jobs_enabled": all_jobs_enabled,
+        # Honest cap: at exactly `limit` rows the list may be cut off —
+        # the UI says so instead of presenting the window as the universe.
+        "truncated": len(jobs) >= limit,
+    })
 
 
 @router.get("/my-jobs", response_model=None)
@@ -1927,10 +1999,16 @@ def get_mobile_job_detail(
 ):
     _ = current_user
     tenant_id = _tenant_id(request)
-    _assert_job_read_access(db, request, current_user, job_id)
+    grant = _assert_job_read_access(db, request, current_user, job_id)
     job = _get_job(db, tenant_id, job_id)
     if not job:
         return jsonable_response({"detail": "job not found"}, 404)
+    if grant == "company":
+        # Company-wide browsing is for situational awareness, not records
+        # access: never ship the customer's raw signature blob to a tech
+        # with no claim on the job (/audit 2026-07-22). signed_by/signed_at
+        # metadata stays — "was it signed" is legitimate context.
+        job["signature_data"] = None
 
     customer = None
     if job.get("customer_id"):
@@ -2064,6 +2142,10 @@ def get_mobile_job_detail(
             "photos": [dict(r) for r in photos],
             "parts": [dict(r) for r in parts],
             "door_specs": door_specs,
+            # Company-wide browsing (techs_see_all_jobs) is view-only: the
+            # write endpoints would 404 anyway, but the UI should not offer
+            # "On my way"/complete buttons that can only fail.
+            "read_only": grant == "company",
         }
     )
 

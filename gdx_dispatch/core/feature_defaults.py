@@ -108,6 +108,20 @@ TECH_MOBILE_SETTINGS: dict[str, dict[str, Any]] = {
         ),
     },
     # --- Phase 1.4 — Multi-Tech ------------------------------------------
+    "tech_mobile.techs_see_all_jobs": {
+        "type": "bool",
+        "default": False,
+        "bounds": None,
+        "phase": "1.4",
+        "label": "Techs can see all jobs",
+        "help": (
+            "When ON, the mobile Jobs tab gains an 'All jobs' scope so any "
+            "tech can browse every job in the company (and open them "
+            "read-only). When OFF (default), techs see only jobs assigned "
+            "to them or that they created. Write actions (start, complete, "
+            "clock-in) always require assignment regardless of this setting."
+        ),
+    },
     "tech_mobile.completion_lead_tech_only": {
         "type": "bool",
         "default": False,
