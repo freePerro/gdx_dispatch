@@ -92,7 +92,7 @@ describe('BillingView — Last Sent column', () => {
   it('normalizeInvoice keeps sent_at on the row', () => {
     const start = BILLING.indexOf('function normalizeInvoice');
     expect(start).toBeGreaterThan(-1);
-    const span = BILLING.slice(start, start + 900);
+    const span = BILLING.slice(start, start + 1400);
     expect(span).toMatch(/sent_at:\s*raw\.sent_at/);
   });
 

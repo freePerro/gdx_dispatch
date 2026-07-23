@@ -82,6 +82,23 @@ export function formatStampDateTime(input, opts) {
     : formatDateTime(input, opts);
 }
 
+/**
+ * Epoch millis for date-window FILTERING, honoring the same conventions as
+ * the display helpers above: date-only strings parse as LOCAL calendar
+ * dates (a bare new Date("2026-07-14") is UTC midnight — previous evening
+ * in every US timezone, so "Today" filters would miss today's rows), and
+ * UTC-midnight backfill stamps are treated as date-only so a Jan 1 payment
+ * doesn't land in last year. Returns null for empty/unparseable input.
+ */
+export function stampTime(input) {
+  if (!input) return null;
+  const d = isDateOnlyStamp(input)
+    ? parseLocalDateString(input.slice(0, 10))
+    : _toDate(input);
+  const t = d ? d.getTime() : NaN;
+  return Number.isNaN(t) ? null : t;
+}
+
 export function formatTime(input, { locale, options } = {}) {
   const d = _toDate(input);
   if (!d) return PLACEHOLDER;
