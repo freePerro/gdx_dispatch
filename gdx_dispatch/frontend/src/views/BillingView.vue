@@ -273,6 +273,18 @@
         <Column field="due_date" header="Due Date" sortable>
           <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
         </Column>
+        <!-- QB-backfilled invoices carry sent_at as UTC midnight of the
+             invoice date ("day known, minute not") — formatStampDate keeps
+             those on the right calendar day and the time-of-day tooltip
+             only appears for real send stamps. -->
+        <Column field="sent_at" header="Last Sent" sortable>
+          <template #body="{ data }">
+            <span
+              v-tooltip="data.sent_at && !isDateOnlyStamp(data.sent_at) ? formatDateTime(data.sent_at) : null"
+              :data-testid="`last-sent-${data.id}`"
+            >{{ formatStampDate(data.sent_at) }}</span>
+          </template>
+        </Column>
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
@@ -428,7 +440,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
-import { formatDate, formatMoney as currency } from "../composables/useFormatters";
+import { formatDate, formatDateTime, formatStampDate, isDateOnlyStamp, formatMoney as currency } from "../composables/useFormatters";
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
@@ -664,9 +676,9 @@ async function confirmBulkMarkPaid() {
 }
 
 function bulkExport() {
-  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date"];
+  const headers = ["Invoice #", "Customer", "Amount", "Status", "Due Date", "Last Sent"];
   const rows = selectedInvoices.value.map((i) => [
-    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "",
+    i.invoice_number || "", i.customer_name || "", i.total || 0, i.status || "", i.due_date || "", i.sent_at || "",
   ]);
   const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -859,6 +871,7 @@ function exportInvoices() {
       { field: "total", header: "Amount" },
       { field: "status", header: "Status" },
       { field: "due_date", header: "Due Date" },
+      { field: "sent_at", header: "Last Sent" },
     ],
     "invoices",
   );
@@ -990,6 +1003,7 @@ function normalizeInvoice(raw, customerMap = {}) {
     balance_due: toNum(raw.balance_due ?? raw.total ?? raw.amount ?? 0),
     status: capitalize(raw.effective_status || raw.status) || "Draft",
     due_date: raw.due_date || raw.dueDate || "",
+    sent_at: raw.sent_at || "",
     paid_at: raw.paid_at || "",
     updated_at: raw.updated_at || "",
     notes: raw.notes || "",

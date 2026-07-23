@@ -381,7 +381,11 @@ def test_send_invoice_marks_sent_and_sets_public_token(tenant_db_session):
 
     assert sent["status"] == "sent"
     assert sent["public_token"]
-    assert sent["sent_at"] is not None
+    # 2026-07-22 — sent_at is a DELIVERY fact (it feeds Billing's "Last Sent"
+    # column). This invoice's customer_id points at no Customer row, so no
+    # email went out and the stamp must stay empty even though status flipped.
+    assert sent["email_sent"] is False
+    assert sent["sent_at"] is None
 
 
 def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, monkeypatch):
@@ -427,21 +431,45 @@ def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, 
 
     assert sent["email_sent"] is True
     assert sent["pdf_attached"] is False
+    assert sent["sent_at"] is not None  # acknowledged delivery → stamp moves
     assert captured["attachments"] is None
 
 
-def test_send_invoice_twice_is_a_valid_resend(tenant_db_session):
+def test_send_invoice_twice_is_a_valid_resend(tenant_db_session, monkeypatch):
     """2026-07-20 — re-send must work: the concrete case is an invoice whose
     first email went out without the PDF. sent→sent transitions again without
-    a 409 and re-stamps sent_at (only paid/void are locked)."""
+    a 409 and re-stamps sent_at (only paid/void are locked). Delivery is
+    faked as acknowledged because sent_at only moves on a real send
+    (2026-07-22 — it feeds Billing's "Last Sent" column)."""
+    from gdx_dispatch.models.tenant_models import Customer
+
+    monkeypatch.setattr(
+        "gdx_dispatch.core.transactional_email.send_transactional_email",
+        lambda **kwargs: (True, "outlook_graph", None),
+    )
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf",
+        lambda **kw: b"%PDF-1.4 tiny",
+    )
+
+    cust = Customer(
+        name="Resend Customer", email="resend@example.com",
+        phone="555-0401", company_id="tenant-test",
+    )
+    tenant_db_session.add(cust)
+    tenant_db_session.commit()
+    tenant_db_session.refresh(cust)
+
     job = _seed_job(tenant_db_session)
-    inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
+    inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=cust.id), _=_current_user(), db=tenant_db_session)
 
     first = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
     second = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
     assert first["status"] == "sent"
     assert second["status"] == "sent"
+    assert first["email_sent"] is True
+    assert first["sent_at"] is not None
     assert second["sent_at"] >= first["sent_at"]
 
 

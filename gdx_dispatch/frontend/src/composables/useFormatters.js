@@ -57,6 +57,31 @@ export function formatDateTime(input, { locale, options } = {}) {
   return new Intl.DateTimeFormat(locale, opts).format(d);
 }
 
+/**
+ * Backfilled timestamps (QB sync: modules/quickbooks/sync.py stamps sent_at /
+ * paid_at as UTC MIDNIGHT of the business date) mean "we know the day, not
+ * the minute". Rendering them through the normal datetime path walks the day
+ * back in every US timezone and invents a phantom evening time. These helpers
+ * detect the convention and render the UTC calendar date as a local calendar
+ * date instead. A real send at exactly 00:00:00 UTC degrades to date-only
+ * display — acceptable.
+ */
+const DATE_ONLY_STAMP = /T00:00:00(?:\.0+)?(?:\+00:00|Z)?$/;
+
+export function isDateOnlyStamp(input) {
+  return typeof input === 'string' && DATE_ONLY_STAMP.test(input);
+}
+
+export function formatStampDate(input, opts) {
+  return formatDate(isDateOnlyStamp(input) ? input.slice(0, 10) : input, opts);
+}
+
+export function formatStampDateTime(input, opts) {
+  return isDateOnlyStamp(input)
+    ? formatDate(input.slice(0, 10), opts)
+    : formatDateTime(input, opts);
+}
+
 export function formatTime(input, { locale, options } = {}) {
   const d = _toDate(input);
   if (!d) return PLACEHOLDER;
