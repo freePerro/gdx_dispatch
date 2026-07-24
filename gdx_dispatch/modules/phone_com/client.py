@@ -365,12 +365,17 @@ class PhoneComClient:
         self,
         *,
         voip_id: int | None = None,
+        extension_id: int | str | None = None,
         from_epoch: int | None = None,
         to_epoch: int | None = None,
         direction: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
+        # SMS/MMS live under the extension scope on Phone.com — the
+        # account-level /messages endpoint returns total=0 even when the
+        # account's extensions hold messages (verified against prod
+        # 2026-07-23). Always prefer extension_id.
         vid = self._resolve_voip_id(voip_id)
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if from_epoch is not None:
@@ -383,7 +388,11 @@ class PhoneComClient:
             )
         if direction is not None:
             params["filters[direction]"] = f"eq:{direction}"
-        return self._get_paginated(f"/accounts/{vid}/messages", params)
+        if extension_id is not None:
+            path = f"/accounts/{vid}/extensions/{extension_id}/messages"
+        else:
+            path = f"/accounts/{vid}/messages"
+        return self._get_paginated(path, params)
 
     def list_extensions(
         self,

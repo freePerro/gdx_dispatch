@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -783,7 +783,10 @@ def send_message(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     msg = PhoneComMessage(
-        phone_com_message_id=str(result.get("id") or "out-pending"),
+        # Unique fallback when Phone.com's POST response omits an id — a
+        # constant here would collide with the column's UNIQUE index on the
+        # second id-less send (after the SMS already went out).
+        phone_com_message_id=str(result.get("id") or f"out-{uuid4()}"),
         thread_key=_thread_key_for(from_number, payload.to),
         direction="out",
         from_number=from_number,

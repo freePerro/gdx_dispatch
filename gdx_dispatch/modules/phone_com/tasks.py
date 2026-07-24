@@ -26,7 +26,11 @@ from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal, SessionLocal
 from gdx_dispatch.control.models import Tenant, TenantSettings
 from gdx_dispatch.modules.phone_com.stats import roll_up_recent
-from gdx_dispatch.modules.phone_com.sync import _open_tenant_session, run_full_resync
+from gdx_dispatch.modules.phone_com.sync import (
+    _open_tenant_session,
+    run_full_resync,
+    sync_recent_messages,
+)
 
 
 log = logging.getLogger("gdx_dispatch.modules.phone_com.tasks")
@@ -73,6 +77,38 @@ def sync_all_phone_com_tenants(self) -> dict[str, int]:
         run_phone_com_sync.delay(tid)
 
     log.info("phone_com.sync_all_phone_com_tenants dispatched=%d", len(tenant_ids))
+    return {"dispatched": len(tenant_ids)}
+
+
+@celery_app.task(name="phone_com.sync_recent_messages", queue="priority:low", bind=True)
+def sync_recent_messages_task(self, tenant_id: str) -> dict[str, Any]:
+    """Per-tenant messages-only poll (see sync.sync_recent_messages). This is
+    the SMS inbox's live path — Phone.com webhooks don't deliver to us."""
+    _ = self
+    tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
+    with contextlib.closing(SessionLocal()) as cdb:
+        try:
+            result = sync_recent_messages(cdb, tid)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("phone_com.sync_recent_messages failed tenant=%s", tid)
+            return {"ok": False, "error": str(exc), "tenant_id": str(tid)}
+    return result | {"tenant_id": str(tid)}
+
+
+@celery_app.task(name="phone_com.sync_all_recent_messages", queue="priority:low", bind=True)
+def sync_all_recent_messages(self) -> dict[str, int]:
+    """Beat task — fan out the messages-only poll to every configured tenant."""
+    _ = self
+    with contextlib.closing(SessionLocal()) as cdb:
+        rows = (
+            cdb.query(TenantSettings.tenant_id)
+            .filter(TenantSettings.phone_com_token_enc.isnot(None))
+            .all()
+        )
+        tenant_ids = [str(r[0]) for r in rows]
+    for tid in tenant_ids:
+        sync_recent_messages_task.delay(tid)
+    log.info("phone_com.sync_all_recent_messages dispatched=%d", len(tenant_ids))
     return {"dispatched": len(tenant_ids)}
 
 
@@ -222,7 +258,7 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
     from gdx_dispatch.modules.phone_com.client import PhoneComClient
 
     tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
-    base = os.environ.get("TENANT_BASE_DOMAIN", "example.com").strip("/")
+    base = os.environ.get("TENANT_BASE_DOMAIN", "").strip().strip("/")
     with contextlib.closing(SessionLocal()) as cdb:
         settings = cdb.get(TenantSettings, tid)
         tenant = cdb.get(Tenant, tid)
@@ -235,6 +271,17 @@ def rotate_webhook_secret(self, tenant_id: str) -> dict[str, Any]:
             or not tenant.slug
         ):
             return {"ok": False, "skipped": "not configured", "tenant_id": str(tid)}
+        if not base:
+            # Rotating without the real domain would PATCH the Phone.com
+            # callback to https://{slug}.example.com/... — a dead URL that
+            # silently kills webhook delivery (this exact failure was live on
+            # prod until 2026-07-23). Refuse loudly instead.
+            log.error(
+                "phone_com.rotate_webhook_secret: TENANT_BASE_DOMAIN unset — "
+                "refusing to rotate tenant=%s (would register an example.com URL)",
+                tid,
+            )
+            return {"ok": False, "error": "TENANT_BASE_DOMAIN unset", "tenant_id": str(tid)}
         callback_id = settings.phone_com_webhook_callback_id
         token = key_storage.get_token(cdb, tid)
         if token is None:

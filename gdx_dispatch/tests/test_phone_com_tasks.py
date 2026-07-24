@@ -207,3 +207,79 @@ def test_rotate_skips_unconfigured_tenant(control_db):
     result = pc_tasks.rotate_webhook_secret.run(str(bogus))
     assert result["ok"] is False
     assert "not configured" in result.get("skipped", "")
+
+# ── messages-refresh beat task (SMS-inbox fix, 2026-07-23) ──────────────
+
+
+def test_sync_all_recent_messages_dispatches_only_token_set_tenants(control_db):
+    sm = control_db
+    s = sm()
+    a, b = uuid4(), uuid4()
+    for tid, slug in [(a, "ta"), (b, "tb")]:
+        s.add(Tenant(id=tid, slug=slug, name=slug.upper()))
+    s.commit()
+    key_storage.set_token(s, a, "phc-good-a-12345")
+    s.commit()
+    s.close()
+
+    with patch.object(pc_tasks.sync_recent_messages_task, "delay") as mock_delay:
+        result = pc_tasks.sync_all_recent_messages.run()
+    assert result == {"dispatched": 1}
+    assert mock_delay.call_args_list[0].args[0] == str(a)
+
+
+def test_sync_recent_messages_task_invokes_sync(control_db, monkeypatch):
+    seen = {}
+
+    def fake(cdb, tid, **kw):
+        seen["tid"] = tid
+        return {"ok": True, "messages_synced": 5}
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.phone_com.tasks.sync_recent_messages", fake,
+    )
+    tid = uuid4()
+    result = pc_tasks.sync_recent_messages_task.run(str(tid))
+    assert result["ok"] is True
+    assert result["messages_synced"] == 5
+    assert seen["tid"] == tid
+
+
+def test_beat_schedule_includes_messages_refresh():
+    from gdx_dispatch.core.scheduler import build_beat_schedule
+
+    sched = build_beat_schedule()
+    assert "phone-com-messages-refresh" in sched
+    entry = sched["phone-com-messages-refresh"]
+    assert entry["task"] == "phone_com.sync_all_recent_messages"
+
+
+def test_rotate_refuses_without_tenant_base_domain(control_db, monkeypatch):
+    """Rotating with TENANT_BASE_DOMAIN unset would PATCH the Phone.com
+    callback to https://{slug}.example.com/... and silently kill webhook
+    delivery (live on prod until 2026-07-23). The task must refuse."""
+    from gdx_dispatch.control.models import TenantSettings
+
+    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
+    sm = control_db
+    s = sm()
+    tid = uuid4()
+    s.add(Tenant(id=tid, slug="ta", name="TA"))
+    s.commit()
+    key_storage.set_token(s, tid, "phc-good-a-12345")
+    ts_row = s.get(TenantSettings, tid)
+    ts_row.phone_com_webhook_callback_id = 99999
+    key_storage.get_or_create_webhook_secret(s, tid)
+    s.commit()
+    secret_before = s.get(TenantSettings, tid).phone_com_webhook_secret
+    s.close()
+
+    result = pc_tasks.rotate_webhook_secret.run(str(tid))
+    assert result["ok"] is False
+    assert "TENANT_BASE_DOMAIN" in result["error"]
+
+    s = sm()
+    try:
+        assert s.get(TenantSettings, tid).phone_com_webhook_secret == secret_before
+    finally:
+        s.close()
