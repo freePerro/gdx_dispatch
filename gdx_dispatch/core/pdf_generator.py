@@ -7,6 +7,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
+from gdx_dispatch.core.branding_logo import resolve_logo_for_pdf
+
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _JINJA_ENV = Environment(
     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -180,7 +182,10 @@ def _default_branding(tenant_branding: dict[str, Any] | None) -> dict[str, Any]:
     branding = dict(tenant_branding or {})
     return {
         "company_name": branding.get("company_name") or "",
-        "logo": branding.get("logo") or "",
+        # An uploaded logo is stored as an app-relative URL; WeasyPrint renders
+        # with a filesystem base_url and can't resolve it — translate to a
+        # file:// URI of the stored bytes (core/branding_logo.py).
+        "logo": resolve_logo_for_pdf(branding.get("logo") or ""),
         "primary_color": branding.get("primary_color") or "#0f172a",
         "secondary_color": branding.get("secondary_color") or "#2563eb",
         "address": branding.get("address") or "",

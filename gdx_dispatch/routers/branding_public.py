@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
@@ -134,3 +134,30 @@ def get_modules_public(
     payload.sort(key=lambda item: item["name"])
 
     return {"modules": payload}
+
+
+@router.get("/branding/logo/{filename}", include_in_schema=False)
+def serve_branding_logo(filename: str):
+    """Serve the uploaded company logo — deliberately unauthenticated.
+
+    The sidebar renders ``branding.logo_url`` in a plain ``<img>`` tag, which
+    cannot attach a Bearer header, so this route must be public. That is safe
+    because the strict filename pattern below matches ONLY files minted by
+    ``routers/settings.py:upload_branding_logo`` (branding-logo-<uuid4hex>.png/
+    jpg) — no other document in the flat upload dir is addressable here, and
+    the uuid4 segment makes names unguessable. A company logo is public
+    marketing material by nature.
+    """
+    from fastapi.responses import FileResponse
+
+    from gdx_dispatch.core.branding_logo import branding_logo_file
+
+    path = branding_logo_file(filename)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    media_type = "image/png" if filename.endswith(".png") else "image/jpeg"
+    # Filenames are unique per upload, so the content behind one never
+    # changes — safe to let browsers cache for a day.
+    return FileResponse(
+        path, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"}
+    )

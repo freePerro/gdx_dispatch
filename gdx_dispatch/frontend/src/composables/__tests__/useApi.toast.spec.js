@@ -127,3 +127,46 @@ describe('useApi toast contract', () => {
     expect(document.body.innerHTML).not.toContain('Something went wrong');
   });
 });
+
+describe('useApi delete alias toast contract (contract-gap Tier 1.1)', () => {
+  let fetchMock;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    document.body.innerHTML = '';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('delete(url, {}, { successMessage }) fires the toast — the PayrollView shape', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse({ ok: true }));
+    const { wrapper, api } = makeHarness();
+
+    await api.delete('/api/payroll/entries/e1', {}, { successMessage: 'Entry deleted' });
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.innerHTML).toContain('Entry deleted');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/payroll/entries/e1');
+    expect(init.method).toBe('DELETE');
+    wrapper.unmount();
+  });
+
+  it('delete(url) plain still deletes and shows no toast', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse({ ok: true }));
+    const { wrapper, api } = makeHarness();
+
+    await api.delete('/api/vendors/v1');
+    await nextTick();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/vendors/v1');
+    expect(init.method).toBe('DELETE');
+    wrapper.unmount();
+  });
+});

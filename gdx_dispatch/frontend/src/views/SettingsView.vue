@@ -1217,10 +1217,17 @@ async function uploadLogoIfPresent() {
   if (!branding.logo) return;
   const formData = new FormData();
   formData.append("logo", branding.logo);
-  await api.request("/api/settings/branding/logo", {
+  const updated = await api.request("/api/settings/branding/logo", {
     method: "POST",
     body: formData,
   });
+  if (updated?.logo_url) {
+    // Push the fresh URL into the theme store so the sidebar logo swaps
+    // without a reload; clear the pending file so a later "Save" doesn't
+    // re-upload the same bytes.
+    theme.branding = { ...theme.branding, logo_url: updated.logo_url };
+    branding.logo = null;
+  }
 }
 
 async function saveBranding() {
