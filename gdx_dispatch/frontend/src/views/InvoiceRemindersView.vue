@@ -402,9 +402,9 @@ onMounted(loadSettings);
 
 .template-box {
   padding: 0.75rem;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--p-content-border-color);
   border-radius: 0.375rem;
-  background: #f8fafc;
+  background: var(--p-content-hover-background);
   min-height: 120px;
   white-space: pre-wrap;
   word-break: break-word;
