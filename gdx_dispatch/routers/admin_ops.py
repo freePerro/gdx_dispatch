@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -413,36 +414,123 @@ async def import_customers(
 
 @router.get("/audit-log")
 def get_audit_log(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
+    # AuditLogViewer's real contract (Tier-8): limit/offset pagination + five
+    # filters + a chain_integrity badge. The old page/page_size-only handler
+    # meant the viewer's params were silently dropped by FastAPI — pagination
+    # was a treadmill, every filter a no-op, and the "hash-chained" badge
+    # never rendered. page/page_size stay accepted for back-compat.
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=200),
+    action: str | None = Query(default=None, max_length=120),
+    resource_type: str | None = Query(default=None, max_length=80),
+    principal_identity_id: str | None = Query(default=None, max_length=64),
+    since: str | None = Query(default=None, max_length=40),
+    until: str | None = Query(default=None, max_length=40),
     _: dict = Depends(_require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    total = int(db.execute(select(func.count()).select_from(AuditLog)).scalar_one() or 0)
-    offset = (page - 1) * page_size
-    rows = list(
-        db.execute(select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(offset).limit(page_size))
-        .scalars()
-        .all()
-    )
+    # Called directly (tests) the unfilled Query(...) defaults arrive as
+    # FastAPI marker objects rather than None; normalize so `if action:` etc.
+    # don't treat a marker as a real filter value.
+    action = action if isinstance(action, str) else None
+    resource_type = resource_type if isinstance(resource_type, str) else None
+    principal_identity_id = principal_identity_id if isinstance(principal_identity_id, str) else None
+    since = since if isinstance(since, str) else None
+    until = until if isinstance(until, str) else None
+    if not isinstance(limit, int):
+        limit = 50
+    if not isinstance(offset, int):
+        offset = 0
+
+    if page_size is not None and isinstance(page_size, int):
+        limit = page_size
+    if page is not None and isinstance(page, int):
+        offset = (page - 1) * limit
+
+    filters = []
+    # action matches either the modern `action` column or the legacy
+    # `event_type` (the viewer's rows read from both).
+    if action:
+        filters.append((AuditLog.action == action) | (AuditLog.event_type == action))
+    if resource_type:
+        filters.append(AuditLog.entity_type == resource_type)
+    if principal_identity_id:
+        filters.append(
+            (AuditLog.user_id == principal_identity_id)
+            | (AuditLog.actor_id == principal_identity_id)
+        )
+    for raw, col_cmp in ((since, "ge"), (until, "le")):
+        if raw:
+            with contextlib.suppress(ValueError):
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                filters.append(
+                    AuditLog.created_at >= parsed if col_cmp == "ge" else AuditLog.created_at <= parsed
+                )
+
+    count_q = select(func.count()).select_from(AuditLog)
+    list_q = select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    for f in filters:
+        count_q = count_q.where(f)
+        list_q = list_q.where(f)
+
+    total = int(db.execute(count_q).scalar_one() or 0)
+    rows = list(db.execute(list_q.offset(offset).limit(limit)).scalars().all())
+
     return {
-        "page": page,
-        "page_size": page_size,
+        "page": (offset // limit) + 1 if limit else 1,
+        "page_size": limit,
+        "limit": limit,
+        "offset": offset,
         "total": total,
+        "chain_integrity": _verify_chain_window(rows),
         "items": [
             {
                 "id": str(row.id),
                 "event_type": row.event_type,
+                "action": row.action,
                 "actor_id": row.actor_id,
                 "actor_role": row.actor_role,
                 "entity_type": row.entity_type,
                 "entity_id": row.entity_id,
                 "payload": row.payload,
+                "details": row.details,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
         ],
     }
+
+
+def _verify_chain_window(rows_desc: list) -> dict:
+    """Verify the hash-chain over the DISPLAYED window (rows arrive newest-first).
+
+    Recomputes each row's hash and checks the prev_hash linkage between
+    consecutive displayed rows, seeding from the oldest row's stored prev_hash.
+    Bounded to the page so a 59k-row table doesn't get fully re-hashed on every
+    load; break_at is the 1-based position in display (newest-first) order.
+    """
+    import hashlib
+
+    from gdx_dispatch.core.audit import _payload_json
+
+    if not rows_desc:
+        return {"valid": True, "break_at": None}
+    ordered = list(reversed(rows_desc))  # oldest → newest, chain direction
+    prev_hash = ordered[0].prev_hash or ""
+    for asc_idx, row in enumerate(ordered):
+        actor = row.user_id or row.actor_id or "system"
+        details = row.details if row.details is not None else (row.payload or {})
+        act = row.action or row.event_type or "unknown"
+        row_data = f"{row.tenant_id}:{actor}:{act}:{row.entity_type}:{row.entity_id}:{_payload_json(details)}:{row.request_id}"
+        expected = hashlib.sha256(f"{prev_hash}{row_data}".encode()).hexdigest()
+        stored = row.row_hash or row.hash
+        if row.prev_hash != prev_hash or stored != expected:
+            # translate ascending index back to display (newest-first) position
+            return {"valid": False, "break_at": len(ordered) - asc_idx}
+        prev_hash = stored
+    return {"valid": True, "break_at": None}
 
 
 @router.get("/permissions")
