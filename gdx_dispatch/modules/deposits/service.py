@@ -217,21 +217,24 @@ def create_deposit_invoice(
 def adopt_orphan_deposit_invoices(db: Session, estimate, job_id) -> int:
     """Backfill job_id on deposit invoices born from this estimate before it
     had a job (mobile accept creates no job). Called by
-    _create_job_from_estimate inside its transaction; no commit here."""
-    from sqlalchemy import update
+    _create_job_from_estimate inside its transaction; no commit here.
 
-    rows = db.execute(
-        update(Invoice)
-        .where(
+    ORM mutation, deliberately NOT a Core UPDATE — the GL writer inventory
+    (test_gl_writer_inventory) forbids raw Core writes to money tables
+    because they bypass the session flush guard the ledger listens to."""
+    orphans = db.execute(
+        select(Invoice).where(
             Invoice.estimate_id == estimate.id,
             Invoice.billing_type == "deposit",
             Invoice.job_id.is_(None),
             Invoice.deleted_at.is_(None),
         )
-        .values(job_id=job_id)
-        .returning(Invoice.id)
     ).scalars().all()
-    return len(rows)
+    for inv in orphans:
+        inv.job_id = job_id
+    if orphans:
+        db.flush()
+    return len(orphans)
 
 
 def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dict | None:
