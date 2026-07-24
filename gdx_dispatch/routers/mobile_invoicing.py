@@ -415,6 +415,25 @@ def mobile_create_invoice(
         tax_amount_value = 0.0
         total_value = 0.0
 
+    # Snapshot the source estimate's "total-only" display onto the invoice so
+    # the invoice PDF the customer receives matches the estimate they already
+    # saw. Best-effort — a features read must never block invoicing (mirrors
+    # the office path in routers/invoices.py).
+    hide_line_prices_value = False
+    if estimate is not None:
+        try:
+            from gdx_dispatch.modules.estimates_features import (
+                effective_hide_line_prices,
+                get_features,
+            )
+            _hide_default = get_features(str(tenant_id)).hide_line_prices
+            hide_line_prices_value = effective_hide_line_prices(
+                estimate.hide_line_prices, _hide_default
+            )
+        except Exception:
+            log.exception("mobile_invoice_hide_line_prices_resolve_failed")
+            hide_line_prices_value = False
+
     invoice = Invoice(
         id=uuid4(),
         job_id=_UUID(job_id),
@@ -427,6 +446,7 @@ def mobile_create_invoice(
         tax_amount=_money(tax_amount_value),
         total=_money(total_value),
         balance_due=_money(total_value),
+        hide_line_prices=hide_line_prices_value,
         status="draft",
         invoice_date=invoice_date_value,
         due_date=due_date_value,

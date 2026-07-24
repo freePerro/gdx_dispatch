@@ -240,6 +240,40 @@ def test_create_invoice_from_accepted_quote(session_factory):
         db.close()
 
 
+def test_create_invoice_inherits_hide_line_prices(session_factory):
+    """The truck path must snapshot the estimate's effective "total-only"
+    display onto the invoice, same as the office path — otherwise a tech
+    generating the invoice re-exposes per-line prices the customer never saw."""
+    from gdx_dispatch.models.tenant_models import Invoice
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    db = session_factory()
+    try:
+        # ORM update, not raw SQL — SQLite stores Uuid PKs as 32-char hex,
+        # so a raw `WHERE id = :dashed_str` silently matches zero rows.
+        est = db.get(Estimate, UUID(estimate_id))
+        assert est is not None
+        est.hide_line_prices = True
+        db.commit()
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            resp = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(
+                    estimate_id=estimate_id, send_email=False,
+                ),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        invoice = db.get(Invoice, UUID(body["id"]))
+        assert invoice is not None
+        assert bool(invoice.hide_line_prices) is True
+    finally:
+        db.close()
+
+
 def test_create_invoice_unauthorized_404(session_factory):
     seed = _seed(session_factory)
     db = session_factory()
