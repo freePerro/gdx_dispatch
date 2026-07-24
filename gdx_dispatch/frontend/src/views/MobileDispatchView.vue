@@ -533,7 +533,7 @@ onUnmounted(() => {
             <ol v-else class="bd-list">
               <li v-for="job in unassignedJobs" :key="job.id" class="job-card unassigned-card">
                 <div class="job-row">
-                  <span class="job-customer">{{ displayCustomer(job) }}</span>
+                  <span class="job-customer"><i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" /> {{ displayCustomer(job) }}</span>
                   <Tag :value="statusBadgeValue(job.status)" :severity="statusSeverity(job.status)" />
                 </div>
                 <div class="job-meta">
@@ -569,7 +569,7 @@ onUnmounted(() => {
               <li v-if="!tech.jobs.length" class="bd-empty">No jobs.</li>
               <li v-for="job in tech.jobs" :key="job.id" class="job-card tech-job-card">
                 <div class="job-row">
-                  <span class="job-customer">{{ displayCustomer(job) }}</span>
+                  <span class="job-customer"><i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" /> {{ displayCustomer(job) }}</span>
                   <Tag :value="canonicalStatus(job.status) ? job.status : 'assigned'" :severity="statusSeverity(job.status)" />
                 </div>
                 <div class="job-meta">
@@ -1092,4 +1092,5 @@ onUnmounted(() => {
   font-weight: 500;
   margin-bottom: 0.2rem;
 }
+.return-visit-icon { color: var(--color-warning-500, #d97706); font-size: 0.8em; margin-right: 0.2rem; }
 </style>

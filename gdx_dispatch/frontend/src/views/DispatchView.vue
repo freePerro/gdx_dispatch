@@ -220,7 +220,10 @@
                 @click="openJobDrawer(job)"
               >
                 <div class="job-card-header">
-                  <span class="job-customer">{{ displayCustomer(job) }}</span>
+                  <span class="job-customer">
+                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" data-testid="return-visit-icon" />
+                    {{ displayCustomer(job) }}
+                  </span>
                   <JobStateChip :job="job" data-testid="job-status-tag" />
                 </div>
                 <div class="job-card-body">
@@ -370,6 +373,7 @@
                   @dragend="draggingJobId = null"
                   @click="openJobDrawer(job)">
                   <div class="job-customer-name">
+                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
                     {{ displayCustomer(job) === 'No customer attached (lead)' ? '—' : displayCustomer(job) }}
                     <Tag v-if="isOverdue(job)" value="OVERDUE" severity="danger" style="margin-left:0.4rem; font-size:0.65rem" />
                   </div>
@@ -459,7 +463,10 @@
                 class="job-card week-job-card"
               >
                 <div class="job-card-header">
-                  <span class="job-customer">{{ displayCustomer(job) }}</span>
+                  <span class="job-customer">
+                    <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+                    {{ displayCustomer(job) }}
+                  </span>
                   <JobStateChip :job="job" />
                 </div>
                 <p class="job-line"><i class="pi pi-user"></i> {{ techName(job.technician_id) }}</p>
@@ -2083,6 +2090,7 @@ defineExpose({
   margin-bottom: 0.4rem;
 }
 
+.return-visit-icon { color: var(--color-warning-500, #d97706); font-size: 0.8em; margin-right: 0.25rem; }
 .job-customer {
   font-weight: 700;
   font-size: 0.9rem;

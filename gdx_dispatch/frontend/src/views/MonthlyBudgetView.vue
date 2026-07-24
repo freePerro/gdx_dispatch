@@ -334,6 +334,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue';
+import { useToast } from 'primevue/usetoast';
 import { useBudget } from '../composables/useBudget';
 import { formatMoney as money, formatDateTime as formatExact, formatPercent } from '../composables/useFormatters';
 import Toolbar from 'primevue/toolbar';
@@ -349,6 +350,7 @@ import ProgressSpinner from 'primevue/progressspinner';
 
 import { useApi } from '../composables/useApi';
 const api = useApi();
+const toast = useToast();
 
 const {
   year, month, data, loading, error,
@@ -479,8 +481,19 @@ async function onSeed() {
   try {
     // Composable still accepts overwrite arg for back-compat; we pass false
     // explicitly — server no longer honors it either way.
-    await seed(seedLookback.value, false);
+    const result = await seed(seedLookback.value, false);
     seedDialogOpen.value = false;
+    // Tier-3 gap: the server reports {created, skipped_existing} and this
+    // used to discard it — "0 created, 40 skipped" was indistinguishable
+    // from a full seed.
+    const created = Number(result?.created ?? 0);
+    const skipped = Number(result?.skipped_existing ?? 0);
+    toast.add({
+      severity: created > 0 ? 'success' : 'info',
+      summary: created > 0 ? 'Budget seeded' : 'Nothing new to seed',
+      detail: `${created} line${created === 1 ? '' : 's'} created, ${skipped} already existed`,
+      life: 5000,
+    });
   } catch (e) { /* toasted */ }
 }
 

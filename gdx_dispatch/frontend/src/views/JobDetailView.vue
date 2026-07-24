@@ -23,6 +23,13 @@
               data-testid="job-detail-callback"
               v-tooltip.bottom="`Return visit within ${job.callback_window_days || 90} days — different P&L treatment`"
             />
+            <Tag
+              v-if="job.is_return_visit"
+              value="RETURN VISIT"
+              severity="warn"
+              data-testid="job-detail-return-visit"
+              v-tooltip.bottom="'Spawned as a return trip from a completed job — not fresh work'"
+            />
           </div>
         </div>
         <div class="header-actions">

@@ -666,7 +666,7 @@ def list_jobs(
                 "SELECT j.id, j.job_number, j.title, j.description, j.status, j.lifecycle_stage, "
                 "j.dispatch_status, j.billing_status, j.scheduled_at, j.completed_at, "
                 "j.priority, j.job_type, j.customer_id, j.assigned_to, j.holding_area_id, "
-                "j.scheduled_duration_hours, j.location_id, "
+                "j.scheduled_duration_hours, j.location_id, j.is_return_visit, "
                 "j.created_at, j.updated_at, "
                 "c.name AS customer_name, c.phone AS customer_phone, "
                 "t.name AS tech_name, "
