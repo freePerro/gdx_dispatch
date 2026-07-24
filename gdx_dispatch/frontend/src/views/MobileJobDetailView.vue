@@ -465,6 +465,20 @@
         />
       </div>
 
+      <!-- Deposit state (2026-07-23): the truck needs to know money already
+           moved before quoting a collect-on-completion number. -->
+      <div v-if="job.deposit" class="deposit-banner" data-testid="mjd-deposit">
+        <i class="pi pi-wallet" />
+        <span v-if="job.deposit.deposit_balance > 0">
+          Deposit: ${{ (job.deposit.deposit_paid || 0).toFixed(2) }} paid of
+          ${{ (job.deposit.deposit_total || 0).toFixed(2) }} —
+          ${{ job.deposit.deposit_balance.toFixed(2) }} still due
+        </span>
+        <span v-else>
+          Deposit paid: ${{ (job.deposit.deposit_paid || 0).toFixed(2) }} — comes off the final bill
+        </span>
+      </div>
+
       <MobileJobCloseoutDialog
         v-model:visible="closeoutOpen"
         :job-id="String(job.id)"
@@ -1255,4 +1269,12 @@ onMounted(() => {
 .urgent-toggle { display: flex; align-items: center; gap: 0.4rem; min-height: 44px; }
 .urgent-toggle label { font-size: 0.9rem; }
 .part-controls :deep(.p-button) { min-height: 44px; }
+
+.deposit-banner {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-top: 0.6rem; padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem; font-size: 0.85rem;
+  background: var(--p-highlight-background, #eff6ff);
+  border: 1px solid var(--p-content-border-color, #bfdbfe);
+}
 </style>

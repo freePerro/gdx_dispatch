@@ -418,6 +418,46 @@ def _job_is_billed(db: Session, job_id: Any) -> bool:
         return True
 
 
+def _job_deposit_summary(db: Session, job_id: Any) -> dict[str, float] | None:
+    """Deposit money state for the job screen (2026-07-23) — the truck needs
+    to know money already moved ("collect $6,000? No, they paid half online").
+    None when the job has no live deposit invoices; failures degrade to None
+    (a missing summary must never break the job screen)."""
+    from gdx_dispatch.models.tenant_models import Invoice, Payment
+
+    try:
+        jid = job_id if isinstance(job_id, _UUID) else _UUID(str(job_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    try:
+        rows = db.execute(
+            select(Invoice).where(
+                Invoice.job_id == jid,
+                Invoice.billing_type == "deposit",
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+            )
+        ).scalars().all()
+        if not rows:
+            return None
+        paid = 0.0
+        for r in rows:
+            paid += float(db.execute(
+                select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                    Payment.invoice_id == r.id,
+                    Payment.voided_at.is_(None),
+                )
+            ).scalar_one() or 0)
+        return {
+            "deposit_total": round(sum(float(r.total or 0) for r in rows), 2),
+            "deposit_paid": round(paid, 2),
+            "deposit_balance": round(sum(float(r.balance_due or 0) for r in rows), 2),
+        }
+    except SQLAlchemyError:
+        log.exception("mobile_job_deposit_summary_failed", extra={"job_id": str(job_id)})
+        return None
+
+
 def _build_navigation_link(address: str | None) -> str | None:
     addr = (address or "").strip()
     if not addr:
@@ -2048,6 +2088,8 @@ def get_mobile_job_detail(
     # invoiced months ago, so it needs the real answer to avoid offering to
     # re-bill it.
     job["billed"] = _job_is_billed(db, job.get("id"))
+    # Deposit state rides along (2026-07-23): null when no deposit exists.
+    job["deposit"] = _job_deposit_summary(db, job.get("id"))
 
     # The people at this customer beyond the one name/phone on the record. The
     # tech needs them to know who to actually call, and needs to see what's

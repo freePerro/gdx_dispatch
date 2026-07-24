@@ -52,6 +52,10 @@ def invoice(db_session):
         subtotal=150.00,
         tax_amount=12.00,
         total=162.00,
+        # 2026-07-23: create_intent now refuses zero-balance invoices (an
+        # open /pay tab can outlive its invoice). The fixture predates the
+        # column being read anywhere — a sent invoice for $162 owes $162.
+        balance_due=162.00,
         status="sent",
         public_token="test-public-token-abc123",
         company_id="tenant-test",

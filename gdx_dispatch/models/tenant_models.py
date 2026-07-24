@@ -384,6 +384,13 @@ class Invoice(Base):
     # invoice's revenue to one fake job. Customer_id is the required link;
     # job_id is optional. Callers that read job_id check for None first.
     job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
+    # 2026-07-23 — deposit invoices. Which estimate this invoice was born
+    # from (set for deposit invoices created at estimate acceptance). A
+    # mobile-accepted quote may have no job yet, so job_id alone can't tie
+    # the deposit back to the sale; when the estimate converts,
+    # _create_job_from_estimate backfills job_id through this link. No FK —
+    # estimates lives on TenantBase metadata (migration 036 adds the column).
+    estimate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     invoice_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     billing_type: Mapped[str] = mapped_column(Enum("standard", "deposit", "progress", "final", name="invoice_billing_type"), nullable=False, default="standard")
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

@@ -18,7 +18,17 @@ from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Job, JobPartNeeded
-from gdx_dispatch.modules.estimates_features import require_line_margin_override_allowed
+from gdx_dispatch.modules.deposits import (
+    DepositError,
+    adopt_orphan_deposit_invoices,
+    create_deposit_invoice,
+    deposit_summary,
+    find_deposit_invoice_for_estimate,
+)
+from gdx_dispatch.modules.estimates_features import (
+    get_features,
+    require_line_margin_override_allowed,
+)
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -1609,6 +1619,9 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
 
     estimate.job_id = new_job.id
     estimate.updated_at = utcnow()
+    # Deposit invoices born before the job existed (mobile accept creates no
+    # job) get job_id backfilled so final-invoice netting can find them.
+    adopt_orphan_deposit_invoices(db, estimate, new_job.id)
     db.commit()
     db.refresh(new_job)
 
@@ -1630,9 +1643,50 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     return new_job
 
 
+class AcceptEstimateIn(BaseModel):
+    """Optional accept-time deposit request (2026-07-23).
+
+    None → no deposit invoice (backward compatible: every existing caller
+    posts `{}`). A positive amount creates a billing_type='deposit' invoice
+    the customer can pay immediately via the public /pay page. 0 is an
+    explicit "no deposit" — same effect as None, distinct for audit trails.
+    """
+
+    deposit_amount: float | None = Field(default=None, ge=0, le=1_000_000)
+
+
+@router.get("/{estimate_id}/deposit-default", response_model=None)
+def estimate_deposit_default(
+    estimate_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """What the accept dialog should pre-fill: the tenant's deposit percent
+    (estimate_deposit_pct — the same number the estimate PDF has printed as
+    '% Down' all along) applied to the estimate total, plus any deposit
+    invoice that already exists for this estimate (mobile/portal beat us)."""
+    estimate = _get_estimate_or_404(estimate_id, db)
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+    total = _to_float(compute_estimate_totals(estimate, db)["total"])
+    pct = 0
+    try:
+        pct = max(0, min(100, int(get_features(str(_.get("tenant_id") or "")).deposit_pct or 0)))
+    except Exception:
+        log.exception("deposit_default_features_read_failed")
+    existing = find_deposit_invoice_for_estimate(db, estimate.id)
+    return {
+        "pct": pct,
+        "estimate_total": total,
+        "amount": round(total * pct / 100.0, 2),
+        "existing": deposit_summary(existing) if existing else None,
+    }
+
+
 @router.post("/{estimate_id}/accept", response_model=None)
 def accept_estimate(
     estimate_id: UUID,
+    payload: AcceptEstimateIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1694,12 +1748,42 @@ def accept_estimate(
             except Exception:
                 logging.getLogger(__name__).exception("auto_convert_audit_failed")
 
-    payload = _serialize_estimate(estimate, include_lines=False)
+    # Deposit invoice (2026-07-23): created AFTER conversion so it lands
+    # with job_id set. A deposit failure must never un-accept the estimate —
+    # capture beats billing; the office can invoice the deposit manually.
+    deposit_info: dict[str, object] | None = None
+    deposit_skipped: str | None = None
+    requested = payload.deposit_amount if payload else None
+    if requested and requested > 0:
+        db.refresh(estimate)
+        try:
+            dep_inv = create_deposit_invoice(
+                db,
+                estimate=estimate,
+                amount=float(requested),
+                tenant_id=str(_.get("tenant_id") or estimate.company_id or ""),
+                actor=actor,
+                source="office_accept",
+            )
+            deposit_info = deposit_summary(dep_inv)
+        except DepositError as exc:
+            deposit_skipped = str(exc)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "deposit_invoice_failed_on_accept estimate=%s", estimate.id
+            )
+            deposit_skipped = "deposit invoice creation failed — create it from Billing"
+
+    payload_out = _serialize_estimate(estimate, include_lines=False)
     if auto_converted_job_id:
-        payload["auto_converted_job_id"] = auto_converted_job_id
+        payload_out["auto_converted_job_id"] = auto_converted_job_id
     if convert_skipped_reason:
-        payload["auto_convert_skipped"] = convert_skipped_reason
-    return payload
+        payload_out["auto_convert_skipped"] = convert_skipped_reason
+    if deposit_info:
+        payload_out["deposit"] = deposit_info
+    if deposit_skipped:
+        payload_out["deposit_skipped"] = deposit_skipped
+    return payload_out
 
 
 @router.post("/{estimate_id}/decline", response_model=None)

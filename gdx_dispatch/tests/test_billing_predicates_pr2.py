@@ -90,13 +90,16 @@ def _seed_job(db, *, stage: str = "completed", title: str = "Job", **kw) -> Job:
     return job
 
 
-def _seed_invoice(db, job, *, status: str, total: float, deleted: bool = False) -> Invoice:
+def _seed_invoice(
+    db, job, *, status: str, total: float, deleted: bool = False,
+    billing_type: str = "standard",
+) -> Invoice:
     inv = Invoice(
         company_id="tenant-1",
         customer_id=job.customer_id,
         job_id=job.id,
         invoice_number=f"INV-{uuid4().hex[:8].upper()}",
-        billing_type="standard",
+        billing_type=billing_type,
         sequence_number=1,
         subtotal=Decimal(str(total)),
         tax_amount=Decimal("0"),
@@ -123,6 +126,9 @@ MATRIX = [
     ("zero_draft", {"status": "draft", "total": 0.0}, False),
     ("zero_sent", {"status": "sent", "total": 0.0}, True),
     ("deleted_sent", {"status": "sent", "total": 500.0, "deleted": True}, False),
+    # Deposit invoices (2026-07-23): money BEFORE the work never bills the
+    # job — it must stay in Ready-for-Billing for the final invoice.
+    ("deposit_sent", {"status": "sent", "total": 500.0, "billing_type": "deposit"}, False),
 ]
 
 
@@ -163,7 +169,8 @@ def test_python_twin_matches_sql(tenant_db_session):
         job = jobs[label]
         invs = db.execute(select(Invoice).where(Invoice.job_id == job.id)).scalars().all()
         py_billed = any(
-            invoice_bills_job(i.status, float(i.total or 0), i.deleted_at) for i in invs
+            invoice_bills_job(i.status, float(i.total or 0), i.deleted_at, i.billing_type)
+            for i in invs
         )
         assert py_billed == (str(job.id) in billed_ids), label
 

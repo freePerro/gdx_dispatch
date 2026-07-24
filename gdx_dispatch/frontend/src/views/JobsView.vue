@@ -440,8 +440,13 @@
 
           <div class="form-actions">
             <Button type="button" label="Cancel" text @click="showFormDialog = false" />
-            <Button v-if="isEditMode && jobForm.status === 'Complete'" type="button"
-              label="Create Invoice" icon="pi pi-dollar" severity="success"
+            <!-- 2026-07-23: no longer gated on Complete — deposit/progress
+                 invoices happen mid-job. Muted styling off-Complete keeps
+                 the normal flow (complete → invoice) visually primary. -->
+            <Button v-if="isEditMode" type="button"
+              label="Create Invoice" icon="pi pi-dollar"
+              :severity="jobForm.status === 'Complete' ? 'success' : 'secondary'"
+              :outlined="jobForm.status !== 'Complete'"
               @click="createInvoiceFromJob" data-testid="job-create-invoice" />
             <Button
               type="submit"

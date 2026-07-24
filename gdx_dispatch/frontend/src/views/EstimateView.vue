@@ -42,6 +42,51 @@
       </header>
 
       <!-- AI Quick Estimate Dialog -->
+      <Dialog v-model:visible="acceptDialogOpen" header="Accept Estimate" :style="{ width: '460px' }" modal data-testid="accept-dialog">
+        <p class="text-sm mb-3">
+          Mark {{ estimate?.label || "this estimate" }} as Accepted? The customer-portal view flips immediately.
+        </p>
+        <div v-if="depositDefault.existing" class="text-sm mb-3">
+          Deposit invoice <b>{{ depositDefault.existing.invoice_number }}</b> already exists
+          ({{ formatMoney(depositDefault.existing.amount) }}, {{ depositDefault.existing.status }}) — no second deposit will be created.
+        </div>
+        <template v-else>
+          <div style="display:flex; align-items:center; gap:.5rem;" class="mb-3">
+            <ToggleSwitch v-model="collectDeposit" inputId="collect-deposit" data-testid="collect-deposit-toggle" />
+            <label for="collect-deposit">Collect a deposit at acceptance</label>
+          </div>
+          <div v-if="collectDeposit" style="display:flex; align-items:center; gap:.5rem;" class="mb-3">
+            <InputNumber v-model="depositAmount" mode="currency" currency="USD" locale="en-US"
+              :min="0" data-testid="deposit-amount-input" />
+            <span v-if="depositDefault.pct" class="text-sm" style="opacity:.7;">
+              default {{ depositDefault.pct }}% of {{ formatMoney(depositDefault.estimate_total) }}
+            </span>
+          </div>
+        </template>
+        <template #footer>
+          <Button label="Cancel" text @click="acceptDialogOpen = false" />
+          <Button label="Accept" icon="pi pi-check" severity="success" :loading="acceptBusy"
+            data-testid="accept-dialog-confirm" @click="doAcceptEstimate" />
+        </template>
+      </Dialog>
+
+      <Dialog v-model:visible="depositResultOpen" header="Deposit Invoice Created" :style="{ width: '460px' }" modal data-testid="deposit-result-dialog">
+        <p class="text-sm mb-3">
+          Deposit invoice <b>{{ depositResult?.invoice_number }}</b> for
+          <b>{{ formatMoney(depositResult?.amount || 0) }}</b> was created and is due now.
+        </p>
+        <p v-if="depositResult?.pay_url" class="text-sm mb-3" style="opacity:.7;">
+          Send the customer the payment link, or record a check/cash payment on the invoice.
+        </p>
+        <template #footer>
+          <Button v-if="depositResult?.pay_url" label="Copy Pay Link" icon="pi pi-link"
+            data-testid="copy-deposit-link" @click="copyDepositPayLink" />
+          <Button label="Open Invoice" icon="pi pi-file" severity="secondary"
+            data-testid="open-deposit-invoice" @click="$router.push(`/billing/${depositResult?.invoice_id}`)" />
+          <Button label="Done" text @click="depositResult = null" />
+        </template>
+      </Dialog>
+
       <Dialog v-model:visible="showAiDialog" header="AI Quick Estimate" :style="{ width: '520px' }" modal>
         <p class="text-sm mb-3">Describe the job and AI will auto-fill line items from the CHI catalog.</p>
         <Textarea v-model="aiDescription" rows="4" class="w-full"
@@ -2137,30 +2182,70 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
 // 2026-05-12 audit — Accept / Decline / Convert all commit state changes
 // that downstream surfaces (customer portal, scheduling, billing) read
 // immediately. One-click misses on the button row used to flip an estimate
-// without a chance to back out. Gate behind confirmDestructive().
-function acceptEstimate() {
-  confirmDestructive({
-    message: `Mark ${estimate.value?.label || "this estimate"} as Accepted? The customer-portal view flips immediately.`,
-    header: "Accept Estimate",
-    icon: "pi pi-check",
-    acceptClass: "p-button-success",
-    acceptLabel: "Accept",
-    rejectLabel: "Cancel",
-    accept: () => doAcceptEstimate(),
-  });
+// without a chance to back out.
+// 2026-07-23 deposit invoices: Accept now opens a real dialog (not just a
+// confirm) so the operator can collect a downpayment in the same motion —
+// pre-filled from the tenant's deposit % (the PDF's "% Down"), editable,
+// skippable. On success the pay link dialog gives them something to send.
+const acceptDialogOpen = ref(false);
+const acceptBusy = ref(false);
+const depositDefault = ref({ pct: 0, amount: 0, estimate_total: 0, existing: null });
+const collectDeposit = ref(false);
+const depositAmount = ref(0);
+const depositResult = ref(null);
+const depositResultOpen = computed({
+  get: () => !!depositResult.value,
+  set: (v) => { if (!v) depositResult.value = null; },
+});
+
+async function acceptEstimate() {
+  depositResult.value = null;
+  try {
+    const d = await api.get(`/api/estimates/${route.params.id}/deposit-default`);
+    depositDefault.value = d || { pct: 0, amount: 0, estimate_total: 0, existing: null };
+    collectDeposit.value = !d?.existing && (d?.amount || 0) > 0;
+    depositAmount.value = d?.amount || 0;
+  } catch {
+    // Deposit defaults are a convenience — accepting must still work.
+    depositDefault.value = { pct: 0, amount: 0, estimate_total: 0, existing: null };
+    collectDeposit.value = false;
+    depositAmount.value = 0;
+  }
+  acceptDialogOpen.value = true;
 }
 
 async function doAcceptEstimate() {
+  acceptBusy.value = true;
   try {
-    const result = await api.post(`/api/estimates/${route.params.id}/accept`, {});
+    const body = { deposit_amount: collectDeposit.value ? (depositAmount.value || 0) : 0 };
+    const result = await api.post(`/api/estimates/${route.params.id}/accept`, body);
     estimate.value.status = _titleCase(result?.status || "accepted");
     // Accept can auto-convert server-side; without hydrating job_id the
     // Convert button stays visible and a second click 409s.
     const jobId = result?.auto_converted_job_id || result?.job_id;
     if (jobId) estimate.value.job_id = jobId;
+    acceptDialogOpen.value = false;
+    if (result?.deposit) {
+      depositResult.value = result.deposit;
+    } else if (result?.deposit_skipped) {
+      toast.add({ severity: "warn", summary: "Deposit not created", detail: result.deposit_skipped, life: 6000 });
+    }
     toast.add({ severity: "success", summary: "Accepted", detail: "Estimate accepted", life: 3000 });
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to accept", life: 3000 });
+  } finally {
+    acceptBusy.value = false;
+  }
+}
+
+async function copyDepositPayLink() {
+  const url = depositResult.value?.pay_url;
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast.add({ severity: "success", summary: "Copied", detail: "Payment link copied", life: 2500 });
+  } catch {
+    toast.add({ severity: "warn", summary: "Copy failed", detail: url, life: 8000 });
   }
 }
 
