@@ -8,12 +8,14 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
 from gdx_dispatch.core.branding_logo import resolve_logo_for_pdf
+from gdx_dispatch.core.money_format import format_money
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _JINJA_ENV = Environment(
     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
     autoescape=select_autoescape(["html", "xml"]),
 )
+_JINJA_ENV.filters["money"] = format_money
 
 # ---------------------------------------------------------------------------
 # Template-editor config (Settings → PDF Templates)

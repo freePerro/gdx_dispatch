@@ -1456,6 +1456,13 @@ def send_estimate(
                 # Tax-inclusive total — matches the attached PDF.
                 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
                 _email_totals = compute_estimate_totals(estimate, db)
+                # NOTE (Tier-9.8 deferred): the estimate email still carries no
+                # accept-link. The audit showed a bare /customer-portal link is
+                # a dead end — a first-time recipient has no CustomerUser, so
+                # portal login 401s AND the magic-link request is silently
+                # dropped by anti-enumeration. The correct build (mint a
+                # per-customer magic-link token + provision the CustomerUser on
+                # send) is its own change; a dead CTA is worse than none.
                 html = build_estimate_email_html(
                     company_name=company_name,
                     estimate_number=estimate.estimate_number or str(estimate.id)[:8],

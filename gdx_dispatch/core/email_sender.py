@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.money_format import format_money as _money
+
 log = logging.getLogger(__name__)
 
 
@@ -104,8 +106,8 @@ def build_estimate_email_html(
         items_html += f"""<tr>
             <td style="padding:8px;border-bottom:1px solid #eee">{li.get('description','')}</td>
             <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">{li.get('quantity',1)}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${li.get('unit_price',0):.2f}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${li.get('line_total',0):.2f}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('unit_price',0))}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('line_total',0))}</td>
         </tr>"""
 
     portal_section = ""
@@ -153,6 +155,7 @@ def build_estimate_email_html(
     """
 
 
+
 def build_invoice_email_html(
     company_name: str,
     invoice_number: str,
@@ -166,6 +169,8 @@ def build_invoice_email_html(
     notes: str = "",
     portal_url: str = "",
     tax_rate: float | None = None,
+    paid_to_date: float = 0.0,
+    credits_applied: float = 0.0,
 ) -> str:
     # Mirrors build_estimate_email_html but speaks invoice-language:
     # subtotal + tax breakdown, "Balance Due" call-out, "Pay Now" CTA when
@@ -177,8 +182,8 @@ def build_invoice_email_html(
         items_html += f"""<tr>
             <td style="padding:8px;border-bottom:1px solid #eee">{li.get('description','')}</td>
             <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">{li.get('quantity',1)}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${li.get('unit_price',0):.2f}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${li.get('line_total',0):.2f}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('unit_price',0))}</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('line_total',0))}</td>
         </tr>"""
 
     portal_section = ""
@@ -192,6 +197,22 @@ def build_invoice_email_html(
     tax_label = "Tax"
     if tax_rate is not None and tax_rate > 0:
         tax_label = f"Tax ({tax_rate * 100:.2f}%)"
+
+    # Paid to Date + Credits Applied rows (Tier-9.4): without them the body
+    # showed Total then jumped to a smaller Balance Due with no explanation —
+    # the totals didn't foot on partially-paid/credited invoices while the
+    # attached PDF footed correctly.
+    settlement_rows = ""
+    if paid_to_date and paid_to_date > 0:
+        settlement_rows += f"""<tr>
+                    <td style="padding:4px 8px;text-align:right;color:#555">Paid to Date</td>
+                    <td style="padding:4px 8px;text-align:right">-${paid_to_date:,.2f}</td>
+                </tr>"""
+    if credits_applied and credits_applied > 0:
+        settlement_rows += f"""<tr>
+                    <td style="padding:4px 8px;text-align:right;color:#555">Credits Applied</td>
+                    <td style="padding:4px 8px;text-align:right">-${credits_applied:,.2f}</td>
+                </tr>"""
 
     due_section = ""
     if due_date:
@@ -233,6 +254,7 @@ def build_invoice_email_html(
                     <td style="padding:6px 8px;text-align:right;font-weight:700;border-top:1px solid #ddd">Total</td>
                     <td style="padding:6px 8px;text-align:right;font-weight:700;border-top:1px solid #ddd">${total:.2f}</td>
                 </tr>
+                {settlement_rows}
                 <tr>
                     <td style="padding:6px 8px;text-align:right;color:#0057a8;font-weight:700">Balance Due</td>
                     <td style="padding:6px 8px;text-align:right;color:#0057a8;font-weight:700;font-size:18px">${balance_due:.2f}</td>
