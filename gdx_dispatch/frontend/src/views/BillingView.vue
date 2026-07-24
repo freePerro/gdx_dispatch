@@ -797,8 +797,13 @@ const statusTabs = [
   { label: "All", value: "All" },
   { label: "Draft", value: "Draft" },
   { label: "Sent", value: "Sent" },
+  // Tier-6: Partial and Void are real effective statuses (partial payments;
+  // the deposit lifecycle voids routinely) — without tabs they were only
+  // reachable by scrolling "All".
+  { label: "Partial", value: "Partial" },
   { label: "Paid", value: "Paid" },
   { label: "Overdue", value: "Overdue" },
+  { label: "Void", value: "Void" },
 ];
 
 // Persist status tab + search + date preset across reloads. Validators guard
@@ -828,7 +833,9 @@ const newPayment = ref({ amount: 0, method: "Cash", reference: "" });
 
 const filteredInvoices = computed(() => {
   let list = invoices.value;
-  if (activeStatus.value !== "All") {
+  if (activeStatus.value === "Partial") {
+    list = list.filter(isPartial);
+  } else if (activeStatus.value !== "All") {
     list = list.filter((inv) => inv.status === activeStatus.value);
   }
   if (searchQuery.value) {
@@ -1031,8 +1038,19 @@ function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// "Partial" is DERIVED — no code path ever writes a literal partial status
+// (audit catch: a tab filtering on it would be permanently empty). An
+// invoice is partial when money has come in but a balance remains.
+function isPartial(inv) {
+  const total = Number(inv.total) || 0;
+  const balance = Number(inv.balance_due);
+  return ["Sent", "Overdue"].includes(inv.status)
+    && Number.isFinite(balance) && balance > 0 && total > 0 && balance < total;
+}
+
 function tabCount(status) {
   if (status === "All") return invoices.value.length;
+  if (status === "Partial") return invoices.value.filter(isPartial).length;
   return invoices.value.filter((inv) => inv.status === status).length;
 }
 

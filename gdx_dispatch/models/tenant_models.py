@@ -573,6 +573,11 @@ class Expense(Base):
     category: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
     job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
+    # Tier-6 (2026-07-24): the approval workflow column. ExpensesView has
+    # rendered a Draft→Submitted→Approved→Reimbursed pipeline since it
+    # shipped, PATCHing a status the backend dropped — every approval
+    # reverted to Draft on reload because there was nothing to store it in.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", server_default="draft")
     # vendor-invoice-intake (2026-07-08): where this Expense originated.
     # 'manual' = keyed in the Expenses UI (the pre-existing path).
     # 'vendor_invoice' = auto-created when the office confirms a parsed vendor

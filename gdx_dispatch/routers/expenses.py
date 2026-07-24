@@ -51,6 +51,9 @@ class ExpenseCreate(BaseModel):
     category: str = Field(min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
     job_id: UUID | None = None
+    # Tier-6 audit catch: the Log Expense dialog sends status on CREATE too —
+    # without this field an expense logged as "Approved" landed as draft.
+    status: str | None = Field(default=None, pattern=r"^(?i)(draft|submitted|approved|reimbursed)$")
 
 
 class ExpensePatch(BaseModel):
@@ -60,6 +63,9 @@ class ExpensePatch(BaseModel):
     category: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
     job_id: UUID | None = None
+    # Tier-6 (2026-07): the approval pipeline the UI has always PATCHed.
+    # Lowercased on write so the UI's TitleCase and the column agree.
+    status: str | None = Field(default=None, pattern=r"^(?i)(draft|submitted|approved|reimbursed)$")
 
 
 class ExpenseLineCreate(BaseModel):
@@ -95,6 +101,7 @@ def _expense_to_dict(expense: Expense, include_lines: bool = False) -> dict:
         "date": expense.date.isoformat() if expense.date else None,
         "category": expense.category,
         "description": expense.description,
+        "status": (expense.status or "draft"),
         "job_id": str(expense.job_id) if expense.job_id else None,
         "created_at": expense.created_at.isoformat() if expense.created_at else None,
         "updated_at": expense.updated_at.isoformat() if expense.updated_at else None,
@@ -211,6 +218,11 @@ def create_expense(
         )
     data = payload.model_dump()
     data["category"] = canonical
+    # None → let the column default ('draft') apply; TitleCase → column case.
+    if data.get("status"):
+        data["status"] = data["status"].lower()
+    else:
+        data.pop("status", None)
     expense = Expense(**data, company_id=_tid)
     db.add(expense)
     db.flush()
@@ -267,6 +279,8 @@ def update_expense(
                 detail=f"category must be one of {_EXPENSE_CATEGORIES}",
             )
         updates["category"] = canonical
+    if "status" in updates and updates["status"]:
+        updates["status"] = updates["status"].lower()
     for field, value in updates.items():
         setattr(row, field, value)
     row.updated_at = datetime.now(UTC)

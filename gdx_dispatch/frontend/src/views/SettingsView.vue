@@ -1183,7 +1183,11 @@ async function loadBrandingForm() {
     if (data && typeof data === "object") {
       if (typeof data.company_name === "string") branding.companyName = data.company_name;
       if (typeof data.primary_color === "string" && data.primary_color) branding.primaryColor = data.primary_color;
-      if (typeof data.secondary_color === "string" && data.secondary_color) branding.accentColor = data.secondary_color;
+      // Tier-6: the branding GET returns accent_color (settings.py maps
+      // secondary_color → accent_color) — reading secondary_color meant the
+      // saved accent never reloaded. Keep the old key as fallback.
+      const accent = data.accent_color || data.secondary_color;
+      if (typeof accent === "string" && accent) branding.accentColor = accent;
     }
   } catch (_err) {
     // Non-fatal: form just shows defaults until user edits.

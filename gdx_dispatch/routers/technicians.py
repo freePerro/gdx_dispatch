@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
@@ -35,6 +35,12 @@ class TechnicianCreate(BaseModel):
     user_id: str | None = None
     skills: list[str] | str | None = None
     hourly_rate: float | None = None
+    # Tier-6 (2026-07): TechniciansView has always sent these — they are real
+    # columns (tenant_models.py) the models silently dropped, so editing a
+    # technician's name/contact did nothing while toasting success.
+    name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=50)
 
 
 class TechnicianPatch(BaseModel):
@@ -42,6 +48,9 @@ class TechnicianPatch(BaseModel):
     skills: list[str] | str | None = None
     hourly_rate: float | None = None
     active: bool | None = None
+    name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=50)
 
 
 class TechnicianSkillCreate(BaseModel):
@@ -278,6 +287,9 @@ def create_technician(
         id=str(uuid.uuid4()),
         company_id=tenant_id,
         user_id=user_id,
+        name=(payload.name or "").strip() or None,
+        email=(payload.email or "").strip() or None,
+        phone=(payload.phone or "").strip() or None,
         skills=skills_json,
         hourly_rate=payload.hourly_rate,
         active=True,
@@ -373,6 +385,9 @@ def patch_technician(
         tech.hourly_rate = updates["hourly_rate"]
     if "active" in updates:
         tech.active = bool(updates["active"])
+    for field in ("name", "email", "phone"):
+        if field in updates:
+            setattr(tech, field, (updates[field] or "").strip() or None)
 
     tech.updated_at = datetime.now(UTC)
     db.flush()
