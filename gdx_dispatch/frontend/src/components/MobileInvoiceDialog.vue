@@ -22,6 +22,7 @@ import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { formatMoney } from '../composables/useFormatters'
+import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -61,6 +62,13 @@ function fmtMoney(n) { return formatMoney(Number(n) || 0) }
 
 const hasAcceptedQuote = computed(() => !!summary.value?.accepted_quote)
 const hasInvoice = computed(() => (summary.value?.invoices || []).length > 0)
+// A deposit invoice is money BEFORE the work — it must not read as "the job
+// is billed" or the Generate button disappears and a deposit-taking job can
+// never be final-billed from the truck (same exclusion as
+// core/billing_predicates.job_billed_exists).
+const hasFinalInvoice = computed(() =>
+  (summary.value?.invoices || []).some((inv) => (inv.billing_type || 'standard') !== 'deposit'),
+)
 
 // ─── Field payment capture (cash / check) ────────────────────────────
 const payingInvoiceId = ref(null)   // invoice id whose pay form is open
@@ -134,6 +142,26 @@ async function generateInvoice() {
     }
     const inv = await api.post(`/api/mobile/jobs/${props.job.id}/invoice`, payload)
     toast.add({ severity: 'success', summary: 'Invoice sent', detail: `#${inv.invoice_number} emailed`, life: 3000 })
+    // Deposit netting — same story InvoiceCreateView tells the office. The
+    // unapplied case (deposit exceeds the final total) needs a human; until
+    // now the truck never heard about it.
+    const net = inv.deposit_netting
+    if (net && !net.skipped) {
+      const parts = []
+      if (Number(net.deposit_paid_applied) > 0) parts.push(`${fmtMoney(net.deposit_paid_applied)} deposit applied`)
+      if ((net.superseded || []).length) parts.push(`superseded ${net.superseded.join(', ')}`)
+      if ((net.voided || []).length) parts.push(`voided unpaid ${net.voided.join(', ')}`)
+      const unapplied = Number(net.deposit_unapplied) > 0
+      if (unapplied) parts.push(`${fmtMoney(net.deposit_unapplied)} deposit NOT applied — tell the office`)
+      if (parts.length) {
+        toast.add({
+          severity: unapplied ? 'warn' : 'info',
+          summary: 'Deposit netting',
+          detail: parts.join(' · '),
+          life: unapplied ? 10000 : 6000,
+        })
+      }
+    }
     emit('invoiced', inv)
     await loadSummary()
   } catch (e) {
@@ -173,12 +201,6 @@ async function sendReceipt(inv) {
   }
 }
 
-function statusSeverity(s) {
-  if (s === 'paid') return 'success'
-  if (s === 'sent') return 'info'
-  if (s === 'overdue') return 'danger'
-  return 'secondary'
-}
 </script>
 
 <template>
@@ -225,6 +247,12 @@ function statusSeverity(s) {
           <div class="invoice-num">
             <strong>#{{ inv.invoice_number }}</strong>
             <Tag :value="inv.status" :severity="statusSeverity(inv.status)" />
+            <Tag
+              v-if="inv.billing_type === 'deposit'"
+              value="deposit"
+              severity="info"
+              data-testid="mid-deposit-tag"
+            />
           </div>
           <div class="invoice-totals">
             <span>{{ fmtMoney(inv.total) }}</span>
@@ -308,7 +336,7 @@ function statusSeverity(s) {
     <template #footer>
       <Button label="Close" text @click="open = false" />
       <Button
-        v-if="!hasInvoice"
+        v-if="!hasFinalInvoice"
         :label="hasAcceptedQuote ? 'Generate & email invoice' : 'Generate empty invoice'"
         icon="pi pi-send"
         severity="success"

@@ -268,6 +268,13 @@
         <Column field="status" header="Status" sortable>
           <template #body="{ data }">
             <Tag :value="data.status" :severity="statusSeverity(data.status)" data-testid="invoice-status-tag" />
+            <Tag
+              v-if="data.billing_type === 'deposit'"
+              value="deposit"
+              severity="info"
+              class="deposit-tag"
+              data-testid="invoice-deposit-tag"
+            />
           </template>
         </Column>
         <Column field="due_date" header="Due Date" sortable>
@@ -458,6 +465,7 @@ import Tag from "primevue/tag";
 import Toast from "primevue/toast";
 import EmptyState from "../components/EmptyState.vue";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 const { confirmAsync, confirmDestructive } = useDestructiveConfirm();
 
 const router = useRouter();
@@ -1023,11 +1031,6 @@ function toNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function statusSeverity(status) {
-  const map = { Draft: "secondary", Sent: "info", Paid: "success", Overdue: "danger", Partial: "warn" };
-  return map[status] || "secondary";
-}
-
 function tabCount(status) {
   if (status === "All") return invoices.value.length;
   return invoices.value.filter((inv) => inv.status === status).length;
@@ -1043,6 +1046,7 @@ function normalizeInvoice(raw, customerMap = {}) {
     total: toNum(raw.total || raw.amount || raw.total_amount || 0),
     balance_due: toNum(raw.balance_due ?? raw.total ?? raw.amount ?? 0),
     status: capitalize(raw.effective_status || raw.status) || "Draft",
+    billing_type: raw.billing_type || "standard",
     due_date: raw.due_date || raw.dueDate || "",
     // The date filter matches on invoice_date (issue date) with created_at
     // as fallback — dropping these here silently blanked EVERY date preset
@@ -1263,6 +1267,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.deposit-tag {
+  margin-left: 0.35rem;
+}
+
 .summary-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(180px, 1fr));

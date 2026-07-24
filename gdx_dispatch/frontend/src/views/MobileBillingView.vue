@@ -130,6 +130,7 @@ import Dialog from 'primevue/dialog'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
@@ -247,14 +248,6 @@ function prettyStatus(s) {
   return String(s).charAt(0).toUpperCase() + String(s).slice(1)
 }
 
-function statusSeverity(s) {
-  const k = String(s || '').toLowerCase()
-  if (['paid'].includes(k)) return 'success'
-  if (['sent'].includes(k)) return 'info'
-  if (['draft', 'pending'].includes(k)) return 'warning'
-  if (['void', 'canceled', 'overdue'].includes(k)) return 'danger'
-  return 'secondary'
-}
 
 function isOverdue(inv) {
   if (!inv?.due_date) return false

@@ -376,7 +376,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { usePermission } from '../composables/usePermission'
 import { formatPhone } from '../composables/useFormatters'
-import { estimateStatusSeverity } from '../utils/statusSeverity'
+import { estimateStatusSeverity, invoiceStatusSeverity } from '../utils/statusSeverity'
 import { useToast } from 'primevue/usetoast'
 import MobileJobNewDialog from '../components/MobileJobNewDialog.vue'
 
@@ -449,14 +449,6 @@ function fmtDate(d) {
   }
 }
 
-function invoiceStatusSeverity(s) {
-  const k = String(s || '').toLowerCase()
-  if (['paid'].includes(k)) return 'success'
-  if (['sent'].includes(k)) return 'info'
-  if (['draft', 'pending'].includes(k)) return 'warning'
-  if (['void', 'canceled', 'overdue'].includes(k)) return 'danger'
-  return 'secondary'
-}
 
 async function fetchCustomer() {
   loading.value = true
