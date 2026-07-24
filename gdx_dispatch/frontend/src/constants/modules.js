@@ -1,3 +1,9 @@
+// Tier-7 (2026-07-24): `requires:` entries gate on the module key the
+// BACKEND actually checks — several nav keys (maps/reports/technicians/
+// fleet) were not backend modules at all, so disabling the real module
+// left dead nav. Permission values align each entry with its API gate
+// (service agreements=settings.write, maintenance+reminders=admin-tier,
+// forecasting=accounting.read) so no role sees a page of 403s.
 // 2026-04-29 nav-cleanup pass:
 // - default-enabled flips to opt-out (see useTenantModules.js)
 // - re-shelved misplaced modules: Warranties → Customers, Campaigns → Marketing,
@@ -36,13 +42,13 @@ export const MODULE_CATEGORIES = [
       { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/planner', type: 'Operations', permission: 'nav.office' },
       { key: 'checklists', label: 'Checklists', icon: 'pi pi-check-square', to: '/checklists', type: 'Operations', permission: 'nav.office' },
       { key: 'job_templates', label: 'Job Templates', icon: 'pi pi-th-large', to: '/job-templates', type: 'Operations', permission: 'nav.office' },
-      { key: 'maintenance', label: 'Maintenance Plans', icon: 'pi pi-wrench', to: '/maintenance', type: 'Jobs', permission: 'nav.office' },
-      { key: 'technicians', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
+      { key: 'maintenance', label: 'Maintenance Plans', icon: 'pi pi-wrench', to: '/maintenance', type: 'Jobs', permission: 'nav.admin' },
+      { key: 'technicians', requires: 'dispatch', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
       { key: 'performance', label: 'Performance', icon: 'pi pi-chart-line', to: '/performance', type: 'Operations', permission: 'nav.office' },
       { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock', type: 'Operations' },
-      { key: 'fleet', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
-      { key: 'gps', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
-      { key: 'maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },
+      { key: 'fleet', requires: 'equipment_tracking', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
+      { key: 'gps', requires: 'jobs', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
+      { key: 'maps', requires: 'google_maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },
       { key: 'daily_loadsheet', label: 'Daily Load Sheet', icon: 'pi pi-check-square', to: '/daily-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Daily' },
       { key: 'delivery_loadsheet', label: 'Delivery Load Sheet', icon: 'pi pi-truck', to: '/delivery-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Delivery' },
       { key: 'equipment', label: 'Customer Equipment', icon: 'pi pi-cog', to: '/equipment', type: 'Operations', permission: 'nav.office' },
@@ -87,7 +93,7 @@ export const MODULE_CATEGORIES = [
       { key: 'estimates', label: 'Estimates', icon: 'pi pi-file-edit', to: '/estimates', type: 'Jobs', permission: 'nav.office' },
       { key: 'proposals', label: 'Proposals', icon: 'pi pi-file-edit', to: '/proposals', type: 'Jobs', permission: 'nav.office' },
       { key: 'change_orders', label: 'Change Orders', icon: 'pi pi-refresh', to: '/change-orders', type: 'Jobs', permission: 'nav.office' },
-      { key: 'service_agreements', label: 'Service Agreements', icon: 'pi pi-shield', to: '/service-agreements', type: 'Customers', permission: 'nav.office' },
+      { key: 'service_agreements', label: 'Service Agreements', icon: 'pi pi-shield', to: '/service-agreements', type: 'Customers', permission: 'settings.write' },
       { key: 'signatures', label: 'Signatures', icon: 'pi pi-pencil', to: '/signatures', type: 'Jobs', permission: 'nav.office' },
     ],
   },
@@ -102,7 +108,7 @@ export const MODULE_CATEGORIES = [
       { key: 'billing', label: 'Billing', icon: 'pi pi-dollar', to: '/billing', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Invoices' },
       { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
       { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
-      { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Reminders' },
+      { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Reminders' },
     ],
   },
   {
@@ -141,9 +147,9 @@ export const MODULE_CATEGORIES = [
     label: 'Experimental',
     icon: 'pi pi-sparkles',
     modules: [
-      { key: 'reports', label: 'Reports', icon: 'pi pi-chart-bar', to: '/reports', type: 'Invoices', permission: 'nav.office' },
+      { key: 'reports', requires: 'reports_advanced', label: 'Reports', icon: 'pi pi-chart-bar', to: '/reports', type: 'Invoices', permission: 'nav.office' },
       { key: 'variance_report', label: 'Variance Report', icon: 'pi pi-chart-bar', to: '/variance-report', type: 'Invoices', permission: 'nav.admin' },
-      { key: 'forecasting', label: 'Forecasting', icon: 'pi pi-chart-line', to: '/forecasting', type: 'Invoices', permission: 'nav.admin' },
+      { key: 'forecasting', label: 'Forecasting', icon: 'pi pi-chart-line', to: '/forecasting', type: 'Invoices', permission: 'accounting.read' },
       { key: 'budget', label: 'Budget', icon: 'pi pi-calculator', to: '/budget', type: 'Invoices', permission: 'accounting.read' },
       { key: 'spending_trends', label: 'Spending Trends', icon: 'pi pi-chart-line', to: '/spending-trends', type: 'Invoices', permission: 'accounting.read' },
       { key: 'overhead', label: 'Overhead', icon: 'pi pi-calculator', to: '/overhead', type: 'Invoices', permission: 'accounting.read' },

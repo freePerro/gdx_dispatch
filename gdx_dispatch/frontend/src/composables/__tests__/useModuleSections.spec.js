@@ -59,7 +59,12 @@ const OLD_MODULE_PERM = {
 // reveals to the same roles (accounting, viewer).
 // accounting_settings (GL S4.5) is a NEW page gated accounting.read — it
 // "reveals" to the accounting + viewer roles by construction.
+// Tier-7 (2026-07-24): forecasting's nav gate moved from nav.admin to
+// accounting.read — matching the route guard today and the backend gate
+// added in PR #199 (in flight at the time of writing). Roles holding the
+// permission now see the entry: accounting + viewer.
 const APPROVED_REVEALS = new Set([
+  'accounting:forecasting', 'viewer:forecasting',
   'dispatcher:labor_matrix', 'dispatcher:vendor_statements',
   'technician:labor_matrix',
   'sales:labor_matrix', 'sales:vendor_statements',
@@ -117,7 +122,27 @@ function newVisible(role, module) {
 // technician saw a nav item that 403'd and crashed the page on open (prod
 // incident, 2026-07-10). Reclassified to nav.office, which correctly drops it
 // from the technician's (field-tier) nav.
-const APPROVED_REMOVALS = new Set(['technician:photos']);
+const APPROVED_REMOVALS = new Set([
+  'technician:photos',
+  // Tier-7 gating alignment (2026-07-24): these roles could SEE the nav
+  // entry but every API call behind it 403'd — a fully rendered page of
+  // errors. The nav now requires the same permission the backend enforces
+  // (service agreements → settings.write; maintenance + invoice reminders
+  // → admin tier), so the entries disappear for roles that could never
+  // use them.
+  'dispatcher:maintenance',
+  'dispatcher:service_agreements',
+  'dispatcher:invoice_reminders',
+  'sales:maintenance',
+  'sales:service_agreements',
+  'sales:invoice_reminders',
+  'accounting:maintenance',
+  'accounting:service_agreements',
+  'accounting:invoice_reminders',
+  'viewer:maintenance',
+  'viewer:service_agreements',
+  'viewer:invoice_reminders',
+]);
 
 describe('nav visibility — Set→permission migration parity', () => {
   it('zero regressions: no builtin role loses any module it could see before (except approved removals)', () => {

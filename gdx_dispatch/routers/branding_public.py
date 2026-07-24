@@ -87,9 +87,6 @@ def get_modules_public(
     in `gdx_dispatch/app.py` and is the authoritative read path. Write-side
     (enable/disable POSTs) stays admin-gated in `routers/settings.py`.
     """
-    from datetime import datetime, timezone
-    from uuid import uuid4
-
     from fastapi import HTTPException
 
     from gdx_dispatch.core.modules import MODULES
@@ -100,21 +97,17 @@ def get_modules_public(
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Missing tenant context")
 
-    # First-GET bootstrap: seed default-enabled grants for fresh tenants.
-    # Mirrors `routers/settings.get_modules` (settings.py:191-206). Idempotent.
-    existing = db.query(CompanyModuleGrant).first()
-    if not existing:
-        now = datetime.now(timezone.utc)
-        for key, cfg in MODULES.items():
-            if cfg.get("default"):
-                db.add(CompanyModuleGrant(
-                    id=str(uuid4()),
-                    company_id=tenant_id,
-                    module_key=key,
-                    granted_at=now,
-                    created_at=now,
-                ))
-        db.commit()
+    # First-GET bootstrap. Tier-7 audit catch: this used to seed only
+    # `default: True` modules while core/modules._seed_default_modules seeds
+    # EVERY module (the single-tenant decision — the owner owns the whole
+    # install). Whichever seeder a fresh tenant hit first decided which
+    # modules existed: if this GET won, google_maps/reports_advanced/
+    # equipment_tracking got no rows → explicit enabled:false → nav hidden
+    # (exactly what the empty-granted demo DB would have hit). One seeder now.
+    from gdx_dispatch.core.modules import _seed_default_modules
+
+    _seed_default_modules(db, tenant_id)
+    db.commit()
 
     rows = db.query(CompanyModuleGrant.module_key).all()
     granted = {str(r[0]) for r in rows}
