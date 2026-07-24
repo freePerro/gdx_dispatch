@@ -223,7 +223,7 @@
                     : (integrations.quickbooks.connected ? 'Connected' : 'Not Connected')"
                   :severity="integrations.quickbooks.needsReconnect
                     ? 'danger'
-                    : (integrations.quickbooks.connected ? 'success' : 'warning')"
+                    : (integrations.quickbooks.connected ? 'success' : 'warn')"
                   data-testid="qbo-status-tag"
                 />
               </div>
@@ -270,7 +270,7 @@
                   <h3>Stripe Payments</h3>
                   <p class="muted">Accept card and ACH payments from your customers.</p>
                 </div>
-                <Tag :value="integrations.stripe.connected ? 'Connected' : 'Not Connected'" :severity="integrations.stripe.connected ? 'success' : 'warning'" />
+                <Tag :value="integrations.stripe.connected ? 'Connected' : 'Not Connected'" :severity="integrations.stripe.connected ? 'success' : 'warn'" />
               </div>
               <small v-if="integrations.stripe.mode" class="muted">Mode: {{ integrations.stripe.mode }}</small>
               <div class="integration-actions">
@@ -290,7 +290,7 @@
                   <h3>SMS Provider</h3>
                   <p class="muted">Send appointment reminders and follow-ups via text message.</p>
                 </div>
-                <Tag :value="integrations.sms.connected ? 'Connected' : 'Not Connected'" :severity="integrations.sms.connected ? 'success' : 'warning'" />
+                <Tag :value="integrations.sms.connected ? 'Connected' : 'Not Connected'" :severity="integrations.sms.connected ? 'success' : 'warn'" />
               </div>
               <small v-if="integrations.sms.provider" class="muted">Provider: {{ integrations.sms.provider }}</small>
               <div class="integration-actions">
@@ -1373,7 +1373,7 @@ const filteredUsers = computed(() => {
 });
 
 function roleSeverity(role) {
-  const map = { Admin: "danger", Dispatcher: "info", Technician: "success", Sales: "warning" };
+  const map = { Admin: "danger", Dispatcher: "info", Technician: "success", Sales: "warn" };
   return map[role] || "secondary";
 }
 

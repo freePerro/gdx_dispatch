@@ -230,7 +230,7 @@ function tierLabel(value) {
 function tierSeverity(value) {
   const tier = (value || '').toLowerCase();
   if (tier === 'platinum' || tier === 'diamond') return 'success';
-  if (tier === 'gold') return 'warning';
+  if (tier === 'gold') return 'warn';
   return 'info';
 }
 

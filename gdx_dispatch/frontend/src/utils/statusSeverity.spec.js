@@ -28,3 +28,40 @@ describe('estimateStatusSeverity', () => {
     expect(tokens).not.toContain('warning')
   })
 })
+
+import {
+  appointmentStatusSeverity,
+  leadStageSeverity,
+  payrollRunSeverity,
+  timeclockEntrySeverity,
+  timeclockStatusSeverity,
+} from './statusSeverity'
+
+describe('Tier-4 consolidated maps', () => {
+  it('appointment map covers the lifecycle with valid PV4 tokens only', () => {
+    const valid = ['secondary', 'success', 'info', 'warn', 'danger', 'contrast']
+    for (const s of ['scheduled', 'confirmed', 'en_route', 'arrived', 'in_progress', 'completed', 'cancelled', 'no_show', 'bogus', null]) {
+      expect(valid).toContain(appointmentStatusSeverity(s))
+    }
+    expect(appointmentStatusSeverity('en_route')).toBe('warn')
+    expect(appointmentStatusSeverity('cancelled')).toBe('danger')
+  })
+
+  it('timeclock: clocked-out is neutral, not an alarm', () => {
+    expect(timeclockStatusSeverity({ clockedIn: false, onBreak: false })).toBe('secondary')
+    expect(timeclockStatusSeverity({ clockedIn: true, onBreak: true })).toBe('warn')
+    expect(timeclockStatusSeverity({ clockedIn: true, onBreak: false })).toBe('success')
+    expect(timeclockEntrySeverity('break')).toBe('warn')
+    expect(timeclockEntrySeverity(undefined)).toBe('info')
+  })
+
+  it('lead + payroll maps never emit the invalid warning token', () => {
+    for (const fn of [leadStageSeverity, payrollRunSeverity]) {
+      for (const s of ['new', 'contacted', 'pending', 'won', 'failed', 'anything', null]) {
+        expect(fn(s)).not.toBe('warning')
+      }
+    }
+    expect(leadStageSeverity('Contacted')).toBe('warn')
+    expect(payrollRunSeverity('processing')).toBe('warn')
+  })
+})

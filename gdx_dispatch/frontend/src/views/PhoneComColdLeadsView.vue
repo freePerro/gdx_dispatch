@@ -140,7 +140,7 @@ function prettyStatus(s) {
 function statusSeverity(s) {
   if (!s) return 'secondary'
   const k = s.toLowerCase()
-  if (k === 'voicemail') return 'warning'
+  if (k === 'voicemail') return 'warn'
   if (k === 'forwarded') return 'info'
   if (k === 'answered' || k === 'completed') return 'success'
   if (k === 'missed' || k === 'canceled') return 'danger'

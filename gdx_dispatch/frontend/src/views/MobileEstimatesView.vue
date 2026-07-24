@@ -236,6 +236,7 @@
 </template>
 
 <script setup>
+import { estimateStatusSeverity } from '../utils/statusSeverity'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
@@ -325,12 +326,13 @@ function prettyStatus(s) {
 }
 
 function statusSeverity(s) {
+  // Shared canon with the desktop estimate views (Tier-4 audit catch: this
+  // local map disagreed on draft and expired). 'converted' isn't a real
+  // backend status (conversion sets job_id, status stays accepted) but the
+  // success mapping is kept for any legacy payload that still says it.
   const k = String(s || '').toLowerCase()
-  if (['accepted', 'converted'].includes(k)) return 'success'
-  if (['sent'].includes(k)) return 'info'
-  if (['draft', 'pending'].includes(k)) return 'warning'
-  if (['declined', 'rejected', 'expired'].includes(k)) return 'danger'
-  return 'secondary'
+  if (k === 'converted') return 'success'
+  return estimateStatusSeverity(k)
 }
 
 async function fetchEstimates() {

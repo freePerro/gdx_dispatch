@@ -151,6 +151,7 @@
 </template>
 
 <script setup>
+import { estimateStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -291,8 +292,10 @@ function currency(amount) {
 }
 
 function statusSeverity(status) {
-  const map = { Draft: "secondary", Sent: "info", Accepted: "success", Declined: "danger", Converted: "contrast" };
-  return map[status] || "secondary";
+  // Shared util knows the real backend enum (draft/sent/accepted/declined/
+  // rejected/expired) — the old local map carried a dead "Converted" key
+  // (conversion only sets job_id) and painted expired/rejected neutral grey.
+  return estimateStatusSeverity(status);
 }
 
 function tabCount(status) {

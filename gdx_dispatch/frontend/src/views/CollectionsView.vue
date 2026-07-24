@@ -320,7 +320,7 @@ function statusSeverity(value) {
   const normalized = normalizeStatus(value);
   return {
     active: 'success',
-    paused: 'warning',
+    paused: 'warn',
     resolved: 'info',
   }[normalized] || 'secondary';
 }

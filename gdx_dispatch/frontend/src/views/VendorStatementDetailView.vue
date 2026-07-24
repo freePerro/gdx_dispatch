@@ -152,7 +152,7 @@ const classificationOptions = [
 function statusSeverity(s) {
   const k = String(s || '').toLowerCase()
   if (k === 'reconciled') return 'success'
-  if (k === 'review') return 'warning'
+  if (k === 'review') return 'warn'
   if (k === 'parsed') return 'info'
   return 'secondary'
 }
@@ -160,7 +160,7 @@ function statusSeverity(s) {
 function classificationSeverity(value) {
   switch ((value || 'unknown').toLowerCase()) {
     case 'job': return 'info'
-    case 'inventory': return 'warning'
+    case 'inventory': return 'warn'
     default: return 'secondary'
   }
 }
@@ -193,7 +193,7 @@ function agingSeverity(bucket) {
     case 'current':
     case '0-29': return 'success'
     case '30-59': return 'info'
-    case '60-89': return 'warning'
+    case '60-89': return 'warn'
     case '90-119':
     case '120+':
     case 'retainage': return 'danger'

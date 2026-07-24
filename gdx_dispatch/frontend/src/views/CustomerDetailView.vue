@@ -12,7 +12,7 @@
         <div class="header-left">
           <Button v-tooltip="'Back to customers'" icon="pi pi-arrow-left" aria-label="Back to customers" text rounded @click="$router.push('/customers')" data-testid="back-btn" />
           <h2>{{ customer.name }}</h2>
-          <Tag :value="customer.customer_type || 'Residential'" :severity="customer.customer_type === 'Commercial' ? 'warning' : 'info'" />
+          <Tag :value="customer.customer_type || 'Residential'" :severity="customer.customer_type === 'Commercial' ? 'warn' : 'info'" />
         </div>
         <div class="header-actions">
           <Button label="Edit" icon="pi pi-pencil" aria-label="Edit" outlined data-testid="edit-customer-btn" @click="openEditDialog" />

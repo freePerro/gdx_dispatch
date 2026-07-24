@@ -204,7 +204,7 @@ function statusLabel(item) {
 function statusSeverity(value) {
   return {
     active: 'success',
-    inactive: 'warning',
+    inactive: 'warn',
     paused: 'info',
   }[value] || 'secondary';
 }

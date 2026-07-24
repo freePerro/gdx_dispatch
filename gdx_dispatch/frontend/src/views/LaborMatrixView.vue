@@ -101,7 +101,7 @@
           <template #body="{ data }">
             <Tag
               :value="data.active ? 'Active' : 'Archived'"
-              :severity="data.active ? 'success' : 'warning'"
+              :severity="data.active ? 'success' : 'secondary'"
             />
           </template>
         </Column>

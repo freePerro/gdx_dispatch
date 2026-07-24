@@ -335,7 +335,7 @@ function statusLabel(status) {
 }
 
 function statusSeverity(status) {
-  return { active: 'success', expired: 'warning', cancelled: 'danger' }[status] || 'secondary';
+  return { active: 'success', expired: 'warn', cancelled: 'danger' }[status] || 'secondary';
 }
 
 function formatDate(value) {

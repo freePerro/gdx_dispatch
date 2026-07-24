@@ -26,7 +26,7 @@
 
     <template #footer>
       <Button label="Cancel" severity="secondary" outlined :disabled="submitting" @click="$emit('update:visible', false)" />
-      <Button label="End stream" icon="pi pi-stop-circle" severity="warning" :loading="submitting" @click="onSubmit" />
+      <Button label="End stream" icon="pi pi-stop-circle" severity="warn" :loading="submitting" @click="onSubmit" />
     </template>
   </Dialog>
 </template>

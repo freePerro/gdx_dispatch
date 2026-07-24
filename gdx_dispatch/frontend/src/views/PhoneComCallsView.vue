@@ -286,7 +286,7 @@ const voicemailOptions = [
 
 function statusSeverity(call) {
   const s = friendlyStatus(call)
-  if (s === 'Voicemail') return 'warning'
+  if (s === 'Voicemail') return 'warn'
   if (s === 'Forwarded') return 'info'
   if (s === 'Completed') return 'success'
   if (s === 'Missed' || s === 'Canceled') return 'danger'

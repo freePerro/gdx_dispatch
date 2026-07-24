@@ -162,7 +162,7 @@
           <div class="section-header">
             <span class="section-icon pi pi-exclamation-triangle" style="color: var(--p-amber-500)"></span>
             <span>Timeclock needs a look</span>
-            <Tag :value="String(laborExceptions.length)" severity="warning" rounded />
+            <Tag :value="String(laborExceptions.length)" severity="warn" rounded />
           </div>
         </template>
         <template #content>

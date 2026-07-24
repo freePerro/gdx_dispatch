@@ -161,7 +161,7 @@ const defaultForm = () => ({
 const form = ref(defaultForm());
 
 function vehicleStatusSeverity(status) {
-  const map = { Active: "success", "In Service": "warning", "Out of Service": "danger", Retired: "secondary" };
+  const map = { Active: "success", "In Service": "warn", "Out of Service": "danger", Retired: "secondary" };
   return map[status] || "info";
 }
 

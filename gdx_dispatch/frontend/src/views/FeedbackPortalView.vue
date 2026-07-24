@@ -228,7 +228,7 @@ function shortDate(iso) {
 
 function statusSeverity(status) {
   if (status === "closed") return "success";
-  if (status === "in_progress") return "warning";
+  if (status === "in_progress") return "warn";
   return "info";
 }
 

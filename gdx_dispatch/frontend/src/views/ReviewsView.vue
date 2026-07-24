@@ -92,7 +92,7 @@
         <Column field="content" header="Comment" />
         <Column field="responded" header="Responded">
           <template #body="{ data }">
-            <Tag :value="data.responded ? 'Responded' : 'Pending'" :severity="data.responded ? 'success' : 'warning'" />
+            <Tag :value="data.responded ? 'Responded' : 'Pending'" :severity="data.responded ? 'success' : 'warn'" />
           </template>
         </Column>
         <Column field="created_at" header="Received">

@@ -118,7 +118,7 @@
               <template #body="{ data }">
                 <Tag
                   :value="data.entry_type || 'work'"
-                  :severity="data.entry_type === 'break' ? 'warning' : 'info'"
+                  :severity="timeclockEntrySeverity(data.entry_type)"
                 />
               </template>
             </Column>
@@ -355,6 +355,7 @@
 </template>
 
 <script setup>
+import { timeclockEntrySeverity, timeclockStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast as useApi } from '../composables/useApiWithToast';
@@ -473,11 +474,10 @@ const statusLabel = computed(() => {
   return 'Clocked In';
 });
 
-const statusSeverity = computed(() => {
-  if (!clockedIn.value) return 'danger';
-  if (onBreak.value) return 'warning';
-  return 'success';
-});
+const statusSeverity = computed(() =>
+  // Shared canon with MobileTimeclockView — desktop used to paint
+  // clocked-out as danger while mobile said secondary (Tier-4 sweep).
+  timeclockStatusSeverity({ clockedIn: clockedIn.value, onBreak: onBreak.value }));
 
 // --- Elapsed time ---
 

@@ -166,7 +166,7 @@ function statusLabel(status) {
 }
 
 function statusSeverity(status) {
-  if (status === 'repair' || status === 'retired') return 'warning';
+  if (status === 'repair' || status === 'retired') return 'warn';
   if (status === 'assigned') return 'info';
   return 'success';
 }

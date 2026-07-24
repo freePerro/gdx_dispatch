@@ -309,7 +309,7 @@ function formatDate(value) {
 
 function campaignStatusSeverity(status) {
   return {
-    draft: 'warning',
+    draft: 'warn',
     sent: 'info',
     active: 'success',
     cancelled: 'danger',

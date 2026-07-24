@@ -218,7 +218,7 @@
           </Column>
           <Column header="System" style="width: 6rem">
             <template #body="{ data }">
-              <Tag v-if="data.is_system" severity="warning" value="system" />
+              <Tag v-if="data.is_system" severity="warn" value="system" />
             </template>
           </Column>
           <Column header="Active" style="width: 6rem">

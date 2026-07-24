@@ -381,7 +381,7 @@ function statusLabel(value) {
 function statusSeverity(value) {
   return {
     scheduled: 'success',
-    pending: 'warning',
+    pending: 'warn',
     completed: 'info',
     cancelled: 'danger',
   }[value] || 'secondary';
