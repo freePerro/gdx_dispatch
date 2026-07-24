@@ -70,10 +70,31 @@
         </template>
       </Dialog>
 
-      <Dialog v-model:visible="depositResultOpen" header="Deposit Invoice Created" :style="{ width: '460px' }" modal data-testid="deposit-result-dialog">
+      <Dialog v-model:visible="requestDepositOpen" header="Request Deposit" :style="{ width: '460px' }" modal data-testid="request-deposit-dialog">
+        <p class="text-sm mb-3">
+          Create a deposit invoice for this accepted estimate. Collect it by
+          card via the pay link, or record a check/cash payment on the invoice.
+        </p>
+        <div style="display:flex; align-items:center; gap:.5rem;" class="mb-3">
+          <InputNumber v-model="depositAmount" mode="currency" currency="USD" locale="en-US"
+            :min="0" data-testid="request-deposit-amount" />
+          <span v-if="depositDefault.pct" class="text-sm" style="opacity:.7;">
+            default {{ depositDefault.pct }}% of {{ formatMoney(depositDefault.estimate_total) }}
+          </span>
+        </div>
+        <template #footer>
+          <Button label="Cancel" text @click="requestDepositOpen = false" />
+          <Button label="Create Deposit Invoice" icon="pi pi-wallet" severity="success" :loading="requestDepositBusy"
+            data-testid="request-deposit-confirm" @click="doRequestDeposit" />
+        </template>
+      </Dialog>
+
+      <Dialog v-model:visible="depositResultOpen" header="Deposit Invoice" :style="{ width: '460px' }" modal data-testid="deposit-result-dialog">
         <p class="text-sm mb-3">
           Deposit invoice <b>{{ depositResult?.invoice_number }}</b> for
-          <b>{{ formatMoney(depositResult?.amount || 0) }}</b> was created and is due now.
+          <b>{{ formatMoney(depositResult?.amount || 0) }}</b>
+          <template v-if="(depositResult?.balance_due ?? depositResult?.amount) > 0"> is due now.</template>
+          <template v-else> is paid.</template>
         </p>
         <p v-if="depositResult?.pay_url" class="text-sm mb-3" style="opacity:.7;">
           Send the customer the payment link, or record a check/cash payment on the invoice.
@@ -555,6 +576,13 @@
           <Button label="Decline" icon="pi pi-times" severity="danger" outlined data-testid="estimate-decline"
             :disabled="estimate.status === 'Declined' || estimate.status === 'Accepted'"
             @click="declineEstimate" />
+          <!-- Retroactive deposit (2026-07-23): estimates accepted before
+               the deposit feature (or with the deposit step skipped) get
+               an explicit door — same invoice the accept-time flow makes. -->
+          <Button v-if="estimate.status === 'Accepted'"
+            label="Request Deposit" icon="pi pi-wallet" severity="info" outlined
+            data-testid="estimate-request-deposit"
+            @click="openRequestDeposit" />
           <Button v-if="estimate.status === 'Accepted' && !estimate.job_id"
             label="Convert to Job" icon="pi pi-briefcase" severity="success"
             data-testid="estimate-convert-job" :loading="converting"
@@ -2235,6 +2263,42 @@ async function doAcceptEstimate() {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to accept", life: 3000 });
   } finally {
     acceptBusy.value = false;
+  }
+}
+
+// Retroactive deposit request for an already-accepted estimate.
+const requestDepositOpen = ref(false);
+const requestDepositBusy = ref(false);
+
+async function openRequestDeposit() {
+  try {
+    const d = await api.get(`/api/estimates/${route.params.id}/deposit-default`);
+    depositDefault.value = d || { pct: 0, amount: 0, estimate_total: 0, existing: null };
+    if (d?.existing) {
+      // One deposit per estimate — show the existing one instead of a form.
+      depositResult.value = d.existing;
+      return;
+    }
+    depositAmount.value = d?.amount || 0;
+  } catch {
+    depositDefault.value = { pct: 0, amount: 0, estimate_total: 0, existing: null };
+    depositAmount.value = 0;
+  }
+  requestDepositOpen.value = true;
+}
+
+async function doRequestDeposit() {
+  requestDepositBusy.value = true;
+  try {
+    const resp = await api.post(`/api/estimates/${route.params.id}/deposit-invoice`, {
+      amount: depositAmount.value || null,
+    });
+    requestDepositOpen.value = false;
+    depositResult.value = resp;
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to create deposit invoice", life: 5000 });
+  } finally {
+    requestDepositBusy.value = false;
   }
 }
 
