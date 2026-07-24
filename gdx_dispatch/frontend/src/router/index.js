@@ -299,6 +299,9 @@ export const routes = [
   // bookmarked link or stale toast notification lands the user in the
   // right place rather than 404'ing.
   { path: '/ai-settings', redirect: '/settings' },
+  // Intentional deep-link target (Tier-8 review): no nav entry on purpose —
+  // the topbar AI panel is the primary UI; this full-page wrapper exists for
+  // bookmarks/shared links.
   { path: '/ai-assistant', name: 'ai-assistant', component: AIAssistantView },
   // Phone cluster — Phone.com Calls / SMS / Cold Leads / Faxes under one tab
   // bar. Bare /phone-com (not previously a route) now lands on Calls.
@@ -358,7 +361,7 @@ export const routes = [
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },
   // Sprint 0.9-o: SS-14..35 admin/user routes
-  { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer },
+  { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer, meta: { requiresPermission: 'settings.write' } },
   // 2026-05-05 — removed routes for platform-admin views whose backends never mounted.
   // 2026-06-22 — removed /admin/billing-usage + /admin/federation (single-tenant cleanup).
   { path: '/admin/payroll', name: 'admin-payroll', component: AdminPayrollView, meta: { requiresPermission: 'payroll.read' } },

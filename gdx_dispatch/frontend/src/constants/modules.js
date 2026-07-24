@@ -217,6 +217,11 @@ export const MODULE_CATEGORIES = [
       { key: 'onboarding', label: 'Onboarding', icon: 'pi pi-flag', to: '/onboarding', type: 'Admin', permission: 'nav.admin' },
       { key: 'admin_ops', label: 'Admin Operations', icon: 'pi pi-server', to: '/admin-ops', type: 'Admin', permission: 'settings.write' },
       { key: 'server_errors', label: 'Server Logs', icon: 'pi pi-exclamation-triangle', to: '/server-errors', type: 'Admin', permission: 'settings.write' },
+      // Tier-8 (2026-07-24): the hash-chained audit log had a live backend
+      // and a working route but its ONLY in-app link lived inside the dead
+      // AdminSettingsView (now retired) — URL-only for months. Same
+      // settings.write gate as its API.
+      { key: 'audit_log', label: 'Audit Log', icon: 'pi pi-history', to: '/admin/audit-log', type: 'Admin', permission: 'settings.write' },
       { key: 'admin_db', label: 'Database', icon: 'pi pi-database', to: '/admin/database', type: 'Admin', permission: 'settings.write' },
       // 2026-07-01 UX audit: key was 'payroll', colliding with the Payroll
       // category's module (two entries, one enablement key). Renamed key +

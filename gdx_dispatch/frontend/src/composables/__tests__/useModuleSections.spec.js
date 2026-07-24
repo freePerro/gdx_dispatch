@@ -87,7 +87,7 @@ const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'ac
 // module.
 // bank_feeds (Banno sync, 2026-07-17) post-dates the migration too — new
 // surface gated bank_feeds.read, pinned explicitly below.
-const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger', 'vendor_bills', 'bank_feeds']);
+const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger', 'vendor_bills', 'bank_feeds', 'audit_log']);
 const MODULES = flattenModules().filter((m) => !POST_MIGRATION_KEYS.has(m.key));
 
 function canonical(role) {

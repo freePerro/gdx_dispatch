@@ -312,11 +312,14 @@ def test_get_admin_audit_log_pagination(db: Session):
         db.add(entry)
     db.commit()
 
-    body = admin_ops.get_audit_log(2, 2, _admin_user(), db)
+    # Tier-8: get_audit_log grew the AuditLogViewer contract (limit/offset +
+    # filters + chain_integrity); page/page_size stay accepted for back-compat.
+    body = admin_ops.get_audit_log(page=2, page_size=2, _=_admin_user(), db=db)
     assert body["page"] == 2
     assert body["page_size"] == 2
     assert body["total"] == 5
     assert len(body["items"]) == 2
+    assert "chain_integrity" in body
 
 
 def test_get_admin_permissions_defaults_empty(db: Session):
