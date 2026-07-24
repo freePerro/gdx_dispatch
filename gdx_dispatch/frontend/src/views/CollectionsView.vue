@@ -87,7 +87,9 @@
         <Column header="Customer">
           <template #body="{ data }">{{ data.customer || data.customer_name || '—' }}</template>
         </Column>
-        <Column field="invoice_id" header="Invoice #" />
+        <Column field="invoice_number" header="Invoice #">
+          <template #body="{ data }">{{ data.invoice_number || String(data.invoice_id || '').slice(0, 8) }}</template>
+        </Column>
         <Column header="Amount Due" style="width: 140px">
           <template #body="{ data }">{{ formatCurrency(data.amount_due) }}</template>
         </Column>
@@ -123,6 +125,14 @@
               text
               size="small"
               @click.stop="pauseEntry(data)"
+            />
+            <Button
+              :data-testid="`collections-reminders-${data.id}`"
+              label="Reminders"
+              icon="pi pi-history"
+              text
+              size="small"
+              @click.stop="openReminders(data)"
             />
             <Button
               :data-testid="`collections-writeoff-${data.id}`"
@@ -208,6 +218,68 @@
           />
         </template>
       </Dialog>
+
+      <!-- Per-invoice reminder ledger (Tier-2 UI door, 2026-07): the
+           GET/POST/DELETE /api/collections/reminders trio — including the
+           promised-payment-date field — had zero callers; only the bulk
+           send-reminders button existed. -->
+      <Dialog
+        v-model:visible="showRemindersDialog"
+        :header="`Reminder history — ${remindersTarget?.customer || remindersTarget?.customer_name || 'invoice'}`"
+        modal
+        :style="{ width: '640px' }"
+        data-testid="reminders-dialog"
+      >
+        <div v-if="remindersLoading" class="muted">Loading…</div>
+        <template v-else>
+          <DataTable v-if="reminders.length" :value="reminders" striped-rows data-testid="reminders-table">
+            <Column field="sent_at" header="When">
+              <template #body="{ data }">{{ (data.sent_at || data.created_at || '').slice(0, 10) }}</template>
+            </Column>
+            <Column field="stage" header="Stage" />
+            <Column field="channel" header="Channel" />
+            <Column field="promised_payment_date" header="Promised">
+              <template #body="{ data }">{{ data.promised_payment_date ? data.promised_payment_date.slice(0, 10) : '—' }}</template>
+            </Column>
+            <Column field="notes" header="Notes" />
+            <Column header="" style="width: 4rem">
+              <template #body="{ data }">
+                <Button icon="pi pi-trash" aria-label="Delete reminder" text severity="secondary" size="small" data-testid="reminder-delete-btn" @click="deleteReminder(data)" />
+              </template>
+            </Column>
+          </DataTable>
+          <p v-else class="muted">No reminders logged for this invoice yet.</p>
+
+          <div class="form-grid" style="margin-top: 1rem">
+            <div class="form-field">
+              <label>Stage</label>
+              <Select v-model="reminderForm.stage" :options="reminderStages" class="w-full" data-testid="reminder-stage" />
+            </div>
+            <div class="form-field">
+              <label>Channel</label>
+              <Select v-model="reminderForm.channel" :options="['email', 'phone', 'sms', 'letter']" class="w-full" data-testid="reminder-channel" />
+            </div>
+            <div class="form-field">
+              <label>Promised payment date</label>
+              <DatePicker v-model="reminderForm.promised_payment_date" dateFormat="yy-mm-dd" showIcon class="w-full" data-testid="reminder-promised" />
+            </div>
+            <div class="form-field full-width">
+              <label>Notes</label>
+              <Textarea v-model="reminderForm.notes" rows="2" class="w-full" data-testid="reminder-notes" />
+            </div>
+          </div>
+        </template>
+        <template #footer>
+          <Button label="Close" severity="secondary" @click="showRemindersDialog = false" />
+          <Button
+            label="Log reminder"
+            icon="pi pi-plus"
+            :loading="savingReminder"
+            data-testid="reminder-save"
+            @click="logReminder"
+          />
+        </template>
+      </Dialog>
     </section>
 </template>
 
@@ -283,6 +355,77 @@ const emptyForm = () => ({
   contact_type: 'phone',
 });
 const form = ref(emptyForm());
+
+// Per-invoice reminder ledger
+const showRemindersDialog = ref(false);
+const remindersTarget = ref(null);
+const reminders = ref([]);
+const remindersLoading = ref(false);
+const savingReminder = ref(false);
+const reminderStages = ['friendly', 'first_reminder', 'second_reminder', 'final_notice', 'collections'];
+const emptyReminderForm = () => ({ stage: 'friendly', channel: 'email', notes: '', promised_payment_date: null });
+const reminderForm = ref(emptyReminderForm());
+
+async function openReminders(entry) {
+  remindersTarget.value = entry;
+  reminderForm.value = emptyReminderForm();
+  showRemindersDialog.value = true;
+  await loadReminders();
+}
+
+async function loadReminders() {
+  if (!remindersTarget.value?.invoice_id) {
+    reminders.value = [];
+    return;
+  }
+  remindersLoading.value = true;
+  try {
+    const data = await api.get(`/api/collections/reminders?invoice_id=${encodeURIComponent(remindersTarget.value.invoice_id)}`);
+    reminders.value = Array.isArray(data) ? data : data?.items || [];
+  } catch {
+    reminders.value = [];
+  } finally {
+    remindersLoading.value = false;
+  }
+}
+
+async function logReminder() {
+  const target = remindersTarget.value;
+  if (!target?.invoice_id) return;
+  savingReminder.value = true;
+  try {
+    await api.post(
+      '/api/collections/reminders',
+      {
+        invoice_id: String(target.invoice_id),
+        customer_id: target.customer_id ? String(target.customer_id) : null,
+        customer_name: target.customer || target.customer_name || null,
+        stage: reminderForm.value.stage,
+        channel: reminderForm.value.channel,
+        notes: reminderForm.value.notes || null,
+        promised_payment_date: reminderForm.value.promised_payment_date
+          ? reminderForm.value.promised_payment_date.toISOString().slice(0, 10)
+          : null,
+      },
+      { successMessage: 'Reminder logged' },
+    );
+    reminderForm.value = emptyReminderForm();
+    await loadReminders();
+  } catch {
+    /* api helper toasts */
+  } finally {
+    savingReminder.value = false;
+  }
+}
+
+async function deleteReminder(rem) {
+  try {
+    await api.del(`/api/collections/reminders/${rem.id}`, { successMessage: 'Reminder deleted' });
+    reminders.value = reminders.value.filter((r) => r.id !== rem.id);
+  } catch {
+    /* api helper toasts */
+  }
+}
 
 const counts = computed(() => {
   const result = {};

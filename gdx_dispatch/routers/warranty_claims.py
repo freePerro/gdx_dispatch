@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -93,6 +93,21 @@ def file_claim(
             filed_at=now, created_by=uid, created_at=now, updated_at=now,
         )
         db.add(claim)
+        # Keep the warranty row in step with its claims — WarrantiesView
+        # filters on warranty.status "claimed" and shows claim_count, and
+        # before this the two systems could only diverge (the counter bump
+        # lived solely on the never-called POST /api/warranties/{id}/claim).
+        if payload.warranty_id:
+            from gdx_dispatch.models.tenant_models import Warranty
+
+            w = db.get(Warranty, payload.warranty_id)
+            if w is not None:
+                w.claim_count = (w.claim_count or 0) + 1
+                w.status = "claimed"
+                w.last_claim_at = now
+                if payload.claim_notes:
+                    w.last_claim_notes = payload.claim_notes
+                w.updated_at = now
         db.commit()
         db.refresh(claim)
     except Exception:
@@ -140,10 +155,16 @@ def update_claim(
     tid = _tid(request)
     uid = _uid(user)
 
+    # claim_id arrives as a path string; the column is Uuid(as_uuid=True) —
+    # coerce explicitly so a malformed id 404s instead of erroring on PG.
+    try:
+        claim_uuid = UUID(claim_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Warranty claim not found") from None
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     claim = db.execute(
         select(WarrantyClaim).where(
-            WarrantyClaim.id == claim_id,
+            WarrantyClaim.id == claim_uuid,
             WarrantyClaim.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -188,10 +209,14 @@ def get_claim(
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    try:
+        claim_uuid = UUID(claim_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Warranty claim not found") from None
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
     claim = db.execute(
         select(WarrantyClaim).where(
-            WarrantyClaim.id == claim_id,
+            WarrantyClaim.id == claim_uuid,
             WarrantyClaim.deleted_at.is_(None),
         )
     ).scalar_one_or_none()

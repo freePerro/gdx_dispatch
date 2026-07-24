@@ -115,21 +115,11 @@ def update_booking(slot_id: str, payload: _GenericPayload, _: dict = Depends(get
     return _ok()
 
 
-# ── Collections (list + generic PATCH + bulk send) ────────────────────────
-
-@router.get("/api/collections", response_model=None)
-def list_collections(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.patch("/api/collections/{entry_id}", response_model=None)
-def update_collection(entry_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
-
-
-@router.post("/api/collections/send-reminders", response_model=None)
-def send_collection_reminders(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "queued": 0}
+# ── Collections ────────────────────────────────────────────────────────────
+# The list/PATCH/bulk-send stubs that lived here were removed 2026-07-24:
+# routers/collections.py now implements the real queue (derived from overdue
+# invoices + the reminder ledger). The shim's {"items": []} made the whole
+# CollectionsView permanent theater.
 
 
 # ── Customer detail: recurring jobs, communications, portal ─────────────

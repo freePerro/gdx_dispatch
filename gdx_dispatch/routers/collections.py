@@ -73,8 +73,13 @@ def list_reminders(
 ) -> list[dict[str, Any]]:
     stmt = select(PaymentReminder)
     if invoice_id:
-        with contextlib.suppress(ValueError):
+        # A malformed id must refuse, not silently drop the filter — the old
+        # suppress() returned EVERY tenant reminder as "this invoice's
+        # history" on any bad input.
+        try:
             stmt = stmt.where(PaymentReminder.invoice_id == UUID(invoice_id))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invoice_id must be a UUID") from None
     if stage:
         stmt = stmt.where(PaymentReminder.stage == stage)
     rows = db.execute(stmt.order_by(PaymentReminder.created_at.desc())).scalars().all()
@@ -93,9 +98,14 @@ def create_reminder(
     if payload.promised_payment_date:
         with contextlib.suppress(ValueError):
             promised = datetime.fromisoformat(payload.promised_payment_date)
+    try:
+        invoice_uuid = UUID(payload.invoice_id)
+        customer_uuid = UUID(payload.customer_id) if payload.customer_id else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invoice_id/customer_id must be UUIDs") from None
     r = PaymentReminder(
-        invoice_id=UUID(payload.invoice_id),
-        customer_id=UUID(payload.customer_id) if payload.customer_id else None,
+        invoice_id=invoice_uuid,
+        customer_id=customer_uuid,
         customer_name=payload.customer_name,
         stage=payload.stage,
         channel=payload.channel,
@@ -236,3 +246,159 @@ def delete_reminder(reminder_id: UUID, _: dict = Depends(get_current_user), db: 
         except Exception:
             log.exception('delete_reminder_audit_failed')
     return None
+
+
+# ---------------------------------------------------------------------------
+# The real collections queue (Tier-2 contract-gap round, 2026-07-24).
+#
+# CollectionsView has rendered GET /api/collections since it shipped, but the
+# path was owned by the ui_compat shim, which returned {"items": []} forever —
+# the entire page was theater: empty table, no-op PATCH, "queued: 0" bulk
+# send. The queue is DERIVED (an invoice is "in collections" because it is
+# past due with a balance), so these endpoints compute rows from invoices +
+# the reminder ledger rather than storing a parallel table that could drift.
+# ---------------------------------------------------------------------------
+
+
+class CollectionPatchIn(BaseModel):
+    status: str | None = Field(default=None, max_length=20)
+    note: str | None = Field(default=None, max_length=2000)
+    last_contact: str | None = Field(default=None, max_length=32)
+    contact_type: str | None = Field(default=None, max_length=20)
+
+
+@router.get("/api/collections", response_model=None)
+def list_collections(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from sqlalchemy import func as _func
+
+    from gdx_dispatch.models.tenant_models import Customer, Invoice
+
+    today = utcnow().date()
+    rows = db.execute(
+        select(Invoice, Customer.name)
+        .join(Customer, Customer.id == Invoice.customer_id, isouter=True)
+        .where(
+            Invoice.deleted_at.is_(None),
+            Invoice.balance_due > 0,
+            Invoice.status.in_(("sent", "overdue")),
+            Invoice.due_date.is_not(None),
+            Invoice.due_date < today,
+        )
+        .order_by(Invoice.due_date.asc())
+    ).all()
+
+    inv_ids = [r[0].id for r in rows]
+    last_contact_by_invoice: dict[str, Any] = {}
+    if inv_ids:
+        rem_rows = db.execute(
+            select(PaymentReminder.invoice_id, _func.max(PaymentReminder.sent_at))
+            .where(PaymentReminder.invoice_id.in_(inv_ids))
+            .group_by(PaymentReminder.invoice_id)
+        ).all()
+        last_contact_by_invoice = {str(inv): ts for inv, ts in rem_rows}
+
+    items = []
+    for inv, customer_name in rows:
+        last = last_contact_by_invoice.get(str(inv.id))
+        items.append({
+            # id doubles as the PATCH path segment AND the reminders-ledger
+            # invoice_id — both are the invoice UUID.
+            "id": str(inv.id),
+            "invoice_id": str(inv.id),
+            "invoice_number": inv.invoice_number,
+            "customer_id": str(inv.customer_id) if inv.customer_id else None,
+            "customer": customer_name or "",
+            "customer_name": customer_name or "",
+            "amount_due": float(inv.balance_due or 0),
+            "amount": float(inv.balance_due or 0),
+            "days_overdue": (today - inv.due_date).days,
+            "due_date": inv.due_date.isoformat(),
+            "last_contact": last.isoformat() if last else None,
+            "status": "paused" if inv.dunning_paused else "active",
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.patch("/api/collections/{entry_id}", response_model=None)
+def update_collection_entry(
+    entry_id: str,
+    payload: CollectionPatchIn,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    from gdx_dispatch.models.tenant_models import Customer, Invoice
+
+    try:
+        invoice_uuid = UUID(entry_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Collection entry not found") from None
+    invoice = db.execute(
+        select(Invoice).where(Invoice.id == invoice_uuid, Invoice.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Collection entry not found")
+
+    if payload.status == "resolved":
+        # There is no stored "resolved" flag to flip — an invoice leaves the
+        # queue when its balance reaches zero. Refusing loudly beats the old
+        # shim's fake success.
+        raise HTTPException(
+            status_code=409,
+            detail="resolve this by recording a payment or issuing a credit memo on the invoice — write-offs are credit memos",
+        )
+    if payload.status == "paused":
+        invoice.dunning_paused = True
+    elif payload.status == "active":
+        invoice.dunning_paused = False
+
+    # A contact note becomes a reminder-ledger row — the same history the
+    # per-invoice Reminders dialog shows.
+    if payload.note or payload.last_contact or payload.contact_type:
+        contacted_at = utcnow()
+        if payload.last_contact:
+            with contextlib.suppress(ValueError):
+                contacted_at = datetime.fromisoformat(payload.last_contact)
+        customer_name = None
+        if invoice.customer_id:
+            customer_name = db.execute(
+                select(Customer.name).where(Customer.id == invoice.customer_id)
+            ).scalar_one_or_none()
+        db.add(PaymentReminder(
+            invoice_id=invoice.id,
+            customer_id=invoice.customer_id,
+            customer_name=customer_name,
+            stage="friendly",
+            channel=payload.contact_type or "phone",
+            sent_at=contacted_at,
+            sent_by=user.get("email") if isinstance(user, dict) else None,
+            notes=payload.note,
+        ))
+
+    db.commit()
+    log_audit_event_sync(
+        db=db, tenant_id=None,
+        user_id=str(user.get("sub") or user.get("user_id") or "system"),
+        action="collection_updated", entity_type="invoice", entity_id=str(invoice.id),
+        details=payload.model_dump(exclude_none=True),
+    )
+    db.commit()
+    return {"ok": True, "id": str(invoice.id), "status": "paused" if invoice.dunning_paused else "active"}
+
+
+@router.post("/api/collections/send-reminders", response_model=None)
+def send_collection_reminders(
+    payload: dict[str, Any] | None = None,
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    # Deliberately refuses instead of pretending: automatic dunning email is
+    # OFF (operator decision — zero reminder emails have ever been sent), and
+    # the shim this replaces answered {"queued": 0} while the toast said
+    # "Reminders queued for delivery". When dunning turns on, implement the
+    # actual send here.
+    raise HTTPException(
+        status_code=409,
+        detail="Automatic reminder sending is switched off. Log contacts per-invoice via the Reminders button instead.",
+    )
