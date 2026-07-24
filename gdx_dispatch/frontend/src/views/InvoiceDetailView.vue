@@ -352,6 +352,44 @@
             data-testid="dunning-pause-btn"
             @click="toggleDunningPause"
           />
+          <!-- Tier-2 UI doors (contract-gap sweep 2026-07-24): the credit
+               lifecycle was fully built server-side with zero entry points —
+               the office could SEE a credit memo but never issue one. -->
+          <Button
+            v-if="['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
+            label="Credit Memo"
+            icon="pi pi-percentage"
+            severity="warn"
+            outlined
+            data-testid="credit-memo-btn"
+            @click="showCreditMemoDialog = true"
+          />
+          <Button
+            v-if="glPostingEnabled && ['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
+            label="Apply Credit"
+            icon="pi pi-wallet"
+            severity="info"
+            outlined
+            data-testid="apply-credit-btn"
+            @click="showApplyCreditDialog = true"
+          />
+          <Button
+            v-if="!invoice.locked && String(invoice.status || '').toLowerCase() !== 'void'"
+            label="Finalize"
+            icon="pi pi-lock"
+            severity="secondary"
+            outlined
+            :loading="finalizing"
+            data-testid="finalize-invoice-btn"
+            @click="finalizeInvoice"
+          />
+          <Tag
+            v-if="invoice.locked"
+            value="Locked"
+            severity="contrast"
+            icon="pi pi-lock"
+            data-testid="invoice-locked-tag"
+          />
           <Button
             label="Delete"
             icon="pi pi-trash" aria-label="Delete"
@@ -524,6 +562,92 @@
         </template>
       </Dialog>
 
+      <!-- Credit Memo Dialog (Tier-2 UI door) -->
+      <Dialog
+        v-model:visible="showCreditMemoDialog"
+        header="Issue Credit Memo"
+        modal
+        :style="{ width: '480px' }"
+        data-testid="credit-memo-dialog"
+      >
+        <div class="form-grid-single">
+          <div class="form-field">
+            <label for="cm-amount">Amount to credit *</label>
+            <InputNumber
+              id="cm-amount"
+              v-model="creditMemo.amount"
+              mode="currency"
+              currency="USD"
+              locale="en-US"
+              :min="0.01"
+              :max="balanceDue > 0 ? balanceDue : undefined"
+              data-testid="credit-memo-amount"
+            />
+            <small class="form-hint">Forgives part of the remaining balance ({{ currency(balanceDue) }}). This is permanent and audited.</small>
+          </div>
+          <div class="form-field">
+            <label for="cm-reason">Reason *</label>
+            <InputText
+              id="cm-reason"
+              v-model="creditMemo.reason"
+              placeholder="e.g. goodwill adjustment, billing error"
+              data-testid="credit-memo-reason"
+            />
+          </div>
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showCreditMemoDialog = false" />
+          <Button
+            label="Issue Credit"
+            severity="warn"
+            data-testid="save-credit-memo"
+            :disabled="!creditMemo.amount || !creditMemo.reason.trim()"
+            :loading="savingCreditMemo"
+            @click="issueCreditMemo"
+          />
+        </template>
+      </Dialog>
+
+      <!-- Apply Customer Credit Dialog (Tier-2 UI door) -->
+      <Dialog
+        v-model:visible="showApplyCreditDialog"
+        header="Apply Customer Credit"
+        modal
+        :style="{ width: '480px' }"
+        data-testid="apply-credit-dialog"
+      >
+        <div class="form-grid-single">
+          <div class="form-field">
+            <label for="ac-amount">Amount to apply *</label>
+            <InputNumber
+              id="ac-amount"
+              v-model="applyCredit.amount"
+              mode="currency"
+              currency="USD"
+              locale="en-US"
+              :min="0.01"
+              :max="balanceDue > 0 ? balanceDue : undefined"
+              data-testid="apply-credit-amount"
+            />
+            <small class="form-hint">
+              Consumes this customer's credit balance against the invoice.
+              Requires ledger posting — the server enforces both the credit
+              balance and the remaining balance ({{ currency(balanceDue) }}).
+            </small>
+          </div>
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showApplyCreditDialog = false" />
+          <Button
+            label="Apply Credit"
+            data-testid="save-apply-credit"
+            :disabled="!applyCredit.amount"
+            :loading="savingApplyCredit"
+            @click="applyCustomerCredit"
+          />
+        </template>
+      </Dialog>
+
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 already mounts
            one globally, and PrimeVue's useConfirm() broadcasts to every
            mounted instance, causing duplicate dialog renders. -->
@@ -586,6 +710,27 @@ const composerSending = ref(false);
 const composer = ref({ to: "", subject: "", body_text: "", pdf: null, extras: [] });
 const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
 const newPayment = ref({ amount: 0, method: "Cash", reference: "" });
+// Tier-2 UI doors — credit lifecycle + finalize
+const showCreditMemoDialog = ref(false);
+const creditMemo = ref({ amount: 0, reason: "" });
+const savingCreditMemo = ref(false);
+const showApplyCreditDialog = ref(false);
+const applyCredit = ref({ amount: 0 });
+const savingApplyCredit = ref(false);
+const finalizing = ref(false);
+// Customer credits live on the GL — with ledger posting off (its prod state
+// until the CPA sign-off) the apply-credit endpoint 409s on every call, so
+// the button only renders when posting is actually on.
+const glPostingEnabled = ref(false);
+
+async function loadGlPosting() {
+  try {
+    const data = await api.get("/api/accounting/settings", { suppressErrorToast: true });
+    glPostingEnabled.value = Boolean(data?.settings?.ledger_posting_enabled);
+  } catch {
+    glPostingEnabled.value = false;
+  }
+}
 // D-S122b-detail-view-columns — same category set as InvoiceCreateView.
 const lineCategoryOptions = [
   { label: "Doors", value: "Doors" },
@@ -777,6 +922,9 @@ function normalizeInvoice(payload) {
     is_superseded_deposit: Boolean(payload.is_superseded_deposit),
     // PR6 — drives the Pause/Resume reminders toggle.
     dunning_paused: Boolean(payload.dunning_paused),
+    // Tier-2 finalize door — without this the Finalize button never
+    // disappears after locking (the audit's "survives its own success").
+    locked: Boolean(payload.locked),
     // Drives the edit-mode "hide line-item prices on PDF" toggle.
     hide_line_prices: Boolean(payload.hide_line_prices),
     line_items: lineItems,
@@ -1030,6 +1178,65 @@ async function toggleDunningPause() {
     });
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Error', detail: e.message || 'Failed to update reminders', life: 4000 });
+  }
+}
+
+async function issueCreditMemo() {
+  savingCreditMemo.value = true;
+  try {
+    // Server re-caps against the live balance and refuses drafts/voids —
+    // the button visibility is UX, the server check is the contract.
+    const result = await api.post(
+      `/api/invoices/${route.params.id}/credit-memo`,
+      { amount: creditMemo.value.amount, reason: creditMemo.value.reason.trim() },
+      { suppressErrorToast: true },
+    );
+    showCreditMemoDialog.value = false;
+    creditMemo.value = { amount: 0, reason: "" };
+    toast.add({
+      severity: "success",
+      summary: "Credit issued",
+      detail: `Balance due is now ${currency(result?.balance_due ?? 0)}`,
+      life: 4000,
+    });
+    await fetchInvoice();
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Credit memo failed", detail: err.message || "Could not issue credit", life: 5000 });
+  } finally {
+    savingCreditMemo.value = false;
+  }
+}
+
+async function applyCustomerCredit() {
+  savingApplyCredit.value = true;
+  try {
+    await api.post(
+      `/api/invoices/${route.params.id}/apply-credit`,
+      { amount: applyCredit.value.amount },
+      { suppressErrorToast: true },
+    );
+    showApplyCreditDialog.value = false;
+    applyCredit.value = { amount: 0 };
+    toast.add({ severity: "success", summary: "Credit applied", life: 3000 });
+    await fetchInvoice();
+  } catch (err) {
+    // Most common refusal: ledger posting is off (customer credits live on
+    // the ledger). Surface the server's own words.
+    toast.add({ severity: "error", summary: "Apply credit failed", detail: err.message || "Could not apply credit", life: 6000 });
+  } finally {
+    savingApplyCredit.value = false;
+  }
+}
+
+async function finalizeInvoice() {
+  finalizing.value = true;
+  try {
+    await api.post(`/api/invoices/${route.params.id}/finalize`, {}, { successMessage: "Invoice locked" });
+    await fetchInvoice();
+  } catch {
+    // fireError already toasted
+  } finally {
+    finalizing.value = false;
   }
 }
 
@@ -1375,6 +1582,7 @@ onMounted(() => {
   });
   loadTaxRate();
   loadQbStatus();
+  loadGlPosting();
 });
 </script>
 

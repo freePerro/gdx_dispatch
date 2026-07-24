@@ -2787,6 +2787,31 @@ def add_job_dependency(
         log.exception("add_job_dependency_failed")
         return jsonable_response({"detail": "job not found"}, 404)
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    # Guardrails added with the first UI door (2026-07): a self-dependency
+    # deadlocks can-start forever, and a typo'd target id would create a
+    # blocker no list could ever resolve to a job.
+    if str(payload.depends_on_job_id) == str(job_id):
+        return jsonable_response({"detail": "a job cannot depend on itself"}, 422)
+    try:
+        target = db.get(Job, uuid.UUID(str(payload.depends_on_job_id)))
+    except (ValueError, AttributeError):
+        target = None
+    if target is None or target.deleted_at is not None:
+        return jsonable_response({"detail": "depends_on job not found"}, 422)
+    # Direct-cycle guard: if the target already depends on THIS job, adding
+    # the reverse edge deadlocks both forever (can-start never clears).
+    # Deeper cycles are not walked — this catches the one-click mistake.
+    reverse = db.execute(
+        select(JobDependency).where(
+            JobDependency.tenant_id == tenant_id,
+            JobDependency.job_id == str(payload.depends_on_job_id),
+            JobDependency.depends_on_job_id == job_id,
+        )
+    ).scalar_one_or_none()
+    if reverse is not None:
+        return jsonable_response(
+            {"detail": "that job already depends on this one — adding both directions would deadlock them"}, 422
+        )
     dep_id = str(uuid.uuid4())
     now = datetime.now(UTC)
     try:
@@ -2832,13 +2857,84 @@ def list_job_dependencies(
                 JobDependency.job_id == job_id,
             )
         ).scalars().all()
+        # Resolve the depended-on jobs so the UI can render names, not UUIDs.
+        # JobDependency stores Text ids while jobs.id is UUID — coerce in
+        # Python rather than CASTing per-dialect.
+        dep_uuids = []
+        for d in deps:
+            with contextlib.suppress(ValueError, AttributeError, TypeError):
+                dep_uuids.append(uuid.UUID(str(d.depends_on_job_id)))
+        target_info: dict[str, dict[str, Any]] = {}
+        if dep_uuids:
+            rows = db.execute(
+                select(Job.id, Job.title, Job.status, Job.lifecycle_stage).where(Job.id.in_(dep_uuids))
+            ).all()
+            target_info = {
+                str(r[0]): {
+                    "title": r[1],
+                    "status": r[2],
+                    "lifecycle_stage": str(r[3]) if r[3] else None,
+                }
+                for r in rows
+            }
         return jsonable_response([
-            {"id": d.id, "job_id": d.job_id, "depends_on_job_id": d.depends_on_job_id, "created_at": d.created_at}
+            {
+                "id": d.id,
+                "job_id": d.job_id,
+                "depends_on_job_id": d.depends_on_job_id,
+                "depends_on_title": target_info.get(str(d.depends_on_job_id), {}).get("title"),
+                "depends_on_status": target_info.get(str(d.depends_on_job_id), {}).get("lifecycle_stage")
+                or target_info.get(str(d.depends_on_job_id), {}).get("status"),
+                "created_at": d.created_at,
+            }
             for d in deps
         ])
     except SQLAlchemyError:
         log.exception("list_job_dependencies_failed", extra={"job_id": job_id})
         return jsonable_response({"detail": "Failed to list dependencies"}, 500)
+
+
+@router.delete("/{job_id}/dependencies/{dependency_id}", response_model=None)
+def remove_job_dependency(
+    job_id: str,
+    dependency_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a blocking relationship. Added with the first dependencies UI
+    (2026-07) — an add-only contract would have made every mis-click a
+    permanent blocker."""
+    try:
+        uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        dep = db.execute(
+            select(JobDependency).where(
+                JobDependency.tenant_id == tenant_id,
+                JobDependency.job_id == job_id,
+                JobDependency.id == dependency_id,
+            )
+        ).scalar_one_or_none()
+        if dep is None:
+            return jsonable_response({"detail": "dependency not found"}, 404)
+        db.delete(dep)
+        db.commit()
+        log_audit_event_sync(
+            db=db, tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="job_dependency_removed", entity_type="job_dependency", entity_id=dependency_id,
+            details={"job_id": job_id, "depends_on": dep.depends_on_job_id},
+            request=request,
+        )
+        db.commit()
+        return jsonable_response({"deleted": True, "id": dependency_id})
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("remove_job_dependency_failed", extra={"job_id": job_id})
+        return jsonable_response({"detail": "Failed to remove dependency"}, 500)
 
 
 @router.get("/{job_id}/can-start", response_model=None)

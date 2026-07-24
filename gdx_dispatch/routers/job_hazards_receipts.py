@@ -213,6 +213,10 @@ class ReceiptOut(BaseModel):
     purchased_at: str | None
     created_by: str | None
     created_at: str
+    # Set once POST /api/expenses/promote-from-receipt has turned this
+    # receipt into a real Expense — lets the UI show "Promoted" instead of
+    # offering the button again (the endpoint is idempotent regardless).
+    promoted_expense_id: str | None = None
 
 
 def _receipt_to_response(r: JobReceipt) -> ReceiptOut:
@@ -226,6 +230,7 @@ def _receipt_to_response(r: JobReceipt) -> ReceiptOut:
         purchased_at=r.purchased_at.isoformat() if r.purchased_at else None,
         created_by=r.created_by,
         created_at=r.created_at.isoformat() if r.created_at else "",
+        promoted_expense_id=str(r.promoted_expense_id) if r.promoted_expense_id else None,
     )
 
 

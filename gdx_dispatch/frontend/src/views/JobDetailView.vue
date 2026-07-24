@@ -324,6 +324,41 @@
           </DataTable>
           <p v-else class="muted">No prior jobs at this customer.</p>
         </div>
+
+        <!-- Job dependencies (Tier-2 UI door): blocking relationships existed
+             server-side only — nothing could set or even see them. -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Blocked by</h3>
+          </div>
+          <div class="receipt-input">
+            <Select
+              v-model="newDependencyJobId"
+              :options="dependencyJobOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              placeholder="This job can't start until..."
+              class="dependency-select"
+              data-testid="dependency-select"
+            />
+            <Button label="Add" icon="pi pi-plus" :disabled="!newDependencyJobId" data-testid="dependency-add-btn" @click="addDependency" />
+          </div>
+          <DataTable v-if="dependencies.length" :value="dependencies" striped-rows data-testid="dependencies-table">
+            <Column field="depends_on_title" header="Job">
+              <template #body="{ data }">
+                <router-link :to="`/jobs/${data.depends_on_job_id}`">{{ data.depends_on_title || data.depends_on_job_id }}</router-link>
+              </template>
+            </Column>
+            <Column field="depends_on_status" header="Status" />
+            <Column header="" style="width: 4rem">
+              <template #body="{ data }">
+                <Button v-tooltip="'Remove dependency'" icon="pi pi-times" aria-label="Remove dependency" text severity="secondary" data-testid="dependency-remove-btn" @click="removeDependency(data)" />
+              </template>
+            </Column>
+          </DataTable>
+          <p v-else class="muted">No blocking jobs.</p>
+        </div>
       </div>
 
       <div v-else-if="activeTab === 'schedule'" class="tab-panel">
@@ -501,6 +536,26 @@
               <template #body="{ data }">
                 <a v-if="data.photo_url" :href="data.photo_url" target="_blank">view</a>
                 <span v-else class="muted">—</span>
+              </template>
+            </Column>
+            <Column header="Expense">
+              <template #body="{ data }">
+                <!-- Tier-2 UI door (2026-07): receipts could never become
+                     expense records from the UI — the promote endpoint had
+                     zero callers, breaking the receipt→bookkeeping handoff. -->
+                <Tag v-if="data.promoted_expense_id" value="Promoted" severity="success" data-testid="receipt-promoted-tag" />
+                <Button
+                  v-else-if="Number(data.amount) > 0"
+                  v-tooltip="'Create an expense record from this receipt'"
+                  label="Promote"
+                  icon="pi pi-arrow-up-right"
+                  text
+                  size="small"
+                  :loading="promotingReceiptId === data.id"
+                  data-testid="receipt-promote-btn"
+                  @click="promoteReceipt(data)"
+                />
+                <span v-else v-tooltip="'Add an amount before promoting'" class="muted">no amount</span>
               </template>
             </Column>
             <Column header="">
@@ -979,6 +1034,10 @@ const newHazardSeverity = ref("medium");
 const newHazardPhotoUrl = ref("");
 const newHazardSticky = ref(false);
 const receipts = ref([]);
+const promotingReceiptId = ref(null);
+const dependencies = ref([]);
+const dependencyJobOptions = ref([]);
+const newDependencyJobId = ref(null);
 const newReceiptVendor = ref("");
 const newReceiptAmount = ref("");
 const newReceiptPhotoUrl = ref("");
@@ -1203,6 +1262,8 @@ async function refreshRelated() {
     fetchDiagnoses(),
     fetchHazards(),
     fetchReceipts(),
+    fetchDependencies(),
+    fetchDependencyJobOptions(),
     fetchFinancials(),
   ]);
 }
@@ -1492,6 +1553,71 @@ async function deleteReceipt(rec) {
   try {
     await api.del(`/api/receipts/${rec.id}`, { successMessage: "Receipt deleted" });
     receipts.value = receipts.value.filter((r) => r.id !== rec.id);
+  } catch {
+    /* api helper toasts */
+  }
+}
+
+async function promoteReceipt(rec) {
+  promotingReceiptId.value = rec.id;
+  try {
+    // Idempotent server-side: re-promoting returns the existing expense.
+    const expense = await api.post(
+      "/api/expenses/promote-from-receipt",
+      { job_receipt_id: rec.id },
+      { successMessage: "Expense created from receipt" },
+    );
+    rec.promoted_expense_id = expense?.id || "promoted";
+  } catch {
+    /* api helper toasts (422 when the receipt has no amount) */
+  } finally {
+    promotingReceiptId.value = null;
+  }
+}
+
+async function fetchDependencies() {
+  try {
+    const data = await api.get(`/api/jobs/${route.params.id}/dependencies`);
+    dependencies.value = Array.isArray(data) ? data : [];
+  } catch {
+    dependencies.value = [];
+  }
+}
+
+async function fetchDependencyJobOptions() {
+  try {
+    const data = await api.get("/api/jobs?per_page=200", { suppressErrorToast: true });
+    const rows = Array.isArray(data) ? data : data?.items || [];
+    const terminal = new Set(["complete", "completed", "cancelled", "paid", "invoiced", "failed"]);
+    dependencyJobOptions.value = rows
+      .filter((j) => String(j.id) !== String(route.params.id))
+      // A finished job can't block anything — offering it just invites noise.
+      .filter((j) => !terminal.has(String(j.lifecycle_stage || j.status || "").toLowerCase()))
+      .map((j) => ({ label: j.title || j.job_number || String(j.id).slice(0, 8), value: String(j.id) }));
+  } catch {
+    dependencyJobOptions.value = [];
+  }
+}
+
+async function addDependency() {
+  if (!newDependencyJobId.value) return;
+  try {
+    await api.post(
+      `/api/jobs/${route.params.id}/dependencies`,
+      { depends_on_job_id: newDependencyJobId.value },
+      { successMessage: "Dependency added" },
+    );
+    newDependencyJobId.value = null;
+    await fetchDependencies();
+  } catch {
+    /* api helper toasts (422 on self/unknown job) */
+  }
+}
+
+async function removeDependency(dep) {
+  try {
+    await api.del(`/api/jobs/${route.params.id}/dependencies/${dep.id}`, { successMessage: "Dependency removed" });
+    dependencies.value = dependencies.value.filter((d) => d.id !== dep.id);
   } catch {
     /* api helper toasts */
   }
@@ -2037,4 +2163,5 @@ onMounted(async () => {
 .assignment-name { font-weight: 500; }
 .assignment-add-row { display: flex; gap: 0.4rem; align-items: center; }
 .assignment-add-row .p-select { flex: 1; }
+.dependency-select { flex: 1; min-width: 260px; }
 </style>

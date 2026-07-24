@@ -2063,6 +2063,17 @@ def finalize_invoice(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
+    # Voids are terminal — locking one stamps an audit row that means
+    # nothing. Drafts stay finalizable ON PURPOSE: locking a draft against
+    # further edits is an established workflow (add-line rejects locked
+    # invoices — see test_add_line_rejects_locked_invoice).
+    if invoice.status == "void":
+        raise HTTPException(
+            status_code=409,
+            detail="void invoices cannot be finalized",
+        )
+    if invoice.locked:
+        return _serialize_invoice(invoice)
     _recalculate_invoice(invoice, db)
     invoice.locked = True
     invoice.locked_at = datetime.now(UTC)
@@ -2191,7 +2202,10 @@ def issue_credit_memo(
     ledger posting is on."""
     _validate_uuid(invoice_id, "Invoice")
     invoice = _get_invoice_or_404(UUID(invoice_id), db)
-    if invoice.status not in ("sent", "paid"):
+    # "overdue" is accepted defensively: prod rows stay raw "sent" (overdue
+    # is derived at read time), but demo seeds and imports do write it, and
+    # the invoices most likely to need a credit memo are the overdue ones.
+    if invoice.status not in ("sent", "paid", "overdue"):
         # Audit round 3: a credit memo on a DRAFT posts an AR credit that
         # P1 never debited (negative AR), and draft deletion would strand
         # the entry. Drafts are edited, not credited.
@@ -2251,7 +2265,7 @@ def apply_customer_credit(
     balance nor the invoice's remaining balance may be exceeded. Requires
     ledger posting (the credit balance IS the 2300 ledger balance)."""
     invoice = _get_invoice_or_404(invoice_id, db)
-    if invoice.status not in ("sent", "paid"):
+    if invoice.status not in ("sent", "paid", "overdue"):
         raise HTTPException(status_code=409, detail="only issued invoices can receive credit")
     if not ledger_posting_enabled(db, invoice.company_id):
         raise HTTPException(
@@ -2337,7 +2351,7 @@ def process_refund(
     ledger posting is on. Lifecycle status untouched (bug #2 stays fixed)."""
     _validate_uuid(invoice_id, "Invoice")
     invoice = _get_invoice_or_404(UUID(invoice_id), db)
-    if invoice.status not in ("sent", "paid"):
+    if invoice.status not in ("sent", "paid", "overdue"):
         raise HTTPException(status_code=409, detail="only issued invoices can be refunded")
     refund_amount = _money(payload.amount)
 
