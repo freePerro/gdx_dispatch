@@ -152,6 +152,12 @@ def _customer_dict(row: Any) -> dict[str, Any]:
             "created_at": _normalize_datetime(row.created_at),
             "notes": row.notes,
             "referral_source": row.source,
+            # Tier 10 — per-record QuickBooks push state (S122-17). Serialized
+            # nowhere before; surfaced on the customer detail view so the office
+            # can see synced / pending / never-pushed. NULL qb_synced_at = never
+            # pushed; qb_dirty True = un-pushed changes (default True for new).
+            "qb_dirty": bool(getattr(row, "qb_dirty", True)),
+            "qb_synced_at": _normalize_datetime(getattr(row, "qb_synced_at", None)),
         }
     return {
         "id": str(row["id"]),
@@ -170,6 +176,10 @@ def _customer_dict(row: Any) -> dict[str, Any]:
         "created_at": _normalize_datetime(row.get("created_at")),
         "notes": row.get("notes"),
         "referral_source": row.get("source"),
+        # NB: the QB sync fields (qb_dirty/qb_synced_at/qb_in_quickbooks) are only
+        # surfaced on the detail route (get_customer, response_model=None). The
+        # list/search routes are CustomerOut-gated and would drop them, and the
+        # sync chip is a detail-only surface — so this raw-row branch omits them.
     }
 
 
@@ -481,7 +491,15 @@ async def get_customer(
         request=request,
     )
     db.commit()
-    return {**_customer_dict(customer), "jobs": jobs}
+    # Tier 10 — authoritative "in QuickBooks" flag from QBEntityMap (not the
+    # un-backfilled qb_synced_at). The detail view renders the sync chip off it.
+    from gdx_dispatch.core.quickbooks import qb_entity_is_mapped
+
+    return {
+        **_customer_dict(customer),
+        "jobs": jobs,
+        "qb_in_quickbooks": qb_entity_is_mapped(db, "customer", customer.id),
+    }
 
 
 @router.patch("/{customer_id}", response_model=CustomerOut)

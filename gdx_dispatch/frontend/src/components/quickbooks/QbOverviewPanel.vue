@@ -1,5 +1,24 @@
 <template>
   <div class="qb-overview-panel">
+    <div v-if="status.needs_reconnect" class="reconnect-banner" data-testid="qb-overview-reconnect-banner">
+      <i class="pi pi-exclamation-triangle" />
+      <div class="reconnect-banner-body">
+        <p class="reconnect-banner-title">QuickBooks needs to be reconnected</p>
+        <p class="reconnect-banner-detail">
+          The QuickBooks authorization has expired or been revoked. Background syncs are
+          silently skipping until it is reconnected — reconnect to resume pushing invoices,
+          customers and payments.
+        </p>
+      </div>
+      <Button
+        label="Reconnect QuickBooks"
+        icon="pi pi-refresh"
+        severity="warn"
+        data-testid="qb-overview-reconnect-btn"
+        @click="$emit('reconnect')"
+      />
+    </div>
+
     <div v-if="status.money_pulls_disabled" class="ledger-banner" data-testid="qb-overview-ledger-banner">
       <i class="pi pi-lock" />
       <div>
@@ -28,8 +47,9 @@
       <div class="overview-card">
         <p class="card-label">Connection</p>
         <Tag
-          :value="status.connected ? 'Connected' : 'Disconnected'"
-          :severity="status.connected ? 'success' : 'danger'"
+          :value="connectionLabel"
+          :severity="connectionSeverity"
+          data-testid="qb-overview-connection"
         />
         <p v-if="status.realm_id" class="card-sub" data-testid="qb-overview-realm">
           Realm: {{ status.realm_id }}
@@ -110,7 +130,18 @@ const props = defineProps({
   },
 });
 
-defineEmits(['sync-entity']);
+defineEmits(['sync-entity', 'reconnect']);
+
+// Tier 10: a token can be present (connected:true) yet dead — auth_state
+// 'needs_reconnect'. Report that honestly instead of a green "Connected".
+const connectionLabel = computed(() => {
+  if (props.status.needs_reconnect) return 'Reconnect needed';
+  return props.status.connected ? 'Connected' : 'Disconnected';
+});
+const connectionSeverity = computed(() => {
+  if (props.status.needs_reconnect) return 'warn';
+  return props.status.connected ? 'success' : 'danger';
+});
 
 // Endpoints exposed by gdx/modules/quickbooks/router.py:
 //   /sync/customers, /sync/invoices, /sync/items,
@@ -143,6 +174,22 @@ const formatDateTime = (value) => {
 
 <style scoped>
 .qb-overview-panel { padding: 0.5rem 0 1rem; }
+
+.reconnect-banner {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.85rem 1rem;
+  background: var(--p-amber-50, #fffbeb);
+  border: 1px solid var(--p-amber-300, #fcd34d);
+  border-radius: 6px;
+  color: var(--p-amber-900, #78350f);
+  margin-bottom: 1rem;
+}
+.reconnect-banner i { font-size: 1.25rem; color: var(--p-amber-600, #d97706); }
+.reconnect-banner-body { flex: 1; }
+.reconnect-banner-title { margin: 0; font-weight: 700; }
+.reconnect-banner-detail { margin: 0.15rem 0 0; font-weight: 500; }
 
 .error-banner {
   display: flex;

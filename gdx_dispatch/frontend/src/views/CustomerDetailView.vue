@@ -13,6 +13,10 @@
           <Button v-tooltip="'Back to customers'" icon="pi pi-arrow-left" aria-label="Back to customers" text rounded @click="$router.push('/customers')" data-testid="back-btn" />
           <h2>{{ customer.name }}</h2>
           <Tag :value="customer.customer_type || 'Residential'" :severity="customer.customer_type === 'Commercial' ? 'warn' : 'info'" />
+          <span v-if="qbEnabled" class="qb-sync-chip" data-testid="customer-qb-sync">
+            <span class="qb-sync-label">QuickBooks:</span>
+            <Tag :value="qbSync.label" :severity="qbSync.severity" data-testid="customer-qb-sync-tag" />
+          </span>
         </div>
         <div class="header-actions">
           <Button label="Edit" icon="pi pi-pencil" aria-label="Edit" outlined data-testid="edit-customer-btn" @click="openEditDialog" />
@@ -632,6 +636,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDate, formatDateTime, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
+import { useTenantModules } from "../composables/useTenantModules";
 import { useAuthStore } from "../stores/auth";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -659,6 +664,29 @@ const auth = useAuthStore();
 
 const customer = ref({});
 const customerJobs = ref([]);
+
+// Tier 10 — per-record QuickBooks push state. Gated on the QB module so a
+// tenant that doesn't use QuickBooks never sees a "not synced" badge.
+const { isEnabled } = useTenantModules();
+const qbEnabled = computed(() => isEnabled("quickbooks"));
+const qbSync = computed(() => {
+  // qb_in_quickbooks (from QBEntityMap) is the authoritative "in QB" signal;
+  // qb_synced_at is un-backfilled and can't be read as "not in QB".
+  const inQb = customer.value.qb_in_quickbooks === true;
+  const syncedAt = customer.value.qb_synced_at;
+  const dirty = customer.value.qb_dirty !== false; // default-true if absent
+  if (!inQb && !syncedAt) {
+    return { label: "Not synced", severity: "secondary" };
+  }
+  if (syncedAt) {
+    const when = formatDateTime(syncedAt);
+    return dirty
+      ? { label: `Synced ${when} · changes pending`, severity: "warn" }
+      : { label: `Synced ${when}`, severity: "success" };
+  }
+  // In QB but no local push timestamp (legacy sync / import / manual entry).
+  return { label: "Synced", severity: "success" };
+});
 const locations = ref([]);
 const loading = ref(true);
 const error = ref("");
@@ -1170,6 +1198,16 @@ onMounted(async () => {
 
 .header-left h2 {
   margin: 0;
+}
+
+.qb-sync-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.qb-sync-label {
+  color: var(--p-text-muted-color, #64748b);
+  font-size: 0.85rem;
 }
 
 .header-actions {

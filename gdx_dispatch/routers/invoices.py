@@ -145,6 +145,13 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "paid_at": _iso_dt(invoice.paid_at),
         "public_token": invoice.public_token,
         "created_at": _iso_dt(invoice.created_at),
+        # Tier 10 — per-record QuickBooks push state. Written by push_invoice /
+        # the before_update listener (S122-14) but serialized nowhere before, so
+        # the office couldn't tell pushed / pending / never-pushed per invoice.
+        # qb_synced_at is NULL until the first successful push; qb_dirty is True
+        # whenever the row has un-pushed changes (default True for new rows).
+        "qb_dirty": bool(getattr(invoice, "qb_dirty", True)),
+        "qb_synced_at": _iso_dt(getattr(invoice, "qb_synced_at", None)),
     }
     if include_lines:
         active_lines = [ln for ln in invoice.lines if getattr(ln, "deleted_at", None) is None]
@@ -1057,6 +1064,13 @@ def get_invoice(
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
     payload = _serialize_invoice(invoice, include_lines=True, include_payments=True)
+    # Tier 10 — authoritative "in QuickBooks" flag from QBEntityMap (what every
+    # push path writes and the QB dashboard counts). qb_synced_at alone is NOT
+    # this signal: it's un-backfilled, so a legacy/imported/manual invoice reads
+    # NULL yet is in QB. The detail view renders the sync chip off this flag.
+    from gdx_dispatch.core.quickbooks import qb_entity_is_mapped
+
+    payload["qb_in_quickbooks"] = qb_entity_is_mapped(db, "invoice", invoice.id)
 
     # Adjustments (credit memos / refunds / applied credits) — without these
     # the detail view can't explain why balance_due ≠ total − payments. The
