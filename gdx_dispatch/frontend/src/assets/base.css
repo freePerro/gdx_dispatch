@@ -12,6 +12,8 @@
   --color-brand-400: #63b3ff;
   --color-brand-500: #3892f3;
   --color-info-500: #63b3ff;
+  --color-info-bg: rgba(99, 179, 255, 0.12);
+  --color-info-border: rgba(99, 179, 255, 0.35);
   --color-danger-500: #ff6d77;
   --color-danger-bg: rgba(255, 109, 119, 0.12);
   --color-danger-border: rgba(255, 109, 119, 0.35);
@@ -73,6 +75,8 @@
   --color-brand-400: #2563eb;
   --color-brand-500: #1d4ed8;
   --color-info-500: #2563eb;
+  --color-info-bg: #eff6ff;
+  --color-info-border: #bfdbfe;
   --color-danger-500: #dc2626;
   --color-danger-bg: #fef2f2;
   --color-danger-border: #fecaca;
@@ -121,6 +125,8 @@
     --color-brand-400: #2563eb;
     --color-brand-500: #1d4ed8;
     --color-info-500: #2563eb;
+    --color-info-bg: #eff6ff;
+    --color-info-border: #bfdbfe;
     --color-danger-500: #dc2626;
     --color-danger-bg: #fef2f2;
     --color-danger-border: #fecaca;

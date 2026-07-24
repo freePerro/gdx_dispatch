@@ -642,7 +642,18 @@ const tax = computed(() => subtotal.value * taxRate.value);
 const totalPaid = computed(() =>
   invoice.value.payments.reduce((sum, p) => sum + toNum(p.amount), 0)
 );
-const balanceDue = computed(() => toNum(invoice.value.total) - totalPaid.value);
+// Mirror the server's balance formula (_recalculate_invoice): credit memos
+// and applied credits reduce the balance; refunds don't. Without this a
+// credit-memo'd invoice (e.g. a superseded deposit) showed a red fake
+// balance next to its "paid" tag.
+const totalAdjustmentCredits = computed(() =>
+  (invoice.value.adjustments || [])
+    .filter((a) => a.kind === "credit_memo" || a.kind === "credit_applied")
+    .reduce((sum, a) => sum + toNum(a.amount), 0)
+);
+const balanceDue = computed(() =>
+  toNum(invoice.value.total) - totalPaid.value - totalAdjustmentCredits.value
+);
 
 // Edit mode is gated on draft status — once an invoice is sent or paid,
 // the source-of-truth is whatever the customer received.
@@ -1375,9 +1386,9 @@ onMounted(() => {
   padding: 0.65rem 0.85rem;
   margin: 0.75rem 0;
   border-radius: 6px;
-  border: 1px solid var(--p-blue-200, #bfdbfe);
-  background: var(--p-blue-50, #eff6ff);
-  color: var(--p-blue-800, #1e40af);
+  border: 1px solid var(--color-info-border);
+  background: var(--color-info-bg);
+  color: var(--color-info-500);
   font-size: 0.9rem;
 }
 
