@@ -37,6 +37,14 @@ def upgrade() -> None:
           IF to_regclass('public.phone_com_messages') IS NOT NULL THEN
             ALTER TABLE phone_com_messages
               ADD COLUMN IF NOT EXISTS read_at timestamptz;
+            -- Backfill: stamp every PRE-EXISTING inbound message read.
+            -- Without this, deploy day floods the new badge with the entire
+            -- SMS history (prod carries 128 backfilled messages) — "unread"
+            -- must mean "arrived after the feature existed and nobody
+            -- opened the thread", not "predates the read marker".
+            UPDATE phone_com_messages
+              SET read_at = COALESCE(created_at, now())
+              WHERE direction = 'in' AND read_at IS NULL;
           END IF;
         END $$;
         """
