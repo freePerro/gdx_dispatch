@@ -67,6 +67,22 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute=20),
             "options": {"queue": "priority:low"},
         },
+        "phone-com-messages-refresh": {
+            # SMS inbox live path. Phone.com's listeners have never delivered
+            # a webhook to us (verified 2026-07-23: zero POSTs to
+            # /api/webhooks/phone-com/ while Outlook webhooks flowed fine),
+            # so polling is what keeps the Messages page current. Messages
+            # only, windowed to 48h — a handful of small per-extension
+            # requests, cheap enough for every 10 minutes. The dual-write
+            # race that demoted the old 15-min full poll (poll overwriting a
+            # fresh webhook upsert) is moot while webhooks don't deliver;
+            # revisit the cadence if listener delivery is ever fixed.
+            "task": "phone_com.sync_all_recent_messages",
+            "schedule": crontab(minute="*/10"),
+            # expires < interval: if the low-priority queue backs up, stale
+            # fan-outs are dropped instead of stacking into a burst.
+            "options": {"queue": "priority:low", "expires": 540},
+        },
         "phone-com-reconcile-nightly": {
             # P1.5 — webhooks cover the live path; this is a daily backstop
             # for missed deliveries (transient Phone.com outages, brief

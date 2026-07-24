@@ -119,7 +119,16 @@ class PhoneComSettingsPatchIn(BaseModel):
 
 
 def _build_webhook_url(tenant_slug: str, webhook_secret: str) -> str:
-    base = os.environ.get("TENANT_BASE_DOMAIN", "example.com").strip("/")
+    base = os.environ.get("TENANT_BASE_DOMAIN", "").strip().strip("/")
+    if not base:
+        # Registering https://{slug}.example.com/... at Phone.com silently
+        # kills webhook delivery (live on prod until 2026-07-23). Fail the
+        # registration loudly instead of poisoning the callback.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="TENANT_BASE_DOMAIN is not configured on the server; "
+            "cannot build a public webhook URL",
+        )
     return f"https://{tenant_slug}.{base}/api/webhooks/phone-com/{tenant_slug}/{webhook_secret}"
 
 
@@ -273,7 +282,17 @@ def _ensure_webhook_registered(
         return {"registered": False, "callback_id": None, "listener_id": None}
 
     secret = key_storage.get_or_create_webhook_secret(control_db, tenant_id)
-    url = _build_webhook_url(tenant.slug, secret)
+    try:
+        url = _build_webhook_url(tenant.slug, secret)
+    except HTTPException as exc:
+        # Misconfigured server (TENANT_BASE_DOMAIN unset). The token itself
+        # is already saved/validated — report the webhook as unregistered
+        # with the reason instead of failing the whole settings save.
+        log.error("ensure_webhook skipped tenant=%s: %s", tenant_id, exc.detail)
+        return {
+            "registered": False, "callback_id": None, "listener_id": None,
+            "error": str(exc.detail),
+        }
     token = key_storage.get_token(control_db, tenant_id)
     if token is None:
         return {"registered": False, "callback_id": None, "listener_id": None}

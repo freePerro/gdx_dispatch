@@ -113,3 +113,25 @@ def test_voip_id_required_no_call_when_unset():
     with pytest.raises(PhoneComAPIError, match="voip_id"):
         c.list_calls()
     assert route.call_count == 0  # no HTTP fired
+
+@respx.mock
+def test_list_messages_extension_scoped_path():
+    """extension_id routes to /extensions/{id}/messages — the account-level
+    /messages endpoint returns total=0 even when extensions hold messages."""
+    route = respx.get(f"{BASE_URL}/accounts/{_VID}/extensions/2674043/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([{"id": 1}], total=1)))
+    out = PhoneComClient(token="t", voip_id=_VID).list_messages(extension_id=2674043)
+    assert out["total"] == 1
+    assert route.called
+    qs = dict(route.calls.last.request.url.params)
+    assert qs["limit"] == "50"
+
+
+@respx.mock
+def test_list_messages_extension_scoped_with_window():
+    route = respx.get(f"{BASE_URL}/accounts/{_VID}/extensions/100/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([])))
+    PhoneComClient(token="t", voip_id=_VID).list_messages(
+        extension_id="100", from_epoch=1000)
+    qs = dict(route.calls.last.request.url.params)
+    assert qs.get("filters[created_at]") == "gt:1000"

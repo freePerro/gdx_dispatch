@@ -175,15 +175,53 @@ def upsert_call(tenant_db: Session, payload: dict[str, Any]) -> PhoneComCall | N
     return row
 
 
+def _party_number(value: Any) -> str | None:
+    """Normalize one from/to party to a bare number string.
+
+    Phone.com message shapes vary by surface: webhooks carry flat strings
+    (``"to": "+1320..."``), while the extension-scoped ``/messages`` REST
+    endpoint carries a LIST of recipient dicts
+    (``"to": [{"number": "+1320...", "delivery_status": ...}]``).
+    """
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, dict):
+        num = value.get("number") or value.get("phone_number")
+        return str(num) if num else None
+    if isinstance(value, list):
+        for entry in value:
+            num = _party_number(entry)
+            if num:
+                return num
+    return None
+
+
 def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessage | None:
     pc_id = str(payload.get("id") or payload.get("message_id") or "")
     if not pc_id:
         return None
 
-    row = (
+    # Phone.com runs two id schemes for the same message: the numeric id the
+    # extension /messages endpoint returns, and a UUID (`old_id`) that the
+    # send POST / legacy /sms surface uses. Match on either so a message we
+    # persisted at send time isn't re-inserted as a duplicate when the poll
+    # later returns it under the numeric id — and migrate the stored key to
+    # the id the current payload leads with.
+    candidate_ids = [pc_id]
+    old_id = payload.get("old_id")
+    if old_id:
+        candidate_ids.append(str(old_id))
+    matches = (
         tenant_db.query(PhoneComMessage)
-        .filter(PhoneComMessage.phone_com_message_id == pc_id)
-        .first()
+        .filter(PhoneComMessage.phone_com_message_id.in_(candidate_ids))
+        .all()
+    )
+    # Prefer the row already keyed by pc_id: if BOTH id schemes exist as
+    # separate rows, migrating the old_id row onto pc_id would collide with
+    # the UNIQUE index and wedge the sync at this message every run.
+    row = next(
+        (m for m in matches if m.phone_com_message_id == pc_id),
+        matches[0] if matches else None,
     )
     if row is None:
         row = PhoneComMessage(
@@ -194,18 +232,28 @@ def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessa
             raw_payload={},
         )
         tenant_db.add(row)
+    else:
+        row.phone_com_message_id = pc_id
 
     direction = payload.get("direction")
     if direction in ("in", "out"):
         row.direction = direction
 
-    from_n = payload.get("from") or payload.get("from_number") or row.from_number
-    to_n = payload.get("to") or payload.get("to_number") or row.to_number
-    row.from_number = from_n
-    row.to_number = to_n
+    from_n = (
+        _party_number(payload.get("from"))
+        or _party_number(payload.get("from_number"))
+        or row.from_number
+    )
+    to_n = (
+        _party_number(payload.get("to"))
+        or _party_number(payload.get("to_number"))
+        or row.to_number
+    )
+    row.from_number = from_n[:40] if from_n else from_n
+    row.to_number = to_n[:40] if to_n else to_n
     row.body = payload.get("text") or payload.get("body") or row.body
     if from_n and to_n:
-        row.thread_key = "|".join(sorted([from_n, to_n]))
+        row.thread_key = "|".join(sorted([from_n, to_n]))[:100]
 
     sent = parse_iso(payload.get("created_at") or payload.get("sent_at"))
     if sent:
@@ -213,8 +261,15 @@ def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessa
     received = parse_iso(payload.get("received_at"))
     if received:
         row.received_at = received
-    if "delivery_status" in payload:
-        row.delivery_status = str(payload["delivery_status"])
+    delivery = payload.get("delivery_status")
+    if delivery is None and isinstance(payload.get("to"), list):
+        # Extension-endpoint shape: per-recipient status on the to-entries.
+        for entry in payload["to"]:
+            if isinstance(entry, dict) and entry.get("delivery_status"):
+                delivery = entry["delivery_status"]
+                break
+    if delivery is not None:
+        row.delivery_status = str(delivery)[:40]
     # P2.9 — Phone.com's conversation_id, when present in the payload.
     # Older webhook shapes may nest it under {"conversation": {"id": ...}};
     # accept both.
@@ -227,6 +282,11 @@ def upsert_message(tenant_db: Session, payload: dict[str, Any]) -> PhoneComMessa
         row.phone_com_conversation_id = str(conv_id)[:80]
     if "attachments" in payload and isinstance(payload["attachments"], list):
         row.attachments = payload["attachments"]
+    elif isinstance(payload.get("media"), list) and payload["media"]:
+        # Extension-endpoint MMS shape: media entries (dicts carrying a
+        # url-ish key) instead of `attachments`. _attachment_url in the
+        # media proxy already handles dict entries.
+        row.attachments = payload["media"]
 
     if row.customer_id is None:
         other = from_n if (row.direction == "in") else to_n

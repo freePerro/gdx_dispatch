@@ -14,7 +14,7 @@ import httpx
 import pytest
 import respx
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -42,6 +42,9 @@ _ACCT = {
 @pytest.fixture(autouse=True)
 def fernet_env(monkeypatch):
     monkeypatch.setenv("GDX_FERNET_KEY", Fernet.generate_key().decode())
+    # _build_webhook_url refuses to run without a real base domain (the
+    # example.com default silently killed prod webhook delivery).
+    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.test")
 
 
 @pytest.fixture(autouse=True)
@@ -371,9 +374,20 @@ def test_sync_now_admin_only(
 # ── webhook URL builder ─────────────────────────────────────────────────
 
 
-def test_build_webhook_url_uses_tenant_slug_and_secret():
+def test_build_webhook_url_uses_tenant_slug_and_secret(monkeypatch):
+    monkeypatch.setenv("TENANT_BASE_DOMAIN", "example.test")
     url = phone_com_settings._build_webhook_url("acme-co", "s3cr3t")
     assert "acme-co" in url
     assert "s3cr3t" in url
     assert url.startswith("https://acme-co.")
     assert "/api/webhooks/phone-com/acme-co/s3cr3t" in url
+
+
+def test_build_webhook_url_refuses_without_base_domain(monkeypatch):
+    """Registering {slug}.example.com at Phone.com silently kills webhook
+    delivery — the builder must refuse instead of defaulting."""
+    monkeypatch.delenv("TENANT_BASE_DOMAIN", raising=False)
+    with pytest.raises(HTTPException) as exc_info:
+        phone_com_settings._build_webhook_url("acme-co", "s3cr3t")
+    assert exc_info.value.status_code == 500
+    assert "TENANT_BASE_DOMAIN" in str(exc_info.value.detail)

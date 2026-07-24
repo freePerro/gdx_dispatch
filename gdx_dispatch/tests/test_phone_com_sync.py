@@ -103,7 +103,10 @@ def setup(control_engine, tenant_engine, monkeypatch):
 
 
 @respx.mock
-def test_resync_pulls_calls_and_messages(setup):
+def test_resync_pulls_calls_and_messages_per_extension(setup):
+    """Messages come from /extensions/{id}/messages — the account-level
+    /messages endpoint returns total=0 even when extensions hold messages
+    (verified against prod 2026-07-23), so the resync must walk extensions."""
     csm, tsm, tid = setup
     # Calls page (single page, total=2)
     call_items = [
@@ -118,28 +121,44 @@ def test_resync_pulls_calls_and_messages(setup):
             "duration": 12, "status": "completed",
         },
     ]
-    msg_items = [
+    # Real extension-endpoint shape: to is a LIST of recipient dicts,
+    # timestamps are epoch ints, MMS media rides `media`.
+    ext_100_msgs = [
         {
-            "id": "phc-msg-1", "direction": "in",
-            "from": "+13202959628", "to": "+18005550199", "text": "hi",
+            "id": 255795124, "message_id": "255795124", "direction": "in",
+            "from": "+13202959628", "text": "hi",
+            "to": [{"number": "+18005550199", "delivery_status": "delivered"}],
+            "created_at": 1784753860, "media": [], "extension_id": 100,
         },
         {
-            "id": "phc-msg-2", "direction": "out",
-            "from": "+18005550199", "to": "+13202959628", "text": "thanks",
+            "id": 255795125, "message_id": "255795125", "direction": "out",
+            "from": "+18005550199", "text": "thanks",
+            "to": [{"number": "+13202959628", "delivery_status": "delivered"}],
+            "created_at": 1784753900, "media": [], "extension_id": 100,
         },
+    ]
+    ext_101_msgs = [
         {
-            "id": "phc-msg-3", "direction": "in",
-            "from": "+15551112222", "to": "+18005550199", "text": "yo",
+            "id": 255795126, "message_id": "255795126", "direction": "in",
+            "from": "+15551112222", "text": "yo",
+            "to": [{"number": "+18005550199", "delivery_status": "delivered"}],
+            "created_at": 1784754000, "media": [], "extension_id": 101,
         },
     ]
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope(call_items)),
     )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope(msg_items)),
-    )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
+        return_value=httpx.Response(200, json=_envelope([
+            {"id": "100", "name": "Main", "extension": "100", "is_active": True},
+            {"id": "101", "name": "Tech", "extension": "101", "is_active": True},
+        ])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/100/messages").mock(
+        return_value=httpx.Response(200, json=_envelope(ext_100_msgs)),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/101/messages").mock(
+        return_value=httpx.Response(200, json=_envelope(ext_101_msgs)),
     )
     respx.get(f"{BASE_URL}/accounts/{VID}/phone-numbers").mock(
         return_value=httpx.Response(200, json=_envelope([])),
@@ -162,6 +181,14 @@ def test_resync_pulls_calls_and_messages(setup):
     try:
         assert ts.query(PhoneComCall).count() == 2
         assert ts.query(PhoneComMessage).count() == 3
+        msg = ts.query(PhoneComMessage).filter(
+            PhoneComMessage.phone_com_message_id == "255795124",
+        ).first()
+        assert msg.to_number == "+18005550199"  # extracted from to-list
+        assert msg.from_number == "+13202959628"
+        assert msg.thread_key == "+13202959628|+18005550199"
+        assert msg.delivery_status == "delivered"
+        assert msg.sent_at is not None  # epoch created_at parsed
     finally:
         ts.close()
 
@@ -172,9 +199,6 @@ def test_resync_idempotent_on_rerun(setup):
     call_items = [{"id": "phc-call-X", "direction": "in", "caller_id": "+1"}]
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope(call_items)),
-    )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
     )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(200, json=_envelope([])),
@@ -214,9 +238,6 @@ def test_resync_synthesizes_voicemail_from_inline_call_payload(setup):
     }]
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope(call_items)),
-    )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
     )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(200, json=_envelope([])),
@@ -276,9 +297,6 @@ def test_resync_stamps_last_synced_at(setup):
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
-    )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
@@ -320,14 +338,17 @@ def test_resync_pulls_extensions_and_numbers(setup):
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
-    )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(200, json=_envelope([
             {"id": "100", "name": "Main", "extension": "100", "is_active": True},
             {"id": "101", "name": "Tech", "extension": "101", "is_active": True},
         ])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/100/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/101/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([])),
     )
     respx.get(f"{BASE_URL}/accounts/{VID}/phone-numbers").mock(
         return_value=httpx.Response(200, json=_envelope([
@@ -369,9 +390,6 @@ def test_resync_marks_token_validated(setup):
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
-    )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
@@ -404,9 +422,6 @@ def test_resync_skips_when_catalog_endpoints_500(setup):
     respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
         return_value=httpx.Response(200, json=_envelope([])),
     )
-    respx.get(f"{BASE_URL}/accounts/{VID}/messages").mock(
-        return_value=httpx.Response(200, json=_envelope([])),
-    )
     respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
         return_value=httpx.Response(500, json={"error": "boom"}),
     )
@@ -429,5 +444,88 @@ def test_resync_skips_when_catalog_endpoints_500(setup):
     try:
         assert ts.query(PhoneComExtension).count() == 0
         assert ts.query(PhoneComNumber).count() == 0
+    finally:
+        ts.close()
+
+@respx.mock
+def test_resync_one_extension_failing_does_not_hide_others(setup):
+    """Per-extension message pulls are non-fatal — one broken extension must
+    not hide the other extensions' messages or fail the resync."""
+    csm, tsm, tid = setup
+    respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
+        return_value=httpx.Response(200, json=_envelope([])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {"id": "100", "name": "Main", "extension": "100", "is_active": True},
+            {"id": "101", "name": "Tech", "extension": "101", "is_active": True},
+        ])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/100/messages").mock(
+        return_value=httpx.Response(500, json={"error": "boom"}),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/extensions/101/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {
+                "id": 1, "direction": "in", "from": "+15551112222", "text": "yo",
+                "to": [{"number": "+18005550199", "delivery_status": "delivered"}],
+                "created_at": 1784754000,
+            },
+        ])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/phone-numbers").mock(
+        return_value=httpx.Response(200, json=_envelope([])),
+    )
+    respx.get(f"{BASE_URL}/accounts/{VID}/fax").mock(
+        return_value=httpx.Response(200, json=_envelope([])),
+    )
+
+    cs = csm()
+    try:
+        result = run_full_resync(cs, tid)
+    finally:
+        cs.close()
+
+    assert result["ok"] is True
+    assert result["messages_synced"] == 1
+
+
+@respx.mock
+def test_sync_recent_messages_uses_known_extensions_and_window(setup):
+    """The messages-only frequent poll walks DB-known extensions with a
+    filters[created_at]=gt: window — no full call-log pull."""
+    from gdx_dispatch.modules.phone_com.models import PhoneComExtension as _Ext
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_messages
+
+    csm, tsm, tid = setup
+    ts = tsm()
+    ts.add(_Ext(phone_com_extension_id="2674043", name="Main", number="100", is_active=True))
+    ts.commit()
+    ts.close()
+
+    route = respx.get(f"{BASE_URL}/accounts/{VID}/extensions/2674043/messages").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {
+                "id": 42, "direction": "in", "from": "+13202959628", "text": "recent",
+                "to": [{"number": "+18005550199", "delivery_status": "delivered"}],
+                "created_at": 1784753860,
+            },
+        ])),
+    )
+
+    cs = csm()
+    try:
+        result = sync_recent_messages(cs, tid, window_hours=48)
+    finally:
+        cs.close()
+
+    assert result["ok"] is True
+    assert result["messages_synced"] == 1
+    params = dict(route.calls.last.request.url.params)
+    assert params.get("filters[created_at]", "").startswith("gt:")
+
+    ts = tsm()
+    try:
+        assert ts.query(PhoneComMessage).count() == 1
     finally:
         ts.close()

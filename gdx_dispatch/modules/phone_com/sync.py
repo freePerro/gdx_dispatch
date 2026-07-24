@@ -23,10 +23,11 @@ Returns a count summary the UI can show ("synced 23 calls, 8 messages").
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import SessionLocal
@@ -39,6 +40,66 @@ log = logging.getLogger("gdx_dispatch.modules.phone_com.sync")
 
 def _open_tenant_session(control_db: Session, tenant_id: UUID) -> Session | None:
     return SessionLocal()
+
+
+def _known_extension_ids(tenant_db: Session) -> list[str]:
+    from gdx_dispatch.modules.phone_com.models import PhoneComExtension
+
+    rows = tenant_db.query(PhoneComExtension.phone_com_extension_id).all()
+    return [r[0] for r in rows]
+
+
+def _sync_messages_for_extensions(
+    tenant_db: Session,
+    client: PhoneComClient,
+    extension_ids: list[str],
+    *,
+    cap: int,
+    from_epoch: int | None = None,
+) -> int:
+    """Walk ``/extensions/{id}/messages`` for each extension and upsert.
+
+    Per-extension failures are non-fatal — one broken extension must not
+    hide the others' messages. Message ids are account-unique, so the
+    upsert key dedupes any overlap.
+    """
+    if not extension_ids:
+        extension_ids = _known_extension_ids(tenant_db)
+    synced = 0
+    for ext_id in extension_ids:
+        try:
+            for item in client.paginate(
+                client.list_messages,
+                limit=50,
+                extension_id=ext_id,
+                from_epoch=from_epoch,
+            ):
+                if synced >= cap:
+                    log.warning(
+                        "phone_com_sync: message cap %d hit at extension=%s — "
+                        "remaining extensions skipped this run",
+                        cap, ext_id,
+                    )
+                    return synced
+                upserts.upsert_message(tenant_db, item)
+                synced += 1
+        except PhoneComAPIError:
+            log.exception(
+                "phone_com_sync: list_messages failed for extension=%s (non-fatal)",
+                ext_id,
+            )
+        except IntegrityError:
+            # The 10-min poll overlapping the nightly resync can race the
+            # same new message id through query-then-insert. Roll back and
+            # move on — the loser's rows arrive on its next run. Broader
+            # SQLAlchemyError (e.g. a dead DB) must NOT be swallowed here,
+            # or a hard outage would report ok=True with 0 synced forever.
+            log.exception(
+                "phone_com_sync: upsert race for extension=%s (non-fatal)",
+                ext_id,
+            )
+            tenant_db.rollback()
+    return synced
 
 
 def _build_client(control_db: Session, tenant_id: UUID, tenant_db: Session) -> PhoneComClient | None:
@@ -133,22 +194,27 @@ def run_full_resync(
                         upserts.upsert_voicemail(tenant_db, vm_payload)
                         voicemails_synced += 1
 
-                # 2. SMS / messages
-                for item in client.paginate(client.list_messages, limit=50):
-                    if messages_synced >= cap:
-                        break
-                    upserts.upsert_message(tenant_db, item)
-                    messages_synced += 1
-
-                # 3. Extensions (Wave C / S4) — small list, single page suffices
-                # in practice, but `paginate` handles edge cases. Surfaces the
-                # set of dialable extensions so the Settings card can pick a
-                # real default_extension instead of a free-text guess.
+                # 2. Extensions (Wave C / S4) — synced BEFORE messages since
+                # messages are pulled per-extension. Small list; `paginate`
+                # handles edge cases. Also surfaces the set of dialable
+                # extensions for the Settings card's default_extension pick.
+                extension_ids: list[str] = []
                 try:
                     for item in client.paginate(client.list_extensions, limit=50):
-                        upserts.upsert_extension(tenant_db, item)
+                        ext_row = upserts.upsert_extension(tenant_db, item)
+                        if ext_row is not None:
+                            extension_ids.append(ext_row.phone_com_extension_id)
                 except PhoneComAPIError:
                     log.exception("phone_com_sync: list_extensions failed (non-fatal)")
+
+                # 3. SMS / messages — per-extension. Phone.com's account-level
+                # /messages endpoint returns total=0 even when extensions hold
+                # messages (verified against prod 2026-07-23: 0 at account
+                # scope, 128 under /extensions/{id}/messages), so walking
+                # extensions is the only way to see the SMS inbox.
+                messages_synced = _sync_messages_for_extensions(
+                    tenant_db, client, extension_ids, cap=cap,
+                )
 
                 # 4. Phone numbers (Wave C / S3) — populates the dropdown that
                 # replaces free-text default_caller_id on the Settings card.
@@ -217,5 +283,50 @@ def run_full_resync(
             "messages_synced": messages_synced,
             "voicemails_synced": voicemails_synced,
         }
+    finally:
+        tenant_db.close()
+
+
+def sync_recent_messages(
+    control_db: Session,
+    tenant_id: UUID,
+    *,
+    window_hours: int = 48,
+    cap: int = 1000,
+) -> dict[str, Any]:
+    """Messages-only frequent poll — the de-facto live path for the SMS inbox.
+
+    Phone.com's account-level listeners have never delivered a webhook to us
+    (verified against prod nginx 2026-07-23), so without this the inbox only
+    updates at the 03:45 UTC nightly resync. Windowed to the last
+    ``window_hours`` so each run is a handful of small requests; the nightly
+    full resync remains the completeness backstop.
+    """
+    tenant_db = _open_tenant_session(control_db, tenant_id)
+    if tenant_db is None:
+        return {"ok": False, "error": "tenant db unavailable", "messages_synced": 0}
+    try:
+        client = _build_client(control_db, tenant_id, tenant_db)
+        if client is None:
+            return {
+                "ok": False,
+                "error": "phone_com integration not configured",
+                "messages_synced": 0,
+            }
+        from_epoch = int(
+            (datetime.now(timezone.utc) - timedelta(hours=window_hours)).timestamp()
+        )
+        with client:
+            synced = _sync_messages_for_extensions(
+                tenant_db, client, [], cap=cap, from_epoch=from_epoch,
+            )
+        log.info(
+            "phone_com_sync_recent_messages ok tenant=%s messages=%d window_h=%d",
+            tenant_id, synced, window_hours,
+        )
+        return {"ok": True, "messages_synced": synced}
+    except PhoneComAPIError as exc:
+        log.exception("phone_com_sync_recent_messages upstream error tenant=%s", tenant_id)
+        return {"ok": False, "error": str(exc), "messages_synced": 0}
     finally:
         tenant_db.close()
