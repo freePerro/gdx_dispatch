@@ -434,7 +434,9 @@
       </div>
 
       <!-- Sprint dispatch-capacity (2026-05-20) — per-tech efficiency leaderboard -->
-      <TechEfficiencyPanel v-if="viewMode === 'day'" data-testid="dispatch-efficiency-panel" />
+      <!-- Tier-7: the panel's endpoints require dispatch.read — sales/
+           accounting can open this page but the panel 403'd inside it. -->
+      <TechEfficiencyPanel v-if="viewMode === 'day' && hasPermission('dispatch.read')" data-testid="dispatch-efficiency-panel" />
 
       <!-- Week View -->
       <template v-if="viewMode === 'week'">
@@ -696,6 +698,7 @@ import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import JobStateChip from '../components/JobStateChip.vue';
 import TechEfficiencyPanel from '../components/TechEfficiencyPanel.vue';
+import { usePermission } from '../composables/usePermission';
 import TechTimelineColumn from '../components/TechTimelineColumn.vue';
 
 const api = useApiWithToast();
@@ -704,6 +707,7 @@ const router = useRouter();
 // Office display timezone — the board buckets jobs into day columns and renders
 // card times in THIS zone, not UTC or the viewer's browser zone.
 const { tenantTimezone, zonedDateKey } = useTenantTimezone();
+const { hasPermission } = usePermission();
 
 const jobStatuses = ['Scheduled', 'In Progress', 'Complete', 'Invoiced'];
 

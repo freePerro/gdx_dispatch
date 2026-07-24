@@ -133,7 +133,11 @@
           <i class="pi pi-search" aria-hidden="true" />
         </Button>
 
+        <!-- Tier-7: every /api/notifications* endpoint requires the
+             communications module; with it disabled the store collapses the
+             403 to zero and the bell was a permanently-empty lie. -->
         <Button
+          v-if="communicationsEnabled"
           type="button"
           class="p-button-text notification-btn"
           :class="{ 'has-flash': notificationFlash }"
@@ -195,6 +199,7 @@ const auth = useAuthStore();
 const theme = useThemeStore();
 
 const notifications = useNotificationsStore();
+
 const { branding } = storeToRefs(theme);
 const userMenuRef = ref();
 const aiDialogVisible = ref(false);
@@ -223,6 +228,10 @@ function newEstimate() {
 const canCreate = computed(() => !isTechnician(auth.user?.role));
 
 const tenantModules = useTenantModules();
+// Tier-7: every /api/notifications* endpoint requires the communications
+// module; with it disabled the store collapsed the 403 to zero and the
+// bell was a permanently-empty lie.
+const communicationsEnabled = computed(() => tenantModules.isEnabled('communications'));
 // AI Assistant is OPT-IN per-tenant (paid/optional feature) AND
 // role-gated — field techs don't need an Assistant in their topbar.
 // useTenantModules.isEnabled() defaults to true for unknown modules
@@ -236,7 +245,15 @@ const aiAssistantEnabled = computed(() => {
 });
 
 // Start polling for real notification count from the API
-notifications.startPolling();
+// Tier-7 audit catch: polling unconditionally meant a communications-off
+// tenant still fired /api/notifications/count every 60s forever, 403ing
+// silently — the lie just moved from the bell to the server logs. Poll
+// only while the module is on (immediate covers the default-enabled
+// pre-fetch state; the watcher stops it if the payload lands disabled).
+watch(communicationsEnabled, (on) => {
+  if (on) notifications.startPolling();
+  else notifications.stopPolling();
+}, { immediate: true });
 
 // Flash the bell + badge briefly when the count *increases* (i.e. a new
 // notification arrived between polls — e.g. a public lead-form submission).

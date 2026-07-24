@@ -201,7 +201,7 @@ export const routes = [
       { path: '', name: 'billing', component: BillingView, meta: { requiresPermission: 'invoices.read_all' } },
       { path: '/payments', name: 'payments', component: PaymentsView, meta: { requiresPermission: 'payments.read' } },
       { path: '/collections', name: 'collections', component: CollectionsView, meta: { requiresPermission: 'invoices.read_all' } },
-      { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'invoices.read_all' } },
+      { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'nav.admin' } },
     ],
   },
   { path: '/billing/new', name: 'invoice-create', component: InvoiceCreateView, meta: { requiresPermission: 'invoices.write' } },
