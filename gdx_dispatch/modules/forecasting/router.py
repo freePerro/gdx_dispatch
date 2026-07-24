@@ -15,7 +15,7 @@ from uuid import UUID
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_role
+from gdx_dispatch.core.modules import require_permission, require_role
 from gdx_dispatch.core.quickbooks import QBAuthError, QBError
 from gdx_dispatch.modules.forecasting import accuracy as forecast_accuracy
 from gdx_dispatch.modules.forecasting import calibration as forecast_calibration
@@ -72,7 +72,12 @@ class ForecastSettingsPayload(BaseModel):
     include_recurring: bool | None = None
 
 
-@router.get("/forecast/settings")
+# Every forecasting GET carries require_permission("accounting.read"): these
+# endpoints serve revenue projections and cash-flow state, and until 2026-07
+# they had no authorization beyond login — any authenticated technician could
+# pull them by URL (contract-gap sweep, Tier 7 security note). admin/owner
+# pass via the builtin permission sets; the SPA route guard admits the same key.
+@router.get("/forecast/settings", dependencies=[Depends(require_permission("accounting.read"))])
 def get_forecast_settings(
     request: FastAPIRequest,
     current_user: dict[str, str] = Depends(get_current_user),
@@ -105,7 +110,7 @@ def update_forecast_settings(
     return forecast_service._settings_dict(s)
 
 
-@router.get("/forecast/revenue")
+@router.get("/forecast/revenue", dependencies=[Depends(require_permission("accounting.read"))])
 def get_revenue_forecast(
     request: FastAPIRequest,
     window: int | None = None,
@@ -150,7 +155,7 @@ def reconcile_forecast_snapshots(
     return {"reconciled": len(reconciled), "snapshots": [forecast_accuracy.snapshot_dict(s) for s in reconciled]}
 
 
-@router.get("/forecast/accuracy")
+@router.get("/forecast/accuracy", dependencies=[Depends(require_permission("accounting.read"))])
 def get_forecast_accuracy(
     request: FastAPIRequest,
     current_user: dict[str, str] = Depends(get_current_user),
@@ -160,7 +165,7 @@ def get_forecast_accuracy(
     return forecast_accuracy.accuracy_summary(db)
 
 
-@router.get("/forecast/calibration")
+@router.get("/forecast/calibration", dependencies=[Depends(require_permission("accounting.read"))])
 def get_forecast_calibration(
     request: FastAPIRequest,
     window: int | None = None,
@@ -177,7 +182,7 @@ def get_forecast_calibration(
     return forecast_calibration.calibration_status(db, settings, window_days, _date.today())
 
 
-@router.get("/forecast/snapshots")
+@router.get("/forecast/snapshots", dependencies=[Depends(require_permission("accounting.read"))])
 def list_forecast_snapshots(
     request: FastAPIRequest,
     limit: int = 50,
@@ -322,7 +327,7 @@ def _validate_term_shape(occurrences: int | None, end_date: _date | None) -> Non
         )
 
 
-@router.get("/forecast/recurring/streams")
+@router.get("/forecast/recurring/streams", dependencies=[Depends(require_permission("accounting.read"))])
 def list_recurring_streams(
     request: FastAPIRequest,
     status: str | None = None,
@@ -337,7 +342,7 @@ def list_recurring_streams(
     return {"items": [_stream_dict(s) for s in rows], "total": len(rows)}
 
 
-@router.get("/forecast/recurring/streams/{stream_id}")
+@router.get("/forecast/recurring/streams/{stream_id}", dependencies=[Depends(require_permission("accounting.read"))])
 def get_recurring_stream(
     stream_id: str,
     request: FastAPIRequest,
@@ -651,7 +656,7 @@ def run_observed_recurring_detector(
     return stats
 
 
-@router.get("/quickbooks/recurring-transactions")
+@router.get("/quickbooks/recurring-transactions", dependencies=[Depends(require_permission("accounting.read"))])
 def list_qb_recurring(
     request: FastAPIRequest,
     current_user: dict[str, str] = Depends(get_current_user),

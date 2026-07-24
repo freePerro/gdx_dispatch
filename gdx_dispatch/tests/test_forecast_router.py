@@ -239,9 +239,10 @@ def test_put_settings_requires_admin_role():
     }
     tc = TestClient(app, raise_server_exceptions=False)
 
-    # GET is readable by techs (no role gate on read).
-    assert tc.get("/api/forecast/settings").status_code == 200
-    # PUT is blocked.
+    # Reads are accounting-gated since the 2026-07 contract-gap security fix:
+    # a technician can no longer pull revenue projections/settings by URL.
+    assert tc.get("/api/forecast/settings").status_code == 403
+    # PUT is blocked too (admin/owner only).
     r = tc.put("/api/forecast/settings", json={"collect_rate_0_30": 0.99})
     assert r.status_code == 403, f"expected 403, got {r.status_code}: {r.text}"
     engine.dispose()

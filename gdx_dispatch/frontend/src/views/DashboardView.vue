@@ -318,6 +318,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { useTenantTimezone } from "../composables/useTenantTimezone";
 import { formatMoney, formatPercent, formatDateTime as fmtDateTime } from "../composables/useFormatters";
 import { useAuthStore } from "../stores/auth";
 import { normalizeRole } from "../constants/roles";
@@ -334,6 +335,7 @@ import PhoneInput from "../components/PhoneInput.vue";
 
 const api = useApi();
 const router = useRouter();
+const { zonedDateKey } = useTenantTimezone();
 const toast = useToast();
 const auth = useAuthStore();
 const canSeePipeline = computed(() => {
@@ -788,10 +790,18 @@ function jobDisplayTitle(job) {
 
 async function loadTodaysJobs() {
   try {
-    const today = new Date().toISOString().split("T")[0];
-    const data = await api.get(`/api/jobs?date=${today}&page_size=10`);
+    // Local calendar day, not toISOString() (which is UTC and rolls to
+    // tomorrow every evening in a negative-offset timezone).
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // The server returns a ±1-day widened window (it can't cut by tenant-zone
+    // day) — filter to the exact day here, like the dispatch boards do,
+    // otherwise the card leads with tomorrow's jobs (scheduled_at DESC).
+    const data = await api.get(`/api/jobs?date=${today}&page_size=200`);
     const list = Array.isArray(data) ? data : data?.items || data?.data || [];
-    todaysJobs.value = list.slice(0, 10);
+    todaysJobs.value = list
+      .filter((j) => j.scheduled_at && zonedDateKey(j.scheduled_at) === today)
+      .slice(0, 10);
   } catch {
     todaysJobs.value = [];
   }
