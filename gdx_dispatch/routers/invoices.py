@@ -2063,12 +2063,14 @@ def finalize_invoice(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
-    # Drafts are still being edited and voids are already terminal — locking
-    # either stamps an audit row that means nothing (Tier-2 audit catch).
-    if invoice.status in ("draft", "void"):
+    # Voids are terminal — locking one stamps an audit row that means
+    # nothing. Drafts stay finalizable ON PURPOSE: locking a draft against
+    # further edits is an established workflow (add-line rejects locked
+    # invoices — see test_add_line_rejects_locked_invoice).
+    if invoice.status == "void":
         raise HTTPException(
             status_code=409,
-            detail=f"only issued invoices can be finalized; current status: {invoice.status}",
+            detail="void invoices cannot be finalized",
         )
     if invoice.locked:
         return _serialize_invoice(invoice)

@@ -374,7 +374,7 @@
             @click="showApplyCreditDialog = true"
           />
           <Button
-            v-if="!invoice.locked && !['draft','void'].includes(String(invoice.status || '').toLowerCase())"
+            v-if="!invoice.locked && String(invoice.status || '').toLowerCase() !== 'void'"
             label="Finalize"
             icon="pi pi-lock"
             severity="secondary"

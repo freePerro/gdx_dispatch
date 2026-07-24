@@ -391,7 +391,9 @@ def test_reminders_reject_malformed_invoice_id():
 # ── finalize gate + dependency cycle guard ─────────────────────────────────
 
 
-def test_finalize_refuses_draft_and_void():
+def test_finalize_refuses_void_but_allows_draft():
+    """Voids are terminal; drafts stay finalizable — locking a draft against
+    edits is an established workflow (add-line rejects locked invoices)."""
     from gdx_dispatch.routers.invoices import finalize_invoice
 
     engine, SessionLocal = _engine_and_sessions()
@@ -401,17 +403,25 @@ def test_finalize_refuses_draft_and_void():
 
         cust = Customer(id=uuid4(), company_id=TENANT, name="Draft Co")
         db.add(cust)
-        inv = Invoice(
+        void_inv = Invoice(
+            id=uuid4(), company_id=TENANT, customer_id=cust.id,
+            invoice_number="INV-VD-1",
+            public_token=uuid4().hex, subtotal=0.0, tax_amount=0.0,
+            total=0.0, balance_due=0.0, status="void",
+        )
+        draft_inv = Invoice(
             id=uuid4(), company_id=TENANT, customer_id=cust.id,
             invoice_number="INV-DR-1",
             public_token=uuid4().hex, subtotal=0.0, tax_amount=0.0,
             total=0.0, balance_due=0.0, status="draft",
         )
-        db.add(inv)
+        db.add_all([void_inv, draft_inv])
         db.commit()
         with pytest.raises(HTTPException) as exc:
-            finalize_invoice(inv.id, _={"sub": "u-1"}, db=db)
+            finalize_invoice(void_inv.id, _={"sub": "u-1"}, db=db)
         assert exc.value.status_code == 409
+        out = finalize_invoice(draft_inv.id, _={"sub": "u-1"}, db=db)
+        assert out["locked"] is True
     finally:
         db.close()
         engine.dispose()
