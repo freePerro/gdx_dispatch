@@ -674,6 +674,12 @@
               <div class="muted" style="font-size:.8rem;">Balance Due</div>
               <div style="font-weight:600;" data-testid="fin-balance">{{ formatCurrency(financials.balance_due) }}</div>
             </div>
+            <!-- Retroactive deposit (2026-07-23): jobs whose estimate was
+                 accepted before the deposit feature get a door here too. -->
+            <div v-if="!financials.deposit_total && acceptedEstimate" style="align-self:center;">
+              <Button label="Collect Deposit" icon="pi pi-wallet" size="small" severity="info" outlined
+                :loading="collectingDeposit" data-testid="job-collect-deposit" @click="collectDeposit" />
+            </div>
           </div>
         </div>
         <div class="card estimates-card">
@@ -1224,6 +1230,32 @@ async function fetchFinancials() {
     financials.value = await api.get(`/api/jobs/${route.params.id}/financials`);
   } catch {
     financials.value = null;
+  }
+}
+
+// Retroactive deposit (2026-07-23): create the deposit invoice for this
+// job's accepted estimate — the same invoice the accept-time flow makes.
+const collectingDeposit = ref(false);
+const acceptedEstimate = computed(() =>
+  relatedEstimates.value.find((e) => (e.status || "").toLowerCase() === "accepted") || null
+);
+
+async function collectDeposit() {
+  if (!acceptedEstimate.value) return;
+  collectingDeposit.value = true;
+  try {
+    const resp = await api.post(`/api/estimates/${acceptedEstimate.value.id}/deposit-invoice`, {});
+    toast.add({
+      severity: "success",
+      summary: resp.existing ? "Deposit already requested" : "Deposit invoice created",
+      detail: `${resp.invoice_number} — ${formatCurrency(resp.amount)}${resp.pay_url ? " (pay link on the invoice)" : ""}`,
+      life: 6000,
+    });
+    await Promise.all([fetchFinancials(), fetchRelatedInvoices()]);
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to create deposit invoice", life: 5000 });
+  } finally {
+    collectingDeposit.value = false;
   }
 }
 
