@@ -75,6 +75,12 @@ class ServiceAgreementPatch(BaseModel):
     services_included: list[str] | None = Field(default=None, max_length=100)
     notes: str | None = Field(default=None, max_length=5000)
     status: str | None = Field(default=None, pattern=r"^(active|expired|cancelled)$")
+    # Tier-6 (2026-07): the edit dialog has always sent these; the PATCH
+    # silently dropped them, so re-dating or re-linking an agreement never
+    # saved while toasting success.
+    start_date: datetime | None = None
+    customer_id: str | None = Field(default=None, max_length=36)
+    template_id: str | None = Field(default=None, max_length=36)
 
 
 # ---------------------------------------------------------------------------
@@ -388,12 +394,37 @@ def update_agreement(
     a = _get_scoped(db, agreement_id, tenant_id)
     data = payload.model_dump(exclude_unset=True)
 
+    if "start_date" in data and data["start_date"] is not None:
+        # Guard both directions (audit catch: only the end_date branch
+        # validated, so re-dating start past end returned 200). SQLite hands
+        # back naive datetimes — normalize before comparing.
+        def _aware(dt):
+            from datetime import timezone as _tz
+            return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=_tz.utc)
+
+        effective_end = _aware(data.get("end_date") or a.end_date)
+        if effective_end is not None and _aware(data["start_date"]) >= effective_end:
+            raise HTTPException(status_code=422, detail="start_date must be before end_date")
+        a.start_date = data["start_date"]
     if "end_date" in data and data["end_date"] is not None:
         if data["end_date"] <= a.start_date:
             raise HTTPException(
                 status_code=422, detail="end_date must be after start_date"
             )
         a.end_date = data["end_date"]
+    if "customer_id" in data and data["customer_id"]:
+        try:
+            a.customer_id = UUID(str(data["customer_id"]))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="customer_id must be a UUID") from None
+    if "template_id" in data:
+        if data["template_id"]:
+            try:
+                a.template_id = UUID(str(data["template_id"]))
+            except ValueError:
+                raise HTTPException(status_code=422, detail="template_id must be a UUID") from None
+        else:
+            a.template_id = None
     if "name" in data and data["name"] is not None:
         a.name = data["name"]
     if "notes" in data:

@@ -196,8 +196,8 @@
 
       <!-- Notes tab -->
       <div v-if="activeTab === 'Notes'" class="tab-content" data-testid="tab-notes-content">
-        <p v-if="!customer.access_notes && !customer.notes" class="muted">No notes on file.</p>
-        <p v-else>{{ customer.access_notes || customer.notes }}</p>
+        <p v-if="!customer.notes" class="muted">No notes on file.</p>
+        <p v-else>{{ customer.notes }}</p>
       </div>
 
       <!-- Equipment tab -->
@@ -355,16 +355,12 @@
             <label for="edit-address">Address</label>
             <Textarea id="edit-address" v-model="editForm.address" rows="2" data-testid="edit-customer-address" class="w-full" />
           </div>
-          <div class="form-field">
-            <label for="edit-access-notes">Access notes (gate codes, dogs, parking)</label>
-            <Textarea
-              id="edit-access-notes"
-              v-model="editForm.access_notes"
-              rows="3"
-              data-testid="edit-customer-access-notes"
-              class="w-full"
-            />
-          </div>
+          <!-- Access notes field removed (Tier-6 audit): access_notes lives
+               on CustomerLocation, not Customer — a deliberate 2026-05-21
+               decision (see CustomerFormDialog). This copy silently dropped
+               every save AND the tech-facing surfaces read only the
+               location column, so a value here would never reach the door.
+               Edit access notes on the customer's locations instead. -->
           <div class="form-field">
             <label for="edit-type">Customer Type</label>
             <Select id="edit-type" v-model="editForm.customer_type" :options="['Residential', 'Commercial']" data-testid="edit-customer-type" class="w-full" />
@@ -1009,7 +1005,6 @@ function openEditDialog() {
     customer_type: customer.value.customer_type || "Residential",
     pricing_class: customer.value.pricing_class || null,
     margin_override_pct: customer.value.margin_override_pct ?? null,
-    access_notes: customer.value.access_notes || "",
   };
   showEditDialog.value = true;
 }
@@ -1028,7 +1023,6 @@ async function saveCustomer() {
       email: editForm.value.email || "",
       address: editForm.value.address || "",
       customer_type: editForm.value.customer_type,
-      access_notes: editForm.value.access_notes?.trim() || null,
     };
     if (editForm.value.pricing_class) patch.pricing_class = editForm.value.pricing_class;
     if (editForm.value.margin_override_pct == null) {

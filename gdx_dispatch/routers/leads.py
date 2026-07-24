@@ -94,6 +94,9 @@ class LeadPatch(BaseModel):
     source: str | None = Field(default=None, max_length=100)
     assigned_to: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=10000)
+    # Tier-6 (2026-07): the edit dialog has always sent stage; the PATCH
+    # silently dropped it, so only the separate advance-stage button worked.
+    stage: str | None = Field(default=None, pattern=r"^(new|contacted|qualified|quoted|won|lost)$")
 
 
 class StageIn(BaseModel):
@@ -594,7 +597,11 @@ def update_lead(
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     lead = _get_lead_scoped(db, lead_id, tenant_id)
-    for field in ("name", "email", "phone", "address", "source", "assigned_to", "notes"):
+    # Mirror advance_stage's side effect so the edit-dialog path doesn't
+    # diverge: first contact stamps last_contact_at (audit catch).
+    if payload.stage == "contacted" and lead.last_contact_at is None:
+        lead.last_contact_at = datetime.now(timezone.utc)
+    for field in ("name", "email", "phone", "address", "source", "assigned_to", "notes", "stage"):
         val = getattr(payload, field, None)
         if val is not None:
             setattr(lead, field, val)

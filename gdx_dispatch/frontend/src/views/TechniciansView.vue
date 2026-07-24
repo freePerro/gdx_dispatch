@@ -86,18 +86,11 @@
             <Chips v-model="form.skills" placeholder="Add skill and press Enter" class="w-full" />
             <small class="muted">e.g., Torsion spring, Commercial doors, Smart openers, Electrical</small>
           </div>
-          <div class="form-field full-width">
-            <label>Certifications</label>
-            <Chips v-model="form.certifications" placeholder="Add cert and press Enter" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Work Hours Start</label>
-            <InputText v-model="form.work_start" placeholder="08:00" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label>Work Hours End</label>
-            <InputText v-model="form.work_end" placeholder="17:00" class="w-full" />
-          </div>
+          <!-- Certifications and work-hours fields removed (Tier-6): the
+               backend has no columns for them — every value typed here was
+               silently dropped while the toast said saved. Work hours live on
+               the user's dispatch-capacity shift override; certifications can
+               ride in Skills until a real column exists. -->
           <div class="form-field full-width">
             <div class="checkbox-row">
               <Checkbox v-model="form.active" :binary="true" inputId="tech-active" />
@@ -142,8 +135,7 @@ const saving = ref(false);
 
 const emptyForm = () => ({
   user_id: "", name: "", email: "", phone: "",
-  hourly_rate: 0, skills: [], certifications: [],
-  work_start: "08:00", work_end: "17:00", active: true,
+  hourly_rate: 0, skills: [], active: true,
 });
 const form = ref(emptyForm());
 
@@ -187,7 +179,6 @@ function openEdit(tech) {
     ...emptyForm(),
     ...tech,
     skills: Array.isArray(tech.skills) ? tech.skills : [],
-    certifications: Array.isArray(tech.certifications) ? tech.certifications : [],
   };
   showDialog.value = true;
 }
@@ -202,10 +193,7 @@ async function saveTech() {
       email: form.value.email,
       phone: form.value.phone,
       skills: form.value.skills,
-      certifications: form.value.certifications,
       hourly_rate: form.value.hourly_rate,
-      work_start: form.value.work_start,
-      work_end: form.value.work_end,
       active: form.value.active,
     };
     if (editing.value) {

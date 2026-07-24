@@ -301,6 +301,19 @@ def update_change_order(
         val = getattr(payload, field, None)
         if val is not None:
             setattr(co, field, val)
+    # Tier-6 (2026-07): the edit dialog sends job_id/customer_id but only
+    # customer_name was applied — display and storage silently split (the CO
+    # showed the new customer's NAME while still linked to the old records).
+    for field in ("job_id", "customer_id"):
+        val = getattr(payload, field, None)
+        if val is not None:
+            if str(val).strip():
+                try:
+                    setattr(co, field, UUID(str(val)))
+                except ValueError:
+                    raise HTTPException(status_code=422, detail=f"{field} must be a UUID") from None
+            else:
+                setattr(co, field, None)
     # D-S122-change-orders-create-flow auditor catch: PATCH was silently
     # dropping line_items, so the frontend's edit-with-lines flow blanked
     # the line set + set amount=0. Now we replace ChangeOrderLine rows in

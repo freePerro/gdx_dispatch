@@ -3,7 +3,7 @@
       <Toolbar>
         <template #start>
           <h2 class="page-title" style="margin:0">Customer Equipment</h2>
-          <InputText v-model="searchQuery" placeholder="Search by name, model, serial..." data-testid="equipment-search" style="margin-left:1rem" />
+          <InputText v-model="searchQuery" placeholder="Search by make, model, serial..." data-testid="equipment-search" style="margin-left:1rem" />
         </template>
         <template #end>
           <Button label="+ New Equipment" data-testid="new-equipment-btn" @click="openCreateDialog" />
@@ -14,6 +14,13 @@
       <div v-if="successMsg" class="inline-success" data-testid="equipment-success">{{ successMsg }}</div>
       <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
 
+      <!-- Tier-6 rework (contract-gap sweep): the old table rendered
+           name/status/last_service/warranty_expiry — none of which
+           /api/equipment serves — and the form sent customer_name/make/type
+           where the API requires customer_id/manufacturer/equipment_type, so
+           creating equipment from this page had never once succeeded and
+           edits silently didn't save. Columns and payloads now match
+           routers/equipment_tracking.py exactly. -->
       <DataTable
         class="clickable-rows"
       responsiveLayout="scroll"
@@ -25,63 +32,71 @@
       >
         <template #empty>
           <EmptyState icon="pi pi-wrench" title="No equipment yet"
-            message="Track customer doors, openers, and parts to see warranty and service history at a glance."
+            message="Track customer doors, openers, and parts to see warranty coverage at a glance."
             action-label="New Equipment" @action="openCreateDialog" />
         </template>
-        <Column field="name" header="Name" sortable />
-        <Column field="make" header="Make" />
-        <Column field="model" header="Model" />
-        <Column field="type" header="Type">
-          <template #body="{ data }">{{ data.type || data.equipment_type || '-' }}</template>
+        <Column field="equipment_type" header="Type" sortable>
+          <template #body="{ data }">{{ typeLabel(data.equipment_type) }}</template>
         </Column>
+        <Column field="manufacturer" header="Make" sortable>
+          <template #body="{ data }">{{ data.manufacturer || '—' }}</template>
+        </Column>
+        <Column field="model" header="Model" />
         <Column field="serial_number" header="Serial #" />
         <Column field="install_date" header="Install Date">
-          <template #body="{ data }">{{ data.install_date ? data.install_date.split('T')[0] : '-' }}</template>
+          <template #body="{ data }">{{ (data.install_date || '').split('T')[0] || '—' }}</template>
         </Column>
-        <Column field="warranty_expiry" header="Warranty" sortable>
+        <Column field="warranty_expires_on" header="Warranty" sortable>
           <template #body="{ data }">
-            <span v-if="data.warranty_expiry" :class="{ 'warranty-expired': new Date(data.warranty_expiry) < new Date() }">
-              {{ data.warranty_expiry.split('T')[0] }}
+            <span v-if="data.warranty_expires_on" :class="{ 'warranty-expired': new Date(data.warranty_expires_on) < new Date() }">
+              {{ data.warranty_expires_on.split('T')[0] }}
             </span>
             <span v-else>—</span>
           </template>
         </Column>
-        <Column field="last_service_date" header="Last Service" sortable>
-          <template #body="{ data }">{{ data.last_service_date ? data.last_service_date.split('T')[0] : '—' }}</template>
+        <Column field="customer_id" header="Customer">
+          <template #body="{ data }">{{ customerName(data.customer_id) }}</template>
         </Column>
-        <Column field="status" header="Status">
-          <template #body="{ data }">
-            <Tag :value="data.status || 'active'" :severity="data.status === 'retired' ? 'secondary' : data.status === 'needs_service' ? 'warn' : 'success'" />
-          </template>
-        </Column>
-        <Column field="customer_name" header="Customer" />
       </DataTable>
 
       <!-- Create / Edit Dialog -->
       <Dialog v-model:visible="showFormDialog" :header="isEdit ? 'Edit Equipment' : 'Add Equipment'" data-testid="equipment-form-dialog" :style="{ width: '32rem' }">
         <form class="dialog-form" @submit.prevent="submitForm">
           <div class="form-field">
-            <label for="eq-customer">Customer</label>
-            <InputText id="eq-customer" v-model="form.customer_name" data-testid="eq-customer-input" />
+            <label for="eq-customer">Customer *</label>
+            <!-- customer_id is the equipment's identity; the update endpoint
+                 deliberately has no customer field, so it locks on edit. -->
+            <Select
+              id="eq-customer"
+              v-model="form.customer_id"
+              :options="customerOptions"
+              optionLabel="label"
+              optionValue="value"
+              filter
+              placeholder="Select customer"
+              :disabled="isEdit"
+              class="w-full"
+              data-testid="eq-customer-input"
+            />
           </div>
           <div class="form-row-2">
             <div class="form-field">
-              <label for="eq-make">Make *</label>
-              <InputText id="eq-make" v-model="form.make" data-testid="eq-make-input" />
+              <label for="eq-type">Type *</label>
+              <Select id="eq-type" v-model="form.equipment_type" :options="equipmentTypeOptions" optionLabel="label" optionValue="value" data-testid="eq-type-dropdown" />
             </div>
             <div class="form-field">
-              <label for="eq-model">Model *</label>
+              <label for="eq-make">Make</label>
+              <InputText id="eq-make" v-model="form.manufacturer" data-testid="eq-make-input" />
+            </div>
+          </div>
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="eq-model">Model</label>
               <InputText id="eq-model" v-model="form.model" data-testid="eq-model-input" />
             </div>
-          </div>
-          <div class="form-row-2">
             <div class="form-field">
               <label for="eq-serial">Serial Number</label>
               <InputText id="eq-serial" v-model="form.serial_number" data-testid="eq-serial-input" />
-            </div>
-            <div class="form-field">
-              <label for="eq-type">Type</label>
-              <Select id="eq-type" v-model="form.type" :options="equipmentTypes" data-testid="eq-type-dropdown" />
             </div>
           </div>
           <div class="form-row-2">
@@ -90,18 +105,8 @@
               <DatePicker id="eq-install-date" v-model="form.install_date" date-format="yy-mm-dd" data-testid="eq-install-date" />
             </div>
             <div class="form-field">
-              <label for="eq-warranty">Warranty Expiry</label>
-              <DatePicker id="eq-warranty" v-model="form.warranty_expiry" date-format="yy-mm-dd" data-testid="eq-warranty" />
-            </div>
-          </div>
-          <div class="form-row-2">
-            <div class="form-field">
-              <label for="eq-last-service">Last Service Date</label>
-              <DatePicker id="eq-last-service" v-model="form.last_service_date" date-format="yy-mm-dd" data-testid="eq-last-service" />
-            </div>
-            <div class="form-field">
-              <label for="eq-status">Status</label>
-              <Select id="eq-status" v-model="form.status" :options="['active', 'needs_service', 'retired']" data-testid="eq-status" />
+              <label for="eq-warranty">Warranty Expires</label>
+              <DatePicker id="eq-warranty" v-model="form.warranty_expires_on" date-format="yy-mm-dd" data-testid="eq-warranty" />
             </div>
           </div>
           <div class="form-field">
@@ -139,12 +144,12 @@ import Dialog from "primevue/dialog";
 import Select from "primevue/select";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
-import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import Toolbar from "primevue/toolbar";
 
 const api = useApi();
 const items = ref([]);
+const customers = ref([]);
 const loading = ref(false);
 const saving = ref(false);
 const deleting = ref(false);
@@ -155,21 +160,45 @@ const searchQuery = ref("");
 const showFormDialog = ref(false);
 const showDeleteDialog = ref(false);
 const formMode = ref("create");
-const equipmentTypes = ["Garage Door", "Opener", "Spring", "Panel", "Track", "Sensor", "Remote", "Other"];
+
+// The backend's ALLOWED_EQUIPMENT_TYPES enum — not free text.
+const equipmentTypeOptions = [
+  { label: "Torsion Spring", value: "torsion_spring" },
+  { label: "Extension Spring", value: "extension_spring" },
+  { label: "Opener", value: "opener" },
+  { label: "Door Panel", value: "door_panel" },
+  { label: "Track", value: "track" },
+  { label: "Roller", value: "roller" },
+];
 
 const isEdit = computed(() => formMode.value === "edit");
 
+const customerOptions = computed(() =>
+  customers.value.map((c) => ({ label: c.name || String(c.id), value: String(c.id) })),
+);
+const customerNames = computed(() => {
+  const map = {};
+  for (const c of customers.value) map[String(c.id)] = c.name || String(c.id);
+  return map;
+});
+
+function customerName(id) {
+  return customerNames.value[String(id)] || String(id || "—").slice(0, 8);
+}
+
+function typeLabel(value) {
+  return equipmentTypeOptions.find((o) => o.value === value)?.label || value || "—";
+}
+
 const defaultForm = () => ({
   id: null,
-  customer_name: "",
-  make: "",
+  customer_id: null,
+  equipment_type: "opener",
+  manufacturer: "",
   model: "",
   serial_number: "",
-  type: "Garage Door",
   install_date: null,
-  warranty_expiry: null,
-  last_service_date: null,
-  status: "active",
+  warranty_expires_on: null,
   notes: "",
 });
 const form = ref(defaultForm());
@@ -179,13 +208,45 @@ const filteredItems = computed(() => {
   if (!q) return items.value;
   return items.value.filter(
     (i) =>
-      (i.name || "").toLowerCase().includes(q) ||
-      (i.make || "").toLowerCase().includes(q) ||
+      (i.manufacturer || "").toLowerCase().includes(q) ||
       (i.model || "").toLowerCase().includes(q) ||
       (i.serial_number || "").toLowerCase().includes(q) ||
-      (i.customer_name || "").toLowerCase().includes(q)
+      customerName(i.customer_id).toLowerCase().includes(q),
   );
 });
+
+function toDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toIso(value) {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString().split("T")[0] : value;
+}
+
+async function loadItems() {
+  loading.value = true;
+  loadError.value = "";
+  try {
+    const data = await api.get("/api/equipment");
+    items.value = Array.isArray(data) ? data : data?.items || [];
+  } catch (e) {
+    loadError.value = e.message || "Failed to load equipment.";
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadCustomers() {
+  try {
+    const data = await api.get("/api/customers?per_page=1000", { suppressErrorToast: true });
+    customers.value = Array.isArray(data) ? data : data?.items || [];
+  } catch {
+    customers.value = [];
+  }
+}
 
 function openCreateDialog() {
   formMode.value = "create";
@@ -195,39 +256,42 @@ function openCreateDialog() {
 }
 
 function onRowClick(event) {
-  const item = event?.data;
-  if (!item?.id) return;
+  const item = event.data;
   formMode.value = "edit";
-  formError.value = "";
   form.value = {
     id: item.id,
-    customer_name: item.customer_name || "",
-    make: item.make || "",
+    customer_id: item.customer_id ? String(item.customer_id) : null,
+    equipment_type: item.equipment_type || "opener",
+    manufacturer: item.manufacturer || "",
     model: item.model || "",
     serial_number: item.serial_number || "",
-    type: item.type || item.equipment_type || "Garage Door",
-    install_date: item.install_date ? new Date(item.install_date) : null,
+    install_date: toDate(item.install_date),
+    warranty_expires_on: toDate(item.warranty_expires_on),
     notes: item.notes || "",
   };
+  formError.value = "";
   showFormDialog.value = true;
 }
 
 async function submitForm() {
   formError.value = "";
   successMsg.value = "";
-  if (!form.value.make.trim() || !form.value.model.trim()) {
-    formError.value = "Make and model are required.";
+  if (!form.value.customer_id && !isEdit.value) {
+    formError.value = "Customer is required.";
+    return;
+  }
+  if (!form.value.equipment_type) {
+    formError.value = "Type is required.";
     return;
   }
   const payload = {
-    customer_name: form.value.customer_name,
-    make: form.value.make.trim(),
-    model: form.value.model.trim(),
-    serial_number: form.value.serial_number,
-    type: form.value.type,
-    install_date: form.value.install_date instanceof Date ? form.value.install_date.toISOString().split("T")[0] : form.value.install_date,
-    notes: form.value.notes,
-    name: `${form.value.make.trim()} ${form.value.model.trim()}`,
+    equipment_type: form.value.equipment_type,
+    manufacturer: form.value.manufacturer?.trim() || null,
+    model: form.value.model?.trim() || null,
+    serial_number: form.value.serial_number?.trim() || null,
+    install_date: toIso(form.value.install_date),
+    warranty_expires_on: toIso(form.value.warranty_expires_on),
+    notes: form.value.notes || null,
   };
   saving.value = true;
   try {
@@ -235,58 +299,41 @@ async function submitForm() {
       await api.patch(`/api/equipment/${form.value.id}`, payload);
       successMsg.value = "Equipment updated.";
     } else {
-      await api.post("/api/equipment", payload);
+      await api.post("/api/equipment", { ...payload, customer_id: form.value.customer_id });
       successMsg.value = "Equipment created.";
     }
     showFormDialog.value = false;
-    await fetchItems();
-  } catch (err) {
-    formError.value = err.message || "Save failed.";
+    await loadItems();
+  } catch (e) {
+    formError.value = e.message || "Save failed.";
   } finally {
     saving.value = false;
   }
 }
 
 async function confirmDelete() {
-  if (!form.value.id) return;
   deleting.value = true;
   try {
-    await api.del(`/api/equipment/${form.value.id}`);
-    successMsg.value = "Equipment deleted.";
+    await api.del(`/api/equipment/${form.value.id}`, { successMessage: "Equipment deleted" });
     showDeleteDialog.value = false;
     showFormDialog.value = false;
-    await fetchItems();
-  } catch (err) {
-    formError.value = err.message || "Delete failed.";
+    await loadItems();
+  } catch {
+    /* api helper toasts */
   } finally {
     deleting.value = false;
   }
 }
 
-async function fetchItems() {
-  loading.value = true;
-  loadError.value = "";
-  try {
-    const result = await api.get("/api/equipment");
-    const payload = result?.data || result;
-    items.value = Array.isArray(payload) ? payload : payload?.items || [];
-  } catch (e) {
-    loadError.value = e.message || "Failed to load equipment";
-  } finally {
-    loading.value = false;
-  }
-}
-
-onMounted(fetchItems);
+onMounted(() => {
+  loadItems();
+  loadCustomers();
+});
 </script>
 
 <style scoped>
-.dialog-form { display: grid; gap: 0.75rem; }
-.form-field { display: grid; gap: 0.25rem; }
+.inline-error { color: var(--color-danger-500, #dc2626); margin: 0.5rem 0; }
+.inline-success { color: var(--color-success-500, #16a34a); margin: 0.5rem 0; }
+.warranty-expired { color: var(--color-danger-500, #dc2626); font-weight: 600; }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-.form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
-.spinner-wrap { display: flex; justify-content: center; margin: 1rem 0; }
-.inline-error { color: #b42318; margin: 0.5rem 0; }
-.inline-success { color: #027a48; margin: 0.5rem 0; }
-.warranty-expired { color: #ef4444; font-weight: 600; }
 </style>

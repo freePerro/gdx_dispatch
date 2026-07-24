@@ -54,6 +54,10 @@ class TaskPatchIn(BaseModel):
     priority: str | None = Field(default=None, pattern=r"^(low|normal|high|urgent)$")
     status: str | None = Field(default=None, pattern=r"^(open|in_progress|completed|cancelled)$")
     due_date: datetime | None = None
+    # Tier-6 (2026-07): TasksView's edit dialog sends the related job/customer;
+    # the PATCH silently dropped both, so relinking never saved.
+    related_job_id: str | None = Field(default=None, max_length=64)
+    related_customer_id: str | None = Field(default=None, max_length=64)
 
 
 def _tenant_id(request: Request) -> str:
@@ -226,6 +230,9 @@ def update_task(
 
     changed: dict[str, Any] = {}
     data = payload.model_dump(exclude_unset=True)
+    for field in ("related_job_id", "related_customer_id"):
+        if field in data:
+            setattr(task, field, _parse_uuid(data[field]) if data[field] else None)
     for field in ("assigned_to", "title", "description", "priority", "status", "due_date"):
         if field in data:
             setattr(task, field, data[field])

@@ -308,7 +308,9 @@ def update_po(
     if po.status in ("received", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Cannot edit {po.status} PO")
 
-    for field in ("vendor_name", "notes", "expected_date"):
+    # Tier-6 (2026-07): order_date joined the loop — the PO form has always
+    # sent it on edit and the PATCH silently dropped it.
+    for field in ("vendor_name", "notes", "expected_date", "order_date"):
         val = getattr(payload, field, None)
         if val is not None:
             setattr(po, field, val)

@@ -168,6 +168,10 @@ class AppointmentIn(BaseModel):
 
 class AppointmentPatch(BaseModel):
     tech_id: str | None = Field(default=None, max_length=64)
+    # Tier-6 (2026-07): the edit dialog has always sent job/customer relinks;
+    # the PATCH silently dropped both.
+    job_id: str | None = Field(default=None, max_length=64)
+    customer_id: str | None = Field(default=None, max_length=64)
     title: str | None = Field(default=None, min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=5000)
     address: str | None = Field(default=None, max_length=500)
@@ -532,6 +536,17 @@ def update_appointment(
     ):
         if field in data:
             setattr(a, field, data[field])
+    # Relinks: empty string / null clears; malformed uuid refuses rather than
+    # silently unlinking.
+    for field in ("job_id", "customer_id"):
+        if field in data:
+            if data[field]:
+                try:
+                    setattr(a, field, UUID(str(data[field])))
+                except ValueError:
+                    raise HTTPException(status_code=422, detail=f"{field} must be a UUID") from None
+            else:
+                setattr(a, field, None)
     for field in ("lat", "lng"):
         if field in data:
             val = data[field]
