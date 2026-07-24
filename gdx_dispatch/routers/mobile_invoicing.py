@@ -713,12 +713,25 @@ def _send_invoice_email(
 
         # Build a simple email body if no specialised builder exists.
         if build_invoice_email_html is not None:
+            # deleted_at filter matches the canonical desktop send path
+            # (routers/invoices.py) — without it a re-send after an office
+            # edit emails soft-deleted ghost lines whose sum doesn't foot
+            # with the printed subtotal.
             lines = db.execute(
                 select(InvoiceLine)
-                .where(InvoiceLine.invoice_id == invoice.id)
+                .where(
+                    InvoiceLine.invoice_id == invoice.id,
+                    InvoiceLine.deleted_at.is_(None),
+                )
                 .order_by(InvoiceLine.sort_order.asc())
             ).scalars().all()
-            html = build_invoice_email_html(  # type: ignore[misc]
+            # subtotal/tax_amount/balance_due are REQUIRED kwargs with no
+            # defaults (core/email_sender.py). This call omitted them from
+            # the day mobile invoicing shipped: the TypeError was swallowed
+            # by the enclosing try/except (and a `# type: ignore[misc]`
+            # silenced the checker), so every truck "Generate & email" and
+            # re-send returned False having delivered nothing.
+            html = build_invoice_email_html(
                 company_name=company_name,
                 invoice_number=invoice.invoice_number,
                 customer_name=cust.name or "Valued Customer",
@@ -731,7 +744,12 @@ def _send_invoice_email(
                     }
                     for ln in lines
                 ],
+                subtotal=float(invoice.subtotal or 0),
+                tax_amount=float(invoice.tax_amount or 0),
                 total=float(invoice.total or 0),
+                balance_due=float(invoice.balance_due or 0),
+                due_date=invoice.due_date.isoformat() if invoice.due_date else "",
+                tax_rate=float(invoice.tax_rate) if getattr(invoice, "tax_rate", None) is not None else None,
                 notes=invoice.notes or "",
                 portal_url=pay_url or "",
             )

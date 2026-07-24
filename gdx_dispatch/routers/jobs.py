@@ -548,6 +548,9 @@ def list_jobs(
     search: str | None = None,
     status: str | None = None,
     customer_id: str | None = None,
+    date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ):
     _ = current_user
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -557,6 +560,54 @@ def list_jobs(
     # P1-4 fix 2026-04-27.
     if per_page is not None:
         page_size = per_page
+
+    # Date scoping. ``date=YYYY-MM-DD`` (single day) has been sent by the
+    # dispatch boards and the dashboard Today card since they shipped; until
+    # 2026-07 the server ignored it, so those callers got page 1 of ALL jobs
+    # (50 rows) and day-filtered client-side — on a tenant with >50 jobs,
+    # jobs for the selected day were silently missing from the board.
+    # ``date_from``/``date_to`` (inclusive calendar bounds) serve the desktop
+    # board's Week view and custom range filter, which render more than one
+    # day from a single fetch.
+    #
+    # Every scope is deliberately widened by ±1 day in UTC, not cut exactly:
+    # clients bucket by the TENANT-zone calendar day (zonedDateKey), which the
+    # server can't reproduce without timezone math — the wide window
+    # guarantees no tenant-zone match is ever excluded, and the client filter
+    # remains the precise cut. Undated jobs stay included (the boards surface
+    # them on today's column).
+    def _parse_day(value: str, label: str) -> datetime:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"{label} must be YYYY-MM-DD") from None
+
+    date_lo: datetime | None = None
+    date_hi: datetime | None = None
+    try:
+        if date_from or date_to:
+            if not (date_from and date_to):
+                return jsonable_response(
+                    {"detail": "date_from and date_to must be provided together"}, 422
+                )
+            lo_day = _parse_day(date_from, "date_from")
+            hi_day = _parse_day(date_to, "date_to")
+            if hi_day < lo_day:
+                return jsonable_response({"detail": "date_to is before date_from"}, 422)
+            date_lo = lo_day - timedelta(days=1)
+            date_hi = hi_day + timedelta(days=2)
+        elif date:
+            day = _parse_day(date, "date")
+            date_lo = day - timedelta(days=1)
+            date_hi = day + timedelta(days=2)
+    except ValueError as exc:
+        return jsonable_response({"detail": str(exc)}, 422)
+
+    if date_lo is not None and per_page is None and "page_size" not in request.query_params:
+        # A date-scoped request wants the whole day/range, not page 1 of it —
+        # when the caller didn't size the page explicitly, lift the cap.
+        page_size = 500
+
     page_size = max(1, min(page_size, 500))
     offset = (page - 1) * page_size
 
@@ -578,6 +629,12 @@ def list_jobs(
     if customer_id:
         where.append("j.customer_id = :customer_id")
         params["customer_id"] = customer_id
+    if date_lo is not None and date_hi is not None:
+        where.append(
+            "(j.scheduled_at IS NULL OR (j.scheduled_at >= :date_lo AND j.scheduled_at < :date_hi))"
+        )
+        params["date_lo"] = date_lo
+        params["date_hi"] = date_hi
     where_sql = " AND ".join(where)
 
     try:

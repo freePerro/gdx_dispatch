@@ -38,20 +38,35 @@ describe("Dashboard KPI cards", () => {
     setActivePinia(createPinia());
     pushMock.mockReset();
     getMock.mockReset();
-    getMock
-      .mockResolvedValueOnce({
-        revenue_total: 145000,
-        open_jobs: 18,
-        overdue_invoices: 6,
-        jobs_completed: 9,
-        revenue_trend: 12,
-        open_jobs_trend: -4,
-        overdue_invoices_trend: -8,
-        jobs_completed_trend: 5,
-      })
-      .mockResolvedValueOnce([
+    // URL-dispatched (not ordered): DashboardView's setup also pulls
+    // useTenantTimezone(), whose /api/me/timezone fetch would otherwise
+    // consume the first ordered mock and shift every response by one.
+    getMock.mockImplementation((url) => {
+      const u = String(url);
+      if (u.startsWith("/api/reports/summary")) {
+        return Promise.resolve({
+          revenue_total: 145000,
+          open_jobs: 18,
+          overdue_invoices: 6,
+          jobs_completed: 9,
+          revenue_trend: 12,
+          open_jobs_trend: -4,
+          overdue_invoices_trend: -8,
+          jobs_completed_trend: 5,
+        });
+      }
+      if (u.startsWith("/api/me/timezone")) {
+        return Promise.resolve({ tenant_timezone: "UTC" });
+      }
+      if (u.startsWith("/api/reports/daily-snapshot")) {
+        // Gated/unavailable in this harness — the tile then falls back to
+        // the summary's jobs_completed, which this test asserts.
+        return Promise.resolve(null);
+      }
+      return Promise.resolve([
         { id: 1, title: "Install", customer: "Acme", created_at: "2026-04-01T10:00:00Z" },
       ]);
+    });
   });
 
   it("renders four KPI cards with values from API", async () => {

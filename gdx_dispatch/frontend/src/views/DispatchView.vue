@@ -862,6 +862,13 @@ watch(selectedDateStr, () => {
   fetchJobs();
 });
 
+// The server scopes the fetch to the requested day/range (±1-day widened),
+// so switching to Week view or applying a custom range needs a re-fetch —
+// the day-scoped payload only covers selectedDate±1.
+watch([viewMode, dateRangeFilter], () => {
+  fetchJobs();
+});
+
 const skillSelectOptions = computed(() => [
   { label: 'All skills', value: null },
   ...skillOptions.value.map((skill) => ({ label: skill, value: skill })),
@@ -1508,9 +1515,30 @@ async function loadSkillOptions() {
   }
 }
 
+// Which slice of the calendar the current view actually renders. The server
+// widens any date scope by ±1 day (UTC) and lifts the page cap for scoped
+// requests; matchesDate/zonedDateKey stays the precise tenant-zone cut.
+// Week view and the custom range filter render multiple days from one fetch,
+// so they must ask for the full range — a day-scoped fetch only carries
+// selectedDate±1 and would leave the other week columns structurally empty.
+function jobsDateQuery() {
+  const [start, end] = dateRangeFilter.value || [];
+  if (start && end) {
+    return `date_from=${toDateStr(new Date(start))}&date_to=${toDateStr(new Date(end))}`;
+  }
+  if (viewMode.value === 'week') {
+    const s = new Date(selectedDate.value);
+    s.setDate(s.getDate() - s.getDay()); // Sunday of the selected week
+    const e = new Date(s);
+    e.setDate(s.getDate() + 6); // Saturday
+    return `date_from=${toDateStr(s)}&date_to=${toDateStr(e)}`;
+  }
+  return `date=${selectedDateStr.value}`;
+}
+
 async function fetchJobs({ keepOnError = false } = {}) {
   try {
-    const data = await api.get(`/api/jobs?date=${selectedDateStr.value}`);
+    const data = await api.get(`/api/jobs?${jobsDateQuery()}`);
     const rows = Array.isArray(data) ? data : data?.items || data?.data || [];
     jobs.value = rows.map(normalizeJob);
   } catch {

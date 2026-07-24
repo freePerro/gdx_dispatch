@@ -73,12 +73,12 @@ const dateLabel = computed(() => {
   return selectedDate.value.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 })
 
-// Jobs on the selected day. The /api/jobs fetch returns the full list (the
-// server ignores the ?date= param — same as the desktop board), so the board
-// MUST filter client-side or every tech column shows all-time jobs and the
-// date pill does nothing. A dated job matches when its OFFICE-local day equals
-// the selected day; undated jobs (leads with no time yet) surface on today's
-// board only, so they don't duplicate across every day or vanish entirely.
+// Jobs on the selected day. The server honors ?date= as a ±1-day UTC window
+// (wide on purpose — it can't reproduce the tenant-zone day cut), so this
+// client-side filter remains the PRECISE cut and must stay. A dated job
+// matches when its OFFICE-local day equals the selected day; undated jobs
+// (leads with no time yet) surface on today's board only, so they don't
+// duplicate across every day or vanish entirely.
 const dayJobs = computed(() => {
   const key = selectedDateStr.value
   return jobs.value.filter((j) =>
@@ -185,9 +185,9 @@ function timeWindow(job) {
 
 async function fetchJobs() {
   try {
-    // NOTE: the server currently ignores ?date= (list_jobs has no date param),
-    // so this returns the full list and `dayJobs` filters it client-side. The
-    // param is kept so filtering narrows automatically if the API gains it.
+    // The server scopes ?date= to a ±1-day window and lifts the page cap to
+    // 500 for date-scoped requests, so a busy day can't fall off page 1
+    // anymore; `dayJobs` still applies the exact tenant-zone day cut.
     const data = await api.get(`/api/jobs?date=${selectedDateStr.value}`)
     const list = Array.isArray(data) ? data : data?.items || data?.jobs || []
     jobs.value = list
