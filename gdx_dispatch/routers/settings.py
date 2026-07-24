@@ -6,12 +6,13 @@ from datetime import datetime, time, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.branding_logo import BRANDING_LOGO_RE, LOGO_URL_PREFIX
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_sync
 from gdx_dispatch.core.database import get_db
@@ -724,4 +725,79 @@ def patch_branding(
             _audit_db.commit()
         except Exception:
             log.exception('patch_branding_audit_failed')
+    return _branding_dict(row)
+
+
+MAX_LOGO_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/branding/logo")
+def upload_branding_logo(
+    request: Request,
+    logo: UploadFile = File(...),
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Store the company logo and point branding.logo_url at it.
+
+    SettingsView has posted here since branding shipped, but the route never
+    existed — the surrounding PATCH succeeded, so "Save" looked fine while the
+    logo silently never persisted (contract-gap sweep 2026-07-24, Tier 1.4).
+    """
+    _require_admin(current_user)
+    from gdx_dispatch.routers.uploads import (
+        ALLOWED_IMAGE_MIME_TYPES,
+        _compress_image,
+        _flat_document_path,
+        _read_upload_with_limit,
+        _write_bytes_to_storage,
+    )
+
+    if (logo.content_type or "").strip().lower() not in ALLOWED_IMAGE_MIME_TYPES:
+        raise HTTPException(status_code=415, detail="Only jpg/png/webp are supported")
+    data = _read_upload_with_limit(logo, MAX_LOGO_BYTES)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    data, effective_ct = _compress_image(data, logo.content_type or "application/octet-stream")
+
+    ext = "png" if effective_ct == "image/png" else "jpg"
+    stored = f"branding-logo-{uuid4().hex}.{ext}"
+    _write_bytes_to_storage(_flat_document_path(stored), data)
+
+    row = _ensure_settings(db)
+    old_logo = row.logo or ""
+    row.logo = f"{LOGO_URL_PREFIX}{stored}"
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    # Best-effort cleanup of the previous upload; only files we minted match.
+    old_name = old_logo.rsplit("/", 1)[-1]
+    if BRANDING_LOGO_RE.match(old_name):
+        try:
+            _flat_document_path(old_name).unlink(missing_ok=True)
+        except Exception:
+            log.warning("branding_logo_cleanup_failed", exc_info=True)
+
+    tenant_id = ""
+    try:
+        tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
+    except Exception:
+        tenant_id = ""
+    if tenant_id:
+        invalidate_sync(tenant_id, "settings:branding")
+        try:
+            log_audit_event_sync(
+                db,
+                tenant_id=tenant_id,
+                user_id=_actor_id(current_user),
+                action="upload_branding_logo",
+                entity_type="branding",
+                entity_id="",
+                details={"filename": stored, "size_bytes": len(data)},
+                request=request,
+            )
+            db.commit()
+        except Exception:
+            log.exception("upload_branding_logo_audit_failed")
     return _branding_dict(row)

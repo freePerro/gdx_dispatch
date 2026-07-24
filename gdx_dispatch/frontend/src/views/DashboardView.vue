@@ -671,7 +671,7 @@ async function loadSummary() {
           const ts = i.created_at || i.invoice_date;
           return i.status === "paid" && ts && new Date(ts) >= monthStart;
         })
-        .reduce((sum, i) => sum + (Number(i.total_amount) || 0), 0);
+        .reduce((sum, i) => sum + (Number(i.total) || 0), 0);
     } catch {
       // jobs/invoices endpoints unavailable — leave defaults
     }

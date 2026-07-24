@@ -153,11 +153,23 @@ export function createApiClient() {
     });
   }
 
-  function del(url) {
-    return request(url, { method: 'DELETE' });
+  function del(url, data) {
+    // Optional JSON body — DELETE /api/push/v2/unsubscribe reads a Pydantic
+    // body ({ endpoint }) and was the only caller sending one.
+    if (data === undefined) {
+      return request(url, { method: 'DELETE' });
+    }
+    return request(url, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
   }
 
-  return { request, get, post, put, patch, del, postQueued, patchQueued };
+  // `delete` is a legal property name (only the operator is reserved).
+  // Nine callsites were written against `api.delete(...)` and silently
+  // invoked `undefined` — every delete button they backed was dead.
+  return { request, get, post, put, patch, del, delete: del, postQueued, patchQueued };
 }
 
 /**
@@ -255,6 +267,28 @@ export function useApi() {
     } catch (e) { fireError(e, options.suppressErrorToast); throw e; }
   }
 
+  // Alias with a distinct signature: delete(url, data?, options?).
+  // The existing `api.delete(...)` callsites were written against this shape
+  // (PayrollView passes (url, {}, { successMessage }); push unsubscribe passes
+  // (url, { endpoint })) — `del(url, options)` keeps its old contract.
+  async function _delete(url, data, options = {}) {
+    // Guard the natural mistake of mirroring del's signature —
+    // delete(url, { successMessage }) — which would otherwise silently send
+    // the options object as the request body and drop the toast.
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const keys = Object.keys(data);
+      if (keys.length > 0 && keys.every((k) => k === 'successMessage' || k === 'suppressErrorToast')) {
+        options = data;
+        data = undefined;
+      }
+    }
+    try {
+      const result = await transport.del(url, data);
+      fireSuccess(options.successMessage);
+      return result;
+    } catch (e) { fireError(e, options.suppressErrorToast); throw e; }
+  }
+
   async function request(url, options = {}, fetchOptions = {}) {
     try {
       const result = await transport.request(url, options);
@@ -265,6 +299,7 @@ export function useApi() {
 
   return {
     request, get, post, put, patch, del,
+    delete: _delete,
     postQueued: transport.postQueued,
     patchQueued: transport.patchQueued,
   };

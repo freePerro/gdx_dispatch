@@ -1,11 +1,9 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
 import { useApiWithToast as useApi } from '../composables/useApiWithToast'
 
 const router = useRouter()
-const auth = useAuthStore()
 const api = useApi()
 
 const step = ref(1)
@@ -58,11 +56,13 @@ async function finish() {
       fd.append('file', customerFile.value)
       // /api/customers/import was never routed; the real admin CSV/JSON
       // import handler lives at /api/admin/import/customers (admin_ops.py).
-      await fetch('/api/admin/import/customers', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${auth.token}` },
-        body: fd,
-      })
+      // Must go through the api client: the raw fetch here sent
+      // `Bearer ${auth.token}` — a field the auth store doesn't have
+      // (it exports accessToken) — so every wizard import 401'd, and the
+      // missing resp.ok check let onboarding "complete" with 0 customers.
+      // api.post throws on non-2xx, which keeps us in this catch block
+      // instead of marking onboarding complete.
+      await api.post('/api/admin/import/customers', fd)
     }
     await api.post('/api/onboarding/complete', {})
     router.push('/dashboard')

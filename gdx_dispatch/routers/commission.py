@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -130,6 +130,62 @@ def set_rules(
 
     log_audit_event_sync(
         db, tenant_id=tid, user_id=uid, action="create" if not existing else "update",
+        entity_type="commission_rule", entity_id=str(rule.id),
+        details={"role": payload.role, "parts_pct": payload.parts_pct, "labor_pct": payload.labor_pct},
+        request=request,
+    )
+    return _serialize_rule(rule)
+
+
+@router.put("/rules/{rule_id}")
+def update_rule(
+    rule_id: str,
+    request: Request,
+    payload: RuleIn,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    # CommissionsView's edit dialog PUTs here; until 2026-07 the route didn't
+    # exist and every edit 404'd — rules could be created but never changed.
+    try:
+        rid = UUID(rule_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Commission rule not found") from None
+
+    rule = db.execute(
+        select(CommissionRule).where(CommissionRule.id == rid)
+    ).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Commission rule not found")
+
+    # POST upserts by role and the calculate flow looks rules up by role, so
+    # two rules sharing a role would make lookups ambiguous.
+    if payload.role != rule.role:
+        dupe = db.execute(
+            select(CommissionRule).where(
+                CommissionRule.role == payload.role, CommissionRule.id != rid
+            )
+        ).scalar_one_or_none()
+        if dupe is not None:
+            raise HTTPException(
+                status_code=409, detail=f"A rule for role '{payload.role}' already exists"
+            )
+
+    try:
+        rule.role = payload.role
+        rule.parts_pct = Decimal(str(payload.parts_pct))
+        rule.labor_pct = Decimal(str(payload.labor_pct))
+        rule.bonus_per_review = Decimal(str(payload.bonus_per_review))
+        rule.updated_at = _now()
+        db.commit()
+        db.refresh(rule)
+    except Exception:
+        db.rollback()
+        log.exception("commission_rule_update_failed")
+        raise HTTPException(status_code=500, detail="Failed to update commission rule") from None
+
+    log_audit_event_sync(
+        db, tenant_id=_tid(request), user_id=_uid(user), action="update",
         entity_type="commission_rule", entity_id=str(rule.id),
         details={"role": payload.role, "parts_pct": payload.parts_pct, "labor_pct": payload.labor_pct},
         request=request,

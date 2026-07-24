@@ -103,3 +103,79 @@ describe('useApi client-error reporting', () => {
     expect(captured.body.missing).toEqual(['parts', 'hours']);
   });
 });
+
+describe('api.delete alias (contract-gap Tier 1.1)', () => {
+  let fetchMock;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('transport exposes delete as an alias of del', () => {
+    const api = createApiClient();
+    expect(typeof api.delete).toBe('function');
+    expect(api.delete).toBe(api.del);
+  });
+
+  it('delete(url) sends DELETE with no body', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse({ ok: true }));
+    const api = createApiClient();
+    await api.delete('/api/campaigns/abc');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/campaigns/abc');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('delete(url, data) sends a JSON body — the push-unsubscribe shape', async () => {
+    fetchMock.mockResolvedValueOnce(mkResponse({ status: 'unsubscribed' }));
+    const api = createApiClient();
+    await api.delete('/api/push/v2/unsubscribe', { endpoint: 'https://push.example/ep' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe('DELETE');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual({ endpoint: 'https://push.example/ep' });
+  });
+});
+
+describe('useApi delete options-misuse guard', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('delete(url, { successMessage }) treats the object as options, not a body', async () => {
+    const { useApi } = await import('../useApi');
+    global.fetch.mockResolvedValueOnce(mkResponse({ ok: true }));
+    // Outside Vue setup: toast/router are null, so no toast — but the
+    // request must NOT carry the options object as a JSON body.
+    const api = useApi();
+    await api.delete('/api/foo/1', { successMessage: 'Deleted' });
+
+    const [, init] = global.fetch.mock.calls[0];
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('delete(url, realBody) still sends the body when keys are not option-shaped', async () => {
+    const { useApi } = await import('../useApi');
+    global.fetch.mockResolvedValueOnce(mkResponse({ ok: true }));
+    const api = useApi();
+    await api.delete('/api/push/v2/unsubscribe', { endpoint: 'x' });
+
+    const [, init] = global.fetch.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ endpoint: 'x' });
+  });
+});
