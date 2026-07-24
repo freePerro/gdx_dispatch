@@ -584,8 +584,8 @@ onMounted(() => {
   margin: 1rem 0;
   padding: 1rem;
   border-radius: 8px;
-  background: #fff9e6;
-  border: 1px solid #ffe29a;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
   display: flex;
   justify-content: space-between;
   gap: 1rem;
@@ -593,7 +593,7 @@ onMounted(() => {
 
 .unconfirmed-banner p {
   margin: 0.35rem 0 0;
-  color: #4b3b1b;
+  color: var(--color-warning-500);
 }
 
 .status-tabs {

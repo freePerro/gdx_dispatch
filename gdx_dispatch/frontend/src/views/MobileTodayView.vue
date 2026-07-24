@@ -1595,21 +1595,21 @@ function replayTour() {
   gap: 0.6rem;
   padding: 0.6rem 0.85rem;
   margin-bottom: 0.75rem;
-  background: #fef2f2;
-  border: 1px solid #fca5a5;
-  border-left: 4px solid #dc2626;
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-left: 4px solid var(--color-danger-500);
   border-radius: 0.5rem;
   font-size: 0.85rem;
 }
 .offline-banner.banner-online {
-  background: #fefce8;
-  border-color: #fde68a;
-  border-left-color: #ca8a04;
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  border-left-color: var(--color-warning-500);
 }
-.offline-banner > .pi { color: #dc2626; font-size: 1.1rem; }
-.offline-banner.banner-online > .pi { color: #ca8a04; }
+.offline-banner > .pi { color: var(--color-danger-500); font-size: 1.1rem; }
+.offline-banner.banner-online > .pi { color: var(--color-warning-500); }
 .offline-banner-text { flex: 1; line-height: 1.3; }
-.offline-banner-text strong { display: block; font-size: 0.95rem; color: #1f2937; }
+.offline-banner-text strong { display: block; font-size: 0.95rem; color: var(--p-text-color); }
 .offline-sub { font-size: 0.75rem; color: var(--p-text-muted-color, #6b7280); margin-top: 0.1rem; }
 .slide-down-enter-active, .slide-down-leave-active {
   transition: transform 0.2s ease, opacity 0.2s ease;

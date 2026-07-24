@@ -52,7 +52,7 @@
           >
             <template #empty>
               <div class="empty-state">
-                <i class="pi pi-chart-line" style="font-size:3rem; color:#64748b"></i>
+                <i class="pi pi-chart-line" style="font-size:3rem; color:var(--p-text-muted-color)"></i>
                 <h3>No profitability data</h3>
                 <p>Adjust the date range above to load more jobs.</p>
               </div>
@@ -112,7 +112,7 @@
           >
             <template #empty>
               <div class="empty-state">
-                <i class="pi pi-sliders-h" style="font-size:3rem; color:#64748b"></i>
+                <i class="pi pi-sliders-h" style="font-size:3rem; color:var(--p-text-muted-color)"></i>
                 <h3>No markup rules</h3>
                 <p>Create a rule to keep estimates profitable.</p>
               </div>
@@ -1176,7 +1176,7 @@ onMounted(() => {
 }
 .job-detail-subtitle {
   margin: 0;
-  color: #475569;
+  color: var(--p-text-muted-color);
   font-size: 0.9rem;
 }
 .job-detail-min-margin {
@@ -1197,7 +1197,7 @@ onMounted(() => {
   font-size: 0.75rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #64748b;
+  color: var(--p-text-muted-color);
 }
 .summary-value {
   display: block;
@@ -1205,14 +1205,14 @@ onMounted(() => {
   margin: 0.25rem 0;
 }
 .min-margin-warning {
-  color: #b91c1c;
+  color: var(--color-danger-500);
   font-weight: 600;
   border: 1px solid rgba(185, 28, 28, 0.2);
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
 }
 .job-detail-section {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--p-content-border-color);
   padding-top: 1rem;
 }
 .section-head {
@@ -1237,7 +1237,7 @@ onMounted(() => {
 }
 .job-detail-table :global(.p-datatable-thead > tr > th) {
   background: transparent;
-  border-color: #e5e7eb;
+  border-color: var(--p-content-border-color);
 }
 .tab-toolbar .date-range {
   display: flex;
@@ -1247,17 +1247,17 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   font-size: 0.85rem;
-  color: #475569;
+  color: var(--p-text-muted-color);
   gap: 0.25rem;
 }
 .date-range input {
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--p-content-border-color);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
 }
 .days-label {
   font-size: 0.95rem;
-  color: #334155;
+  color: var(--p-text-color);
 }
 .spinner-wrap.small {
   padding: 1rem 0;
@@ -1267,7 +1267,7 @@ onMounted(() => {
 }
 .calculator-section header p {
   margin: 0.25rem 0 1rem;
-  color: #475569;
+  color: var(--p-text-muted-color);
 }
 .calculator-form {
   display: flex;
@@ -1287,9 +1287,9 @@ onMounted(() => {
 .calculator-result {
   margin-top: 1rem;
   padding: 1rem;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--p-content-border-color);
   border-radius: 6px;
-  background: #f8fafc;
+  background: var(--p-content-hover-background);
 }
 .result-row {
   display: flex;
@@ -1299,14 +1299,14 @@ onMounted(() => {
 }
 .breakdown {
   margin-top: 0.75rem;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--p-content-border-color);
   padding-top: 0.75rem;
 }
 .breakdown-row {
   display: flex;
   justify-content: space-between;
   font-size: 0.9rem;
-  color: #475569;
+  color: var(--p-text-muted-color);
 }
 .detail-grid {
   display: grid;

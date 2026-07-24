@@ -17,7 +17,7 @@
     </template>
     <div v-if="store.loading" class="state-wrap"><ProgressSpinner /></div>
     <div v-else-if="!store.items.length" class="state-wrap empty">
-      <i class="pi pi-inbox" style="font-size:2.5rem; color:#94a3b8;"></i>
+      <i class="pi pi-inbox" style="font-size:2.5rem; color:var(--p-text-muted-color);"></i>
       <p>No notifications</p>
     </div>
     <ul v-else class="notif-list">
@@ -190,7 +190,7 @@ function formatTime(iso) {
   justify-content: center;
   padding: 3rem 1rem;
   gap: 0.5rem;
-  color: #64748b;
+  color: var(--p-text-muted-color);
 }
 .notif-list {
   list-style: none;
@@ -199,16 +199,16 @@ function formatTime(iso) {
 }
 .notif-item {
   padding: 0.85rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--p-content-border-color);
   cursor: pointer;
   transition: background 0.15s ease;
 }
 .notif-item:hover {
-  background: #f8fafc;
+  background: var(--p-content-hover-background);
 }
 .notif-item.unread {
-  background: #eff6ff;
-  border-left: 3px solid var(--interactive-primary, #2563eb);
+  background: var(--p-highlight-background);
+  border-left: 3px solid var(--interactive-primary, var(--p-primary-color));
 }
 .notif-row {
   display: flex;
@@ -218,16 +218,16 @@ function formatTime(iso) {
 }
 .notif-title {
   font-weight: 600;
-  color: #0f172a;
+  color: var(--p-text-color);
 }
 .notif-time {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--p-text-muted-color);
   white-space: nowrap;
 }
 .notif-message {
   margin-top: 0.25rem;
-  color: #334155;
+  color: var(--p-text-color);
   font-size: 0.9rem;
 }
 .notif-cat {
@@ -236,6 +236,6 @@ function formatTime(iso) {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--p-text-muted-color);
 }
 </style>

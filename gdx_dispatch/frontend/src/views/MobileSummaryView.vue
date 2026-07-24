@@ -139,9 +139,9 @@ onMounted(load)
   flex-direction: column;
   gap: 0.3rem;
   padding: 0.85rem 1rem;
-  border: 2px solid #2563eb;
+  border: 2px solid var(--color-info-500);
   border-radius: 0.65rem;
-  background: #eff6ff;
+  background: var(--color-info-bg);
 }
 .muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 </style>
