@@ -1127,12 +1127,17 @@ async function saveEdit() {
       const marginOverrideDec = ln.margin_pct_override != null && toNum(ln.margin_pct_override) > 0
         ? toNum(ln.margin_pct_override) / 100
         : null;
-      if (ln.id && originalById.has(String(ln.id))) {
+      if (ln.id) {
+        // Any row with a server id PATCHes — never re-POSTs. The id can be
+        // missing from the snapshot when a previous save attempt created
+        // the line and then failed before the resync landed; PATCHing with
+        // absolute values is idempotent, a second POST is a duplicate.
         keptIds.add(String(ln.id));
-        const orig = originalById.get(String(ln.id));
-        const origCost = orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
-        const origMargin = orig.margin_pct_override != null ? toNum(orig.margin_pct_override) : null;
+        const orig = originalById.get(String(ln.id)) || null;
+        const origCost = orig && orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
+        const origMargin = orig && orig.margin_pct_override != null ? toNum(orig.margin_pct_override) : null;
         const changed =
+          !orig ||
           orig.description !== desc ||
           toNum(orig.quantity) !== qty ||
           toNum(orig.unit_price) !== price ||
@@ -1151,9 +1156,9 @@ async function saveEdit() {
           // the new value is null — backend's exclude_unset=True semantics
           // mean omitted fields stay unchanged, so clearing a cost requires
           // an explicit `cost: null`.
-          if (category !== (orig.category || null)) patch.category = category;
-          if (cost !== origCost) patch.cost = cost;
-          if (marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
+          if (!orig || category !== (orig.category || null)) patch.category = category;
+          if (!orig || cost !== origCost) patch.cost = cost;
+          if (!orig || marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
           await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
         }
       } else {
@@ -1191,8 +1196,13 @@ async function saveEdit() {
     // an already-collected deposit, and the server 409s the attempt.
     for (const orig of original) {
       if (isDepositNettingLine(orig)) continue;
-      if (!keptIds.has(String(orig.id))) {
-        await api.del(`/api/invoices/${id}/lines/${orig.id}`);
+      const oid = String(orig.id ?? "");
+      // Only real server line ids (UUIDs) are deletable — fetchInvoice's
+      // offline placeholder rows carry ids like 1/2, and firing DELETEs
+      // derived from fabricated data must never happen (audit 2026-07-24).
+      if (oid.length < 32) continue;
+      if (!keptIds.has(oid)) {
+        await api.del(`/api/invoices/${id}/lines/${oid}`);
       }
     }
 
@@ -1225,10 +1235,16 @@ async function saveEdit() {
     // some of them committed. Resync the underlying invoice (edit state is
     // untouched — the user keeps their draft and can retry) so the diff on
     // the next attempt runs against what the server actually has.
+    // Deliberately NOT fetchInvoice(): its offline fallback swallows the
+    // error and installs placeholder line items, and a retry diffed against
+    // fabricated rows would duplicate every real line (audit 2026-07-24).
+    // If this fetch fails too, the pre-save snapshot stays — safe, because
+    // rows with a server id always PATCH and deletions require real UUIDs.
     try {
-      await fetchInvoice();
+      const result = await api.get(`/api/invoices/${route.params.id}`, { suppressErrorToast: true });
+      normalizeInvoice(result?.data || result || {});
     } catch {
-      /* resync is best-effort; the retry's refetch covers it */
+      /* resync unavailable — keep the pre-save snapshot */
     }
   } finally {
     savingEdit.value = false;

@@ -315,3 +315,26 @@ def test_mark_thread_read_clears_local_without_conversation_ids():
     r = client.post("/api/phone-com/messages/threads/+1|+2/mark-read")
     assert r.status_code == 204
     assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 0}
+
+
+def test_open_thread_stamps_beyond_current_page():
+    """The read stamp covers the WHOLE thread, not just the fetched page —
+    a long conversation opened at per_page=2 must still zero the badge."""
+    ce, te = _engines()
+    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    tid = _seed_tenant(csm)
+    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    s = tsm()
+    base = datetime.now(timezone.utc)
+    for i in range(5):
+        _seed_msg(s, mid=f"m{i}", thread="+1|+2", direction="in",
+                  sent_at=base + timedelta(seconds=i))
+    s.commit()
+    s.close()
+
+    app, _, _ = _app(ce, te, tid)
+    client = TestClient(app)
+    r = client.get("/api/phone-com/messages/threads/+1|+2?per_page=2")
+    assert r.status_code == 200
+    assert len(r.json()["items"]) == 2
+    assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 0}

@@ -58,6 +58,12 @@
           <div class="inv-row-2">
             <span class="inv-number">#{{ inv.number || inv.invoice_number || (inv.id || '').slice(0, 8) }}</span>
             <Tag :value="prettyStatus(inv.status)" :severity="statusSeverity(inv.status)" />
+            <Tag
+              v-if="inv.billing_type === 'deposit'"
+              value="deposit"
+              severity="info"
+              data-testid="mb-deposit-tag"
+            />
           </div>
           <div v-if="inv.due_date" class="inv-due" :class="{ overdue: isOverdue(inv) }">
             <i class="pi pi-calendar" /> Due {{ fmtDate(inv.due_date) }}
