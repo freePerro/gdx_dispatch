@@ -1683,6 +1683,69 @@ def estimate_deposit_default(
     }
 
 
+class DepositInvoiceIn(BaseModel):
+    """Explicit deposit request for an ALREADY-ACCEPTED estimate (2026-07-23,
+    Doug: 'no way of applying money/deposits after the fact'). amount None →
+    tenant deposit percent × estimate total."""
+
+    amount: float | None = Field(default=None, gt=0, le=1_000_000)
+
+
+@router.post("/{estimate_id}/deposit-invoice", response_model=None)
+def request_deposit_invoice(
+    estimate_id: UUID,
+    payload: DepositInvoiceIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Create (or return the existing) deposit invoice for an accepted
+    estimate — the retroactive path for estimates accepted before the
+    deposit feature existed, or accepted with the deposit step skipped.
+    Idempotent per estimate (same rule as the accept-time flow)."""
+    estimate = _get_estimate_or_404(estimate_id, db)
+    if (estimate.status or "").lower() != "accepted":
+        raise HTTPException(
+            status_code=409,
+            detail="deposit invoices are for accepted estimates — accept it first",
+        )
+    existing = find_deposit_invoice_for_estimate(db, estimate.id)
+    if existing is not None:
+        out = deposit_summary(existing)
+        out["existing"] = True
+        return out
+
+    amount = payload.amount if payload else None
+    if amount is None:
+        from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+        pct = 0
+        try:
+            pct = max(0, min(100, int(get_features(str(_.get("tenant_id") or "")).deposit_pct or 0)))
+        except Exception:
+            log.exception("deposit_invoice_features_read_failed")
+        total = _to_float(compute_estimate_totals(estimate, db)["total"])
+        amount = round(total * pct / 100.0, 2)
+    if not amount or amount <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="no deposit amount — pass one, or set a deposit percent in estimate settings",
+        )
+    try:
+        dep_inv = create_deposit_invoice(
+            db,
+            estimate=estimate,
+            amount=float(amount),
+            tenant_id=str(_.get("tenant_id") or estimate.company_id or ""),
+            actor=_actor_id(_),
+            source="office_request",
+        )
+    except DepositError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    out = deposit_summary(dep_inv)
+    out["existing"] = False
+    return out
+
+
 @router.post("/{estimate_id}/accept", response_model=None)
 def accept_estimate(
     estimate_id: UUID,

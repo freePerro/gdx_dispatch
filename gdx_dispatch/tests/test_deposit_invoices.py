@@ -408,6 +408,42 @@ def test_office_accept_without_deposit_unchanged(db):
     assert find_deposit_invoice_for_estimate(db, est.id) is None
 
 
+def test_request_deposit_invoice_after_acceptance(db):
+    """Retroactive path (Doug 2026-07-23: 'no way of applying deposits' on
+    estimates accepted before the feature): explicit request endpoint,
+    accepted-only, idempotent per estimate."""
+    from fastapi import HTTPException
+    from gdx_dispatch.routers.estimates import DepositInvoiceIn, request_deposit_invoice
+
+    cust = _seed_customer(db)
+    est = _seed_estimate(db, cust, total=1000.0, status="sent")
+    with pytest.raises(HTTPException) as exc:
+        request_deposit_invoice(est.id, DepositInvoiceIn(amount=100.0), USER, db)
+    assert exc.value.status_code == 409
+
+    est.status = "accepted"
+    db.commit()
+    out = request_deposit_invoice(est.id, DepositInvoiceIn(amount=300.0), USER, db)
+    assert out["existing"] is False
+    assert out["amount"] == 300.0
+    again = request_deposit_invoice(est.id, DepositInvoiceIn(amount=999.0), USER, db)
+    assert again["existing"] is True
+    assert again["invoice_id"] == out["invoice_id"]
+
+
+def test_request_deposit_invoice_defaults_to_tenant_pct(db):
+    """No explicit amount → tenant deposit percent × estimate total. The
+    hermetic env can't read the control DB, so get_features returns the
+    default EstimatesFeatures (deposit_pct=50) — 50% of $1000 = $500."""
+    from gdx_dispatch.routers.estimates import request_deposit_invoice
+
+    cust = _seed_customer(db)
+    est = _seed_estimate(db, cust, total=1000.0, status="accepted")
+    out = request_deposit_invoice(est.id, None, USER, db)
+    assert out["existing"] is False
+    assert out["amount"] == 500.0
+
+
 def test_orphan_deposit_adopted_at_job_conversion(db):
     """Mobile accept creates no job — the deposit is born job-less and must
     be adopted when the estimate converts, or final-invoice netting never
