@@ -495,6 +495,69 @@ def test_mark_unknown_notification_404(client):
     assert resp.status_code == 404
 
 
+# --- delete / clear-all (2026-07-24) ----------------------------------------
+
+def test_delete_notification_soft_deletes(client):
+    """Delete drops the row from list + count; a second delete 404s."""
+    _seed_notification(client, notif_id="n1", user_id="user-1", is_read=0)
+    _seed_notification(client, notif_id="n2", user_id=None, is_read=0)
+
+    resp = client.delete("/api/notifications/n1")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    data = client.get("/api/notifications").json()
+    assert {item["id"] for item in data["items"]} == {"n2"}
+    assert client.get("/api/notifications/count").json() == {"count": 1}
+    # Already soft-deleted → 404, not a double delete.
+    assert client.delete("/api/notifications/n1").status_code == 404
+
+
+def test_delete_broadcast_notification(client):
+    """A broadcast row (user_id NULL) can be deleted by any user — one office,
+    'delete' means handled for everyone."""
+    _seed_notification(client, notif_id="b1", user_id=None, is_read=0)
+    assert client.delete("/api/notifications/b1").status_code == 200
+    assert client.get("/api/notifications/count").json() == {"count": 0}
+
+
+def test_delete_other_users_notification_404(client):
+    """Another user's personal notification is invisible to delete."""
+    _seed_notification(client, notif_id="n3", user_id="other-user")
+    assert client.delete("/api/notifications/n3").status_code == 404
+
+
+def test_mark_read_deleted_notification_404(client):
+    """A deleted notification can't be marked read."""
+    _seed_notification(client, notif_id="n1", user_id="user-1")
+    assert client.delete("/api/notifications/n1").status_code == 200
+    assert client.post("/api/notifications/n1/read").status_code == 404
+
+
+def test_clear_all_notifications(client):
+    """Clear-all soft-deletes everything visible to the caller (own + broadcast,
+    read or unread) and leaves other users' rows alone."""
+    _seed_notification(client, notif_id="n1", user_id="user-1", is_read=0)
+    _seed_notification(client, notif_id="n2", user_id=None, is_read=1)
+    _seed_notification(client, notif_id="n3", user_id="other-user", is_read=0)
+
+    resp = client.delete("/api/notifications")
+    assert resp.status_code == 200
+    assert resp.json() == {"cleared": 2}
+    assert client.get("/api/notifications").json()["total"] == 0
+    assert client.get("/api/notifications/count").json() == {"count": 0}
+
+    # The other user's row must be untouched.
+    db = client._Session()  # type: ignore[attr-defined]
+    try:
+        row = db.execute(
+            text("SELECT deleted_at FROM notifications WHERE id = 'n3'")
+        ).scalar()
+    finally:
+        db.close()
+    assert row is None
+
+
 # --- gating -----------------------------------------------------------------
 
 def test_requires_communications_module():

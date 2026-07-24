@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -470,6 +471,7 @@ def get_notification_count(
                     Notification.tenant_id == tenant_id,
                     or_(Notification.user_id == uid, Notification.user_id.is_(None)),
                     Notification.is_read == 0,
+                    Notification.deleted_at.is_(None),
                 )
             ).scalar()
             or 0
@@ -497,6 +499,7 @@ def list_notifications(
         base_filter = [
             Notification.tenant_id == tenant_id,
             or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+            Notification.deleted_at.is_(None),
         ]
         total = int(
             db.execute(
@@ -547,6 +550,7 @@ def mark_notification_read(
                 Notification.id == notification_id,
                 Notification.tenant_id == tenant_id,
                 or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                Notification.deleted_at.is_(None),
             )
         ).scalars().first()
         if not notif:
@@ -576,3 +580,100 @@ def mark_notification_read(
         db.rollback()
         log.exception("notifications_mark_read_failed", extra={"tenant_id": tenant_id})
         raise HTTPException(status_code=500, detail="Failed to mark notification as read") from None
+
+
+@router.delete("/api/notifications/{notification_id}", status_code=200)
+def delete_notification(
+    notification_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Soft-delete a single notification (sets deleted_at; house pattern).
+
+    Deleting a broadcast row (user_id NULL) removes it for the whole tenant —
+    intended: single-tenant shop, "delete" means the office handled it.
+    """
+    tenant_id = _tenant_id(request)
+    uid = _user_id(current_user)
+    try:
+        notif = db.execute(
+            select(Notification).where(
+                Notification.id == notification_id,
+                Notification.tenant_id == tenant_id,
+                or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                Notification.deleted_at.is_(None),
+            )
+        ).scalars().first()
+        if not notif:
+            raise HTTPException(status_code=404, detail="Notification not found")
+
+        notif.deleted_at = datetime.now(UTC).isoformat()
+        db.commit()
+
+        asyncio.run(
+            log_audit_event(
+                db=db,
+                tenant_id=tenant_id,
+                user_id=uid,
+                action="notification_deleted",
+                entity_type="notification",
+                entity_id=notification_id,
+                details={"notification_id": notification_id},
+                request=request,
+            )
+        )
+        db.commit()
+
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("notifications_delete_failed", extra={"tenant_id": tenant_id})
+        raise HTTPException(status_code=500, detail="Failed to delete notification") from None
+
+
+@router.delete("/api/notifications", status_code=200)
+def clear_notifications(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Soft-delete every notification visible to the current user
+    ("Clear all" in the drawer). Returns how many were cleared."""
+    tenant_id = _tenant_id(request)
+    uid = _user_id(current_user)
+    try:
+        now = datetime.now(UTC).isoformat()
+        result = db.execute(
+            sa_update(Notification)
+            .where(
+                Notification.tenant_id == tenant_id,
+                or_(Notification.user_id == uid, Notification.user_id.is_(None)),
+                Notification.deleted_at.is_(None),
+            )
+            .values(deleted_at=now)
+        )
+        db.commit()
+        cleared = int(result.rowcount or 0)
+
+        asyncio.run(
+            log_audit_event(
+                db=db,
+                tenant_id=tenant_id,
+                user_id=uid,
+                action="notifications_cleared",
+                entity_type="notification",
+                entity_id="all",
+                details={"cleared": cleared},
+                request=request,
+            )
+        )
+        db.commit()
+
+        return {"cleared": cleared}
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("notifications_clear_failed", extra={"tenant_id": tenant_id})
+        raise HTTPException(status_code=500, detail="Failed to clear notifications") from None

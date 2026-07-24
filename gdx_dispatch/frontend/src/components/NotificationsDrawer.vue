@@ -1,5 +1,20 @@
 <template>
-  <Drawer v-model:visible="visible" position="right" header="Notifications" class="notifications-drawer">
+  <Drawer v-model:visible="visible" position="right" class="notifications-drawer">
+    <template #header>
+      <div class="drawer-header">
+        <span class="drawer-title">Notifications</span>
+        <Button
+          v-if="store.items.length"
+          label="Clear all"
+          icon="pi pi-trash"
+          text
+          size="small"
+          severity="danger"
+          data-testid="notif-clear-all"
+          @click="onClearAll"
+        />
+      </div>
+    </template>
     <div v-if="store.loading" class="state-wrap"><ProgressSpinner /></div>
     <div v-else-if="!store.items.length" class="state-wrap empty">
       <i class="pi pi-inbox" style="font-size:2.5rem; color:#94a3b8;"></i>
@@ -16,6 +31,17 @@
         <div class="notif-row">
           <span class="notif-title">{{ n.title }}</span>
           <span class="notif-time">{{ formatTime(n.created_at) }}</span>
+          <Button
+            icon="pi pi-times"
+            text
+            rounded
+            size="small"
+            severity="secondary"
+            class="notif-delete"
+            aria-label="Delete notification"
+            :data-testid="`notif-delete-${n.id}`"
+            @click.stop="onDelete(n)"
+          />
         </div>
         <div class="notif-message">{{ n.message }}</div>
         <span v-if="n.category" class="notif-cat">{{ n.category }}</span>
@@ -27,8 +53,11 @@
 <script setup>
 import { ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import Button from 'primevue/button';
 import Drawer from 'primevue/drawer';
 import ProgressSpinner from 'primevue/progressspinner';
+import { useToast } from 'primevue/usetoast';
+import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useNotificationsStore } from '../stores/notifications';
 
 const props = defineProps({
@@ -38,7 +67,26 @@ const emit = defineEmits(['update:modelValue']);
 
 const router = useRouter();
 const store = useNotificationsStore();
+const toast = useToast();
+const { confirmAsync } = useDestructiveConfirm();
 const visible = ref(props.modelValue);
+
+async function onDelete(n) {
+  try {
+    await store.remove(n.id);
+  } catch (e) {
+    toast.add({ severity: 'error', summary: 'Delete failed', detail: e?.message || 'Could not delete notification', life: 4000 });
+  }
+}
+
+async function onClearAll() {
+  if (!(await confirmAsync({ header: 'Clear notifications', message: 'Clear all notifications? This removes them for everyone in the company.' }))) return;
+  try {
+    await store.clearAll();
+  } catch (e) {
+    toast.add({ severity: 'error', summary: 'Clear failed', detail: e?.message || 'Could not clear notifications', life: 4000 });
+  }
+}
 
 watch(() => props.modelValue, (v) => {
   visible.value = v;
@@ -120,6 +168,21 @@ function formatTime(iso) {
 </script>
 
 <style scoped>
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: 1;
+}
+.drawer-title {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.notif-delete {
+  flex-shrink: 0;
+  margin: -0.35rem -0.35rem -0.35rem 0;
+}
 .state-wrap {
   display: flex;
   flex-direction: column;
