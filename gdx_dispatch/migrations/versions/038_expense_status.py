@@ -16,12 +16,12 @@ fresh-DB ordering guard as 036/037: no-op before the table exists
 (create_all builds it WITH the column from the model). IF NOT EXISTS keeps
 it idempotent across multi-container boots.
 
-Revision ID: 038_expense_status_customer_access_notes
+Revision ID: 038_expense_status
 Revises: 037_notification_delete_sms_read
 """
 from alembic import op
 
-revision = "038_expense_status_customer_access_notes"
+revision = "038_expense_status"
 down_revision = "037_notification_delete_sms_read"
 branch_labels = None
 depends_on = None
