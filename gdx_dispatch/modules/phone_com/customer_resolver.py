@@ -35,7 +35,9 @@ def normalize_e164(raw: str | None, *, default_country: str = "US") -> str | Non
                 return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
             return None
         except phonenumbers.NumberParseException as exc:
-            log.debug("phone_com.normalize_e164_unparseable raw=%r err=%s", raw, exc)
+            # Don't log the raw value — it's a phone number (PII); length is
+            # enough to debug parse failures.
+            log.debug("phone_com.normalize_e164_unparseable len=%d err=%s", len(raw), exc)
             return None
     else:
         # Simple regex fallback: extract digits
