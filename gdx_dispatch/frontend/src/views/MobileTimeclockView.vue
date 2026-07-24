@@ -144,7 +144,7 @@
             <div class="entry-top">
               <Tag
                 :value="(e.entry_type || 'work').toUpperCase()"
-                :severity="(e.entry_type || 'work') === 'break' ? 'warning' : 'info'"
+                :severity="timeclockEntrySeverity(e.entry_type)"
               />
               <span class="entry-hours" v-if="e.hours != null">{{ Number(e.hours).toFixed(2) }}h</span>
             </div>
@@ -161,6 +161,7 @@
 </template>
 
 <script setup>
+import { timeclockEntrySeverity, timeclockStatusSeverity } from '../utils/statusSeverity'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useApi } from '../composables/useApi'
 import { useToast } from 'primevue/usetoast'
@@ -204,11 +205,8 @@ const statusLabel = computed(() => {
   return 'Clocked In'
 })
 
-const statusSeverity = computed(() => {
-  if (!clockedIn.value) return 'secondary'
-  if (onBreak.value) return 'warning'
-  return 'success'
-})
+const statusSeverity = computed(() =>
+  timeclockStatusSeverity({ clockedIn: clockedIn.value, onBreak: onBreak.value }))
 
 const elapsedFormatted = computed(() => {
   const total = elapsedSeconds.value

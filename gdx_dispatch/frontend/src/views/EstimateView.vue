@@ -667,6 +667,7 @@
 </template>
 
 <script setup>
+import { estimateStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -1319,8 +1320,7 @@ function currency(amount) {
 }
 
 function statusSeverity(status) {
-  const map = { Draft: "secondary", Sent: "info", Accepted: "success", Declined: "danger", Converted: "contrast" };
-  return map[status] || "secondary";
+  return estimateStatusSeverity(status);
 }
 
 function _titleCase(s) {

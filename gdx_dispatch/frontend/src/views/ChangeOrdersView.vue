@@ -192,7 +192,7 @@ const filtered = computed(() => {
 });
 
 function statusSeverity(s) {
-  return { draft: "secondary", pending_approval: "warning", approved: "success",
+  return { draft: "secondary", pending_approval: "warn", approved: "success",
            declined: "danger", completed: "info" }[s] || "secondary";
 }
 

@@ -170,7 +170,7 @@ function typeSeverity(type) {
   return {
     proposal: "info",
     completion: "success",
-    consent: "warning",
+    consent: "warn",
   }[type] || "secondary";
 }
 

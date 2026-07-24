@@ -305,6 +305,7 @@
 </template>
 
 <script setup>
+import { leadStageSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
@@ -424,14 +425,7 @@ function stageLabel(value) {
 }
 
 function stageSeverity(stage) {
-  return {
-    New: 'info',
-    Contacted: 'warning',
-    Qualified: 'success',
-    Quoted: 'info',
-    Won: 'success',
-    Lost: 'danger',
-  }[stage] || 'secondary';
+  return leadStageSeverity(stage);
 }
 
 function capitalize(s) {

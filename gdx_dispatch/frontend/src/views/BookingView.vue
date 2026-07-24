@@ -215,7 +215,7 @@ function statusSeverity(value) {
   const normalized = normalizeStatus(value);
   return {
     upcoming: 'info',
-    pending: 'warning',
+    pending: 'warn',
     confirmed: 'success',
     cancelled: 'danger',
   }[normalized] || 'secondary';

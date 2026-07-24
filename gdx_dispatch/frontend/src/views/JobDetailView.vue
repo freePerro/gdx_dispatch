@@ -986,7 +986,7 @@ import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency,
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
 import { isTechnician as isTechRole } from "../constants/roles";
-import { estimateStatusSeverity } from "../utils/statusSeverity";
+import { appointmentStatusSeverity, estimateStatusSeverity } from "../utils/statusSeverity";
 import { isAwaitingSchedule } from "../utils/jobDisplayState";
 import Button from "primevue/button";
 import Tabs from "primevue/tabs";
@@ -1221,15 +1221,7 @@ function formatAppointmentStatus(status) {
 }
 
 function appointmentSeverity(status) {
-  const map = {
-    scheduled: "info",
-    confirmed: "success",
-    cancelled: "danger",
-    en_route: "warning",
-    arrived: "warning",
-    completed: "success",
-  };
-  return map[status] || "secondary";
+  return appointmentStatusSeverity(status);
 }
 
 async function fetchJob() {

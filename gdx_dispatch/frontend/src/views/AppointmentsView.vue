@@ -216,6 +216,7 @@
 </template>
 
 <script setup>
+import { appointmentStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDateTime as fmtDateTime } from '../composables/useFormatters';
@@ -344,15 +345,9 @@ function formatStatusLabel(status) {
 }
 
 function statusSeverity(status) {
-  const severityMap = {
-    scheduled: 'warning',
-    confirmed: 'info',
-    en_route: 'info',
-    arrived: 'success',
-    completed: 'success',
-    cancelled: 'danger',
-  };
-  return severityMap[status] || 'secondary';
+  // Shared canon — JobDetailView renders the SAME appointment; a divergent
+  // local map made one appointment two different colours (Tier-4 sweep).
+  return appointmentStatusSeverity(status);
 }
 
 function formatDateTime(value) {

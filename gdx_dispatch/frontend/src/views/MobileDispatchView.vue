@@ -152,7 +152,7 @@ function statusSeverity(status) {
   const s = canonicalStatus(status) || 'pending'
   if (['done', 'complete', 'completed', 'paid'].includes(s)) return 'success'
   if (['en_route', 'en route', 'on site', 'on_site', 'in_progress'].includes(s)) return 'info'
-  if (['pending', 'scheduled', 'new'].includes(s)) return 'warning'
+  if (['pending', 'scheduled', 'new'].includes(s)) return 'warn'
   if (['canceled', 'cancelled', 'failed'].includes(s)) return 'danger'
   if (['on_hold', 'hold'].includes(s)) return 'secondary'
   return 'secondary'

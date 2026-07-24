@@ -64,7 +64,7 @@
           </template>
           <template v-else-if="mode === 'active'">
             <Button label="Edit" icon="pi pi-pencil" size="small" severity="secondary" outlined @click="$emit('edit', data)" />
-            <Button label="End" icon="pi pi-stop-circle" size="small" severity="warning" @click="$emit('end', data)" />
+            <Button label="End" icon="pi pi-stop-circle" size="small" severity="warn" @click="$emit('end', data)" />
           </template>
           <span v-else class="cell-muted">read-only</span>
         </div>
@@ -116,7 +116,7 @@ function sourceSeverity(src) {
 
 function endedSeverity(status) {
   if (status === 'paid_off') return 'success';
-  if (status === 'cancelled') return 'warning';
+  if (status === 'cancelled') return 'warn';
   return 'secondary';
 }
 </script>

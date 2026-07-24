@@ -350,7 +350,7 @@ function statusLabel(status) {
 }
 
 function statusSeverity(status) {
-  return { active: 'success', paused: 'warning', cancelled: 'danger' }[status] || 'info';
+  return { active: 'success', paused: 'warn', cancelled: 'danger' }[status] || 'info';
 }
 
 async function loadPlans() {

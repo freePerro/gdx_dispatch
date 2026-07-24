@@ -186,7 +186,7 @@ function statusSeverity(s) {
   if (!s) return 'secondary'
   const k = String(s).toLowerCase()
   if (['received', 'sent', 'completed', 'success'].includes(k)) return 'success'
-  if (['queued', 'sending', 'pending'].includes(k)) return 'warning'
+  if (['queued', 'sending', 'pending'].includes(k)) return 'warn'
   if (['failed', 'error'].includes(k)) return 'danger'
   return 'secondary'
 }

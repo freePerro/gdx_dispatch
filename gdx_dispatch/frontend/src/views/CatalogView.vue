@@ -14,7 +14,7 @@
           <Button v-if="selectedCatalog && !selectedCatalog.read_only"
             :label="selectedCatalog.active === false ? 'Activate' : 'Deactivate'"
             :icon="selectedCatalog.active === false ? 'pi pi-eye' : 'pi pi-eye-slash'"
-            severity="warning" outlined data-testid="toggle-catalog-active-btn"
+            severity="warn" outlined data-testid="toggle-catalog-active-btn"
             @click="toggleCatalogActive" :loading="togglingActive" />
           <Button v-if="selectedCatalog && !selectedCatalog.read_only" label="Delete Catalog" icon="pi pi-trash"
             severity="danger" outlined data-testid="delete-catalog-btn" @click="confirmDeleteCatalog" :loading="deletingCatalog" />

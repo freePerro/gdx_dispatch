@@ -862,7 +862,7 @@ function marginSeverity(value) {
   if (value === undefined || value === null) return 'secondary';
   if (value >= 20) return 'success';
   if (value >= 10) return 'info';
-  if (value >= 0) return 'warning';
+  if (value >= 0) return 'warn';
   return 'danger';
 }
 

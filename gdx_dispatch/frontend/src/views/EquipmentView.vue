@@ -51,7 +51,7 @@
         </Column>
         <Column field="status" header="Status">
           <template #body="{ data }">
-            <Tag :value="data.status || 'active'" :severity="data.status === 'retired' ? 'secondary' : data.status === 'needs_service' ? 'warning' : 'success'" />
+            <Tag :value="data.status || 'active'" :severity="data.status === 'retired' ? 'secondary' : data.status === 'needs_service' ? 'warn' : 'success'" />
           </template>
         </Column>
         <Column field="customer_name" header="Customer" />

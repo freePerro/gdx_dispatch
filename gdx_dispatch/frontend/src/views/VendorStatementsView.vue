@@ -113,7 +113,7 @@ function statusSeverity(s) {
   if (!s) return 'secondary'
   const k = String(s).toLowerCase()
   if (k === 'reconciled') return 'success'
-  if (k === 'review') return 'warning'
+  if (k === 'review') return 'warn'
   if (k === 'parsed') return 'info'
   return 'secondary'
 }

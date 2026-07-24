@@ -62,7 +62,7 @@ onMounted(() => {
       <Tag
         v-if="!loading && !adminError"
         :value="isConfigured ? 'Connected' : 'Not Configured'"
-        :severity="isConfigured ? 'success' : 'warning'"
+        :severity="isConfigured ? 'success' : 'warn'"
       />
     </div>
 

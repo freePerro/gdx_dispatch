@@ -198,7 +198,7 @@ function statusLabel(status) {
 
 function statusSeverity(status) {
   return {
-    pending: "warning",
+    pending: "warn",
     contacted: "info",
     converted: "success",
     declined: "danger",

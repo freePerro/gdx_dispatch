@@ -195,7 +195,7 @@ function categorySeverity(category) {
   return {
     sop: "info",
     training: "success",
-    forms: "warning",
+    forms: "warn",
     templates: "primary",
   }[category] || "secondary";
 }

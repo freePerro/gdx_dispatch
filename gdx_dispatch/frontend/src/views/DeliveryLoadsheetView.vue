@@ -35,7 +35,7 @@
             <div class="stop-info">
               <strong>{{ stop.dealer }}</strong>
               <span v-if="stop.address" class="stop-address">{{ stop.address }}</span>
-              <Tag :value="stop.status" :severity="stop.status === 'confirmed' ? 'success' : 'warning'" size="small" />
+              <Tag :value="stop.status" :severity="stop.status === 'confirmed' ? 'success' : 'warn'" size="small" />
             </div>
             <div class="stop-total">{{ formatMoney(stop.total_amount) }}</div>
           </div>

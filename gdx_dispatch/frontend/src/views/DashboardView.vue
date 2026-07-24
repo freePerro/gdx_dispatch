@@ -479,7 +479,7 @@ const attentionItems = computed(() => {
   }
   const unassigned = todaysJobs.value.filter((j) => !j.technician_name || j.technician_name === 'Unassigned').length;
   if (unassigned > 0) {
-    items.push({ id: 'unassigned', type: 'Unassigned', severity: 'warning', text: `${unassigned} jobs today have no technician assigned`, link: '/dispatch' });
+    items.push({ id: 'unassigned', type: 'Unassigned', severity: 'warn', text: `${unassigned} jobs today have no technician assigned`, link: '/dispatch' });
   }
   if (toNumber(s.open_jobs) > 100) {
     items.push({ id: 'backlog', type: 'Backlog', severity: 'info', text: `${s.open_jobs} open jobs — consider scheduling more capacity`, link: '/jobs' });

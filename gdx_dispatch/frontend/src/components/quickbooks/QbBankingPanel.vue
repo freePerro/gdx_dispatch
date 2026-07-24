@@ -383,8 +383,8 @@ const prettyKind = (k) => ({
   journal_entry: 'Journal', customer_payment: 'Cust Pmt', vendor_credit: 'Vendor Cr',
 }[k] || k);
 const kindSeverity = (k) => ({
-  purchase: 'warning', deposit: 'success', transfer: 'info',
-  bill_payment: 'warning', sales_receipt: 'success', refund_receipt: 'danger',
+  purchase: 'warn', deposit: 'success', transfer: 'info',
+  bill_payment: 'warn', sales_receipt: 'success', refund_receipt: 'danger',
   journal_entry: 'secondary', customer_payment: 'success', vendor_credit: 'info',
 }[k] || 'secondary');
 

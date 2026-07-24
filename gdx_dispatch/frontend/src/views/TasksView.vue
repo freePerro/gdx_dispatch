@@ -237,7 +237,7 @@ function prioritySeverity(value) {
   return {
     low: 'info',
     normal: 'success',
-    high: 'warning',
+    high: 'warn',
     urgent: 'danger',
   }[value] || 'info';
 }
@@ -250,7 +250,7 @@ function statusLabel(value) {
 function statusSeverity(value) {
   return {
     open: 'info',
-    in_progress: 'warning',
+    in_progress: 'warn',
     completed: 'success',
     cancelled: 'danger',
   }[value] || 'info';

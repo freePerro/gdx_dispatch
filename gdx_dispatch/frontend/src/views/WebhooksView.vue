@@ -261,7 +261,7 @@ async function loadDeliveries(subId) {
 }
 
 function deliverySeverity(status) {
-  if (!status) return "warning";
+  if (!status) return "warn";
   return status >= 200 && status < 300 ? "success" : "danger";
 }
 

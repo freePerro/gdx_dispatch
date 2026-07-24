@@ -265,7 +265,9 @@ const counts = computed(() => {
 const statusSeverity = (status) => {
   return {
     Completed: 'success',
-    Voided: 'warning',
+    // Audit reconcile: a voided payment is closed, not a problem — same
+    // canon as invoice void (utils/statusSeverity.js).
+    Voided: 'contrast',
     Refunded: 'info',
   }[status] || 'secondary';
 };

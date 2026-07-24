@@ -109,7 +109,7 @@
         </Column>
         <Column field="customer_type" header="Type" sortable style="width: 130px">
           <template #body="{ data }">
-            <Tag :value="normalizeCustomerType(data.customer_type)" :severity="normalizeCustomerType(data.customer_type) === 'Commercial' ? 'warning' : 'info'" />
+            <Tag :value="normalizeCustomerType(data.customer_type)" :severity="normalizeCustomerType(data.customer_type) === 'Commercial' ? 'warn' : 'info'" />
           </template>
         </Column>
         <Column header="Actions" style="width: 100px; text-align: center">

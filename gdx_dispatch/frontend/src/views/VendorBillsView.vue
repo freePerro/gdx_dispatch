@@ -75,7 +75,7 @@
           <Tag
             v-if="needsReview(data)"
             value="needs review"
-            severity="warning"
+            severity="warn"
             class="chip"
             data-testid="needs-review-chip"
           />
@@ -147,7 +147,7 @@ const filterOptions = [
 function statusSeverity(s) {
   const k = String(s || '').toLowerCase()
   if (k === 'paid') return 'success'
-  if (k === 'void') return 'secondary'
+  if (k === 'void') return 'contrast'
   if (k === 'open') return 'info'
   return 'secondary'
 }

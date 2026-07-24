@@ -119,6 +119,7 @@
 </template>
 
 <script setup>
+import { payrollRunSeverity } from '../utils/statusSeverity';
 import { onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatMoney as formatCurrency } from '../composables/useFormatters';
@@ -149,12 +150,7 @@ const detailRecord = ref(null);
 const detailType = ref('');
 
 function statusSeverity(status) {
-  if (!status) return 'info';
-  const normalized = status.toLowerCase();
-  if (['paid', 'finalized', 'completed'].includes(normalized)) return 'success';
-  if (['failed', 'rejected', 'denied'].includes(normalized)) return 'danger';
-  if (['pending', 'processing', 'running'].includes(normalized)) return 'warning';
-  return 'info';
+  return payrollRunSeverity(status);
 }
 
 function statusLabel(status) {

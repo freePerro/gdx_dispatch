@@ -67,7 +67,7 @@
         </Column>
         <Column header="Active" :style="{ width: '120px' }">
           <template #body="{ data }">
-            <Tag :value="data.active ? 'Active' : 'Archived'" :severity="data.active ? 'success' : 'warning'" />
+            <Tag :value="data.active ? 'Active' : 'Archived'" :severity="data.active ? 'success' : 'secondary'" />
           </template>
         </Column>
         <Column header="Actions" :style="{ width: '140px' }">

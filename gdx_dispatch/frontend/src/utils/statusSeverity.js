@@ -51,3 +51,65 @@ export function invoiceStatusSeverity(status) {
   }
   return map[String(status || '').toLowerCase()] || 'secondary'
 }
+
+/**
+ * Appointment status → PrimeVue Tag `severity`.
+ *
+ * AppointmentsView and JobDetailView carried DIVERGENT hand-rolled maps —
+ * the same appointment rendered a different colour depending on which screen
+ * you saw it on (scheduled: warn↔info, confirmed: info↔success, en_route and
+ * arrived flipped too), and both used the invalid `'warning'` token.
+ * Canon: awaiting=info, locked-in/positive=success, in-motion=warn,
+ * terminal-bad=danger.
+ */
+export function appointmentStatusSeverity(status) {
+  const map = {
+    scheduled: 'info', // on the calendar, awaiting the day
+    confirmed: 'success', // customer confirmed
+    en_route: 'warn', // live, in motion — watch it
+    arrived: 'success', // tech on site
+    in_progress: 'warn',
+    completed: 'success',
+    cancelled: 'danger',
+    no_show: 'danger',
+  }
+  return map[String(status || '').toLowerCase()] || 'secondary'
+}
+
+/**
+ * Timeclock presence → severity. Desktop said clocked-out = danger, mobile
+ * said secondary; a tech who has gone home is a neutral fact, not an alarm.
+ */
+export function timeclockStatusSeverity({ clockedIn, onBreak }) {
+  if (!clockedIn) return 'secondary'
+  if (onBreak) return 'warn'
+  return 'success'
+}
+
+/** Timeclock entry rows: break entries stand out from work entries. */
+export function timeclockEntrySeverity(entryType) {
+  return String(entryType || 'work').toLowerCase() === 'break' ? 'warn' : 'info'
+}
+
+/** Lead pipeline stage → severity (LeadsView). */
+export function leadStageSeverity(stage) {
+  const map = {
+    new: 'info',
+    contacted: 'warn',
+    qualified: 'success',
+    quoted: 'info',
+    won: 'success',
+    lost: 'danger',
+  }
+  return map[String(stage || '').toLowerCase()] || 'secondary'
+}
+
+/** Payroll run status → severity (PayrollView). */
+export function payrollRunSeverity(status) {
+  const normalized = String(status || '').toLowerCase()
+  if (!normalized) return 'info'
+  if (['paid', 'finalized', 'completed'].includes(normalized)) return 'success'
+  if (['failed', 'rejected', 'denied'].includes(normalized)) return 'danger'
+  if (['pending', 'processing', 'running'].includes(normalized)) return 'warn'
+  return 'info'
+}

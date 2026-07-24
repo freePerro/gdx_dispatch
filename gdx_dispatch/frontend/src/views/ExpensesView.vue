@@ -375,7 +375,7 @@ function jobLabel(expense) {
 function statusSeverity(value) {
   return {
     Draft: 'info',
-    Submitted: 'warning',
+    Submitted: 'warn',
     Approved: 'success',
     Reimbursed: 'success',
   }[value] || 'info';

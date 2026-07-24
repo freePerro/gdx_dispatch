@@ -155,7 +155,7 @@ const statusTabs = ['all', 'success', 'failed'];
 const actionButtons = [
   { label: 'Run maintenance', payload: 'run-maintenance', icon: 'pi pi-cog', severity: 'primary', testId: 'run-maintenance-btn' },
   { label: 'Rebuild indexes', payload: 'rebuild-indexes', icon: 'pi pi-sync', severity: 'info', testId: 'rebuild-indexes-btn' },
-  { label: 'Clear cache', payload: 'clear-cache', icon: 'pi pi-trash', severity: 'warning', testId: 'clear-cache-btn' },
+  { label: 'Clear cache', payload: 'clear-cache', icon: 'pi pi-trash', severity: 'warn', testId: 'clear-cache-btn' },
   { label: 'Export audit log', payload: 'export-audit-log', icon: 'pi pi-download', severity: 'secondary', testId: 'export-audit-log-btn' },
 ];
 

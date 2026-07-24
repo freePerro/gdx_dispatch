@@ -116,7 +116,7 @@ function statusSeverity(s) {
   const k = String(s || '').toLowerCase()
   if (k === 'received') return 'success'
   if (k === 'ordered') return 'info'
-  if (k === 'needed') return 'warning'
+  if (k === 'needed') return 'warn'
   return 'secondary'
 }
 

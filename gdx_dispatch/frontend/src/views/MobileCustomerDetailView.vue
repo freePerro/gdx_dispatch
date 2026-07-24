@@ -16,7 +16,7 @@
           <Tag
             v-if="customer?.customer_type"
             :value="customer.customer_type"
-            :severity="customer.customer_type === 'Commercial' ? 'warning' : 'info'"
+            :severity="customer.customer_type === 'Commercial' ? 'warn' : 'info'"
           />
         </div>
         <Button
