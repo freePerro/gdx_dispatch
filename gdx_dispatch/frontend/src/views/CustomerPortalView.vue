@@ -91,7 +91,12 @@
           <TabPanel value="invoices">
             <DataTable :value="invoices" responsiveLayout="stack" breakpoint="640px" data-testid="invoices-table">
               <template #empty>No invoices found.</template>
-              <Column field="invoice_number" header="Invoice #" />
+              <Column field="invoice_number" header="Invoice #">
+                <template #body="{ data }">
+                  {{ data.invoice_number }}
+                  <Tag v-if="data.billing_type === 'deposit'" value="Deposit" severity="info" data-testid="portal-deposit-tag" />
+                </template>
+              </Column>
               <Column field="total" header="Amount"><template #body="{ data }">{{ currency(data.total) }}</template></Column>
               <Column field="balance_due" header="Balance Due"><template #body="{ data }">{{ currency(data.balance_due) }}</template></Column>
               <Column field="payment_status" header="Status"><template #body="{ data }"><Tag :value="data.payment_status" :severity="statusSeverity(data.payment_status)" /></template></Column>
@@ -316,7 +321,16 @@ async function authedFetch(path, options = {}) {
     clearStoredJwt();
     throw Object.assign(new Error("unauthorized"), { auth: true });
   }
-  if (!res.ok) throw new Error(`request failed: ${res.status}`);
+  if (!res.ok) {
+    // Surface the server's detail string — "already accepted" is a far
+    // better message than "request failed: 409".
+    let detail = `request failed: ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string" && body.detail) detail = body.detail;
+    } catch { /* non-JSON error body */ }
+    throw Object.assign(new Error(detail), { status: res.status });
+  }
   return res.json();
 }
 
@@ -479,7 +493,10 @@ async function estimateAction(id, action, successMsg) {
     try { invoices.value = await authedFetch("/portal/invoices"); } catch { /* tab refresh is best-effort */ }
   } catch (e) {
     if (e?.auth) { error.value = "Your portal session has expired."; return; }
-    toast.add({ severity: "error", summary: "Error", detail: `Could not ${action} estimate`, life: 4000 });
+    const msg = e?.message && !e.message.startsWith("request failed")
+      ? e.message
+      : `Could not ${action} estimate`;
+    toast.add({ severity: "error", summary: "Error", detail: msg, life: 4000 });
   } finally {
     actionBusy[id] = false;
   }

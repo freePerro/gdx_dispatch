@@ -22,6 +22,15 @@
               <router-link v-if="invoice.job_id" :to="`/jobs/${invoice.job_id}`" class="link" style="margin-left:1rem; font-size:0.85rem;">
                 <i class="pi pi-briefcase" /> View Job
               </router-link>
+              <router-link
+                v-if="invoice.estimate_id"
+                :to="`/estimates/${invoice.estimate_id}`"
+                class="link"
+                style="margin-left:1rem; font-size:0.85rem;"
+                data-testid="invoice-view-estimate-link"
+              >
+                <i class="pi pi-file" /> View Estimate
+              </router-link>
             </p>
           </div>
           <div class="header-meta">
@@ -29,6 +38,13 @@
               :value="invoice.status"
               :severity="statusSeverity(invoice.status)"
               data-testid="invoice-status"
+            />
+            <Tag
+              v-if="invoice.billing_type === 'deposit'"
+              value="deposit"
+              severity="info"
+              style="margin-left: 0.35rem"
+              data-testid="invoice-deposit-tag"
             />
             <p>Due: <strong>{{ formatDate(invoice.due_date) }}</strong></p>
             <p>Created: {{ formatDate(invoice.created_at) }}</p>
@@ -183,6 +199,8 @@
           v-model:lines="editLines"
           :categories="lineCategoryOptions"
           :job-id="invoice.job_id || null"
+          :locked-predicate="isDepositNettingLine"
+          locked-tooltip="Deposit netting line — it mirrors the deposit actually paid and can't be edited or deleted. Void the invoice and re-create it if the netting is wrong."
           show-taxable
           show-cost
           show-margin
@@ -346,6 +364,21 @@
 
         <Divider v-if="!editing" />
 
+        <!-- Superseded-deposit banner — without it a partially-paid deposit
+             closed out at final-create reads "paid" while its payments don't
+             sum to the total, and the operator only learns the truth from
+             the record-payment 409. -->
+        <div
+          v-if="invoice.is_superseded_deposit"
+          class="superseded-banner"
+          data-testid="superseded-deposit-banner"
+        >
+          <i class="pi pi-info-circle" />
+          This deposit was closed out when the final invoice was created —
+          the unpaid remainder was credit-memo'd (see Adjustments below).
+          Record any further payment on the final invoice, not here.
+        </div>
+
         <!-- Payment History -->
         <h3>Payment History</h3>
         <DataTable
@@ -360,6 +393,29 @@
             <template #body="{ data }">{{ currency(data.amount) }}</template>
           </Column>
         </DataTable>
+
+        <!-- Adjustments (credit memos / refunds / applied credits) — explain
+             why balance_due ≠ total − payments. Hidden when there are none. -->
+        <template v-if="invoice.adjustments && invoice.adjustments.length">
+          <h3>Adjustments</h3>
+          <DataTable
+            responsiveLayout="scroll"
+            :value="invoice.adjustments"
+            dataKey="id"
+            data-testid="adjustments-table"
+          >
+            <Column field="created_at" header="Date">
+              <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
+            </Column>
+            <Column field="kind" header="Type">
+              <template #body="{ data }">{{ adjustmentKindLabel(data.kind) }}</template>
+            </Column>
+            <Column field="reason" header="Reason" />
+            <Column field="amount" header="Amount" style="text-align: right">
+              <template #body="{ data }">{{ currency(data.amount) }}</template>
+            </Column>
+          </DataTable>
+        </template>
 
         <!-- Notes -->
         <div v-if="invoice.notes" class="notes-section">
@@ -490,6 +546,7 @@ import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTime } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
+import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -585,7 +642,18 @@ const tax = computed(() => subtotal.value * taxRate.value);
 const totalPaid = computed(() =>
   invoice.value.payments.reduce((sum, p) => sum + toNum(p.amount), 0)
 );
-const balanceDue = computed(() => toNum(invoice.value.total) - totalPaid.value);
+// Mirror the server's balance formula (_recalculate_invoice): credit memos
+// and applied credits reduce the balance; refunds don't. Without this a
+// credit-memo'd invoice (e.g. a superseded deposit) showed a red fake
+// balance next to its "paid" tag.
+const totalAdjustmentCredits = computed(() =>
+  (invoice.value.adjustments || [])
+    .filter((a) => a.kind === "credit_memo" || a.kind === "credit_applied")
+    .reduce((sum, a) => sum + toNum(a.amount), 0)
+);
+const balanceDue = computed(() =>
+  toNum(invoice.value.total) - totalPaid.value - totalAdjustmentCredits.value
+);
 
 // Edit mode is gated on draft status — once an invoice is sent or paid,
 // the source-of-truth is whatever the customer received.
@@ -613,13 +681,25 @@ function lineTotal(item) {
   return toNum(item.quantity) * toNum(item.unit_price);
 }
 
+// The deposit-netting line the server adds to a final invoice: category
+// "Deposit" (DEPOSIT_CATEGORY, modules/deposits/service.py) with a negative
+// total. The deposit invoice's own positive line shares the category, so the
+// sign check matters. Server-owned — the API 409s any edit/delete of it.
+function isDepositNettingLine(item) {
+  return String(item?.category || "") === "Deposit" && lineTotal(item) < 0;
+}
+
 function currency(value) {
   return formatMoney(toNum(value));
 }
 
-function statusSeverity(status) {
-  const map = { Draft: "secondary", Sent: "info", Paid: "success", Overdue: "danger", Partial: "warn" };
-  return map[status] || "secondary";
+function adjustmentKindLabel(kind) {
+  const map = {
+    credit_memo: "Credit memo",
+    refund: "Refund",
+    credit_applied: "Credit applied",
+  };
+  return map[kind] || kind || "—";
 }
 
 function normalizeInvoice(payload) {
@@ -687,6 +767,14 @@ function normalizeInvoice(payload) {
     created_at: payload.created_at || payload.createdAt || "",
     sent_at: payload.sent_at || "",
     notes: payload.notes || "",
+    // Deposit lifecycle (2026-07-24): the tag, the "View Estimate" link and
+    // the adjustments panel all need these — the normalizer used to drop
+    // them, which is why a deposit invoice was indistinguishable from a
+    // final on this page.
+    billing_type: payload.billing_type || "standard",
+    estimate_id: payload.estimate_id || null,
+    adjustments: payload.adjustments || [],
+    is_superseded_deposit: Boolean(payload.is_superseded_deposit),
     // PR6 — drives the Pause/Resume reminders toggle.
     dunning_paused: Boolean(payload.dunning_paused),
     // Drives the edit-mode "hide line-item prices on PDF" toggle.
@@ -1033,6 +1121,13 @@ async function saveEdit() {
 
     // 1. Updates + inserts
     for (const ln of editLines.value) {
+      // The deposit-netting line is server-owned: never PATCH it (the 409
+      // aside, the Math.max(0, price) clamp below would zero its negative
+      // price and flag it "changed" on every save), just keep it.
+      if (isDepositNettingLine(ln)) {
+        if (ln.id) keptIds.add(String(ln.id));
+        continue;
+      }
       const desc = (ln.description || "").trim();
       if (!desc) continue;  // skip rows with no description
       const qty = Math.max(1, Math.floor(toNum(ln.quantity) || 1));
@@ -1043,12 +1138,17 @@ async function saveEdit() {
       const marginOverrideDec = ln.margin_pct_override != null && toNum(ln.margin_pct_override) > 0
         ? toNum(ln.margin_pct_override) / 100
         : null;
-      if (ln.id && originalById.has(String(ln.id))) {
+      if (ln.id) {
+        // Any row with a server id PATCHes — never re-POSTs. The id can be
+        // missing from the snapshot when a previous save attempt created
+        // the line and then failed before the resync landed; PATCHing with
+        // absolute values is idempotent, a second POST is a duplicate.
         keptIds.add(String(ln.id));
-        const orig = originalById.get(String(ln.id));
-        const origCost = orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
-        const origMargin = orig.margin_pct_override != null ? toNum(orig.margin_pct_override) : null;
+        const orig = originalById.get(String(ln.id)) || null;
+        const origCost = orig && orig.cost_snapshot != null ? toNum(orig.cost_snapshot) : null;
+        const origMargin = orig && orig.margin_pct_override != null ? toNum(orig.margin_pct_override) : null;
         const changed =
+          !orig ||
           orig.description !== desc ||
           toNum(orig.quantity) !== qty ||
           toNum(orig.unit_price) !== price ||
@@ -1067,9 +1167,9 @@ async function saveEdit() {
           // the new value is null — backend's exclude_unset=True semantics
           // mean omitted fields stay unchanged, so clearing a cost requires
           // an explicit `cost: null`.
-          if (category !== (orig.category || null)) patch.category = category;
-          if (cost !== origCost) patch.cost = cost;
-          if (marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
+          if (!orig || category !== (orig.category || null)) patch.category = category;
+          if (!orig || cost !== origCost) patch.cost = cost;
+          if (!orig || marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
           await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
         }
       } else {
@@ -1083,6 +1183,11 @@ async function saveEdit() {
         if (cost != null) body.cost = cost;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
         const lineResp = await api.post(`/api/invoices/${id}/lines`, body);
+        // Record the server id on the edit row so a retry after a mid-save
+        // failure PATCHes this line instead of POSTing a duplicate (the
+        // catch below refetches, which puts it in originalById).
+        const createdId = lineResp?.id || lineResp?.data?.id || null;
+        if (createdId) ln.id = String(createdId);
         // PR1-billing-capture: surface the F-75 zero-price warning the
         // server attaches in warn-mode — it was emitted but never rendered.
         if (lineResp && lineResp.warning) {
@@ -1097,10 +1202,18 @@ async function saveEdit() {
     }
 
     // 2. Deletions — anything in original that didn't appear in the
-    // post-edit kept set.
+    // post-edit kept set. The netting line is excluded twice over (the
+    // editor can't remove it, and this guard) — deleting it would re-bill
+    // an already-collected deposit, and the server 409s the attempt.
     for (const orig of original) {
-      if (!keptIds.has(String(orig.id))) {
-        await api.del(`/api/invoices/${id}/lines/${orig.id}`);
+      if (isDepositNettingLine(orig)) continue;
+      const oid = String(orig.id ?? "");
+      // Only real server line ids (UUIDs) are deletable — fetchInvoice's
+      // offline placeholder rows carry ids like 1/2, and firing DELETEs
+      // derived from fabricated data must never happen (audit 2026-07-24).
+      if (oid.length < 32) continue;
+      if (!keptIds.has(oid)) {
+        await api.del(`/api/invoices/${id}/lines/${oid}`);
       }
     }
 
@@ -1129,6 +1242,21 @@ async function saveEdit() {
       detail: err?.message || "Could not save invoice changes",
       life: 5000,
     });
+    // The save applies changes sequentially, so a mid-save failure leaves
+    // some of them committed. Resync the underlying invoice (edit state is
+    // untouched — the user keeps their draft and can retry) so the diff on
+    // the next attempt runs against what the server actually has.
+    // Deliberately NOT fetchInvoice(): its offline fallback swallows the
+    // error and installs placeholder line items, and a retry diffed against
+    // fabricated rows would duplicate every real line (audit 2026-07-24).
+    // If this fetch fails too, the pre-save snapshot stays — safe, because
+    // rows with a server id always PATCH and deletions require real UUIDs.
+    try {
+      const result = await api.get(`/api/invoices/${route.params.id}`, { suppressErrorToast: true });
+      normalizeInvoice(result?.data || result || {});
+    } catch {
+      /* resync unavailable — keep the pre-save snapshot */
+    }
   } finally {
     savingEdit.value = false;
   }
@@ -1251,6 +1379,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.superseded-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  margin: 0.75rem 0;
+  border-radius: 6px;
+  border: 1px solid var(--color-info-border);
+  background: var(--color-info-bg);
+  color: var(--color-info-500);
+  font-size: 0.9rem;
+}
+
 .detail-header {
   display: flex;
   justify-content: space-between;

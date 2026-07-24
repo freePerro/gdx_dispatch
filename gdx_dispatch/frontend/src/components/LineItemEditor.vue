@@ -123,8 +123,32 @@
         v-for="(item, idx) in localLines"
         :key="idx"
         class="line-item-row"
+        :class="{ 'line-item-row-locked': isLocked(item) }"
         :style="gridStyle"
       >
+        <template v-if="isLocked(item)">
+          <span
+            class="col-action locked-cell"
+            v-tooltip="lockedTooltip"
+            :data-testid="`line-locked-${idx}`"
+          >
+            <i class="pi pi-lock" />
+          </span>
+          <span v-if="categories.length" class="col-cat locked-cell">{{ item.category || '—' }}</span>
+          <span class="col-desc locked-cell">{{ item.description }}</span>
+          <span class="col-qty locked-cell">{{ toNum(item.quantity) }}</span>
+          <span v-if="showCost" class="col-cost locked-cell"></span>
+          <span class="col-price locked-cell">{{ currency(toNum(item.unit_price)) }}</span>
+          <span v-if="showTaxable" class="col-taxable locked-cell">
+            <input type="checkbox" :checked="item.taxable !== false" disabled />
+          </span>
+          <span v-if="showMargin" class="col-margin locked-cell"></span>
+          <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
+            {{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}
+          </span>
+          <span class="col-action"></span>
+        </template>
+        <template v-else>
         <Button
           icon="pi pi-trash"
           aria-label="Delete line"
@@ -223,6 +247,7 @@
           :data-testid="`line-copy-${idx}`"
           @click="duplicateLineAt(idx)"
         />
+        </template>
       </div>
       <div class="line-item-buttons">
         <Button
@@ -271,6 +296,12 @@ const props = defineProps({
   showCost: { type: Boolean, default: false },
   showMargin: { type: Boolean, default: false },
   catalogEndpoint: { type: String, default: '/api/catalogs' },
+  // Rows matching this predicate render read-only with a lock icon — no
+  // inputs, no delete, no duplicate. Used for the deposit-netting line on
+  // final invoices: it mirrors money actually collected, and the server
+  // 409s any edit/delete of it anyway.
+  lockedPredicate: { type: Function, default: null },
+  lockedTooltip: { type: String, default: "This line is locked and can't be edited" },
 });
 
 const emit = defineEmits(['update:lines', 'update:fromPartIds']);
@@ -311,7 +342,12 @@ function addLine() {
   emitLines();
 }
 
+function isLocked(item) {
+  return typeof props.lockedPredicate === 'function' && Boolean(props.lockedPredicate(item));
+}
+
 function removeLineAt(idx) {
+  if (isLocked(localLines.value[idx])) return;
   localLines.value.splice(idx, 1);
   emitLines();
 }
@@ -322,7 +358,7 @@ function removeLineAt(idx) {
 // is a real productivity feature, not polish.
 function duplicateLineAt(idx) {
   const src = localLines.value[idx];
-  if (!src) return;
+  if (!src || isLocked(src)) return;
   // Shallow clone — strip any id-like fields so the copy is treated as a
   // new line by callers that key on id (estimate save path uses `id` to
   // distinguish updates from inserts).
@@ -809,6 +845,25 @@ function addFromCatalog(items) {
 .line-total-display {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.line-item-row-locked {
+  opacity: 0.75;
+}
+.line-item-row-locked .locked-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.line-item-row-locked .locked-cell.col-qty,
+.line-item-row-locked .locked-cell.col-price {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+.line-item-row-locked .pi-lock {
+  color: var(--p-text-muted-color, #6b7280);
 }
 .col-action {
   display: flex;

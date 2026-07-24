@@ -25,8 +25,13 @@
             data-test="pc-thread-row"
           >
             <template #content>
-              <div class="thread-row-top">
+              <div class="thread-row-top" :class="{ 'thread-unread': t.unread_count > 0 }">
                 <span class="thread-name">{{ t.customer_name || t.other_party_number || '—' }}</span>
+                <span
+                  v-if="t.unread_count > 0"
+                  class="thread-unread-badge"
+                  data-test="pc-thread-unread"
+                >{{ t.unread_count }}</span>
                 <span class="thread-when text-muted">{{ formatDateTime(t.last_message_at) }}</span>
               </div>
               <div class="thread-preview text-muted">
@@ -124,8 +129,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useApi } from '../composables/useApi'
+import { useSmsUnreadStore } from '../stores/smsUnread'
 import { formatDateTime } from '../composables/useFormatters'
 
 import Toolbar from 'primevue/toolbar'
@@ -135,6 +141,7 @@ import Textarea from 'primevue/textarea'
 import ProgressSpinner from 'primevue/progressspinner'
 
 const api = useApi()
+const smsUnread = useSmsUnreadStore()
 
 const threads = ref([])
 const total = ref(0)
@@ -219,6 +226,10 @@ const openThread = async (thread) => {
     )
     threadMessages.value = r.items
     _loadThreadMedia(r.items)  // fire-and-forget; bubbles render as blobs resolve
+    // The server stamps the whole thread read on open — reflect it locally
+    // so the row dot and the sidebar badge drop without a refetch.
+    if (thread.unread_count) thread.unread_count = 0
+    smsUnread.fetchCount()
   } catch (err) {
     error.value = err.message || 'Failed to load thread'
   } finally {
@@ -257,11 +268,15 @@ const markThreadRead = async () => {
     await api.post(
       `/api/phone-com/messages/threads/${encodeURIComponent(selectedThread.value.thread_key)}/mark-read`,
     )
-    composeStatus.value = { ok: true, message: 'Marked read on Phone.com.' }
+    composeStatus.value = { ok: true, message: 'Marked read here and on Phone.com.' }
+    if (selectedThread.value.unread_count) selectedThread.value.unread_count = 0
   } catch (err) {
     composeStatus.value = { ok: false, message: err.message || 'Mark-read failed' }
   } finally {
     markReadLoading.value = false
+    // Local read state clears server-side even when the upstream Phone.com
+    // sync errors — resync the badge either way.
+    smsUnread.fetchCount()
   }
 }
 
@@ -273,7 +288,28 @@ const closeThread = () => {
   _revokeMedia()
 }
 
-onMounted(fetchThreads)
+// Auto-refresh the thread list while the view is open (60s, matching the
+// badge poll) — pre-fix the list only loaded on mount, so a new inbound SMS
+// never appeared until the operator clicked Refresh. Silent variant: no
+// spinner (fetchThreads flashes one over the whole list).
+const _refreshThreadsSilently = async () => {
+  try {
+    const r = await api.get('/api/phone-com/messages/threads?per_page=100')
+    threads.value = r.items
+    total.value = r.total
+  } catch { /* background refresh is best-effort */ }
+}
+let _threadsTimer = null
+onMounted(() => {
+  fetchThreads()
+  _threadsTimer = setInterval(() => {
+    if (!loading.value) _refreshThreadsSilently()
+  }, 60000)
+})
+onUnmounted(() => {
+  if (_threadsTimer) clearInterval(_threadsTimer)
+  _revokeMedia()
+})
 </script>
 
 <style scoped>
@@ -319,6 +355,24 @@ onMounted(fetchThreads)
 }
 .thread-when {
   font-size: 0.8rem;
+}
+.thread-unread .thread-name {
+  font-weight: 700;
+}
+.thread-unread-badge {
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.28rem;
+  border-radius: 0.6rem;
+  background: var(--interactive-primary, #2563eb);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  margin-left: 0.35rem;
 }
 .thread-preview {
   font-size: 0.85rem;

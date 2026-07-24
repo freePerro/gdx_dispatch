@@ -213,7 +213,8 @@ def _make_tenant_engine() -> object:
                 message TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT 'system',
                 is_read INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                deleted_at TEXT
             )
             """
         ))

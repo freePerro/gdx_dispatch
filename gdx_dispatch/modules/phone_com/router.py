@@ -631,6 +631,25 @@ class MessageOut(BaseModel):
     job_id: UUID | None
 
 
+@router.get("/messages/unread-count")
+def unread_message_count(
+    tenant_db: Session = Depends(get_tenant_db),
+    user: dict[str, Any] = Depends(get_current_user),  # noqa: ARG001
+) -> dict[str, int]:
+    """Inbound SMS never locally read — drives the sidebar SMS badge.
+
+    Tenant-wide, not per-user: one office, one inbox (same model as the
+    thread list itself).
+    """
+    count = (
+        tenant_db.query(func.count(PhoneComMessage.id))
+        .filter(PhoneComMessage.direction == "in", PhoneComMessage.read_at.is_(None))
+        .scalar()
+        or 0
+    )
+    return {"count": int(count)}
+
+
 @router.get("/messages/threads")
 def list_message_threads(
     page: int = Query(default=1, ge=1),
@@ -651,6 +670,18 @@ def list_message_threads(
     )
     total = sub.count()
     rows = sub.offset((page - 1) * per_page).limit(per_page).all()
+
+    # Per-thread unread (inbound, never locally read) — one grouped query,
+    # not a correlated count per row.
+    unread_by_thread: dict[str, int] = {
+        tk: int(cnt)
+        for tk, cnt in tenant_db.query(
+            PhoneComMessage.thread_key, func.count(PhoneComMessage.id)
+        )
+        .filter(PhoneComMessage.direction == "in", PhoneComMessage.read_at.is_(None))
+        .group_by(PhoneComMessage.thread_key)
+        .all()
+    }
 
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -679,6 +710,7 @@ def list_message_threads(
             "last_message_body": latest.body,
             "last_message_direction": latest.direction,
             "message_count": int(row.msg_count),
+            "unread_count": int(unread_by_thread.get(row.thread_key, 0)),
         })
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
@@ -701,6 +733,21 @@ def get_message_thread(
         .limit(per_page)
         .all()
     )
+    # Opening a conversation reads it — stamp the WHOLE thread's inbound
+    # unread (not just this page) so the badge and thread dot clear. Local
+    # only; the upstream Phone.com read flag stays on the explicit
+    # mark-read button.
+    stamped = (
+        tenant_db.query(PhoneComMessage)
+        .filter(
+            PhoneComMessage.thread_key == thread_key,
+            PhoneComMessage.direction == "in",
+            PhoneComMessage.read_at.is_(None),
+        )
+        .update({"read_at": datetime.now(timezone.utc)}, synchronize_session=False)
+    )
+    if stamped:
+        tenant_db.commit()
     return {
         "thread_key": thread_key,
         "items": [
@@ -1027,6 +1074,20 @@ def mark_thread_read(
     mark-read call will then sync.
     """
     tid = _coerce_tenant_uuid(user)
+    # Clear the LOCAL unread marker first — the badge must drop even when
+    # the upstream sync below can't run (no conversation ids / no default
+    # extension). Upstream state is best-effort on top.
+    locally_stamped = (
+        tenant_db.query(PhoneComMessage)
+        .filter(
+            PhoneComMessage.thread_key == thread_key,
+            PhoneComMessage.direction == "in",
+            PhoneComMessage.read_at.is_(None),
+        )
+        .update({"read_at": datetime.now(timezone.utc)}, synchronize_session=False)
+    )
+    if locally_stamped:
+        tenant_db.commit()
     rows = (
         tenant_db.query(PhoneComMessage)
         .filter(PhoneComMessage.thread_key == thread_key)

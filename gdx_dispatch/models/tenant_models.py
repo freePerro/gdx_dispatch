@@ -2457,6 +2457,10 @@ class Notification(Base):
     category: Mapped[str] = mapped_column(Text, nullable=False, default="system")
     is_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    # Soft delete (2026-07-24). Text ISO to match created_at. A broadcast
+    # row (user_id NULL) deleted by anyone disappears for the whole tenant —
+    # single-tenant shop, one office: "delete" means "we've handled this".
+    deleted_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PORequest(Base):

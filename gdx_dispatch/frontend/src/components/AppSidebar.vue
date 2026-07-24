@@ -61,6 +61,11 @@
       >
         <i :class="pin.icon" aria-hidden="true" />
         <span>{{ pin.label }}</span>
+        <span
+          v-if="pin.key === 'phone_com_messages' && smsUnread.count > 0"
+          class="pin-badge"
+          data-testid="sms-unread-badge"
+        >{{ smsUnread.count > 99 ? '99+' : smsUnread.count }}</span>
       </router-link>
 
       <!-- Search/filter -->
@@ -262,6 +267,7 @@ import Button from 'primevue/button';
 import PanelMenu from 'primevue/panelmenu';
 import { useThemeStore } from '../stores/theme';
 import { useAuthStore } from '../stores/auth';
+import { useSmsUnreadStore } from '../stores/smsUnread';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useTour } from '../composables/useTour';
 import { isTechnician } from '../constants/roles';
@@ -433,12 +439,18 @@ const favoriteModules = computed(() => {
   return favorites.value.filter((f) => allowedRoutes.has(f.to));
 });
 
+const smsUnread = useSmsUnreadStore();
+
 onMounted(() => {
   loadFavorites();
   window.addEventListener('keydown', onKeydown);
+  // SMS unread badge — polls even when the pin is module-gated off; the
+  // store collapses errors to 0 so a phone.com-less tenant never badges.
+  smsUnread.startPolling();
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown);
+  smsUnread.stopPolling();
 });
 
 function handleItemClick(_to, _label, _icon) {
@@ -593,6 +605,22 @@ onMounted(async () => {
 }
 .pinned-item:hover {
   background: var(--surface-hover);
+}
+
+.pin-badge {
+  margin-left: auto;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 0.625rem;
+  background: var(--interactive-primary, #2563eb);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .sidebar-search {

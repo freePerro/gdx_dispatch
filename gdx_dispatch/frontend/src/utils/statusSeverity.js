@@ -21,3 +21,33 @@ export function estimateStatusSeverity(status) {
   }
   return map[String(status || '').toLowerCase()] || 'secondary'
 }
+
+/**
+ * Invoice status → PrimeVue Tag `severity`.
+ *
+ * Shared by InvoiceDetailView, BillingView, MobileBillingView and
+ * MobileCustomerDetailView, which previously carried three divergent local
+ * maps — none knew `void` (which the deposit lifecycle produces routinely:
+ * an abandoned unpaid deposit is voided at final-invoice creation), and the
+ * mobile copies used the invalid PrimeVue-3 token `'warning'`.
+ *
+ * Backend enum (models/tenant_models.py Invoice.status): draft, sent, paid,
+ * overdue, void. The extra keys cover derived/display statuses: `partial`
+ * (BillingView effective_status), `pending`/`canceled` (mobile), `unpaid`
+ * (portal payment_status). `void` is `contrast`, not `danger` — a voided
+ * invoice is closed, not a problem needing action.
+ */
+export function invoiceStatusSeverity(status) {
+  const map = {
+    draft: 'secondary',
+    pending: 'secondary',
+    sent: 'info',
+    partial: 'warn',
+    unpaid: 'warn',
+    paid: 'success',
+    overdue: 'danger',
+    canceled: 'danger',
+    void: 'contrast',
+  }
+  return map[String(status || '').toLowerCase()] || 'secondary'
+}

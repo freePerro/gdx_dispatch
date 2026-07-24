@@ -58,6 +58,12 @@
           <div class="inv-row-2">
             <span class="inv-number">#{{ inv.number || inv.invoice_number || (inv.id || '').slice(0, 8) }}</span>
             <Tag :value="prettyStatus(inv.status)" :severity="statusSeverity(inv.status)" />
+            <Tag
+              v-if="inv.billing_type === 'deposit'"
+              value="deposit"
+              severity="info"
+              data-testid="mb-deposit-tag"
+            />
           </div>
           <div v-if="inv.due_date" class="inv-due" :class="{ overdue: isOverdue(inv) }">
             <i class="pi pi-calendar" /> Due {{ fmtDate(inv.due_date) }}
@@ -130,6 +136,7 @@ import Dialog from 'primevue/dialog'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
@@ -247,14 +254,6 @@ function prettyStatus(s) {
   return String(s).charAt(0).toUpperCase() + String(s).slice(1)
 }
 
-function statusSeverity(s) {
-  const k = String(s || '').toLowerCase()
-  if (['paid'].includes(k)) return 'success'
-  if (['sent'].includes(k)) return 'info'
-  if (['draft', 'pending'].includes(k)) return 'warning'
-  if (['void', 'canceled', 'overdue'].includes(k)) return 'danger'
-  return 'secondary'
-}
 
 function isOverdue(inv) {
   if (!inv?.due_date) return false

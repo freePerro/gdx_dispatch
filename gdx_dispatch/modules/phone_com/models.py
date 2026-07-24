@@ -94,6 +94,11 @@ class PhoneComMessage(Base):
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Local read marker for inbound SMS (2026-07-24) — mirrors voicemail's
+    # heard_at. NULL on an inbound row = unread; drives the sidebar badge
+    # and per-thread unread counts. Outbound rows never get stamped.
+    # NOTE: plugin-style create_all table — existing DBs need migration 037.
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     delivery_failed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

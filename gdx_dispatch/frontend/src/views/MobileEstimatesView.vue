@@ -159,6 +159,79 @@
           />
         </template>
       </Dialog>
+
+      <!-- Deposit prompt at accept — mobile is opt-IN per accept (parity with
+           MobileCustomerQuoteDialog); the tenant % only prefills the amount. -->
+      <Dialog
+        v-model:visible="depositPromptOpen"
+        header="Accept estimate"
+        modal
+        :style="{ width: '94vw', maxWidth: '420px' }"
+      >
+        <div class="form-stack" data-test="me-deposit-prompt">
+          <div class="deposit-toggle-row">
+            <label for="me-collect-deposit">Collect a deposit now?</label>
+            <ToggleSwitch v-model="collectDeposit" inputId="me-collect-deposit" data-test="me-deposit-toggle" />
+          </div>
+          <div v-if="collectDeposit">
+            <label>Deposit amount</label>
+            <InputNumber
+              v-model="depositAmount"
+              mode="currency"
+              currency="USD"
+              locale="en-US"
+              :min="0.01"
+              class="w-full"
+              data-test="me-deposit-amount"
+            />
+            <small v-if="depositDefault" class="muted">
+              Default {{ depositDefault.pct }}% of ${{ fmtMoney(depositDefault.estimate_total) }}
+            </small>
+          </div>
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" text @click="depositPromptOpen = false" />
+          <Button
+            :label="collectDeposit ? 'Accept + request deposit' : 'Accept'"
+            icon="pi pi-check"
+            :loading="actionSaving"
+            :disabled="collectDeposit && !(Number(depositAmount) > 0)"
+            data-test="me-deposit-accept"
+            @click="doAccept(collectDeposit ? depositAmount : 0)"
+          />
+        </template>
+      </Dialog>
+
+      <!-- Deposit result — invoice number + pay link, mirrors the quote
+           dialog's deposit step. -->
+      <Dialog
+        :visible="!!depositResult"
+        header="Deposit requested"
+        modal
+        :style="{ width: '94vw', maxWidth: '420px' }"
+        @update:visible="(v) => { if (!v) depositResult = null }"
+      >
+        <div v-if="depositResult" class="form-stack" data-test="me-deposit-result">
+          <p>
+            Deposit invoice <strong>#{{ depositResult.invoice_number }}</strong> for
+            <strong>${{ fmtMoney(depositResult.balance_due ?? depositResult.amount) }}</strong> is due now.
+          </p>
+          <p v-if="!depositResult.pay_url" class="muted">
+            Card payment isn't set up — collect cash/check, or the office can
+            record the payment.
+          </p>
+        </div>
+        <template #footer>
+          <Button label="Done" severity="secondary" text @click="depositResult = null" />
+          <Button
+            v-if="depositResult && depositResult.pay_url"
+            label="Copy pay link"
+            icon="pi pi-copy"
+            data-test="me-deposit-copy"
+            @click="copyPayLink"
+          />
+        </template>
+      </Dialog>
     </section>
 </template>
 
@@ -170,9 +243,11 @@ import { useToast } from 'primevue/usetoast'
 
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
+import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
+import ToggleSwitch from 'primevue/toggleswitch'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { usePermission } from '../composables/usePermission'
 const { confirmAsync } = useDestructiveConfirm();
@@ -289,18 +364,64 @@ function closeDetail() {
   detail.value = null
 }
 
+// Deposit-at-acceptance (2026-07-24) — parity with MobileCustomerQuoteDialog.
+// Mobile stays opt-IN per accept (same-day repairs shouldn't demand 50% up
+// front), so the toggle defaults off; the office default % only prefills the
+// amount. Accept used to post an empty body here, silently making this the
+// one accept surface that could never collect a deposit.
+const depositPromptOpen = ref(false)
+const depositDefault = ref(null)
+const collectDeposit = ref(false)
+const depositAmount = ref(null)
+const depositResult = ref(null)
+
 async function accept() {
   if (!detail.value) return
+  let dflt = null
+  try {
+    dflt = await api.get(`/api/estimates/${detail.value.id}/deposit-default`, { suppressErrorToast: true })
+  } catch {
+    dflt = null // deposit prefill is best-effort — never block accepting
+  }
+  if (dflt && Number(dflt.pct) > 0 && !dflt.existing) {
+    depositDefault.value = dflt
+    collectDeposit.value = false
+    depositAmount.value = Number(dflt.amount) || null
+    depositPromptOpen.value = true
+    return
+  }
+  await doAccept(0)
+}
+
+async function doAccept(depositAmt) {
   actionSaving.value = true
   try {
-    await api.post(`/api/estimates/${detail.value.id}/accept`, {})
+    const resp = await api.post(`/api/estimates/${detail.value.id}/accept`, {
+      deposit_amount: Number(depositAmt) > 0 ? Number(depositAmt) : 0,
+    })
     toast.add({ severity: 'success', summary: 'Estimate accepted', life: 2500 })
+    if (resp?.deposit_skipped) {
+      toast.add({ severity: 'warn', summary: 'Deposit not created', detail: resp.deposit_skipped, life: 6000 })
+    }
+    depositPromptOpen.value = false
+    if (resp?.deposit) depositResult.value = resp.deposit
     await fetchEstimates()
     detail.value = await api.get(`/api/estimates/${detail.value.id}`)
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Accept failed', detail: err.message, life: 4000 })
   } finally {
     actionSaving.value = false
+  }
+}
+
+async function copyPayLink() {
+  const url = depositResult.value?.pay_url
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    toast.add({ severity: 'success', summary: 'Pay link copied', life: 2000 })
+  } catch {
+    toast.add({ severity: 'warn', summary: 'Could not copy', detail: url, life: 6000 })
   }
 }
 
@@ -656,6 +777,13 @@ onMounted(() => {
 .empty-title {
   font-size: 1.05rem;
   font-weight: 600;
+}
+
+.deposit-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .form-stack {

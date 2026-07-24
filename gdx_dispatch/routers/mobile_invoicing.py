@@ -129,6 +129,10 @@ def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session
         "job_id": str(inv.job_id) if inv.job_id else None,
         "customer_id": str(inv.customer_id) if inv.customer_id else None,
         "status": inv.status,
+        # Deposit lifecycle (2026-07-24): without billing_type the truck
+        # can't tell a deposit invoice from a final one.
+        "billing_type": inv.billing_type or "standard",
+        "estimate_id": str(inv.estimate_id) if getattr(inv, "estimate_id", None) else None,
         "subtotal": float(inv.subtotal or 0),
         "tax_amount": float(inv.tax_amount or 0),
         "total": float(inv.total or 0),
@@ -322,6 +326,11 @@ def job_financial_summary(
                 "total": float(inv.total or 0),
                 "balance_due": float(inv.balance_due or 0),
                 "status": inv.status,
+                # Without billing_type the Bill/collect dialog counted a
+                # deposit invoice as "the job is invoiced" and hid the
+                # Generate button — a deposit-taking job couldn't be final-
+                # billed from the truck at all.
+                "billing_type": inv.billing_type or "standard",
                 "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
             }
             for inv in invoices
@@ -415,6 +424,25 @@ def mobile_create_invoice(
         tax_amount_value = 0.0
         total_value = 0.0
 
+    # Snapshot the source estimate's "total-only" display onto the invoice so
+    # the invoice PDF the customer receives matches the estimate they already
+    # saw. Best-effort — a features read must never block invoicing (mirrors
+    # the office path in routers/invoices.py).
+    hide_line_prices_value = False
+    if estimate is not None:
+        try:
+            from gdx_dispatch.modules.estimates_features import (
+                effective_hide_line_prices,
+                get_features,
+            )
+            _hide_default = get_features(str(tenant_id)).hide_line_prices
+            hide_line_prices_value = effective_hide_line_prices(
+                estimate.hide_line_prices, _hide_default
+            )
+        except Exception:
+            log.exception("mobile_invoice_hide_line_prices_resolve_failed")
+            hide_line_prices_value = False
+
     invoice = Invoice(
         id=uuid4(),
         job_id=_UUID(job_id),
@@ -427,6 +455,7 @@ def mobile_create_invoice(
         tax_amount=_money(tax_amount_value),
         total=_money(total_value),
         balance_due=_money(total_value),
+        hide_line_prices=hide_line_prices_value,
         status="draft",
         invoice_date=invoice_date_value,
         due_date=due_date_value,
@@ -583,7 +612,14 @@ def mobile_create_invoice(
         db.commit()
         db.refresh(invoice)
 
-    return _jr(_serialize_invoice(invoice, include_lines=True, db=db), 201)
+    # Surface the netting result to the truck — the office create paths
+    # return it (InvoiceCreateView renders the toast) but this one dropped
+    # it, so a tech never learned a deposit was applied, superseded, voided,
+    # or — worst — left UNAPPLIED (deposit exceeds the final total).
+    resp_payload = _serialize_invoice(invoice, include_lines=True, db=db)
+    if _dep_result:
+        resp_payload["deposit_netting"] = _dep_result
+    return _jr(resp_payload, 201)
 
 
 def _send_invoice_email(

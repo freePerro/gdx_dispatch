@@ -46,6 +46,27 @@ export const useNotificationsStore = defineStore('notifications', () => {
     }
   }
 
+  async function remove(id) {
+    // Optimistic: drop the row immediately, restore on failure.
+    const idx = items.value.findIndex((n) => n.id === id);
+    const [row] = idx >= 0 ? items.value.splice(idx, 1) : [null];
+    try {
+      const api = createApiClient();
+      await api.del(`/api/notifications/${id}`);
+      fetchCount();
+    } catch {
+      if (row) items.value.splice(Math.min(idx, items.value.length), 0, row);
+      throw new Error('Could not delete notification');
+    }
+  }
+
+  async function clearAll() {
+    const api = createApiClient();
+    await api.del('/api/notifications');
+    items.value = [];
+    unreadCount.value = 0;
+  }
+
   function startPolling(intervalMs = 60000) {
     stopPolling();
     fetchCount();
@@ -61,6 +82,6 @@ export const useNotificationsStore = defineStore('notifications', () => {
 
   return {
     unreadCount, badgeCount, items, loading,
-    fetchCount, fetchList, markRead, startPolling, stopPolling,
+    fetchCount, fetchList, markRead, remove, clearAll, startPolling, stopPolling,
   };
 });

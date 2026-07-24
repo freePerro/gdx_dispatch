@@ -116,6 +116,9 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
     payload: dict[str, object] = {
         "id": str(invoice.id),
         "job_id": str(invoice.job_id) if invoice.job_id else None,
+        # Deposit provenance (migration 036) — lets the detail view link back
+        # to the source estimate.
+        "estimate_id": str(invoice.estimate_id) if getattr(invoice, "estimate_id", None) else None,
         "customer_id": str(invoice.customer_id) if getattr(invoice, 'customer_id', None) else None,
         "customer_name": getattr(invoice, 'customer_name', None) or "",
         "invoice_number": invoice.invoice_number,
@@ -1054,6 +1057,42 @@ def get_invoice(
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
     payload = _serialize_invoice(invoice, include_lines=True, include_payments=True)
+
+    # Adjustments (credit memos / refunds / applied credits) — without these
+    # the detail view can't explain why balance_due ≠ total − payments. The
+    # deposit lifecycle leans on them: a partially-paid deposit superseded at
+    # final-create carries a credit_memo for the remainder and reads "paid",
+    # which is misleading unless the memo is shown.
+    adjustments = (
+        db.execute(
+            select(InvoiceAdjustment)
+            .where(InvoiceAdjustment.invoice_id == invoice.id)
+            .order_by(InvoiceAdjustment.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    payload["adjustments"] = [
+        {
+            "id": str(adj.id),
+            "kind": adj.kind,
+            "amount": _to_float(adj.amount),
+            "reason": adj.reason,
+            "refund_method": adj.refund_method,
+            "created_at": _iso_dt(adj.created_at),
+        }
+        for adj in adjustments
+    ]
+    # Same predicate as the record-payment 409 guard — the frontend banner
+    # and that guard must tell the same story.
+    payload["is_superseded_deposit"] = bool(
+        (invoice.billing_type or "") == "deposit"
+        and _to_float(invoice.balance_due) <= 0
+        and any(
+            adj.kind == "credit_memo" and "superseded" in (adj.reason or "").lower()
+            for adj in adjustments
+        )
+    )
 
     # 2026-04-29: enrich customer_name via Job → Customer fallback the same
     # way the list endpoint does (lines 235–258). QB-imported invoices have

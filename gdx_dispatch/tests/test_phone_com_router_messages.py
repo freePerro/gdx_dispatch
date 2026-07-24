@@ -240,3 +240,101 @@ def test_send_message_rejects_oversize_body():
         json={"to": "+13202959628", "body": "x" * 1601},
     )
     assert r.status_code == 422
+
+
+# --- local unread state (2026-07-24) ----------------------------------------
+
+def _seed_msg(s, *, mid, thread, direction, sent_at, read_at=None, conversation_id=None):
+    s.add(PhoneComMessage(
+        phone_com_message_id=mid, thread_key=thread, direction=direction,
+        from_number="+1", to_number="+2", body=f"body-{mid}", sent_at=sent_at,
+        read_at=read_at, phone_com_conversation_id=conversation_id,
+        attachments=[], raw_payload={},
+    ))
+
+
+def test_unread_count_counts_inbound_unread_only():
+    ce, te = _engines()
+    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    tid = _seed_tenant(csm)
+    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    s = tsm()
+    base = datetime.now(timezone.utc)
+    _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)                    # unread
+    _seed_msg(s, mid="m2", thread="+1|+2", direction="out", sent_at=base)                   # outbound: never counts
+    _seed_msg(s, mid="m3", thread="+1|+2", direction="in", sent_at=base)                    # unread
+    _seed_msg(s, mid="m4", thread="+3|+4", direction="in", sent_at=base, read_at=base)      # already read
+    s.commit()
+    s.close()
+
+    app, _, _ = _app(ce, te, tid)
+    client = TestClient(app)
+    assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 2}
+
+    threads = {t["thread_key"]: t for t in client.get("/api/phone-com/messages/threads").json()["items"]}
+    assert threads["+1|+2"]["unread_count"] == 2
+    assert threads["+3|+4"]["unread_count"] == 0
+
+
+def test_open_thread_stamps_read():
+    """GET-ing a conversation marks its inbound messages locally read — the
+    badge and thread dot must clear just by reading the thread."""
+    ce, te = _engines()
+    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    tid = _seed_tenant(csm)
+    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    s = tsm()
+    base = datetime.now(timezone.utc)
+    _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)
+    _seed_msg(s, mid="m2", thread="+1|+2", direction="in", sent_at=base)
+    _seed_msg(s, mid="m3", thread="+3|+4", direction="in", sent_at=base)  # other thread untouched
+    s.commit()
+    s.close()
+
+    app, _, _ = _app(ce, te, tid)
+    client = TestClient(app)
+    assert client.get("/api/phone-com/messages/threads/+1|+2").status_code == 200
+    assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 1}
+
+
+def test_mark_thread_read_clears_local_without_conversation_ids():
+    """Rows from before P2.9 have no phone_com_conversation_id, so the
+    upstream sync no-ops — the LOCAL read marker must still clear."""
+    ce, te = _engines()
+    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    tid = _seed_tenant(csm)
+    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    s = tsm()
+    base = datetime.now(timezone.utc)
+    _seed_msg(s, mid="m1", thread="+1|+2", direction="in", sent_at=base)
+    s.commit()
+    s.close()
+
+    app, _, _ = _app(ce, te, tid)
+    client = TestClient(app)
+    r = client.post("/api/phone-com/messages/threads/+1|+2/mark-read")
+    assert r.status_code == 204
+    assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 0}
+
+
+def test_open_thread_stamps_beyond_current_page():
+    """The read stamp covers the WHOLE thread, not just the fetched page —
+    a long conversation opened at per_page=2 must still zero the badge."""
+    ce, te = _engines()
+    csm = sessionmaker(bind=ce, expire_on_commit=False)
+    tid = _seed_tenant(csm)
+    tsm = sessionmaker(bind=te, expire_on_commit=False)
+    s = tsm()
+    base = datetime.now(timezone.utc)
+    for i in range(5):
+        _seed_msg(s, mid=f"m{i}", thread="+1|+2", direction="in",
+                  sent_at=base + timedelta(seconds=i))
+    s.commit()
+    s.close()
+
+    app, _, _ = _app(ce, te, tid)
+    client = TestClient(app)
+    r = client.get("/api/phone-com/messages/threads/+1|+2?per_page=2")
+    assert r.status_code == 200
+    assert len(r.json()["items"]) == 2
+    assert client.get("/api/phone-com/messages/unread-count").json() == {"count": 0}
