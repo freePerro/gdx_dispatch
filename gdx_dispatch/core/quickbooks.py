@@ -91,6 +91,38 @@ class QBVendor(TenantBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
+def qb_entity_is_mapped(db: Session, entity_type: str, local_id: object) -> bool:
+    """Authoritative "is this record in QuickBooks" signal.
+
+    A ``QBEntityMap`` row links a local record (``entity_type`` + ``local_id``)
+    to its QuickBooks id. Every push path writes it via ``_upsert_map`` and the
+    QB dashboard's entity counts are exactly these rows — so its presence is the
+    single source of truth for "in QB".
+
+    This is deliberately NOT ``Invoice/Customer.qb_synced_at``: that column is
+    stamped only by the newer selective-push path and has no backfill, so a
+    record synced by the legacy path, imported, or entered manually in QB has
+    ``qb_synced_at = NULL`` yet is very much in QuickBooks. Reading NULL as
+    "not synced" would contradict the dashboard's own counts.
+
+    Single-tenant-per-DB: the table holds only this tenant's rows, so no
+    tenant_id filter is needed. Returns False (never raises) if the table does
+    not exist yet on a tenant that has never connected QuickBooks.
+    """
+    try:
+        return db.execute(
+            select(QBEntityMap.id)
+            .where(
+                QBEntityMap.entity_type == entity_type,
+                QBEntityMap.local_id == str(local_id),
+            )
+            .limit(1)
+        ).first() is not None
+    except Exception:
+        db.rollback()
+        return False
+
+
 def _run_audit(
     db: Session,
     *,

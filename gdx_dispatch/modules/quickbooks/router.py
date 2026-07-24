@@ -732,17 +732,27 @@ def qb_dashboard(
     # Connected status: true if EITHER the legacy QBConnection row exists OR
     # the new encrypted QBTokenStore has a row for this tenant. The
     # disconnect endpoint clears both, so the OR matches reality.
-    token_present = False
+    token_row = None
     try:
         # S122-4 (N1): filter by tenant; previously .limit(1) returned the
         # whichever-tenant global row, leaking dashboard connected-status
         # across tenants.
-        token_present = db.execute(
+        token_row = db.execute(
             select(QBTokenStore).where(QBTokenStore.tenant_id == tenant_id)
-        ).scalar_one_or_none() is not None
+        ).scalar_one_or_none()
     except Exception:
         log.exception("qb_dashboard_token_store_query_failed")
         db.rollback()
+    token_present = token_row is not None
+
+    # S122-13 parity with /status: the dashboard is the frontend's PRIMARY
+    # status source (it only falls back to /status on older builds), so it must
+    # surface auth_state/needs_reconnect too. Without this a dead token
+    # (auth_state == 'needs_reconnect') shows "Connected" here while every sync
+    # silently no-ops — the 2026-05 dead-QB incident, invisible on the dashboard.
+    auth_state = "healthy"
+    if token_row is not None:
+        auth_state = getattr(token_row, "auth_state", "healthy") or "healthy"
 
     entity_counts = {
         row[0]: int(row[1])
@@ -803,6 +813,8 @@ def qb_dashboard(
         "last_sync_at": conn.last_sync_at.isoformat() if conn and conn.last_sync_at else None,
         "error_count": int(conn.error_count or 0) if conn else 0,
         "last_error": conn.last_error if conn else None,
+        "auth_state": auth_state,
+        "needs_reconnect": auth_state == "needs_reconnect",
         "entity_counts": entity_counts,
         "delete_sync_enabled": sync._delete_sync_enabled(tenant_id, db),
         "delete_sync_source": _delete_sync_source(conn),

@@ -47,6 +47,7 @@
               :loading="loading"
               data-testid="qb-overview-panel"
               @sync-entity="onSyncEntity"
+              @reconnect="runAction('connect')"
             />
           </TabPanel>
 
@@ -308,6 +309,12 @@ const loadQuickbooks = async () => {
       entity_counts: dashboard.entity_counts || {},
       delete_sync_enabled: !!dashboard.delete_sync_enabled,
       money_pulls_disabled: !!dashboard.money_pulls_disabled,
+      // Tier 10 — a dead/revoked token reports connected:true while every
+      // background sync silently no-ops (the 2026-05 dead-QB incident). The
+      // backend now returns auth_state/needs_reconnect on /dashboard; surface
+      // them so QbOverviewPanel can show a "Reconnect QuickBooks" banner.
+      auth_state: dashboard.auth_state || 'healthy',
+      needs_reconnect: !!dashboard.needs_reconnect,
     };
     syncEvents.value = Array.isArray(events?.events) ? events.events : [];
   } catch (err) {

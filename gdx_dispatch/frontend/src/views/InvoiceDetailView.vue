@@ -54,6 +54,14 @@
             <p v-if="invoice.sent_at" data-testid="invoice-last-sent">
               Last sent: {{ formatStampDateTime(invoice.sent_at) }}
             </p>
+            <p v-if="qbEnabled" data-testid="invoice-qb-sync">
+              QuickBooks:
+              <Tag
+                :value="qbSync.label"
+                :severity="qbSync.severity"
+                data-testid="invoice-qb-sync-tag"
+              />
+            </p>
           </div>
         </header>
 
@@ -671,6 +679,7 @@ import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTime } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
+import { useTenantModules } from "../composables/useTenantModules";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -778,6 +787,32 @@ const invoice = ref({
 // fields the invoice payload doesn't carry (notes, access_notes, etc.).
 const showCustomerEditDialog = ref(false);
 const customerForEdit = ref(null);
+
+// Tier 10 — per-record QuickBooks push state. Only shown when the tenant has
+// the QuickBooks module enabled (otherwise every row reads "not synced", which
+// is technically true but pure noise for a tenant that doesn't use QB).
+const { isEnabled } = useTenantModules();
+const qbEnabled = computed(() => isEnabled("quickbooks"));
+const qbSync = computed(() => {
+  // qb_in_quickbooks (from QBEntityMap) is the authoritative "in QB" signal.
+  // qb_synced_at is only stamped by the selective-push path and is un-backfilled,
+  // so it can't be used to claim "not in QB" — a legacy/imported/manual record
+  // is in QB with a NULL timestamp.
+  const inQb = invoice.value.qb_in_quickbooks === true;
+  const syncedAt = invoice.value.qb_synced_at;
+  const dirty = invoice.value.qb_dirty !== false; // default-true if absent
+  if (!inQb && !syncedAt) {
+    return { label: "Not synced", severity: "secondary" };
+  }
+  if (syncedAt) {
+    const when = formatStampDateTime(syncedAt);
+    return dirty
+      ? { label: `Synced ${when} · changes pending`, severity: "warn" }
+      : { label: `Synced ${when}`, severity: "success" };
+  }
+  // In QB but no local push timestamp (legacy sync / import / manual entry).
+  return { label: "Synced", severity: "success" };
+});
 
 // --- Computed ---
 const subtotal = computed(() =>
@@ -927,6 +962,12 @@ function normalizeInvoice(payload) {
     locked: Boolean(payload.locked),
     // Drives the edit-mode "hide line-item prices on PDF" toggle.
     hide_line_prices: Boolean(payload.hide_line_prices),
+    // Tier 10 — per-record QuickBooks push state for the sync chip. This
+    // normalizer copies fields explicitly, so these must be listed or the chip
+    // reads undefined and always renders "Not in QuickBooks".
+    qb_dirty: payload.qb_dirty,
+    qb_synced_at: payload.qb_synced_at || null,
+    qb_in_quickbooks: Boolean(payload.qb_in_quickbooks),
     line_items: lineItems,
     payments,
   };
