@@ -1267,7 +1267,7 @@ _DEFAULT_INVOICE_SUBJECT_TEMPLATE = "Invoice {{invoice_number}} from {{company_n
 _DEFAULT_INVOICE_BODY_TEMPLATE = (
     "Hi {{customer_name}},\n\n"
     "Please see the attached invoice ({{invoice_number}}) for {{job_title}}.\n"
-    "Total: {{total}}{{due_line}}\n\n"
+    "Total: {{total}}{{balance_line}}{{due_line}}\n\n"
     "Thanks,\n{{company_name}}"
 )
 
@@ -1317,13 +1317,21 @@ def invoice_email_compose(
 
     invoice_label = job_title or f"Invoice {invoice.invoice_number or ''}".strip()
     due_line = f"\nDue: {invoice.due_date.isoformat()}" if invoice.due_date else ""
+    # Tier-9.5: the draft advertised the gross Total even after a partial
+    # payment or credit; balance_due sat in the context UNUSED. Surface it as
+    # its own line when it differs from the total, so the customer is asked
+    # for what they actually owe.
+    _total_v = _to_float(invoice.total)
+    _balance_v = _to_float(invoice.balance_due)
+    balance_line = f"\nBalance Due: ${_balance_v:.2f}" if abs(_balance_v - _total_v) > 0.005 else ""
     ctx = {
         "customer_name": (customer.name if customer else "") or "there",
         "job_title": invoice_label,
         "invoice_number": invoice.invoice_number or "",
         "company_name": company_name,
-        "total": f"${_to_float(invoice.total):.2f}",
-        "balance_due": f"${_to_float(invoice.balance_due):.2f}",
+        "total": f"${_total_v:.2f}",
+        "balance_due": f"${_balance_v:.2f}",
+        "balance_line": balance_line,
         "due_line": due_line,
     }
     subject = _render_template(_DEFAULT_INVOICE_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
@@ -1349,7 +1357,7 @@ def invoice_email_compose(
         body_text = f"{body_text.rstrip()}\n\nPay online: {pay_url}\n"
 
     pdf_bytes = generate_invoice_pdf(
-        invoice_data=_invoice_payload(invoice, customer),
+        invoice_data=_invoice_payload(invoice, customer, db),
         tenant_branding=_branding_payload(db),
         template_config=_template_config(db, "invoice"),
     )
@@ -1526,6 +1534,8 @@ def send_invoice(
                     if _to_float(invoice.balance_due) > 0
                     else None
                 )
+                from gdx_dispatch.routers.pdf import _invoice_settlement
+                _paid, _credits = _invoice_settlement(invoice, db)
                 html = build_invoice_email_html(
                     company_name=company_name,
                     invoice_number=invoice.invoice_number or str(invoice.id)[:8],
@@ -1539,6 +1549,8 @@ def send_invoice(
                     notes=invoice.notes or "",
                     portal_url=pay_url or "",
                     tax_rate=tax_rate_val,
+                    paid_to_date=_paid,
+                    credits_applied=_credits,
                 )
                 # 2026-07-20 — attach the actual invoice PDF (same generator
                 # the composer flow uses). This path shipped html-only for
@@ -1554,7 +1566,7 @@ def send_invoice(
                     from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
                     from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
                     pdf_bytes = generate_invoice_pdf(
-                        invoice_data=_invoice_payload(invoice, cust),
+                        invoice_data=_invoice_payload(invoice, cust, db),
                         tenant_branding=_branding_payload(db),
                         template_config=_template_config(db, "invoice"),
                     )

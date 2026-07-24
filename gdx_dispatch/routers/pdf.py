@@ -10,13 +10,21 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pdf_generator import generate_estimate_pdf, generate_invoice_pdf
-from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job, PdfTemplate
+from gdx_dispatch.models.tenant_models import (
+    AppSettings,
+    Customer,
+    Document,
+    Invoice,
+    InvoiceAdjustment,
+    Job,
+    PdfTemplate,
+)
 from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.routers.auth import get_current_user
@@ -203,7 +211,43 @@ def _estimate_payload(
     }
 
 
-def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, Any]:
+def _invoice_settlement(invoice: Invoice, db: Session | None) -> tuple[float, float]:
+    """(paid_to_date, credits_applied) — the single source the PDF and the
+    email body use so their totals agree.
+
+    paid_to_date = Σ non-voided payments (zero on a void invoice); credits =
+    Σ(credit_memo + credit_applied). balance_due = max(total − paid − credits, 0).
+
+    These are the TRUE amounts, not capped to the total: an overpayment is a
+    real fact a customer understands (they see the full amount paid and a $0
+    balance), and per-adjustment caps already stop a credit alone from
+    exceeding the remaining balance — so the only way the four printed numbers
+    don't foot is a genuine overpayment, which is honest to show. Capping would
+    LIE about how much money was received (audit round: the earlier clamp broke
+    exactly that — paid $300 on a $150 invoice must print $300).
+    """
+    paid_to_date = 0.0
+    if (getattr(invoice, "status", "") or "") != "void":
+        paid_to_date = sum(
+            _to_float(p.amount)
+            for p in (getattr(invoice, "payments", None) or [])
+            if getattr(p, "voided_at", None) is None
+        )
+    credits_applied = 0.0
+    if db is not None and getattr(invoice, "id", None) is not None:
+        credits_applied = _to_float(
+            db.execute(
+                select(func.sum(InvoiceAdjustment.amount)).where(
+                    InvoiceAdjustment.invoice_id == invoice.id,
+                    InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+                )
+            ).scalar_one_or_none()
+            or 0
+        )
+    return round(max(paid_to_date, 0.0), 2), round(max(credits_applied, 0.0), 2)
+
+
+def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | None = None) -> dict[str, Any]:
     lines = sorted(invoice.lines, key=lambda row: (row.sort_order, row.created_at, row.id))
     invoice_date = getattr(invoice, "invoice_date", None)
     if invoice_date is None:
@@ -219,18 +263,18 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None) -> dict[str, A
     # round 5). NOT amount_paid either — that column is deprecated. A voided
     # invoice zeroes its balance without payments, so the row is suppressed
     # outright there.
-    paid_to_date = 0.0
-    if (getattr(invoice, "status", "") or "") != "void":
-        paid_to_date = sum(
-            _to_float(p.amount)
-            for p in (getattr(invoice, "payments", None) or [])
-            if getattr(p, "voided_at", None) is None
-        )
+    # Paid to Date + Credits Applied (Tier-9.2 for the PDF, shared with the
+    # email body). balance_due = total − paid − credits, so a credit-memo'd
+    # invoice printed Total − Paid ≠ Balance Due with NO line explaining the
+    # gap — the detail view has shown adjustments since PR #197, the PDF was
+    # blind to them.
+    paid_to_date, credits_applied = _invoice_settlement(invoice, db)
     return {
         "invoice_number": invoice.invoice_number,
         "customer": _customer_payload(customer),
         "invoice_date": invoice_date.isoformat() if invoice_date else "",
-        "paid_to_date": round(max(paid_to_date, 0.0), 2),
+        "paid_to_date": paid_to_date,
+        "credits_applied": credits_applied,
         "lines": [
             {
                 "description": line.description,
@@ -357,7 +401,7 @@ def invoice_pdf(invoice_id: UUID, db: Session = Depends(get_db)) -> StreamingRes
         ).scalar_one_or_none()
 
     pdf_bytes = generate_invoice_pdf(
-        invoice_data=_invoice_payload(invoice, customer),
+        invoice_data=_invoice_payload(invoice, customer, db),
         tenant_branding=_branding_payload(db),
         template_config=_template_config(db, "invoice"),
     )

@@ -18,8 +18,8 @@
   <td>{{ line.description }}{% if show_nontax and line.taxable is defined and not line.taxable %} <span class="nontax">non-taxable</span>{% endif %}</td>
   <td class="num">{{ line.quantity }}</td>
   {% if not hide_prices %}
-  <td class="num">${{ '%.2f'|format(line.unit_price or 0) }}</td>
-  <td class="num">${{ '%.2f'|format(line.line_total or 0) }}</td>
+  <td class="num">{{ line.unit_price | money }}</td>
+  <td class="num">{{ line.line_total | money }}</td>
   {% endif %}
 </tr>
 {%- endmacro %}

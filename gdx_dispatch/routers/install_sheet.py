@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job, flatten_door_spec
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Customer, Job, Technician
+from gdx_dispatch.models.tenant_models import AppSettings, Customer, Job, Technician
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -80,7 +80,9 @@ def daily_loadsheet(
     # ORM-routed so customer.address (EncryptedString) decrypts via
     # process_result_value. Pre-S122-9 raw-SQL form rendered ciphertext
     # to the tech's daily route sheet — the load-bearing field workflow.
-    from sqlalchemy import cast as _cast, func as _func, or_  # noqa: PLC0415
+    from sqlalchemy import cast as _cast  # noqa: PLC0415
+    from sqlalchemy import func as _func
+    from sqlalchemy import or_
     from sqlalchemy.types import String as _SaString  # noqa: PLC0415
 
     rows = (
@@ -445,6 +447,11 @@ def install_sheet(
             hide_line_prices = False
 
     job_num = f"JOB-{str(job['id'])[:8].upper()}"
+    # Tier-9.9: the install sheet printed the literal "DispatchApp" as the
+    # company name on every truck's paperwork. Use the tenant's configured
+    # branding instead (falls back to a neutral label if unset).
+    _settings = db.query(AppSettings).first()
+    company_name = (getattr(_settings, "company_name", "") or "").strip() or "Your Company"
     auto_print = False
 
     if fmt == "pdf":
@@ -452,7 +459,7 @@ def install_sheet(
             from weasyprint import HTML as WPHTML
             tmpl = _load_template()
             html = tmpl.render(
-                company_name="DispatchApp", job_number=job_num,
+                company_name=company_name, job_number=job_num,
                 customer_name=_val(job.get("customer_name")), address=_val(job.get("address")),
                 phone=_val(job.get("phone")), scheduled_at=_fdate(job.get("scheduled_at")),
                 technician=tech_name, job_type=_val(job.get("job_type"), "Service"),
@@ -472,7 +479,7 @@ def install_sheet(
 
     tmpl = _load_template()
     html = tmpl.render(
-        company_name="DispatchApp", job_number=job_num,
+        company_name=company_name, job_number=job_num,
         customer_name=_val(job.get("customer_name")), address=_val(job.get("address")),
         phone=_val(job.get("phone")), scheduled_at=_fdate(job.get("scheduled_at")),
         technician=tech_name, job_type=_val(job.get("job_type"), "Service"),

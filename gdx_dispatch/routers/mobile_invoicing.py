@@ -680,7 +680,7 @@ def _send_invoice_email(
             from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
             from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
             pdf_bytes = generate_invoice_pdf(
-                invoice_data=_invoice_payload(invoice, cust),
+                invoice_data=_invoice_payload(invoice, cust, db),
                 tenant_branding=_branding_payload(db),
                 template_config=_template_config(db, "invoice"),
             )
@@ -712,6 +712,8 @@ def _send_invoice_email(
         )
 
         # Build a simple email body if no specialised builder exists.
+        from gdx_dispatch.routers.pdf import _invoice_settlement
+        _paid, _credits = _invoice_settlement(invoice, db)
         if build_invoice_email_html is not None:
             # deleted_at filter matches the canonical desktop send path
             # (routers/invoices.py) — without it a re-send after an office
@@ -752,6 +754,8 @@ def _send_invoice_email(
                 tax_rate=float(invoice.tax_rate) if getattr(invoice, "tax_rate", None) is not None else None,
                 notes=invoice.notes or "",
                 portal_url=pay_url or "",
+                paid_to_date=_paid,
+                credits_applied=_credits,
             )
         else:
             html = (

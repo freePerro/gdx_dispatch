@@ -86,6 +86,12 @@
     {% if (data.paid_to_date or 0) > 0 %}
     <tr><td class="label">Paid to Date</td><td class="num">-${{ '%.2f'|format(data.paid_to_date) }}</td></tr>
     {% endif %}
+    {# Credits applied (credit memos / applied customer credit). Without this
+       line a credit-memo'd invoice printed Total − Paid ≠ Balance Due with no
+       explanation (Tier-9.2). #}
+    {% if (data.credits_applied or 0) > 0 %}
+    <tr><td class="label">Credits Applied</td><td class="num">-${{ '%.2f'|format(data.credits_applied) }}</td></tr>
+    {% endif %}
     <tr class="grand"><td>Balance Due</td><td class="num">${{ '%.2f'|format(data.balance_due or 0) }}</td></tr>
   </table>
 
