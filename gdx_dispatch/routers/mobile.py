@@ -745,6 +745,7 @@ def get_mobile_schedule(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.description, j.dispatch_status, j.scheduled_at,
+                   j.is_return_visit,
                    a.id AS appointment_id, a.start_at, a.end_at,
                    c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
                    c.address AS customer_address
@@ -782,6 +783,7 @@ def get_mobile_schedule(
                 "title": row.get("title"),
                 "description": row.get("description"),
                 "dispatch_status": row.get("dispatch_status"),
+                "is_return_visit": bool(row.get("is_return_visit")),
                 "scheduled_at": row.get("scheduled_at"),
                 "appointment_id": row.get("appointment_id"),
                 "time_window": {
@@ -802,6 +804,7 @@ def get_mobile_schedule(
             _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
                 """
                 SELECT j.id, j.title, j.description, j.dispatch_status, j.scheduled_at,
+                       j.is_return_visit,
                        c.id AS customer_id, c.name AS customer_name,
                        c.phone AS customer_phone, c.address AS customer_address
                 FROM jobs j
@@ -834,6 +837,7 @@ def get_mobile_schedule(
                     "title": row.get("title"),
                     "description": row.get("description"),
                     "dispatch_status": row.get("dispatch_status"),
+                    "is_return_visit": bool(row.get("is_return_visit")),
                     "scheduled_at": row.get("scheduled_at"),
                     "appointment_id": None,
                     "time_window": {"start": row.get("scheduled_at"), "end": None},
@@ -937,6 +941,9 @@ def _job_card(
         "description": job.description,
         "service_type": job.job_type or "Service",
         "priority": job.priority or "Normal",
+        # Tier-3 (2026-07): the tech at the door is exactly who needs to know
+        # this is a return trip, not fresh work.
+        "is_return_visit": bool(job.is_return_visit),
         "dispatch_status": job.dispatch_status,
         "scheduled_at": scheduled_at,
         "time_window": time_window,

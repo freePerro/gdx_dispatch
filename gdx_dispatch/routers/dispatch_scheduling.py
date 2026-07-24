@@ -225,7 +225,7 @@ def scheduled_unassigned(
             # without knowing the dispatcher's day; the lane is where
             # those land so they don't get missed.
             "SELECT j.id, j.job_number, j.title, j.scheduled_at, j.priority, "
-            "       j.customer_id, c.name AS customer_name "
+            "       j.customer_id, c.name AS customer_name, j.is_return_visit "
             "FROM jobs j "
             "LEFT JOIN customers c ON c.id = j.customer_id "
             "WHERE j.scheduled_at IS NOT NULL "
@@ -246,6 +246,7 @@ def scheduled_unassigned(
                 "priority": r[4],
                 "customer_id": str(r[5]) if r[5] else None,
                 "customer_name": r[6],
+                "is_return_visit": bool(r[7]),
             }
             for r in rows
         ]

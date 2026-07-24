@@ -61,7 +61,10 @@
             @keydown.enter="$emit('open-drawer', job)"
             @keydown.space.prevent="$emit('open-drawer', job)"
           >
-            <span class="tray-customer">{{ displayCustomer(job) }}</span>
+            <span class="tray-customer">
+              <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+              {{ displayCustomer(job) }}
+            </span>
             <span class="tray-dur">{{ formatDuration(job.effective_duration_hours) }}</span>
           </div>
         </div>
@@ -131,7 +134,10 @@
             @keydown.enter="$emit('open-drawer', block.job)"
             @keydown.space.prevent="$emit('open-drawer', block.job)"
           >
-            <div class="block-customer">{{ displayCustomer(block.job) }}</div>
+            <div class="block-customer">
+              <i v-if="block.job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
+              {{ displayCustomer(block.job) }}
+            </div>
             <div class="block-meta">
               {{ formatTime(block.startDate) }} · {{ formatDuration(block.durationHours) }}
             </div>
@@ -450,6 +456,7 @@ defineExpose({ dropYToISO });
   outline-offset: 2px;
 }
 .tray-customer { font-weight: 500; }
+.return-visit-icon { color: var(--color-warning-500, #d97706); font-size: 0.8em; margin-right: 0.25rem; }
 .tray-dur { color: var(--p-text-muted-color, #6b7280); font-size: 0.7rem; }
 .tray-empty {
   font-size: 0.7rem;

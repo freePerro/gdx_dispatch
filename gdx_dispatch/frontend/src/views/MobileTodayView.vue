@@ -1220,7 +1220,10 @@ function replayTour() {
             <i class="pi pi-map-marker" />
             {{ job.customer?.address || 'No address — ask dispatch' }}
           </div>
-          <div class="job-service">{{ job.service_type }} · {{ job.title }}</div>
+          <div class="job-service">
+            {{ job.service_type }} · {{ job.title }}
+            <Tag v-if="job.is_return_visit" value="Return visit" severity="warn" class="return-visit-tag" data-test="mt-return-visit-tag" />
+          </div>
 
           <div v-if="job.alerts?.length" class="job-alerts">
             <Tag
@@ -2050,4 +2053,5 @@ function replayTour() {
 }
 .area-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .area-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
+.return-visit-tag { margin-left: 0.4rem; font-size: 0.65rem; vertical-align: middle; }
 </style>

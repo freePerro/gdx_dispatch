@@ -77,7 +77,12 @@
             <span v-else class="muted-cell">—</span>
           </template>
         </Column>
-        <Column field="title" header="Title" sortable />
+        <Column field="title" header="Title" sortable>
+          <template #body="{ data }">
+            {{ data.title }}
+            <Tag v-if="data.is_return_visit" value="Return" severity="warn" style="margin-left: 0.4rem; font-size: 0.7rem" data-testid="jobs-return-visit-tag" />
+          </template>
+        </Column>
         <Column field="status" header="Status" sortable style="width: 130px">
           <template #body="{ data }">
             <JobStateChip :job="data" />
@@ -530,6 +535,7 @@ import EmptyState from "../components/EmptyState.vue";
 import JobStateChip from "../components/JobStateChip.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import PhoneInput from "../components/PhoneInput.vue";
+import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
 import ToggleSwitch from "primevue/toggleswitch";
 import Toast from "primevue/toast";

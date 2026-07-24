@@ -40,6 +40,11 @@
             <Tag :value="data.status" :severity="statusSeverity(data.status)" />
           </template>
         </Column>
+        <!-- Tier-3 gap: received_date was serialized but never displayed —
+             the receiving/audit trail showed only the status flip. -->
+        <Column field="received_date" header="Received" sortable style="width:130px">
+          <template #body="{ data }">{{ data.received_date || '—' }}</template>
+        </Column>
         <Column field="total" header="Total" sortable style="width:120px">
           <template #body="{ data }">{{ formatCurrency(data.total || 0) }}</template>
         </Column>
@@ -241,6 +246,7 @@ function exportRows() {
     { field: "order_date", header: "Order Date" },
     { field: "expected_date", header: "Expected" },
     { field: "status", header: "Status" },
+    { field: "received_date", header: "Received" },
     { field: "total", header: "Total" },
   ], "purchase-orders");
 }
