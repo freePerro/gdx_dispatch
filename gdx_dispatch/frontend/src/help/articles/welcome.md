@@ -1,5 +1,5 @@
 ---
-title: Welcome to DispatchApp
+title: Welcome to GDX Dispatch
 role: all
 tags: getting-started, intro
 related: customers, jobs, invoices
@@ -7,7 +7,7 @@ related: customers, jobs, invoices
 
 # Welcome
 
-DispatchApp is the operations console your shop uses to handle customers, jobs, dispatch, and invoicing in one place.
+GDX Dispatch is the operations console your shop uses to handle customers, jobs, dispatch, and invoicing in one place.
 
 ## What you can do here
 

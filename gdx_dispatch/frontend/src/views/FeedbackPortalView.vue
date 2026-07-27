@@ -39,7 +39,7 @@
       <div class="submit-card">
         <h2>Suggest a feature</h2>
         <p class="submit-help">
-          Tell us what would make DispatchApp work better for your
+          Tell us what would make GDX Dispatch work better for your
           shop. We read everything; the team triages weekly.
         </p>
         <div class="submit-form">

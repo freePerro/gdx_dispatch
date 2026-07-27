@@ -10,7 +10,7 @@ const SAMPLE_INDEX = {
   articles: [
     {
       slug: 'welcome',
-      title: 'Welcome to DispatchApp',
+      title: 'Welcome to GDX Dispatch',
       role: 'all',
       tags: ['intro'],
       related: ['create-a-job'],
