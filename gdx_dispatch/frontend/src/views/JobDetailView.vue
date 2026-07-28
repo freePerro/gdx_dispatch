@@ -91,6 +91,7 @@
           <Tab value="signature">Signature</Tab>
           <Tab value="costing">Costing</Tab>
           <Tab value="install">Install Specs</Tab>
+          <Tab value="email">Email</Tab>
           <Tab value="activity">Activity</Tab>
         </TabList>
       </Tabs>
@@ -828,6 +829,48 @@
         </template>
       </div>
 
+      <!-- Email tab (P2.1) — correspondence the tagger linked to this job.
+           Mounts only when open, so the job page pays nothing for it
+           otherwise. -->
+      <div v-else-if="activeTab === 'email'" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h3>Email</h3>
+            <!-- P2.5 — composing FROM the job is what stamps the
+                 [Job #<uuid>] subject marker, so the customer's reply links
+                 itself back to this job without anyone tagging it by hand. -->
+            <Button
+              label="Email about this job"
+              icon="pi pi-envelope"
+              size="small"
+              outlined
+              data-testid="job-email-compose"
+              @click="composeEmailAboutJob"
+            />
+          </div>
+          <EmailTimeline :job-id="route.params.id" />
+        </div>
+
+        <!-- P2.3 — where "Save to job" actually lands. The Photos tab filters
+             on entity_type, which DocumentOut doesn't carry, so a saved
+             attachment would otherwise be invisible on the job it was filed
+             to: a button that says "Saved to the job" and shows nothing. -->
+        <div class="card" data-testid="job-files-card">
+          <div class="card-header"><h3>Files on this job</h3></div>
+          <div v-if="!jobFiles.length" class="muted" style="padding:0.5rem">
+            No files yet. Saving an email attachment to this job puts it here.
+          </div>
+          <ul v-else class="job-file-list">
+            <li v-for="doc in jobFiles" :key="doc.id" class="job-file-row">
+              <i class="pi pi-file" aria-hidden="true" />
+              <span class="job-file-name">{{ doc.original_name || doc.title }}</span>
+              <span class="job-file-meta">{{ formatDateTime(doc.uploaded_at || doc.created_at) }}</span>
+              <Button v-tooltip="'Download'" icon="pi pi-download" aria-label="Download file" text @click="downloadDocument(doc.id)" />
+            </li>
+          </ul>
+        </div>
+      </div>
+
       <div v-else class="tab-panel">
         <div class="card activity-card">
           <div class="card-header"><h3>Activity</h3></div>
@@ -1005,6 +1048,7 @@ import JobStateChip from "../components/JobStateChip.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import DoorSpecList from "../components/DoorSpecList.vue";
 import PhoneInput from "../components/PhoneInput.vue";
+import EmailTimeline from "../components/EmailTimeline.vue";
 
 const route = useRoute();
 const router = useRouter();
@@ -1170,6 +1214,13 @@ const pickedLocationAddressMissing = computed(
   () => Boolean(pickedLocation.value) && !pickedLocation.value.address,
 );
 const photoDocs = computed(() => documents.value.filter((doc) => doc.entity_type === "job_photo"));
+// Everything filed on this job that isn't a photo or the signature — which is
+// where an email attachment saved with "Save to job" lands.
+const jobFiles = computed(() =>
+  documents.value.filter(
+    (doc) => doc.entity_type !== "job_photo" && doc.entity_type !== "job_signature",
+  ),
+);
 const signatureDoc = computed(() => documents.value.find((doc) => doc.entity_type === "job_signature"));
 const isTechnician = computed(() => isTechRole(auth.user?.role));
 // Techs can't patch job fields (variant-aware: was `!== "tech"`, which missed
@@ -1821,6 +1872,18 @@ function openSchedule(jobId) {
   router.push(`/appointments?job_id=${encodeURIComponent(jobId || route.params.id)}`);
 }
 
+// P2.5 — open the Inbox composer already attached to this job. The server
+// stamps `[Job #<uuid>]` on the subject, which is what lets the customer's
+// reply auto-link back here instead of relying on address matching alone.
+function composeEmailAboutJob() {
+  const q = new URLSearchParams({ job_id: String(route.params.id) });
+  const label = job.value?.job_number || job.value?.title;
+  if (label) q.set('job_label', label);
+  if (customerDetail.value?.email) q.set('to', customerDetail.value.email);
+  if (label) q.set('subject', `${label} — update`);
+  router.push(`/inbox?${q.toString()}`);
+}
+
 function openEstimate(id) {
   router.push(`/estimates/${id}`);
 }
@@ -2135,6 +2198,18 @@ onMounted(async () => {
 .signature-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
 .costing-summary .costing-values { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.85rem; }
 .parts-card .p-datatable-wrapper, .time-entry-card .p-datatable-wrapper { max-height: 320px; }
+.job-file-list { list-style: none; margin: 0; padding: 0.25rem 0.5rem 0.5rem; }
+.job-file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--p-content-border-color, #e5e7eb);
+  font-size: 0.88rem;
+}
+.job-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-file-meta { flex: 0 0 auto; color: var(--p-text-muted-color, #6b7280); font-size: 0.78rem; }
+
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-row { display: flex; gap: 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
 .activity-row:last-child { border-bottom: none; }

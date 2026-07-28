@@ -616,7 +616,12 @@ def list_jobs(
     where = ["j.company_id = :tenant_id", "j.deleted_at IS NULL"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if search:
-        where.append("(j.title ILIKE :search OR c.name ILIKE :search)")
+        # job_number is the identifier every surface PRINTS — the jobs list,
+        # the email link chips, the [Job #…] subject marker — so it has to be
+        # the identifier you can search by. Without it, a user reads
+        # "JOB-2026-014" off the screen, types it into a job search, and gets
+        # nothing.
+        where.append("(j.title ILIKE :search OR c.name ILIKE :search OR j.job_number ILIKE :search)")
         params["search"] = f"%{search}%"
     if status:
         # Match against both normalized and raw forms (supports 'Scheduled' / 'scheduled' / lifecycle_stage)

@@ -1,6 +1,8 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { useAuthStore } from '../stores/auth'
 import { formatDateTime as fmtDate } from '../composables/useFormatters'
 import Tree from 'primevue/tree'
 import ContextMenu from 'primevue/contextmenu'
@@ -16,6 +18,8 @@ import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
+const route = useRoute()
+const auth = useAuthStore()
 
 // ── state ────────────────────────────────────────────────────────────
 const folders = ref([])              // flat list from /api/outlook/folders
@@ -58,6 +62,12 @@ const composeMode = ref(null)   // null | 'new' | 'reply'
 const composeForm = ref({ to: '', cc: '', subject: '', body: '' })
 const composeStatus = ref(null)
 const composeSending = ref(false)
+// P2.5 — the job this outbound message is about. Sending with it stamps a
+// `[Job #<uuid>]` marker on the subject, which is what makes the customer's
+// REPLY auto-link back to the job (tagger job_thread strategy). Set from the
+// message being replied to, or from ?job_id= when composing from a job page.
+const composeJobId = ref(null)
+const composeJobLabel = ref('')
 
 // Folder operations state
 const ctxMenu = ref(null)        // PrimeVue ContextMenu (right-click)
@@ -176,6 +186,28 @@ const MSG_PAGE_SIZE = 50
 const msgOffset = ref(0)
 const hasMoreMessages = ref(false)
 
+// 1.1 — search runs SERVER-side (the whole mailbox), not over the loaded page.
+// Filtering only what's on screen would look like search and silently miss
+// every message past the first 50.
+const searchTerm = ref('')
+const activeSearch = ref('')
+let _searchTimer = null
+
+function onSearchInput() {
+  clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(() => {
+    activeSearch.value = searchTerm.value.trim()
+    fetchMessages()
+  }, 300)
+}
+
+function clearSearch() {
+  clearTimeout(_searchTimer)
+  searchTerm.value = ''
+  activeSearch.value = ''
+  fetchMessages()
+}
+
 async function fetchMessages(folderId = selectedFolderId.value, { append = false } = {}) {
   loadingMessages.value = true
   error.value = null
@@ -184,8 +216,14 @@ async function fetchMessages(folderId = selectedFolderId.value, { append = false
     // visibility after the window, so a page may be short; has_more/next_offset
     // let us keep loading until every message is reachable (D7).
     const offset = append ? msgOffset.value : 0
-    const base = `/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`
-    const url = folderId ? `${base}&folder_id=${encodeURIComponent(folderId)}` : base
+    let base = `/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`
+    // An active search spans ALL folders. The box sits above the folder rail
+    // and reads as "search my mail" — scoping it to whichever folder happens
+    // to be selected (Inbox, on mount) silently hides every hit in Archive.
+    if (activeSearch.value) base += `&q=${encodeURIComponent(activeSearch.value)}`
+    const url = folderId && !activeSearch.value
+      ? `${base}&folder_id=${encodeURIComponent(folderId)}`
+      : base
     const r = await api.get(url)
     const items = Array.isArray(r) ? r : (r.items || [])
     if (append) {
@@ -231,6 +269,7 @@ async function openMessage(m) {
   selectedMsgId.value = m.id
   detail.value = null
   bodyData.value = {}
+  thread.value = []
   composeMode.value = null
   composeStatus.value = null
   detailLoading.value = true
@@ -245,8 +284,32 @@ async function openMessage(m) {
   } finally {
     if (selectedMsgId.value === m.id) detailLoading.value = false
   }
-  if (detail.value && selectedMsgId.value === m.id) loadBody(m.id)
+  if (detail.value && selectedMsgId.value === m.id) {
+    loadBody(m.id)
+    loadThread(m.id)
+  }
 }
+
+// ── 1.3 conversation ─────────────────────────────────────────────────
+// The thread comes from the SERVER (every sibling re-checked against the
+// visibility chokepoint), not from grouping the loaded page — otherwise the
+// "3 messages" count would mean "3 of the ones that happen to be on screen".
+const thread = ref([])
+
+async function loadThread(id) {
+  try {
+    const rows = await api.get(`/api/outlook/messages/${id}/thread`)
+    if (selectedMsgId.value === id) thread.value = Array.isArray(rows) ? rows : []
+  } catch {
+    if (selectedMsgId.value === id) thread.value = []
+  }
+}
+
+// Only worth showing when there IS a conversation — a lone message renders
+// as a one-row strip otherwise, which is just noise.
+const threadOthers = computed(() =>
+  thread.value.filter((m) => m.id !== selectedMsgId.value),
+)
 
 async function loadBody(id) {
   bodyLoading.value = true
@@ -286,21 +349,172 @@ function startNewCompose() {
   detail.value = null
   composeMode.value = 'new'
   composeStatus.value = null
+  composeJobId.value = null
+  composeJobLabel.value = ''
+  draftSavedFingerprint.value = null
+  draftWebLink.value = null
   composeForm.value = { to: '', cc: '', subject: '', body: '' }
+}
+
+function quotedBody() {
+  const d = detail.value
+  return `\n\n---\nOn ${fmtDate(d.sent_at || d.received_at)}, ${d.from_address || ''} wrote:\n${(d.body_preview || '').split('\n').map(l => `> ${l}`).join('\n')}`
+}
+
+function replySubject() {
+  const subj = detail.value.subject || ''
+  return subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`
 }
 
 function startReply() {
   if (!detail.value) return
   composeMode.value = 'reply'
   composeStatus.value = null
-  const subj = detail.value.subject || ''
-  const replySubj = subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`
-  const quoted = `\n\n---\nOn ${fmtDate(detail.value.sent_at || detail.value.received_at)}, ${detail.value.from_address || ''} wrote:\n${(detail.value.body_preview || '').split('\n').map(l => `> ${l}`).join('\n')}`
+  composeJobId.value = detail.value.linked_job_id || null
+  composeJobLabel.value = detail.value.linked_job_label || ''
   composeForm.value = {
     to: detail.value.from_address || '',
     cc: '',
-    subject: replySubj,
-    body: quoted,
+    subject: replySubject(),
+    body: quotedBody(),
+  }
+}
+
+// 1.4 — reply-all: original sender + everyone on To/Cc, minus this mailbox.
+// The self-drop is load-bearing: on a shared office inbox the mailbox's OWN
+// address is in the original To/Cc, so without dropping it every reply-all
+// mails the inbox back into itself and the thread doubles each round-trip.
+// The server tells us that address (mailbox_address, the account's UPN) —
+// it can't be inferred client-side from the recipient list.
+function startReplyAll() {
+  if (!detail.value) return
+  const d = detail.value
+  const mine = new Set(
+    [d.to_addresses, d.cc_addresses]
+      .flat()
+      .filter(Boolean)
+      .map((a) => String(a).toLowerCase()),
+  )
+  const from = (d.from_address || '').toLowerCase()
+  const self = (d.mailbox_address || '').toLowerCase()
+  const cc = [...mine].filter((a) => a && a !== from && a !== self)
+  composeMode.value = 'reply'
+  composeStatus.value = null
+  composeJobId.value = d.linked_job_id || null
+  composeJobLabel.value = d.linked_job_label || ''
+  composeForm.value = {
+    to: d.from_address || '',
+    cc: cc.join(', '),
+    subject: replySubject(),
+    body: quotedBody(),
+  }
+}
+
+// 1.4 — forward goes through Graph's own /forward action (server side), which
+// carries the ORIGINAL ATTACHMENTS. That's why this is its own dialog instead
+// of a pre-filled compose: a compose-based forward would silently drop them.
+const forwardOpen = ref(false)
+const forwardForm = ref({ to: '', cc: '', comment: '' })
+const forwardSending = ref(false)
+
+function startForward() {
+  if (!detail.value) return
+  forwardForm.value = { to: '', cc: '', comment: '' }
+  forwardOpen.value = true
+}
+
+async function sendForward() {
+  const to = splitAddrs(forwardForm.value.to)
+  if (!to.length) {
+    error.value = 'Forward needs at least one recipient.'
+    return
+  }
+  forwardSending.value = true
+  try {
+    const payload = { to, comment: forwardForm.value.comment || '' }
+    const cc = splitAddrs(forwardForm.value.cc)
+    if (cc.length) payload.cc = cc
+    await api.post(`/api/outlook/messages/${detail.value.id}/forward`, payload, {
+      successMessage: 'Forwarded.',
+    })
+    forwardOpen.value = false
+  } catch (err) {
+    error.value = err.message || 'Forward failed'
+  } finally {
+    forwardSending.value = false
+  }
+}
+
+// 1.5 — save the compose pane as a REAL Graph draft so it shows up in the
+// Drafts folder (and in Outlook) instead of evaporating on close.
+const draftSaving = ref(false)
+const draftWebLink = ref(null)
+// Fingerprint of what we last saved. A second click on unchanged content
+// would otherwise create a SECOND Graph draft — there's no update path yet,
+// so the guard is what keeps Drafts from filling with near-duplicates.
+const draftSavedFingerprint = ref(null)
+
+function composeFingerprint() {
+  const f = composeForm.value
+  return JSON.stringify([f.to, f.cc, f.subject, f.body, composeJobId.value])
+}
+
+async function saveDraft() {
+  const form = composeForm.value
+  if (draftSavedFingerprint.value === composeFingerprint()) {
+    composeStatus.value = { ok: true, message: 'Already saved to Drafts — nothing changed since.' }
+    return
+  }
+  draftSaving.value = true
+  composeStatus.value = null
+  try {
+    const payload = {
+      subject: form.subject || '',
+      body_html: (form.body || '').replace(/\n/g, '<br>'),
+    }
+    const to = splitAddrs(form.to)
+    if (to.length) payload.to = to
+    const cc = splitAddrs(form.cc)
+    if (cc.length) payload.cc = cc
+    if (composeJobId.value) payload.job_id = composeJobId.value
+    const r = await api.post('/api/outlook/drafts', payload)
+    draftSavedFingerprint.value = composeFingerprint()
+    draftWebLink.value = r?.web_link || null
+    // Say where it actually is. The draft is real and in Outlook NOW, but
+    // GDX's Drafts folder is a mirror refreshed by the sync (every 30 min),
+    // so "Saved to Drafts" alone sends the user to a folder that still looks
+    // empty and reads as a failed save.
+    composeStatus.value = {
+      ok: true,
+      message: 'Saved to your Outlook Drafts — it appears in the Drafts folder after the next sync.',
+    }
+  } catch (err) {
+    composeStatus.value = { ok: false, message: err.message || 'Could not save draft' }
+  } finally {
+    draftSaving.value = false
+  }
+}
+
+// P2.4 — AI-suggested reply body. Replaces the quote block, never the user's
+// own typing: if they've already written something, append below it.
+const aiDrafting = ref(false)
+
+async function draftWithAi() {
+  if (!detail.value) return
+  aiDrafting.value = true
+  composeStatus.value = null
+  try {
+    const r = await api.post(`/api/outlook/messages/${detail.value.id}/ai-draft`, {})
+    const text = r?.draft_text || ''
+    if (!text) return
+    composeForm.value.body = `${text}\n${quotedBody()}`
+    if (r.source === 'fallback') {
+      composeStatus.value = { ok: true, message: 'No AI configured — inserted a standard reply.' }
+    }
+  } catch (err) {
+    composeStatus.value = { ok: false, message: err.message || 'AI draft failed' }
+  } finally {
+    aiDrafting.value = false
   }
 }
 
@@ -332,6 +546,8 @@ async function sendCompose() {
     if (composeMode.value === 'reply' && detail.value?.id) {
       payload.in_reply_to = detail.value.id
     }
+    // P2.5 — server stamps the [Job #…] subject marker so the reply links back.
+    if (composeJobId.value) payload.job_id = composeJobId.value
     const r = await api.post('/api/outlook/send', payload)
     composeStatus.value = { ok: !!r.ok, message: r.ok ? 'Sent.' : (r.detail || 'Send failed') }
     if (r.ok) {
@@ -343,6 +559,140 @@ async function sendCompose() {
     composeStatus.value = { ok: false, message: err.message || 'Send failed' }
   } finally {
     composeSending.value = false
+  }
+}
+
+// ── P2.1/P2.2 link this email to a customer or job ───────────────────
+// The auto-tagger gets most of these; this is the correction path (and the
+// only path for mail from an address we've never seen). Linking is what puts
+// the message on the customer's / job's Email tab.
+
+// Mirrors views_router._TAG_MANAGER_ROLES. Techs consume tags, they don't
+// curate them — the server 403s them, so don't offer the control.
+const _TAG_MANAGER_ROLES = ['owner', 'admin', 'dispatcher', 'csr', 'manager', 'sales']
+const canManageLinks = computed(() =>
+  _TAG_MANAGER_ROLES.includes(String(auth.user?.role || '').toLowerCase()),
+)
+
+const linkOpen = ref(false)
+const linkCustomerQuery = ref('')
+const linkJobQuery = ref('')
+const linkCustomerResults = ref([])
+const linkJobResults = ref([])
+const linkChoice = ref({ customer_id: null, job_id: null, customer_name: '', job_label: '' })
+const linkSaving = ref(false)
+let _linkCustTimer = null
+let _linkJobTimer = null
+
+function openLinkDialog() {
+  if (!detail.value) return
+  linkChoice.value = {
+    customer_id: detail.value.linked_customer_id || null,
+    job_id: detail.value.linked_job_id || null,
+    customer_name: detail.value.linked_customer_name || '',
+    job_label: detail.value.linked_job_label || '',
+  }
+  linkCustomerQuery.value = ''
+  linkJobQuery.value = ''
+  linkCustomerResults.value = []
+  linkJobResults.value = []
+  linkOpen.value = true
+}
+
+async function searchLinkCustomers() {
+  clearTimeout(_linkCustTimer)
+  _linkCustTimer = setTimeout(async () => {
+    const q = linkCustomerQuery.value.trim()
+    if (q.length < 2) { linkCustomerResults.value = []; return }
+    try {
+      const r = await api.get(`/api/customers?q=${encodeURIComponent(q)}&per_page=10`,
+        { suppressErrorToast: true })
+      linkCustomerResults.value = Array.isArray(r) ? r : (r?.items || [])
+    } catch { linkCustomerResults.value = [] }
+  }, 300)
+}
+
+async function searchLinkJobs() {
+  clearTimeout(_linkJobTimer)
+  _linkJobTimer = setTimeout(async () => {
+    const q = linkJobQuery.value.trim()
+    if (q.length < 2) { linkJobResults.value = []; return }
+    try {
+      const r = await api.get(`/api/jobs?search=${encodeURIComponent(q)}&per_page=10`,
+        { suppressErrorToast: true })
+      linkJobResults.value = Array.isArray(r) ? r : (r?.items || [])
+    } catch { linkJobResults.value = [] }
+  }, 300)
+}
+
+function pickLinkCustomer(c) {
+  linkChoice.value.customer_id = c.id
+  linkChoice.value.customer_name = c.name || ''
+  linkCustomerResults.value = []
+  linkCustomerQuery.value = ''
+}
+
+function pickLinkJob(j) {
+  linkChoice.value.job_id = j.id
+  linkChoice.value.job_label = j.job_number || j.title || String(j.id).slice(0, 8)
+  // A job implies its customer — pre-fill it so the message lands on both
+  // timelines, which is what "this email is about this job" actually means.
+  if (!linkChoice.value.customer_id && j.customer_id) {
+    linkChoice.value.customer_id = j.customer_id
+    linkChoice.value.customer_name = j.customer_name || ''
+  }
+  linkJobResults.value = []
+  linkJobQuery.value = ''
+}
+
+async function saveLink() {
+  if (!detail.value) return
+  const { customer_id, job_id } = linkChoice.value
+  linkSaving.value = true
+  try {
+    if (!customer_id && !job_id) {
+      detail.value = await api.del(`/api/outlook/messages/${detail.value.id}/link`)
+    } else {
+      const payload = {}
+      if (customer_id) payload.customer_id = customer_id
+      if (job_id) payload.job_id = job_id
+      detail.value = await api.post(`/api/outlook/messages/${detail.value.id}/link`, payload)
+    }
+    // Keep the list row's badge in step with the pane without a full refetch.
+    const row = messages.value.find((m) => m.id === detail.value.id)
+    if (row) {
+      row.linked_customer_id = detail.value.linked_customer_id
+      row.linked_job_id = detail.value.linked_job_id
+      row.linked_customer_name = detail.value.linked_customer_name
+      row.linked_job_label = detail.value.linked_job_label
+    }
+    linkOpen.value = false
+  } catch (err) {
+    error.value = err.message || 'Failed to update link'
+  } finally {
+    linkSaving.value = false
+  }
+}
+
+function clearLinkChoice() {
+  linkChoice.value = { customer_id: null, job_id: null, customer_name: '', job_label: '' }
+}
+
+// ── P2.2 email → follow-up task ──────────────────────────────────────
+
+const taskSaving = ref(false)
+
+async function createTaskFromEmail() {
+  if (!detail.value) return
+  taskSaving.value = true
+  try {
+    await api.post(`/api/outlook/messages/${detail.value.id}/create-task`, {}, {
+      successMessage: 'Follow-up task created.',
+    })
+  } catch (err) {
+    error.value = err.message || 'Could not create the task'
+  } finally {
+    taskSaving.value = false
   }
 }
 
@@ -597,6 +947,20 @@ onMounted(async () => {
   } else {
     await fetchMessages()
   }
+  // "Email about this job" from a job page lands here (P2.5). Opening the
+  // composer with the job attached is what gets the [Job #…] marker onto the
+  // subject — which is what makes the customer's reply link itself back.
+  // Optional-chained: this view is also mounted in isolation (component
+  // tests, storybook) where there is no router — a missing route must not
+  // take the whole inbox down before it renders a single message.
+  const q = route?.query || {}
+  if (q.job_id) {
+    startNewCompose()
+    composeJobId.value = String(q.job_id)
+    composeJobLabel.value = q.job_label ? String(q.job_label) : ''
+    composeForm.value.to = q.to ? String(q.to) : ''
+    composeForm.value.subject = q.subject ? String(q.subject) : ''
+  }
 })
 </script>
 
@@ -609,6 +973,24 @@ onMounted(async () => {
         <Button label="New folder" icon="pi pi-folder-plus" outlined size="small" @click="promptNewFolder(null)" />
         <Button v-tooltip="'Refresh'" icon="pi pi-refresh" outlined size="small" aria-label="Refresh" @click="fetchFolders().then(() => fetchMessages())" />
       </div>
+    </div>
+
+    <div class="inbox-search">
+      <i class="pi pi-search" aria-hidden="true" />
+      <input
+        v-model="searchTerm"
+        type="search"
+        class="inbox-search-input"
+        placeholder="Search subject, sender, or preview…"
+        aria-label="Search mail"
+        data-test="inbox-search"
+        @input="onSearchInput"
+        @keyup.enter="onSearchInput"
+      />
+      <button v-if="activeSearch" class="btn-link" data-test="inbox-search-clear" @click="clearSearch">✕</button>
+      <span v-if="activeSearch" class="search-note muted" data-test="inbox-search-note">
+        Searching all folders — subject, sender and preview text, not full message bodies.
+      </span>
     </div>
 
     <div v-if="error" class="status-error">{{ error }}</div>
@@ -704,6 +1086,18 @@ onMounted(async () => {
           </div>
           <div class="row-subject">{{ m.subject || '(no subject)' }}</div>
           <div class="row-preview muted">{{ m.body_preview || '(no preview)' }}</div>
+          <!-- P2.1 — what this email is ABOUT. The whole reason to read mail
+               inside GDX rather than in Outlook. -->
+          <div v-if="m.linked_customer_id || m.linked_job_id" class="row-links" data-test="inbox-row-links">
+            <span v-if="m.linked_customer_id" class="link-chip customer">
+              <i class="pi pi-user" aria-hidden="true" />
+              {{ m.linked_customer_name || 'Customer' }}
+            </span>
+            <span v-if="m.linked_job_id" class="link-chip job">
+              <i class="pi pi-briefcase" aria-hidden="true" />
+              {{ m.linked_job_label || 'Job' }}
+            </span>
+          </div>
         </button>
         <button
           v-if="hasMoreMessages"
@@ -723,6 +1117,10 @@ onMounted(async () => {
           <button class="btn-link" @click="cancelCompose">✕</button>
         </div>
         <div class="compose-fields">
+          <div v-if="composeJobId" class="compose-job-chip" data-test="compose-job-chip">
+            <i class="pi pi-briefcase" aria-hidden="true" />
+            About {{ composeJobLabel || 'this job' }} — replies link back to it automatically.
+          </div>
           <label>To<input v-model="composeForm.to" data-test="compose-to" placeholder="name@example.com" /></label>
           <label>Cc<input v-model="composeForm.cc" data-test="compose-cc" placeholder="optional" /></label>
           <label>Subject<input v-model="composeForm.subject" data-test="compose-subject" /></label>
@@ -735,9 +1133,33 @@ onMounted(async () => {
           <Button :disabled="composeSending" data-test="compose-send" @click="sendCompose">
             {{ composeSending ? 'Sending…' : 'Send' }}
           </Button>
+          <Button
+            outlined
+            icon="pi pi-save"
+            label="Save draft"
+            :loading="draftSaving"
+            data-test="compose-save-draft"
+            @click="saveDraft"
+          />
+          <Button
+            v-if="composeMode === 'reply' && detail"
+            outlined
+            icon="pi pi-sparkles"
+            label="Draft with AI"
+            :loading="aiDrafting"
+            data-test="compose-ai-draft"
+            @click="draftWithAi"
+          />
           <Button outlined @click="cancelCompose">Cancel</Button>
           <span v-if="composeStatus" :class="['compose-status', composeStatus.ok ? 'ok' : 'err']">
             {{ composeStatus.message }}
+            <a
+              v-if="draftWebLink && composeStatus.ok"
+              :href="draftWebLink"
+              target="_blank"
+              rel="noopener"
+              data-test="compose-draft-link"
+            >Open in Outlook</a>
           </span>
         </div>
       </div>
@@ -754,11 +1176,47 @@ onMounted(async () => {
           <div v-if="detail.cc_addresses?.length"><span class="muted">Cc:</span> {{ detail.cc_addresses.join(', ') }}</div>
           <div><span class="muted">Date:</span> {{ fmtDate(detail.sent_at || detail.received_at) }}</div>
           <div v-if="detail.is_personal" class="muted" data-test="inbox-personal-flag">🔒 Personal — visible only to you</div>
+          <div class="detail-links" data-test="inbox-detail-links">
+            <span v-if="detail.linked_customer_id" class="link-chip customer">
+              <i class="pi pi-user" aria-hidden="true" />
+              {{ detail.linked_customer_name || 'Customer' }}
+            </span>
+            <span v-if="detail.linked_job_id" class="link-chip job">
+              <i class="pi pi-briefcase" aria-hidden="true" />
+              {{ detail.linked_job_label || 'Job' }}
+            </span>
+            <span v-if="!detail.linked_customer_id && !detail.linked_job_id" class="muted">Not linked to a customer or job</span>
+            <!-- Office roles only, matching POST /link's own gate — a tech
+                 could otherwise search customers, pick one, save, and be told
+                 they aren't permitted. -->
+            <button v-if="canManageLinks" class="btn-link small" data-test="inbox-link-open" @click="openLinkDialog">
+              {{ detail.linked_customer_id || detail.linked_job_id ? 'Change link' : 'Link…' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 1.3 conversation strip: the rest of this thread, server-resolved
+             and visibility-filtered. -->
+        <div v-if="threadOthers.length" class="thread-strip" data-test="inbox-thread">
+          <div class="thread-title muted">Conversation · {{ thread.length }} messages</div>
+          <button
+            v-for="t in threadOthers"
+            :key="t.id"
+            class="thread-row"
+            data-test="inbox-thread-row"
+            @click="openMessage(t)"
+          >
+            <span class="thread-from">{{ t.from_address || '(no sender)' }}</span>
+            <span class="thread-subject">{{ t.subject || '(no subject)' }}</span>
+            <span class="thread-when muted">{{ fmtDate(t.received_at || t.sent_at) }}</span>
+          </button>
         </div>
         <EmailAttachments
           v-if="detail.has_attachments"
           :message-id="detail.id"
           :has-attachments="detail.has_attachments"
+          :linked-job-id="detail.linked_job_id"
+          :linked-job-label="detail.linked_job_label"
         />
         <EmailBodyFrame
           :html="bodyData.body_html || bodyData.body_preview || detail.body_preview || ''"
@@ -768,6 +1226,29 @@ onMounted(async () => {
         />
         <div class="detail-actions">
           <Button label="Reply" icon="pi pi-reply" data-test="inbox-reply" @click="startReply" />
+          <Button label="Reply all" icon="pi pi-replay" outlined data-test="inbox-reply-all" @click="startReplyAll" />
+          <!-- Owner-only, same gate as the personal toggle below: Graph's
+               forward action resolves the id against the CALLER's mailbox and
+               would send under the owner's name, so the server 403s everyone
+               else. Showing the button, collecting recipients, and failing at
+               the end with "ask an admin for permission" — a permission no
+               role grant can give — is the worst version of that. -->
+          <Button
+            v-if="detail.viewer_is_owner"
+            label="Forward"
+            icon="pi pi-share-alt"
+            outlined
+            data-test="inbox-forward"
+            @click="startForward"
+          />
+          <Button
+            label="Create task"
+            icon="pi pi-check-square"
+            outlined
+            :loading="taskSaving"
+            data-test="inbox-create-task"
+            @click="createTaskFromEmail"
+          />
           <Button label="Move" icon="pi pi-folder-open" outlined data-test="inbox-move" @click="promptMoveMessage" />
           <!-- Owner-only: the per-message privacy override. Server 403s
                non-owners; viewer_is_owner hides the control from them. -->
@@ -851,6 +1332,69 @@ onMounted(async () => {
       <template #footer>
         <Button label="Cancel" outlined @click="emptyFolderConfirmOpen = false" />
         <Button label="Empty" severity="danger" data-test="empty-folder-confirm" @click="emptyFolder" />
+      </template>
+    </Dialog>
+
+    <!-- ── Forward dialog (1.4) ── -->
+    <Dialog v-model:visible="forwardOpen" header="Forward message" modal :style="{ width: '30rem' }">
+      <div class="compose-fields dialog-fields">
+        <label>To<input v-model="forwardForm.to" data-test="forward-to" placeholder="name@example.com" /></label>
+        <label>Cc<input v-model="forwardForm.cc" data-test="forward-cc" placeholder="optional" /></label>
+        <label>Note
+          <textarea v-model="forwardForm.comment" rows="5" data-test="forward-comment" placeholder="Optional note above the forwarded message" />
+        </label>
+      </div>
+      <p class="muted" style="font-size:0.8rem">The original attachments are forwarded with it.</p>
+      <template #footer>
+        <Button label="Cancel" outlined @click="forwardOpen = false" />
+        <Button label="Forward" :loading="forwardSending" data-test="forward-send" @click="sendForward" />
+      </template>
+    </Dialog>
+
+    <!-- ── Link to customer / job dialog (P2.1 / P2.2) ── -->
+    <Dialog v-model:visible="linkOpen" header="Link this email" modal :style="{ width: '30rem' }">
+      <div class="link-picker">
+        <div class="link-current">
+          <span v-if="linkChoice.customer_name" class="link-chip customer">{{ linkChoice.customer_name }}</span>
+          <span v-else-if="linkChoice.customer_id" class="link-chip customer">Customer selected</span>
+          <span v-if="linkChoice.job_label" class="link-chip job">{{ linkChoice.job_label }}</span>
+          <span v-else-if="linkChoice.job_id" class="link-chip job">Job selected</span>
+          <button
+            v-if="linkChoice.customer_id || linkChoice.job_id"
+            class="btn-link small"
+            data-test="link-clear"
+            @click="clearLinkChoice"
+          >Clear</button>
+        </div>
+
+        <label class="picker-label">
+          Customer
+          <InputText v-model="linkCustomerQuery" placeholder="Search customers…" data-test="link-customer-search" @input="searchLinkCustomers" />
+        </label>
+        <ul v-if="linkCustomerResults.length" class="picker-results" data-test="link-customer-results">
+          <li v-for="c in linkCustomerResults" :key="c.id">
+            <button class="picker-row" @click="pickLinkCustomer(c)">{{ c.name }}<span class="muted"> {{ c.email || '' }}</span></button>
+          </li>
+        </ul>
+
+        <label class="picker-label">
+          Job
+          <InputText v-model="linkJobQuery" placeholder="Search jobs…" data-test="link-job-search" @input="searchLinkJobs" />
+        </label>
+        <ul v-if="linkJobResults.length" class="picker-results" data-test="link-job-results">
+          <li v-for="j in linkJobResults" :key="j.id">
+            <button class="picker-row" @click="pickLinkJob(j)">
+              {{ j.job_number || j.title }}<span class="muted"> {{ j.customer_name || '' }}</span>
+            </button>
+          </li>
+        </ul>
+        <p class="muted" style="font-size:0.8rem">
+          Clearing both and saving records "no link" — the auto-tagger won't re-link it.
+        </p>
+      </div>
+      <template #footer>
+        <Button label="Cancel" outlined @click="linkOpen = false" />
+        <Button label="Save link" :loading="linkSaving" data-test="link-save" @click="saveLink" />
       </template>
     </Dialog>
 
@@ -1149,6 +1693,17 @@ onMounted(async () => {
   gap: 0.5rem;
   align-items: center;
 }
+.compose-job-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
 .compose-status.ok { color: var(--color-success-500, #065f46); }
 .compose-status.err { color: var(--color-danger-500, #b91c1c); }
 
@@ -1170,6 +1725,106 @@ onMounted(async () => {
   justify-content: center;
 }
 .color-swatch:hover { transform: scale(1.1); }
+
+/* ── search ── */
+.inbox-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+}
+.inbox-search .pi-search { color: var(--text-secondary); }
+.inbox-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+  min-width: 0;
+}
+.search-note { font-size: 0.75rem; }
+
+/* ── link chips ── */
+.row-links, .detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+.detail-links { margin-top: 0.35rem; font-size: 0.8rem; }
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-chip.customer { border-color: var(--p-primary-color); color: var(--p-primary-color); }
+.btn-link.small { font-size: 0.78rem; padding: 0; }
+
+/* ── conversation strip ── */
+.thread-strip {
+  border-bottom: 1px solid var(--surface-border);
+  padding: 0.5rem 1rem;
+  max-height: 9rem;
+  overflow-y: auto;
+}
+.thread-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.thread-row {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+.thread-row:hover { background: var(--surface-hover); }
+.thread-from { font-weight: 600; flex: 0 0 auto; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-subject { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-when { flex: 0 0 auto; font-size: 0.72rem; }
+
+/* ── link picker ── */
+.link-picker { display: flex; flex-direction: column; gap: 0.6rem; }
+.link-current { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; min-height: 1.5rem; }
+.picker-label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--text-secondary); }
+.picker-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+.picker-row {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+.picker-row:hover { background: var(--surface-hover); }
+.dialog-fields { padding: 0; }
 
 .muted { color: var(--text-secondary); }
 .center { text-align: center; padding: 2rem; }
