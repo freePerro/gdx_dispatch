@@ -92,6 +92,89 @@
             </template>
           </p>
 
+          <!-- Committed spend: ordered, not yet billed. Shown next to the open
+               balance but never added to it — a quote is not a debt. -->
+          <p
+            v-if="onOrderFor(a) && onOrderFor(a).awaiting_bill_count"
+            class="account-onorder"
+            data-testid="account-on-order"
+          >
+            Plus <strong>{{ formatCurrency(onOrderFor(a).awaiting_bill_total) }}</strong>
+            on order across
+            <strong>{{ onOrderFor(a).awaiting_bill_count }}</strong>
+            order{{ onOrderFor(a).awaiting_bill_count === 1 ? '' : 's' }} the supplier
+            hasn't billed yet — not included in the balance above.
+          </p>
+
+          <Button
+            v-if="onOrderFor(a) && onOrderFor(a).items.length"
+            :label="expandedOrders[a.vendor_name] ? 'Hide orders' : `Show ${onOrderFor(a).items.length} orders`"
+            :icon="expandedOrders[a.vendor_name] ? 'pi pi-chevron-up' : 'pi pi-shopping-cart'"
+            text
+            size="small"
+            :data-testid="`toggle-orders-${a.vendor_name}`"
+            @click="toggleOrders(a.vendor_name)"
+          />
+
+          <p
+            v-if="expandedOrders[a.vendor_name] && onOrderFor(a)?.finished_truncated"
+            class="text-xs hint-text truncation-note"
+            data-testid="on-order-truncated"
+          >
+            Showing recent orders only — {{ onOrderFor(a).finished_truncated }}
+            older completed order(s) not listed.
+          </p>
+
+          <DataTable
+            v-if="expandedOrders[a.vendor_name] && onOrderFor(a)"
+            :value="onOrderFor(a).items"
+            stripedRows
+            responsiveLayout="scroll"
+            class="open-items"
+            data-testid="on-order-table"
+          >
+            <Column header="Order #" style="width: 120px">
+              <template #body="{ data }"><span class="mono">{{ data.order_number }}</span></template>
+            </Column>
+            <Column header="Ordered" style="width: 110px">
+              <template #body="{ data }">{{ formatDate(data.order_date) }}</template>
+            </Column>
+            <Column header="Ship to" style="width: 160px">
+              <template #body="{ data }">{{ data.ship_to || '—' }}</template>
+            </Column>
+            <Column header="Status" style="width: 130px">
+              <template #body="{ data }">
+                <Tag :value="statusLabel(data.status)" :severity="statusSeverity2(data.status)" />
+              </template>
+            </Column>
+            <Column header="Estimated" style="width: 120px">
+              <template #body="{ data }">{{ formatCurrency(data.estimated_total) }}</template>
+            </Column>
+            <Column header="Billed" style="width: 120px">
+              <template #body="{ data }">
+                <span v-if="data.billed_total != null">{{ formatCurrency(data.billed_total) }}</span>
+                <span v-else class="text-muted">—</span>
+              </template>
+            </Column>
+            <Column header="Variance" style="width: 120px">
+              <template #body="{ data }">
+                <span v-if="data.variance == null" class="text-muted">—</span>
+                <span v-else-if="Number(data.variance) === 0" class="text-muted">none</span>
+                <span v-else :class="Number(data.variance) > 0 ? 'variance-up' : 'variance-down'">
+                  {{ Number(data.variance) > 0 ? '+' : '' }}{{ formatCurrency(data.variance) }}
+                </span>
+              </template>
+            </Column>
+            <Column header="Ordered items">
+              <template #body="{ data }">
+                <div v-for="ln in data.lines" :key="ln.line_no" class="order-line">
+                  <span class="qty">{{ ln.quantity }}×</span>
+                  <span class="spec">{{ ln.notes || ln.description }}</span>
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+
           <Button
             :label="expandedVendors[a.vendor_name] ? 'Hide open invoices' : `Show ${a.open_line_count} open invoices`"
             :icon="expandedVendors[a.vendor_name] ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
@@ -236,6 +319,7 @@ const router = useRouter()
 
 const items = ref([])
 const accounts = ref([])
+const onOrder = ref([])
 const loading = ref(false)
 const error = ref(null)
 const duplicate = ref(null)
@@ -268,6 +352,39 @@ function openLines(account) {
   return (account.lines || []).filter((l) => Number(l.balance) > 0)
 }
 
+// Committed spend for an account. Deliberately NOT added to the open balance:
+// an order is a supplier quote that may still change, an open invoice is a
+// debt. Summing them would overstate what's due.
+function onOrderFor(account) {
+  const all = onOrder.value || []
+  // Exact account match first. The fallback matters: statements read
+  // `CUSTOMER CODE:` while order confirmations read `CUSTOMER NO:`, and if the
+  // supplier ever prints those differently an exact-only match would render
+  // nothing at all, silently. Degrading to the vendor name shows the orders.
+  return all.find((o) => o.vendor_name === account.vendor_name
+                      && o.vendor_code === account.vendor_code)
+      || all.find((o) => o.vendor_name === account.vendor_name)
+}
+
+function statusLabel(status) {
+  if (status === 'awaiting_bill') return 'Not billed yet'
+  if (status === 'billed') return 'Billed'
+  if (status === 'settled') return 'Settled'
+  return 'On statement'
+}
+
+function statusSeverity2(status) {
+  if (status === 'awaiting_bill') return 'warn'
+  if (status === 'billed') return 'info'
+  if (status === 'settled') return 'success'
+  return 'secondary'
+}
+
+const expandedOrders = ref({})
+function toggleOrders(name) {
+  expandedOrders.value = { ...expandedOrders.value, [name]: !expandedOrders.value[name] }
+}
+
 function toggleVendor(name) {
   expandedVendors.value = { ...expandedVendors.value, [name]: !expandedVendors.value[name] }
 }
@@ -285,12 +402,14 @@ const fetchItems = async () => {
   loading.value = true
   error.value = null
   try {
-    const [statements, accts] = await Promise.all([
+    const [statements, accts, orders] = await Promise.all([
       api.get('/api/vendor-statements'),
       api.get('/api/vendor-statements/accounts'),
+      api.get('/api/vendor-statements/on-order'),
     ])
     items.value = statements || []
     accounts.value = accts || []
+    onOrder.value = orders || []
   } catch (err) {
     error.value = err.message || 'Failed to load'
   } finally {
@@ -419,6 +538,17 @@ onMounted(fetchItems)
   border-bottom: 1px dotted var(--p-text-muted-color);
 }
 .open-items { margin-top: 0.5rem; }
+.account-onorder {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--p-text-color);
+}
+.variance-up { color: var(--p-orange-500, #f59e0b); font-weight: 600; }
+.variance-down { color: var(--p-green-500, #22c55e); font-weight: 600; }
+.truncation-note { margin: 0.25rem 0 0; }
+.order-line { font-size: 0.8rem; line-height: 1.4; }
+.order-line .qty { color: var(--p-text-muted-color); margin-right: 0.35rem; }
+.order-line .spec { color: var(--p-text-color); }
 .paid-some { color: var(--p-green-500, #22c55e); }
 .carried { font-size: 0.8rem; color: var(--p-orange-500, #f59e0b); }
 .po-ref, .small { font-size: 0.8rem; color: var(--p-text-muted-color); }

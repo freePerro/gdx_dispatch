@@ -7,6 +7,7 @@ automatically instead of by manual upload:
 
     rung 1   ``upload_midwest_invoice``    deterministic bill parser
     rung 1b  ``ingest_midwest_statement``  deterministic statement parser
+    rung 1c  ``ingest_midwest_order``      deterministic order-confirmation parser
     rung 2   ``upload_invoice_via_llm``    Claude-vision bill extraction
 
 Rung 1b exists because a statement of account is not a bill and the two must
@@ -48,6 +49,11 @@ from gdx_dispatch.modules.vendor_invoices.service import (
     upload_invoice_via_llm,
     upload_midwest_invoice,
 )
+from gdx_dispatch.modules.vendor_orders.parsers.midwest_order import (
+    MidwestOrderParseError,
+    MidwestOrderStructureError,
+)
+from gdx_dispatch.modules.vendor_orders.service import ingest_midwest_order
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
     MidwestParseError as MidwestStatementParseError,
 )
@@ -125,14 +131,16 @@ def new_totals() -> dict[str, int]:
     per-run LLM ceiling was reached. The ``statement*`` keys count rung 1b
     (vendor statements of account) separately from bills — a statement is not
     a payable and must never inflate the ``ingested`` count the office reads as
-    "new bills to review". ``statement_unparseable`` is the one to watch: it
-    means a document the vendor's own letterhead identifies as a statement was
-    dropped because the parser couldn't read it."""
+    "new bills to review", and neither must an order confirmation, which is a
+    commitment rather than a debt. The ``*_unparseable`` keys are the ones to
+    watch: each means a document the supplier's own letterhead and title
+    identify as ours was dropped because the parser couldn't read it."""
     return {
         "ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0,
         "downloads": 0, "capped": 0,
         "llm_extractions": 0, "ingested_llm": 0, "llm_capped": 0,
         "statements": 0, "statement_duplicate": 0, "statement_unparseable": 0,
+        "orders": 0, "order_duplicate": 0, "order_unparseable": 0,
     }
 
 
@@ -221,8 +229,20 @@ def ingest_message_attachments(
             )
             if handled:
                 continue
-            # Rung 2: neither a Midwest invoice nor a Midwest statement — try
-            # LLM extraction if the tenant configured a key and the run's cost
+            # Rung 1c: an order confirmation? Also deterministic and free, and
+            # it arrives BEFORE any bill — this is the only view of committed
+            # spend that isn't yet a payable.
+            handled = _order_rung(
+                tdb, result,
+                pdf_bytes=data,
+                original_filename=att.get("name") or "order.pdf",
+                uploaded_by=uploaded_by,
+                graph_id=graph_id,
+            )
+            if handled:
+                continue
+            # Rung 2: none of the deterministic parsers claimed it — try LLM
+            # extraction if the tenant configured a key and the run's cost
             # ceiling allows.
             _llm_rung(
                 tdb, result,
@@ -313,6 +333,74 @@ def _statement_rung(
         )
     else:
         result["statement_duplicate"] += 1
+    return True
+
+
+def _order_rung(
+    tdb: Session,
+    result: dict[str, int],
+    *,
+    pdf_bytes: bytes,
+    original_filename: str,
+    uploaded_by: str,
+    graph_id: str,
+) -> bool:
+    """Rung 1c: record a supplier ORDER CONFIRMATION. Mutates ``result``.
+
+    Returns True when the PDF is settled and must not climb further; False when
+    it simply isn't an order confirmation.
+
+    An order is a commitment, not a debt — its totals are the supplier's own
+    estimate, explicitly a 30-day quote with shipping and tax provisional — so
+    it gets its own counters and never touches the bill counts. What it buys is
+    the front of the chain: the supplier's order number becomes their invoice
+    number, so an order recorded here threads to the bill and the statement line
+    that follow it, and an order with no invoice yet is committed spend that is
+    otherwise invisible.
+    """
+    try:
+        res = ingest_midwest_order(
+            tdb,
+            pdf_bytes=pdf_bytes,
+            original_filename=original_filename,
+            content_type="application/pdf",
+            uploaded_by=uploaded_by,
+            source="email",
+        )
+    except MidwestOrderStructureError as exc:
+        # Titled ORDER CONFIRMATION and still unreadable. Same posture as the
+        # statement rung: claim it (never hand a non-bill to the bill
+        # extractor), count it under its own name so the loss is attributable
+        # rather than buried with junk attachments, and do NOT count it an
+        # error — that would block the checkpoint and re-download the same PDF
+        # every run forever.
+        result["order_unparseable"] += 1
+        log.error(
+            "vendor_bill_ingest: %s from message %s IS an order confirmation but "
+            "the parser could not read it (%s) — NOT recorded. Update the parser "
+            "to this layout, then clear this message's vendor_bills_ingested_at "
+            "to re-ingest it.",
+            original_filename, graph_id, exc,
+        )
+        return True
+    except MidwestOrderParseError:
+        return False  # not an order confirmation — climb to rung 2
+    except Exception:  # noqa: BLE001
+        # Retryable (DB/disk). Keeps the message un-checkpointed, and claims the
+        # PDF so a storage failure can't be laundered into a bill extraction.
+        log.exception("vendor_bill_ingest: order rung failed for %s", graph_id)
+        result["errors"] += 1
+        return True
+
+    if res.created:
+        result["orders"] += 1
+        log.info(
+            "vendor_bill_ingest: recorded vendor order %s (%s, %d lines, est %s) from %s",
+            res.order.order_number, res.order.order_date, res.order.line_count,
+            res.order.estimated_total, graph_id,
+        )
+    else:
+        result["order_duplicate"] += 1
     return True
 
 

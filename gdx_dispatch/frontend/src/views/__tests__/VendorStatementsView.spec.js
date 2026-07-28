@@ -80,10 +80,41 @@ const globalConfig = {
   stubs: { AppLayout: { template: '<div><slot /></div>' } },
 };
 
-async function mountWith({ accounts = [_account()], statements = [_statement] } = {}) {
+function _onOrder(overrides = {}) {
+  return {
+    vendor_name: 'Example Door Supply',
+    vendor_code: 'ACME01',
+    awaiting_bill_count: 1,
+    awaiting_bill_total: '3707.74',
+    items: [
+      {
+        order_number: '20635854', order_date: '2026-07-23', ship_to: 'A Jobsite',
+        customer_po: 'A Jobsite', lot_no: null, estimated_total: '3707.74',
+        line_count: 1, status: 'awaiting_bill', billed_total: null, variance: null,
+        lines: [{
+          line_no: 0, description: 'Garage Door Material and Labor',
+          notes: 'CHI 4283 12x10 Black Long Panel', quantity: '2',
+          unit: 'EA', unit_cost: '1853.8700', line_total: '3707.74',
+        }],
+      },
+      {
+        order_number: '20476417', order_date: '2026-06-22', ship_to: 'Another Site',
+        customer_po: '98022', lot_no: null, estimated_total: '2469.42',
+        line_count: 1, status: 'billed', billed_total: '2577.42', variance: '108.00',
+        lines: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+async function mountWith({
+  accounts = [_account()], statements = [_statement], onOrder = [_onOrder()],
+} = {}) {
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(mkResponse(statements))
-    .mockResolvedValueOnce(mkResponse(accounts));
+    .mockResolvedValueOnce(mkResponse(accounts))
+    .mockResolvedValueOnce(mkResponse(onOrder));
   global.fetch = fetchMock;
   const w = mount(VendorStatementsView, { global: globalConfig });
   await flushPromises();
@@ -227,6 +258,44 @@ describe('VendorStatementsView — account position', () => {
     const { w } = await mountWith();
     expect(w.text()).toContain('Statement history');
     expect(w.find('[data-testid="vendor-statements-table"]').exists()).toBe(true);
+  });
+
+  // ── on order ──────────────────────────────────────────────────────
+  it('reports committed spend separately from the balance owed', async () => {
+    // A supplier quote is not a debt; adding them would overstate what's due.
+    const { w } = await mountWith();
+    const note = w.find('[data-testid="account-on-order"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain('3,707.74');
+    expect(note.text()).toContain('not included in the balance above');
+    // The headline balance is untouched by the order.
+    expect(w.text()).toContain('36,855.52');
+  });
+
+  it('says nothing about orders when none are awaiting a bill', async () => {
+    const { w } = await mountWith({
+      onOrder: [_onOrder({ awaiting_bill_count: 0, awaiting_bill_total: '0.00' })],
+    });
+    expect(w.find('[data-testid="account-on-order"]').exists()).toBe(false);
+  });
+
+  it('shows the ordered doors and the ordered-vs-billed variance', async () => {
+    const { w } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+
+    const table = w.find('[data-testid="on-order-table"]');
+    expect(table.exists()).toBe(true);
+    expect(table.text()).toContain('20635854');
+    expect(table.text()).toContain('Not billed yet');
+    expect(table.text()).toContain('CHI 4283 12x10 Black Long Panel');
+    // Ordered $2,469.42, billed $2,577.42 — surfaced, not judged.
+    expect(table.text()).toContain('108.00');
+  });
+
+  it('does not offer an orders table when there are no orders', async () => {
+    const { w } = await mountWith({ onOrder: [] });
+    expect(w.find('[data-testid="toggle-orders-Example Door Supply"]').exists()).toBe(false);
   });
 
   it('renders nothing account-shaped when there are no statements yet', async () => {
