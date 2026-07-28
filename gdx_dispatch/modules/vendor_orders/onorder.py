@@ -61,6 +61,9 @@ class OnOrderLine:
 
 @dataclass
 class OnOrderItem:
+    # The row's own id — the suggest/confirm endpoints address the order, not
+    # its number, because a number is only unique per vendor.
+    order_id: str
     order_number: str
     order_date: date | None
     ship_to: str | None
@@ -71,6 +74,7 @@ class OnOrderItem:
     status: str
     billed_total: Decimal | None       # what the invoice actually said, if any
     variance: Decimal | None           # billed - estimated, when both are known
+    matched_job_id: str | None = None  # set only by a human confirming
     lines: list[OnOrderLine] = field(default_factory=list)
 
 
@@ -178,6 +182,7 @@ def build_on_order(db: Session) -> list[OnOrderSummary]:
             status = STATUS_AWAITING_BILL
 
         item = OnOrderItem(
+            order_id=str(o.id),
             order_number=o.order_number,
             order_date=o.order_date,
             ship_to=o.ship_to,
@@ -192,6 +197,7 @@ def build_on_order(db: Session) -> list[OnOrderSummary]:
             # judged, because only the office knows which is which.
             variance=(billed_total - (o.estimated_total or ZERO)
                       if billed_total is not None else None),
+            matched_job_id=str(o.matched_job_id) if o.matched_job_id else None,
             lines=[
                 OnOrderLine(
                     line_no=ln.line_no,

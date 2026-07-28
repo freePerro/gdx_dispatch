@@ -151,6 +151,7 @@ class OnOrderLineOut(BaseModel):
 
 
 class OnOrderItemOut(BaseModel):
+    order_id: str
     order_number: str
     order_date: date | None
     ship_to: str | None
@@ -161,7 +162,38 @@ class OnOrderItemOut(BaseModel):
     status: str
     billed_total: Decimal | None
     variance: Decimal | None
+    matched_job_id: str | None = None
     lines: list[OnOrderLineOut]
+
+
+class OrderJobSuggestionOut(BaseModel):
+    job_id: str
+    score: float
+    reason: str
+    job_title: str | None = None
+    job_number: str | None = None
+    customer_id: str | None = None
+    customer_name: str | None = None
+    lifecycle_stage: str | None = None
+
+
+class OrderJobConfirmIn(BaseModel):
+    job_id: UUID
+
+
+class FiledDocumentOut(BaseModel):
+    document_id: str
+    kind: str
+    original_name: str | None
+    newly_filed: bool
+
+
+class OrderJobConfirmOut(BaseModel):
+    order_number: str
+    job_id: str
+    customer_id: str | None
+    documents: list[FiledDocumentOut]
+    newly_filed_count: int
 
 
 class OnOrderSummaryOut(BaseModel):
@@ -332,6 +364,86 @@ async def list_on_order(
         )
         for s in build_on_order(db)
     ]
+
+
+def _live_order_or_404(db: Session, order_id: UUID) -> VendorOrder:
+    order = db.execute(
+        select(VendorOrder)
+        .where(VendorOrder.id == order_id)
+        .where(VendorOrder.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="vendor order not found")
+    return order
+
+
+@router.get(
+    "/orders/{order_id}/job-suggestions",
+    response_model=list[OrderJobSuggestionOut],
+    dependencies=[Depends(require_permission("vendor_statements.read"))],
+)
+async def order_job_suggestions(
+    order_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[OrderJobSuggestionOut]:
+    """Rank likely jobs for this order. Suggestion only — nothing is written.
+
+    Ranked on the jobsite the doors ship to and the reference the office typed,
+    each suggestion carrying the text that produced it so a human can see why.
+    """
+    order = _live_order_or_404(db, order_id)
+    return [
+        OrderJobSuggestionOut(**vars(s)) for s in suggest_order_job_matches(db, order)
+    ]
+
+
+@router.post(
+    "/orders/{order_id}/confirm-job",
+    response_model=OrderJobConfirmOut,
+    dependencies=[Depends(require_permission("vendor_statements.write"))],
+)
+async def confirm_order_job_endpoint(
+    order_id: UUID,
+    payload: OrderJobConfirmIn,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> OrderJobConfirmOut:
+    """Attach this order to a job and file every document held for its number.
+
+    Requires vendor_statements.WRITE, not read: this moves a customer's
+    paperwork onto a job, which is a decision rather than a lookup.
+    """
+    order = _live_order_or_404(db, order_id)
+    actor = str(user.get("sub") or user.get("user_id") or "") or None
+    try:
+        result = confirm_order_job(db, order, job_id=payload.job_id, actor_id=actor)
+    except OrderConfirmError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    log_audit_event_sync(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=actor or "system",
+        action="vendor_order_confirmed_to_job",
+        entity_type="vendor_order",
+        entity_id=str(order.id),
+        details={
+            "order_number": result.order_number,
+            "job_id": result.job_id,
+            "documents_filed": result.newly_filed_count,
+        },
+    )
+    db.commit()
+    return OrderJobConfirmOut(
+        order_number=result.order_number,
+        job_id=result.job_id,
+        customer_id=result.customer_id,
+        documents=[FiledDocumentOut(**vars(d)) for d in result.documents],
+        newly_filed_count=result.newly_filed_count,
+    )
 
 
 @router.get(
