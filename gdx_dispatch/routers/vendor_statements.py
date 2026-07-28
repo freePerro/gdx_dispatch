@@ -69,6 +69,7 @@ class VendorStatementSummaryOut(BaseModel):
     raw_total: Decimal
     line_count: int
     status: str
+    source: str = "upload"
     uploaded_by: Optional[str]
     created_at: datetime
 

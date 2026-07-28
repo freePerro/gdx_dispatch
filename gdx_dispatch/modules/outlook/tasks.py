@@ -12,11 +12,15 @@ Four tasks ship in this module:
   expired, or errored. Safety net for webhook drops.
 - ``repair_blank_outlook_messages(account_id, tenant_id)``: one-shot manual
   repair for rows blanked by the 2026-07 partial-delta overwrite bug.
-- ``sweep_vendor_bill_history(account_id, tenant_id, days)``: repeatable,
-  admin-triggered vendor-bill history sweep over the LOCAL message mirror —
-  downloads allowlisted senders' PDF attachments (bounded per run) and feeds
-  the vendor-invoice pipeline. Checkpointed per message, so re-running only
+- ``sweep_vendor_bill_history(account_id, tenant_id, days)``: repeatable
+  vendor-bill/statement sweep over the LOCAL message mirror — downloads
+  allowlisted senders' PDF attachments (bounded per run) and feeds them to the
+  vendor-invoice pipeline, or to the vendor-statement pipeline when the PDF is
+  a statement of account. Checkpointed per message, so re-running only
   processes what previous runs didn't reach.
+- ``sweep_vendor_bills_all_accounts(days)``: beat task — fans the above out
+  across every connected mailbox daily, so ingest doesn't depend on someone
+  remembering to press the admin button.
 
 Body persistence to R2 is deferred to a future slice (the column
 ``body_r2_key`` is set; actual write is a no-op until R2 client lands).
@@ -947,6 +951,63 @@ def sweep_vendor_bill_history(self, account_id: str, tenant_id: str, days: int =
                   "window_covered": window_covered, **totals}
         log.info("sweep_vendor_bill_history %s: %s", aid, result)
         return result
+
+
+@celery_app.task(name="outlook.sweep_vendor_bills_all_accounts", bind=True)
+def sweep_vendor_bills_all_accounts(self, days: int = 120) -> dict:
+    """Beat task: fan the vendor-bill/statement sweep out across every
+    connected mailbox.
+
+    ``sweep_vendor_bill_history`` needs an account_id, which beat can't supply
+    — so this walks the accounts, exactly like ``poll_outlook_mailboxes_fallback``.
+    Without it the sweep only ever ran when an admin pushed the button, which
+    is how a year of supplier statements sat unread in the mirror.
+
+    ``days`` is a rolling window, not a coverage limit: the per-message
+    ``vendor_bills_ingested_at`` checkpoint means each run only touches what
+    earlier runs didn't reach, so re-scanning costs a mirror query rather than
+    re-downloads. The window has to comfortably exceed the cadence of the
+    documents it's catching — statements of account arrive MONTHLY, so a
+    window of a month or two would let one age out of range during any
+    multi-week outage and never be picked up again. 120 days is four cycles of
+    slack. Deeper history than that is the admin sweep endpoint's job (``POST
+    /api/admin/outlook/vendor-bills/sweep`` with an explicit ``days``).
+
+    Empty allowlist = feature off; the per-account task no-ops, so this stays a
+    cheap tick until a supplier is allowlisted.
+    """
+    tenant_id_str = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
+    triggered = 0
+    tdb = SessionLocal()
+    try:
+        settings = tdb.get(OutlookSettings, 1)
+        allowlist = normalize_allowlist(
+            getattr(settings, "vendor_bill_sender_allowlist", None) if settings else None
+        )
+        if not allowlist:
+            return {"skipped": "allowlist empty", "triggered": 0}
+        accounts = (
+            tdb.query(OutlookAccount)
+            .filter(OutlookAccount.refresh_token_enc.isnot(None))
+            .all()
+        )
+        for account in accounts:
+            sweep_vendor_bill_history.delay(str(account.id), tenant_id_str, days=days)
+            triggered += 1
+    except Exception as exc:  # noqa: BLE001
+        # A beat tick must never raise into the worker. But it must not lie
+        # about why it gave up either: the usual cause is a DB without the
+        # outlook_* tables (module not provisioned), and a dead broker or a
+        # failing .delay() lands here too. Report the real error and mark the
+        # run failed, so a broken fan-out can't read as a quiet success.
+        log.exception(
+            "sweep_vendor_bills_all_accounts: tenant %s aborted after "
+            "queueing %d account(s)", tenant_id_str, triggered,
+        )
+        return {"triggered": triggered, "days": days, "error": str(exc)[:200]}
+    finally:
+        tdb.close()
+    return {"triggered": triggered, "days": days}
 
 
 @celery_app.task(name="outlook.repair_blank_outlook_messages", bind=True)

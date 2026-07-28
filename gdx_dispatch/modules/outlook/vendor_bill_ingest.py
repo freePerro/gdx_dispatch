@@ -1,9 +1,18 @@
 """Outlook → vendor-bills bridge (Phase 2, delta ingest).
 
 When the Outlook delta sync sees a new message from an allowlisted supplier
-sender that has attachments, this downloads each PDF and feeds it to the
-vendor-invoice pipeline (``upload_midwest_invoice``), so the bill lands in the
-review queue automatically instead of by manual upload.
+sender that has attachments, this downloads each PDF and walks it up a rung
+ladder until something claims it, so supplier paperwork lands in GDX
+automatically instead of by manual upload:
+
+    rung 1   ``upload_midwest_invoice``    deterministic bill parser
+    rung 1b  ``ingest_midwest_statement``  deterministic statement parser
+    rung 2   ``upload_invoice_via_llm``    Claude-vision bill extraction
+
+Rung 1b exists because a statement of account is not a bill and the two must
+not be conflated — recording a statement as a payable would shadow the real
+invoice through ``(vendor, invoice_number)`` dedup. It sits BEFORE the LLM
+because it is deterministic and free; see ``_statement_rung``.
 
 Safety posture:
 - **Opt-in, default off.** Nothing ingests unless the tenant lists sender
@@ -39,6 +48,13 @@ from gdx_dispatch.modules.vendor_invoices.service import (
     upload_invoice_via_llm,
     upload_midwest_invoice,
 )
+from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+    MidwestParseError as MidwestStatementParseError,
+)
+from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+    MidwestStatementStructureError,
+)
+from gdx_dispatch.modules.vendor_statements.service import ingest_midwest_statement
 
 log = logging.getLogger("gdx_dispatch.modules.outlook.vendor_bill_ingest")
 
@@ -106,11 +122,17 @@ def new_totals() -> dict[str, int]:
     """The zero counters every ingest call/aggregate uses. ``capped`` counts
     messages whose PDF set was cut short by ``max_downloads``; ``llm_capped``
     counts messages with parser-unreadable PDFs left unprocessed because the
-    per-run LLM ceiling was reached."""
+    per-run LLM ceiling was reached. The ``statement*`` keys count rung 1b
+    (vendor statements of account) separately from bills — a statement is not
+    a payable and must never inflate the ``ingested`` count the office reads as
+    "new bills to review". ``statement_unparseable`` is the one to watch: it
+    means a document the vendor's own letterhead identifies as a statement was
+    dropped because the parser couldn't read it."""
     return {
         "ingested": 0, "duplicate": 0, "unparseable": 0, "errors": 0,
         "downloads": 0, "capped": 0,
         "llm_extractions": 0, "ingested_llm": 0, "llm_capped": 0,
+        "statements": 0, "statement_duplicate": 0, "statement_unparseable": 0,
     }
 
 
@@ -188,8 +210,20 @@ def ingest_message_attachments(
             else:
                 result["duplicate"] += 1
         except MidwestInvoiceParseError:
-            # Rung 2: not a parseable Midwest invoice — try LLM extraction if
-            # the tenant configured a key and the run's cost ceiling allows.
+            # Rung 1b: not a parseable Midwest invoice — is it a statement of
+            # account? Deterministic and free, so it runs BEFORE the LLM.
+            handled = _statement_rung(
+                tdb, result,
+                pdf_bytes=data,
+                original_filename=att.get("name") or "statement.pdf",
+                uploaded_by=uploaded_by,
+                graph_id=graph_id,
+            )
+            if handled:
+                continue
+            # Rung 2: neither a Midwest invoice nor a Midwest statement — try
+            # LLM extraction if the tenant configured a key and the run's cost
+            # ceiling allows.
             _llm_rung(
                 tdb, result,
                 pdf_bytes=data,
@@ -204,6 +238,82 @@ def ingest_message_attachments(
             result["errors"] += 1
 
     return result
+
+
+def _statement_rung(
+    tdb: Session,
+    result: dict[str, int],
+    *,
+    pdf_bytes: bytes,
+    original_filename: str,
+    uploaded_by: str,
+    graph_id: str,
+) -> bool:
+    """Rung 1b: record a vendor STATEMENT of account. Mutates ``result``.
+
+    Returns True when this PDF is settled (recorded, already known, or errored)
+    and must not continue to the LLM rung; False when it simply isn't a
+    statement we can parse, which is the caller's signal to keep climbing.
+
+    Ordered before the LLM deliberately. The Midwest statement parser is
+    strongly self-identifying — it requires the vendor's name in the extracted
+    text, an aging row carrying exactly eight currency columns, and the branch
+    code anchor on the paired detail line — so it cannot mistake an invoice for
+    a statement, and it costs nothing. Statements from vendors with no parser
+    still fall through to rung 2, where the LLM classifier recognizes them and
+    (correctly) declines to record one as a bill.
+    """
+    try:
+        res = ingest_midwest_statement(
+            tdb,
+            pdf_bytes=pdf_bytes,
+            original_filename=original_filename,
+            content_type="application/pdf",
+            uploaded_by=uploaded_by,
+            source="email",
+        )
+    except MidwestStatementStructureError as exc:
+        # The letterhead says this IS a Midwest statement and we still couldn't
+        # read it. Three things must NOT happen here. It must not fall through
+        # to rung 2 — handing a statement to a bill extractor is how one gets
+        # booked as a payable. It must not be filed under the generic
+        # `unparseable` count, where a lost statement is indistinguishable from
+        # a junk attachment. And it must not be counted an error, which would
+        # block the checkpoint and make a parser gap re-download the same PDF
+        # every single run forever.
+        #
+        # So: claim it, count it under its own name, and shout. A non-zero
+        # `statement_unparseable` in a sweep report means the parser has drifted
+        # from what the vendor is sending and a real document was dropped —
+        # visible, attributable, and fixable, which the old behavior was not.
+        result["statement_unparseable"] += 1
+        log.error(
+            "vendor_bill_ingest: %s from message %s IS a Midwest statement but "
+            "the parser could not read it (%s) — NOT recorded. The parser needs "
+            "to be updated to this statement's layout, then this message's "
+            "vendor_bills_ingested_at cleared to re-ingest it.",
+            original_filename, graph_id, exc,
+        )
+        return True
+    except MidwestStatementParseError:
+        return False  # not a statement at all — climb to rung 2
+    except Exception:  # noqa: BLE001
+        # Retryable (DB/disk). Counting it an error keeps the message
+        # un-checkpointed, and claims the PDF so a failure to STORE a statement
+        # can't be laundered into an LLM bill-extraction attempt.
+        log.exception("vendor_bill_ingest: statement rung failed for %s", graph_id)
+        result["errors"] += 1
+        return True
+
+    if res.created:
+        result["statements"] += 1
+        log.info(
+            "vendor_bill_ingest: recorded vendor statement %s (%s, %d lines) from %s",
+            res.statement.id, res.statement.statement_date, res.statement.line_count, graph_id,
+        )
+    else:
+        result["statement_duplicate"] += 1
+    return True
 
 
 def _llm_rung(
