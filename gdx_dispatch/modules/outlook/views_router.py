@@ -77,6 +77,11 @@ class MessageDetailOut(MessageOut):
     # collides with the explicit kwarg.
     internet_message_id: str | None = None
     body_r2_key: str | None = None
+    # The address of the mailbox this message was synced FROM (the connected
+    # account's UPN). Reply-all needs it: on a shared office inbox the mailbox's
+    # own address is in the original To/Cc, so without it every reply-all CCs
+    # the inbox back into itself and the thread doubles each round-trip.
+    mailbox_address: str | None = None
     # True when the CURRENT VIEWER owns the mailbox this message belongs to.
     # Drives owner-only UI affordances (the "mark personal" toggle) without a
     # second round-trip. List serialization always leaves it False — only the
@@ -204,6 +209,26 @@ def _to_out_all(tenant_db: Session, rows: list[OutlookMessage]) -> list[MessageO
     return [_to_out(m, customers=customers, jobs=jobs) for m in rows]
 
 
+def _mailbox_address(tenant_db: Session, msg: OutlookMessage) -> str | None:
+    """The connected account's own address (UPN) for this message's mailbox.
+
+    Best-effort — a missing address only costs reply-all its self-drop.
+    """
+    try:
+        from gdx_dispatch.modules.outlook.models import OutlookAccount  # noqa: PLC0415
+
+        row = (
+            tenant_db.query(OutlookAccount.upn)
+            .filter(OutlookAccount.id == msg.account_id)
+            .first()
+        )
+        value = row[0] if row else None
+        return value.strip().lower() if isinstance(value, str) and value.strip() else None
+    except Exception:  # noqa: BLE001
+        log.warning("views_router: mailbox-address lookup failed", exc_info=True)
+        return None
+
+
 def _to_detail(
     m: OutlookMessage,
     *,
@@ -219,6 +244,7 @@ def _to_detail(
         internet_message_id=m.internet_message_id,
         body_r2_key=m.body_r2_key,
         viewer_is_owner=viewer_is_owner,
+        mailbox_address=_mailbox_address(tenant_db, m) if tenant_db is not None else None,
     )
 
 

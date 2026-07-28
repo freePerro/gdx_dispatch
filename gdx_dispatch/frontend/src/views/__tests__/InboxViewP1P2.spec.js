@@ -84,7 +84,11 @@ const MESSAGES = [{
 // viewer_is_owner drives the owner-only affordances (Forward, the personal
 // toggle). Doug — the connected mailbox — is the owner, which is the case
 // these tests exercise.
-const DETAIL = { ...MESSAGES[0], internet_message_id: '<x@y>', body_r2_key: null, viewer_is_owner: true };
+const DETAIL = {
+  ...MESSAGES[0], internet_message_id: '<x@y>', body_r2_key: null, viewer_is_owner: true,
+  // The shared mailbox's own address — it IS in the original To list.
+  mailbox_address: 'office@gdx.com',
+};
 
 const THREAD = [
   MESSAGES[0],
@@ -205,10 +209,13 @@ describe('InboxView — reply-all + forward (1.4)', () => {
     await flushPromises();
     expect(wrapper.find('[data-test="compose-to"]').element.value).toBe('alice@example.com');
     const cc = wrapper.find('[data-test="compose-cc"]').element.value;
-    expect(cc).toContain('office@gdx.com');
+    expect(cc).toContain('sam@gdx.com');
     expect(cc).toContain('boss@gdx.com');
     // The original sender must not be duplicated into cc.
     expect(cc).not.toContain('alice@example.com');
+    // ...and the shared inbox must not be mailed back into itself, or the
+    // thread doubles on every reply-all.
+    expect(cc).not.toContain('office@gdx.com');
   });
 
   it('forward posts to the native Graph forward endpoint with a recipient list', async () => {

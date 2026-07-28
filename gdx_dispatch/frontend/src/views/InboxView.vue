@@ -381,8 +381,11 @@ function startReply() {
 }
 
 // 1.4 — reply-all: original sender + everyone on To/Cc, minus this mailbox.
-// Without the self-drop, every reply-all mails the shared inbox back into
-// itself and the thread doubles on each round.
+// The self-drop is load-bearing: on a shared office inbox the mailbox's OWN
+// address is in the original To/Cc, so without dropping it every reply-all
+// mails the inbox back into itself and the thread doubles each round-trip.
+// The server tells us that address (mailbox_address, the account's UPN) —
+// it can't be inferred client-side from the recipient list.
 function startReplyAll() {
   if (!detail.value) return
   const d = detail.value
@@ -392,11 +395,9 @@ function startReplyAll() {
       .filter(Boolean)
       .map((a) => String(a).toLowerCase()),
   )
-  // The mailbox's own address: on an inbound message it's whichever of our
-  // recipients matches the connected account. We can't know it client-side,
-  // so drop the FROM address from cc (it goes in To) and de-dupe the rest.
   const from = (d.from_address || '').toLowerCase()
-  const cc = [...mine].filter((a) => a && a !== from)
+  const self = (d.mailbox_address || '').toLowerCase()
+  const cc = [...mine].filter((a) => a && a !== from && a !== self)
   composeMode.value = 'reply'
   composeStatus.value = null
   composeJobId.value = d.linked_job_id || null

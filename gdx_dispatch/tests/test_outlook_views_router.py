@@ -1134,3 +1134,19 @@ def test_unread_count_excludes_junk_and_deleted_folders(app):
     assert r.json() == {"count": 1}
     # The exclusion actually reached SQL (a second .filter on the query).
     assert chain.filter.called
+
+
+def test_detail_exposes_the_mailbox_address_for_reply_all(app):
+    """Reply-all must drop the shared inbox's OWN address from Cc, and the
+    client can't infer which recipient that is — the server has to say."""
+    client, tdb = app
+    msg = _msg(to_addresses=["office@gdx.com", "sam@gdx.com"])
+    tdb.get.return_value = msg
+    account_row = ("Office@GDX.com ",)  # UPN as Graph stores it: mixed case
+    tdb.query.return_value.filter.return_value.first.return_value = account_row
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._viewer_owns_mailbox", return_value=True):
+        r = client.get(f"/api/outlook/messages/{msg.id}")
+    assert r.status_code == 200
+    # Normalized for a case-insensitive compare against the recipient list.
+    assert r.json()["mailbox_address"] == "office@gdx.com"
