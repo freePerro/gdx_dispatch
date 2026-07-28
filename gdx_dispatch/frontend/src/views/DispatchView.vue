@@ -2037,7 +2037,7 @@ defineExpose({
 }
 .tech-capacity-bar {
   height: 4px;
-  background: var(--p-surface-300, #e5e7eb);
+  background: var(--p-content-border-color);
   border-radius: 2px;
   overflow: hidden;
 }

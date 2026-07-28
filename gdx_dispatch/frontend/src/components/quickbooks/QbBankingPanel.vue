@@ -485,7 +485,7 @@ onMounted(async () => {
 }
 
 .balances-empty {
-  background: var(--p-surface-100);
+  background: var(--p-content-hover-background);
   border-radius: 8px;
   padding: 0.75rem;
 }

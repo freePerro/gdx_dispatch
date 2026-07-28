@@ -65,6 +65,7 @@ function onClickSegment(target) {
   gap: 0.25rem;
   width: 100%;
 }
+/* dark-safe: progress bar segment, holds no text */
 .progress-segment {
   flex: 1;
   height: 36px;
@@ -76,6 +77,7 @@ function onClickSegment(target) {
   min-width: 32px;
 }
 .progress-segment:hover { transform: scaleY(1.1); }
+/* dark-safe: progress bar segment, holds no text */
 .progress-segment--filled.progress-segment--amber { background: #f59e0b; }
 .progress-segment--filled.progress-segment--green { background: #10b981; }
 .progress-segment--filled.progress-segment--red { background: #ef4444; }

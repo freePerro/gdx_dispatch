@@ -341,7 +341,11 @@ onUnmounted(() => {
   transition: background 0.1s ease;
 }
 .thread-card.active {
-  outline: 2px solid var(--p-primary-color);
+  /* --p-primary-color is Aura's EMERALD, so the selected thread rang green in
+     a UI that is blue everywhere else — visible the moment you look at it,
+     invisible to a contrast check. --interactive-primary is the brand blue
+     this file already uses for .thread-unread-badge, and it flips per theme. */
+  outline: 2px solid var(--interactive-primary);
 }
 .thread-card :deep(.p-card-body) {
   padding: 0.65rem 0.85rem;
@@ -413,7 +417,7 @@ onUnmounted(() => {
   align-self: flex-start;
 }
 .msg-out {
-  background: var(--p-primary-50, #eff6ff);
+  background: var(--interactive-primary-soft);
   align-self: flex-end;
 }
 .msg-meta {

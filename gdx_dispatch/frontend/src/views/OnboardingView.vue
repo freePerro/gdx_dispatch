@@ -154,7 +154,7 @@ async function finish() {
   font-weight: 700; margin-bottom: 0.4rem;
 }
 .active .dot { background: var(--interactive-primary); color: #fff; }
-.done .dot { background: var(--p-green-500, #22c55e); color: #fff; }
+.done .dot { background: var(--p-green-700); color: #fff; }
 .step-dot span { font-size: 0.8rem; color: var(--text-muted); }
 .card {
   background: var(--surface-panel, var(--surface-elevated));
@@ -214,13 +214,28 @@ button {
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-back { background: var(--surface-elevated); color: var(--text-muted); }
 .btn-skip { background: transparent; color: var(--text-muted); }
+/* An error banner has to read as an error, so the text stays red — but no
+   single red clears AA on both tints (#dc2626 is 4.01:1 on the light one,
+   #f87171 is 3.37:1 on the dark one). Pin each theme to its own red, the way
+   MobileTimeclockView's banners do: 5.37:1 light, 5.97:1 dark. The
+   prefers-color-scheme block is the fallback for first paint, before the
+   theme store has stamped data-theme onto <html>. */
 .error {
-  color: var(--p-red-400, #f87171);
+  color: #b91c1c;
   font-size: 0.85rem;
   text-align: center;
   margin-bottom: 1rem;
-  background: var(--p-red-50, rgba(248, 113, 113, 0.1));
+  background: color-mix(in srgb, #dc2626 12%, var(--p-content-background));
+  border: 1px solid color-mix(in srgb, #dc2626 45%, var(--p-content-background));
   padding: 0.5rem;
   border-radius: 6px;
+}
+[data-theme="dark"] .error {
+  color: #ff6d77;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .error {
+    color: #ff6d77;
+  }
 }
 </style>

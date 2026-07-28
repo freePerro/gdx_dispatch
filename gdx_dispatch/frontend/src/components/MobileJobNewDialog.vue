@@ -788,10 +788,10 @@ watch(open, async (v) => {
   margin-top: 0.4rem;
   padding: 0.65rem 0.75rem;
   min-height: 44px;
-  border: 1px dashed var(--p-primary-300, #a5b4fc);
+  border: 1px dashed var(--p-primary-color);
   border-radius: 0.5rem;
-  background: var(--p-primary-50, #eef2ff);
-  color: var(--p-primary-color, #4338ca);
+  background: var(--p-highlight-background);
+  color: var(--p-primary-color);
   font: inherit;
   font-size: 0.9rem;
   text-align: left;
@@ -841,8 +841,8 @@ watch(open, async (v) => {
   cursor: pointer;
 }
 .loc-item.active {
-  background: var(--p-primary-50, #eef2ff);
-  border-color: var(--p-primary-300, #a5b4fc);
+  background: var(--p-highlight-background);
+  border-color: var(--p-primary-color);
 }
 .loc-item .badge-primary {
   margin-left: auto;

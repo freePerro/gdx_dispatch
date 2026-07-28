@@ -749,6 +749,7 @@ onMounted(() => {
   font-size: 1rem;
 }
 
+/* dark-safe: captured signature bitmap — dark ink baked into a white image */
 .signature-img {
   max-width: 100%;
   border: 1px solid var(--p-content-border-color, #e5e7eb);
@@ -805,6 +806,8 @@ onMounted(() => {
   width: 100%;
 }
 
+/* dark-safe: signature paper — white is deliberate in both themes. Anything
+   placed on it must set its own dark colour; see .sig-clear below. */
 .sig-canvas-wrap {
   position: relative;
   background: #fff;
@@ -813,6 +816,7 @@ onMounted(() => {
   overflow: hidden;
 }
 
+/* dark-safe: signature paper — white is deliberate in both themes, the ink is dark */
 .sig-canvas {
   display: block;
   width: 100%;
@@ -826,6 +830,7 @@ onMounted(() => {
   top: 0.4rem;
   right: 0.4rem;
   background: rgba(0, 0, 0, 0.06);
+  color: #1f2937;
   border: 0;
   border-radius: 0.3rem;
   padding: 0.2rem 0.55rem;

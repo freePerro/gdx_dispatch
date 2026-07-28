@@ -407,7 +407,7 @@ function handleTab(item) {
   letter-spacing: 0.04em;
   padding: 0.15rem 0.4rem;
   border-radius: 0.375rem;
-  background: var(--surface-muted, #e2e8f0);
+  background: var(--p-content-hover-background);
   color: var(--text-muted, #64748b);
 }
 

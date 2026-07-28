@@ -238,13 +238,13 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .error-message { background-color: #fee2e2; color: #991b1b; }
 .warning-message { background-color: #fef3c7; color: #92400e; }
 .answer-text { background-color: #f3f4f6; color: #1f2937; white-space: pre-wrap; }
-.yellow-confirm-card { background-color: #fef3c7; border: 1px solid #fcd34d; border-radius: 4px; padding: 15px; margin-top: 15px; }
+.yellow-confirm-card { background-color: #fef3c7; color: #78350f; border: 1px solid #fcd34d; border-radius: 4px; padding: 15px; margin-top: 15px; }
 .tool-name { font-weight: bold; margin-bottom: 10px; color: #92400e; }
-.diff-view { background-color: #fffbeb; padding: 10px; border-radius: 4px; font-size: 0.875rem; overflow-x: auto; margin-bottom: 15px; border: 1px solid #fde68a; }
+.diff-view { background-color: #fffbeb; color: #78350f; padding: 10px; border-radius: 4px; font-size: 0.875rem; overflow-x: auto; margin-bottom: 15px; border: 1px solid #fde68a; }
 .card-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .apply-btn { background-color: #92400e; color: white; border: none; border-radius: 4px; padding: 6px 12px; }
 .cancel-btn { background-color: transparent; border: 1px solid #92400e; color: #92400e; border-radius: 4px; padding: 6px 12px; }
-.red-confirm-modal { background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 4px; padding: 20px; margin-top: 15px; }
+.red-confirm-modal { background-color: #fef2f2; color: #7f1d1d; border: 1px solid #fecaca; border-radius: 4px; padding: 20px; margin-top: 15px; }
 .modal-header { margin-bottom: 15px; color: #991b1b; font-size: 1.1rem; }
 .modal-body { margin-bottom: 20px; }
 .confirmation-id { font-family: monospace; background: #fee2e2; padding: 8px; border-radius: 4px; margin: 10px 0; font-weight: bold; color: #b91c1c; text-align: center; }

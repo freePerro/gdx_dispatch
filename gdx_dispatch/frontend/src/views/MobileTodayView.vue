@@ -1715,7 +1715,7 @@ function replayTour() {
   gap: 0.35rem;
   align-self: flex-start;
   padding: 0.15rem 0.5rem;
-  background: var(--p-surface-100, #f3f4f6);
+  background: var(--p-content-hover-background);
   border-radius: 999px;
   font-size: 0.8rem;
   color: var(--p-text-muted-color, #6b7280);
@@ -1784,8 +1784,9 @@ function replayTour() {
   flex-wrap: wrap;
 }
 .job-notes {
-  background: var(--p-yellow-50, #fef9c3);
-  border-left: 3px solid var(--p-yellow-400, #facc15);
+  background: color-mix(in srgb, #eab308 15%, var(--p-content-background));
+  border-left: 3px solid #eab308;
+  color: var(--p-text-color);
   border-radius: 0.25rem;
   padding: 0.5rem 0.65rem;
   font-size: 0.9rem;
@@ -1829,7 +1830,7 @@ function replayTour() {
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   border-radius: 0.5rem;
   overflow: hidden;
-  background: #f3f4f6;
+  background: var(--p-content-hover-background);
 }
 .map-placeholder {
   position: absolute;
@@ -1841,8 +1842,8 @@ function replayTour() {
   gap: 0.5rem;
   text-align: center;
   padding: 1rem;
-  color: var(--p-text-muted-color, #6b7280);
-  background: rgba(255, 255, 255, 0.85);
+  color: var(--p-text-muted-color);
+  background: color-mix(in srgb, var(--p-content-background) 85%, transparent);
   border-radius: 0.5rem;
 }
 .reorder-controls {
@@ -1855,7 +1856,7 @@ function replayTour() {
   gap: 0.4rem;
   padding: 0.45rem 0.55rem;
   margin-top: 0.2rem;
-  background: var(--p-surface-100, #f3f4f6);
+  background: var(--p-content-hover-background);
   border-radius: 0.4rem;
   font-size: 0.85rem;
   cursor: pointer;

@@ -327,7 +327,7 @@ onMounted(() => {
 .pdf-block { padding: 0.75rem; margin: 0.5rem 0; border: 1px dashed #ddd; border-radius: 4px; cursor: pointer; position: relative; } /* printed-page preview: intentionally light */
 .pdf-block.selected { border-color: var(--p-primary-color); background: rgba(0, 87, 168, 0.03); }
 .pdf-block:hover { border-color: #aaa; } /* printed-page preview: intentionally light */
-.block-type-label { position: absolute; top: -0.5rem; left: 0.5rem; background: white; padding: 0 0.3rem; font-size: 0.65rem; color: #999; text-transform: uppercase; } /* printed-page preview: intentionally light */
+.block-type-label { position: absolute; top: -0.5rem; left: 0.5rem; background: white; padding: 0 0.3rem; font-size: 0.65rem; color: #6b7280; text-transform: uppercase; } /* dark-safe: printed-page preview, intentionally light in both themes */
 .preview-items table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .preview-items th, .preview-items td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; text-align: left; } /* printed-page preview: intentionally light */
 .preview-items th { font-weight: 600; border-bottom: 2px solid #ccc; } /* printed-page preview: intentionally light */

@@ -234,8 +234,8 @@ onMounted(fetchDetail)
   gap: 0.75rem;
 }
 .summary-tile {
-  background: var(--p-surface-50, #f8fafc);
-  border: 1px solid var(--p-surface-200, #e2e8f0);
+  background: var(--p-content-hover-background);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 8px;
   padding: 0.75rem 1rem;
 }

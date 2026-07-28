@@ -663,8 +663,8 @@ onMounted(async () => {
 .filter-select { min-width: 8rem; margin-right: .5rem; }
 .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1rem 0; }
 .kpi {
-  background: var(--p-surface-50, #f8fafc);
-  border: 1px solid var(--p-surface-200, #e2e8f0);
+  background: var(--p-content-hover-background);
+  border: 1px solid var(--p-content-border-color);
   border-radius: .5rem;
   padding: 1rem;
 }
@@ -722,8 +722,8 @@ onMounted(async () => {
   width: 100%;
 }
 .quickfill:hover:not(:disabled) {
-  background: var(--p-blue-50, #eff6ff);
-  border-color: var(--p-blue-200, #bfdbfe);
+  background: var(--interactive-primary-soft);
+  border-color: var(--interactive-primary);
 }
 .quickfill:disabled {
   cursor: default;

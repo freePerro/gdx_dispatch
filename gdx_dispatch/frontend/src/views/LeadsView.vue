@@ -779,7 +779,7 @@ onMounted(async () => {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--p-surface-100, #f1f5f9);
+  background: var(--p-content-hover-background);
   border-radius: 6px;
   padding: 0.75rem;
   font-size: 0.95rem;

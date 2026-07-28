@@ -98,6 +98,6 @@ function onGrantLife() {
   cursor: pointer;
   margin-left: 0.5rem;
 }
-.heart-add:disabled { background: #cbd5e1; cursor: not-allowed; }
+.heart-add:disabled { background: #cbd5e1; color: #334155; cursor: not-allowed; }
 .heart-add:not(:disabled):hover { background: #059669; }
 </style>

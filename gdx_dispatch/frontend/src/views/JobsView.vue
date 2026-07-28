@@ -1329,10 +1329,12 @@ defineExpose({
   background: #667085;
 }
 
+/* dark-safe: 8px status dot (.priority-dot), holds no text */
 .priority-normal {
   background: #4fc3f7;
 }
 
+/* dark-safe: 8px status dot (.priority-dot), holds no text */
 .priority-high {
   background: #ffa726;
 }
@@ -1369,10 +1371,10 @@ defineExpose({
 }
 
 .new-client-section {
-  border: 1px solid var(--surface-border, #dee2e6);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 8px;
   padding: 0.75rem;
-  background: var(--surface-card, #ffffff);
+  background: var(--p-content-background);
   margin-bottom: 0.5rem;
 }
 
@@ -1385,10 +1387,10 @@ defineExpose({
 }
 
 .appointment-section {
-  border: 1px solid var(--surface-border, #dee2e6);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 8px;
   padding: 0.75rem;
-  background: var(--surface-ground, #f8f9fb);
+  background: var(--p-content-hover-background);
   display: grid;
   gap: 0.75rem;
 }
@@ -1442,9 +1444,9 @@ defineExpose({
 .catalog-part-row .cp-qty {
   width: 56px;
   padding: 0.25rem 0.4rem;
-  border: 1px solid var(--surface-border, #dee2e6);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 6px;
-  background: var(--surface-ground, #fff);
+  background: var(--p-content-background);
   color: inherit;
 }
 

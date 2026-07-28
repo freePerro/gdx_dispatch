@@ -291,21 +291,6 @@ onMounted(() => {
   text-align: right;
 }
 
-.bar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-  height: 24px;
-  overflow: hidden;
-}
-
-.bar-fill {
-  height: 100%;
-  background: var(--primary, #4fc3f7);
-  border-radius: 4px;
-  transition: width 0.4s ease;
-  min-width: 2px;
-}
-
 .bar-value {
   font-size: 0.85rem;
   font-weight: 600;

@@ -64,6 +64,7 @@ function onClick() {
 }
 .big-button--danger:hover {
   background: #fecaca;
+  color: #7f1d1d;
   border-color: #f87171;
 }
 .big-button:active { transform: translateY(1px); }

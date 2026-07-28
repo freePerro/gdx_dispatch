@@ -481,8 +481,9 @@ onBeforeUnmount(() => {
 .sync-error-list {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
-  background: var(--p-red-50, #fef2f2);
-  border: 1px solid var(--p-red-300, #fca5a5);
+  background: color-mix(in srgb, #dc2626 12%, var(--p-content-background));
+  border: 1px solid color-mix(in srgb, #dc2626 45%, var(--p-content-background));
+  color: var(--p-text-color);
   border-radius: 6px;
 }
 .sync-error-list h4 {
