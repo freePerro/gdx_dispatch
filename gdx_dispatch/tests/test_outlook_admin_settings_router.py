@@ -237,3 +237,183 @@ def test_sweep_404_when_no_connected_account(app):
         r = client.post("/api/admin/outlook/vendor-bills/sweep", json={})
     assert r.status_code == 404
     task.delay.assert_not_called()
+
+
+# ── vendor_bill_sender_allowlist ───────────────────────────────────────
+#
+# This column gates the whole vendor-bill/statement intake feature, and until
+# 2026-07-28 no endpoint read or wrote it — turning the feature on required
+# hand-written SQL against prod. These cover the API that replaced that, on a
+# REAL session (not a MagicMock) because the round-trip and the row-creation
+# commit are exactly what mocks can't prove.
+
+from gdx_dispatch.modules.outlook.admin_settings_router import (  # noqa: E402
+    MAX_ALLOWLIST_ENTRIES,
+    _clean_allowlist,
+    _ensure_settings_row,
+)
+from gdx_dispatch.modules.outlook.models import OutlookSettings  # noqa: E402
+
+
+def _real_db():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from gdx_dispatch.core.audit import TenantBase
+
+    eng = create_engine(
+        "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
+    )
+    TenantBase.metadata.create_all(eng)
+    return sessionmaker(bind=eng)
+
+
+@pytest.fixture
+def real_app(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "x" * 64)
+    maker = _real_db()
+    db = maker()
+    app = FastAPI()
+    app.include_router(admin_router)
+    app.dependency_overrides[get_admin_principal] = _admin
+    app.dependency_overrides[get_db_for_admin] = lambda: db
+    app.dependency_overrides[get_current_user] = _admin
+    app.dependency_overrides[get_db] = lambda: db
+    return TestClient(app), db, maker
+
+
+# --- normalization + validation ---------------------------------------------
+def test_clean_allowlist_normalizes_and_dedupes():
+    assert _clean_allowlist(
+        ["  Vendor.COM ", "vendor.com", "AR@Supplier.Net", ""]
+    ) == ["vendor.com", "ar@supplier.net"]
+
+
+@pytest.mark.parametrize("bad", [
+    "vendor",             # no dot — a typo, would match nothing
+    "com",                # bare TLD
+    "two words.com",      # whitespace
+    "@vendor.com",        # empty local part
+    "vendor.com/path",
+    ".vendor.com",
+    "vendor..com",
+])
+def test_clean_allowlist_rejects_entries_that_would_misfire(bad):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        _clean_allowlist([bad])
+    assert exc.value.status_code == 422
+
+
+def test_clean_allowlist_caps_the_list():
+    from fastapi import HTTPException
+
+    ok = [f"v{i}.com" for i in range(MAX_ALLOWLIST_ENTRIES)]
+    assert len(_clean_allowlist(ok)) == MAX_ALLOWLIST_ENTRIES
+    with pytest.raises(HTTPException):
+        _clean_allowlist(ok + ["one-too-many.com"])
+
+
+def test_clean_allowlist_accepts_subdomains_and_empty():
+    assert _clean_allowlist(["mail.vendor.co.uk"]) == ["mail.vendor.co.uk"]
+    assert _clean_allowlist([]) == []          # empty = feature off, not an error
+
+
+# --- the API round-trip ------------------------------------------------------
+def test_patch_then_get_round_trips_the_allowlist(real_app):
+    client, db, _ = real_app
+
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"vendor_bill_sender_allowlist": ["  Installed.NET  ", "ar@vendor.com"]})
+    assert r.status_code == 200
+    assert r.json()["vendor_bill_sender_allowlist"] == ["installed.net", "ar@vendor.com"]
+
+    # GET must report it too — it returned nothing at all before this change.
+    assert client.get("/api/admin/outlook/settings").json()[
+        "vendor_bill_sender_allowlist"
+    ] == ["installed.net", "ar@vendor.com"]
+
+    # And it actually landed in the column the background tasks read.
+    assert db.get(OutlookSettings, 1).vendor_bill_sender_allowlist == [
+        "installed.net", "ar@vendor.com",
+    ]
+
+
+def test_patch_rejects_a_bad_entry_without_changing_what_is_stored(real_app):
+    client, db, _ = real_app
+    client.patch("/api/admin/outlook/settings",
+                 json={"vendor_bill_sender_allowlist": ["good.com"]})
+
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"vendor_bill_sender_allowlist": ["good.com", "typo"]})
+    assert r.status_code == 422
+    db.expire_all()
+    assert db.get(OutlookSettings, 1).vendor_bill_sender_allowlist == ["good.com"]
+
+
+def test_a_rejected_patch_does_not_apply_its_other_fields(real_app):
+    """Validation runs before any assignment. Otherwise a 422'd request leaves
+    its other mutations sitting on a live ORM object, and nothing but the
+    session teardown stops them reaching the DB."""
+    client, db, maker = real_app
+    client.patch("/api/admin/outlook/settings", json={"backfill_days": 90})
+
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"backfill_days": 365, "vendor_bill_sender_allowlist": ["typo"]})
+    assert r.status_code == 422
+
+    other = maker()
+    try:
+        assert other.get(OutlookSettings, 1).backfill_days == 90
+    finally:
+        other.close()
+
+
+def test_patch_can_empty_the_allowlist_to_turn_intake_off(real_app):
+    client, db, _ = real_app
+    client.patch("/api/admin/outlook/settings",
+                 json={"vendor_bill_sender_allowlist": ["vendor.com"]})
+    r = client.patch("/api/admin/outlook/settings",
+                     json={"vendor_bill_sender_allowlist": []})
+    assert r.status_code == 200
+    assert r.json()["vendor_bill_sender_allowlist"] == []
+
+
+def test_patching_other_fields_leaves_the_allowlist_alone(real_app):
+    """A save from the Tagging tab must not wipe vendor-bill intake."""
+    client, db, _ = real_app
+    client.patch("/api/admin/outlook/settings",
+                 json={"vendor_bill_sender_allowlist": ["vendor.com"]})
+
+    r = client.patch("/api/admin/outlook/settings", json={"backfill_days": 120})
+    assert r.status_code == 200
+    assert r.json()["vendor_bill_sender_allowlist"] == ["vendor.com"]
+
+
+# --- the row-creation commit fix --------------------------------------------
+def test_reading_settings_actually_persists_the_row(real_app):
+    """_ensure_settings_row used to only flush(), so a GET created a row that
+    was discarded on session close — the table stayed empty no matter how many
+    times the page was opened, and every background task that reads
+    OutlookSettings directly saw 'unconfigured'."""
+    client, db, maker = real_app
+    assert db.query(OutlookSettings).count() == 0
+
+    assert client.get("/api/admin/outlook/settings").status_code == 200
+
+    # A SEPARATE session must see it — that's what "committed" means.
+    other = maker()
+    try:
+        assert other.query(OutlookSettings).count() == 1
+    finally:
+        other.close()
+
+
+def test_ensure_settings_row_is_idempotent(real_app):
+    _, db, _ = real_app
+    first = _ensure_settings_row(db)
+    second = _ensure_settings_row(db)
+    assert first.id == second.id == 1
+    assert db.query(OutlookSettings).count() == 1
