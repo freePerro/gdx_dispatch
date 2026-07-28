@@ -165,6 +165,49 @@
                 </span>
               </template>
             </Column>
+            <Column header="Job" style="width: 230px">
+              <template #body="{ data }">
+                <span v-if="data.matched_job_id" class="job-linked">
+                  <i class="pi pi-check-circle" aria-hidden="true" /> Filed to job
+                </span>
+                <template v-else>
+                  <Button
+                    v-if="!jobSuggestions[data.order_number]"
+                    label="Find job"
+                    icon="pi pi-search"
+                    text
+                    size="small"
+                    :loading="suggestLoading[data.order_number]"
+                    :data-testid="`suggest-${data.order_number}`"
+                    @click="loadJobSuggestions(data)"
+                  />
+                  <div v-else-if="!jobSuggestions[data.order_number].length" class="text-muted small">
+                    No match — the reference doesn't look like a customer name.
+                  </div>
+                  <div v-else class="suggestions">
+                    <div
+                      v-for="sug in jobSuggestions[data.order_number].slice(0, 2)"
+                      :key="sug.job_id"
+                      class="suggestion"
+                    >
+                      <div class="sug-name">
+                        {{ sug.customer_name }}
+                        <span v-if="sug.job_number" class="mono small">{{ sug.job_number }}</span>
+                      </div>
+                      <div class="sug-why">{{ sug.reason }}</div>
+                      <Button
+                        label="File here"
+                        icon="pi pi-paperclip"
+                        size="small"
+                        :loading="confirmingOrder === data.order_number"
+                        :data-testid="`confirm-${data.order_number}`"
+                        @click="confirmJob(data, sug)"
+                      />
+                    </div>
+                  </div>
+                </template>
+              </template>
+            </Column>
             <Column header="Ordered items">
               <template #body="{ data }">
                 <div v-for="ln in data.lines" :key="ln.line_no" class="order-line">
@@ -300,6 +343,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
 import { formatDate } from '../utils/dates'
@@ -314,6 +358,7 @@ import FileUpload from 'primevue/fileupload'
 import ProgressSpinner from 'primevue/progressspinner'
 
 const api = useApi()
+const toast = useToast()
 const auth = useAuthStore()
 const router = useRouter()
 
@@ -381,6 +426,51 @@ function statusSeverity2(status) {
 }
 
 const expandedOrders = ref({})
+// Suggestions are fetched per order on demand — they scan every customer name,
+// so loading them for rows nobody expands would be waste.
+const jobSuggestions = ref({})
+const suggestLoading = ref({})
+const confirmingOrder = ref(null)
+
+async function loadJobSuggestions(order) {
+  if (order.matched_job_id || jobSuggestions.value[order.order_number]) return
+  suggestLoading.value = { ...suggestLoading.value, [order.order_number]: true }
+  try {
+    jobSuggestions.value = {
+      ...jobSuggestions.value,
+      [order.order_number]: await api.get(
+        `/api/vendor-statements/orders/${order.order_id}/job-suggestions`,
+      ) || [],
+    }
+  } catch {
+    jobSuggestions.value = { ...jobSuggestions.value, [order.order_number]: [] }
+  } finally {
+    suggestLoading.value = { ...suggestLoading.value, [order.order_number]: false }
+  }
+}
+
+async function confirmJob(order, suggestion) {
+  confirmingOrder.value = order.order_number
+  try {
+    const res = await api.post(
+      `/api/vendor-statements/orders/${order.order_id}/confirm-job`,
+      { job_id: suggestion.job_id },
+    )
+    toast.add({
+      severity: 'success',
+      summary: 'Filed to job',
+      detail: res.newly_filed_count
+        ? `${res.newly_filed_count} document(s) filed on the job.`
+        : 'Job linked. The paperwork was already filed elsewhere and was left alone.',
+      life: 5000,
+    })
+    await fetchItems()
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not file', detail: err?.message || 'Unknown error', life: 6000 })
+  } finally {
+    confirmingOrder.value = null
+  }
+}
 function toggleOrders(name) {
   expandedOrders.value = { ...expandedOrders.value, [name]: !expandedOrders.value[name] }
 }
@@ -547,6 +637,11 @@ onMounted(fetchItems)
 .variance-down { color: var(--p-green-500, #22c55e); font-weight: 600; }
 .truncation-note { margin: 0.25rem 0 0; }
 .order-line { font-size: 0.8rem; line-height: 1.4; }
+.job-linked { color: var(--p-green-500, #22c55e); font-size: 0.85rem; }
+.suggestions { display: flex; flex-direction: column; gap: 0.5rem; }
+.suggestion { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
+.sug-name { font-size: 0.85rem; color: var(--p-text-color); }
+.sug-why { font-size: 0.72rem; color: var(--p-text-muted-color); line-height: 1.3; }
 .order-line .qty { color: var(--p-text-muted-color); margin-right: 0.35rem; }
 .order-line .spec { color: var(--p-text-color); }
 .paid-some { color: var(--p-green-500, #22c55e); }

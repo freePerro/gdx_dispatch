@@ -88,6 +88,16 @@ class VendorOrder(TenantBase):
     parser_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Set only by a human confirming a suggestion (modules/vendor_orders/
+    # confirm.py). Matching suggests; it never writes here. No migration needed:
+    # this table is created fresh by create_orm_tables() and has never deployed.
+    matched_job_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True, index=True
+    )
+    job_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    job_confirmed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     source: Mapped[str] = mapped_column(
         String(20), nullable=False, default="email", server_default="email")
     uploaded_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
