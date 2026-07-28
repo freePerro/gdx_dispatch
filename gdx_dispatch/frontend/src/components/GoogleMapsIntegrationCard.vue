@@ -160,7 +160,7 @@ onMounted(fetchKey)
   font-size: 0.875rem;
 }
 .status-row { padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.875rem; }
-.status-error { color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; }
+.status-error { color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; }
 .status-ok { color: #15803d; background: #f0fdf4; border: 1px solid #bbf7d0; }
-code { background: #f3f4f6; padding: 0.05em 0.3em; border-radius: 3px; }
+code { background: var(--p-content-hover-background); padding: 0.05em 0.3em; border-radius: 3px; }
 </style>

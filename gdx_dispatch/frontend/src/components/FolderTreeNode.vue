@@ -243,8 +243,8 @@ function onDrop(e) {
 }
 
 .folder-delete-btn:hover {
-  color: var(--p-red-500, #ef4444);
-  background: var(--p-red-50, rgba(239, 68, 68, 0.08));
+  color: var(--p-red-500);
+  background: color-mix(in srgb, #dc2626 12%, var(--p-content-background));
 }
 
 .folder-children {

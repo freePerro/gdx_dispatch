@@ -768,7 +768,7 @@ function addFromCatalog(items) {
   border: 1px solid var(--p-content-border-color, #e5e7eb);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
-  background: var(--p-surface-50, #fafafa);
+  background: var(--p-content-hover-background);
 }
 .parts-from-job-header {
   display: flex;

@@ -1763,7 +1763,7 @@ onMounted(() => {
   gap: 0.75rem 1rem;
   margin-top: 0.75rem;
   padding: 0.75rem;
-  background: var(--p-surface-50, #f8f9fa);
+  background: var(--p-content-hover-background);
   border-radius: 0.5rem;
 }
 .edit-field {

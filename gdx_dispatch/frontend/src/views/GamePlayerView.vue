@@ -143,6 +143,7 @@ onMounted(loadAll);
 }
 .game-player-view__panel {
   background: white;
+  color: #1f2937;
   border-radius: 0.75rem;
   padding: 1.25rem 1.5rem 1.5rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);

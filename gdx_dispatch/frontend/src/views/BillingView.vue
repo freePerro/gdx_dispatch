@@ -1362,7 +1362,7 @@ onMounted(async () => {
   align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
-  background: var(--p-primary-100, rgba(14, 165, 233, 0.1));
+  background: var(--p-highlight-background);
   border: 1px solid var(--p-primary-color);
   border-radius: 8px;
   margin-bottom: 1rem;
@@ -1379,7 +1379,7 @@ onMounted(async () => {
   align-items: center;
   gap: 0.75rem;
   padding: 0.5rem 1rem;
-  background: var(--p-surface-100, #f1f5f9);
+  background: var(--p-content-hover-background);
   border-radius: 8px;
   margin-bottom: 1rem;
 }

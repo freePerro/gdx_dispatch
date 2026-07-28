@@ -381,6 +381,7 @@ async function submitDecline() {
 }
 .form-field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.55rem; }
 .form-field label { font-size: 0.85rem; color: var(--p-text-muted-color); }
+/* dark-safe: signature paper — white is deliberate, the ink is dark */
 .sig-canvas {
   width: 100%;
   height: 140px;

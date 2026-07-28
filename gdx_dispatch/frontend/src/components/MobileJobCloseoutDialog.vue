@@ -572,6 +572,7 @@ watch(open, async (v) => {
   font-weight: 600;
 }
 
+/* dark-safe: signature paper — white is deliberate in both themes, the ink is dark */
 .sig-canvas-wrap {
   position: relative;
   border: 1px dashed var(--p-content-border-color);

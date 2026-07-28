@@ -393,7 +393,7 @@ defineExpose({ invoice, draft, pdfUrl, jobPick, jobOptions, confirmLine, setMatc
 .pdf-missing { padding: 2rem; text-align: center; color: var(--p-text-muted-color); }
 .review-pane { display: flex; flex-direction: column; gap: 1rem; }
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.5rem; }
-.summary-tile { background: var(--p-surface-50, #f8fafc); border: 1px solid var(--p-surface-200, #e2e8f0); border-radius: 8px; padding: 0.5rem 0.75rem; }
+.summary-tile { background: var(--p-content-hover-background); border: 1px solid var(--p-content-border-color); border-radius: 8px; padding: 0.5rem 0.75rem; }
 .tile-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--p-text-muted-color); }
 .tile-value { font-size: 1.05rem; font-weight: 600; margin-top: 0.15rem; }
 .match-block { display: flex; flex-direction: column; gap: 0.4rem; }

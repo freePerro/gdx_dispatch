@@ -422,12 +422,12 @@ defineExpose({ dropYToISO });
   border: 1px dashed var(--p-content-border-color, #d1d5db);
   border-radius: var(--p-border-radius, 6px);
   padding: 0.4rem 0.5rem;
-  background: var(--p-surface-100, #f3f4f6);
+  background: var(--p-content-hover-background);
   font-size: 0.75rem;
 }
 .tech-timeline-tray--drag-over {
-  border-color: var(--p-primary-color, #2563eb);
-  background: var(--p-primary-100, #dbeafe);
+  border-color: var(--p-primary-color);
+  background: color-mix(in srgb, var(--p-primary-color) 28%, var(--p-content-background));
 }
 .tray-label {
   font-size: 0.7rem;
@@ -472,7 +472,7 @@ defineExpose({ dropYToISO });
   overflow: visible;
 }
 .tech-timeline-body--drag-over {
-  background: var(--p-primary-50, #eff6ff);
+  background: color-mix(in srgb, var(--p-primary-color) 14%, var(--p-content-background));
 }
 
 /* 40px gutter on the left holds the hour labels; the block layer fills
@@ -485,7 +485,7 @@ defineExpose({ dropYToISO });
   left: 0;
   right: 0;
   height: 1px;
-  background: var(--p-surface-300, #e5e7eb);
+  background: var(--p-content-border-color);
 }
 .hour-label {
   position: absolute;
@@ -501,7 +501,7 @@ defineExpose({ dropYToISO });
   left: 40px;
   right: 0;
   height: 1px;
-  background: var(--p-surface-200, #f3f4f6);
+  background: color-mix(in srgb, var(--p-content-border-color) 55%, var(--p-content-background));
 }
 
 .now-line {
@@ -527,8 +527,8 @@ defineExpose({ dropYToISO });
   min-height: 20px;
   padding: 0.25rem 0.4rem;
   border-radius: 4px;
-  background: var(--p-primary-100, #dbeafe);
-  border: 1px solid var(--p-primary-300, #93c5fd);
+  background: color-mix(in srgb, var(--p-primary-color) 22%, var(--p-content-background));
+  border: 1px solid var(--p-primary-color);
   font-size: 0.72rem;
   color: var(--p-text-color, #111827);
   cursor: grab;

@@ -413,7 +413,7 @@ onUnmounted(() => {
   align-self: flex-start;
 }
 .msg-out {
-  background: var(--p-primary-50, #eff6ff);
+  background: var(--interactive-primary-soft);
   align-self: flex-end;
 }
 .msg-meta {

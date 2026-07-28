@@ -68,6 +68,7 @@ function formatTime(iso) {
   border: 1px solid #e2e8f0;
   border-radius: 0.5rem;
   background: #f8fafc;
+  color: #334155;
   max-height: 300px;
   overflow-y: auto;
 }

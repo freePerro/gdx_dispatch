@@ -1016,10 +1016,10 @@ onMounted(loadProposals);
   margin-bottom: 0.5rem;
 }
 .line-items-frame {
-  border: 1px solid var(--surface-border, #d0d7de);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 0.75rem;
   padding: 0.5rem;
-  background: var(--surface-ground, #fafbfc);
+  background: var(--p-content-hover-background);
 }
 .line-items-loading {
   display: flex;
