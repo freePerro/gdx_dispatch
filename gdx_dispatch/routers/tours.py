@@ -25,7 +25,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
@@ -155,7 +155,7 @@ def _upsert_progress(
             )
         ).scalar_one_or_none()
         if row is None:
-            row = UserTourProgress(
+            new_row = UserTourProgress(
                 user_id=user_id,
                 tour_id=tour_id,
                 status=status or "started",
@@ -163,12 +163,41 @@ def _upsert_progress(
                 last_step=last_step,
                 completed_at=_utcnow() if status == "completed" else None,
             )
-            db.add(row)
-            db.commit()
-            db.refresh(row)
-            return _to_status_out(row)
+            db.add(new_row)
+            try:
+                db.commit()
+                db.refresh(new_row)
+                return _to_status_out(new_row)
+            except IntegrityError:
+                # Lost the insert race: a concurrent request created the
+                # (user_id, tour_id) row between our SELECT and INSERT and the
+                # unique constraint fired. The global handler would turn this
+                # into a 409. Roll back our failed insert, re-load the winner's
+                # row, and FALL THROUGH to the merge path below — so this
+                # caller's mutation (complete / skip / step) still lands.
+                # Returning the winner's row unchanged would silently drop it:
+                # a raced /complete would report "started" and the tour would
+                # re-fire forever. _upsert_progress serves all four verbs, not
+                # just /start.
+                db.rollback()
+                row = db.execute(
+                    select(UserTourProgress).where(
+                        UserTourProgress.user_id == user_id,
+                        UserTourProgress.tour_id == tour_id,
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    # On Postgres (READ COMMITTED — what GDX runs) the row the
+                    # winner committed is visible to this fresh SELECT, so this
+                    # is effectively unreachable. Under snapshot isolation
+                    # (e.g. MySQL REPEATABLE READ) the re-SELECT could still see
+                    # nothing; rather than crash _to_status_out(None) we return
+                    # None, which the frontend treats as "fell back to
+                    # localStorage" — a graceful degrade, not an error.
+                    return None
 
-        # Existing row — decide how to merge.
+        # Existing row (or the row the race winner just created) — decide how
+        # to merge this caller's requested change.
         is_upgrade = version is not None and version > row.version
         if is_upgrade:
             row.version = version

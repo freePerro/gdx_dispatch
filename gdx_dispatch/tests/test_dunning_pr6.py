@@ -336,10 +336,19 @@ def test_weekly_nudge_monday_only_and_permanent_dismiss(tenant_db_session, monke
     _seed_overdue(db, cust, days=20, balance=750.0)
     settings = _get_or_create_settings(db, TENANT)
 
+    # Anchor "now" to THIS week's Monday relative to the real date. Pinning a
+    # fixed calendar Monday made this a time-bomb: _seed_overdue builds the
+    # invoice due_date from the real date.today(), so once real time moved
+    # ~20+ days past the hardcoded mock the overdue invoice was no longer
+    # "overdue" relative to the frozen now → the nudge returned False.
+    _monday = date.today() - timedelta(days=date.today().weekday())
+    _mon_now = datetime(_monday.year, _monday.month, _monday.day, 13, 0, tzinfo=UTC)
+    _tue_now = _mon_now + timedelta(days=1)
+
     class _FakeDT(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 7, 6, 13, 0, tzinfo=UTC)  # a Monday
+            return _mon_now  # this week's Monday
 
     monkeypatch.setattr("gdx_dispatch.tasks.invoice_reminders_auto.datetime", _FakeDT)
     assert _weekly_nudge(db, TENANT, settings) is True
@@ -351,7 +360,7 @@ def test_weekly_nudge_monday_only_and_permanent_dismiss(tenant_db_session, monke
     class _FakeTue(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 7, 7, 13, 0, tzinfo=UTC)
+            return _tue_now
 
     monkeypatch.setattr("gdx_dispatch.tasks.invoice_reminders_auto.datetime", _FakeTue)
     assert _weekly_nudge(db, TENANT, settings) is False
@@ -474,10 +483,14 @@ def test_completed_nudge_stays_gone_for_the_week(tenant_db_session, monkeypatch)
     _seed_overdue(db, cust, days=20)
     settings = _get_or_create_settings(db, TENANT)
 
+    # This week's Monday, relative to real today (see the time-bomb note above).
+    _monday = date.today() - timedelta(days=date.today().weekday())
+    _mon_now = datetime(_monday.year, _monday.month, _monday.day, 13, 0, tzinfo=UTC)
+
     class _Mon(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 7, 6, 13, 0, tzinfo=UTC)
+            return _mon_now
 
     monkeypatch.setattr("gdx_dispatch.tasks.invoice_reminders_auto.datetime", _Mon)
     assert _weekly_nudge(db, TENANT, settings) is True

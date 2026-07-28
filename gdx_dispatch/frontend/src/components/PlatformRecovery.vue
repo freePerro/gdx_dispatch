@@ -104,7 +104,7 @@ function goToWorkspace() {
         <a
           href="https://example.com"
           data-testid="recovery-marketing"
-        >Learn about DispatchApp</a>
+        >Learn about GDX Dispatch</a>
       </p>
     </div>
   </div>

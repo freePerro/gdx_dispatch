@@ -736,29 +736,35 @@ const ACTIVITY_HIDE_ACTIONS = new Set([
 const ACTIVITY_HIDE_ENTITIES = new Set(["auth", "session"]);
 
 async function loadRecentActivity() {
-  // Try audit log first — gives richer cross-entity activity
-  try {
-    // Pull a wider window so we can filter and still have ~10 user-visible events.
-    const data = await api.get("/api/audit/logs?page=1&page_size=50");
-    const items = (data?.items || []).filter((evt) => {
-      if (ACTIVITY_HIDE_ACTIONS.has(evt.action)) return false;
-      if (ACTIVITY_HIDE_ENTITIES.has(evt.entity_type)) return false;
-      return true;
-    });
-    if (items.length) {
-      recentActivity.value = items.slice(0, 10).map((evt) => ({
-        id: evt.id,
-        title: formatActivityTitle(evt.action, evt.entity_type),
-        icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
-        meta: formatTimestamp(evt.created_at),
-      }));
-      return;
+  // Try audit log first — gives richer cross-entity activity. The endpoint is
+  // admin/owner-only, so only ask for it when the viewer actually qualifies;
+  // otherwise a dispatcher/tech dashboard fires a guaranteed 403 that shows up
+  // as a red console error on every load. Non-admins fall straight to the
+  // jobs-based activity feed below.
+  if (auth.isAdmin) {
+    try {
+      // Pull a wider window so we can filter and still have ~10 user-visible events.
+      const data = await api.get("/api/audit/logs?page=1&page_size=50");
+      const items = (data?.items || []).filter((evt) => {
+        if (ACTIVITY_HIDE_ACTIONS.has(evt.action)) return false;
+        if (ACTIVITY_HIDE_ENTITIES.has(evt.entity_type)) return false;
+        return true;
+      });
+      if (items.length) {
+        recentActivity.value = items.slice(0, 10).map((evt) => ({
+          id: evt.id,
+          title: formatActivityTitle(evt.action, evt.entity_type),
+          icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
+          meta: formatTimestamp(evt.created_at),
+        }));
+        return;
+      }
+    } catch {
+      // audit endpoint may still 403 for a custom admin-less role — fall back to jobs
     }
-  } catch {
-    // audit endpoint may require admin — fall back to jobs
   }
 
-  // Fallback: recent jobs
+  // Fallback: recent jobs (also the non-admin path)
   try {
     const data = await api.get("/api/jobs");
     const jobs = Array.isArray(data) ? data : data?.items || data?.data || [];

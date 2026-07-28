@@ -7,14 +7,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import UserTourProgress
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.routers.tours import router
-
+from gdx_dispatch.routers.tours import _upsert_progress, router
 
 _TEST_USER_ID = str(uuid4())
 _TEST_TENANT_ID = str(uuid4())
@@ -201,3 +202,92 @@ def test_version_bump_only_resets_when_newer(client: TestClient):
     # version stays at 3, status stays at completed (we only re-fire on UPGRADE).
     assert body["version"] == 3
     assert body["status"] == "completed"
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _RaceDB:
+    """Simulates the insert race: the first SELECT sees no row (the concurrent
+    request's insert isn't visible yet), the INSERT trips the unique constraint,
+    the retry SELECT finds the winner's row, and the follow-up merge commit
+    succeeds. Records enough state to prove the fix rolls back BEFORE it
+    re-selects and that the caller's mutation actually commits (not dropped)."""
+
+    def __init__(self, existing_row):
+        self._existing = existing_row
+        self._selects = 0
+        self._commits = 0
+        self.rolled_back = False
+        self.reselect_saw_rollback = None
+        self.merge_committed = False
+
+    def execute(self, *_a, **_k):
+        self._selects += 1
+        if self._selects == 1:
+            return _FakeResult(None)  # no row yet → forces the insert path
+        if self._selects == 2:
+            # The retry SELECT must happen AFTER the rollback.
+            self.reselect_saw_rollback = self.rolled_back
+        return _FakeResult(self._existing)
+
+    def add(self, _obj):
+        pass
+
+    def commit(self):
+        self._commits += 1
+        if self._commits == 1:
+            raise IntegrityError("INSERT", {}, Exception("uq_utp_user_tour"))
+        self.merge_committed = True  # the merge-path commit succeeds
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def refresh(self, _obj):
+        pass
+
+
+def _existing_started():
+    return UserTourProgress(
+        user_id=uuid4(),
+        tour_id="owner-getting-started",
+        status="started",
+        version=1,
+        last_step=None,
+    )
+
+
+def test_start_survives_insert_race():
+    """A /start that loses the insert race returns the row (no 409, no crash)."""
+    existing = _existing_started()
+    db = _RaceDB(existing)
+
+    out = _upsert_progress(db, str(existing.user_id), "owner-getting-started", status="started")
+
+    assert db.rolled_back is True
+    assert out is not None
+    assert out.status == "started"
+
+
+def test_completion_survives_insert_race():
+    """The bug the naive fix missed: _upsert_progress is the shared write path for
+    /start, /complete, /skip AND /step. A /complete that loses the insert race
+    must still apply the completion to the winner's row — returning the winner's
+    unchanged 'started' row would silently drop the mutation and re-fire the tour
+    forever."""
+    existing = _existing_started()
+    db = _RaceDB(existing)
+
+    out = _upsert_progress(db, str(existing.user_id), "owner-getting-started", status="completed")
+
+    assert db.rolled_back is True
+    assert db.reselect_saw_rollback is True, "must roll back the failed insert before re-selecting"
+    assert db.merge_committed is True, "the caller's mutation must be committed, not dropped"
+    assert out is not None
+    assert out.status == "completed", "a raced /complete must land the completion"
+    assert out.completed_at is not None

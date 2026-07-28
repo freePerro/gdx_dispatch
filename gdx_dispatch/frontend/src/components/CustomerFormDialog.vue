@@ -321,6 +321,12 @@ async function submitForm() {
       });
     } else {
       saved = await api.post("/api/customers", payload);
+      toast.add({
+        severity: "success",
+        summary: "Customer Created",
+        detail: "Customer saved successfully.",
+        life: 3000,
+      });
     }
     emit("saved", saved || { ...payload, id: form.value.id });
     emit("update:visible", false);

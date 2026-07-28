@@ -342,7 +342,7 @@
                 <div class="form-row">
                   <div class="form-field">
                     <label for="email-password">Password / App Password</label>
-                    <Password input-id="email-password" input-props="{ name: 'email-password', autocomplete: 'current-password' }" v-model="emailConfig.password" toggleMask :feedback="false" data-testid="email-password" class="w-full" />
+                    <Password input-id="email-password" :input-props="{ name: 'email-password', autocomplete: 'current-password' }" v-model="emailConfig.password" toggleMask :feedback="false" data-testid="email-password" class="w-full" />
                   </div>
                   <div class="form-field">
                     <label for="email-host">SMTP Host</label>
