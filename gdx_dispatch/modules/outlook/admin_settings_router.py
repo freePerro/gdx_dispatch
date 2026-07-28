@@ -2,9 +2,14 @@
 
 ``GET /api/admin/outlook-settings`` and ``PATCH`` for the tenant admin to
 configure: backfill_days, tag-strategy order/enabled/threshold, visibility
-rules, auto_email_triggers. Mirrors ``admin_ai_settings`` shape (Sprint 1.x
-S26): module-level dependency callables for test override, never returns
-secrets, audit-logged on change.
+rules, auto_email_triggers, vendor_bill_sender_allowlist. Mirrors
+``admin_ai_settings`` shape (Sprint 1.x S26): module-level dependency callables
+for test override, never returns secrets, audit-logged on change.
+
+``vendor_bill_sender_allowlist`` was writable only by hand-written SQL until
+2026-07-28 — the column existed and gated the whole vendor-bill/statement
+intake feature, but no endpoint read or wrote it, so turning the feature on
+required someone with database access. It is here now.
 
 Tenant Entra app credentials (client_id, client_secret) live in
 ``TenantSettings`` (control plane) and are managed via a separate endpoint
@@ -13,6 +18,7 @@ Tenant Entra app credentials (client_id, client_secret) live in
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -41,6 +47,55 @@ router = APIRouter(
 # ── Pydantic shapes ────────────────────────────────────────────────────
 
 
+# A vendor-bill allowlist entry is either a full address (ar@vendor.com) or a
+# bare domain (vendor.com, matched on the domain and its subdomains). Requiring
+# a dot in the domain is what stops a typo like "vendor" or a bare TLD from
+# becoming a rule that matches far more mail than intended.
+_ALLOWLIST_ENTRY = re.compile(
+    r"^(?:[^@\s]+@)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
+)
+MAX_ALLOWLIST_ENTRIES = 50
+
+
+def _clean_allowlist(raw: list[str]) -> list[str]:
+    """Normalize + validate allowlisted senders, preserving order.
+
+    This list decides whose attachments GDX downloads and files automatically,
+    so a bad entry is not a cosmetic problem — it's either silent non-ingest
+    (nothing matches) or over-collection (too much matches). Both are worth a
+    422 at the door rather than a debugging session later.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        entry = str(item).strip().lower()
+        if not entry:
+            continue  # blank chips from the UI are dropped, not an error
+        if len(entry) > 320:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"allowlist entry too long: {entry[:60]}…",
+            )
+        if not _ALLOWLIST_ENTRY.match(entry):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"'{item}' is not a valid sender — use a full address "
+                    "(ar@vendor.com) or a domain (vendor.com)"
+                ),
+            )
+        if entry in seen:
+            continue
+        seen.add(entry)
+        cleaned.append(entry)
+    if len(cleaned) > MAX_ALLOWLIST_ENTRIES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"at most {MAX_ALLOWLIST_ENTRIES} allowlisted senders",
+        )
+    return cleaned
+
+
 class OutlookSettingsOut(BaseModel):
     backfill_days: int
     tag_strategy_order: list[str]
@@ -48,6 +103,9 @@ class OutlookSettingsOut(BaseModel):
     ai_tag_threshold: float
     visibility_rules: dict[str, Any]
     auto_email_triggers: dict[str, Any]
+    # Senders whose PDF attachments are auto-filed as vendor bills/statements.
+    # Empty = the whole vendor-bill intake feature is off.
+    vendor_bill_sender_allowlist: list[str] = []
 
 
 class OutlookSettingsPatchIn(BaseModel):
@@ -58,6 +116,7 @@ class OutlookSettingsPatchIn(BaseModel):
     ai_tag_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     visibility_rules: dict[str, Any] | None = None
     auto_email_triggers: dict[str, Any] | None = None
+    vendor_bill_sender_allowlist: list[str] | None = None
 
 
 class OutlookCredentialsOut(BaseModel):
@@ -109,6 +168,15 @@ def _ensure_settings_row(tenant_db: Session) -> OutlookSettings:
     """Singleton fetch-or-create. Race-tolerant: two concurrent admin calls
     that both see "no row" will both INSERT id=1; the second hits an
     IntegrityError on the unique PK — caught + recovered by re-fetching.
+
+    Commits the bootstrap INSERT itself. It used to only ``flush()``, which
+    meant a caller that never commits — ``get_settings`` — discarded the row on
+    session close: reading the settings page a hundred times still left the
+    table empty, and only a PATCH ever created it. That made ``outlook_settings``
+    look unconfigured to every background task that reads it directly
+    (``tdb.get(OutlookSettings, 1)`` returns None), which is a confusing state
+    to debug from. Creating the row is idempotent and carries no user data —
+    committing it is safe.
     """
     from sqlalchemy.exc import IntegrityError
     row = tenant_db.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
@@ -118,7 +186,7 @@ def _ensure_settings_row(tenant_db: Session) -> OutlookSettings:
     row.id = 1
     tenant_db.add(row)
     try:
-        tenant_db.flush()
+        tenant_db.commit()
     except IntegrityError:
         tenant_db.rollback()
         row = (
@@ -166,6 +234,9 @@ def get_settings(
         ai_tag_threshold=float(row.ai_tag_threshold or Decimal("0.85")),
         visibility_rules=visibility,
         auto_email_triggers=triggers,
+        vendor_bill_sender_allowlist=normalize_allowlist(
+            row.vendor_bill_sender_allowlist
+        ),
     )
 
 
@@ -176,6 +247,17 @@ def patch_settings(
     tenant_db: Session = Depends(get_db_for_admin),
 ) -> OutlookSettingsOut:
     row = _ensure_settings_row(tenant_db)
+
+    # Validate BEFORE touching the row. _clean_allowlist raises 422, and doing
+    # that after the other fields were already assigned would leave a rejected
+    # request's mutations sitting on a live ORM object — harmless only because
+    # nothing commits on that path, which is a thin thing to rely on.
+    cleaned_allowlist = (
+        _clean_allowlist(payload.vendor_bill_sender_allowlist)
+        if payload.vendor_bill_sender_allowlist is not None
+        else None
+    )
+
     if payload.backfill_days is not None:
         row.backfill_days = payload.backfill_days
     if payload.tag_strategy_order is not None:
@@ -188,8 +270,26 @@ def patch_settings(
         row.visibility_rules = payload.visibility_rules
     if payload.auto_email_triggers is not None:
         row.auto_email_triggers = payload.auto_email_triggers
+
+    allowlist_change: tuple[list[str], list[str]] | None = None
+    if cleaned_allowlist is not None:
+        before = normalize_allowlist(row.vendor_bill_sender_allowlist)
+        if cleaned_allowlist != before:
+            allowlist_change = (before, cleaned_allowlist)
+        row.vendor_bill_sender_allowlist = cleaned_allowlist
+
     tenant_db.commit()
-    log.info("outlook settings updated for tenant %s", _coerce_tenant_uuid(user))
+    tenant_id = _coerce_tenant_uuid(user)
+    if allowlist_change is not None:
+        # Log this one specifically. It governs whose attachments GDX
+        # downloads and files unattended, so "who widened it, and to what"
+        # is the question worth being able to answer later.
+        before, after = allowlist_change
+        log.info(
+            "vendor_bill_sender_allowlist changed for tenant %s by %s: %s -> %s",
+            tenant_id, user.get("sub") or user.get("user_id") or "?", before, after,
+        )
+    log.info("outlook settings updated for tenant %s", tenant_id)
     return get_settings(user=user, tenant_db=tenant_db)
 
 

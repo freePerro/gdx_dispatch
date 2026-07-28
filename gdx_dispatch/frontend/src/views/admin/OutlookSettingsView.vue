@@ -4,6 +4,7 @@ import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
+import AutoComplete from 'primevue/autocomplete'
 import Password from 'primevue/password'
 import Slider from 'primevue/slider'
 import ToggleSwitch from 'primevue/toggleswitch'
@@ -35,9 +36,63 @@ const TAB_KEYS = {
   CONNECTION: 'connection',
   TAGGING: 'tagging',
   VISIBILITY: 'visibility',
+  VENDOR_BILLS: 'vendor_bills',
   AUTO_EMAIL: 'auto_email',
 }
 const activeTab = ref(TAB_KEYS.CONNECTION)
+
+// Consumer mail providers. Allowlisting one of these matches every sender at
+// that provider, not just the vendor — worth a warning, not a block, because
+// plenty of small suppliers really do invoice from a gmail address.
+const CONSUMER_DOMAINS = [
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+  'live.com', 'aol.com', 'icloud.com', 'me.com', 'msn.com', 'comcast.net',
+]
+
+const sweeping = ref(false)
+const sweepDays = ref(120)
+
+const broadEntries = computed(() =>
+  (settings.value?.vendor_bill_sender_allowlist || [])
+    .filter((e) => CONSUMER_DOMAINS.includes(String(e).trim().toLowerCase())),
+)
+
+const allowlistEmpty = computed(
+  () => (settings.value?.vendor_bill_sender_allowlist || []).length === 0,
+)
+
+// PrimeVue's AutoComplete (multiple + no typeahead) commits a chip ONLY on
+// Enter — onBlur drops focus without touching the model. So typing a sender and
+// clicking Save straight after would send the OLD list, flash "Saved", and
+// leave the typed text sitting in the box looking accepted. That is precisely
+// the "why didn't it save?" this whole page exists to eliminate, so commit any
+// pending text before it can be lost.
+function commitPendingSender(event) {
+  const el = event?.target
+  const raw = (el?.value || '').trim()
+  if (!raw) return
+  if (!Array.isArray(settings.value.vendor_bill_sender_allowlist)) {
+    settings.value.vendor_bill_sender_allowlist = []
+  }
+  const list = settings.value.vendor_bill_sender_allowlist
+  if (!list.some((e) => String(e).toLowerCase() === raw.toLowerCase())) {
+    list.push(raw)
+  }
+  if (el) el.value = ''
+}
+
+// What the server last confirmed it has. The sweep reads the SAVED list, so an
+// edit sitting unsaved on screen would silently not apply — the confirm dialog
+// says so, but a dialog is a bad place for a fact the user needs BEFORE
+// clicking, and useDestructiveConfirm resolves its service lazily outside
+// setup, so in practice the dialog doesn't render at all here. Surfacing it
+// inline is both more visible and not dependent on that.
+const savedAllowlist = ref([])
+
+const allowlistDirty = computed(() => (
+  JSON.stringify(settings.value?.vendor_bill_sender_allowlist || [])
+  !== JSON.stringify(savedAllowlist.value)
+))
 
 const ROLE_OPTIONS = [
   { label: 'Tech and above (everyone)', value: 'tech' },
@@ -76,6 +131,7 @@ async function load() {
   try {
     credentials.value = await api.get('/api/admin/outlook/credentials')
     settings.value = await api.get('/api/admin/outlook/settings')
+    savedAllowlist.value = [...(settings.value.vendor_bill_sender_allowlist || [])]
   } catch (err) {
     error.value = err?.message || 'Failed to load Outlook settings'
   } finally {
@@ -121,10 +177,44 @@ async function saveSettings() {
       ai_tag_threshold: settings.value.ai_tag_threshold,
       visibility_rules: settings.value.visibility_rules,
       auto_email_triggers: settings.value.auto_email_triggers,
+      // Only when it changed. PATCH treats an omitted key as "leave alone", and
+      // every tab's Save posts this same payload — so blindly resending the
+      // allowlist would make ONE malformed stored entry (this column was
+      // hand-written SQL before today) 422 the Tagging and Visibility tabs too,
+      // over a value nobody on those tabs touched.
+      ...(allowlistDirty.value
+        ? { vendor_bill_sender_allowlist: settings.value.vendor_bill_sender_allowlist || [] }
+        : {}),
     })
+    savedAllowlist.value = [...(settings.value.vendor_bill_sender_allowlist || [])]
     toast.add({ severity: 'success', summary: 'Saved', detail: 'Outlook settings updated.', life: 3000 })
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Save failed', detail: err?.message || 'Unknown error', life: 5000 })
+  }
+}
+
+async function runSweep() {
+  // No confirm dialog here on purpose. The sweep is additive and idempotent
+  // (checkpointed per message), so it doesn't warrant one — and the unsaved-edit
+  // hazard it would have warned about is handled structurally instead, by
+  // disabling this button while `allowlistDirty`. See [[useDestructiveConfirm]]:
+  // its service resolves outside setup and the fallback silently auto-accepts,
+  // so a dialog here would be decoration that never renders.
+  sweeping.value = true
+  try {
+    const res = await api.post('/api/admin/outlook/vendor-bills/sweep', { days: sweepDays.value })
+    const n = res?.queued?.length || 0
+    toast.add({
+      severity: 'success',
+      summary: 'Sweep queued',
+      detail: `Queued for ${n} mailbox${n === 1 ? '' : 'es'}. It runs in the background — `
+        + 'new bills and statements appear on their pages as it works.',
+      life: 6000,
+    })
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Sweep failed', detail: err?.message || 'Unknown error', life: 6000 })
+  } finally {
+    sweeping.value = false
   }
 }
 
@@ -132,7 +222,7 @@ onMounted(() => {
   load()
 })
 
-defineExpose({ load, saveCredentials, saveSettings, clearSecret })
+defineExpose({ load, saveCredentials, saveSettings, clearSecret, runSweep, sweepDays })
 </script>
 
 <template>
@@ -157,6 +247,7 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret })
         <Tab :value="TAB_KEYS.CONNECTION">Connection</Tab>
         <Tab :value="TAB_KEYS.TAGGING">Tagging</Tab>
         <Tab :value="TAB_KEYS.VISIBILITY">Visibility</Tab>
+        <Tab :value="TAB_KEYS.VENDOR_BILLS">Vendor Bills</Tab>
         <Tab :value="TAB_KEYS.AUTO_EMAIL">Auto-Email</Tab>
       </TabList>
       <TabPanels>
@@ -297,6 +388,103 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret })
           </div>
         </TabPanel>
 
+        <!-- Vendor Bills -->
+        <TabPanel :value="TAB_KEYS.VENDOR_BILLS">
+          <div class="flex flex-col gap-4 mt-4">
+            <p class="text-sm hint-text">
+              When mail arrives from one of these senders, GDX downloads its PDF
+              attachments and files them automatically — supplier invoices land in
+              <strong>Vendor Bills</strong>, statements of account land in
+              <strong>Vendor Statements</strong>. Nothing else is touched, and
+              anything it can't read is left alone rather than guessed at.
+            </p>
+
+            <div>
+              <label class="font-medium" for="vb-allowlist">Allowlisted senders</label>
+              <p class="text-xs hint-text mb-1">
+                A full address (<code>ar@vendor.com</code>) or a whole domain
+                (<code>vendor.com</code>, which also covers its subdomains).
+                Type one and press Enter.
+              </p>
+              <!-- AutoComplete in multiple+no-typeahead mode is PrimeVue 4's
+                   chips input (InputChips is deprecated). No suggestion source:
+                   the value is whatever the admin types, one chip per Enter. -->
+              <AutoComplete
+                id="vb-allowlist"
+                v-model="settings.vendor_bill_sender_allowlist"
+                multiple
+                :typeahead="false"
+                class="w-full"
+                data-test="vendor-bill-allowlist"
+                placeholder="vendor.com"
+                @blur="commitPendingSender"
+              />
+            </div>
+
+            <Message v-if="allowlistEmpty" severity="warn" :closable="false">
+              <strong>Vendor bill intake is off.</strong> With no senders listed,
+              nothing is ingested and the sweep does nothing. Add the address or
+              domain your supplier emails from — note that's the domain in their
+              <em>From</em> line, which is often not the one in their company name.
+            </Message>
+
+            <Message v-if="broadEntries.length" severity="warn" :closable="false">
+              <strong>{{ broadEntries.join(', ') }}</strong>
+              {{ broadEntries.length === 1 ? 'is a consumer mail domain' : 'are consumer mail domains' }} —
+              this allowlists <em>every</em> sender there, not just your vendor.
+              Prefer their full address if you can.
+            </Message>
+
+            <div>
+              <Button label="Save Allowlist" @click="saveSettings" />
+            </div>
+
+            <div class="sweep-block">
+              <h3 class="font-medium">Import past email</h3>
+              <p class="text-xs hint-text mb-2">
+                New mail is picked up automatically, and a sweep runs nightly.
+                Use this to reach further back — after adding a sender, for
+                instance. It only looks at mail already synced to GDX, skips
+                anything it has handled before, and is safe to run more than
+                once; large windows may need a second run.
+              </p>
+              <div class="flex items-center gap-2 flex-wrap">
+                <label class="text-sm" for="vb-sweep-days">Look back</label>
+                <InputNumber
+                  id="vb-sweep-days"
+                  v-model="sweepDays"
+                  :min="1"
+                  :max="3650"
+                  showButtons
+                  class="sweep-days"
+                />
+                <span class="text-sm">days</span>
+                <!-- outlined: plain `secondary` rendered as bare icon+text
+                     against this panel, reading as a label rather than a
+                     control. The border is what makes it look clickable. -->
+                <Button
+                  label="Run Sweep Now"
+                  icon="pi pi-download"
+                  severity="secondary"
+                  outlined
+                  :loading="sweeping"
+                  :disabled="allowlistEmpty || allowlistDirty"
+                  data-test="vendor-bill-sweep"
+                  @click="runSweep"
+                />
+              </div>
+              <p
+                v-if="allowlistDirty && !allowlistEmpty"
+                class="text-xs dirty-note mt-2"
+                data-test="vendor-bill-dirty"
+              >
+                You've changed the sender list but haven't saved it. The sweep
+                uses the saved list — save first, then run it.
+              </p>
+            </div>
+          </div>
+        </TabPanel>
+
         <!-- Auto-Email -->
         <TabPanel :value="TAB_KEYS.AUTO_EMAIL">
           <div class="flex flex-col gap-4 mt-4">
@@ -373,6 +561,22 @@ defineExpose({ load, saveCredentials, saveSettings, clearSecret })
   color: var(--p-text-color);
   font-size: 0.85rem;
   line-height: 1.45;
+}
+.sweep-block {
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+  padding: 0.75rem;
+  /* Theme tokens only — this panel has to stay legible in dark mode too. */
+  background: var(--p-content-hover-background);
+}
+.dirty-note {
+  color: var(--p-orange-500, #f59e0b);
+  margin: 0;
+}
+.sweep-days :deep(input) {
+  /* Wide enough for a 4-digit window plus the stacked spinner arrows — at 5rem
+     the default 120 rendered clipped as "12". */
+  width: 7rem;
 }
 .template-textarea {
   border: 1px solid var(--p-content-border-color);
