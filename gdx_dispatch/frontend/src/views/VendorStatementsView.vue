@@ -36,8 +36,127 @@
         <ProgressSpinner />
       </div>
 
+      <!-- Current position. A statement is a SNAPSHOT of open items, so an
+           unpaid invoice reappears until it clears — summing statements
+           double-counts. The latest one is what's owed. -->
+      <section v-if="!loading && accounts.length" class="accounts" data-testid="vendor-accounts">
+        <div v-for="a in accounts" :key="a.vendor_name" class="account-card">
+          <div class="account-head">
+            <div>
+              <h2 class="account-vendor">{{ a.vendor_name }}</h2>
+              <p class="account-asof">
+                <span v-if="a.vendor_code" class="mono">{{ a.vendor_code }}</span>
+                <span v-if="a.vendor_code"> · </span>
+                As of the {{ formatDate(a.as_of) }} statement
+                <span v-if="a.statement_count > 1"> · {{ a.statement_count }} on file</span>
+              </p>
+            </div>
+            <div class="account-balance">
+              <span class="balance-amount">{{ formatCurrency(a.open_balance) }}</span>
+              <span class="balance-label">
+                open on {{ a.open_line_count }} invoice{{ a.open_line_count === 1 ? '' : 's' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="aging-row">
+            <span v-for="row in agingRows(a)" :key="row.bucket" class="aging-chip">
+              <Tag :value="row.label" :severity="agingSeverity(row.bucket)" />
+              <span class="aging-amount">{{ formatCurrency(row.amount) }}</span>
+            </span>
+          </div>
+
+          <p v-if="a.days_oldest_open != null" class="account-note">
+            Oldest unpaid charge dates {{ formatDate(a.oldest_line_date) }} —
+            <strong>{{ a.days_oldest_open }} days</strong> ago.
+          </p>
+
+          <p v-if="a.change" class="account-change" data-testid="account-change">
+            Since the {{ formatDate(a.change.previous_statement_date) }} statement:
+            <template v-if="a.change.new_invoice_count">
+              <strong>{{ a.change.new_invoice_count }}</strong> new
+              ({{ formatCurrency(a.change.new_invoice_total) }})
+            </template>
+            <template v-if="a.change.new_invoice_count && a.change.implied_payment_total > 0"> · </template>
+            <template v-if="a.change.implied_payment_total > 0">
+              <strong>{{ a.change.cleared_count }}</strong> paid off, and
+              <strong>{{ formatCurrency(a.change.implied_payment_total) }}</strong>
+              appears to have been paid
+              <span
+                class="derived-flag"
+                v-tooltip="'Worked out by comparing this statement to the previous one, not from a recorded payment. A credit or return looks the same, and two payments between statements show as one.'"
+              >(derived)</span>
+            </template>
+            <template v-if="!a.change.new_invoice_count && !(a.change.implied_payment_total > 0)">
+              nothing moved.
+            </template>
+          </p>
+
+          <Button
+            :label="expandedVendors[a.vendor_name] ? 'Hide open invoices' : `Show ${a.open_line_count} open invoices`"
+            :icon="expandedVendors[a.vendor_name] ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
+            text
+            size="small"
+            :data-testid="`toggle-open-${a.vendor_name}`"
+            @click="toggleVendor(a.vendor_name)"
+          />
+
+          <DataTable
+            v-if="expandedVendors[a.vendor_name]"
+            :value="openLines(a)"
+            stripedRows
+            responsiveLayout="scroll"
+            class="open-items"
+            data-testid="open-items-table"
+          >
+            <Column header="Invoice" style="width: 120px">
+              <template #body="{ data }">
+                <span class="mono">{{ data.invoice_no }}</span>
+              </template>
+            </Column>
+            <Column header="Dated" style="width: 110px">
+              <template #body="{ data }">{{ formatDate(data.line_date) }}</template>
+            </Column>
+            <Column header="Age" style="width: 110px">
+              <template #body="{ data }">
+                <Tag :value="data.aging_bucket" :severity="agingSeverity(data.aging_bucket)" />
+              </template>
+            </Column>
+            <Column header="Original" style="width: 120px">
+              <template #body="{ data }">{{ formatCurrency(data.amount) }}</template>
+            </Column>
+            <Column header="Paid" style="width: 120px">
+              <template #body="{ data }">
+                <span :class="data.paid > 0 ? 'paid-some' : 'text-muted'">
+                  {{ formatCurrency(data.paid) }}
+                </span>
+              </template>
+            </Column>
+            <Column header="Still open" style="width: 130px">
+              <template #body="{ data }"><strong>{{ formatCurrency(data.balance) }}</strong></template>
+            </Column>
+            <Column header="Job / PO" style="width: 160px">
+              <template #body="{ data }">
+                <span class="mono small">{{ data.vendor_job_no }}</span>
+                <span v-if="data.po_ref" class="po-ref"> · {{ data.po_ref }}</span>
+              </template>
+            </Column>
+            <Column header="On statements" style="width: 130px">
+              <template #body="{ data }">
+                <span v-if="data.statements_seen > 1" class="carried">
+                  {{ data.statements_seen }}× since {{ formatDate(data.first_seen_on) }}
+                </span>
+                <span v-else class="text-muted">first time</span>
+              </template>
+            </Column>
+          </DataTable>
+        </div>
+      </section>
+
+      <h2 v-if="!loading" class="section-heading">Statement history</h2>
+
       <DataTable
-        v-else
+        v-if="!loading"
         :value="items"
         stripedRows
         responsiveLayout="scroll"
@@ -116,9 +235,42 @@ const auth = useAuthStore()
 const router = useRouter()
 
 const items = ref([])
+const accounts = ref([])
 const loading = ref(false)
 const error = ref(null)
 const duplicate = ref(null)
+const expandedVendors = ref({})
+
+// Aging oldest-first — the order money gets chased in.
+const AGING_ORDER = ['120+', '90-119', '60-89', '30-59', '0-29', 'current', 'retainage']
+const AGING_LABEL = {
+  '120+': '120+ days', '90-119': '90-119', '60-89': '60-89',
+  '30-59': '30-59', '0-29': '0-29 days', current: 'Current', retainage: 'Retainage',
+}
+
+function agingRows(account) {
+  return AGING_ORDER
+    .filter((b) => account.aging?.[b] != null)
+    .map((b) => ({ bucket: b, label: AGING_LABEL[b] || b, amount: account.aging[b] }))
+}
+
+// Anything past 60 days is the part worth looking at.
+function agingSeverity(bucket) {
+  if (bucket === '120+' || bucket === '90-119') return 'danger'
+  if (bucket === '60-89') return 'warn'
+  return 'secondary'
+}
+
+// The table under "open invoices" must contain exactly the invoices the count
+// promises. A line still listed at a nil balance is settled, not open — it
+// stays visible on the statement detail page.
+function openLines(account) {
+  return (account.lines || []).filter((l) => Number(l.balance) > 0)
+}
+
+function toggleVendor(name) {
+  expandedVendors.value = { ...expandedVendors.value, [name]: !expandedVendors.value[name] }
+}
 
 function statusSeverity(s) {
   if (!s) return 'secondary'
@@ -133,7 +285,12 @@ const fetchItems = async () => {
   loading.value = true
   error.value = null
   try {
-    items.value = (await api.get('/api/vendor-statements')) || []
+    const [statements, accts] = await Promise.all([
+      api.get('/api/vendor-statements'),
+      api.get('/api/vendor-statements/accounts'),
+    ])
+    items.value = statements || []
+    accounts.value = accts || []
   } catch (err) {
     error.value = err.message || 'Failed to load'
   } finally {
@@ -228,6 +385,44 @@ onMounted(fetchItems)
   padding: 0.5rem 0.75rem;
 }
 .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+.accounts { display: flex; flex-direction: column; gap: 1rem; }
+.account-card {
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 8px;
+  padding: 1rem;
+  /* Theme tokens only — this has to stay legible on the dark surface. */
+  background: var(--p-content-hover-background);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.account-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.account-vendor { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.account-asof { margin: 0.15rem 0 0; font-size: 0.8rem; color: var(--p-text-muted-color); }
+.account-balance { display: flex; flex-direction: column; align-items: flex-end; }
+.balance-amount { font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.balance-label { font-size: 0.78rem; color: var(--p-text-muted-color); }
+.aging-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.aging-chip { display: inline-flex; align-items: center; gap: 0.35rem; }
+.aging-amount { font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.account-note, .account-change { margin: 0; font-size: 0.85rem; color: var(--p-text-color); }
+.derived-flag {
+  color: var(--p-text-muted-color);
+  font-style: italic;
+  cursor: help;
+  border-bottom: 1px dotted var(--p-text-muted-color);
+}
+.open-items { margin-top: 0.5rem; }
+.paid-some { color: var(--p-green-500, #22c55e); }
+.carried { font-size: 0.8rem; color: var(--p-orange-500, #f59e0b); }
+.po-ref, .small { font-size: 0.8rem; color: var(--p-text-muted-color); }
+.section-heading { margin: 0.5rem 0 0; font-size: 1rem; font-weight: 600; }
 .source-cell {
   display: inline-flex;
   align-items: center;
