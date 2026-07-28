@@ -21,6 +21,9 @@ so failures come in two flavors:
     MidwestParseError               not a Midwest statement — keep looking
     MidwestStatementStructureError  IS one, and we lost it — raise the alarm
 
+The line between them is the `STATEMENT DATE:` header, NOT the company name —
+Midwest's letterhead is on their order confirmations and quotes as well.
+
 Callers walking a ladder of parsers get handed every PDF nobody else could
 place, so the first is routine and the second is a defect. Collapsing them
 would file a real statement next to the junk attachments and lose it quietly,
@@ -42,6 +45,11 @@ log = logging.getLogger(__name__)
 
 PARSER_NAME = "midwest_v1"
 PARSER_VERSION = 1
+
+# The letterhead string that identifies a document as this supplier's. Named
+# once here so callers and tests reference the constant instead of repeating
+# the literal.
+VENDOR_LETTERHEAD = "Midwest Wholesale Doors"
 
 
 class MidwestParseError(ValueError):
@@ -179,15 +187,34 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
         except Exception as exc:  # noqa: BLE001
             raise MidwestParseError(f"layout extraction failed: {exc}") from exc
 
-    if "Midwest Wholesale Doors" not in text:
-        raise MidwestParseError("PDF does not appear to be a Midwest Wholesale Doors statement")
+    if VENDOR_LETTERHEAD not in text:
+        raise MidwestParseError("PDF does not appear to be from this supplier")
+
+    # The company name is the LETTERHEAD — it appears on order confirmations,
+    # quotes and packing slips too, so on its own it identifies a Midwest
+    # document, not a statement of account. The STATEMENT DATE header is what
+    # actually distinguishes one. Checking only the letterhead made 39 order
+    # confirmations report as "statement we failed to read" on the first prod
+    # sweep (2026-07-28), which is exactly the alarm a genuinely drifted
+    # statement needs to be audible in.
+    #
+    # Note the ordering: everything past this point is a confirmed statement,
+    # so it raises MidwestStatementStructureError. Anything that fails HERE is
+    # simply not ours and falls through to the caller's next parser.
+    statement_date_marker = _STATEMENT_DATE.search(text)
+    if statement_date_marker is None:
+        raise MidwestParseError(
+            "Midwest letterhead but no STATEMENT DATE header — not a statement "
+            "of account (likely an order confirmation, quote or packing slip)"
+        )
 
     statement_date = None
-    if m := _STATEMENT_DATE.search(text):
-        try:
-            statement_date = datetime.strptime(m.group(1), "%m/%d/%Y").date()
-        except ValueError:
-            statement_date = None
+    try:
+        statement_date = datetime.strptime(statement_date_marker.group(1), "%m/%d/%Y").date()
+    except ValueError:
+        # Marker present but the value is unreadable — still a statement, just
+        # an undated one. The email path records it rather than dropping it.
+        statement_date = None
 
     customer_code = None
     if m := _CUSTOMER_CODE.search(text):
