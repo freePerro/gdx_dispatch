@@ -31,7 +31,10 @@ def _sample_bytes() -> bytes:
 def test_parse_header_fields():
     result = parse_midwest_statement(_sample_bytes())
     assert result.statement_date == date(2026, 5, 3)
-    assert result.customer_code == "GARA01"
+    # Assert the field was FOUND, not what it equals — the customer code is a
+    # real account identifier and this repo is public.
+    assert result.customer_code
+    assert result.customer_code.strip() == result.customer_code
 
 
 def test_parse_line_count_and_total():

@@ -19,6 +19,7 @@ from decimal import Decimal
 import pytest
 
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+    VENDOR_LETTERHEAD,
     MidwestParseError,
     MidwestStatementStructureError,
     parse_midwest_statement,
@@ -26,7 +27,7 @@ from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
 
 pytest.importorskip("weasyprint")
 
-HEADER = "Midwest Wholesale Doors\nSTATEMENT DATE: 05/03/2026     CUSTOMER CODE: GDX01"
+HEADER = f"{VENDOR_LETTERHEAD}\nSTATEMENT DATE: 05/03/2026     CUSTOMER CODE: ACME01"
 LINE_A = "100493 AB 04/12/2026 $1,200.00 $1,200.00 $1,200.00 $0.00 $0.00 $0.00 $0.00 $0.00"
 LINE_B = "900112 PO-4471 / 58 8x7 ThermoGuard door"
 
@@ -49,7 +50,7 @@ def test_a_well_formed_statement_parses_from_real_pdf_bytes():
     result = parse_midwest_statement(_pdf(f"{HEADER}\n{LINE_A}\n{LINE_B}\n"))
 
     assert result.statement_date == date(2026, 5, 3)
-    assert result.customer_code == "GDX01"
+    assert result.customer_code == "ACME01"
     assert result.line_count == 1
     line = result.lines[0]
     assert line.invoice_no == "100493"
@@ -102,11 +103,59 @@ def test_short_job_number_is_a_structure_failure():
         parse_midwest_statement(_pdf(f"{HEADER}\n{LINE_A}\n9001 PO-4471 / 58 8x7 door\n"))
 
 
-def test_midwest_letterhead_with_no_line_items_is_a_structure_failure():
-    """Their letterhead, none of their rows — we were handed a statement (or
-    something wearing one) and produced nothing. Not a stranger's document."""
+def test_statement_header_with_no_line_items_is_a_structure_failure():
+    """A confirmed statement (STATEMENT DATE present) that yields no rows —
+    we were handed one and produced nothing."""
     with pytest.raises(MidwestStatementStructureError):
         parse_midwest_statement(_pdf(f"{HEADER}\nNo open items.\n"))
+
+
+# --------------------------------------------------------------------------- #
+# the letterhead is NOT the identity
+#
+# Midwest puts the same company name on order confirmations, quotes and
+# packing slips. Treating the name as identity made 39 order confirmations
+# report as "statement we failed to read" on the first prod sweep
+# (2026-07-28) — drowning the alarm a genuinely drifted statement depends on.
+# --------------------------------------------------------------------------- #
+
+# Shaped like the order confirmations that tripped the old check: same
+# letterhead, but "CUSTOMER NO:" where a statement says "CUSTOMER CODE:", and
+# no STATEMENT DATE anywhere. Values are invented — the discriminating feature
+# is the absent header, not any particular order.
+ORDER_CONFIRMATION = f"""                    ORDER CONFIRMATION
+{VENDOR_LETTERHEAD} (000)                    ORDER NUMBER:  10000001
+1 Example Road                                 ORDER DATE:  07/13/2026
+ANYTOWN, MN 55555                            SALES PERSON:  000001
+
+                                              CUSTOMER NO:  ACME01
+ BILL TO:                        SHIP TO:
+ Example Door Co                 Example Site
+"""
+
+
+def test_order_confirmation_is_not_mine_despite_the_letterhead():
+    with pytest.raises(MidwestParseError) as exc:
+        parse_midwest_statement(_pdf(ORDER_CONFIRMATION))
+    assert not isinstance(exc.value, MidwestStatementStructureError), (
+        "an order confirmation must fall through as 'not a statement', not "
+        "raise the alarm reserved for a statement we actually lost"
+    )
+
+
+def test_a_statement_is_identified_by_its_statement_date_header():
+    """The positive half of the same rule — the marker admits real statements."""
+    result = parse_midwest_statement(_pdf(f"{HEADER}\n{LINE_A}\n{LINE_B}\n"))
+    assert result.statement_date == date(2026, 5, 3)
+
+
+def test_statement_date_marker_present_but_unreadable_is_still_a_statement():
+    """Marker there, value junk: an undated statement, not someone else's PDF.
+    It must still parse so the email path records it."""
+    bad_date = HEADER.replace("05/03/2026", "13/45/9999")
+    result = parse_midwest_statement(_pdf(f"{bad_date}\n{LINE_A}\n{LINE_B}\n"))
+    assert result.statement_date is None
+    assert result.line_count == 1
 
 
 def test_structure_failures_are_still_catchable_as_the_base_error():
