@@ -22,6 +22,13 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.modules.vendor_orders.confirm import (
+    OrderConfirmError,
+    confirm_order_job,
+)
+from gdx_dispatch.modules.vendor_orders.matching import suggest_order_job_matches
+from gdx_dispatch.modules.vendor_orders.models import VendorOrder
+from gdx_dispatch.modules.vendor_orders.onorder import build_on_order
 from gdx_dispatch.modules.vendor_statements.account import build_vendor_accounts
 from gdx_dispatch.modules.vendor_statements.classifier import VALID_CLASSIFICATIONS
 from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine
