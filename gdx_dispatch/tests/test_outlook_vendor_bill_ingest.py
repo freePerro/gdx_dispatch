@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 from gdx_dispatch.modules.outlook import vendor_bill_ingest as vbi
 from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import MidwestInvoiceParseError
+from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+    MidwestParseError as MidwestStatementParseError,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,3 +375,276 @@ def test_llm_rung_broken_client_counts_error_without_api_call(monkeypatch):
     assert result["unparseable"] == 0
     assert result["llm_extractions"] == 0
     assert called == []
+
+
+# --------------------------------------------------------------------------- #
+# rung 1b — vendor statements of account
+#
+# A statement is not a payable. Before this rung existed the ladder ran
+# invoice-parser -> LLM, and the LLM's classifier (correctly) refused to record
+# a statement as a bill — so every statement the vendor emailed was counted
+# "unparseable" and silently dropped. These tests pin the routing.
+# --------------------------------------------------------------------------- #
+def _stmt_result(created=True, sid="s1", lines=27, sdate="2026-05-03"):
+    return SimpleNamespace(
+        created=created,
+        statement=SimpleNamespace(id=sid, statement_date=sdate, line_count=lines),
+    )
+
+
+def _only_statements_parse(monkeypatch, *, statement_bytes=b"stmt"):
+    """Invoice parser rejects everything; statement parser claims statement_bytes."""
+    def fake_invoice(tdb, *, pdf_bytes, **k):
+        raise MidwestInvoiceParseError("not a midwest invoice")
+
+    def fake_statement(tdb, *, pdf_bytes, **k):
+        if pdf_bytes != statement_bytes:
+            raise MidwestStatementParseError("not a midwest statement")
+        return _stmt_result()
+
+    monkeypatch.setattr(vbi, "upload_midwest_invoice", fake_invoice)
+    monkeypatch.setattr(vbi, "ingest_midwest_statement", fake_statement)
+
+
+def test_statement_pdf_is_recorded_as_a_statement_not_a_bill(monkeypatch):
+    _only_statements_parse(monkeypatch)
+    seen = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: seen.append(1))
+
+    gc = _FakeGC([_pdf_att("a1", "statement.pdf")], {"a1": b"stmt"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert result["statements"] == 1
+    # The whole point: it must NOT be counted as a bill, and must NOT be
+    # counted unparseable (the pre-fix behavior that lost them).
+    assert result["ingested"] == 0
+    assert result["unparseable"] == 0
+    assert result["errors"] == 0
+    # Deterministic rung claimed it — no tokens spent.
+    assert seen == []
+    assert result["llm_extractions"] == 0
+
+
+def test_statement_rung_passes_source_email_and_the_pdf_bytes(monkeypatch):
+    calls = []
+
+    def fake_statement(tdb, *, pdf_bytes, original_filename, content_type, uploaded_by, source):
+        calls.append({"bytes": pdf_bytes, "name": original_filename, "source": source})
+        return _stmt_result()
+
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(vbi, "ingest_midwest_statement", fake_statement)
+
+    gc = _FakeGC([_pdf_att("a1", "cs_master.PDF")], {"a1": b"stmt"})
+    vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+
+    assert calls[0]["source"] == "email"
+    assert calls[0]["bytes"] == b"stmt"
+    assert calls[0]["name"] == "cs_master.PDF"
+
+
+def test_already_known_statement_counts_duplicate_not_new(monkeypatch):
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_statement", lambda tdb, **k: _stmt_result(created=False)
+    )
+
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+
+    assert result["statement_duplicate"] == 1
+    assert result["statements"] == 0
+    assert result["duplicate"] == 0   # bill duplicates are a separate count
+    assert result["errors"] == 0
+
+
+def test_non_statement_still_falls_through_to_the_llm_rung(monkeypatch):
+    """Rung 1b must not swallow documents it can't parse — the LLM still gets
+    its turn at a scanned bill from a vendor with no deterministic parser."""
+    _only_statements_parse(monkeypatch, statement_bytes=b"stmt")
+    llm_calls = []
+
+    def fake_llm(tdb, *, pdf_bytes, **k):
+        llm_calls.append(pdf_bytes)
+        return SimpleNamespace(created=True)
+
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", fake_llm)
+
+    gc = _FakeGC([_pdf_att("a1", "scan.pdf")], {"a1": b"a scanned bill"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert llm_calls == [b"a scanned bill"]
+    assert result["ingested"] == 1
+    assert result["ingested_llm"] == 1
+    assert result["statements"] == 0
+
+
+def test_statement_rung_runs_before_the_llm(monkeypatch):
+    """Ordering is the cost control: the free deterministic parser must get the
+    PDF first, so a statement never reaches a paid extraction."""
+    order = []
+
+    def fake_statement(tdb, *, pdf_bytes, **k):
+        order.append("statement")
+        return _stmt_result()
+
+    def fake_llm(tdb, **k):
+        order.append("llm")
+        return SimpleNamespace(created=True)
+
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(vbi, "ingest_midwest_statement", fake_statement)
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", fake_llm)
+
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+    vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], llm_client=object())
+
+    assert order == ["statement"]
+
+
+def test_statement_storage_failure_is_retryable_and_never_reaches_the_llm(monkeypatch):
+    """A DB/disk failure while STORING a statement must not be laundered into
+    an LLM bill extraction — that would record the statement as a payable."""
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_statement",
+        lambda tdb, **k: (_ for _ in ()).throw(RuntimeError("db is down")),
+    )
+    llm_calls = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: llm_calls.append(1))
+
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert result["errors"] == 1          # retryable => message stays un-checkpointed
+    assert result["statements"] == 0
+    assert result["unparseable"] == 0     # NOT a permanent skip
+    assert llm_calls == []
+
+
+def test_statement_rung_off_when_no_llm_key_still_records_statements(monkeypatch):
+    """Statements are deterministic — they must land even with rung 2 disabled
+    (llm_client=None), which is the tenant's default state."""
+    _only_statements_parse(monkeypatch)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], llm_client=None)
+    assert result["statements"] == 1
+    assert result["unparseable"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# rung 1b — "it IS ours and we lost it" must not look like "it isn't ours"
+#
+# The statement parser is deliberately strict: one unexpected detail line and
+# it raises rather than skipping. Before this distinction existed, that raise
+# was indistinguishable from "not a statement", so a real statement whose
+# layout drifted would fall to the LLM rung, be counted with the junk
+# attachments, and get checkpointed — lost silently, forever.
+# --------------------------------------------------------------------------- #
+def _identified_but_unreadable(monkeypatch):
+    from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+        MidwestStatementStructureError,
+    )
+
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_statement",
+        lambda tdb, **k: (_ for _ in ()).throw(
+            MidwestStatementStructureError("could not parse line B for invoice 100493")
+        ),
+    )
+
+
+def test_unreadable_statement_is_counted_under_its_own_name(monkeypatch):
+    _identified_but_unreadable(monkeypatch)
+    gc = _FakeGC([_pdf_att("a1", "cs_master.PDF")], {"a1": b"stmt"})
+
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+
+    assert result["statement_unparseable"] == 1
+    # NOT bucketed with junk attachments — that's what made the loss invisible.
+    assert result["unparseable"] == 0
+    assert result["statements"] == 0
+
+
+def test_unreadable_statement_never_reaches_the_bill_extractor(monkeypatch):
+    """Handing a statement to an invoice extractor is how one gets booked as a
+    payable and shadows the real invoice through (vendor, invoice_number)."""
+    _identified_but_unreadable(monkeypatch)
+    llm_calls = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: llm_calls.append(1))
+
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+    vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"], llm_client=object())
+
+    assert llm_calls == []
+
+
+def test_unreadable_statement_does_not_block_the_checkpoint(monkeypatch):
+    """It must not count as an error either: a parser gap that blocks the
+    checkpoint re-downloads the same PDF on every run, forever."""
+    _identified_but_unreadable(monkeypatch)
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"stmt"})
+
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+
+    assert result["errors"] == 0
+    assert result["capped"] == 0
+    assert result["llm_capped"] == 0
+
+
+def test_unreadable_statement_is_logged_loudly_enough_to_act_on(monkeypatch, caplog):
+    import logging
+
+    _identified_but_unreadable(monkeypatch)
+    gc = _FakeGC([_pdf_att("a1", "cs_master.PDF")], {"a1": b"stmt"})
+
+    with caplog.at_level(logging.ERROR):
+        vbi.ingest_message_attachments(None, gc, _msg(mid="AAMk-123"), ["midwest.com"])
+
+    assert any(
+        r.levelno >= logging.ERROR
+        and "cs_master.PDF" in r.getMessage()
+        and "AAMk-123" in r.getMessage()
+        for r in caplog.records
+    ), "a dropped statement must name the file and the message so it can be recovered"
+
+
+def test_a_pdf_that_is_simply_not_a_statement_still_climbs_to_rung_2(monkeypatch):
+    """The distinction must not over-claim: a plain 'not mine' still falls
+    through, which is the routine answer on a ladder of parsers."""
+    _only_statements_parse(monkeypatch, statement_bytes=b"stmt")
+    llm_calls = []
+    monkeypatch.setattr(
+        vbi, "upload_invoice_via_llm",
+        lambda tdb, *, pdf_bytes, **k: llm_calls.append(pdf_bytes) or SimpleNamespace(created=True),
+    )
+
+    gc = _FakeGC([_pdf_att("a1", "scan.pdf")], {"a1": b"some other vendor bill"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert llm_calls == [b"some other vendor bill"]
+    assert result["statement_unparseable"] == 0

@@ -45,6 +45,15 @@ class VendorStatement(TenantBase):
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="parsed")
 
+    # How this statement arrived: 'upload' (office dropped the PDF on the
+    # Vendor Statements page) or 'email' (the Outlook vendor-bill ingest pulled
+    # it off an allowlisted sender). server_default carries existing rows —
+    # these tables are created via create_all, not the migration chain (see
+    # migration 024), so a deployed table needs the matching ALTER by hand.
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="upload", server_default="upload"
+    )
+
     uploaded_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

@@ -55,6 +55,21 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute="*/30"),
             "options": {"queue": "priority:low"},
         },
+        "outlook-vendor-bill-sweep-daily": {
+            # Supplier bills + statements of account arrive as PDF attachments
+            # from allowlisted senders. The delta sync ingests them as mail
+            # lands, but a webhook drop, a budget cap, or a transient Graph
+            # error leaves messages un-checkpointed — and until this entry
+            # existed the ONLY thing that picked those up was an admin pressing
+            # the sweep button, which nobody does. 07:15 UTC ≈ before the
+            # office opens US Central. No-ops while the sender allowlist is
+            # empty; the task's default window is a keep-up pass, not a
+            # backfill (use the admin endpoint with an explicit `days` for
+            # deeper history).
+            "task": "outlook.sweep_vendor_bills_all_accounts",
+            "schedule": crontab(hour=7, minute=15),
+            "options": {"queue": "priority:low"},
+        },
         "outlook-retag-untagged-hourly": {
             # D3: forward-tagging only tags NEW mail. This picks up (a) the
             # historical backlog synced before tagging existed, and (b) any

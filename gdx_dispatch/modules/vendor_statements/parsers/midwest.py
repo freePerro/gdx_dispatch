@@ -11,9 +11,20 @@ The constant `58` between the slash and description is Midwest's branch code
 and appears on every row in this dataset; we use it as the join anchor.
 
 Parser is deliberately strict: any line that looks like an invoice row but
-fails to parse raises `MidwestParseError`. Slice-1 has no recovery; we'd
-rather fail loudly and have Doug see the broken statement than silently lose
-line items.
+fails to parse raises rather than skipping. There is no recovery; we'd rather
+fail loudly and have Doug see the broken statement than silently lose line
+items.
+
+That strictness is only safe if "failed" is distinguishable from "not mine",
+so failures come in two flavors:
+
+    MidwestParseError               not a Midwest statement — keep looking
+    MidwestStatementStructureError  IS one, and we lost it — raise the alarm
+
+Callers walking a ladder of parsers get handed every PDF nobody else could
+place, so the first is routine and the second is a defect. Collapsing them
+would file a real statement next to the junk attachments and lose it quietly,
+which is precisely the failure this parser's strictness exists to prevent.
 """
 from __future__ import annotations
 
@@ -35,6 +46,19 @@ PARSER_VERSION = 1
 
 class MidwestParseError(ValueError):
     """Raised when a Midwest statement PDF cannot be parsed."""
+
+
+class MidwestStatementStructureError(MidwestParseError):
+    """The PDF **is** a Midwest statement — the letterhead identified it — but
+    its structure defeated the parser.
+
+    Distinct from its parent on purpose. Plain ``MidwestParseError`` means
+    "this isn't ours, keep looking", which is a routine answer when something
+    hands us every PDF it couldn't otherwise place. This one means "this IS
+    ours and we lost it", which is a defect and has to be loud. Callers that
+    walk a ladder of parsers must not treat the two the same: doing so buries
+    a real statement in the same bucket as junk attachments.
+    """
 
 
 _MONEY = r"\$[\d,]+\.\d{2}"
@@ -191,12 +215,12 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
         while j < len(lines) and not lines[j].strip():
             j += 1
         if j >= len(lines):
-            raise MidwestParseError(f"line A at index {i} has no following line B")
+            raise MidwestStatementStructureError(f"line A at index {i} has no following line B")
 
         line_b = lines[j]
         m_b = _LINE_B.match(line_b)
         if not m_b:
-            raise MidwestParseError(
+            raise MidwestStatementStructureError(
                 f"could not parse line B for invoice {m_a.group('invoice')}: {line_b!r}"
             )
 
@@ -220,7 +244,7 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
                 raw_text=line.strip() + "\n" + line_b.strip(),
             )
         except Exception as exc:  # noqa: BLE001
-            raise MidwestParseError(
+            raise MidwestStatementStructureError(
                 f"failed to build parsed line for invoice {m_a.group('invoice')}: {exc}"
             ) from exc
 
@@ -230,7 +254,7 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
         i = j + 1
 
     if not parsed:
-        raise MidwestParseError("no line items found in PDF")
+        raise MidwestStatementStructureError("no line items found in PDF")
 
     return MidwestParseResult(
         statement_date=statement_date,

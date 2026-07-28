@@ -46,7 +46,10 @@
         @row-click="(event) => openDetail(event.data)"
       >
         <template #empty>
-          <div class="empty-message">No vendor statements yet. Upload a Midwest PDF to begin.</div>
+          <div class="empty-message">
+            No vendor statements yet. They arrive automatically from allowlisted
+            supplier senders — or upload a Midwest PDF to begin.
+          </div>
         </template>
 
         <Column header="Uploaded" style="width: 180px">
@@ -65,6 +68,14 @@
         <Column header="Status" style="width: 120px">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="statusSeverity(data.status)" />
+          </template>
+        </Column>
+        <Column header="Source" style="width: 130px">
+          <template #body="{ data }">
+            <span class="source-cell">
+              <i :class="data.source === 'email' ? 'pi pi-envelope' : 'pi pi-upload'" aria-hidden="true" />
+              {{ data.source === 'email' ? 'Email' : 'Upload' }}
+            </span>
           </template>
         </Column>
         <Column header="" style="width: 80px">
@@ -217,6 +228,15 @@ onMounted(fetchItems)
   padding: 0.5rem 0.75rem;
 }
 .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+.source-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  /* Theme token, no light-only literal — this cell has to stay legible on the
+     dark surface too (see the 2026-07 dark-mode sweep). */
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+}
 .spinner-wrap { display: flex; justify-content: center; padding: 2rem; }
 .empty-message {
   text-align: center;

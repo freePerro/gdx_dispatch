@@ -1048,3 +1048,151 @@ def test_sweep_broken_llm_key_leaves_messages_unstamped(monkeypatch):
     assert result["llm_extractions"] == 0
     assert result["unparseable"] == 0
     assert _stamps(maker, aid)["m-scan"] is False   # retried after the fix
+
+
+# ── vendor statements through the sweep, and the beat fan-out ──────────
+#
+# The statement rung is only worth anything if something runs it unattended.
+# Until 2026-07 the sweep existed but nothing scheduled it, so a year of
+# supplier statements sat un-ingested in the mirror.
+
+
+def _sweep_env_connected(allowlist=("midwest.com",)):
+    """_sweep_env, but the account looks CONNECTED (refresh token present) —
+    which is what the fan-out task filters on."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from gdx_dispatch.core.audit import TenantBase
+    from gdx_dispatch.modules.outlook.models import OutlookAccount, OutlookSettings
+
+    eng = create_engine(
+        "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
+    )
+    TenantBase.metadata.create_all(eng)
+    maker = sessionmaker(bind=eng)
+    db = maker()
+    ids = []
+    for _ in range(2):
+        acct = OutlookAccount(user_id=str(uuid4()), refresh_token_enc="enc")
+        db.add(acct)
+        db.flush()
+        ids.append(acct.id)
+    db.add(OutlookSettings(id=1, vendor_bill_sender_allowlist=list(allowlist)))
+    db.commit()
+    db.close()
+    return maker, ids
+
+
+def test_sweep_records_a_vendor_statement_and_checkpoints_it(monkeypatch):
+    """End-to-end through the real ingest path: a statement PDF from an
+    allowlisted sender lands as a STATEMENT, not a bill, and the message is
+    checkpointed so the next run leaves it alone."""
+    from types import SimpleNamespace
+
+    from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import (
+        MidwestInvoiceParseError,
+    )
+
+    maker, aid = _sweep_env()
+    _mirror_msg(maker, aid, "m-stmt", "carol@midwest.com", days_ago=5)
+
+    def _not_a_bill(*a, **k):
+        raise MidwestInvoiceParseError("not a midwest invoice")
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.outlook.vendor_bill_ingest.ingest_midwest_statement",
+        lambda tdb, **k: SimpleNamespace(
+            created=True,
+            statement=SimpleNamespace(id="s1", statement_date="2026-05-03", line_count=27),
+        ),
+    )
+
+    gc = _SweepGC()
+    result = _run_sweep(maker, aid, gc, monkeypatch, upload=_not_a_bill)
+
+    assert result["statements"] == 1
+    assert result["ingested"] == 0        # a statement is not a payable
+    assert result["unparseable"] == 0     # and not a dropped document
+    assert _stamps(maker, aid)["m-stmt"] is True
+
+
+def test_fanout_queues_a_sweep_for_every_connected_account(monkeypatch):
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, ids = _sweep_env_connected()
+    queued = []
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()), \
+         patch.object(tasks.sweep_vendor_bill_history, "delay",
+                      side_effect=lambda *a, **k: queued.append((a, k))):
+        result = tasks.sweep_vendor_bills_all_accounts.run(days=45)
+
+    assert result["triggered"] == len(ids) == 2
+    assert result["days"] == 45
+    assert {a[0] for a, _ in queued} == {str(i) for i in ids}
+    assert all(k["days"] == 45 for _, k in queued)
+
+
+def test_fanout_default_window_outlives_a_monthly_document():
+    """Statements arrive monthly. A window near the cadence lets one age out
+    of range during an outage and never be swept again — the default has to
+    carry several cycles of slack."""
+    import inspect
+
+    from gdx_dispatch.modules.outlook import tasks
+
+    default = inspect.signature(tasks.sweep_vendor_bills_all_accounts.run).parameters["days"].default
+    assert default >= 90, f"{default}d is under three monthly cycles"
+
+
+def test_fanout_reports_a_broken_run_instead_of_a_quiet_success():
+    """A dead broker must not read as 'triggered 0, all good'."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, _ = _sweep_env_connected()
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()), \
+         patch.object(tasks.sweep_vendor_bill_history, "delay",
+                      side_effect=RuntimeError("broker unreachable")):
+        result = tasks.sweep_vendor_bills_all_accounts.run()
+
+    assert "error" in result
+    assert "broker unreachable" in result["error"]
+
+
+def test_fanout_noops_while_the_allowlist_is_empty(monkeypatch):
+    """Feature off = a cheap tick, not a mailbox crawl."""
+    from gdx_dispatch.modules.outlook import tasks
+
+    maker, _ = _sweep_env_connected(allowlist=())
+    queued = []
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()), \
+         patch.object(tasks.sweep_vendor_bill_history, "delay",
+                      side_effect=lambda *a, **k: queued.append(a)):
+        result = tasks.sweep_vendor_bills_all_accounts.run()
+
+    assert result == {"skipped": "allowlist empty", "triggered": 0}
+    assert queued == []
+
+
+def test_fanout_survives_a_database_without_outlook_tables():
+    """A beat tick must never raise into the worker (the module may not be
+    provisioned on a given deployment)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from gdx_dispatch.modules.outlook import tasks
+
+    eng = create_engine(
+        "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
+    )
+    maker = sessionmaker(bind=eng)  # no create_all — tables absent on purpose
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", side_effect=lambda: maker()):
+        result = tasks.sweep_vendor_bills_all_accounts.run()
+
+    assert result["triggered"] == 0
