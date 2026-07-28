@@ -140,6 +140,41 @@ class VendorAccountOut(BaseModel):
     change: AccountChangeOut | None
 
 
+class OnOrderLineOut(BaseModel):
+    line_no: int
+    description: str | None
+    notes: str | None
+    quantity: Decimal
+    unit: str | None
+    unit_cost: Decimal
+    line_total: Decimal
+
+
+class OnOrderItemOut(BaseModel):
+    order_number: str
+    order_date: date | None
+    ship_to: str | None
+    customer_po: str | None
+    lot_no: str | None
+    estimated_total: Decimal
+    line_count: int
+    status: str
+    billed_total: Decimal | None
+    variance: Decimal | None
+    lines: list[OnOrderLineOut]
+
+
+class OnOrderSummaryOut(BaseModel):
+    vendor_name: str
+    vendor_code: str | None
+    awaiting_bill_count: int
+    awaiting_bill_total: Decimal
+    # Non-zero when finished orders were capped out of `items` — the list is
+    # partial and consumers must not present it as the whole history.
+    finished_truncated: int = 0
+    items: list[OnOrderItemOut]
+
+
 @router.post(
     "/upload",
     status_code=201,
@@ -258,6 +293,44 @@ async def list_vendor_accounts(
             ),
         )
         for a in build_vendor_accounts(db)
+    ]
+
+
+@router.get(
+    "/on-order",
+    response_model=list[OnOrderSummaryOut],
+    dependencies=[Depends(require_permission("vendor_statements.read"))],
+)
+async def list_on_order(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[OnOrderSummaryOut]:
+    """Committed spend: orders placed, threaded to whatever has followed them.
+
+    An order confirmation arrives before any bill, and the supplier's order
+    number becomes their invoice number — so an order with no bill and no
+    statement line is spend GDX could not otherwise see. Deliberately reported
+    separately from the statement balance: a quote that may still change is not
+    the same kind of money as a debt, and adding them would overstate what's due.
+
+    Declared before ``/{statement_id}`` so the literal path isn't swallowed.
+    """
+    return [
+        OnOrderSummaryOut(
+            vendor_name=s.vendor_name,
+            vendor_code=s.vendor_code,
+            awaiting_bill_count=s.awaiting_bill_count,
+            awaiting_bill_total=s.awaiting_bill_total,
+            finished_truncated=s.finished_truncated,
+            items=[
+                OnOrderItemOut(
+                    **{k: v for k, v in vars(it).items() if k != "lines"},
+                    lines=[OnOrderLineOut(**vars(ln)) for ln in it.lines],
+                )
+                for it in s.items
+            ],
+        )
+        for s in build_on_order(db)
     ]
 
 

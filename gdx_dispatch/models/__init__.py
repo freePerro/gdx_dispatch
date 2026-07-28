@@ -149,6 +149,7 @@ try:
 except ImportError:
     pass
 try:
+    from gdx_dispatch.modules.vendor_orders.models import VendorOrder, VendorOrderLine  # noqa: F401
     from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine  # noqa: F401
 except ImportError:
     pass

@@ -648,3 +648,108 @@ def test_a_pdf_that_is_simply_not_a_statement_still_climbs_to_rung_2(monkeypatch
 
     assert llm_calls == [b"some other vendor bill"]
     assert result["statement_unparseable"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# rung 1c — order confirmations
+#
+# An order is a commitment, not a debt: its totals are the supplier's own
+# 30-day quote with shipping and tax provisional. It must never touch the bill
+# counters, and it must never reach the bill extractor.
+# --------------------------------------------------------------------------- #
+def _no_invoice_no_statement(monkeypatch):
+    from gdx_dispatch.modules.vendor_statements.parsers.midwest import (
+        MidwestParseError as _StmtErr,
+    )
+    monkeypatch.setattr(
+        vbi, "upload_midwest_invoice",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestInvoiceParseError("no")),
+    )
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_statement",
+        lambda tdb, **k: (_ for _ in ()).throw(_StmtErr("not a statement")),
+    )
+
+
+def test_order_confirmation_is_recorded_as_an_order_not_a_bill(monkeypatch):
+    _no_invoice_no_statement(monkeypatch)
+    monkeypatch.setattr(vbi, "ingest_midwest_order", lambda tdb, **k: SimpleNamespace(
+        created=True,
+        order=SimpleNamespace(order_number="20635854", order_date="2026-07-23",
+                              line_count=1, estimated_total="3707.74"),
+    ))
+    llm = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: llm.append(1))
+
+    gc = _FakeGC([_pdf_att("a1", "order_confirmation.pdf")], {"a1": b"oc"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert result["orders"] == 1
+    assert result["ingested"] == 0        # a commitment is not a payable
+    assert result["statements"] == 0
+    assert result["unparseable"] == 0
+    assert llm == []                      # deterministic rung claimed it
+
+
+def test_a_known_order_counts_duplicate(monkeypatch):
+    _no_invoice_no_statement(monkeypatch)
+    monkeypatch.setattr(vbi, "ingest_midwest_order", lambda tdb, **k: SimpleNamespace(
+        created=False, order=SimpleNamespace(order_number="X", order_date=None,
+                                             line_count=0, estimated_total="0"),
+    ))
+    gc = _FakeGC([_pdf_att("a1")], {"a1": b"oc"})
+    result = vbi.ingest_message_attachments(None, gc, _msg(), ["midwest.com"])
+    assert result["order_duplicate"] == 1
+    assert result["orders"] == 0
+
+
+def test_an_unreadable_order_confirmation_is_reported_not_swallowed(monkeypatch):
+    from gdx_dispatch.modules.vendor_orders.parsers.midwest_order import (
+        MidwestOrderStructureError,
+    )
+    _no_invoice_no_statement(monkeypatch)
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_order",
+        lambda tdb, **k: (_ for _ in ()).throw(MidwestOrderStructureError("totals disagree")),
+    )
+    llm = []
+    monkeypatch.setattr(vbi, "upload_invoice_via_llm", lambda *a, **k: llm.append(1))
+
+    gc = _FakeGC([_pdf_att("a1", "order_confirmation.pdf")], {"a1": b"oc"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert result["order_unparseable"] == 1
+    assert result["unparseable"] == 0     # not buried with junk attachments
+    assert result["errors"] == 0          # must not block the checkpoint forever
+    assert llm == []                      # and never handed to the bill extractor
+
+
+def test_something_that_is_no_ones_still_reaches_the_llm(monkeypatch):
+    """Rung 1c must not over-claim: a scanned bill from another vendor still
+    climbs past all three deterministic parsers."""
+    from gdx_dispatch.modules.vendor_orders.parsers.midwest_order import (
+        MidwestOrderParseError as _OrderErr,
+    )
+    _no_invoice_no_statement(monkeypatch)
+    monkeypatch.setattr(
+        vbi, "ingest_midwest_order",
+        lambda tdb, **k: (_ for _ in ()).throw(_OrderErr("not an order confirmation")),
+    )
+    llm = []
+    monkeypatch.setattr(
+        vbi, "upload_invoice_via_llm",
+        lambda tdb, *, pdf_bytes, **k: llm.append(pdf_bytes) or SimpleNamespace(created=True),
+    )
+
+    gc = _FakeGC([_pdf_att("a1", "scan.pdf")], {"a1": b"someone elses bill"})
+    result = vbi.ingest_message_attachments(
+        None, gc, _msg(), ["midwest.com"], llm_client=object()
+    )
+
+    assert llm == [b"someone elses bill"]
+    assert result["ingested_llm"] == 1
+    assert result["orders"] == 0
