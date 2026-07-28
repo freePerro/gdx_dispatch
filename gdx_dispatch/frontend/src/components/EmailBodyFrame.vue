@@ -54,7 +54,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps({
   // Raw body from the /body endpoint. For html: attacker HTML. For text: plain.
@@ -66,6 +66,32 @@ const props = defineProps({
 })
 
 const showImages = ref(false)
+
+// The iframe is its own document — it inherits none of the app's CSS
+// variables, so the theme has to be read here and baked into srcdoc. GDX
+// stamps data-theme on <html> (stores/theme.js), and 'auto' resolves to the
+// OS preference. Watched via MutationObserver so toggling the theme repaints
+// an already-open message instead of waiting for a re-open.
+function readTheme() {
+  if (typeof document === 'undefined') return false
+  const mode = document.documentElement.getAttribute('data-theme')
+  if (mode === 'dark') return true
+  if (mode === 'light') return false
+  return typeof window !== 'undefined' && !!window.matchMedia
+    && window.matchMedia('(prefers-color-scheme: dark)').matches
+}
+
+const isDark = ref(readTheme())
+let _themeObserver = null
+
+onMounted(() => {
+  if (typeof MutationObserver === 'undefined') return
+  _themeObserver = new MutationObserver(() => { isDark.value = readTheme() })
+  _themeObserver.observe(document.documentElement, {
+    attributes: true, attributeFilter: ['data-theme'],
+  })
+})
+onBeforeUnmount(() => { _themeObserver?.disconnect() })
 
 // Only offer the images toggle for real HTML bodies (plain text has none).
 const canShowImagesToggle = computed(
@@ -97,15 +123,32 @@ const srcdoc = computed(() => {
       ? `<pre class="txt">${escapeHtml(props.html)}</pre>`
       : (props.html || '')
 
+  // Theme comes from the APP's toggle, not the OS. GDX switches themes by
+  // stamping data-theme on <html>, so an iframe styled only by
+  // `@media (prefers-color-scheme: dark)` keeps its light-mode #1e293b text
+  // whenever the user picks dark while their OS is light — dark slate text on
+  // a dark pane, which is how the body rendered as barely-readable grey on
+  // prod. The media query stays as the fallback for a frame rendered before
+  // the attribute is set.
+  const dark = isDark.value
+  const fg = dark ? '#e2e8f0' : '#1e293b'
+  const link = dark ? '#60a5fa' : '#2563eb'
+
   return `<!doctype html><html><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
     `<base target="_blank">` +
     `<style>` +
-    `html,body{margin:0;padding:12px;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1e293b;word-break:break-word;overflow-wrap:anywhere;}` +
+    `html,body{margin:0;padding:12px;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:${fg};background:transparent;word-break:break-word;overflow-wrap:anywhere;}` +
     `img{max-width:100%;height:auto;}` +
     `pre.txt{white-space:pre-wrap;font:inherit;margin:0;}` +
-    `a{color:#2563eb;}` +
-    `@media (prefers-color-scheme: dark){html,body{color:#e2e8f0;background:transparent;}a{color:#60a5fa;}}` +
+    `a{color:${link};}` +
+    // Sender HTML routinely hard-codes near-black text for a white backdrop.
+    // In dark mode inherit our foreground instead, or half the email is
+    // invisible — but only where the sender didn't set a colour themselves.
+    (dark
+      ? `body :where(p,div,span,td,th,li,h1,h2,h3,h4,h5,h6){color:inherit;}`
+      : '') +
+    `@media (prefers-color-scheme: dark){html,body{color:${fg};background:transparent;}}` +
     `</style></head><body>${inner}</body></html>`
 })
 </script>
