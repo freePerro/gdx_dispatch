@@ -70,6 +70,18 @@ def app(monkeypatch):
 # ── unified inbox ───────────────────────────────────────────────────────
 
 
+def _filtered_on(tdb, column_name: str) -> bool:
+    """True when some .filter() on the message query mentioned `column_name`.
+
+    Audit round 4: several tests asserted `filter.called`, which is True on
+    every request (_load_tech_emails filters the User query on the same shared
+    mock) — so they passed with the WHERE clause deleted entirely. Assert the
+    predicate's SQL text instead.
+    """
+    calls = tdb.query.return_value.filter.call_args_list
+    return any(c.args and column_name in str(c.args[0]) for c in calls)
+
+
 def _set_raw_rows(tdb, rows):
     tdb.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = rows
 
@@ -752,6 +764,7 @@ def test_unread_count_counts_visible_only(app):
     # No "capped" field: telling a viewer who sees 0 that the scan window was
     # full would disclose the mailbox holds >=500 unread messages.
     assert r.json() == {"count": 1}
+    assert _filtered_on(tdb, "is_read")
 
 
 def test_unread_count_route_not_eaten_by_message_id(app):
@@ -783,6 +796,9 @@ def test_thread_returns_siblings_oldest_first(app):
     assert r.status_code == 200
     # Chronological for a reader, regardless of the SQL window's order.
     assert [m["id"] for m in r.json()] == [str(anchor.id), str(sibling.id)]
+    # ...and the query was actually scoped to the conversation, rather than
+    # returning whatever the mock had lying around.
+    assert _filtered_on(tdb, "conversation_id")
 
 
 def test_thread_hides_siblings_the_viewer_cannot_see(app):
