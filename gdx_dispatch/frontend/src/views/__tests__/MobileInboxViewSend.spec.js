@@ -198,3 +198,114 @@ describe('MobileInboxView pagination / load-more (D7)', () => {
     expect(w.find('[data-test="mi-load-more"]').exists()).toBe(false);
   });
 });
+
+/**
+ * Mobile P1/P2 parity — search, link badges, conversation strip, forward,
+ * follow-up task, AI reply. Mobile is where these were missing entirely
+ * before; the desktop-only shape is exactly what shipped the D2 class of bug.
+ */
+describe('MobileInboxView P1/P2 surfaces', () => {
+  const MSG = {
+    id: 'm-1',
+    subject: 'Broken spring',
+    from_address: 'alice@example.com',
+    to_addresses: ['office@gdx.com'],
+    direction: 'inbound',
+    received_at: '2026-07-20T12:00:00Z',
+    body_preview: 'door wont open',
+    is_read: true,
+    has_attachments: false,
+    linked_customer_id: 'c-1',
+    linked_customer_name: 'Acme Doors',
+    linked_job_id: 'j-1',
+    linked_job_label: 'JOB-2026-014',
+    conversation_id: 'conv-9',
+    // Forward is owner-only (Graph resolves the id against the caller's own
+    // mailbox), so the button only renders for the mailbox owner.
+    viewer_is_owner: true,
+  };
+  const SIBLING = { ...MSG, id: 'm-2', subject: 'Re: Broken spring', from_address: 'doug@gdx.com' };
+
+  beforeEach(() => {
+    apiGet.mockReset().mockImplementation(async (url) => {
+      if (url.includes('/thread')) return [MSG, SIBLING];
+      if (url.includes('/body')) return { fetched: true, content_type: 'text', body_html: 'door wont open' };
+      if (url.includes('/api/outlook/messages?')) return { items: [MSG], has_more: false, next_offset: 1 };
+      return MSG;
+    });
+    apiPost.mockReset().mockResolvedValue({ ok: true, draft_text: 'We can be there Tuesday.' });
+    apiPatch.mockReset().mockResolvedValue({});
+  });
+
+  it('search sends q= to the server', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const w = mountView();
+    await flushPromises();
+    apiGet.mockClear();
+    const box = w.find('[data-test="mi-search"]');
+    await box.setValue('spring');
+    await box.trigger('input');
+    vi.advanceTimersByTime(400);
+    await flushPromises();
+    expect(apiGet.mock.calls.some(([u]) => u.includes('q=spring'))).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('shows customer/job labels on a row', async () => {
+    const w = mountView();
+    await flushPromises();
+    const links = w.find('[data-test="mi-row-links"]');
+    expect(links.exists()).toBe(true);
+    expect(links.text()).toContain('Acme Doors');
+    expect(links.text()).toContain('JOB-2026-014');
+  });
+
+  it('opening a message loads the conversation strip', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    expect(apiGet.mock.calls.some(([u]) => u.includes('/thread'))).toBe(true);
+    expect(w.findAll('[data-test="mi-thread-row"]').length).toBe(1);
+  });
+
+  it('forward posts to the Graph forward endpoint with an array recipient', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="mi-forward-open"]').trigger('click');
+    await typeInto(w, 'mi-forward-to', 'sub@vendor.com');
+    apiPost.mockClear();
+    await w.find('[data-test="mi-forward-send"]').trigger('click');
+    await flushPromises();
+    const [url, body] = apiPost.mock.calls[0];
+    expect(url).toContain('/forward');
+    expect(body.to).toEqual(['sub@vendor.com']);
+  });
+
+  it('create task posts to create-task for the open message', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    apiPost.mockClear();
+    await w.find('[data-test="mi-create-task"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls[0][0]).toContain('/create-task');
+  });
+
+  it('AI draft fills the reply box above the quoted original', async () => {
+    const w = mountView();
+    await flushPromises();
+    await w.find('[data-test="mi-msg-row"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="mi-reply-open"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="mi-ai-draft"]').trigger('click');
+    await flushPromises();
+    const body = w.find('[data-test="mi-reply-body"]').element.value;
+    expect(body.startsWith('We can be there Tuesday.')).toBe(true);
+    expect(body).toContain('alice@example.com wrote:');
+  });
+});

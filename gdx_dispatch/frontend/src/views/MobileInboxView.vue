@@ -10,6 +10,26 @@
         </div>
       </header>
 
+      <div class="mi-search">
+        <i class="pi pi-search" aria-hidden="true" />
+        <input
+          v-model="searchTerm"
+          type="search"
+          class="mi-search-input"
+          placeholder="Search subject, sender, preview…"
+          aria-label="Search mail"
+          data-test="mi-search"
+          @input="onSearchInput"
+        />
+        <button v-if="activeSearch" class="mi-search-clear" data-test="mi-search-clear" aria-label="Clear search" @click="clearSearch">✕</button>
+      </div>
+      <!-- Same disclosure the desktop makes. The tech in the truck is the one
+           most likely to search for an address that lives only in the body —
+           zero results must not read as "that email isn't in GDX". -->
+      <p v-if="activeSearch" class="mi-search-note" data-test="mi-search-note">
+        Searching subject, sender and preview text — not full message bodies.
+      </p>
+
       <div v-if="error" class="error-banner">{{ error }}</div>
 
       <div v-if="loading && !messages.length" class="state-msg">
@@ -37,6 +57,10 @@
           </div>
           <div class="msg-subject">{{ m.subject || '(no subject)' }}</div>
           <div class="msg-preview">{{ m.body_preview || '' }}</div>
+          <div v-if="m.linked_customer_id || m.linked_job_id" class="msg-links" data-test="mi-row-links">
+            <span v-if="m.linked_customer_id" class="link-chip">{{ m.linked_customer_name || 'Customer' }}</span>
+            <span v-if="m.linked_job_id" class="link-chip job">{{ m.linked_job_label || 'Job' }}</span>
+          </div>
         </li>
       </ol>
       <button
@@ -77,19 +101,58 @@
             v-if="detail.has_attachments"
             :message-id="detail.id"
             :has-attachments="detail.has_attachments"
+            :linked-job-id="detail.linked_job_id"
+            :linked-job-label="detail.linked_job_label"
           />
+
+          <div v-if="detail.linked_customer_id || detail.linked_job_id" class="msg-links" data-test="mi-detail-links">
+            <span v-if="detail.linked_customer_id" class="link-chip">{{ detail.linked_customer_name || 'Customer' }}</span>
+            <span v-if="detail.linked_job_id" class="link-chip job">{{ detail.linked_job_label || 'Job' }}</span>
+          </div>
+
+          <!-- 1.3 the rest of the conversation, server-resolved -->
+          <div v-if="threadOthers.length" class="thread-strip" data-test="mi-thread">
+            <div class="thread-title">Conversation · {{ thread.length }} messages</div>
+            <button
+              v-for="t in threadOthers"
+              :key="t.id"
+              class="thread-row"
+              data-test="mi-thread-row"
+              @click="openMessage(t)"
+            >
+              <span class="thread-subject">{{ t.subject || '(no subject)' }}</span>
+              <span class="thread-when">{{ fmtAgo(t.received_at || t.sent_at) }}</span>
+            </button>
+          </div>
 
           <div v-if="composeMode === 'reply'" class="reply-block">
             <h3>Reply</h3>
             <Textarea v-model="replyBody" rows="6" autoResize class="w-full" placeholder="Type your reply…" data-test="mi-reply-body" />
             <div class="reply-actions">
               <Button label="Cancel" severity="secondary" text @click="composeMode = null" />
+              <Button label="Draft with AI" icon="pi pi-sparkles" severity="secondary" outlined :loading="aiDrafting" @click="draftWithAi" data-test="mi-ai-draft" />
               <Button label="Send reply" icon="pi pi-send" :loading="replySaving" :disabled="!replyBody.trim()" @click="sendReply" data-test="mi-reply-send" />
+            </div>
+          </div>
+
+          <div v-if="composeMode === 'forward'" class="reply-block">
+            <h3>Forward</h3>
+            <InputText v-model="forwardForm.to" class="w-full" placeholder="recipient@example.com" data-test="mi-forward-to" />
+            <Textarea v-model="forwardForm.comment" rows="4" autoResize class="w-full" placeholder="Optional note…" data-test="mi-forward-comment" />
+            <p class="muted">The original attachments go with it.</p>
+            <div class="reply-actions">
+              <Button label="Cancel" severity="secondary" text @click="composeMode = null" />
+              <Button label="Forward" icon="pi pi-share-alt" :loading="forwardSending" :disabled="!forwardForm.to.trim()" @click="sendForward" data-test="mi-forward-send" />
             </div>
           </div>
         </div>
         <template #footer>
           <Button v-if="detail && composeMode !== 'reply'" label="Reply" icon="pi pi-reply" @click="startReply" data-test="mi-reply-open" />
+          <!-- Owner-only: Graph's forward resolves the message id against the
+               caller's own mailbox, so the server 403s a non-owner. Same gate
+               as the personal toggle. -->
+          <Button v-if="detail && detail.viewer_is_owner && composeMode !== 'forward'" label="Forward" icon="pi pi-share-alt" severity="secondary" text @click="startForward" data-test="mi-forward-open" />
+          <Button v-if="detail" label="Task" icon="pi pi-check-square" severity="secondary" text :loading="taskSaving" @click="createTaskFromEmail" data-test="mi-create-task" />
           <Button v-if="detail && !detail.is_read" label="Mark unread later" icon="pi pi-eye-slash" severity="secondary" text @click="markUnread" data-test="mi-mark-unread" />
           <!-- Owner-only privacy override; server 403s non-owners. -->
           <Button
@@ -230,6 +293,26 @@ const MSG_PAGE_SIZE = 50
 const msgOffset = ref(0)
 const hasMoreMessages = ref(false)
 
+// 1.1 — server-side search over the whole mailbox (not the loaded page).
+const searchTerm = ref('')
+const activeSearch = ref('')
+let _searchTimer = null
+
+function onSearchInput() {
+  clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(() => {
+    activeSearch.value = searchTerm.value.trim()
+    fetchMessages()
+  }, 350)
+}
+
+function clearSearch() {
+  clearTimeout(_searchTimer)
+  searchTerm.value = ''
+  activeSearch.value = ''
+  fetchMessages()
+}
+
 async function fetchMessages({ append = false } = {}) {
   loading.value = true
   error.value = null
@@ -238,7 +321,9 @@ async function fetchMessages({ append = false } = {}) {
     // window, so has_more/next_offset drive load-more until all mail is
     // reachable (D7).
     const offset = append ? msgOffset.value : 0
-    const r = await api.get(`/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`)
+    let url = `/api/outlook/messages?limit=${MSG_PAGE_SIZE}&offset=${offset}`
+    if (activeSearch.value) url += `&q=${encodeURIComponent(activeSearch.value)}`
+    const r = await api.get(url)
     const items = Array.isArray(r) ? r : (r?.items || [])
     if (append) {
       const seen = new Set(messages.value.map((m) => m.id))
@@ -262,6 +347,11 @@ function loadMoreMessages() {
 async function openMessage(m) {
   detail.value = null
   bodyData.value = {}
+  // Clear the previous message's conversation too. Without this, tapping B
+  // shows A's thread under B's header for the whole round-trip — and if B's
+  // metadata fetch fails, loadThread never runs and A's siblings stay there
+  // indefinitely, one tap away from navigating into the wrong thread.
+  thread.value = []
   activeMsgId.value = m.id
   detailOpen.value = true
   detailLoading.value = true
@@ -285,7 +375,97 @@ async function openMessage(m) {
   } finally {
     if (activeMsgId.value === m.id) detailLoading.value = false
   }
-  if (detail.value && activeMsgId.value === m.id) loadBody(m.id)
+  if (detail.value && activeMsgId.value === m.id) {
+    loadBody(m.id)
+    loadThread(m.id)
+  }
+}
+
+// ── 1.3 conversation ─────────────────────────────────────────────────
+const thread = ref([])
+const threadOthers = computed(() => thread.value.filter((t) => t.id !== activeMsgId.value))
+
+async function loadThread(id) {
+  try {
+    const rows = await api.get(`/api/outlook/messages/${id}/thread`, { suppressErrorToast: true })
+    if (activeMsgId.value === id) thread.value = Array.isArray(rows) ? rows : []
+  } catch {
+    if (activeMsgId.value === id) thread.value = []
+  }
+}
+
+// ── 1.4 forward (native Graph forward — keeps the attachments) ───────
+const forwardForm = ref({ to: '', comment: '' })
+const forwardSending = ref(false)
+
+function startForward() {
+  forwardForm.value = { to: '', comment: '' }
+  composeMode.value = 'forward'
+}
+
+async function sendForward() {
+  if (!detail.value) return
+  const to = splitAddrs(forwardForm.value.to)
+  if (!to.length) {
+    toast.add({ severity: 'error', summary: 'A recipient is required', life: 3000 })
+    return
+  }
+  forwardSending.value = true
+  try {
+    await api.post(`/api/outlook/messages/${detail.value.id}/forward`, {
+      to,
+      comment: forwardForm.value.comment || '',
+    })
+    toast.add({ severity: 'success', summary: 'Forwarded', life: 2500 })
+    composeMode.value = null
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Forward failed', detail: err.message, life: 4000 })
+  } finally {
+    forwardSending.value = false
+  }
+}
+
+// ── P2.2 email → follow-up task ──────────────────────────────────────
+const taskSaving = ref(false)
+
+async function createTaskFromEmail() {
+  if (!detail.value) return
+  taskSaving.value = true
+  try {
+    await api.post(`/api/outlook/messages/${detail.value.id}/create-task`, {})
+    toast.add({ severity: 'success', summary: 'Follow-up task created', life: 2500 })
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not create task', detail: err.message, life: 4000 })
+  } finally {
+    taskSaving.value = false
+  }
+}
+
+// ── P2.4 AI-suggested reply ──────────────────────────────────────────
+const aiDrafting = ref(false)
+
+async function draftWithAi() {
+  if (!detail.value) return
+  aiDrafting.value = true
+  try {
+    const r = await api.post(`/api/outlook/messages/${detail.value.id}/ai-draft`, {})
+    if (r?.draft_text) replyBody.value = `${r.draft_text}${quotedTail()}`
+    // Say when it's the canned fallback. Silently inserting boilerplate under
+    // a sparkles button lets a tech send a generic acknowledgement believing
+    // it was written for this message.
+    if (r?.source === 'fallback') {
+      toast.add({
+        severity: 'info',
+        summary: 'No AI configured',
+        detail: 'Inserted a standard reply — edit before sending.',
+        life: 4000,
+      })
+    }
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'AI draft failed', detail: err.message, life: 3500 })
+  } finally {
+    aiDrafting.value = false
+  }
 }
 
 async function loadBody(id) {
@@ -304,17 +484,22 @@ function closeDetail() {
   detailOpen.value = false
   detail.value = null
   bodyData.value = {}
+  thread.value = []
   activeMsgId.value = null
   composeMode.value = null
   replyBody.value = ''
 }
 
+function quotedTail() {
+  const d = detail.value
+  if (!d) return ''
+  return `\n\n---\nOn ${fmtFull(d.sent_at || d.received_at)}, ${d.from_address || ''} wrote:\n${(d.body_preview || '').split('\n').map(l => `> ${l}`).join('\n')}`
+}
+
 function startReply() {
   if (!detail.value) return
   composeMode.value = 'reply'
-  const subj = detail.value.subject || ''
-  const quoted = `\n\n---\nOn ${fmtFull(detail.value.sent_at || detail.value.received_at)}, ${detail.value.from_address || ''} wrote:\n${(detail.value.body_preview || '').split('\n').map(l => `> ${l}`).join('\n')}`
-  replyBody.value = quoted
+  replyBody.value = quotedTail()
 }
 
 // Split a comma/semicolon address string into the array SendMailIn wants.
@@ -631,4 +816,92 @@ onMounted(fetchMessages)
 .w-full {
   width: 100%;
 }
+
+/* ── search ── */
+.mi-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--p-content-background, #fff);
+  border: 1px solid var(--p-content-border-color, #e5e7eb);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.7rem;
+  margin-bottom: 0.6rem;
+}
+.mi-search .pi-search { color: var(--p-text-muted-color, #6b7280); }
+.mi-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 1rem; /* 16px — anything smaller makes iOS zoom on focus */
+  color: var(--p-text-color, #1e293b);
+}
+.mi-search-clear {
+  border: none;
+  background: transparent;
+  color: var(--p-text-muted-color, #6b7280);
+  font-size: 1rem;
+  /* 44px touch target — this sits next to a text field on a phone */
+  min-width: 44px;
+  min-height: 44px;
+}
+.mi-search-note {
+  margin: -0.35rem 0 0.6rem;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+/* ── link chips ── */
+.msg-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+}
+.link-chip {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 10px;
+  border: 1px solid var(--p-primary-color, #2563eb);
+  color: var(--p-primary-color, #2563eb);
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-chip.job {
+  border-color: var(--p-content-border-color, #e5e7eb);
+  color: var(--p-text-muted-color, #6b7280);
+}
+
+/* ── conversation strip ── */
+.thread-strip {
+  border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+  padding-top: 0.5rem;
+}
+.thread-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--p-text-muted-color, #6b7280);
+  margin-bottom: 0.25rem;
+}
+.thread-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--p-content-border-color, #f1f5f9);
+  text-align: left;
+  color: var(--p-text-color, #1e293b);
+  font-size: 0.85rem;
+}
+.thread-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-when { flex-shrink: 0; font-size: 0.75rem; color: var(--p-text-muted-color, #6b7280); }
 </style>

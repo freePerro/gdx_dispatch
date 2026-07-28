@@ -66,6 +66,11 @@
           class="pin-badge"
           data-testid="sms-unread-badge"
         >{{ smsUnread.count > 99 ? '99+' : smsUnread.count }}</span>
+        <span
+          v-if="pin.key === 'inbox' && emailUnread.count > 0"
+          class="pin-badge"
+          data-testid="email-unread-badge"
+        >{{ emailUnread.count > 99 ? '99+' : emailUnread.count }}</span>
       </router-link>
 
       <!-- Search/filter -->
@@ -268,6 +273,8 @@ import PanelMenu from 'primevue/panelmenu';
 import { useThemeStore } from '../stores/theme';
 import { useAuthStore } from '../stores/auth';
 import { useSmsUnreadStore } from '../stores/smsUnread';
+import { useEmailUnreadStore } from '../stores/emailUnread';
+import { useToast } from 'primevue/usetoast';
 import { useTenantModules } from '../composables/useTenantModules';
 import { useTour } from '../composables/useTour';
 import { isTechnician } from '../constants/roles';
@@ -440,6 +447,9 @@ const favoriteModules = computed(() => {
 });
 
 const smsUnread = useSmsUnreadStore();
+const emailUnread = useEmailUnreadStore();
+const toast = useToast();
+let _stopEmailListener = null;
 
 onMounted(() => {
   loadFavorites();
@@ -447,10 +457,24 @@ onMounted(() => {
   // SMS unread badge — polls even when the pin is module-gated off; the
   // store collapses errors to 0 so a phone.com-less tenant never badges.
   smsUnread.startPolling();
+  // Email badge + new-mail toast (P2.6). The toast fires only on a RISE after
+  // the first poll seeds a baseline — otherwise every page load with unread
+  // mail would announce week-old messages as new.
+  _stopEmailListener = emailUnread.onIncrease((delta) => {
+    toast.add({
+      severity: 'info',
+      summary: delta === 1 ? 'New email' : `${delta} new emails`,
+      detail: 'Open the Inbox to read it.',
+      life: 4000,
+    });
+  });
+  emailUnread.startPolling();
 });
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown);
   smsUnread.stopPolling();
+  emailUnread.stopPolling();
+  if (_stopEmailListener) _stopEmailListener();
 });
 
 function handleItemClick(_to, _label, _icon) {

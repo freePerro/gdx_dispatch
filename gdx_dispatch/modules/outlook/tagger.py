@@ -101,18 +101,28 @@ _JOB_PATTERNS = [
     ),
 ]
 
+# The customer-facing marker form: `[Job #JOB-2026-014]`. Outbound job mail
+# stamps the tenant's own job NUMBER rather than a raw UUID (a 36-character
+# uuid in a quote's subject line reads as a malfunction), so the tagger has to
+# resolve that form too or the reply never links back. Bracketed only — a bare
+# "job 14" in prose is far too loose to bind a customer record to.
+_JOB_NUMBER_PATTERN = re.compile(r"\[Job\s*#?\s*([A-Za-z0-9][A-Za-z0-9._/\-]{1,49})\]")
+
 
 def job_thread_strategy(
     message: OutlookMessage,
     tenant_db: Session,
 ) -> TagResult | None:
-    """Regex the subject for ``[Job #N]`` markers + look up matching Job.
+    """Regex the subject for ``[Job #…]`` markers + look up the matching Job.
 
-    Job.id is a UUID; the regex matcher captures arbitrary digits/UUID-ish
-    strings. We try to coerce the captured value to a UUID and match by id;
-    if the captured value isn't a valid UUID we silently skip (the strategy
-    is a safety net for explicit thread markers — auto_match covers the
-    common case).
+    Two marker forms, because outbound GDX mail stamps the human-readable one:
+
+    * ``[Job #<uuid>]`` / ``job <uuid>`` — matched by id.
+    * ``[Job #JOB-2026-014]`` — matched by ``Job.job_number``.
+
+    A captured token that resolves to neither is skipped silently; the
+    strategy is a safety net for explicit thread markers, and auto_match
+    covers the common case.
     """
     if not message.subject:
         return None
@@ -131,6 +141,34 @@ def job_thread_strategy(
             job = tenant_db.query(Job).filter(Job.id == job_uuid).first()
         except Exception:  # noqa: BLE001
             log.exception("job_thread: Job lookup failed for uuid=%s", job_uuid)
+            job = None
+        if job is not None:
+            return TagResult(
+                job_id=job.id,
+                customer_id=job.customer_id,
+                confidence=Decimal("0.95"),
+                strategy="job_thread",
+            )
+
+    # Job-number form. Exact match only — job_number is the tenant's own
+    # printed identifier, so a fuzzy match here would attach a customer's
+    # correspondence to the wrong job.
+    m = _JOB_NUMBER_PATTERN.search(message.subject)
+    if m:
+        token = m.group(1).strip()
+        try:
+            # job_number is NOT unique in the schema and its format is
+            # tenant-editable, so a bare .first() would bind the customer's
+            # mail to whichever duplicate the planner happened to return.
+            # Newest wins, deterministically.
+            job = (
+                tenant_db.query(Job)
+                .filter(Job.job_number == token, Job.deleted_at.is_(None))
+                .order_by(Job.created_at.desc())
+                .first()
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("job_thread: Job lookup failed for job_number=%r", token)
             job = None
         if job is not None:
             return TagResult(

@@ -669,3 +669,452 @@ def test_attachment_download_502_on_graph_error(app):
          _patch_owner_graph(side_effect=_OwnerFetchError("graph_error")):
         r = client.get(f"/api/outlook/messages/{msg.id}/attachments/a1")
     assert r.status_code == 502
+
+
+# ── P1.1 search ─────────────────────────────────────────────────────────
+
+
+def test_search_predicate_escapes_like_wildcards():
+    """A user searching for "50%" must not match every message. The wildcard
+    has to reach SQL escaped, or the search silently returns the whole box."""
+    from gdx_dispatch.modules.outlook.views_router import _search_predicate
+
+    sql = str(_search_predicate("50%_off").compile(compile_kwargs={"literal_binds": True}))
+    assert "50\\%\\_off" in sql
+    assert "lower" in sql.lower() or "ilike" in sql.lower()
+
+
+def test_list_messages_applies_search_filter(app):
+    """?q=… must actually reach SQL as the TERM predicate.
+
+    The first version of this test asserted `tdb.query.return_value.filter.called`
+    — which is True on every request, because _load_tech_emails filters the
+    User query on the same shared mock. It passed with the search filter
+    deleted entirely (audit round 4: the visibility refactor orphaned
+    _search_predicate and `?q=` silently returned the whole mailbox). Assert
+    the predicate is BUILT from the term and HANDED to the query instead.
+    """
+    client, tdb = app
+    msgs = [_msg()]
+    sentinel = object()
+    with patch("gdx_dispatch.modules.outlook.views_router._search_predicate",
+               return_value=sentinel) as pred, \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=msgs):
+        tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = msgs
+        r = client.get("/api/outlook/messages?q=furnace")
+    assert r.status_code == 200
+    pred.assert_called_once_with("furnace")
+    # ...and that exact predicate object was passed to .filter()
+    assert any(
+        call.args and call.args[0] is sentinel
+        for call in tdb.query.return_value.filter.call_args_list
+    ), "the search predicate never reached the query"
+
+
+def test_search_without_a_term_does_not_build_a_predicate(app):
+    """The unsearched list must not pay for, or accidentally apply, a term
+    filter — that path pages over raw rows by design."""
+    client, tdb = app
+    msgs = [_msg()]
+    _set_raw_rows(tdb, msgs)
+    with patch("gdx_dispatch.modules.outlook.views_router._search_predicate") as pred, \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=msgs):
+        r = client.get("/api/outlook/messages")
+    assert r.status_code == 200
+    assert not pred.called
+
+
+def test_list_messages_blank_search_is_not_a_filter(app):
+    """q="   " must behave like no search at all — not like a search for
+    whitespace (which would match almost nothing)."""
+    client, tdb = app
+    msgs = [_msg()]
+    _set_raw_rows(tdb, msgs)
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=msgs):
+        r = client.get("/api/outlook/messages?q=%20%20")
+    assert r.status_code == 200
+    assert len(r.json()["items"]) == 1
+
+
+# ── P2.6 unread count ───────────────────────────────────────────────────
+
+
+def test_unread_count_counts_visible_only(app):
+    """The badge must count what the VIEWER can open, not every unread row —
+    otherwise a tech sees a badge for mail that isn't there when they click."""
+    client, tdb = app
+    rows = [_msg(is_read=False) for _ in range(3)]
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = rows
+    with patch("gdx_dispatch.modules.outlook.views_router._unbadged_folder_ids", return_value=[]), \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=rows[:1]):
+        r = client.get("/api/outlook/messages/unread-count")
+    assert r.status_code == 200
+    # No "capped" field: telling a viewer who sees 0 that the scan window was
+    # full would disclose the mailbox holds >=500 unread messages.
+    assert r.json() == {"count": 1}
+
+
+def test_unread_count_route_not_eaten_by_message_id(app):
+    """/messages/unread-count must not be parsed as /messages/{uuid}."""
+    client, tdb = app
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
+    with patch("gdx_dispatch.modules.outlook.views_router._unbadged_folder_ids", return_value=[]), \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=[]):
+        r = client.get("/api/outlook/messages/unread-count")
+    assert r.status_code == 200  # a 422 here means the UUID route swallowed it
+
+
+# ── 1.3 conversation thread ─────────────────────────────────────────────
+
+
+def test_thread_returns_siblings_oldest_first(app):
+    client, tdb = app
+    anchor = _msg(conversation_id="conv-9")
+    sibling = _msg(
+        conversation_id="conv-9", subject="Re: Re: estimate",
+        received_at=datetime(2026, 4, 28, 9, 0, tzinfo=timezone.utc),
+    )
+    tdb.get.return_value = anchor
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = [anchor, sibling]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible",
+               return_value=[anchor, sibling]):
+        r = client.get(f"/api/outlook/messages/{anchor.id}/thread")
+    assert r.status_code == 200
+    # Chronological for a reader, regardless of the SQL window's order.
+    assert [m["id"] for m in r.json()] == [str(anchor.id), str(sibling.id)]
+
+
+def test_thread_hides_siblings_the_viewer_cannot_see(app):
+    """Seeing one message in a thread does NOT grant the rest — a personal
+    reply inside a shared thread stays hidden."""
+    client, tdb = app
+    anchor = _msg(conversation_id="conv-9")
+    secret = _msg(conversation_id="conv-9", is_personal=True)
+    tdb.get.return_value = anchor
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = [anchor, secret]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=[anchor]):
+        r = client.get(f"/api/outlook/messages/{anchor.id}/thread")
+    assert [m["id"] for m in r.json()] == [str(anchor.id)]
+
+
+def test_thread_without_conversation_id_returns_self(app):
+    client, tdb = app
+    anchor = _msg(conversation_id=None)
+    tdb.get.return_value = anchor
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.get(f"/api/outlook/messages/{anchor.id}/thread")
+    assert [m["id"] for m in r.json()] == [str(anchor.id)]
+
+
+def test_thread_404_when_message_hidden(app):
+    client, tdb = app
+    anchor = _msg()
+    tdb.get.return_value = anchor
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.get(f"/api/outlook/messages/{anchor.id}/thread")
+    assert r.status_code == 404
+
+
+# ── P2.2 email → planner task ───────────────────────────────────────────
+
+
+def test_create_task_from_message_carries_links(app):
+    client, tdb = app
+    cust, job = uuid4(), uuid4()
+    msg = _msg(subject="Broken spring", linked_customer_id=cust, linked_job_id=job)
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/create-task", json={})
+    assert r.status_code == 201
+    assert r.json()["title"] == "Email: Broken spring"
+    task = tdb.add.call_args.args[0]
+    assert task.customer_id == str(cust)
+    assert task.job_id == str(job)
+    assert task.source == "email_capture"
+    # due_date stamped so the needs-action sort can't bury it (same rule the
+    # phone quick-capture path follows).
+    assert task.due_date is not None
+    assert tdb.commit.called
+
+
+def test_create_task_404_when_message_hidden(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.post(f"/api/outlook/messages/{msg.id}/create-task", json={})
+    assert r.status_code == 404
+    assert not tdb.add.called
+
+
+def test_create_task_rejects_bad_priority(app):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    r = client.post(f"/api/outlook/messages/{msg.id}/create-task", json={"priority": "🔥"})
+    assert r.status_code == 422
+
+
+# ── P2.3 save attachment → job document ─────────────────────────────────
+
+
+def _job_row(customer_id=None):
+    row = MagicMock()
+    row.id = uuid4()
+    row.customer_id = customer_id
+    return row
+
+
+def test_save_attachment_to_job_creates_document(app, tmp_path):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    job_id = uuid4()
+    # 1st .first() → the Job lookup; 2nd → the content-hash dedup lookup (miss).
+    tdb.query.return_value.filter.return_value.first.side_effect = [_job_row(), None]
+    listing = [{"id": "a1", "name": "po.pdf", "contentType": "application/pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir",
+               return_value=tmp_path), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(job_id)},
+        )
+    assert r.status_code == 201, r.text
+    assert r.json()["filename"] == "po.pdf"
+    assert r.json()["size_bytes"] == 4
+    # bytes actually hit disk — a Document row pointing at nothing is worse
+    # than no row at all.
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1 and written[0].read_bytes() == b"%PDF"
+    doc = tdb.add.call_args.args[0]
+    assert doc.job_id == job_id
+    # content_hash is deliberately unset — it is the vendor pipelines'
+    # tenant-wide dedup key and would block importing the same PDF as a
+    # vendor document forever.
+    assert doc.content_hash is None
+    # customer_id stays NULL: the customer portal lists documents by
+    # customer_id and would publish the filename + email subject.
+    assert doc.customer_id is None
+
+
+def test_save_attachment_to_job_is_idempotent(app, tmp_path):
+    """Saving the same attachment twice returns the first Document instead of
+    duplicating the bytes on disk."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    existing = MagicMock()
+    existing.id = uuid4()
+    existing.original_name = "po.pdf"
+    existing.file_size = 4
+    # 1st .first() → the Job lookup; 2nd → the existing Document.
+    tdb.query.return_value.filter.return_value.first.side_effect = [_job_row(), existing]
+    listing = [{"id": "a1", "name": "po.pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir",
+               return_value=tmp_path), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 201
+    assert r.json()["already_saved"] is True
+    assert not tdb.add.called
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_attachment_422_for_unknown_job(app, tmp_path):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.return_value = None
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir",
+               return_value=tmp_path):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 422
+
+
+def test_save_attachment_404_when_message_hidden(app, tmp_path):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=False):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 404
+
+
+# ── audit round 3: privacy regressions the first cut shipped ─────────────
+
+
+def test_search_cursor_never_counts_hidden_matches(app):
+    """THE oracle test. Search pages over VISIBLE rows, so a viewer who can
+    see nothing learns nothing — not even how many hidden messages contain
+    their guessed word. The old raw cursor returned next_offset = number of
+    matching rows INCLUDING hidden ones, which turns ?q= into a content
+    oracle over mail the viewer may not open."""
+    client, tdb = app
+    hidden = [_msg(is_personal=True) for _ in range(7)]
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = hidden
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=[]):
+        r = client.get("/api/outlook/messages?q=divorce&limit=1&offset=0")
+    body = r.json()
+    assert body["items"] == []
+    assert body["has_more"] is False
+    # 0, not 7 — the response must not leak the hidden match count.
+    assert body["next_offset"] == 0
+
+
+def test_search_paginates_over_visible_results(app):
+    client, tdb = app
+    rows = [_msg() for _ in range(5)]
+    tdb.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = rows
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=rows):
+        r = client.get("/api/outlook/messages?q=door&limit=2&offset=0")
+    body = r.json()
+    assert len(body["items"]) == 2
+    assert body["has_more"] is True
+    assert body["next_offset"] == 2
+
+
+def test_create_task_refuses_a_personal_message(app):
+    """PlannerTask rows are readable tenant-wide, so copying a message the
+    owner marked personal into one would publish its subject to every tech."""
+    client, tdb = app
+    msg = _msg(is_personal=True, subject="MRI results")
+    tdb.get.return_value = msg
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(f"/api/outlook/messages/{msg.id}/create-task", json={})
+    assert r.status_code == 409
+    assert "personal" in r.text.lower()
+    assert not tdb.add.called
+
+
+def test_create_task_rejects_an_unknown_assignee(app):
+    """A task assigned to a non-user is invisible work — it never appears in
+    anyone's 'mine' view."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.return_value = None
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/create-task",
+            json={"assigned_to": str(uuid4())},
+        )
+    assert r.status_code == 422
+    assert not tdb.add.called
+
+
+def test_save_attachment_403_for_a_tech_on_someone_elses_job(app, tmp_path):
+    """Seeing an email must not confer the right to write a file onto any job
+    in the tenant. Office roles may; a tech only onto their own jobs."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.return_value = _job_row()
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._user_role", return_value="technician"), \
+         patch("gdx_dispatch.core.job_access.job_belongs_to_user", return_value=False), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir", return_value=tmp_path):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 403
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_attachment_allows_a_tech_on_their_own_job(app, tmp_path):
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.side_effect = [_job_row(), None]
+    listing = [{"id": "a1", "name": "po.pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._user_role", return_value="technician"), \
+         patch("gdx_dispatch.core.job_access.job_belongs_to_user", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir", return_value=tmp_path), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 201
+
+
+def test_save_attachment_truncates_an_overlong_filename(app, tmp_path):
+    """Attachment names come from whoever emailed us. A 300-char name used to
+    pass validation, get its bytes written, and THEN blow up on the INSERT
+    (String(255)) — leaving an orphan blob that every retry duplicated."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.side_effect = [_job_row(), None]
+    listing = [{"id": "a1", "name": "A" * 300 + ".pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir", return_value=tmp_path), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 201
+    doc = tdb.add.call_args.args[0]
+    assert len(doc.original_name) <= 255
+    assert len(doc.title) <= 255
+
+
+def test_save_attachment_cleans_up_the_file_when_the_insert_fails(app, tmp_path):
+    """No orphan bytes: a failed commit must not leave a file in UPLOAD_DIR
+    with no row pointing at it."""
+    client, tdb = app
+    msg = _msg()
+    tdb.get.return_value = msg
+    tdb.query.return_value.filter.return_value.first.side_effect = [_job_row(), None]
+    tdb.commit.side_effect = RuntimeError("value too long for type character varying(255)")
+    listing = [{"id": "a1", "name": "po.pdf", "size": 4}]
+    with patch("gdx_dispatch.modules.outlook.views_router.can_view", return_value=True), \
+         patch("gdx_dispatch.modules.outlook.views_router._document_upload_dir", return_value=tmp_path), \
+         patch("gdx_dispatch.modules.outlook.views_router._owner_graph",
+               side_effect=[listing, b"%PDF"]):
+        r = client.post(
+            f"/api/outlook/messages/{msg.id}/attachments/a1/save-to-job",
+            json={"job_id": str(uuid4())},
+        )
+    assert r.status_code == 500
+    assert list(tmp_path.iterdir()) == []
+    assert tdb.rollback.called
+
+
+def test_unread_count_excludes_junk_and_deleted_folders(app):
+    """The badge's click target is the Inbox. Counting Junk there produces a
+    badge of 23 that opens onto 4 unread messages — and a "new email" toast
+    for every spam that lands."""
+    client, tdb = app
+    rows = [_msg(is_read=False)]
+    chain = tdb.query.return_value.filter.return_value
+    chain.filter.return_value.order_by.return_value.limit.return_value.all.return_value = rows
+    with patch("gdx_dispatch.modules.outlook.views_router._unbadged_folder_ids",
+               return_value=["g-junk", "g-trash"]), \
+         patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=rows):
+        r = client.get("/api/outlook/messages/unread-count")
+    assert r.status_code == 200
+    assert r.json() == {"count": 1}
+    # The exclusion actually reached SQL (a second .filter on the query).
+    assert chain.filter.called

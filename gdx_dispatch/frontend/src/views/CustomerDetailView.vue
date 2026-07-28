@@ -263,6 +263,17 @@
         </Card>
       </div>
 
+      <!-- Email tab (P2.1) — mail the tagger linked to this customer.
+           Lazy: only mounts when the tab is open, so a customer page never
+           pays for an email query nobody asked for. -->
+      <div v-if="activeTab === 'Email'" class="tab-content" data-testid="tab-email-content">
+        <Card class="section-card">
+          <template #content>
+            <EmailTimeline :customer-id="customerId" />
+          </template>
+        </Card>
+      </div>
+
       <!-- Communications tab -->
       <div v-if="activeTab === 'Communications'" class="tab-content" data-testid="tab-communications-content">
         <div class="panel-header">
@@ -648,6 +659,7 @@ import DatePicker from "primevue/datepicker";
 import InputText from "primevue/inputtext";
 import JobStateChip from "../components/JobStateChip.vue";
 import PhoneInput from "../components/PhoneInput.vue";
+import EmailTimeline from "../components/EmailTimeline.vue";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
@@ -732,7 +744,10 @@ function formatCurrency(v) {
 }
 // formatDateTime — declared further down in the existing util block, reused here.
 const activeTab = ref("Jobs");
-const tabs = ["Jobs", "Estimates", "Invoices", "Locations", "Notes", "Equipment", "Recurring Jobs", "Communications", "Portal"];
+const tabs = ["Jobs", "Estimates", "Invoices", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Communications", "Portal"];
+// Route param, not the loaded customer object — the tab must work while the
+// customer record is still in flight.
+const customerId = computed(() => route.params.id);
 const customerEstimates = ref([]);
 const customerInvoices = ref([]);
 const equipment = ref([]);

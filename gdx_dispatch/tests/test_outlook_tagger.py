@@ -106,9 +106,41 @@ def test_job_thread_matches_bracketed_pattern():
 
 
 def test_job_thread_skips_pure_digit_pattern():
-    """A bracketed digit-only number (legacy display) cannot match a UUID PK."""
+    """A bracketed non-UUID token can't match a UUID PK — it falls through to
+    the job_number lookup, and an unknown number still resolves to nothing."""
     msg = _msg(subject="[Job #1234] not a UUID")
     tdb = MagicMock()
+    # job_number lookup is ordered (job_number is not unique) — mock that chain.
+    tdb.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+    assert job_thread_strategy(msg, tdb) is None
+
+
+def test_job_thread_matches_the_human_readable_job_number():
+    """Outbound GDX mail stamps `[Job #JOB-2026-014]`, not a raw UUID — the
+    customer's reply quotes that subject, so the tagger has to resolve it or
+    the whole marker loop is inert for customer-facing mail."""
+    job_uuid = uuid4()
+    job = MagicMock()
+    job.id = job_uuid
+    job.customer_id = uuid4()
+    msg = _msg(subject="Re: JOB-2026-014 — update [Job #JOB-2026-014]")
+    tdb = MagicMock()
+    # The UUID patterns don't match this subject at all, so the only query
+    # issued is the (ordered) job_number lookup.
+    tdb.query.return_value.filter.return_value.order_by.return_value.first.return_value = job
+    result = job_thread_strategy(msg, tdb)
+    assert result is not None
+    assert result.job_id == job_uuid
+    assert result.strategy == "job_thread"
+
+
+def test_job_thread_ignores_an_unbracketed_job_word():
+    """"job 14" in prose must not bind a customer's mail to job 14 — only the
+    explicit bracketed marker counts for the number form."""
+    msg = _msg(subject="we finished job 14 yesterday")
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.first.return_value = MagicMock()
+    tdb.query.return_value.filter.return_value.order_by.return_value.first.return_value = MagicMock()
     assert job_thread_strategy(msg, tdb) is None
 
 
@@ -128,6 +160,7 @@ def test_job_thread_returns_none_when_job_lookup_fails():
     msg = _msg(subject="[Job #999]")
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.first.return_value = None
+    tdb.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
     assert job_thread_strategy(msg, tdb) is None
 
 
