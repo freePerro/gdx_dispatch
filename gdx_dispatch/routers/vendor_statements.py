@@ -8,7 +8,7 @@ Slice 1 endpoints:
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.modules.vendor_statements.account import build_vendor_accounts
 from gdx_dispatch.modules.vendor_statements.classifier import VALID_CLASSIFICATIONS
 from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine
 from gdx_dispatch.modules.vendor_statements.parsers.midwest import MidwestParseError
@@ -87,6 +88,56 @@ class DuplicateOut(BaseModel):
     detail: str
     existing_document_id: str
     original_name: Optional[str] = None
+
+
+# ── vendor account (what is actually owed) ─────────────────────────────
+
+
+class AccountLineOut(BaseModel):
+    invoice_no: str
+    line_date: date | None
+    amount: Decimal
+    paid: Decimal
+    balance: Decimal
+    aging_bucket: str | None
+    vendor_job_no: str | None
+    po_ref: str | None
+    description: str | None
+    classification: str | None
+    matched_job_id: UUID | None
+    first_seen_on: date | None
+    statements_seen: int
+
+
+class AccountChangeOut(BaseModel):
+    previous_statement_date: date | None
+    new_invoice_count: int
+    new_invoice_total: Decimal
+    cleared_count: int
+    cleared_total: Decimal
+    paid_down_count: int
+    paid_down_total: Decimal
+    # DERIVED from the statement diff, never a recorded payment. Consumers must
+    # present it as inferred: a credit memo reads the same as a payment, and two
+    # payments inside one statement gap collapse into one number.
+    implied_payment_total: Decimal
+
+
+class VendorAccountOut(BaseModel):
+    vendor_name: str
+    vendor_code: str | None
+    as_of: date | None
+    statement_id: UUID
+    statement_count: int
+    open_balance: Decimal
+    open_line_count: int
+    original_total: Decimal
+    paid_to_date: Decimal
+    oldest_line_date: date | None
+    days_oldest_open: int | None
+    aging: dict[str, Decimal]
+    lines: list[AccountLineOut]
+    change: AccountChangeOut | None
 
 
 @router.post(
@@ -157,6 +208,57 @@ async def upload_statement(
     db.commit()
 
     return _detail_response(db, result.statement)
+
+
+@router.get(
+    "/accounts",
+    response_model=list[VendorAccountOut],
+    dependencies=[Depends(require_permission("vendor_statements.read"))],
+)
+async def list_vendor_accounts(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[VendorAccountOut]:
+    """Current position per vendor: what is open, how old, and what moved since
+    the previous statement.
+
+    Reads the LATEST statement as the current position — a statement is a
+    snapshot of open items, so summing statements double-counts every invoice
+    that stayed open (by 15x on the first real dataset). Declared BEFORE
+    ``/{statement_id}`` so the literal path isn't swallowed by the UUID route.
+    """
+    today = datetime.now(timezone.utc).date()
+    return [
+        VendorAccountOut(
+            vendor_name=a.vendor_name,
+            vendor_code=a.vendor_code,
+            as_of=a.as_of,
+            statement_id=a.statement_id,
+            statement_count=a.statement_count,
+            open_balance=a.open_balance,
+            open_line_count=a.open_line_count,
+            original_total=a.original_total,
+            paid_to_date=a.paid_to_date,
+            oldest_line_date=a.oldest_line_date,
+            days_oldest_open=a.days_oldest_open(today),
+            aging=a.aging,
+            lines=[AccountLineOut(**vars(ln)) for ln in a.lines],
+            change=(
+                AccountChangeOut(
+                    previous_statement_date=a.change.previous_statement_date,
+                    new_invoice_count=a.change.new_invoice_count,
+                    new_invoice_total=a.change.new_invoice_total,
+                    cleared_count=a.change.cleared_count,
+                    cleared_total=a.change.cleared_total,
+                    paid_down_count=a.change.paid_down_count,
+                    paid_down_total=a.change.paid_down_total,
+                    implied_payment_total=a.change.implied_payment_total,
+                )
+                if a.change is not None else None
+            ),
+        )
+        for a in build_vendor_accounts(db)
+    ]
 
 
 @router.get(
