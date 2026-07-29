@@ -67,8 +67,17 @@
         <Column field="action" header="Action">
           <template #body="{ data }">{{ formatActivityTitle(data.action, data.entity_type) }}</template>
         </Column>
-        <Column field="user_name" header="User" style="width:160px">
-          <template #body="{ data }">{{ formatUser(data.user_name || data.user_id) }}</template>
+        <Column field="entity_label" header="Subject">
+          <template #body="{ data }">
+            <span v-if="data.entity_label">{{ data.entity_label }}</span>
+            <span v-else class="subject-none">—</span>
+          </template>
+        </Column>
+        <Column field="user_name" header="User" style="width:180px">
+          <template #body="{ data }">
+            {{ formatUser(data.user_name || data.user_id) }}
+            <Tag v-if="data.actor_type === 'customer'" value="customer" severity="warn" class="actor-tag" />
+          </template>
         </Column>
         <Column field="changes" header="Details">
           <template #body="{ data }">
@@ -258,6 +267,13 @@ onMounted(() => {
 /* The raw action string stays visible in the detail dialog: the friendly
    label is for scanning, but an auditor needs the literal value that is in
    the audit_logs row. */
+.subject-none {
+  color: var(--p-text-muted-color);
+}
+.actor-tag {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+}
 .raw-action {
   font-family: monospace;
   font-size: 0.75rem;

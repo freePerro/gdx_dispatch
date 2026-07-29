@@ -47,3 +47,25 @@ describe('formatActivityTitle', () => {
     expect(ACTIVITY_LABELS.landing_lead_created).toBe('Lead captured');
   });
 });
+
+describe('customer-side portal actions', () => {
+  it('names portal events instead of leaking raw action strings', () => {
+    // routers/portal.py has written these all along; nothing mapped them, so
+    // the audit page rendered "Portal Login Verified (customer_user)".
+    expect(formatActivityTitle('portal_login_verified', 'customer_user')).toBe(
+      'Customer signed in to the portal',
+    );
+    expect(formatActivityTitle('portal_estimate_accepted', 'estimate')).toBe(
+      'Customer accepted the estimate',
+    );
+    expect(formatActivityTitle('portal_booking_created', 'booking_request')).toBe(
+      'Customer requested a booking',
+    );
+  });
+
+  it('distinguishes a customer accepting an estimate from staff doing it', () => {
+    expect(formatActivityTitle('portal_estimate_accepted', 'estimate')).not.toBe(
+      formatActivityTitle('estimate_accepted', 'estimate'),
+    );
+  });
+});
