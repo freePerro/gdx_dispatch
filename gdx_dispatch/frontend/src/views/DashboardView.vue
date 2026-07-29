@@ -269,7 +269,9 @@
                 <span class="activity-title"><i v-if="item.icon" :class="item.icon" aria-hidden="true" style="margin-right:0.4rem;opacity:0.6" />{{ item.title }}</span>
                 <span class="activity-meta">{{ item.meta }}</span>
               </li>
-              <li v-if="!recentActivity.length" class="activity-empty">No recent job activity.</li>
+              <li v-if="!recentActivity.length" class="activity-empty">
+                {{ activityIsAuditBacked ? 'No recent activity.' : 'No recent job activity.' }}
+              </li>
             </ul>
           </template>
         </Card>
@@ -476,6 +478,10 @@ async function loadReadyForBilling() {
 const summaryLoading = ref(true);
 
 const recentActivity = ref([]);
+// Whether the list below came from the audit trail (admin) or is the
+// jobs-derived stand-in shown to non-admins and on load failure. The empty
+// state must say which, or an empty audit feed reads as "no jobs".
+const activityIsAuditBacked = ref(false);
 const todaysJobs = ref([]);
 
 // "Needs Attention" — exception-based items for the owner
@@ -689,17 +695,6 @@ async function loadSummary() {
   summaryLoading.value = false;
 }
 
-// 2026-04-29 nav-cleanup: filter session/token-refresh noise from the
-// dashboard's "Recent Activity" — they were drowning real activity 9-of-10.
-const ACTIVITY_HIDE_ACTIONS = new Set([
-  "token_refreshed",
-  "session_renewed",
-  "refresh_replay_detected",
-  "auth_login",
-  "auth_logout",
-]);
-const ACTIVITY_HIDE_ENTITIES = new Set(["auth", "session"]);
-
 async function loadRecentActivity() {
   // Try audit log first — gives richer cross-entity activity. The endpoint is
   // admin/owner-only, so only ask for it when the viewer actually qualifies;
@@ -708,38 +703,52 @@ async function loadRecentActivity() {
   // jobs-based activity feed below.
   if (auth.isAdmin) {
     try {
-      // Pull a wider window so we can filter and still have ~10 user-visible events.
-      const data = await api.get("/api/audit/logs?page=1&page_size=50");
-      const items = (data?.items || []).filter((evt) => {
-        if (ACTIVITY_HIDE_ACTIONS.has(evt.action)) return false;
-        if (ACTIVITY_HIDE_ENTITIES.has(evt.entity_type)) return false;
-        return true;
+      // feed=true applies the noise policy in SQL, before the LIMIT, and
+      // collapses consecutive edits to the same record. Filtering here in the
+      // browser could never work: 47 of the live tenant's 50 most recent audit
+      // rows are session/token churn, so the page budget was spent before the
+      // request returned — the card showed 3 rows on a good day and silently
+      // fell through to the jobs-list fallback on a busy one.
+      const data = await api.get("/api/audit/logs?page=1&page_size=20&feed=true");
+      const items = data?.items || [];
+      // An admin who genuinely has no recent activity gets an honest empty
+      // state, NOT a jobs list wearing an "Activity" label. The old code fell
+      // through on `items.length === 0`, which is precisely what happened
+      // whenever the noise filled the page — the card lied about what it was
+      // showing and nothing indicated the audit feed had failed to load.
+      activityIsAuditBacked.value = true;
+      // The actor: `user_name` is resolved server-side (routers/audit.py
+      // _resolve_user_names) and was previously dropped on the floor here,
+      // leaving the feed a bare action + timestamp. That server resolver
+      // falls back to the raw user_id when the users lookup misses, so
+      // user_name can BE a UUID — hence formatUser's guard. The `||` here is
+      // belt-and-braces only; audit.py always populates the field.
+      recentActivity.value = items.slice(0, 10).map((evt) => {
+        const what = formatActivityTitle(evt.action, evt.entity_type);
+        // entity_label is resolved server-side (core/audit_labels.py) and is
+        // null for entity types with no resolver — the row then reads as it
+        // did before rather than showing a UUID.
+        const who = formatUser(evt.user_name || evt.user_id);
+        return {
+          id: evt.id,
+          title: evt.entity_label ? `${what} — ${evt.entity_label}` : what,
+          icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
+          meta: [
+            `${who}${evt.actor_type === "customer" ? " (customer)" : ""}`,
+            evt.occurrence_count > 1 ? `×${evt.occurrence_count}` : null,
+            formatTimestamp(evt.created_at),
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          url: evt.entity_url || null,
+        };
       });
-      if (items.length) {
-        // The actor: `user_name` is resolved server-side (routers/audit.py
-        // _resolve_user_names) and was previously dropped on the floor here,
-        // leaving the feed a bare action + timestamp. That server resolver
-        // falls back to the raw user_id when the users lookup misses, so
-        // user_name can BE a UUID — hence formatUser's guard. The `||` here is
-        // belt-and-braces only; audit.py always populates the field.
-        recentActivity.value = items.slice(0, 10).map((evt) => {
-          const what = formatActivityTitle(evt.action, evt.entity_type);
-          // entity_label is resolved server-side (core/audit_labels.py) and is
-          // null for entity types with no resolver — the row then reads as it
-          // did before rather than showing a UUID.
-          const who = formatUser(evt.user_name || evt.user_id);
-          return {
-            id: evt.id,
-            title: evt.entity_label ? `${what} — ${evt.entity_label}` : what,
-            icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
-            meta: `${who}${evt.actor_type === "customer" ? " (customer)" : ""} · ${formatTimestamp(evt.created_at)}`,
-            url: evt.entity_url || null,
-          };
-        });
-        return;
-      }
+      return;
     } catch {
-      // audit endpoint may still 403 for a custom admin-less role — fall back to jobs
+      // A 403 (custom admin-less role) or a network error is a real failure to
+      // load the audit feed, not "no activity" — fall through to the jobs view
+      // and stop claiming the list is audit-backed.
+      activityIsAuditBacked.value = false;
     }
   }
 

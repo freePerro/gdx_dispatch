@@ -662,15 +662,15 @@ async def send_communication(
                     _audit_db,
                     tenant_id=_audit_tenant,
                     user_id=_audit_user,
-                    action="        ",
+                    action="communication_sent",
                     entity_type="communication",
-                    entity_id="",
+                    entity_id=str(message_id or ""),
                     details={},
                     request=_audit_req,
                 )
                 _audit_db.commit()
             except Exception:
-                log.exception('        ')
+                log.exception('send_communication_audit_failed')
         return {
             "id": message_id,
             "thread_id": f"email:{payload.to}",
