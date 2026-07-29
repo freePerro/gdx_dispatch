@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -73,7 +73,7 @@ def _first_geocode_result_or_404(results: list[dict[str, Any]]) -> dict[str, Any
 
 
 @router.post("/geocode")
-def geocode_address(payload: GeocodeIn) -> dict[str, Any]:
+def geocode_address(payload: GeocodeIn, request: Request = None) -> dict[str, Any]:
     gmaps = get_google_maps_client()
     result = _first_geocode_result_or_404(gmaps.geocode(payload.address))
     location = result.get("geometry", {}).get("location", {})
@@ -85,7 +85,7 @@ def geocode_address(payload: GeocodeIn) -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -107,7 +107,7 @@ def geocode_address(payload: GeocodeIn) -> dict[str, Any]:
 
 
 @router.post("/reverse-geocode")
-def reverse_geocode(payload: ReverseGeocodeIn) -> dict[str, Any]:
+def reverse_geocode(payload: ReverseGeocodeIn, request: Request = None) -> dict[str, Any]:
     gmaps = get_google_maps_client()
     result = _first_geocode_result_or_404(gmaps.reverse_geocode((payload.lat, payload.lng)))
     _audit_db = locals().get('db')
@@ -118,7 +118,7 @@ def reverse_geocode(payload: ReverseGeocodeIn) -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -136,7 +136,7 @@ def reverse_geocode(payload: ReverseGeocodeIn) -> dict[str, Any]:
 
 
 @router.post("/optimize-route")
-def optimize_route(payload: OptimizeRouteIn) -> dict[str, Any]:
+def optimize_route(payload: OptimizeRouteIn, request: Request = None) -> dict[str, Any]:
     if not payload.jobs:
         return {"optimized_job_ids": [], "total_duration_seconds": 0, "total_distance_meters": 0}
 
@@ -166,7 +166,7 @@ def optimize_route(payload: OptimizeRouteIn) -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -188,7 +188,7 @@ def optimize_route(payload: OptimizeRouteIn) -> dict[str, Any]:
 
 
 @router.post("/drive-time")
-def drive_time(payload: DriveTimeIn) -> dict[str, Any]:
+def drive_time(payload: DriveTimeIn, request: Request = None) -> dict[str, Any]:
     gmaps = get_google_maps_client()
     matrix = gmaps.distance_matrix([payload.origin], [payload.destination])
     element = ((matrix.get("rows") or [{}])[0].get("elements") or [{}])[0]
@@ -205,7 +205,7 @@ def drive_time(payload: DriveTimeIn) -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -283,7 +283,7 @@ def check_service_area(payload: ServiceAreaCheckIn, request: Request) -> dict[st
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

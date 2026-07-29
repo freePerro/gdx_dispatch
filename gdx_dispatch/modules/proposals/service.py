@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event, utcnow
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
 from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
 
 
@@ -32,11 +32,11 @@ def add_proposal_tier(estimate_id: UUID, tier_name: str, description: str | None
     db.add(row); db.commit(); db.refresh(row); return row  # noqa: E701,E702
 
 
-def accept_tier(estimate_id: UUID, tier_id: UUID, db: Session) -> Estimate:
+def accept_tier(estimate_id: UUID, tier_id: UUID, db: Session, actor: str = SYSTEM_ACTOR) -> Estimate:
     est = db.execute(select(Estimate).where(Estimate.id == estimate_id)).scalar_one_or_none()
     if not est: raise HTTPException(status_code=404, detail="Estimate not found")  # noqa: E701,E702
     tier = db.execute(select(ProposalTier).where(ProposalTier.id == tier_id, ProposalTier.estimate_id == estimate_id)).scalar_one_or_none()
     if not tier: raise HTTPException(status_code=404, detail="Proposal tier not found")  # noqa: E701,E702
     est.status = "accepted"; est.accepted_at = utcnow(); est.accepted_tier_id = tier_id  # noqa: E701,E702
-    asyncio.run(log_audit_event(db, "proposal_tier_accepted", "system", "estimate", str(est.id), {"tier_id": str(tier_id), "tier_name": tier.tier_name}))
+    asyncio.run(log_audit_event(db, "proposal_tier_accepted", actor, "estimate", str(est.id), {"tier_id": str(tier_id), "tier_name": tier.tier_name}))
     db.commit(); db.refresh(est); return est  # noqa: E701,E702

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from sqlalchemy.types import Uuid
 
 from gdx_dispatch.core import pii
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event_sync
 from gdx_dispatch.models.tenant_models import Base
 from gdx_dispatch.modules.quickbooks.client import TOKEN_ENDPOINT, QBAuthError, QBClient
 
@@ -223,7 +223,7 @@ def save_tokens(
     log_audit_event_sync(
         db,
         tenant_id=tenant_id,
-        user_id="system",
+        user_id=SYSTEM_ACTOR,
         action="qb_tokens_saved",
         entity_type="quickbooks",
         entity_id=realm_id,

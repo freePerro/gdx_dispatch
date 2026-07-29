@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import utcnow
+from gdx_dispatch.core.audit import resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.maintenance.models import CustomerPlanEnrollment, ServicePlan
@@ -35,7 +35,7 @@ def get_enrollment(customer_id: UUID, db: Session = Depends(get_db)) -> Customer
 
 @router.post("/customers/{customer_id}/plan/enroll", response_model=None)
 def enroll(customer_id: UUID, payload: EnrollIn, db: Session = Depends(get_db)) -> CustomerPlanEnrollment:
-    try: return enroll_customer(customer_id, payload.plan_id, payload.stripe_subscription_id, db)  # noqa: E701,E702
+    try: return enroll_customer(customer_id, payload.plan_id, payload.stripe_subscription_id, db, actor=resolve_audit_actor(current_user))  # noqa: E701,E702
     except ValueError as exc: raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from None  # noqa: E701,E702
 
 @router.post("/customers/{customer_id}/plan/cancel", response_model=None)

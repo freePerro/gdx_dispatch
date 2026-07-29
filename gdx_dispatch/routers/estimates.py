@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Job, JobPartNeeded
@@ -800,7 +800,7 @@ def get_estimate(
 def patch_estimate(
     estimate_id: UUID,
     payload: EstimatePatchIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db)
@@ -835,7 +835,7 @@ def patch_estimate(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -855,7 +855,7 @@ def patch_estimate(
 @router.delete("/{estimate_id}", response_model=None)
 def delete_estimate(
     estimate_id: UUID,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     estimate = _get_estimate_or_404(estimate_id, db)
@@ -870,7 +870,7 @@ def delete_estimate(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -892,7 +892,7 @@ def add_line(
     estimate_id: UUID,
     payload: EstimateLineCreateIn,
     request: Request,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
@@ -989,7 +989,7 @@ def add_line(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -1012,7 +1012,7 @@ def patch_line(
     line_id: UUID,
     payload: EstimateLinePatchIn,
     request: Request,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
@@ -1130,7 +1130,7 @@ def patch_line(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -1151,7 +1151,7 @@ def patch_line(
 def delete_line(
     estimate_id: UUID,
     line_id: UUID,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
@@ -1175,7 +1175,7 @@ def delete_line(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -2114,7 +2114,7 @@ def estimate_conversion_rate(
 @router.post("/expire-stale")
 def expire_stale_estimates(
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> dict:
     """Mark estimates as expired if past their valid_until date."""
     now = utcnow()
@@ -2144,7 +2144,7 @@ def expire_stale_estimates(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

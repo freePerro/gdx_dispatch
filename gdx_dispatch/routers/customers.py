@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_prefix, invalidate_prefix_sync
 from gdx_dispatch.core.database import get_db
@@ -638,7 +638,7 @@ async def create_customer_location(
     customer_id: str,
     payload: CustomerLocationCreateIn,
     request: Request,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerLocationOut:
     _ensure_customer_exists(db, customer_id)
@@ -710,7 +710,7 @@ async def create_customer_location(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -732,7 +732,7 @@ async def update_customer_location(
     customer_id: str,
     location_id: str,
     payload: CustomerLocationPatchIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CustomerLocationOut:
     """Partial update of a customer service location.
@@ -821,7 +821,7 @@ async def update_customer_location(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -842,7 +842,7 @@ async def update_customer_location(
 async def delete_customer_location(
     customer_id: str,
     location_id: str,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Soft-delete a customer location."""
@@ -874,7 +874,7 @@ async def delete_customer_location(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

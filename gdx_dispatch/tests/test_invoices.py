@@ -352,7 +352,7 @@ def test_patch_invoice_updates_draft_fields(tenant_db_session):
     updated = patch_invoice(
         invoice_id=UUID(created["id"]),
         payload=InvoicePatchIn(tax_amount=10.25, notes="  apply tax  "),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
 
@@ -369,7 +369,7 @@ def test_patch_invoice_rejects_non_draft(tenant_db_session):
         patch_invoice(
             invoice_id=UUID(inv["id"]),
             payload=InvoicePatchIn(tax_amount=9.99),
-            _=_current_user(),
+            current_user=_current_user(),
             db=tenant_db_session,
         )
     assert exc.value.status_code == 409
@@ -676,7 +676,7 @@ def test_add_line_item_updates_subtotal_for_unlocked_invoice(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Labor", quantity=2, unit_price=50.0),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
     data = get_invoice(UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
@@ -691,7 +691,7 @@ def test_finalize_invoice_locks_and_calculates_total(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Part", quantity=1, unit_price=80.0),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
 
@@ -712,7 +712,7 @@ def test_add_line_rejects_locked_invoice(tenant_db_session):
         add_invoice_line(
             invoice_id=UUID(inv["id"]),
             payload=InvoiceLineCreateIn(description="Late line", quantity=1, unit_price=10.0),
-            _=_current_user(),
+            current_user=_current_user(),
             db=tenant_db_session,
         )
     assert exc.value.status_code == 409
@@ -724,7 +724,7 @@ def test_record_payment_updates_status_paid_when_fully_paid(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=120.0),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
     finalize_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
@@ -817,7 +817,7 @@ def test_billing_summary_excludes_drafts_from_outstanding(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(draft["id"]),
         payload=InvoiceLineCreateIn(description="WIP", quantity=1, unit_price=1290.0),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
     # Sent invoice — should be INCLUDED. force=True: the draft above already
     # bills the job ($>0 draft), and the 2026-07-23 guard 409s a silent
@@ -829,7 +829,7 @@ def test_billing_summary_excludes_drafts_from_outstanding(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(sent["id"]),
         payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=500.0),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
     send_invoice(invoice_id=UUID(sent["id"]), _=_current_user(), db=tenant_db_session)
 
@@ -919,7 +919,7 @@ def test_billing_summary_overdue_uses_due_date_and_balance(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(overdue_inv["id"]),
         payload=InvoiceLineCreateIn(description="Late", quantity=1, unit_price=750.0),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
     send_invoice(invoice_id=UUID(overdue_inv["id"]), _=_current_user(), db=tenant_db_session)
 
@@ -938,7 +938,7 @@ def test_list_invoices_filters_overdue(tenant_db_session):
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=100.0),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
     send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
@@ -1164,7 +1164,7 @@ def test_add_invoice_line_persists_estimate_parity_fields(tenant_db_session):
             cost=0,
             margin_pct_override=0.0,
         ),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
     assert line["category"] == "Labor"
     assert line["taxable"] is False
@@ -1183,7 +1183,7 @@ def test_patch_invoice_line_clears_cost_when_set_to_null(tenant_db_session):
         payload=InvoiceLineCreateIn(
             description="Spring", quantity=1, unit_price=80.0, cost=35.0, margin_pct_override=0.40,
         ),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
     assert line["cost_snapshot"] == 35.0
 
@@ -1295,7 +1295,7 @@ def test_soft_delete_invoice_releases_billed_parts(tenant_db_session):
     # Soft-delete the invoice — part should release back to unbilled.
     delete_invoice(
         invoice_id=UUID(created["id"]),
-        _=_current_user(),
+        current_user=_current_user(),
         db=tenant_db_session,
     )
     tenant_db_session.refresh(part)

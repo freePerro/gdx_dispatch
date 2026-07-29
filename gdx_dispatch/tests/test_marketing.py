@@ -374,10 +374,10 @@ async def test_campaign_send_to_segment(db_sessionmaker):
             channel="email",
             campaign_type="one-time blast",
         ),
-        _={},
+        current_user={},
         db=db,
     )
-    sent = await send_campaign(campaign_id=campaign["id"], _={}, db=db)
+    sent = await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
     db.close()
 
     assert sent["sent"] == 2
@@ -401,10 +401,10 @@ async def test_campaign_stats_tracking(db_sessionmaker):
             channel="sms",
             campaign_type="drip sequence",
         ),
-        _={},
+        current_user={},
         db=db,
     )
-    await send_campaign(campaign_id=campaign["id"], _={}, db=db)
+    await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
 
     now = datetime.now(UTC).isoformat()
     db.execute(
@@ -420,7 +420,7 @@ async def test_campaign_stats_tracking(db_sessionmaker):
     )
     db.commit()
 
-    stats = await get_campaign_stats(campaign_id=campaign["id"], _={}, db=db)
+    stats = await get_campaign_stats(campaign_id=campaign["id"], current_user={}, db=db)
     db.close()
 
     assert stats["sent"] == 2
@@ -470,10 +470,10 @@ async def test_audit_logged_on_send(db_sessionmaker):
             channel="email",
             campaign_type="win-back",
         ),
-        _={},
+        current_user={},
         db=db,
     )
-    await send_campaign(campaign_id=campaign["id"], _={}, db=db)
+    await send_campaign(campaign_id=campaign["id"], current_user={}, db=db)
 
     events = db.execute(
         text("SELECT event_type FROM audit_logs WHERE entity_type = 'campaign' AND entity_id = :campaign_id"),
@@ -528,6 +528,6 @@ async def test_referral_create_requires_required_fields():
 async def test_campaign_send_404_for_unknown_campaign(db_sessionmaker):
     db = db_sessionmaker()
     with pytest.raises(HTTPException) as exc:
-        await send_campaign(campaign_id=str(uuid.uuid4()), _={}, db=db)
+        await send_campaign(campaign_id=str(uuid.uuid4()), current_user={}, db=db)
     db.close()
     assert exc.value.status_code == 404

@@ -8,13 +8,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event, utcnow
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
 from gdx_dispatch.modules.change_orders.models import ModuleChangeOrder as ChangeOrder
 from gdx_dispatch.modules.change_orders.models import ModuleChangeOrderLine as ChangeOrderLine
 
 
-def _audit(db: Session, event_type: str, co_id: UUID, payload: dict) -> None:
-    asyncio.run(log_audit_event(db, event_type, "system", "change_order", str(co_id), payload))
+def _audit(db: Session, event_type: str, co_id: UUID, payload: dict, actor: str = SYSTEM_ACTOR) -> None:
+    asyncio.run(log_audit_event(db, event_type, actor, "change_order", str(co_id), payload))
 
 
 def _next_co_number(db: Session) -> str:

@@ -17,7 +17,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event_sync
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap, QBVendor
 from gdx_dispatch.models.tenant_models import (
@@ -503,7 +503,7 @@ def _audit(db: Session, event_type: str, entity_id: str, payload: dict[str, Any]
     log_audit_event_sync(
         db,
         tenant_id=payload.get("tenant_id", ""),
-        user_id="system",
+        user_id=SYSTEM_ACTOR,
         action=event_type,
         entity_type="quickbooks",
         entity_id=entity_id,

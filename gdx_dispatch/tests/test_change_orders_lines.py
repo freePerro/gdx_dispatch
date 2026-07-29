@@ -141,7 +141,7 @@ def test_patch_change_order_replaces_lines(db):
                 {"description": "Replacement", "quantity": 2, "unit_price": 75.0},
             ],
         ),
-        _=_user(), db=db,
+        current_user=_user(), db=db,
     )
     # Amount recomputed from new lines (2 × 75 = 150), original lines gone.
     assert updated["amount"] == 150.0
@@ -167,7 +167,7 @@ def test_patch_change_order_without_line_items_preserves_existing(db):
     update_change_order(
         co_id=co_id,
         payload=ChangeOrderIn(title="Keep me", reason="other"),
-        _=_user(), db=db,
+        current_user=_user(), db=db,
     )
     detail = get_change_order(co_id=co_id, _=_user(), db=db)
     assert len(detail["line_items"]) == 1

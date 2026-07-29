@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Expense, ExpenseLine, JobReceipt
@@ -332,7 +332,7 @@ def delete_expense(
 def create_expense_line(
     expense_id: UUID,
     payload: ExpenseLineCreate,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     expense = db.execute(
@@ -360,7 +360,7 @@ def create_expense_line(
             detail=f"expense lines sum to {lines_sum:.2f}, over the header amount {header:.2f}",
         )
     if abs(lines_sum - header) <= 0.005:
-        _post_or_409(lambda: repost_expense(db, expense, actor=_actor_id(_)))
+        _post_or_409(lambda: repost_expense(db, expense, actor=_actor_id(current_user)))
     db.commit()
     db.refresh(line)
     _audit_db = locals().get('db')
@@ -371,7 +371,7 @@ def create_expense_line(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

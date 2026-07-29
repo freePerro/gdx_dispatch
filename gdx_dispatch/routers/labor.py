@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -138,7 +138,7 @@ def _get_job_or_404(db: Session, job_id: UUID) -> Job:
 @router.get("/jobs/{job_id}/time-entries", response_model=None)
 def list_job_time_entries(
     job_id: UUID,
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     _get_job_or_404(db, job_id)
@@ -156,7 +156,7 @@ def create_job_time_entry(
     request: Request,
     job_id: UUID,
     payload: TimeEntryCreate,
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _get_job_or_404(db, job_id)
@@ -188,7 +188,7 @@ def create_job_time_entry(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -209,7 +209,7 @@ def create_job_time_entry(
 def update_time_entry(
     entry_id: UUID,
     payload: TimeEntryPatch,
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     row = db.get(TimeEntry, entry_id)
@@ -250,7 +250,7 @@ def update_time_entry(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -270,7 +270,7 @@ def update_time_entry(
 @router.delete("/time-entries/{entry_id}", response_model=None)
 def delete_time_entry(
     entry_id: UUID,
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     row = db.get(TimeEntry, entry_id)
@@ -288,7 +288,7 @@ def delete_time_entry(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -308,7 +308,7 @@ def delete_time_entry(
 @router.get("/jobs/{job_id}/costing", response_model=None, operation_id="get_job_labor_costing")
 def get_job_labor_costing(
     job_id: UUID,
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _get_job_or_404(db, job_id)
@@ -350,7 +350,7 @@ def get_job_labor_costing(
 def labor_summary(
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    _: dict[str, Any] = Depends(_require_dispatch),
+    current_user: dict[str, Any] = Depends(_require_dispatch),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     now = datetime.now(UTC).date()

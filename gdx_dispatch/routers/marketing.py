@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event
 from gdx_dispatch.models.tenant_models import LoyaltyPoints, LoyaltyReferral, ReviewRequest
 
 router = APIRouter(prefix="/api", tags=["marketing"])
@@ -132,13 +132,19 @@ async def convert_referrals_for_customer(customer_id: str, customer_phone: str, 
         referral.status = "rewarded"
         referral.rewarded_at = now
 
+        # SYSTEM_ACTOR is deliberate: a referral converts as an automatic
+        # side effect of a customer being created. No human performs it.
         await log_audit_event(
             db,
-            "referral_converted",
-            "system",
-            "referral",
-            str(referral.id),
-            {"referrer_customer_id": referral.referrer_id, "converted_customer_id": customer_id, "points": 250},
+            event_type="referral_converted",
+            user_id=SYSTEM_ACTOR,
+            entity_type="referral",
+            entity_id=str(referral.id),
+            details={
+                "referrer_customer_id": referral.referrer_id,
+                "converted_customer_id": customer_id,
+                "points": 250,
+            },
         )
         converted += 1
 
