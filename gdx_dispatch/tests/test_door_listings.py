@@ -51,20 +51,34 @@ def _make_app(role: str = "admin", uid: str = _ADMIN_UID, tmp_path=None) -> Test
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     setup = Session()
-    for tbl, col in (("tenant_module_grants", "tenant_id"), ("company_module_grants", "company_id")):
-        setup.execute(
-            text(
-                f"CREATE TABLE IF NOT EXISTS {tbl} (id TEXT PRIMARY KEY, {col} TEXT, "
-                "module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)"
-            )
+    # Literal statements rather than f-string interpolation of the table name:
+    # ruff's S608 flags the latter, and CI ratchets on total violation count.
+    setup.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS tenant_module_grants (id TEXT PRIMARY KEY, "
+            "tenant_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)"
         )
-        setup.execute(
-            text(
-                f"INSERT INTO {tbl} (id, {col}, module_key, granted_at, created_at) "
-                f"VALUES (:id, :tid, 'inventory', datetime('now'), datetime('now'))"
-            ),
-            {"id": f"{tbl}-g", "tid": TENANT},
+    )
+    setup.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS company_module_grants (id TEXT PRIMARY KEY, "
+            "company_id TEXT, module_key TEXT, granted_at TEXT, created_at TEXT, expires_at TEXT)"
         )
+    )
+    setup.execute(
+        text(
+            "INSERT INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at) "
+            "VALUES (:id, :tid, 'inventory', datetime('now'), datetime('now'))"
+        ),
+        {"id": "tmg-g", "tid": TENANT},
+    )
+    setup.execute(
+        text(
+            "INSERT INTO company_module_grants (id, company_id, module_key, granted_at, created_at) "
+            "VALUES (:id, :tid, 'inventory', datetime('now'), datetime('now'))"
+        ),
+        {"id": "cmg-g", "tid": TENANT},
+    )
     # require_permission resolves the caller's role from the tenant users table.
     setup.add(
         User(id=UUID(uid), email=f"{role}@example.com", password_hash="x",
