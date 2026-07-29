@@ -315,11 +315,14 @@ describe('VendorStatementsView — account position', () => {
     await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
     await flushPromises();
 
-    fetchMock.mockResolvedValueOnce(mkResponse([{
-      job_id: 'job-1', score: 0.91, job_number: 'JOB-2026-004',
-      reason: 'ship_to “SFL Trende” ≈ customer “Trende”',
-      customer_id: 'cust-1', customer_name: 'Trende', lifecycle_stage: 'scheduled',
-    }]));
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      suggestions: [{
+        job_id: 'job-1', score: 0.91, job_number: 'JOB-2026-004', job_title: 'Trende',
+        reason: 'ship_to "SFL Trende" ≈ job "Trende"',
+        customer_id: 'cust-1', customer_name: 'Trende', lifecycle_stage: 'scheduled',
+      }],
+      customers_without_jobs: [],
+    }));
     await w.find('[data-testid="suggest-20635854"]').trigger('click');
     await flushPromises();
 
@@ -334,11 +337,11 @@ describe('VendorStatementsView — account position', () => {
     await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
     await flushPromises();
 
-    fetchMock.mockResolvedValueOnce(mkResponse([]));
+    fetchMock.mockResolvedValueOnce(mkResponse({ suggestions: [], customers_without_jobs: [] }));
     await w.find('[data-testid="suggest-20635854"]').trigger('click');
     await flushPromises();
 
-    expect(w.text()).toContain("doesn't look like a customer name");
+    expect(w.text()).toContain("doesn't resemble a customer or a job");
   });
 
   it('posts the chosen job to the confirm endpoint', async () => {
@@ -346,10 +349,13 @@ describe('VendorStatementsView — account position', () => {
     await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
     await flushPromises();
 
-    fetchMock.mockResolvedValueOnce(mkResponse([{
-      job_id: 'job-1', score: 0.91, reason: 'ship_to ≈ customer',
-      customer_id: 'cust-1', customer_name: 'Trende',
-    }]));
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      suggestions: [{
+        job_id: 'job-1', score: 0.91, reason: 'ship_to ≈ job', job_title: 'Trende',
+        customer_id: 'cust-1', customer_name: 'Trende',
+      }],
+      customers_without_jobs: [],
+    }));
     await w.find('[data-testid="suggest-20635854"]').trigger('click');
     await flushPromises();
 
@@ -364,6 +370,31 @@ describe('VendorStatementsView — account position', () => {
     expect(call).toBeTruthy();
     expect(call[0]).toContain('/orders/ord-1/confirm-job');
     expect(JSON.parse(call[1].body)).toEqual({ job_id: 'job-1' });
+  });
+
+  it('says the customer matched but has no job, rather than "no match"', async () => {
+    // Six real orders matched a customer at up to 0.89 and were shown as
+    // "the reference doesn't look like a customer name". Those are opposite
+    // instructions: one means the text is junk, the other means create the job.
+    const { w, fetchMock } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      suggestions: [],
+      customers_without_jobs: [{
+        customer_id: 'cust-9', customer_name: 'Chad Bryniarski', score: 0.89,
+        reason: 'ship_to "A+ Bryniarski" ≈ customer "Chad Bryniarski"',
+      }],
+    }));
+    await w.find('[data-testid="suggest-20635854"]').trigger('click');
+    await flushPromises();
+
+    const hint = w.find('[data-testid="no-job-20635854"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain('Chad Bryniarski');
+    expect(hint.text()).toContain('no job on file');
+    expect(w.text()).not.toContain("doesn't resemble a customer or a job");
   });
 
   it('does not offer to find a job for an order already filed', async () => {

@@ -87,7 +87,7 @@ def test_suggests_a_job_from_the_jobsite_it_ships_to(tenant_db):
     _order(tenant_db, ship_to="SFL Trende")
     tenant_db.commit()
 
-    suggestions = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    suggestions = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions
     assert suggestions
     assert suggestions[0].job_id == str(job.id)
     assert "ship_to" in suggestions[0].reason
@@ -99,7 +99,7 @@ def test_falls_back_to_the_typed_reference_when_there_is_no_ship_to(tenant_db):
     _order(tenant_db, ship_to=None, po="Kreinke")
     tenant_db.commit()
 
-    suggestions = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    suggestions = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions
     assert suggestions[0].job_id == str(job.id)
     assert "customer_po" in suggestions[0].reason
 
@@ -111,7 +111,7 @@ def test_the_reason_names_the_text_that_produced_the_match(tenant_db):
     _order(tenant_db, ship_to="Wickham A+")
     tenant_db.commit()
 
-    reason = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())[0].reason
+    reason = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions[0].reason
     assert "Wickham A+" in reason
     assert "Wickham" in reason
 
@@ -120,14 +120,14 @@ def test_an_unmatchable_reference_suggests_nothing(tenant_db):
     _customer(tenant_db, "Kreinke")
     _order(tenant_db, ship_to="5.19.26", po="5.19.26")   # a date, not a name
     tenant_db.commit()
-    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()) == []
+    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions == []
 
 
 def test_an_order_with_no_reference_at_all_suggests_nothing(tenant_db):
     _customer(tenant_db, "Kreinke")
     _order(tenant_db, ship_to=None, po=None)
     tenant_db.commit()
-    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()) == []
+    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions == []
 
 
 def test_cancelled_jobs_are_never_suggested(tenant_db):
@@ -135,7 +135,7 @@ def test_cancelled_jobs_are_never_suggested(tenant_db):
     _job(tenant_db, customer, stage="cancelled")
     _order(tenant_db, ship_to="SFL Trende")
     tenant_db.commit()
-    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()) == []
+    assert suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one()).suggestions == []
 
 
 def test_suggesting_never_writes_anything(tenant_db):
@@ -147,6 +147,111 @@ def test_suggesting_never_writes_anything(tenant_db):
     suggest_order_job_matches(tenant_db, order)
     tenant_db.expire_all()
     assert tenant_db.query(VendorOrder).one().matched_job_id is None
+
+
+def test_matches_the_job_title_when_the_customer_name_does_not(tenant_db):
+    """The real failure this fixes. Measured on production: the office titles
+    the JOB after the jobsite and types that same shorthand on the supplier
+    order, while the customer record carries a different name entirely.
+    "SFL Swenstad" scored 0.52 against every customer and 1.00 against the job
+    title "Swenstad"."""
+    customer = _customer(tenant_db, "Bill Greenwaldt")     # nothing like the order text
+    job = Job(customer_id=customer.id, company_id=TID, job_number="JOB-9",
+              title="Swenstad", lifecycle_stage="scheduled")
+    tenant_db.add(job)
+    tenant_db.flush()
+    _order(tenant_db, ship_to="SFL Swenstad")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions, "job-title matching should have found this"
+    assert result.suggestions[0].job_id == str(job.id)
+    assert 'job "Swenstad"' in result.suggestions[0].reason
+
+
+def test_the_customer_route_still_works_for_a_uselessly_titled_job(tenant_db):
+    """Both signals are kept, not swapped — a job called "Service call" is
+    still reachable through its customer."""
+    customer = _customer(tenant_db, "Kreinke")
+    job = Job(customer_id=customer.id, company_id=TID, job_number="JOB-8",
+              title="Service call", lifecycle_stage="scheduled")
+    tenant_db.add(job)
+    tenant_db.flush()
+    _order(tenant_db, ship_to="Kreinke")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions[0].job_id == str(job.id)
+    assert "customer" in result.suggestions[0].reason
+
+
+def test_a_job_reached_by_both_signals_is_offered_once(tenant_db):
+    customer = _customer(tenant_db, "Trende")
+    job = Job(customer_id=customer.id, company_id=TID, job_number="JOB-7",
+              title="Trende", lifecycle_stage="scheduled")
+    tenant_db.add(job)
+    tenant_db.flush()
+    _order(tenant_db, ship_to="Trende", po="Trende")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert len(result.suggestions) == 1
+
+
+def test_a_matched_customer_with_no_job_is_reported_not_called_no_match(tenant_db):
+    """The UI said "the reference doesn't look like a customer name" for six
+    real orders that matched a customer at up to 0.89. Those customers simply
+    had no job — which means CREATE ONE, not "junk reference"."""
+    customer = _customer(tenant_db, "Chad Bryniarski")     # no job at all
+    _order(tenant_db, ship_to="A+ Bryniarski")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions == []
+    assert len(result.customers_without_jobs) == 1
+    assert result.customers_without_jobs[0].customer_name == "Chad Bryniarski"
+    assert result.customers_without_jobs[0].customer_id == str(customer.id)
+
+
+def test_a_customer_hint_is_suppressed_when_a_job_was_found(tenant_db):
+    """It is only useful as a fallback; alongside a real suggestion it is noise."""
+    with_job = _customer(tenant_db, "Trende")
+    _job(tenant_db, with_job)
+    _customer(tenant_db, "Trendel")          # close, but no job
+    _order(tenant_db, ship_to="Trende")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions
+    assert result.customers_without_jobs == []
+
+
+def test_a_reference_too_thin_to_be_a_name_is_not_matched(tenant_db):
+    """The scorer returns 1.0 when a single token appears anywhere in the other
+    string — which is what makes "Wickham A+" ≈ job "Wickham" work, and would
+    equally make "A+" match any title containing that letter as a word, at full
+    confidence. A confidently-wrong suggestion is the worst outcome here."""
+    customer = _customer(tenant_db, "Someone")
+    job = Job(customer_id=customer.id, company_id=TID, job_number="JOB-6",
+              title="A new door", lifecycle_stage="scheduled")
+    tenant_db.add(job)
+    tenant_db.flush()
+    _order(tenant_db, ship_to="A+", po="A+")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions == []
+    assert result.customers_without_jobs == []
+
+
+def test_a_junk_reference_reports_neither(tenant_db):
+    _customer(tenant_db, "Kreinke")
+    _order(tenant_db, ship_to="5.19.26", po="5.19.26")
+    tenant_db.commit()
+
+    result = suggest_order_job_matches(tenant_db, tenant_db.query(VendorOrder).one())
+    assert result.suggestions == []
+    assert result.customers_without_jobs == []
 
 
 # --------------------------------------------------------------------------- #

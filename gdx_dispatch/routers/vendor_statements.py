@@ -184,6 +184,22 @@ class OrderJobSuggestionOut(BaseModel):
     lifecycle_stage: str | None = None
 
 
+class CustomerWithoutJobOut(BaseModel):
+    customer_id: str
+    customer_name: str
+    score: float
+    reason: str
+
+
+class OrderMatchResultOut(BaseModel):
+    """Suggestions, and — when there are none — the customer the order clearly
+    belongs to who simply has no job on file. Those are different answers and
+    reporting them as one told the office "no match" for six real orders that
+    matched a customer at up to 0.89."""
+    suggestions: list[OrderJobSuggestionOut]
+    customers_without_jobs: list[CustomerWithoutJobOut]
+
+
 class OrderJobConfirmIn(BaseModel):
     job_id: UUID
 
@@ -386,23 +402,30 @@ def _live_order_or_404(db: Session, order_id: UUID) -> VendorOrder:
 
 @router.get(
     "/orders/{order_id}/job-suggestions",
-    response_model=list[OrderJobSuggestionOut],
+    response_model=OrderMatchResultOut,
     dependencies=[Depends(require_permission("vendor_statements.read"))],
 )
 async def order_job_suggestions(
     order_id: UUID,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[OrderJobSuggestionOut]:
+) -> OrderMatchResultOut:
     """Rank likely jobs for this order. Suggestion only — nothing is written.
 
-    Ranked on the jobsite the doors ship to and the reference the office typed,
-    each suggestion carrying the text that produced it so a human can see why.
+    Matches the jobsite the doors ship to and the reference the office typed
+    against both job TITLES and customer names, each suggestion carrying the
+    text that produced it so a human can see why. When nothing reaches a job,
+    a customer that clearly matches but has no job on file is reported instead
+    — "create the job" and "that reference is junk" are different answers.
     """
     order = _live_order_or_404(db, order_id)
-    return [
-        OrderJobSuggestionOut(**vars(s)) for s in suggest_order_job_matches(db, order)
-    ]
+    result = suggest_order_job_matches(db, order)
+    return OrderMatchResultOut(
+        suggestions=[OrderJobSuggestionOut(**vars(s)) for s in result.suggestions],
+        customers_without_jobs=[
+            CustomerWithoutJobOut(**vars(c)) for c in result.customers_without_jobs
+        ],
+    )
 
 
 @router.post(
