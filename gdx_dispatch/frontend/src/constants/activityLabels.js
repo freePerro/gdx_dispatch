@@ -106,6 +106,12 @@ export const ACTIVITY_LABELS = {
   'change_order:update_change_order': 'Change order updated',
   'po:update_po': 'Purchase order updated',
   communication_sent: 'Message sent',
+
+  // Customer click-through on a public document link. Deliberately NOT called
+  // an "open": this fires when someone follows the link we emailed, which is a
+  // stronger signal than a tracking pixel (see core/customer_views.py).
+  invoice_viewed_by_customer: 'Customer opened the invoice',
+  estimate_viewed_by_customer: 'Customer opened the estimate',
 };
 
 export const ENTITY_ICONS = {

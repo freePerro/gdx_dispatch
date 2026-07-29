@@ -41,6 +41,14 @@ ACTOR_UNKNOWN = "unknown"
 
 _MACHINE_ACTORS = {"system", "anonymous", "", None}
 
+#: The actor id written for an anonymous customer opening a public document
+#: link (core/customer_views.py). The token identifies a DOCUMENT, not a
+#: person — several people at a company can share the same link — so there is
+#: no CustomerUser row to resolve. It still has to classify as a customer, or
+#: the UI badge that exists precisely to distinguish customer actions from
+#: staff ones never fires.
+PUBLIC_CUSTOMER_ACTOR = "customer"
+
 
 def _is_uuid(value: Any) -> bool:
     try:
@@ -91,6 +99,8 @@ def resolve_actors(db: Session, user_ids: set[str]) -> dict[str, dict[str, Any]]
     for raw in user_ids:
         if raw in _MACHINE_ACTORS:
             out[raw] = {"name": "System", "actor_type": ACTOR_SYSTEM}
+        elif raw == PUBLIC_CUSTOMER_ACTOR:
+            out[raw] = {"name": "Customer", "actor_type": ACTOR_CUSTOMER}
 
     unresolved = {u for u in user_ids if u and u not in out}
 

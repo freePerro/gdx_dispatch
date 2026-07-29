@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import resolve_audit_actor
+from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -41,8 +42,19 @@ def post_accept_tier(estimate_id: UUID, payload: AcceptIn, _: None = Depends(req
     return accept_tier(estimate_id, payload.tier_id, db, actor=resolve_audit_actor(current_user))
 
 @router.get("/proposals/{token}")
-def get_public_proposal(token: str, db: Session = Depends(get_db)) -> dict[str, object]:
+def get_public_proposal(token: str, request: Request = None, db: Session = Depends(get_db)) -> dict[str, object]:
     est = db.execute(select(Estimate).where(Estimate.public_token == token)).scalar_one_or_none()
     if not est: raise HTTPException(status_code=404, detail="Invalid proposal token")  # noqa: E701,E702
+    # The customer opened the estimate we sent. Never blocks the response.
+    record_customer_view(
+        db,
+        action="estimate_viewed_by_customer",
+        entity_type="estimate",
+        entity_id=est.id,
+        tenant_id=getattr(est, "company_id", None),
+        request=request,
+        sent_at=getattr(est, "sent_at", None),
+        details={"estimate_number": est.estimate_number},
+    )
     tiers = list(db.execute(select(ProposalTier).where(ProposalTier.estimate_id == est.id).order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())).scalars().all())
     return {"estimate": est, "tiers": tiers}
