@@ -88,6 +88,7 @@ function _onOrder(overrides = {}) {
     awaiting_bill_total: '3707.74',
     items: [
       {
+        order_id: 'ord-1', matched_job_id: null,
         order_number: '20635854', order_date: '2026-07-23', ship_to: 'A Jobsite',
         customer_po: 'A Jobsite', lot_no: null, estimated_total: '3707.74',
         line_count: 1, status: 'awaiting_bill', billed_total: null, variance: null,
@@ -98,6 +99,7 @@ function _onOrder(overrides = {}) {
         }],
       },
       {
+        order_id: 'ord-2', matched_job_id: null,
         order_number: '20476417', order_date: '2026-06-22', ship_to: 'Another Site',
         customer_po: '98022', lot_no: null, estimated_total: '2469.42',
         line_count: 1, status: 'billed', billed_total: '2577.42', variance: '108.00',
@@ -296,6 +298,82 @@ describe('VendorStatementsView — account position', () => {
   it('does not offer an orders table when there are no orders', async () => {
     const { w } = await mountWith({ onOrder: [] });
     expect(w.find('[data-testid="toggle-orders-Example Door Supply"]').exists()).toBe(false);
+  });
+
+  // ── order → job ───────────────────────────────────────────────────
+  it('offers to find a job for an unfiled order', async () => {
+    const { w } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="suggest-20635854"]').exists()).toBe(true);
+  });
+
+  it('shows why a job was suggested, not just a score', async () => {
+    // A human confirming needs the reason; a bare confidence number is
+    // something to click past rather than check.
+    const { w, fetchMock } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+
+    fetchMock.mockResolvedValueOnce(mkResponse([{
+      job_id: 'job-1', score: 0.91, job_number: 'JOB-2026-004',
+      reason: 'ship_to “SFL Trende” ≈ customer “Trende”',
+      customer_id: 'cust-1', customer_name: 'Trende', lifecycle_stage: 'scheduled',
+    }]));
+    await w.find('[data-testid="suggest-20635854"]').trigger('click');
+    await flushPromises();
+
+    const text = w.text();
+    expect(text).toContain('Trende');
+    expect(text).toContain('SFL Trende');
+    expect(w.find('[data-testid="confirm-20635854"]').exists()).toBe(true);
+  });
+
+  it('says so plainly when the reference matches no customer', async () => {
+    const { w, fetchMock } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+
+    fetchMock.mockResolvedValueOnce(mkResponse([]));
+    await w.find('[data-testid="suggest-20635854"]').trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain("doesn't look like a customer name");
+  });
+
+  it('posts the chosen job to the confirm endpoint', async () => {
+    const { w, fetchMock } = await mountWith();
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+
+    fetchMock.mockResolvedValueOnce(mkResponse([{
+      job_id: 'job-1', score: 0.91, reason: 'ship_to ≈ customer',
+      customer_id: 'cust-1', customer_name: 'Trende',
+    }]));
+    await w.find('[data-testid="suggest-20635854"]').trigger('click');
+    await flushPromises();
+
+    fetchMock.mockResolvedValueOnce(mkResponse({
+      order_number: '20635854', job_id: 'job-1', customer_id: 'cust-1',
+      documents: [], newly_filed_count: 2,
+    }));
+    await w.find('[data-testid="confirm-20635854"]').trigger('click');
+    await flushPromises();
+
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('confirm-job'));
+    expect(call).toBeTruthy();
+    expect(call[0]).toContain('/orders/ord-1/confirm-job');
+    expect(JSON.parse(call[1].body)).toEqual({ job_id: 'job-1' });
+  });
+
+  it('does not offer to find a job for an order already filed', async () => {
+    const filed = _onOrder();
+    filed.items[0].matched_job_id = 'job-1';
+    const { w } = await mountWith({ onOrder: [filed] });
+    await w.find('[data-testid="toggle-orders-Example Door Supply"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="suggest-20635854"]').exists()).toBe(false);
+    expect(w.text()).toContain('Filed to job');
   });
 
   it('renders nothing account-shaped when there are no statements yet', async () => {
