@@ -65,6 +65,23 @@ export const ACTIVITY_LABELS = {
   landing_lead_created: 'Lead captured',
   landing_lead_deleted: 'Lead removed',
   qb_webhook_received: 'QuickBooks update received',
+
+  // Customer-side activity. routers/portal.py has logged these all along;
+  // they were rendering as raw action strings because nothing mapped them,
+  // and they were mis-attributed to "Unknown user" until core/audit_labels.py
+  // learned to resolve a CustomerUser actor.
+  portal_login_verified: 'Customer signed in to the portal',
+  portal_password_login: 'Customer signed in to the portal',
+  portal_password_login_failed: 'Failed portal sign-in',
+  portal_password_set: 'Customer set a portal password',
+  portal_magic_link_sent: 'Portal sign-in link sent',
+  portal_magic_link_send_failed: 'Portal sign-in link failed to send',
+  portal_invite_sent: 'Portal invitation sent',
+  portal_access_toggled: 'Portal access changed',
+  portal_booking_created: 'Customer requested a booking',
+  portal_message_sent: 'Customer sent a message',
+  portal_estimate_accepted: 'Customer accepted the estimate',
+  portal_estimate_declined: 'Customer declined the estimate',
 };
 
 export const ENTITY_ICONS = {

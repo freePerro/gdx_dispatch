@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import csv
 import io
-import logging
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from gdx_dispatch.core.audit import AuditLog
+from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
-from gdx_dispatch.models.tenant_models import User
 from gdx_dispatch.routers.auth import get_current_user
 
 router = APIRouter(
@@ -48,43 +46,18 @@ def _row_to_dict(row: AuditLog) -> dict[str, Any]:
     }
 
 
-def _resolve_user_names(db: Session, user_ids: set[str]) -> dict[str, str]:
-    """Batch-resolve user IDs to display names. Non-UUID IDs (e.g. 'system',
-    'anonymous') are skipped — they aren't rows in the User table and would
-    fail the IN-clause cast on Postgres."""
-    if not user_ids:
-        return {}
-    valid: list[str] = []
-    for uid in user_ids:
-        if not uid:
-            continue
-        try:
-            UUID(str(uid))
-            valid.append(str(uid))
-        except (ValueError, TypeError):
-            continue
-    if not valid:
-        return {}
-    try:
-        rows = db.execute(
-            select(User.id, User.name, User.full_name, User.email)
-            .where(User.id.in_(valid))
-        ).all()
-        result = {}
-        for row in rows:
-            display = row.name or row.full_name or row.email or str(row.id)[:8]
-            result[str(row.id)] = display
-        return result
-    except Exception:
-        logging.getLogger(__name__).exception("_resolve_user_names caught exception")
-        return {}
-
-
 def _list_rows(db: Session, *, page: int, page_size: int, where=None):
     q = select(AuditLog)
     if where is not None:
         q = q.where(where)
-    total = len(db.execute(q).scalars().all())
+    # COUNT(*) — the previous implementation was len(...scalars().all()), which
+    # materialized every audit row in the tenant on each dashboard load. On the
+    # live tenant that is ~60k ORM objects to produce one integer.
+    count_q = select(func.count()).select_from(AuditLog)
+    if where is not None:
+        count_q = count_q.where(where)
+    total = int(db.execute(count_q).scalar() or 0)
+
     offset = (page - 1) * page_size
     rows = (
         db.execute(
@@ -93,14 +66,9 @@ def _list_rows(db: Session, *, page: int, page_size: int, where=None):
         .scalars()
         .all()
     )
-    # Resolve user_ids to display names
-    user_ids = {r.user_id for r in rows if r.user_id}
-    user_names = _resolve_user_names(db, user_ids)
-    items = []
-    for r in rows:
-        d = _row_to_dict(r)
-        d["user_name"] = user_names.get(r.user_id, r.user_id or "system")
-        items.append(d)
+    # Actor + subject labels, batched, one query per distinct entity type.
+    # Shared with routers/activity.py so both feeds agree on what a row says.
+    items = decorate_rows(db, [_row_to_dict(r) for r in rows])
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -28,33 +29,19 @@ router = APIRouter(
 )
 
 
-_user_cache: dict[str, str] = {}
+def _serialize(row: AuditLog) -> dict[str, Any]:
+    """Raw row -> dict. Actor and subject labels are added afterwards, for the
+    whole page at once, by ``decorate_rows``.
 
-
-def _resolve_user(db: Session, user_id: str | None) -> str:
-    """Resolve a user UUID to email/username. Returns the ID if not found."""
-    if not user_id or user_id in ("system", "anonymous", ""):
-        return user_id or ""
-    if user_id in _user_cache:
-        return _user_cache[user_id]
-    try:
-        from sqlalchemy import select
-
-        from gdx_dispatch.models.tenant_models import User
-        u = db.execute(select(User).where(User.id == user_id)).scalars().first()
-        name = (u.email or u.username or user_id) if u else user_id
-    except Exception:
-        logging.getLogger(__name__).exception("_resolve_user caught exception")
-        name = user_id
-    _user_cache[user_id] = name
-    return name
-
-
-def _serialize(row: AuditLog, db: Session | None = None) -> dict[str, Any]:
-    user_display = _resolve_user(db, row.user_id) if db else row.user_id
+    ``user_id`` stays the real id here. It used to be overwritten with the
+    resolved email, which meant this endpoint and /api/audit/logs disagreed
+    about what `user_id` even meant, and the UI's user filter was keying on a
+    display string. The display name now lives in `user_name`, matching the
+    audit router.
+    """
     return {
         "id": str(row.id),
-        "user_id": user_display,
+        "user_id": row.user_id,
         "action": row.action,
         "entity_type": row.entity_type,
         "entity_id": row.entity_id,
@@ -104,7 +91,7 @@ def list_recent_activity(
 
     rows = db.execute(stmt).scalars().all()
     total = int(db.execute(count_stmt).scalar() or 0)
-    return {"items": [_serialize(r, db) for r in rows], "total": total}
+    return {"items": decorate_rows(db, [_serialize(r) for r in rows]), "total": total}
 
 
 @router.get("/api/jobs/{job_id}/activity", response_model=None)
@@ -136,7 +123,7 @@ def list_job_activity(
 
     rows = db.execute(stmt).scalars().all()
     total = int(db.execute(count_stmt).scalar() or 0)
-    return {"items": [_serialize(r, db) for r in rows], "total": total}
+    return {"items": decorate_rows(db, [_serialize(r) for r in rows]), "total": total}
 
 
 @router.get("/api/customers/{customer_id}/activity", response_model=None)
@@ -168,4 +155,4 @@ def list_customer_activity(
 
     rows = db.execute(stmt).scalars().all()
     total = int(db.execute(count_stmt).scalar() or 0)
-    return {"items": [_serialize(r, db) for r in rows], "total": total}
+    return {"items": decorate_rows(db, [_serialize(r) for r in rows]), "total": total}

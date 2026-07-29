@@ -258,7 +258,14 @@
           <template #title>Recent Activity</template>
           <template #content>
             <ul class="activity-list" data-testid="recent-activity-list">
-              <li v-for="item in recentActivity" :key="item.id" class="activity-item" :data-testid="`activity-item-${item.id}`">
+              <li
+                v-for="item in recentActivity"
+                :key="item.id"
+                class="activity-item"
+                :class="item.url ? 'activity-item-linked' : 'activity-item-static'"
+                :data-testid="`activity-item-${item.id}`"
+                @click="item.url && router.push(item.url)"
+              >
                 <span class="activity-title"><i v-if="item.icon" :class="item.icon" aria-hidden="true" style="margin-right:0.4rem;opacity:0.6" />{{ item.title }}</span>
                 <span class="activity-meta">{{ item.meta }}</span>
               </li>
@@ -715,12 +722,20 @@ async function loadRecentActivity() {
         // falls back to the raw user_id when the users lookup misses, so
         // user_name can BE a UUID — hence formatUser's guard. The `||` here is
         // belt-and-braces only; audit.py always populates the field.
-        recentActivity.value = items.slice(0, 10).map((evt) => ({
-          id: evt.id,
-          title: formatActivityTitle(evt.action, evt.entity_type),
-          icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
-          meta: `${formatUser(evt.user_name || evt.user_id)} · ${formatTimestamp(evt.created_at)}`,
-        }));
+        recentActivity.value = items.slice(0, 10).map((evt) => {
+          const what = formatActivityTitle(evt.action, evt.entity_type);
+          // entity_label is resolved server-side (core/audit_labels.py) and is
+          // null for entity types with no resolver — the row then reads as it
+          // did before rather than showing a UUID.
+          const who = formatUser(evt.user_name || evt.user_id);
+          return {
+            id: evt.id,
+            title: evt.entity_label ? `${what} — ${evt.entity_label}` : what,
+            icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
+            meta: `${who}${evt.actor_type === "customer" ? " (customer)" : ""} · ${formatTimestamp(evt.created_at)}`,
+            url: evt.entity_url || null,
+          };
+        });
         return;
       }
     } catch {
@@ -888,6 +903,14 @@ onMounted(() => {
   transition: background 0.15s;
   padding: 0.5rem;
   border-radius: 4px;
+}
+
+/* An activity row is only clickable when the server resolved a deep link for
+   it (entity_url). Rows for entity types with no resolver must not advertise
+   a click that does nothing — the blanket `cursor: pointer` above predates
+   the links and was a lie for every row in this list. */
+.activity-item-static {
+  cursor: default;
 }
 
 .activity-item:hover {
