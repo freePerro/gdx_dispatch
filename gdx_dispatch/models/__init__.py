@@ -153,6 +153,10 @@ try:
     from gdx_dispatch.modules.vendor_statements.models import VendorStatement, VendorStatementLine  # noqa: F401
 except ImportError:
     pass
+try:
+    from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto  # noqa: F401
+except ImportError:
+    pass
 
 # Phase 2: register models from modules/routers/core that use TenantBase
 # but were never imported here (2026-04-12 an earlier session)

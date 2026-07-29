@@ -119,6 +119,15 @@ class AppSettings(Base):
     debug_logging_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Master switch for customer-submitted door listings. OFF means the portal
+    # submission routes 404 for EVERY customer regardless of their individual
+    # `customers.can_submit_listings` flag — so flipping this off kills the
+    # feature company-wide without disturbing per-customer grants, and flipping
+    # it back on restores exactly the prior grants rather than opening it to
+    # everybody. See modules/door_listings/service.py:customer_may_submit.
+    customer_listings_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
@@ -151,6 +160,11 @@ class Customer(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=True)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     customer_type: Mapped[str] = mapped_column(String(50), nullable=True, default="Retail")
+    # Per-customer half of the customer-submitted-listings gate. Default OFF;
+    # only meaningful when AppSettings.customer_listings_enabled is also on.
+    can_submit_listings: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Sprint 1.0.5 — canonical pricing-engine input. NULL = engine treats as 'retail'.
     # Eventually replaces customer_type (kept until pave reload is hardened — D-PE-7).
     pricing_class: Mapped[str] = mapped_column(

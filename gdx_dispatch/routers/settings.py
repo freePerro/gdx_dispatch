@@ -58,6 +58,7 @@ class SettingsPatchIn(BaseModel):
     # UI-audit follow-up — operator debug toggle. When ON, handled errors that
     # are normally swallowed are also recorded to the Server Errors log.
     debug_logging_enabled: bool | None = None
+    customer_listings_enabled: bool | None = None
 
 
 class BrandingPatchIn(BaseModel):
@@ -141,6 +142,7 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
             row.qb_accounting_method if getattr(row, "qb_accounting_method", None) else "Accrual"
         ),
         "debug_logging_enabled": bool(getattr(row, "debug_logging_enabled", False)),
+        "customer_listings_enabled": bool(getattr(row, "customer_listings_enabled", False)),
     }
 
 
@@ -191,6 +193,7 @@ def patch_settings(
         "primary_color", "secondary_color",
         "default_shift_start", "default_shift_end", "default_workdays",
         "qb_accounting_method", "debug_logging_enabled",
+        "customer_listings_enabled",
     ):
         if key in updates:
             setattr(row, key, updates[key])

@@ -161,6 +161,8 @@ VALID_SCOPES = {
     "read:customers",
     "write:customers",
     "landing_leads:write",
+    # Read-only feed of published door listings for garagedoorxperts.com.
+    "listings:read",
 }
 
 

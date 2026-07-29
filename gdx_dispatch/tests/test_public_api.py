@@ -92,7 +92,7 @@ def _make_control_engine():
             "id": API_KEY_ID,
             "tenant_id": TENANT_ID,
             "key_hash": API_KEY_HASH,
-            "scopes": json.dumps(["read:jobs", "write:jobs", "read:customers", "write:customers"]),
+            "scopes": json.dumps(["read:jobs", "write:jobs", "read:customers", "write:customers", "listings:read"]),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
     return engine
@@ -138,6 +138,7 @@ def _make_tenant_engine():
                 notes_appended TEXT,
                 source TEXT,
                 customer_type TEXT,
+                can_submit_listings INTEGER DEFAULT 0,
                 pricing_class TEXT,
                 margin_override_pct REAL,
                 payment_terms_days INTEGER,
@@ -307,6 +308,7 @@ def client():
     app.dependency_overrides[_db_mod.get_db] = _override_tenant_db
 
     with TestClient(app, raise_server_exceptions=False) as c:
+        c._tenant_engine = tenant_engine  # type: ignore[attr-defined]
         yield c
 
     # Restore patched state
@@ -412,3 +414,43 @@ class TestPublicWebhooksAPI:
         assert data["url"] == "https://example.com/hooks/gdx"
         assert "job.created" in data["events"]
         assert data["active"] is True
+
+
+class TestPublicListingsAPI:
+    """The door-listings feed garagedoorxperts.com renders.
+
+    The risk on this route is not availability, it's exposure: an unapproved
+    door — a tech's rough draft, or a customer's submission the office hasn't
+    ruled on — must be unreachable even with a perfectly valid API key.
+    """
+
+    _headers = {"X-API-Key": RAW_API_KEY, "x-tenant-id": TENANT_ID}
+
+    def test_requires_an_api_key(self, client: TestClient):
+        assert client.get("/api/v1/listings").status_code == 401
+
+    def test_returns_only_published_doors(self, client: TestClient):
+        from sqlalchemy.orm import sessionmaker
+
+        from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto
+
+        # This fixture's tenant DB is built from hand-written DDL, so create the
+        # ORM-managed listing tables the same way create_orm_tables() does at boot.
+        DoorListing.__table__.create(bind=client._tenant_engine, checkfirst=True)
+        DoorListingPhoto.__table__.create(bind=client._tenant_engine, checkfirst=True)
+        s = sessionmaker(bind=client._tenant_engine)()
+        s.add(DoorListing(title="live door", slug="live-door", status="published",
+                          listing_type="used", source="office"))
+        s.add(DoorListing(title="draft door", slug="draft-door", status="draft",
+                          listing_type="used", source="office"))
+        s.add(DoorListing(title="pending door", slug="pending-door", status="pending_review",
+                          listing_type="used", source="tech"))
+        s.add(DoorListing(title="sold door", slug="sold-door", status="sold",
+                          listing_type="used", source="office"))
+        s.commit()
+        s.close()
+
+        resp = client.get("/api/v1/listings", headers=self._headers)
+        assert resp.status_code == 200, resp.text[:2000]
+        titles = [r["title"] for r in resp.json()["data"]]
+        assert titles == ["live door"], titles

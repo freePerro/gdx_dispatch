@@ -1641,6 +1641,16 @@ def create_app() -> FastAPI:
         app.include_router(_vendor_statements_router.router)
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: vendor_statements")
+    # Door listings — doors for sale, published to garagedoorxperts.com.
+    # `public_router` serves photo bytes unauthenticated and is deliberately
+    # NOT under /api: the per-key 60 req/min cap in core/api_keys.py would trip
+    # on a page of thumbnails and hand an <img> tag a 429 JSON body.
+    try:
+        from gdx_dispatch.routers import door_listings as _door_listings_router
+        app.include_router(_door_listings_router.router)
+        app.include_router(_door_listings_router.public_router)
+    except Exception:
+        logging.getLogger("gdx_dispatch.app").exception("Failed to import router: door_listings")
     # Sprint vendor-invoice-intake — supplier bill upload + parse + match/confirm
     try:
         from gdx_dispatch.routers import vendor_invoices as _vendor_invoices_router
