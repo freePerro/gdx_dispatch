@@ -64,7 +64,18 @@ def _base_names(cls: ast.ClassDef) -> list[str]:
 
 
 def _own_fields(cls: ast.ClassDef) -> set[str]:
-    """Field names declared directly on this class body."""
+    """Names declared directly on this class body that ``payload.<name>``
+    can legitimately resolve to at runtime.
+
+    That includes METHODS, not just annotated fields. A model may define a
+    helper (e.g. ``ListingIn.validated()``) and a handler calling
+    ``payload.validated()`` cannot AttributeError — the attribute exists. The
+    original version scanned only AnnAssign/Assign, so any such call was
+    reported as an undeclared-field read: a false positive, which this file's
+    own design priority forbids ("it must never cry wolf"). Found 2026-07-29
+    when door_listings.py became the first router to put a method on a
+    request model.
+    """
     fields: set[str] = set()
     for stmt in cls.body:
         if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
@@ -73,6 +84,8 @@ def _own_fields(cls: ast.ClassDef) -> set[str]:
             for t in stmt.targets:
                 if isinstance(t, ast.Name):
                     fields.add(t.id)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fields.add(stmt.name)
     # config / private aren't request fields but are never read as data
     return {f for f in fields if not f.startswith("_") and f != "model_config"}
 
@@ -216,3 +229,42 @@ def test_scanner_is_not_inert() -> None:
     assert undeclared == {"holding_area_id"}, (
         "scanner failed to flag the known bug shape — it is inert"
     )
+
+
+def test_scanner_does_not_flag_methods_declared_on_the_model() -> None:
+    """The other half of "guard the guard": prove it does not cry wolf.
+
+    A model may define a helper method, and a handler calling it cannot
+    AttributeError — the attribute exists. Before 2026-07-29 the scanner read
+    only AnnAssign/Assign, so `payload.validated()` was reported as an
+    undeclared field and failed CI for the whole repo. Pin BOTH directions so
+    neither the miss nor the false positive can come back silently.
+    """
+    sample = (
+        "from pydantic import BaseModel\n"
+        "class Body(BaseModel):\n"
+        "    title: str\n"
+        "    def validated(self):\n"
+        "        return self\n"
+        "    async def enriched(self):\n"
+        "        return self\n"
+        "def handler(payload: Body):\n"
+        "    payload.validated()\n"
+        "    return payload.title, payload.enriched, payload.nope\n"
+    )
+    tree = ast.parse(sample)
+    models = _resolve_models(tree)
+    assert models.get("Body") == {"title", "validated", "enriched"}
+
+    func = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "handler"
+    )
+    reads = {
+        n.attr for n in ast.walk(func)
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+        and n.value.id == "payload"
+    }
+    undeclared = {r for r in reads if not _is_allowed(r)} - models["Body"]
+    # Methods are fine; a genuinely missing attr is still caught.
+    assert undeclared == {"nope"}, undeclared
