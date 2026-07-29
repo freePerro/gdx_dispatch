@@ -489,3 +489,39 @@ def test_publish_refuses_zero_quantity(office: TestClient):
     listing = _create(office, qty=0)
     _add_photo(office, listing["id"])
     assert office.post(f"/api/door-listings/{listing['id']}/publish").status_code == 422
+
+
+# ── the unauthenticated public feed (v1.31.1) ────────────────────────────────
+#
+# Same trust argument as the photos: the feed is the advertisement. What these
+# pin is that going keyless did NOT loosen the two invariants that matter —
+# published-only, and no internal fields.
+
+
+def test_public_feed_needs_no_auth_and_returns_published_only(office: TestClient):
+    listing = _create(office)
+    _add_photo(office, listing["id"])
+
+    # Unpublished → invisible, even though the route needs no credentials.
+    r = office.get("/public/door-listings.json")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"] == []
+
+    office.post(f"/api/door-listings/{listing['id']}/publish")
+    r = office.get("/public/door-listings.json")
+    rows = r.json()["data"]
+    assert [x["title"] for x in rows] == ["16x7 sandtone short panel"]
+    assert r.headers["cache-control"].startswith("public, max-age=")
+
+    # The public serializer, not the internal one.
+    for leaked in ("status", "source", "rejection_reason", "submitted_by_user_id"):
+        assert leaked not in rows[0], f"{leaked} must not reach the public feed"
+
+    # Sold drops off immediately.
+    office.post(f"/api/door-listings/{listing['id']}/sold")
+    assert office.get("/public/door-listings.json").json()["data"] == []
+
+
+def test_public_feed_validates_listing_type(office: TestClient):
+    assert office.get("/public/door-listings.json?listing_type=bogus").status_code == 422
+    assert office.get("/public/door-listings.json?listing_type=quick_ship").json()["data"] == []
