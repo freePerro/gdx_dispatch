@@ -34,8 +34,8 @@ def get_enrollment(customer_id: UUID, db: Session = Depends(get_db)) -> Customer
     return db.execute(select(CustomerPlanEnrollment).where(CustomerPlanEnrollment.customer_id == customer_id).order_by(CustomerPlanEnrollment.enrolled_at.desc())).scalar_one_or_none()
 
 @router.post("/customers/{customer_id}/plan/enroll", response_model=None)
-def enroll(customer_id: UUID, payload: EnrollIn, db: Session = Depends(get_db)) -> CustomerPlanEnrollment:
-    try: return enroll_customer(customer_id, payload.plan_id, payload.stripe_subscription_id, db, actor=resolve_audit_actor(current_user))  # noqa: E701,E702
+def enroll(customer_id: UUID, payload: EnrollIn, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> CustomerPlanEnrollment:
+    try: return enroll_customer(customer_id, payload.plan_id, payload.stripe_subscription_id, db, actor=resolve_audit_actor(user))  # noqa: E701,E702
     except ValueError as exc: raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 400, detail=str(exc)) from None  # noqa: E701,E702
 
 @router.post("/customers/{customer_id}/plan/cancel", response_model=None)

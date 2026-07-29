@@ -30,8 +30,8 @@ def create_vehicle(payload: VehicleIn, db: Session = Depends(get_db)) -> Vehicle
     row = Vehicle(**payload.model_dump()); db.add(row); db.commit(); db.refresh(row); return row  # noqa: E701,E702
 
 @router.put("/fleet/vehicles/{vehicle_id}", response_model=None)
-def put_vehicle(vehicle_id: UUID, payload: VehiclePatch, db: Session = Depends(get_db)) -> Vehicle:
-    if payload.odometer is not None: return update_odometer(vehicle_id, payload.odometer, db, actor=resolve_audit_actor(current_user))  # noqa: E701,E702
+def put_vehicle(vehicle_id: UUID, payload: VehiclePatch, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Vehicle:
+    if payload.odometer is not None: return update_odometer(vehicle_id, payload.odometer, db, actor=resolve_audit_actor(user))  # noqa: E701,E702
     row = db.execute(select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.deleted_at.is_(None))).scalar_one_or_none()
     if not row: raise HTTPException(status_code=404, detail="Vehicle not found")  # noqa: E701,E702
     for k, v in payload.model_dump(exclude_unset=True).items(): setattr(row, k, v)  # noqa: E701,E702
@@ -42,8 +42,8 @@ def service_history(vehicle_id: UUID, db: Session = Depends(get_db)) -> list[Veh
     return list(db.execute(select(VehicleServiceRecord).where(VehicleServiceRecord.vehicle_id == vehicle_id).order_by(VehicleServiceRecord.service_date.desc())).scalars().all())
 
 @router.post("/fleet/vehicles/{vehicle_id}/service", response_model=None)
-def create_service(vehicle_id: UUID, payload: ServiceIn, db: Session = Depends(get_db)) -> VehicleServiceRecord:
-    return log_service(vehicle_id, payload.service_type, payload.mileage, payload.service_date, payload.cost, payload.notes, db, actor=resolve_audit_actor(current_user))
+def create_service(vehicle_id: UUID, payload: ServiceIn, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> VehicleServiceRecord:
+    return log_service(vehicle_id, payload.service_type, payload.mileage, payload.service_date, payload.cost, payload.notes, db, actor=resolve_audit_actor(user))
 
 @router.get("/fleet/due-maintenance", response_model=None)
 def due_maintenance(db: Session = Depends(get_db)) -> list[Vehicle]:
