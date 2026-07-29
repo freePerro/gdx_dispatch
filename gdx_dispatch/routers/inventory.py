@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import InventoryItem
@@ -98,7 +98,7 @@ def list_parts(
 @router.post("/api/inventory/parts", response_model=None, status_code=201)
 def create_part(
     payload: InventoryItemIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     name = payload.part_name or payload.name
@@ -129,7 +129,7 @@ def create_part(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -162,7 +162,7 @@ def get_part(
 def update_part(
     item_id: UUID,
     payload: InventoryItemIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     item = db.get(InventoryItem, item_id)
@@ -191,7 +191,7 @@ def update_part(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -211,7 +211,7 @@ def update_part(
 @router.delete("/api/inventory/parts/{item_id}", response_model=None, status_code=204)
 def delete_part(
     item_id: UUID,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     item = db.get(InventoryItem, item_id)
@@ -227,7 +227,7 @@ def delete_part(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -287,7 +287,7 @@ def adjust_stock(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

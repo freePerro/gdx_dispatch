@@ -96,7 +96,7 @@ def test_calculate_sell_price_contractor():
 
 def test_part_tier_markup():
     pricing_router._PRICING_SETTINGS = deepcopy(DEFAULT_PRICING_SETTINGS)
-    data = pricing_router.calculate_markup(MarkupBatchIn(items=[MarkupItemIn(cost=50)]), _=_user())
+    data = pricing_router.calculate_markup(MarkupBatchIn(items=[MarkupItemIn(cost=50)]), current_user=_user())
     assert len(data["items"]) == 1
     assert data["items"][0]["markup_pct"] == pytest.approx(1.0)
     assert data["items"][0]["sell_price"] == pytest.approx(100.0)
@@ -123,7 +123,7 @@ def test_calculate_markup_batch_uses_tiers():
     pricing_router._PRICING_SETTINGS = deepcopy(DEFAULT_PRICING_SETTINGS)
     result = pricing_router.calculate_markup(
         MarkupBatchIn(items=[MarkupItemIn(cost=50), MarkupItemIn(cost=300), MarkupItemIn(cost=900)]),
-        _=_user(),
+        current_user=_user(),
     )
     prices = [row["sell_price"] for row in result["items"]]
     assert prices == pytest.approx([100.0, 450.0, 1170.0])

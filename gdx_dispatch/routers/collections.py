@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -125,7 +125,7 @@ def create_reminder(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -217,7 +217,7 @@ def aging_report(
 
 
 @router.delete("/api/collections/reminders/{reminder_id}", response_model=None, status_code=204)
-def delete_reminder(reminder_id: UUID, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_reminder(reminder_id: UUID, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(PaymentReminder, reminder_id)
     if not r:
         raise HTTPException(status_code=404, detail="Reminder not found")
@@ -231,7 +231,7 @@ def delete_reminder(reminder_id: UUID, _: dict = Depends(get_current_user), db: 
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

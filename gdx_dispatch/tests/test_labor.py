@@ -252,7 +252,7 @@ def test_labor_summary_by_technician(db_session):
     data = labor_router.labor_summary(
         start_date=date(2026, 3, 1),
         end_date=date(2026, 3, 3),
-        _={},
+        current_user={},
         db=db_session,
     )
     assert data["total_hours"] == 3.5
@@ -269,7 +269,7 @@ def test_labor_summary_rejects_invalid_date_range(db_session):
         labor_router.labor_summary(
             start_date=date(2026, 3, 10),
             end_date=date(2026, 3, 1),
-            _={},
+            current_user={},
             db=db_session,
         )
     assert exc.value.status_code == 422

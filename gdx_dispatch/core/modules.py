@@ -279,6 +279,9 @@ def require_role(*roles: str) -> Callable:
                 logging.getLogger(__name__).exception("_dependency caught exception")
                 pass
 
+        if user:
+            _stash_principal(request, user)
+
         role = normalize_role((user or {}).get("role"))
         if role in allowed:
             return
@@ -311,6 +314,7 @@ def require_role(*roles: str) -> Callable:
                     from gdx_dispatch.routers.auth.core import _get_app_denylist
                     revoked = _get_app_denylist(request).contains(str(jti))
                 if not revoked and normalize_role(claims.get("role")) in allowed:
+                    _stash_principal(request, claims)
                     return
             except Exception:
                 logging.getLogger(__name__).exception("_dependency caught exception")
@@ -319,6 +323,24 @@ def require_role(*roles: str) -> Callable:
         raise HTTPException(status_code=403, detail="Insufficient role")
 
     return _dependency
+
+
+def _stash_principal(request: Request, user: dict) -> None:
+    """Publish the resolved principal on request.state for downstream helpers.
+
+    ``routers/auth/core.py`` does this for routes that depend on
+    ``get_current_user``, with the comment "so audit helpers see it without
+    per-route plumbing". Routes gated only by ``require_role`` never run that
+    dependency, so nothing published the principal and every audit row they
+    wrote was attributed to "system" (see core/audit.resolve_audit_actor).
+    """
+    try:
+        if not getattr(request.state, "user", None) and not getattr(
+            request.state, "current_user", None
+        ):
+            request.state.current_user = user
+    except Exception:  # pragma: no cover - request.state is always writable
+        logging.getLogger(__name__).exception("_stash_principal failed")
 
 
 def _resolve_request_user(request: Request) -> dict:

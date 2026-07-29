@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -30,7 +31,7 @@ def create_vehicle(payload: VehicleIn, db: Session = Depends(get_db)) -> Vehicle
 
 @router.put("/fleet/vehicles/{vehicle_id}", response_model=None)
 def put_vehicle(vehicle_id: UUID, payload: VehiclePatch, db: Session = Depends(get_db)) -> Vehicle:
-    if payload.odometer is not None: return update_odometer(vehicle_id, payload.odometer, db)  # noqa: E701,E702
+    if payload.odometer is not None: return update_odometer(vehicle_id, payload.odometer, db, actor=resolve_audit_actor(current_user))  # noqa: E701,E702
     row = db.execute(select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.deleted_at.is_(None))).scalar_one_or_none()
     if not row: raise HTTPException(status_code=404, detail="Vehicle not found")  # noqa: E701,E702
     for k, v in payload.model_dump(exclude_unset=True).items(): setattr(row, k, v)  # noqa: E701,E702
@@ -42,7 +43,7 @@ def service_history(vehicle_id: UUID, db: Session = Depends(get_db)) -> list[Veh
 
 @router.post("/fleet/vehicles/{vehicle_id}/service", response_model=None)
 def create_service(vehicle_id: UUID, payload: ServiceIn, db: Session = Depends(get_db)) -> VehicleServiceRecord:
-    return log_service(vehicle_id, payload.service_type, payload.mileage, payload.service_date, payload.cost, payload.notes, db)
+    return log_service(vehicle_id, payload.service_type, payload.mileage, payload.service_date, payload.cost, payload.notes, db, actor=resolve_audit_actor(current_user))
 
 @router.get("/fleet/due-maintenance", response_model=None)
 def due_maintenance(db: Session = Depends(get_db)) -> list[Vehicle]:

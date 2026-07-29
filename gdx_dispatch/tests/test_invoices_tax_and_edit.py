@@ -187,7 +187,7 @@ def test_legacy_flat_tax_amount_path_unchanged(db):
     updated = patch_invoice(
         invoice_id=UUID(inv["id"]),
         payload=InvoicePatchIn(tax_amount=99.99),
-        _=_user(), db=db,
+        current_user=_user(), db=db,
     )
     assert updated["tax_rate"] is None
     assert round(updated["tax_amount"], 2) == 99.99
@@ -245,7 +245,7 @@ def test_patch_zero_rate_zeroes_existing_tax(db):
     updated = patch_invoice(
         invoice_id=UUID(inv["id"]),
         payload=InvoicePatchIn(tax_rate=0.0),
-        _=_user(), db=db,
+        current_user=_user(), db=db,
     )
     assert updated["tax_rate"] == 0.0
     assert round(updated["tax_amount"], 2) == 0.00

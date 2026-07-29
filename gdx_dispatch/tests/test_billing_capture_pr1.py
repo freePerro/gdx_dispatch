@@ -321,7 +321,7 @@ def test_add_invoice_line_zero_price_block(monkeypatch, tenant_db_session):
         add_invoice_line(
             UUID(created["id"]),
             payload=InvoiceLineCreateIn(description="Freebie", quantity=1, unit_price=0),
-            _=_current_user(),
+            current_user=_current_user(),
             db=db,
         )
     assert exc_info.value.status_code == 422
@@ -352,7 +352,7 @@ def test_add_invoice_line_zero_price_warns_by_default(monkeypatch, tenant_db_ses
     resp = add_invoice_line(
         UUID(created["id"]),
         payload=InvoiceLineCreateIn(description="Freebie", quantity=1, unit_price=0),
-        _=_current_user(),
+        current_user=_current_user(),
         db=db,
     )
     assert resp["warning"]

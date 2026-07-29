@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import weakref
 from datetime import UTC, datetime
 from typing import Any
@@ -122,6 +123,99 @@ def _extract_request_id(request: Any) -> str | None:
 def _extract_tenant_id(request: Any) -> str | None:
     tenant = getattr(getattr(request, "state", None), "tenant", None) or {}
     return tenant.get("id") if isinstance(tenant, dict) else None  # type: ignore[return-value]
+
+
+class _DeliberateSystemActor(str):
+    """A str that equals "system" but is identity-distinguishable from it.
+
+    The stored value must stay "system" — existing rows, queries and the
+    activity feed all key on it. But the request-principal fallback in
+    ``_log_audit_event_impl`` needs to tell a considered "no human did this"
+    apart from a handler that simply failed to resolve its actor, and both
+    arrive as the same six characters. Identity (``is``) carries the intent
+    that the value cannot.
+    """
+
+    __slots__ = ()
+
+
+#: Deliberate machine attribution. Pass this — not the bare string "system" —
+#: when an audit row genuinely has no human actor (scheduled jobs, webhook
+#: receivers, automatic side effects). It suppresses the request-principal
+#: fallback, is greppable, and lets the attribution gate in
+#: tests/test_audit_actor_attribution.py distinguish intent from omission.
+SYSTEM_ACTOR = _DeliberateSystemActor("system")
+
+
+def resolve_audit_actor(candidate: Any = None, request: Any = None) -> str:
+    """Actor id for an audit row, from whatever the handler has to hand.
+
+    Handlers bind their auth dependency to wildly different things: a JWT claim
+    dict, a ``User`` ORM row, a ``CustomerUser`` (portal endpoints), or nothing
+    at all. The generated audit blocks assumed a dict and called ``.get('sub')``
+    on it. Against the portal's ``CustomerUser`` that raises AttributeError
+    inside the block's own try/except, so the audit row was never written —
+    silently, on the payment endpoints.
+
+    Order: the explicit candidate, then the authenticated principal stashed on
+    ``request.state.user`` by ``routers/auth/core.py``, then "system".
+    """
+    # A deliberate machine declaration wins outright — it is a statement that
+    # no human performed this, not a failure to look, so the request principal
+    # must not override it.
+    if candidate is SYSTEM_ACTOR:
+        return SYSTEM_ACTOR
+    for source in (candidate, _request_user_dict(request)):
+        actor = _actor_id_of(source)
+        if actor:
+            return actor
+    return "system"
+
+
+def _actor_id_of(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        val = obj.get("sub") or obj.get("user_id") or obj.get("id")
+        return str(val) if val else None
+    # ORM rows (User, CustomerUser) and anything else with an id.
+    val = getattr(obj, "id", None) or getattr(obj, "sub", None)
+    return str(val) if val else None
+
+
+def _request_user_dict(request: Any) -> Any:
+    """The principal stashed on the request, under either key.
+
+    ``routers/auth/core.py`` sets ``request.state.user``; service-account auth
+    (``core/service_accounts.py``) and the module guards set
+    ``request.state.current_user``. core/modules.py already reads both — a
+    resolver that reads only one silently leaves every service-account row
+    attributed to "system".
+    """
+    if request is None:
+        return None
+    state = getattr(request, "state", None)
+    if state is None:
+        return None
+    return getattr(state, "user", None) or getattr(state, "current_user", None)
+
+
+def _extract_request_actor(request: Any) -> str | None:
+    """The authenticated principal for this request, or None.
+
+    ``routers/auth/core.py`` stashes the decoded user on ``request.state.user``
+    precisely so audit helpers can find it "without per-route plumbing". A
+    batch of generated audit blocks never used it — they sniffed
+    ``locals().get('user')`` in handlers whose auth dependency is bound to
+    ``_``, so the lookup always missed and every row fell through to the
+    literal string "system". On the live tenant that was 1909 of 2251 non-auth
+    rows in 30 days: 85% of the audit trail with no actor, silently.
+
+    Anything genuinely running without a request — Celery beat, webhook
+    receivers, CLI tools — has no ``request.state.user`` and correctly stays
+    "system". The presence of an authenticated principal is the discriminator.
+    """
+    return _actor_id_of(_request_user_dict(request))
 
 
 def _extract_impersonation(request: Any) -> tuple[str | None, str | None]:
@@ -308,6 +402,25 @@ def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     ensure_audit_table(db)
 
     tenant_id = str(tenant_id or _extract_tenant_id(request) or "") or None
+
+    # Actor resolution. A caller that supplies a real user_id always wins. When
+    # it supplies nothing — or the literal "system", which is what the
+    # locals()-sniffing blocks produce when their lookup misses — fall back to
+    # the authenticated principal on the request. See _extract_request_actor.
+    if user_id is not SYSTEM_ACTOR and (not user_id or str(user_id) == "system"):
+        request_actor = _extract_request_actor(request)
+        if request_actor:
+            if str(user_id) == "system":
+                # Loud on purpose: a handler that reached here under an
+                # authenticated request had a broken actor lookup. The row is
+                # now attributed correctly, but the call site is still wrong.
+                logging.getLogger(__name__).warning(
+                    "audit_actor_recovered_from_request action=%s entity_type=%s "
+                    "— call site passed 'system' during an authenticated request",
+                    action,
+                    entity_type,
+                )
+            user_id = request_actor
     user_id = str(user_id or "system")
     details = _sanitize_details(details or {})
     ip_address = ip_address or _extract_ip(request)

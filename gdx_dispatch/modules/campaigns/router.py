@@ -101,7 +101,7 @@ def _campaign_or_404(campaign_id: str, db: Session) -> dict[str, Any]:
 @router.post("/campaigns", response_model=None, status_code=201)
 async def create_campaign(
     payload: CampaignCreateIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _ensure_campaign_tables(db)
@@ -142,7 +142,7 @@ async def create_campaign(
 @router.post("/campaigns/{campaign_id}/send", response_model=None)
 async def send_campaign(
     campaign_id: str,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     campaign = _campaign_or_404(campaign_id, db)
@@ -226,7 +226,7 @@ async def send_campaign(
 @router.get("/campaigns/{campaign_id}/stats", response_model=None)
 async def get_campaign_stats(
     campaign_id: str,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _campaign_or_404(campaign_id, db)
@@ -256,7 +256,7 @@ async def get_campaign_stats(
 
 @router.get("/campaigns", response_model=None)
 async def list_campaigns(
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     _ensure_campaign_tables(db)

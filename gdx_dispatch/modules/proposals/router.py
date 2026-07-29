@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
@@ -27,17 +28,17 @@ class TierIn(BaseModel): tier_name: str; description: str | None = None; total_p
 class AcceptIn(BaseModel): tier_id: UUID  # noqa: E701,E702
 
 @router.get("/estimates/{estimate_id}/proposal", response_model=None)
-def get_proposal(estimate_id: UUID, _: None = Depends(require_module("proposals")), __: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ProposalTier]:
+def get_proposal(estimate_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ProposalTier]:
     if not db.execute(select(Estimate.id).where(Estimate.id == estimate_id)).scalar_one_or_none(): raise HTTPException(status_code=404, detail="Estimate not found")  # noqa: E701,E702
     return list(db.execute(select(ProposalTier).where(ProposalTier.estimate_id == estimate_id).order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())).scalars().all())
 
 @router.post("/estimates/{estimate_id}/proposal-tiers", response_model=None)
-def post_proposal_tier(estimate_id: UUID, payload: TierIn, _: None = Depends(require_module("proposals")), __: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> ProposalTier:
+def post_proposal_tier(estimate_id: UUID, payload: TierIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> ProposalTier:
     return add_proposal_tier(estimate_id, payload.tier_name, payload.description, payload.total_price, payload.warranty_months, db)
 
 @router.post("/estimates/{estimate_id}/proposal/accept", response_model=None)
-def post_accept_tier(estimate_id: UUID, payload: AcceptIn, _: None = Depends(require_module("proposals")), __: dict = Depends(_require_dispatch), db: Session = Depends(get_db)) -> Estimate:
-    return accept_tier(estimate_id, payload.tier_id, db)
+def post_accept_tier(estimate_id: UUID, payload: AcceptIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(_require_dispatch), db: Session = Depends(get_db)) -> Estimate:
+    return accept_tier(estimate_id, payload.tier_id, db, actor=resolve_audit_actor(current_user))
 
 @router.get("/proposals/{token}")
 def get_public_proposal(token: str, db: Session = Depends(get_db)) -> dict[str, object]:

@@ -99,7 +99,7 @@ def _seed_invoice(db, total: float = 250.0) -> dict:
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Spring replacement", quantity=1, unit_price=total),
-        _=_current_user(),
+        current_user=_current_user(),
         db=db,
     )
     return inv
@@ -252,7 +252,7 @@ def test_send_invoice_email_includes_pay_link_when_configured(tenant_db_session,
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Opener install", quantity=1, unit_price=500.0),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
 
     sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
@@ -282,7 +282,7 @@ def test_send_invoice_email_omits_pay_link_when_unconfigured(tenant_db_session, 
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Opener install", quantity=1, unit_price=500.0),
-        _=_current_user(), db=tenant_db_session,
+        current_user=_current_user(), db=tenant_db_session,
     )
 
     sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)

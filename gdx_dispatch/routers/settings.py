@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.branding_logo import BRANDING_LOGO_RE, LOGO_URL_PREFIX
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_sync
@@ -398,7 +398,7 @@ def patch_notification_preferences(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -528,7 +528,7 @@ def connect_integration(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -579,7 +579,7 @@ def disconnect_integration(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -631,7 +631,7 @@ def sync_integration(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -711,7 +711,7 @@ def patch_branding(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

@@ -204,15 +204,15 @@ def test_line_add_rejects_overshoot_allows_incremental_build(db):
     created = _create(db, amount=100.0)
     expense = db.get(Expense, UUID(created["id"]))
 
-    create_expense_line(expense.id, ExpenseLineCreate(account="parts", amount=30.0), _=USER, db=db)
+    create_expense_line(expense.id, ExpenseLineCreate(account="parts", amount=30.0), current_user=USER, db=db)
     assert len(_entries(db)) == 1  # under-complete: no repost, header entry live
 
     with pytest.raises(HTTPException) as exc:  # 30 + 80 = 110 > 100
-        create_expense_line(expense.id, ExpenseLineCreate(account="misc", amount=80.0), _=USER, db=db)
+        create_expense_line(expense.id, ExpenseLineCreate(account="misc", amount=80.0), current_user=USER, db=db)
     assert exc.value.status_code == 409 and "over the header" in exc.value.detail
     db.rollback()
 
-    create_expense_line(expense.id, ExpenseLineCreate(account="labor", amount=70.0), _=USER, db=db)
+    create_expense_line(expense.id, ExpenseLineCreate(account="labor", amount=70.0), current_user=USER, db=db)
     live = [e for e in _entries(db) if e.status == "posted" and e.reverses_entry_id is None]
     assert len(live) == 1  # complete set — still one live, header-level entry
 

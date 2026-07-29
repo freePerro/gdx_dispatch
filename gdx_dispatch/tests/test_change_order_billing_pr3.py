@@ -238,7 +238,7 @@ def test_delete_invoice_releases_change_order(tenant_db_session):
         db=db,
     )
 
-    delete_invoice(UUID(created["id"]), _=_current_user(), db=db)
+    delete_invoice(UUID(created["id"]), current_user=_current_user(), db=db)
 
     db.refresh(co)
     assert co.billed_invoice_id is None
@@ -489,13 +489,13 @@ def test_billed_co_is_frozen_against_patch_and_delete(tenant_db_session):
         update_change_order(
             co.id,
             payload=ChangeOrderIn(title="Sneaky edit", amount=9999.0),
-            _=_current_user(),
+            current_user=_current_user(),
             db=db,
         )
     assert patch_exc.value.status_code == 409
 
     with pytest.raises(HTTPException) as del_exc:
-        delete_change_order(co.id, _=_current_user(), db=db)
+        delete_change_order(co.id, current_user=_current_user(), db=db)
     assert del_exc.value.status_code == 409
     db.refresh(co)
     assert co.deleted_at is None

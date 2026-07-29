@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
+from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -246,7 +246,7 @@ def create_change_order(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -282,7 +282,7 @@ def get_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Sessi
 def update_change_order(
     co_id: UUID,
     payload: ChangeOrderIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     co = db.get(ChangeOrder, co_id)
@@ -353,7 +353,7 @@ def update_change_order(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -392,7 +392,7 @@ def approve_change_order(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -410,7 +410,7 @@ def approve_change_order(
 
 
 @router.post("/api/change-orders/{co_id}/decline", response_model=None)
-def decline_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+def decline_change_order(co_id: UUID, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
@@ -425,7 +425,7 @@ def decline_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: S
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -443,7 +443,7 @@ def decline_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: S
 
 
 @router.delete("/api/change-orders/{co_id}", response_model=None, status_code=204)
-def delete_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_change_order(co_id: UUID, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     co = db.get(ChangeOrder, co_id)
     if not co or co.deleted_at:
         raise HTTPException(status_code=404, detail="Change order not found")
@@ -464,7 +464,7 @@ def delete_change_order(co_id: UUID, _: dict = Depends(get_current_user), db: Se
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

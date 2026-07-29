@@ -56,7 +56,7 @@ def test_list_default_tiers(tenant_db_session):
 def test_create_tier(tenant_db_session):
     created = create_tier(
         payload=TierCreate(name="diamond", min_spend=5000, discount_pct=20),
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
 
@@ -74,7 +74,7 @@ def test_create_tier_validates_blank_name():
 def test_get_tier_by_id(tenant_db_session):
     created = create_tier(
         payload=TierCreate(name="vip", min_spend=9000, discount_pct=25),
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
 
@@ -92,14 +92,14 @@ def test_get_tier_not_found(tenant_db_session):
 def test_patch_tier_updates_values(tenant_db_session):
     created = create_tier(
         payload=TierCreate(name="vip", min_spend=7000, discount_pct=15),
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
 
     updated = update_tier(
         tier_id=UUID(created["id"]),
         payload=TierPatch(name="vip-plus", min_spend=9000, discount_pct=25),
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
 
@@ -162,7 +162,7 @@ def test_create_and_list_referrals(tenant_db_session):
             referee_phone="555-1212",
         ),
         request=mock_req,
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
 

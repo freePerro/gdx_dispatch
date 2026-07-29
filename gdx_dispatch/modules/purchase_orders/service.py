@@ -9,14 +9,14 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event, utcnow
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
 from gdx_dispatch.modules.inventory.models import Part
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrder as PurchaseOrder
 from gdx_dispatch.modules.purchase_orders.models import InventoryPurchaseOrderLine as PurchaseOrderLine
 
 
-def _audit(db: Session, event_type: str, po_id: UUID, payload: dict) -> None:
-    asyncio.run(log_audit_event(db, event_type, "system", "purchase_order", str(po_id), payload))
+def _audit(db: Session, event_type: str, po_id: UUID, payload: dict, actor: str = SYSTEM_ACTOR) -> None:
+    asyncio.run(log_audit_event(db, event_type, actor, "purchase_order", str(po_id), payload))
 
 
 def create_po(vendor_name: str, job_id: UUID | None, lines: list[dict], db: Session) -> PurchaseOrder:

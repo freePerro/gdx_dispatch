@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gdx_dispatch.core import email as email_service
 from gdx_dispatch.core import sms as sms_service
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context, current_tenant_id
@@ -206,7 +206,7 @@ async def send_sms(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -271,7 +271,7 @@ async def sms_webhook(request: Request, _sig: None = Depends(verify_twilio_signa
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -368,6 +368,7 @@ async def inbox_folders() -> dict[str, list[dict[str, Any]]]:
 async def send_email(
     payload: SendEmailRequest,
     sender: Any = Depends(get_email_sender),
+    request: Request = None,
 ) -> dict[str, Any]:
     result = sender.send_email(
         to=payload.to,
@@ -399,7 +400,7 @@ async def send_email(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -656,7 +657,7 @@ async def send_communication(
                 _audit_tenant = ''
                 if _audit_req is not None:
                     _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-                _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+                _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
                 log_audit_event_sync(
                     _audit_db,
                     tenant_id=_audit_tenant,
@@ -761,7 +762,7 @@ class DNCRequest(BaseModel):
 
 
 @router.post("/api/communications/dnc")
-def add_to_dnc(payload: DNCRequest) -> dict[str, Any]:
+def add_to_dnc(payload: DNCRequest, request: Request = None) -> dict[str, Any]:
     """Add a customer to the do-not-contact list."""
     key = f"{payload.customer_id}:{payload.channel}"
     _dnc_list.add(key)
@@ -773,7 +774,7 @@ def add_to_dnc(payload: DNCRequest) -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -791,7 +792,7 @@ def add_to_dnc(payload: DNCRequest) -> dict[str, Any]:
 
 
 @router.delete("/api/communications/dnc/{customer_id}")
-def remove_from_dnc(customer_id: str, channel: str = "all") -> dict[str, Any]:
+def remove_from_dnc(customer_id: str, channel: str = "all", request: Request = None) -> dict[str, Any]:
     """Remove a customer from the do-not-contact list."""
     key = f"{customer_id}:{channel}"
     _dnc_list.discard(key)
@@ -803,7 +804,7 @@ def remove_from_dnc(customer_id: str, channel: str = "all") -> dict[str, Any]:
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

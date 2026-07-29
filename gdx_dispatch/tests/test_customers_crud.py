@@ -412,7 +412,7 @@ async def test_create_customer_location_success(tenant_db_session):
             is_primary=True,
         ),
         request=_mock_request(),
-        _={},
+        current_user={},
         db=tenant_db_session,
     )
     assert out.customer_id == customer_id
@@ -433,7 +433,7 @@ async def test_create_customer_location_customer_not_found(tenant_db_session):
             customer_id=str(uuid.uuid4()),
             payload=CustomerLocationCreateIn(label="Nowhere", address="11 Void Ave"),
             request=_mock_request(),
-            _={},
+            current_user={},
             db=tenant_db_session,
         )
     assert getattr(exc.value, "status_code", None) == 404

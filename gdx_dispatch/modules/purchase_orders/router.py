@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import log_audit_event, utcnow
+from gdx_dispatch.core.audit import log_audit_event, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.routers.auth import get_current_user
@@ -39,10 +39,10 @@ def get_purchase_order(po_id: UUID, db: Session = Depends(get_db)) -> dict[str, 
     lines = list(db.execute(select(PurchaseOrderLine).where(PurchaseOrderLine.po_id == po.id)).scalars().all()); return {"po": po, "lines": lines}  # noqa: E701,E702
 
 @router.post("/purchase-orders/{po_id}/send", response_model=None)
-def send_purchase_order(po_id: UUID, db: Session = Depends(get_db)) -> PurchaseOrder:
+def send_purchase_order(po_id: UUID, db: Session = Depends(get_db), request: Request = None) -> PurchaseOrder:
     po = db.execute(select(PurchaseOrder).where(PurchaseOrder.id == po_id, PurchaseOrder.deleted_at.is_(None))).scalar_one_or_none()
     if not po: raise HTTPException(status_code=404, detail="PO not found")  # noqa: E701,E702
-    po.status = "sent"; po.sent_at = utcnow(); asyncio.run(log_audit_event(db, "po_sent", "system", "purchase_order", str(po.id), {"po_number": po.po_number})); db.commit(); db.refresh(po); return po  # noqa: E701,E702
+    po.status = "sent"; po.sent_at = utcnow(); asyncio.run(log_audit_event(db, "po_sent", resolve_audit_actor(None, request), "purchase_order", str(po.id), {"po_number": po.po_number})); db.commit(); db.refresh(po); return po  # noqa: E701,E702
 
 @router.post("/purchase-orders/{po_id}/receive", response_model=None)
 def post_receive_purchase_order(po_id: UUID, db: Session = Depends(get_db)) -> PurchaseOrder:

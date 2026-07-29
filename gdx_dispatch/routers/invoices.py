@@ -13,7 +13,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session, selectinload
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import (
@@ -1167,7 +1167,7 @@ def get_invoice(
 def patch_invoice(
     invoice_id: UUID,
     payload: InvoicePatchIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
@@ -1205,7 +1205,7 @@ def patch_invoice(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -1225,7 +1225,7 @@ def patch_invoice(
 @router.delete("/{invoice_id}", response_model=None)
 def delete_invoice(
     invoice_id: UUID,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Soft-delete an invoice. Only draft invoices can be deleted — once sent
@@ -1264,7 +1264,7 @@ def delete_invoice(
         log_audit_event_sync(
             db=db,
             tenant_id=None,
-            user_id=str((_ or {}).get("user_id") or (_ or {}).get("sub") or "system"),
+            user_id=resolve_audit_actor(current_user),
             action="invoice_deleted",
             entity_type="invoice",
             entity_id=str(invoice.id),
@@ -1642,7 +1642,7 @@ def send_invoice(
 def add_invoice_line(
     invoice_id: UUID,
     payload: InvoiceLineCreateIn,
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
@@ -1692,7 +1692,7 @@ def add_invoice_line(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -2131,7 +2131,7 @@ class BatchInvoiceIn(BaseModel):
 def batch_create_invoices(
     payload: BatchInvoiceIn,
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ) -> dict[str, object]:
     """Create invoices for multiple jobs at once."""
     created = []
@@ -2173,7 +2173,7 @@ def batch_create_invoices(
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,

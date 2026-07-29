@@ -5,10 +5,10 @@ from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from gdx_dispatch.core.audit import log_audit_event_sync
+from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.core.tenant_ctx import bind_tenant_context, current_tenant_id
 from gdx_dispatch.routers.auth import get_current_user
@@ -214,7 +214,7 @@ def get_pricing_settings(_: dict = Depends(get_current_user)) -> dict[str, objec
 
 
 @router.patch("/api/pricing/settings", response_model=None)
-def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
+def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(require_role("admin", "owner")), request: Request = None) -> dict[str, object]:
     _log_tenant_shared_write("pricing_settings")
     # Mutate the per-tenant slot in place
     current = _tenant_settings()
@@ -228,7 +228,7 @@ def patch_pricing_settings(payload: PricingSettingsPatchIn, _: dict = Depends(re
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -282,7 +282,7 @@ def calculate_sell_price(
 
 
 @router.post("/api/pricing/markup", response_model=None)
-def calculate_markup(payload: MarkupBatchIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def calculate_markup(payload: MarkupBatchIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     rows: list[dict[str, object]] = []
     grand_total = 0.0
     for item in payload.items:
@@ -310,7 +310,7 @@ def calculate_markup(payload: MarkupBatchIn, _: dict = Depends(get_current_user)
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -349,7 +349,7 @@ class VendorPriceBatchIn(BaseModel):
 
 
 @router.post("/api/pricing/vendor-lists")
-def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
+def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(require_role("admin", "owner")), request: Request = None) -> dict[str, object]:
     imported = 0
     for item in payload.items:
         key = f"{item.vendor_name}:{item.sku}"
@@ -364,7 +364,7 @@ def import_vendor_prices(payload: VendorPriceBatchIn, _: dict = Depends(require_
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -439,7 +439,7 @@ class LockPricesIn(BaseModel):
 
 
 @router.post("/api/pricing/lock-prices")
-def lock_estimate_prices(payload: LockPricesIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def lock_estimate_prices(payload: LockPricesIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     """Snapshot current prices when an estimate is accepted."""
     snapshot = {
         "estimate_id": payload.estimate_id,
@@ -456,7 +456,7 @@ def lock_estimate_prices(payload: LockPricesIn, _: dict = Depends(get_current_us
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -503,7 +503,7 @@ def get_seasonal_pricing(_: dict = Depends(get_current_user)) -> list[dict[str, 
 
 
 @router.patch("/api/pricing/seasonal")
-def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(require_role("admin", "owner"))) -> dict[str, object]:
+def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(require_role("admin", "owner")), request: Request = None) -> dict[str, object]:
     key = f"{payload.category}:{payload.season}"
     _log_tenant_shared_write("seasonal_adjustments", key=key)
     _tenant_seasonal_adjustments()[key] = payload.adjustment_pct
@@ -515,7 +515,7 @@ def set_seasonal_pricing(payload: SeasonalAdjustment, _: dict = Depends(require_
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -555,7 +555,7 @@ class BundleIn(BaseModel):
 
 
 @router.post("/api/pricing/bundles")
-def create_bundle(payload: BundleIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def create_bundle(payload: BundleIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     _log_tenant_shared_write("bundles", key=payload.name)
     _tenant_bundles()[payload.name] = payload.model_dump()
     _audit_db = locals().get('db')
@@ -566,7 +566,7 @@ def create_bundle(payload: BundleIn, _: dict = Depends(get_current_user)) -> dic
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -589,7 +589,7 @@ def list_bundles(_: dict = Depends(get_current_user)) -> list[dict[str, object]]
 
 
 @router.post("/api/pricing/bundles/{bundle_id}/calculate")
-def calculate_bundle_by_id(bundle_id: str, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def calculate_bundle_by_id(bundle_id: str, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     bundle = _tenant_bundles().get(bundle_id)
     if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
@@ -605,7 +605,7 @@ def calculate_bundle_by_id(bundle_id: str, _: dict = Depends(get_current_user)) 
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -623,7 +623,7 @@ def calculate_bundle_by_id(bundle_id: str, _: dict = Depends(get_current_user)) 
 
 
 @router.post("/api/pricing/bundles/calculate")
-def calculate_bundle(name: str = Query(min_length=1), _: dict = Depends(get_current_user)) -> dict[str, object]:
+def calculate_bundle(name: str = Query(min_length=1), current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     bundle = _tenant_bundles().get(name)
     if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
@@ -638,7 +638,7 @@ def calculate_bundle(name: str = Query(min_length=1), _: dict = Depends(get_curr
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -672,7 +672,7 @@ class CustomerRateIn(BaseModel):
 
 
 @router.post("/api/pricing/customer-rates")
-def set_customer_rate(payload: CustomerRateIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def set_customer_rate(payload: CustomerRateIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     _log_tenant_shared_write("customer_rates", key=str(payload.customer_id))
     _tenant_customer_rates()[payload.customer_id] = payload.model_dump()
     _audit_db = locals().get('db')
@@ -683,7 +683,7 @@ def set_customer_rate(payload: CustomerRateIn, _: dict = Depends(get_current_use
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -734,7 +734,7 @@ class ApprovalCheckIn(BaseModel):
 
 
 @router.post("/api/pricing/approval-rules")
-def set_approval_rule(payload: ApprovalRuleIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def set_approval_rule(payload: ApprovalRuleIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     _tenant_approval_rules().append(payload.model_dump())
     _tenant_approval_rules().sort(key=lambda r: float(r["threshold_amount"]))
     _audit_db = locals().get('db')
@@ -745,7 +745,7 @@ def set_approval_rule(payload: ApprovalRuleIn, _: dict = Depends(get_current_use
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
@@ -768,7 +768,7 @@ def get_approval_rules(_: dict = Depends(get_current_user)) -> list[dict[str, ob
 
 
 @router.post("/api/pricing/check-approval")
-def check_approval(payload: ApprovalCheckIn, _: dict = Depends(get_current_user)) -> dict[str, object]:
+def check_approval(payload: ApprovalCheckIn, current_user: dict = Depends(get_current_user)) -> dict[str, object]:
     """Check if a quote amount requires manager approval."""
     for rule in reversed(_tenant_approval_rules()):
         if payload.quote_amount >= float(rule["threshold_amount"]):
@@ -787,7 +787,7 @@ def check_approval(payload: ApprovalCheckIn, _: dict = Depends(get_current_user)
             _audit_tenant = ''
             if _audit_req is not None:
                 _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = str((_audit_user_obj or {}).get('sub') or (_audit_user_obj or {}).get('user_id') or 'system')
+            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
             log_audit_event_sync(
                 _audit_db,
                 tenant_id=_audit_tenant,
