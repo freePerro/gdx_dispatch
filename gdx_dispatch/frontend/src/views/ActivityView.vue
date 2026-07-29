@@ -64,7 +64,9 @@
             <Tag :value="data.entity_type || 'Unknown'" severity="info" />
           </template>
         </Column>
-        <Column field="action" header="Action" />
+        <Column field="action" header="Action">
+          <template #body="{ data }">{{ formatActivityTitle(data.action, data.entity_type) }}</template>
+        </Column>
         <Column field="user_name" header="User" style="width:160px">
           <template #body="{ data }">{{ formatUser(data.user_name || data.user_id) }}</template>
         </Column>
@@ -83,7 +85,8 @@
           </div>
           <div>
             <strong>Action</strong>
-            <p>{{ selectedEvent.action }}</p>
+            <p>{{ formatActivityTitle(selectedEvent.action, selectedEvent.entity_type) }}</p>
+            <p class="raw-action">{{ selectedEvent.action }}</p>
           </div>
           <div>
             <strong>User</strong>
@@ -105,7 +108,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { formatDate as fmtDate, formatDateTime as fmtDateTime } from '../composables/useFormatters';
+import { formatDate as fmtDate, formatDateTime as fmtDateTime, formatUser } from '../composables/useFormatters';
+import { formatActivityTitle } from '../constants/activityLabels';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
@@ -161,17 +165,6 @@ function formatDate(value, includeTime = false) {
     return fmtDateTime(value, { options: { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } });
   }
   return fmtDate(value);
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function formatUser(value) {
-  if (!value || value === 'anonymous' || value === 'system') return 'System';
-  // If we got a raw UUID through (user since deleted, or resolver missed it),
-  // show "Unknown user" + short id rather than a 36-char wall.
-  if (typeof value === 'string' && UUID_RE.test(value)) {
-    return `Unknown user (${value.slice(0, 8)})`;
-  }
-  return value;
 }
 
 function formatDetails(details) {
@@ -261,5 +254,13 @@ onMounted(() => {
 }
 .detail-grid p {
   margin: 0.25rem 0 0;
+}
+/* The raw action string stays visible in the detail dialog: the friendly
+   label is for scanning, but an auditor needs the literal value that is in
+   the audit_logs row. */
+.raw-action {
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
 }
 </style>
