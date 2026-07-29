@@ -225,3 +225,94 @@ describe('dashboard recent activity — non-admin fallback path', () => {
     expect(text).toContain('Acme Storage');
   });
 });
+
+
+describe('dashboard recent activity — server-side feed', () => {
+  it('asks the server to apply the noise policy', async () => {
+    // Filtering in the browser could never work: 47 of the live tenant's 50
+    // most recent audit rows are session churn, so the page budget was spent
+    // before the response arrived.
+    mountWithAuditRows([]);
+    await flushPromises();
+    const auditCall = mockGet.mock.calls.map(([u]) => String(u)).find((u) => u.includes('/api/audit/logs'));
+    expect(auditCall).toBeDefined();
+    expect(auditCall).toContain('feed=true');
+  });
+
+  it('shows a repeat count for a collapsed run of edits', async () => {
+    const w = mountWithAuditRows([
+      {
+        id: 'c1',
+        action: 'patch_line',
+        entity_type: 'estimate_line',
+        entity_id: 'l-1',
+        user_id: 'u-1',
+        user_name: 'Amber Joy',
+        entity_label: 'EST-000049',
+        occurrence_count: 7,
+        created_at: '2026-07-28T18:21:40Z',
+      },
+    ]);
+    await flushPromises();
+    const text = activityText(w);
+    expect(text).toContain('Estimate line updated — EST-000049');
+    expect(text).toContain('×7');
+  });
+
+  it('does not show a count for a single event', async () => {
+    const w = mountWithAuditRows([
+      {
+        id: 'c2',
+        action: 'job_updated',
+        entity_type: 'job',
+        entity_id: 'j-1',
+        user_id: 'u-1',
+        user_name: 'Amber Joy',
+        occurrence_count: 1,
+        created_at: '2026-07-28T18:21:40Z',
+      },
+    ]);
+    await flushPromises();
+    expect(activityText(w)).not.toContain('×1');
+  });
+});
+
+
+describe('dashboard recent activity — empty state honesty', () => {
+  it('an admin with no activity sees an empty feed, not a jobs list', async () => {
+    // The old code fell through to /api/jobs whenever the audit page came back
+    // empty — which is exactly what the noise caused — so the card silently
+    // showed unrelated data under an "Activity" heading.
+    mockAuth.isAdmin = true;
+    mockGet.mockReset();
+    mockGet.mockImplementation((url) => {
+      if (url.startsWith('/api/audit/logs')) return Promise.resolve({ items: [] });
+      if (url === '/api/jobs') {
+        return Promise.resolve({
+          items: [{ id: 'j-9', title: 'Should not appear', customer_name: 'Nope' }],
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const w = mount(DashboardView, { global: { stubs } });
+    await flushPromises();
+    const text = w.get('[data-testid="recent-activity-list"]').text();
+    expect(text).not.toContain('Should not appear');
+    expect(text).toContain('No recent activity.');
+  });
+
+  it('a failed audit load still falls back to jobs and says so', async () => {
+    mockAuth.isAdmin = true;
+    mockGet.mockReset();
+    mockGet.mockImplementation((url) => {
+      if (url.startsWith('/api/audit/logs')) return Promise.reject(new Error('403'));
+      if (url === '/api/jobs') {
+        return Promise.resolve({ items: [{ id: 'j-1', title: 'Spring swap', customer_name: 'Acme' }] });
+      }
+      return Promise.resolve(null);
+    });
+    const w = mount(DashboardView, { global: { stubs } });
+    await flushPromises();
+    expect(w.get('[data-testid="recent-activity-list"]').text()).toContain('Spring swap');
+  });
+});

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import AuditLog, ensure_audit_table
+from gdx_dispatch.core.activity_feed import collapse_runs, feed_filter, wanted_fetch_size
 from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
@@ -72,9 +73,13 @@ def list_recent_activity(
     offset: int = Query(0, ge=0),
     entity_type: str | None = Query(default=None, max_length=80),
     user_id: str | None = Query(default=None, max_length=64),
+    feed: bool = Query(default=False, description="Drop session churn, collapse repeats"),
 ) -> dict[str, Any]:
     """Company-wide recent activity, paginated and filterable."""
     ensure_audit_table(db)
+    # See routers/audit.py: a bare `if feed` is truthy when this function is
+    # called directly, because the default is a fastapi Query object.
+    feed = feed is True
     tenant_id = _tenant_id(request)
 
     stmt = _base_stmt(tenant_id)
@@ -86,12 +91,22 @@ def list_recent_activity(
     if user_id:
         stmt = stmt.where(AuditLog.user_id == user_id)
         count_stmt = count_stmt.where(AuditLog.user_id == user_id)
+    if feed:
+        stmt = stmt.where(feed_filter())
+        count_stmt = count_stmt.where(feed_filter())
 
-    stmt = stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit).offset(offset)
+    stmt = (
+        stmt.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(wanted_fetch_size(limit, feed=feed))
+        .offset(offset)
+    )
 
     rows = db.execute(stmt).scalars().all()
     total = int(db.execute(count_stmt).scalar() or 0)
-    return {"items": decorate_rows(db, [_serialize(r) for r in rows]), "total": total}
+    items = decorate_rows(db, [_serialize(r) for r in rows])
+    if feed:
+        items = collapse_runs(items)[:limit]
+    return {"items": items, "total": total}
 
 
 @router.get("/api/jobs/{job_id}/activity", response_model=None)

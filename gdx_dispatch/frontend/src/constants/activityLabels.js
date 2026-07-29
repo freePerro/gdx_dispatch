@@ -82,6 +82,30 @@ export const ACTIVITY_LABELS = {
   portal_message_sent: 'Customer sent a message',
   portal_estimate_accepted: 'Customer accepted the estimate',
   portal_estimate_declined: 'Customer declined the estimate',
+
+  // Auth events that survive the feed's noise filter (core/activity_feed.py
+  // hides only routine churn — token refresh, logout — and keeps everything
+  // security-relevant).
+  login_blocked: 'Sign-in blocked',
+  failed_login: 'Failed sign-in attempt',
+  password_reset_requested: 'Password reset requested',
+  password_reset_success: 'Password reset completed',
+  token_revoked: 'Session token revoked',
+  user_sessions_revoked: 'All sessions revoked',
+  refresh_replay_detected: 'Token replay detected',
+
+  // CRUD verbs the generated audit blocks emit as bare create/update/delete
+  // plus an entity type. Scoped keys so "Create Vendor (vendor)" stops
+  // leaking through.
+  'vendor:create_vendor': 'Vendor added',
+  'vendor:update_vendor': 'Vendor updated',
+  'vendor:delete_vendor': 'Vendor removed',
+  'part:create_part': 'Part added',
+  'part:update_part': 'Part updated',
+  'part:delete_part': 'Part removed',
+  'change_order:update_change_order': 'Change order updated',
+  'po:update_po': 'Purchase order updated',
+  communication_sent: 'Message sent',
 };
 
 export const ENTITY_ICONS = {

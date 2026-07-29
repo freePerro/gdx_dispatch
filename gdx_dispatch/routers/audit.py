@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import Response
 
 from gdx_dispatch.core.audit import AuditLog
+from gdx_dispatch.core.activity_feed import collapse_runs, feed_filter, wanted_fetch_size
 from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
@@ -46,22 +47,40 @@ def _row_to_dict(row: AuditLog) -> dict[str, Any]:
     }
 
 
-def _list_rows(db: Session, *, page: int, page_size: int, where=None):
+def _list_rows(db: Session, *, page: int, page_size: int, where=None, feed: bool = False):
+    # `feed is True`, not `if feed`: called outside FastAPI's dependency
+    # resolution (as the in-process tests do) the parameter is still a
+    # fastapi.params.Query instance, and FieldInfo has no __bool__, so it is
+    # truthy — `if feed` would silently turn the feed on for every direct
+    # caller.
+    feed = feed is True
     q = select(AuditLog)
     if where is not None:
         q = q.where(where)
+    if feed:
+        # Filter in SQL, before the LIMIT. Filtering client-side cannot work:
+        # 47 of the live tenant's most recent 50 rows are auth noise, so the
+        # page budget is spent before the browser ever sees it.
+        q = q.where(feed_filter())
     # COUNT(*) — the previous implementation was len(...scalars().all()), which
     # materialized every audit row in the tenant on each dashboard load. On the
     # live tenant that is ~60k ORM objects to produce one integer.
     count_q = select(func.count()).select_from(AuditLog)
     if where is not None:
         count_q = count_q.where(where)
+    if feed:
+        count_q = count_q.where(feed_filter())
     total = int(db.execute(count_q).scalar() or 0)
 
     offset = (page - 1) * page_size
+    # Over-fetch when collapsing: a run of 20 edits to one record becomes a
+    # single entry, so asking for exactly page_size would hand back a nearly
+    # empty page — the starved-feed bug this phase exists to fix, reintroduced
+    # by its own fix.
+    fetch = wanted_fetch_size(page_size, feed=feed)
     rows = (
         db.execute(
-            q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(offset).limit(page_size)
+            q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(offset).limit(fetch)
         )
         .scalars()
         .all()
@@ -69,6 +88,8 @@ def _list_rows(db: Session, *, page: int, page_size: int, where=None):
     # Actor + subject labels, batched, one query per distinct entity type.
     # Shared with routers/activity.py so both feeds agree on what a row says.
     items = decorate_rows(db, [_row_to_dict(r) for r in rows])
+    if feed:
+        items = collapse_runs(items)[:page_size]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
@@ -76,10 +97,18 @@ def _list_rows(db: Session, *, page: int, page_size: int, where=None):
 def get_audit_logs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    feed: bool = Query(
+        default=False,
+        description=(
+            "Human-facing activity feed: drop session/token churn and collapse "
+            "consecutive edits to the same record. Off by default so the "
+            "compliance view still sees every row."
+        ),
+    ),
     _: dict[str, Any] = Depends(_require_admin),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return _list_rows(db, page=page, page_size=page_size)
+    return _list_rows(db, page=page, page_size=page_size, feed=feed)
 
 
 @router.get("/logs/export")
