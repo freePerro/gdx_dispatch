@@ -186,6 +186,9 @@ export const MODULE_CATEGORIES = [
       { key: 'catalog', label: 'Catalog', icon: 'pi pi-list', to: '/catalog', type: 'Jobs', permission: 'nav.office' },
       // Field tier (ungated): inventory (read-only "do we have this part?").
       { key: 'inventory', label: 'Inventory', icon: 'pi pi-box', to: '/inventory', type: 'Jobs' },
+      // Doors we're selling, published to garagedoorxperts.com. Office-tier:
+      // the field submits from the mobile console, not from here.
+      { key: 'door_listings', label: 'Doors for Sale', icon: 'pi pi-tag', to: '/door-listings', type: 'Jobs', permission: 'inventory.read' },
       { key: 'parts_to_order', label: 'Parts to Order', icon: 'pi pi-box', to: '/parts-to-order', type: 'Jobs', permission: 'nav.office' },
       { key: 'vendors', label: 'Vendors', icon: 'pi pi-building', to: '/vendors', type: 'Jobs', permission: 'nav.office' },
       { key: 'purchase_orders', label: 'Purchase Orders', icon: 'pi pi-shopping-cart', to: '/purchase-orders', type: 'Jobs', permission: 'nav.office' },

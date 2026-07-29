@@ -63,6 +63,16 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     # Inventory
     ("inventory.read", "View inventory", "inventory"),
     ("inventory.write", "Adjust inventory", "inventory"),
+    # Publishing a door listing pushes it to the PUBLIC website, so it needs a
+    # real authz key. An earlier draft gated it on inventory.write + nav.office;
+    # that was wrong — nav.* are nav-visibility only (see the note below), they
+    # are tenant-editable in the Roles UI, and granting a technician office nav
+    # would silently have handed them the publish button.
+    # admin/owner get this via _all_except/WILDCARD and resolve against live
+    # BUILTIN_ROLES, so no snapshot backfill is needed. Every other role must be
+    # granted it explicitly — fail-closed is the correct default for "can put
+    # this on the internet".
+    ("listings.publish", "Publish door listings to the public website", "inventory"),
 
     # Reports
     ("reports.read", "View reports", "reports"),

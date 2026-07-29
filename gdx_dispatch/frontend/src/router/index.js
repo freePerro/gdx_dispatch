@@ -26,6 +26,7 @@ const InvoiceRemindersView = () => import('../views/InvoiceRemindersView.vue');
 const JobDetailView = () => import('../views/JobDetailView.vue');
 const CustomerDetailView = () => import('../views/CustomerDetailView.vue');
 const InventoryView = () => import('../views/InventoryView.vue');
+const DoorListingsView = () => import('../views/DoorListingsView.vue');
 const TimeclockView = () => import('../views/TimeclockView.vue');
 const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
 const DeliveryLoadsheetView = () => import('../views/DeliveryLoadsheetView.vue');
@@ -222,6 +223,7 @@ export const routes = [
   //  above at the top of the public-route block; Vue Router warned + the
   //  second declaration silently won. Single declaration now.)
   { path: '/inventory', name: 'inventory', component: InventoryView },
+  { path: '/door-listings', name: 'door-listings', component: DoorListingsView },
   { path: '/timeclock', name: 'timeclock', component: TimeclockView },
   { path: '/equipment', name: 'equipment', component: EquipmentView },
   { path: '/communications', name: 'communications', component: CommunicationsView },

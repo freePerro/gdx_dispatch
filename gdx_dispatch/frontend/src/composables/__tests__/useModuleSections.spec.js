@@ -63,7 +63,13 @@ const OLD_MODULE_PERM = {
 // accounting.read — matching the route guard today and the backend gate
 // added in PR #199 (in flight at the time of writing). Roles holding the
 // permission now see the entry: accounting + viewer.
+// door_listings (2026-07-29) is a NEW page. Its nav gate is inventory.read —
+// deliberately the SAME key the router's read gate uses — so the entry only
+// appears for roles whose first request would actually succeed. dispatcher,
+// sales and accounting hold nav.office but NOT inventory.read, so they do not
+// get an entry that would 403 on load.
 const APPROVED_REVEALS = new Set([
+  'technician:door_listings', 'viewer:door_listings',
   'accounting:forecasting', 'viewer:forecasting',
   'dispatcher:labor_matrix', 'dispatcher:vendor_statements',
   'technician:labor_matrix',
@@ -157,7 +163,7 @@ describe('nav visibility — Set→permission migration parity', () => {
     expect(regressions).toEqual([]);
   });
 
-  it('differs from the old Sets only by the 19 approved reveals', () => {
+  it('differs from the old Sets only by the approved reveals', () => {
     const reveals = new Set();
     for (const role of PARITY_ROLES) {
       for (const m of MODULES) {

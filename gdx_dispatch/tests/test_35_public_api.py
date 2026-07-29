@@ -86,6 +86,7 @@ def _bootstrap_db():
                 notes_appended TEXT,
                 source TEXT,
                 customer_type TEXT,
+                can_submit_listings INTEGER DEFAULT 0,
                 pricing_class TEXT,
                 margin_override_pct REAL,
                 payment_terms_days INTEGER,

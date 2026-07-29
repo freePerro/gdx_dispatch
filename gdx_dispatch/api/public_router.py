@@ -12,6 +12,7 @@ Response envelope for lists:
 Response envelope for single items / mutations:
     {"data": {...}}
 """
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.api_keys import scope_required
@@ -708,3 +709,57 @@ def register_webhook(
         },
         status_code=201,
     )
+
+
+# ---------------------------------------------------------------------------
+# Door listings — the feed garagedoorxperts.com/used-doors renders
+# ---------------------------------------------------------------------------
+
+
+@router.get("/listings")
+def list_public_listings(
+    request: Request,
+    _auth: Annotated[dict, Depends(_require_api_key)],
+    db: Annotated[Session, Depends(get_db)],
+    _scope: None = scope_required("listings:read"),
+    listing_type: Annotated[str | None, Query(description="used | in_stock | quick_ship")] = None,
+) -> JSONResponse:
+    """Published door listings, GDX stock ranked above consignment.
+
+    `published` is filtered in the query, not by the caller — a draft or a
+    pending-review door must be unreachable even with a valid key. Ordering is
+    computed here rather than in the website template so the rule lives in one
+    place and the two cannot drift (plan §7.1).
+
+    Photos are referenced by id only; their bytes come from the unauthenticated
+    `/public/door-listings/{id}.jpg` route, which keeps a page of thumbnails
+    off this key's 60 req/min budget.
+    """
+    from gdx_dispatch.modules.door_listings import service as _listing_service
+    from gdx_dispatch.modules.door_listings.models import LISTING_TYPES, DoorListing
+
+    if listing_type and listing_type not in LISTING_TYPES:
+        raise HTTPException(
+            status_code=422, detail=f"listing_type must be one of {list(LISTING_TYPES)}"
+        )
+
+    stmt = select(DoorListing).where(
+        DoorListing.status == "published",
+        DoorListing.deleted_at.is_(None),
+    )
+    if listing_type:
+        stmt = stmt.where(DoorListing.listing_type == listing_type)
+
+    try:
+        rows = db.execute(stmt.order_by(*_listing_service.public_ordering())).scalars().all()
+        # Serialization is INSIDE the guard on purpose: it lazy-loads the photo
+        # relationship, so on a not-yet-migrated environment the 500 would come
+        # from here, not from the query above.
+        payload = [_listing_service.serialize(r, public=True) for r in rows]
+    except Exception:
+        # Degrade to "no doors" — the marketing page has a static fallback for
+        # exactly this — rather than 500 the whole public API.
+        logging.getLogger(__name__).exception("public listings feed failed")
+        payload = []
+
+    return _ok(payload)

@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import jwt
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError as JWTError
@@ -23,6 +23,8 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
+from gdx_dispatch.modules.door_listings import service as _listing_service
+from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.deposits import (
     DepositError,
     create_deposit_invoice,
@@ -676,7 +678,165 @@ def portal_context(
             "id": str(principal.customer_id),
             "name": customer.name if customer else "",
         },
+        # Drives whether the portal shows a "list a door" entry point at all.
+        # The routes below re-check the same helper — hiding a button is not
+        # access control.
+        "can_submit_listings": _listing_service.customer_may_submit(db, principal.customer_id),
     }
+
+
+# ── Customer-submitted door listings ─────────────────────────────────────────
+#
+# OFF by default and twice-gated: the company-wide AppSettings switch AND the
+# per-customer flag must both be on (see modules/door_listings/service.py).
+# When either is off these routes 404 — not 403, which would confirm the
+# feature exists for a customer who isn't meant to see it.
+
+
+def _require_listing_submission(db: Session, principal: PortalPrincipal) -> None:
+    if not _listing_service.customer_may_submit(db, principal.customer_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+class PortalListingIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    condition: str | None = None
+    width_in: float | None = Field(default=None, ge=0, le=99999)
+    height_in: float | None = Field(default=None, ge=0, le=99999)
+    color: str | None = Field(default=None, max_length=60)
+    brand: str | None = Field(default=None, max_length=80)
+
+
+@router.get("/door-listings", response_model=None)
+def portal_list_own_listings(
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The customer's own submissions and where each one stands."""
+    _require_listing_submission(db, principal)
+    rows = db.execute(
+        select(DoorListing)
+        .where(
+            DoorListing.submitted_by_customer_id == principal.customer_id,
+            DoorListing.deleted_at.is_(None),
+        )
+        .order_by(DoorListing.created_at.desc())
+    ).scalars().all()
+    return {
+        "listings": [
+            {
+                "id": str(r.id),
+                "title": r.title,
+                "status": r.status,
+                "rejection_reason": r.rejection_reason,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/door-listings", response_model=None, status_code=201)
+def portal_submit_listing(
+    payload: PortalListingIn,
+    request: Request,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Submit a door for the office to review.
+
+    Status and source are set server-side. A customer cannot publish, cannot
+    set a price the site would display as ours, and cannot pin a listing.
+    """
+    _require_listing_submission(db, principal)
+
+    listing = DoorListing(
+        title=payload.title,
+        slug=_listing_service.unique_slug(db, payload.title),
+        description=payload.description,
+        condition=payload.condition,
+        width_in=payload.width_in,
+        height_in=payload.height_in,
+        color=payload.color,
+        brand=payload.brand,
+        listing_type="used",
+        status="pending_review",
+        source="customer",
+        # Price is the office's call at approval — a customer-quoted number
+        # would render as GDX's asking price.
+        price_display="call_for_price",
+        submitted_by_customer_id=principal.customer_id,
+        submitted_at=_now_utc(),
+    )
+    db.add(listing)
+    db.commit()
+    db.refresh(listing)
+
+    log_audit_event_sync(
+        db=db,
+        tenant_id=str(getattr(request.state, "tenant", {}).get("id", "")),
+        user_id=str(principal.user_id),
+        action="door_listing_submitted_by_customer",
+        entity_type="door_listing",
+        entity_id=str(listing.id),
+        details={"customer_id": str(principal.customer_id)},
+        ip_address=(request.client.host if request.client else None),
+        request=request,
+    )
+    db.commit()
+    return {"id": str(listing.id), "status": listing.status}
+
+
+@router.post("/door-listings/{listing_id}/photos", response_model=None, status_code=201)
+async def portal_upload_listing_photo(
+    listing_id: UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _require_listing_submission(db, principal)
+
+    listing = db.execute(
+        select(DoorListing).where(
+            DoorListing.id == listing_id,
+            DoorListing.submitted_by_customer_id == principal.customer_id,
+            DoorListing.deleted_at.is_(None),
+        )
+    ).scalars().first()
+    if listing is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if listing.status not in ("pending_review", "rejected"):
+        raise HTTPException(status_code=403, detail="This listing is no longer editable")
+    if len(listing.photos) >= _listing_service.MAX_PHOTOS_PER_LISTING:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {_listing_service.MAX_PHOTOS_PER_LISTING} photos per listing",
+        )
+
+    content_type = (file.content_type or "").lower().split(";")[0].strip()
+    if content_type not in _listing_service.ALLOWED_PHOTO_MIME_TYPES:
+        raise HTTPException(status_code=415, detail="Unsupported image type")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > _listing_service.MAX_PHOTO_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    try:
+        photo = _listing_service.store_photo(
+            db,
+            tenant_id=str(getattr(request.state, "tenant", {}).get("id", "")),
+            listing=listing,
+            data=data,
+            content_type=content_type,
+        )
+    except _listing_service.PhotoProcessingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(photo)
+    return {"id": str(photo.id)}
 
 
 def _portal_estimate_totals(estimate: Estimate, db: Session) -> dict[str, Any]:
