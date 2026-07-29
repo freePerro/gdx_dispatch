@@ -163,11 +163,35 @@ export function formatPhone(value) {
   return `(${ten.slice(0, 3)})${ten.slice(3, 6)}-${ten.slice(6)}`;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Audit/activity actor → display name.
+ *
+ * The audit API resolves `user_id` to a `user_name` where it can, but falls
+ * back to the raw id when the lookup misses (deleted user, an actor that isn't
+ * a row in `users` at all). Rendering a bare 36-char UUID in a feed is worse
+ * than useless, so a UUID that got this far is shown as an explicit unknown
+ * plus a short prefix that is still greppable against the audit table.
+ *
+ * Machine actors ('system', 'anonymous', '') collapse to "System" — as of the
+ * activity-attribution work most `system` rows are a real bug (handlers that
+ * never recorded their actor), but showing them honestly is the point: a
+ * silent blank would hide it.
+ */
+export function formatUser(value) {
+  if (!value || value === 'anonymous' || value === 'system') return 'System';
+  if (typeof value === 'string' && UUID_RE.test(value)) {
+    return `Unknown user (${value.slice(0, 8)})`;
+  }
+  return String(value);
+}
+
 /**
  * Composable form for views that prefer destructured imports of the
  * functions all in one go. No setup required, but matches the project
  * `useX()` convention.
  */
 export function useFormatters() {
-  return { formatDate, formatDateTime, formatTime, formatMoney, formatPercent, formatNumber, formatPhone };
+  return { formatDate, formatDateTime, formatTime, formatMoney, formatPercent, formatNumber, formatPhone, formatUser };
 }

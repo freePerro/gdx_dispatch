@@ -6,6 +6,7 @@ import {
   formatPercent,
   formatNumber,
   formatPhone,
+  formatUser,
 } from '../useFormatters';
 
 const LOCALE = 'en-US';
@@ -101,5 +102,33 @@ describe('useFormatters', () => {
 
   it('formatNumber thousands separator', () => {
     expect(formatNumber(1234567, { locale: LOCALE })).toBe('1,234,567');
+  });
+});
+
+
+describe('formatUser', () => {
+  it('renders a resolved display name unchanged', () => {
+    expect(formatUser('Amber Joy')).toBe('Amber Joy');
+    expect(formatUser('dispatch@example.com')).toBe('dispatch@example.com');
+  });
+
+  it('collapses machine actors to System', () => {
+    expect(formatUser('system')).toBe('System');
+    expect(formatUser('anonymous')).toBe('System');
+    expect(formatUser('')).toBe('System');
+    expect(formatUser(null)).toBe('System');
+    expect(formatUser(undefined)).toBe('System');
+  });
+
+  it('guards a raw UUID that escaped server-side resolution', () => {
+    // audit.py falls back to the raw user_id when the users lookup misses;
+    // a 36-char wall in the feed is worse than an explicit unknown.
+    expect(formatUser('1f23a32a-198e-4a2d-90b7-4998c845790e')).toBe(
+      'Unknown user (1f23a32a)',
+    );
+  });
+
+  it('passes through non-UUID opaque actors (e.g. API keys)', () => {
+    expect(formatUser('gdx_live_0f26c7d')).toBe('gdx_live_0f26c7d');
   });
 });

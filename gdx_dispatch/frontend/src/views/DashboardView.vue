@@ -319,7 +319,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
-import { formatMoney, formatPercent, formatDateTime as fmtDateTime } from "../composables/useFormatters";
+import { formatMoney, formatPercent, formatDateTime as fmtDateTime, formatUser } from "../composables/useFormatters";
+import { ENTITY_ICONS, formatActivityTitle } from "../constants/activityLabels";
 import { useAuthStore } from "../stores/auth";
 import { normalizeRole } from "../constants/roles";
 import { useToast } from "primevue/usetoast";
@@ -681,49 +682,6 @@ async function loadSummary() {
   summaryLoading.value = false;
 }
 
-const ACTIVITY_LABELS = {
-  login: "Signed in",
-  login_success: "Signed in",
-  login_failed: "Failed login attempt",
-  logout: "Signed out",
-  token_refreshed: "Session renewed",
-  customer_created: "New customer added",
-  customer_updated: "Customer updated",
-  customer_deleted: "Customer removed",
-  job_created: "New job created",
-  job_updated: "Job updated",
-  job_completed: "Job completed",
-  estimate_created: "New estimate created",
-  estimate_updated: "Estimate updated",
-  estimate_accepted: "Estimate accepted",
-  invoice_created: "New invoice created",
-  invoice_paid: "Invoice paid",
-  module_enabled: "Module enabled",
-  module_disabled: "Module disabled",
-  settings_updated: "Settings changed",
-  user_created: "New user added",
-  user_updated: "User updated",
-};
-
-const ENTITY_ICONS = {
-  auth: "pi pi-sign-in",
-  customer: "pi pi-users",
-  job: "pi pi-briefcase",
-  estimate: "pi pi-file-edit",
-  invoice: "pi pi-dollar",
-  module: "pi pi-th-large",
-  settings: "pi pi-cog",
-  user: "pi pi-user",
-};
-
-function formatActivityTitle(action, entityType) {
-  if (ACTIVITY_LABELS[action]) return ACTIVITY_LABELS[action];
-  // Fallback: title-case the action and replace underscores
-  const label = action.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  if (entityType && entityType !== "auth") return `${label} (${entityType})`;
-  return label;
-}
-
 // 2026-04-29 nav-cleanup: filter session/token-refresh noise from the
 // dashboard's "Recent Activity" — they were drowning real activity 9-of-10.
 const ACTIVITY_HIDE_ACTIONS = new Set([
@@ -751,11 +709,17 @@ async function loadRecentActivity() {
         return true;
       });
       if (items.length) {
+        // The actor: `user_name` is resolved server-side (routers/audit.py
+        // _resolve_user_names) and was previously dropped on the floor here,
+        // leaving the feed a bare action + timestamp. That server resolver
+        // falls back to the raw user_id when the users lookup misses, so
+        // user_name can BE a UUID — hence formatUser's guard. The `||` here is
+        // belt-and-braces only; audit.py always populates the field.
         recentActivity.value = items.slice(0, 10).map((evt) => ({
           id: evt.id,
           title: formatActivityTitle(evt.action, evt.entity_type),
           icon: ENTITY_ICONS[evt.entity_type] || "pi pi-circle",
-          meta: formatTimestamp(evt.created_at),
+          meta: `${formatUser(evt.user_name || evt.user_id)} · ${formatTimestamp(evt.created_at)}`,
         }));
         return;
       }
