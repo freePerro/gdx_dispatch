@@ -181,17 +181,33 @@
                     :data-testid="`suggest-${data.order_number}`"
                     @click="loadJobSuggestions(data)"
                   />
-                  <div v-else-if="!jobSuggestions[data.order_number].length" class="text-muted small">
-                    No match — the reference doesn't look like a customer name.
+                  <!-- "matched a customer with no job" and "the reference is
+                       junk" are different answers; showing both as "no match"
+                       hid six real orders whose customer scored up to 0.89. -->
+                  <div
+                    v-else-if="!jobSuggestions[data.order_number].suggestions.length
+                               && jobSuggestions[data.order_number].customers_without_jobs.length"
+                    class="no-job-hint"
+                    :data-testid="`no-job-${data.order_number}`"
+                  >
+                    Matched
+                    <strong>{{ jobSuggestions[data.order_number].customers_without_jobs[0].customer_name }}</strong>,
+                    who has no job on file. Create the job, then file this order to it.
+                  </div>
+                  <div
+                    v-else-if="!jobSuggestions[data.order_number].suggestions.length"
+                    class="text-muted small"
+                  >
+                    No match — the reference doesn't resemble a customer or a job.
                   </div>
                   <div v-else class="suggestions">
                     <div
-                      v-for="sug in jobSuggestions[data.order_number].slice(0, 2)"
+                      v-for="sug in jobSuggestions[data.order_number].suggestions.slice(0, 2)"
                       :key="sug.job_id"
                       class="suggestion"
                     >
                       <div class="sug-name">
-                        {{ sug.customer_name }}
+                        {{ sug.job_title || sug.customer_name }}
                         <span v-if="sug.job_number" class="mono small">{{ sug.job_number }}</span>
                       </div>
                       <div class="sug-why">{{ sug.reason }}</div>
@@ -436,14 +452,17 @@ async function loadJobSuggestions(order) {
   if (order.matched_job_id || jobSuggestions.value[order.order_number]) return
   suggestLoading.value = { ...suggestLoading.value, [order.order_number]: true }
   try {
-    jobSuggestions.value = {
+jobSuggestions.value = {
       ...jobSuggestions.value,
       [order.order_number]: await api.get(
         `/api/vendor-statements/orders/${order.order_id}/job-suggestions`,
-      ) || [],
+      ) || { suggestions: [], customers_without_jobs: [] },
     }
   } catch {
-    jobSuggestions.value = { ...jobSuggestions.value, [order.order_number]: [] }
+    jobSuggestions.value = {
+      ...jobSuggestions.value,
+      [order.order_number]: { suggestions: [], customers_without_jobs: [] },
+    }
   } finally {
     suggestLoading.value = { ...suggestLoading.value, [order.order_number]: false }
   }
@@ -642,6 +661,7 @@ onMounted(fetchItems)
 .suggestion { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
 .sug-name { font-size: 0.85rem; color: var(--p-text-color); }
 .sug-why { font-size: 0.72rem; color: var(--p-text-muted-color); line-height: 1.3; }
+.no-job-hint { font-size: 0.8rem; color: var(--p-orange-500, #f59e0b); line-height: 1.35; }
 .order-line .qty { color: var(--p-text-muted-color); margin-right: 0.35rem; }
 .order-line .spec { color: var(--p-text-color); }
 .paid-some { color: var(--p-green-500, #22c55e); }
