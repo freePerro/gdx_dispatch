@@ -57,10 +57,15 @@
               class="thumb"
               loading="lazy"
             />
-            <div v-else class="thumb thumb--empty"><i class="pi pi-image" /></div>
+            <div v-else class="thumb thumb--empty" title="No photo yet — needed before publishing">
+              <i class="pi pi-image" />
+            </div>
             <div>
               <div class="door-title">{{ data.title }}</div>
               <div class="door-sub">{{ sizeLabel(data) }}</div>
+              <div v-if="!data.photos?.length" class="needs-photo">
+                <i class="pi pi-exclamation-triangle" /> Needs a photo to publish
+              </div>
             </div>
           </div>
         </template>
@@ -142,12 +147,16 @@
               v-tooltip.bottom="'Edit'"
               @click="openEdit(data)"
             />
+            <!-- Labelled, not icon-only, and it states what is MISSING. A door
+                 cannot be published without a photo, and when this was a bare
+                 pi-images icon among four other icon buttons nobody found it. -->
             <Button
+              :label="data.photos?.length ? `Photos (${data.photos.length})` : 'Add photo'"
               icon="pi pi-images"
-              severity="secondary"
-              outlined
+              :severity="data.photos?.length ? 'secondary' : 'warn'"
+              :outlined="!!data.photos?.length"
               size="small"
-              v-tooltip.bottom="'Photos'"
+              :data-testid="`photos-${data.id}`"
               @click="openPhotos(data)"
             />
           </div>
@@ -377,13 +386,22 @@ async function save() {
       description: editing.value.description || null,
       price_display: editing.value.callForPrice ? 'call_for_price' : 'fixed',
     }
-    if (editing.value.id) {
-      await api.patch(`/api/door-listings/${editing.value.id}`, body)
+    const isNew = !editing.value.id
+    let created = null
+    if (isNew) {
+      created = await api.post('/api/door-listings', body)
     } else {
-      await api.post('/api/door-listings', body)
+      await api.patch(`/api/door-listings/${editing.value.id}`, body)
     }
     showEditor.value = false
     await fetchItems()
+    // A new door still needs a photo before it can go live, so don't drop the
+    // user back on the grid to hunt for the control — open it for them.
+    // Use `created` directly, NOT a lookup in listings.value: fetchItems filters
+    // server-side by statusFilter, so a new `draft` row is absent whenever the
+    // grid is on "Needs review"/"Live"/"Sold" — the lookup returned undefined and
+    // the dialog silently never opened. `created` is the full serialized row.
+    if (isNew && created?.id) openPhotos({ ...created, photos: created.photos || [] })
   } catch (e) {
     error.value = e.message || 'Could not save'
   } finally {
@@ -476,6 +494,12 @@ onMounted(fetchItems)
 .door-title { font-weight: 600; }
 .door-sub, .muted { color: var(--p-text-muted-color); }
 .small { font-size: 0.85rem; }
+.needs-photo {
+  font-size: 0.75rem; font-weight: 600; margin-top: 0.15rem;
+  color: var(--p-amber-600, #b45309);
+  display: flex; align-items: center; gap: 0.25rem;
+}
+:root[data-theme='dark'] .needs-photo { color: var(--p-amber-400, #fbbf24); }
 .reject-reason { font-size: 0.8rem; color: var(--p-text-muted-color); margin-top: 0.25rem; }
 .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .form-grid { display: flex; flex-direction: column; gap: 0.85rem; }

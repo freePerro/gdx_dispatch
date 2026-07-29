@@ -525,3 +525,54 @@ def test_public_feed_needs_no_auth_and_returns_published_only(office: TestClient
 def test_public_feed_validates_listing_type(office: TestClient):
     assert office.get("/public/door-listings.json?listing_type=bogus").status_code == 422
     assert office.get("/public/door-listings.json?listing_type=quick_ship").json()["data"] == []
+
+
+# ── the tech-mobile field screen ─────────────────────────────────────────────
+
+
+def test_mine_filter_scopes_to_the_caller(tech: TestClient):
+    """`?mine=1` is what the field screen calls.
+
+    Uses ONE client so both rows live in the SAME engine — the fixtures build
+    separate in-memory SQLite databases, so an earlier version of this test that
+    took both `office` and `tech` was only ever exercising office-scoping while
+    appearing to test the tech.
+    """
+    mine_row = _create(tech)  # submitted_by_user_id == _TECH_UID
+
+    Session = tech._Session  # type: ignore[attr-defined]
+    s = Session()
+    s.add(DoorListing(title="somebody else's", slug="somebody-else",
+                      source="tech", status="pending_review", listing_type="used",
+                      submitted_by_user_id=UUID(_ADMIN_UID)))
+    s.commit()
+    s.close()
+
+    everything = tech.get("/api/door-listings").json()
+    assert len(everything["listings"]) == 2, "unfiltered still shows both"
+
+    scoped = tech.get("/api/door-listings?mine=1").json()
+    assert [r["id"] for r in scoped["listings"]] == [mine_row["id"]]
+    # The badge must agree with the list it sits next to.
+    assert scoped["pending_count"] == 1, scoped["pending_count"]
+    assert everything["pending_count"] == 2
+
+
+def test_mine_filter_is_not_a_security_boundary(tech: TestClient):
+    """Deliberately pinning the LIMIT of ?mine=1 so nobody mistakes it for authz.
+
+    Anyone who can reach this endpoint already holds inventory.read and can just
+    omit the param. The filter is a convenience for the phone; the real boundary
+    is listings.publish on the write path.
+    """
+    Session = tech._Session  # type: ignore[attr-defined]
+    s = Session()
+    s.add(DoorListing(title="office door with a price", slug="office-priced",
+                      source="office", status="draft", listing_type="used",
+                      price=9999, submitted_by_user_id=UUID(_ADMIN_UID)))
+    s.commit()
+    s.close()
+
+    assert tech.get("/api/door-listings?mine=1").json()["listings"] == []
+    unscoped = tech.get("/api/door-listings").json()["listings"]
+    assert any(r["title"] == "office door with a price" for r in unscoped)

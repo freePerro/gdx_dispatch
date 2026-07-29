@@ -192,6 +192,9 @@ const MOBILE_ROUTE_OVERRIDES = {
   '/billing': '/mobile/billing',
   '/inventory': '/mobile/inventory',
   '/parts-to-order': '/mobile/parts-to-order',
+  // Doors for Sale has a purpose-built field screen: photo-first capture at
+  // the tear-out, no pricing (the office sets that at approval).
+  '/door-listings': '/mobile/door-listings',
   // /delivery-loadsheet stays on /delivery-loadsheet — it's already
   // mobile-friendly via @media rules in its scoped styles.
 };
@@ -216,6 +219,7 @@ const MOBILE_FRIENDLY_PATHS = new Set([
   '/mobile/billing',
   '/mobile/inventory',
   '/mobile/parts-to-order',
+  '/mobile/door-listings',
   '/jobs', // bottom-nav handles the mobile redirect at the view level
   '/dispatch',
   '/timeclock',

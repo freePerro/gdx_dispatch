@@ -63,6 +63,12 @@ export function useViewMode() {
   // This map is for non-tech roles (office/admin/owner) on mobile only.
   const MOBILE_COMPANION_PATHS = {
     '/customers': '/mobile/customers',
+    // Doors for Sale: the office grid is a wide DataTable whose Publish button
+    // 403s for a technician (needs listings.publish). The field screen is the
+    // phone-shaped equivalent. Mapped HERE as well as in AppBottomNav's drawer
+    // override, because the drawer is only one of the ways a tech arrives — a
+    // bookmark, the back button, or the command palette all route through here.
+    '/door-listings': '/mobile/door-listings',
     // NOTE: '/jobs' is intentionally NOT mapped here — /mobile/jobs is
     // tech-scoped ("My Jobs") and would hide office/admin data. See
     // MH-5b follow-up for a non-tech-scoped /mobile/jobs-list.

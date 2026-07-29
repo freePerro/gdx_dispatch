@@ -519,11 +519,25 @@ def list_listings(
     request: Request,
     status: str = Query(default=""),
     listing_type: str = Query(default=""),
+    mine: bool = Query(
+        default=False,
+        description="Only listings this user submitted — the tech-mobile view.",
+    ),
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
     _p: None = _CAN_READ,
 ) -> dict[str, Any]:
     stmt = select(DoorListing).where(DoorListing.deleted_at.is_(None))
+    # Convenience scope for the field screen, NOT a security boundary: anyone who
+    # can call this endpoint already holds inventory.read and may omit the param
+    # to see everything. It exists so a phone shows one tech's rows instead of
+    # the company's whole shelf.
+    me = _as_uuid(_user_id(user)) if mine else None
+    if mine:
+        # A caller with no resolvable UUID id (the "system" fallback) also stores
+        # NULL on create, so scoping to NULL is the consistent answer rather than
+        # silently returning everything.
+        stmt = stmt.where(DoorListing.submitted_by_user_id == me)
     if status:
         if status not in LISTING_STATUSES:
             raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
@@ -532,11 +546,14 @@ def list_listings(
         stmt = stmt.where(DoorListing.listing_type == listing_type)
 
     rows = db.execute(stmt.order_by(*service.public_ordering())).scalars().all()
-    pending = db.execute(
-        select(DoorListing).where(
-            DoorListing.status == "pending_review", DoorListing.deleted_at.is_(None)
-        )
-    ).scalars().all()
+    # Scope the badge to match the list. A company-wide count returned alongside a
+    # mine-scoped list contradicted itself.
+    pending_stmt = select(DoorListing).where(
+        DoorListing.status == "pending_review", DoorListing.deleted_at.is_(None)
+    )
+    if mine:
+        pending_stmt = pending_stmt.where(DoorListing.submitted_by_user_id == me)
+    pending = db.execute(pending_stmt).scalars().all()
     return {
         "listings": [service.serialize(r) for r in rows],
         "pending_count": len(pending),
