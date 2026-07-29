@@ -31,6 +31,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import Invoice, Payment
 
@@ -474,6 +475,18 @@ def pay_invoice(
     )
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found or expired")
+
+    # The customer clicked the link we emailed them. Never blocks the page.
+    record_customer_view(
+        db,
+        action="invoice_viewed_by_customer",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        tenant_id=getattr(invoice, "company_id", None),
+        request=request,
+        sent_at=getattr(invoice, "sent_at", None),
+        details={"invoice_number": getattr(invoice, "invoice_number", None)},
+    )
 
     return templates.TemplateResponse(
         request,
