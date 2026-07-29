@@ -30,7 +30,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -551,6 +551,55 @@ def get_listing(
     _p: None = _CAN_READ,
 ) -> dict[str, Any]:
     return service.serialize(_get_or_404(db, listing_id))
+
+
+# ── public feed ──────────────────────────────────────────────────────────────
+
+
+@public_router.get("/public/door-listings.json")
+def public_listing_feed(
+    listing_type: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Published listings as JSON. No auth — deliberately, and by the same
+    argument that already made the photos below unauthenticated.
+
+    The keyed `/api/v1/listings` route predates this one and stays for
+    integrations, but requiring a key here bought nothing: the photos are
+    served without one (the 60 req/min per-key cap forced that), and this JSON
+    is strictly LESS sensitive than those images — it is the exact
+    advertisement data the marketing page renders to the world, produced by
+    `serialize(public=True)`, which is test-pinned to drop every internal
+    field and to null the price on call-for-price listings. Meanwhile the key
+    requirement had a real cost: the whole feature sat dark behind one
+    hand-pasted hPanel env var. Fail-closed guards belong on the WRITE path
+    (publish needs `listings.publish`); the published feed is the thing we are
+    trying to show people.
+
+    Same graceful-degrade contract as the keyed route: any failure returns an
+    empty feed, never a 500 — the marketing page has a static fallback for
+    exactly that.
+    """
+    if listing_type and listing_type not in LISTING_TYPES:
+        raise HTTPException(
+            status_code=422, detail=f"listing_type must be one of {list(LISTING_TYPES)}"
+        )
+    stmt = select(DoorListing).where(
+        DoorListing.status == "published",
+        DoorListing.deleted_at.is_(None),
+    )
+    if listing_type:
+        stmt = stmt.where(DoorListing.listing_type == listing_type)
+    try:
+        rows = db.execute(stmt.order_by(*service.public_ordering())).scalars().all()
+        payload = [service.serialize(r, public=True) for r in rows]
+    except Exception:
+        log.exception("public door-listings feed failed")
+        payload = []
+    return JSONResponse(
+        {"data": payload},
+        headers={"Cache-Control": "public, max-age=60"},
+    )
 
 
 # ── public photo bytes ───────────────────────────────────────────────────────
