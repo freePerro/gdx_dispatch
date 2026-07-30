@@ -588,7 +588,11 @@ def mobile_create_invoice(
         # labor stays UNPRICED and the §11 verification gate is the flag —
         # the invoice cannot reach a customer until the office reviewed it,
         # so nothing is ever silently $0-lined onto a PDF.
-        from gdx_dispatch.core.billing_lanes import lane_for_job, service_labor_line
+        from gdx_dispatch.core.billing_lanes import (
+            install_labor_line,
+            lane_for_job,
+            service_labor_line,
+        )
         from gdx_dispatch.core.closeouts import get_current_closeout
 
         closeout = get_current_closeout(db, _UUID(job_id))
@@ -596,6 +600,25 @@ def mobile_create_invoice(
         _new_lines_total = Decimal("0")
         if closeout is not None:
             lane = lane_for_job(job_job_type)
+            _install = None
+            if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
+                # Install lane: flat price from the picked matrix row. If the
+                # row is gone/inactive/$0, _install is None → labor stays
+                # unpriced (office lane), never guessed.
+                _install = install_labor_line(db, closeout.labor_matrix_item_id)
+                if _install is not None:
+                    db.add(InvoiceLine(
+                        id=uuid4(),
+                        invoice_id=invoice.id,
+                        description=_install.description,
+                        quantity=_install.quantity,
+                        unit_price=_install.unit_price,
+                        line_total=_install.line_total,
+                        sort_order=_sort,
+                        company_id=str(tenant_id),
+                    ))
+                    _new_lines_total += _install.line_total
+                    _sort += 1
             if lane == "service" and float(closeout.hours_worked or 0) > 0:
                 labor = service_labor_line(
                     db,

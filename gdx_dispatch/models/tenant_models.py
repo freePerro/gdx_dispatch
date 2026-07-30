@@ -2270,6 +2270,13 @@ class JobCloseout(Base):
     # their own day clock; one tech attesting "there were two of us" is a
     # billing fact, not a payroll attestation for a colleague).
     techs_on_site: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    # Plan §8/§14 gap 1 (install lane): the labor-matrix row the tech picked
+    # at closeout for a flat-priced install. NULL for service-lane jobs
+    # (priced hourly) and for installs the tech didn't pick a row for (fall
+    # to office-priced). String(36), not an FK — labor_price_items lives on
+    # TenantBase and matrix rows are occasionally reseeded; a hard FK would
+    # block that. billing_lanes re-reads flat_price live from the row.
+    labor_matrix_item_id: Mapped[str] = mapped_column(String(36), nullable=True)
     hourly_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
     signature_data: Mapped[str] = mapped_column(Text, nullable=True)
     signed_by: Mapped[str] = mapped_column(String(200), nullable=True)

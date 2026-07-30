@@ -1468,6 +1468,7 @@ function replayTour() {
       v-model:visible="closeoutOpen"
       :job-id="closeoutJob?.id || ''"
       :job-title="closeoutJob?.title || closeoutJob?.customer?.name || ''"
+      :job-type="closeoutJob?.job_type || ''"
       :customer-name="closeoutJob?.customer?.name || ''"
       @closed-out="onCloseoutDone"
     />

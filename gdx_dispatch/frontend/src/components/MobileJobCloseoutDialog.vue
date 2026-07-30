@@ -27,6 +27,8 @@ import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
+import Select from 'primevue/select'
+import { isInstallLane as _isInstallLane } from '../constants/jobTypes'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 
@@ -34,6 +36,7 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   jobId: { type: String, default: null },
   jobTitle: { type: String, default: '' },
+  jobType: { type: String, default: '' },
   customerName: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'closed-out'])
@@ -116,6 +119,25 @@ const techsOnSite = ref(1)
 // control must fail CLOSED). "Is this how many hours you meant?"
 const confirmStep = ref(false)
 const confirmArmedAt = ref(0)
+// Plan §8/§14 gap 1: the install flat-price picker. Only relevant for the
+// install lane; service jobs price hourly and never see it.
+// Canonical lane, not a raw string (audit round 2): an install from the quote
+// flow arrives as 'installation'/'Install' and must still show the picker.
+const isInstallLane = computed(() => _isInstallLane(props.jobType))
+const matrixItems = ref([])
+const matrixItemId = ref(null)
+async function loadMatrix() {
+  if (!isInstallLane.value || matrixItems.value.length) return
+  try {
+    const r = await api.get('/api/labor-pricing/items?active=true', { suppressErrorToast: true })
+    matrixItems.value = (Array.isArray(r) ? r : r?.items || []).map((i) => ({
+      label: `${i.description} — $${Number(i.flat_price).toFixed(2)}`,
+      value: String(i.id),
+    }))
+  } catch {
+    matrixItems.value = []
+  }
+}
 const notes = ref('')
 const signedBy = ref('')
 const sigCanvas = ref(null)
@@ -222,6 +244,7 @@ async function submit() {
     no_parts_used: noPartsUsed.value,
     hours: Number(hours.value) || 0,
     techs_on_site: Math.max(1, Math.min(10, Number(techsOnSite.value) || 1)),
+    labor_matrix_item_id: isInstallLane.value ? (matrixItemId.value || null) : null,
     signature_data,
     signed_by: signedBy.value.trim() || null,
     notes: notes.value.trim() || null,
@@ -301,6 +324,7 @@ function _resetForm() {
   parts.value = []
   hours.value = 0
   techsOnSite.value = 1
+  matrixItemId.value = null
   confirmStep.value = false
   notes.value = ''
   // Pre-fill the signer with the customer's name when known — saves the
@@ -415,6 +439,21 @@ watch(open, async (v) => {
       <!-- Hours -->
       <section class="section">
         <header class="section-head"><h3>Labor</h3></header>
+        <div v-if="isInstallLane" class="form-field" data-testid="mjco-install-picker">
+          <label for="mjco-matrix">Install price (from the matrix)</label>
+          <Select
+            id="mjco-matrix"
+            v-model="matrixItemId"
+            :options="matrixItems"
+            option-label="label"
+            option-value="value"
+            placeholder="Pick the install line…"
+            class="w-full"
+            data-testid="mjco-matrix-select"
+            @before-show="loadMatrix"
+          />
+          <small class="muted">Installs bill this flat price; hours below are for records only.</small>
+        </div>
         <div class="form-field">
           <label for="mjco-hours">Hours worked</label>
           <input

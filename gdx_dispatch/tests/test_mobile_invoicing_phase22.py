@@ -632,3 +632,55 @@ def test_invoice_from_closeout_office_lane_leaves_labor_unpriced(session_factory
         assert not labor, "office lane must not price labor"
     finally:
         db.close()
+
+
+def test_invoice_install_lane_flat_price_no_double_labor(session_factory):
+    """Plan §8 install lane end-to-end (audit: the router install branch had
+    no test). Install job + matrix pick + hours>0 → ONE flat labor line
+    (never flat + hourly — the lanes are mutually exclusive), draft."""
+    from uuid import UUID as _U
+    from uuid import uuid4 as _u4
+    from decimal import Decimal as _D
+    import datetime as _dt
+
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+    from gdx_dispatch.models.tenant_models import JobCloseout
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        LaborPriceItem.__table__.create(bind=db.get_bind(), checkfirst=True)
+        item_id = _u4()
+        db.add(LaborPriceItem(
+            id=item_id, description="16x7 Sectional Install", service_type="install",
+            flat_price=_D("650"), assumed_man_hours=_D("6.5"), default_crew_size=1,
+            min_wall_clock_minutes=15, active=True, effective_from=_dt.date(2026, 1, 1),
+            sort_order=1,
+        ))
+        db.execute(
+            text("UPDATE jobs SET job_type = 'Installation' WHERE id = :j"),
+            {"j": seed["job_id"]},
+        )
+        db.add(JobCloseout(
+            id=_u4(), job_id=_U(seed["job_id"]), parts_used=[], no_parts_used=True,
+            hours_worked=8.0, techs_on_site=2,  # hours + crew that WOULD hourly-bill
+            labor_matrix_item_id=str(item_id),
+            closed_by_user_id="user-1", closed_at=datetime.now(UTC),
+        ))
+        db.commit()
+
+        resp = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(send_email=False),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        # Flat $650, NOT 8h×2×$100 — the install lane ignores hours for price.
+        assert float(body["total"]) == 650.0, body["total"]
+        install_lines = [ln for ln in body["lines"] if "Install —" in (ln["description"] or "")]
+        hourly_lines = [ln for ln in body["lines"] if "man-hours" in (ln["description"] or "")]
+        assert len(install_lines) == 1
+        assert not hourly_lines, "install lane must not ALSO add an hourly line"
+    finally:
+        db.close()
