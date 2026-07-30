@@ -650,6 +650,129 @@ def test_decline_trims_the_loss_reason(client: TestClient):
     assert r.json()["declined_reason"] == "Went with a competitor"
 
 
+def _force_status(client: TestClient, estimate_id: str, status: str) -> None:
+    """Set an estimate's status directly (the API won't move it to 'expired')."""
+    import uuid as _uuid
+
+    from gdx_dispatch.modules.proposals.models import Estimate
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        est = db.query(Estimate).filter(Estimate.id == _uuid.UUID(estimate_id)).one()
+        est.status = status
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_reopen_expired_estimate_goes_to_draft(client: TestClient):
+    estimate = _create_estimate(client)
+    _force_status(client, estimate["id"], "expired")
+
+    r = client.post(f"/api/estimates/{estimate['id']}/reopen")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "draft"
+    assert data["valid_until"] is None  # fresh window stamped on next send
+    assert data["price_drift"] == []    # no labor lines → nothing to drift
+
+
+def test_reopen_declined_clears_the_loss_reason(client: TestClient):
+    estimate = _create_estimate(client)
+    client.post(f"/api/estimates/{estimate['id']}/decline", json={"reason": "Price too high"})
+
+    data = client.post(f"/api/estimates/{estimate['id']}/reopen").json()
+    assert data["status"] == "draft"
+    assert data["declined_reason"] is None
+    assert data["declined_at"] is None
+
+
+def test_cannot_reopen_an_active_or_accepted_estimate(client: TestClient):
+    estimate = _create_estimate(client)
+    # draft
+    assert client.post(f"/api/estimates/{estimate['id']}/reopen").status_code == 409
+    # sent
+    client.post(f"/api/estimates/{estimate['id']}/send")
+    assert client.post(f"/api/estimates/{estimate['id']}/reopen").status_code == 409
+    # accepted
+    client.post(f"/api/estimates/{estimate['id']}/accept")
+    assert client.post(f"/api/estimates/{estimate['id']}/reopen").status_code == 409
+
+
+def test_reopen_reports_labor_price_drift(client: TestClient):
+    """A labor-matrix line quoted at one price surfaces as drift when the
+    matrix flat_price has since changed."""
+    import uuid as _uuid
+
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+
+    estimate = _create_estimate(client)
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        item = LaborPriceItem(
+            id=_uuid.uuid4(), description="Opener install", service_type="install",
+            flat_price=150, assumed_man_hours=2,
+        )
+        db.add(item)
+        line = EstimateLine(
+            id=_uuid.uuid4(), estimate_id=_uuid.UUID(estimate["id"]),
+            description="Opener install", quantity=1, unit_price=100, line_total=100,
+            labor_price_item_id=item.id, company_id="tenant-test",
+        )
+        db.add(line)
+        est = db.query(Estimate).filter(Estimate.id == _uuid.UUID(estimate["id"])).one()
+        est.status = "expired"
+        db.commit()
+    finally:
+        db.close()
+
+    data = client.post(f"/api/estimates/{estimate['id']}/reopen").json()
+    assert data["status"] == "draft"
+    drift = data["price_drift"]
+    assert len(drift) == 1
+    assert drift[0]["quoted_unit_price"] == 100
+    assert drift[0]["current_price"] == 150
+    assert drift[0]["delta"] == 50
+    assert drift[0]["line_delta"] == 50  # qty 1
+    assert drift[0]["reason"] == "matrix price changed"
+
+
+def test_reopen_flags_a_row_retired_by_effective_to(client: TestClient):
+    """A matrix row that's still active=True but superseded by effective_to is
+    NOT billable (install_labor_line refuses it) — reopen must flag it, not
+    give a false 'prices still check out'."""
+    import uuid as _uuid
+    from datetime import date, timedelta
+
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
+
+    estimate = _create_estimate(client)
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        item = LaborPriceItem(
+            id=_uuid.uuid4(), description="Spring replace", service_type="repair",
+            flat_price=200, assumed_man_hours=1, active=True,
+            effective_to=date.today() - timedelta(days=1),  # retired yesterday
+        )
+        db.add(item)
+        db.add(EstimateLine(
+            id=_uuid.uuid4(), estimate_id=_uuid.UUID(estimate["id"]),
+            description="Spring replace", quantity=1, unit_price=200, line_total=200,
+            labor_price_item_id=item.id, company_id="tenant-test",
+        ))
+        est = db.query(Estimate).filter(Estimate.id == _uuid.UUID(estimate["id"])).one()
+        est.status = "declined"
+        db.commit()
+    finally:
+        db.close()
+
+    drift = client.post(f"/api/estimates/{estimate['id']}/reopen").json()["price_drift"]
+    assert len(drift) == 1
+    assert drift[0]["current_price"] is None
+    assert drift[0]["reason"] == "matrix row no longer available"
+
+
 def test_cannot_accept_declined_estimate(client: TestClient):
     estimate = _create_estimate(client)
     decline = client.post(f"/api/estimates/{estimate['id']}/decline", json={"reason": "No"})

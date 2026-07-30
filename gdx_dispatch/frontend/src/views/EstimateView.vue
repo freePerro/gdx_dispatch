@@ -100,6 +100,38 @@
         </template>
       </Dialog>
 
+      <!-- Price-drift warning shown after reopening when matrix prices moved. -->
+      <Dialog v-model:visible="driftDialogOpen" header="Reopened — check these prices" :style="{ width: '560px' }" modal data-testid="drift-dialog">
+        <p class="text-sm mb-3">
+          This estimate is a draft again. Since it was quoted, the labor-matrix
+          price changed on {{ priceDrift.length }} line{{ priceDrift.length === 1 ? '' : 's' }} —
+          review before you re-send. (Parts / free-form lines aren't auto-checked.)
+        </p>
+        <DataTable :value="priceDrift" responsiveLayout="scroll" data-testid="drift-table" striped-rows>
+          <Column field="description" header="Line" />
+          <Column header="Qty" style="width:56px">
+            <template #body="{ data }">{{ data.quantity }}</template>
+          </Column>
+          <Column header="Quoted (ea)">
+            <template #body="{ data }">{{ formatDrift(data.quoted_unit_price) }}</template>
+          </Column>
+          <Column header="Now (ea)">
+            <template #body="{ data }">{{ data.current_price === null ? 'unavailable' : formatDrift(data.current_price) }}</template>
+          </Column>
+          <Column header="Line change">
+            <template #body="{ data }">
+              <span v-if="data.line_delta === null" class="muted">{{ data.reason }}</span>
+              <span v-else :style="{ color: data.line_delta > 0 ? 'var(--p-red-400, #f87171)' : 'var(--p-green-400, #4ade80)' }">
+                {{ data.line_delta > 0 ? '+' : '' }}{{ formatDrift(data.line_delta) }}
+              </span>
+            </template>
+          </Column>
+        </DataTable>
+        <template #footer>
+          <Button label="Got it" @click="driftDialogOpen = false" data-testid="drift-dialog-close" />
+        </template>
+      </Dialog>
+
       <Dialog v-model:visible="requestDepositOpen" header="Request Deposit" :style="{ width: '460px' }" modal data-testid="request-deposit-dialog">
         <p class="text-sm mb-3">
           Create a deposit invoice for this accepted estimate. Collect it by
@@ -606,6 +638,12 @@
           <Button label="Decline" icon="pi pi-times" severity="danger" outlined data-testid="estimate-decline"
             :disabled="estimate.status === 'Declined' || estimate.status === 'Accepted'"
             @click="declineEstimate" />
+          <!-- Reopen a closed estimate (§15) — customers come back months later.
+               Only for Expired/Declined/Rejected; warns on stale matrix prices. -->
+          <Button v-if="['Expired','Declined','Rejected'].includes(estimate.status)"
+            label="Reopen" icon="pi pi-replay" severity="warn" outlined
+            :loading="reopenBusy" data-testid="estimate-reopen"
+            @click="reopenEstimate" />
           <!-- Retroactive deposit (2026-07-23): estimates accepted before
                the deposit feature (or with the deposit step skipped) get
                an explicit door — same invoice the accept-time flow makes. -->
@@ -2380,6 +2418,39 @@ async function doDeclineEstimate() {
   } finally {
     declineBusy.value = false;
   }
+}
+
+// Reopen a closed estimate (§15). The backend flips it to draft and returns a
+// price_drift report; if any line's matrix price changed we surface it so the
+// office re-checks the numbers before re-sending.
+const reopenBusy = ref(false);
+const driftDialogOpen = ref(false);
+const priceDrift = ref([]);
+
+async function reopenEstimate() {
+  reopenBusy.value = true;
+  try {
+    const result = await api.post(`/api/estimates/${route.params.id}/reopen`, {});
+    estimate.value.status = _titleCase(result?.status || "draft");
+    estimate.value.declined_reason = null;
+    estimate.value.expires_at = "";
+    priceDrift.value = Array.isArray(result?.price_drift) ? result.price_drift : [];
+    if (priceDrift.value.length) {
+      driftDialogOpen.value = true; // make them look before re-sending
+    } else {
+      toast.add({ severity: "success", summary: "Reopened", detail: "Estimate is a draft again — prices still check out.", life: 3500 });
+    }
+  } catch (err) {
+    const msg = err?.status === 409 ? "Only expired, declined, or rejected estimates can be reopened." : (err.message || "Failed to reopen");
+    toast.add({ severity: "error", summary: "Error", detail: msg, life: 4000 });
+  } finally {
+    reopenBusy.value = false;
+  }
+}
+
+function formatDrift(v) {
+  if (v === null || v === undefined) return "—";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(v) || 0);
 }
 
 function convertToJob() {

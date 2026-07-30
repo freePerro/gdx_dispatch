@@ -1948,6 +1948,115 @@ def decline_estimate(
     return _serialize_estimate(estimate, include_lines=False)
 
 
+def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
+    """Which of this estimate's lines have gone stale since it was quoted?
+
+    Reliable only for labor-matrix lines (labor_price_item_id set): compare the
+    quoted unit_price to the matrix row's CURRENT flat_price. A row that's been
+    archived (deleted → FK SET NULL) or deactivated is also drift — the price
+    the customer saw is no longer one we stand behind. Free-form / parts lines
+    have no catalog FK, so they can't be auto-checked and are left out (the UI
+    says as much). Used to warn on reopen — 'people come back months later and
+    the numbers are still good' is the hope; this proves it or flags it.
+    """
+    import datetime as _dt
+
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+
+    def _is_retired(item: "LaborPriceItem") -> bool:
+        # SAME definition install_labor_line (billing_lanes) uses to refuse a
+        # row: gone/inactive, OR retired by effective_to (stays active=True!),
+        # OR a $0 row. Anything short of this would let a superseded row read
+        # as "prices still check out" — the exact false reassurance to avoid.
+        if item is None or not item.active:
+            return True
+        eff_to = getattr(item, "effective_to", None)
+        if eff_to is not None and eff_to < _dt.date.today():
+            return True
+        return _to_float(item.flat_price) <= 0
+
+    drift: list[dict] = []
+    lines = getattr(estimate, "lines", None) or []
+    for line in lines:
+        item_id = getattr(line, "labor_price_item_id", None)
+        if not item_id:
+            continue  # non-labor / free-form — no reliable current price to compare
+        current = db.get(LaborPriceItem, item_id)
+        quoted = _to_float(line.unit_price)
+        qty = int(getattr(line, "quantity", 1) or 1)
+        if _is_retired(current):
+            drift.append({
+                "line_id": str(line.id),
+                "description": line.description,
+                "quantity": qty,
+                "quoted_unit_price": quoted,
+                "current_price": None,
+                "delta": None,
+                "line_delta": None,
+                "reason": "matrix row no longer available",
+            })
+            continue
+        current_price = _to_float(current.flat_price)
+        if abs(current_price - quoted) >= 0.005:  # penny tolerance
+            delta = round(current_price - quoted, 2)
+            drift.append({
+                "line_id": str(line.id),
+                "description": line.description,
+                "quantity": qty,
+                "quoted_unit_price": quoted,
+                "current_price": current_price,
+                "delta": delta,
+                "line_delta": round(delta * qty, 2),  # per-unit × qty = line impact
+                "reason": "matrix price changed",
+            })
+    return drift
+
+
+@router.post("/{estimate_id}/reopen", response_model=None)
+def reopen_estimate(
+    estimate_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Reopen a closed estimate so it can be re-sent — 'sometimes people come
+    back months later and the numbers are still good' (Doug §15).
+
+    Only expired / declined / rejected estimates reopen (an active draft/sent
+    one has nothing to reopen; accepted is terminal). Goes back to 'draft' and
+    clears the closed-state stamps (declined_at/reason, valid_until) so the
+    next send re-stamps a fresh expiry window. Returns the estimate plus a
+    price_drift report so the office can re-check the numbers before re-sending.
+    """
+    estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
+    if estimate.status not in {"expired", "declined", "rejected"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"only an expired, declined, or rejected estimate can be reopened (is '{estimate.status}')",
+        )
+    drift = _compute_price_drift(estimate, db)
+
+    estimate.status = "draft"
+    estimate.declined_at = None
+    estimate.declined_reason = None
+    estimate.valid_until = None  # a fresh window is stamped on the next send
+    estimate.updated_at = utcnow()
+    db.commit()
+    db.refresh(estimate)
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=_actor_id(_),
+        action="estimate_reopened",
+        entity_type="estimate",
+        entity_id=str(estimate.id),
+        details={"drifted_line_count": len(drift)},
+    )
+    db.commit()
+    payload = _serialize_estimate(estimate, include_lines=False)
+    payload["price_drift"] = drift
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # Convert estimate → job (closes EstimatesView + EstimateDetailView Vue gap)
 # ---------------------------------------------------------------------------
