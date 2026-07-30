@@ -665,8 +665,59 @@ def apply_job_template(job_id: str, payload: _GenericPayload, _: dict = Depends(
 # ── Labor time entries (via /api/labor/jobs/...) ──────────────────────────
 
 @router.get("/api/labor/jobs/{job_id}/time-entries", response_model=None)
-def list_labor_time_entries(job_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
+def list_labor_time_entries(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: _Session = Depends(get_db),
+) -> dict:
+    # SAME gate as the real labor endpoint (audit round 2): this serves
+    # tenant-wide cost data — hourly_rate, labor_cost, tech names — which
+    # labor.list_job_time_entries restricts to dispatch/admin. Un-stubbing it
+    # WITHOUT this gate silently demoted a role gate to a module gate and let
+    # any technician read it. is_dispatch_manager is the same predicate.
+    from fastapi import HTTPException
+
+    from gdx_dispatch.core.roles import is_dispatch_manager
+
+    # Pass the ROLE, not the whole dict: normalize_role stringifies its arg,
+    # so is_dispatch_manager(dict) is always False (a latent bug the real
+    # labor _require_dispatch shares, hidden because nothing calls it). Read
+    # the role the same way get_current_user stores it.
+    _role = (current_user or {}).get("role") or (current_user or {}).get("user_role") or ""
+    if not is_dispatch_manager(_role):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    # Plan §3: this was a STUB returning an empty list — the JobDetailView
+    # Time Entries table has been blank since it was written, hitting this
+    # shim instead of the real labor endpoint (which lives at the sibling
+    # path /api/jobs/{id}/time-entries). Serve the real rows, with the labor
+    # router's fixed serialization (resolved tech name + $65-configured cost
+    # fallback).
+    from uuid import UUID as _UUID
+
+    from gdx_dispatch.models.tenant_models import TimeEntry
+    from gdx_dispatch.routers.labor import (
+        _cost_rate_fallback,
+        _entry_to_dict,
+        _resolve_entry_names,
+    )
+
+    try:
+        jid = _UUID(str(job_id))
+    except (ValueError, AttributeError):
+        return _empty_list()
+    rows = (
+        db.query(TimeEntry)
+        .filter(TimeEntry.job_id == jid, TimeEntry.deleted_at.is_(None))
+        .order_by(TimeEntry.clock_in.desc())
+        .all()
+    )
+    fallback = _cost_rate_fallback(db)
+    names = _resolve_entry_names(db, rows)
+    items = [
+        _entry_to_dict(r, name=names.get(str(r.id)), fallback_rate=fallback)
+        for r in rows
+    ]
+    return {"items": items, "total": len(items)}
 
 
 # ── Proposals: line items, approve, convert ───────────────────────────────
