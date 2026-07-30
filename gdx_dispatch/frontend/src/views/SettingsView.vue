@@ -813,6 +813,13 @@
                     <div class="muted">Block completion until the customer has signed.</div>
                   </div>
                 </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                  <ToggleSwitch v-model="workflowFlags.closeout_billing_reconciliation" data-testid="wf-closeout-reconcile" />
+                  <div>
+                    <strong>Flag closeout changes after billing</strong>
+                    <div class="muted">When a job is re-closed-out after it was already invoiced, surface it on the Billing page so the office can reconcile — instead of silently re-billing. OFF by default.</div>
+                  </div>
+                </div>
                 <div>
                   <Button label="Save Workflow Settings" icon="pi pi-save" @click="saveWorkflowFlags" :loading="workflowSaving" data-testid="workflow-save" />
                 </div>
@@ -1873,6 +1880,7 @@ const workflowFlags = reactive({
   require_hours_on_complete: false,
   require_signature_on_complete: false,
   require_invoice_on_complete: false,
+  closeout_billing_reconciliation: false,
 });
 const workflowSaving = ref(false);
 

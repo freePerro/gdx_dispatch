@@ -544,6 +544,29 @@ def billing_summary(
     }
 
 
+@router.get(
+    "/closeout-discrepancies",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.read_all"))],
+)
+def closeout_billing_discrepancies(
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Jobs billed from a closeout that was later revised (plan §12) — the
+    invoice no longer matches the attested work, so the office reconciles.
+
+    Company-gated: returns {enabled:false, items:[]} when the tenant hasn't
+    turned on closeout_billing_reconciliation. Read-only — surfacing only; the
+    supplemental-invoice / credit-memo action is a separate step.
+    """
+    from gdx_dispatch.core.closeout_reconciliation import find_closeout_billing_discrepancies
+
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
+    return find_closeout_billing_discrepancies(db, tenant_id)
+
+
 @router.get("", response_model=None, dependencies=[Depends(require_permission("invoices.read_all"))])
 def list_invoices(
     request: Request,
