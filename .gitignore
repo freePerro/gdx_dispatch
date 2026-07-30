@@ -103,6 +103,12 @@ gdx-dev-portal/node_modules/
 gdx/frontend/e2e-results.json
 gdx/frontend/e2e-route-report.json
 gdx/frontend/test-results/
+# Same, at the CURRENT path — the tree moved gdx/ → gdx_dispatch/ and the
+# patterns above stopped matching, so run artifacts were showing up untracked.
+gdx_dispatch/frontend/e2e-results.json
+gdx_dispatch/frontend/e2e-route-report.json
+gdx_dispatch/frontend/test-results/
+gdx_dispatch/frontend/e2e-artifacts/
 
 # orchestrator extracted to ../gdx-orchestrator on 2026-04-20
 ai-queue/_archived_orchestrator_2026-04-20/

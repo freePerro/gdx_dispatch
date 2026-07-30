@@ -93,6 +93,12 @@ class JobCreate(BaseModel):
     # customer_locations row this job is at. NULL → JobDetailView falls
     # back to the customer's primary location (existing behavior).
     location_id: str | None = Field(default=None, max_length=36)
+    # 2026-07-29: same class of bug as `description` above — both JobsView and
+    # MobileJobNewDialog have always POSTed `notes` (the "Dispatch notes for
+    # tech" box), pydantic had no field for it, so every note an operator typed
+    # at create time was silently dropped. Declared here AND assigned in
+    # create_job; a field without the assignment is the same bug wearing a hat.
+    notes: str | None = Field(default=None, max_length=20000)
 
 
 class JobUpdate(BaseModel):
@@ -442,6 +448,11 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "billing_status": job.billing_status,
         "scheduled_at": job.scheduled_at,
         "completed_at": job.completed_at,
+        # 2026-07-29: the third face of the same bug. `notes` (the "Dispatch
+        # notes for tech" box) was dropped by JobCreate, never assigned in
+        # create_job, AND never serialized here — so even once it persisted,
+        # nothing could read it back. Write-only fields are invisible fields.
+        "notes": job.notes,
         "priority": job.priority,
         "job_type": job.job_type,
         "customer_id": job.customer_id,
@@ -551,6 +562,7 @@ def list_jobs(
     date: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    order: str | None = None,
 ):
     _ = current_user
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -609,6 +621,26 @@ def list_jobs(
         page_size = 500
 
     page_size = max(1, min(page_size, 500))
+
+    # Ordering is an EVICTION POLICY, not presentation — every capped fetch of
+    # this endpoint keeps the first page_size rows and drops the rest, and
+    # ~15 views consume it as their job picker with caps of 50/200/500.
+    #
+    # Default (`scheduled`): `scheduled_at DESC NULLS LAST` — dated work always
+    #   survives a cap; undated backlog is what gets evicted. Load-bearing for
+    #   the picker views; do not change it out from under them.
+    # Opt-in (`order=activity`, 2026-07-29): COALESCE(scheduled_at, created_at)
+    #   DESC — undated jobs slot into the timeline by creation time. Exists for
+    #   the /jobs list view, where the old default sank a just-created undated
+    #   job below every dated job in the tenant (last page, invisible the
+    #   moment it was saved → the operator concluded the save failed and saved
+    #   again). Under a cap this evicts the oldest of the coalesced timeline,
+    #   so it is NOT the right ordering for pickers that must never lose old
+    #   scheduled-but-unfinished work.
+    if (order or "").strip().lower() == "activity":
+        order_sql = "ORDER BY COALESCE(j.scheduled_at, j.created_at) DESC, j.created_at DESC "
+    else:
+        order_sql = "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
     offset = (page - 1) * page_size
 
     # Dynamic WHERE — kept as raw SQL because of ILIKE, CAST on PG enum, and
@@ -680,7 +712,7 @@ def list_jobs(
                 f"LEFT JOIN technicians t ON CAST(t.id AS TEXT) = CAST(j.assigned_to AS TEXT) AND t.deleted_at IS NULL "
                 "LEFT JOIN customer_locations cl ON cl.id = j.location_id AND cl.deleted_at IS NULL "
                 f"WHERE {where_sql} "
-                "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
+                f"{order_sql}"
                 "LIMIT :page_size OFFSET :offset"
             ),
             {**params, "page_size": page_size, "offset": offset},
@@ -861,6 +893,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             holding_area_id=derived_holding_area,
             scheduled_duration_hours=payload.scheduled_duration_hours,
             location_id=payload.location_id or None,
+            notes=(payload.notes or "").strip() or None,
         )
         db.add(job)
         db.flush()
