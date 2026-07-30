@@ -29,6 +29,9 @@ _FLAG_COLUMNS = (
     # hard gate. Default OFF — the daily billing follow-up loop chases
     # invoice-after-completion shops instead.
     "workflow_require_invoice_on_complete",
+    # §12 (Doug 2026-07-30): surface jobs re-closed-out AFTER they were billed
+    # so the office can reconcile. Company-wide on/off. Default OFF.
+    "closeout_billing_reconciliation",
 )
 
 
@@ -40,6 +43,7 @@ class WorkflowFlags(BaseModel):
     require_hours_on_complete: bool = False
     require_signature_on_complete: bool = False
     require_invoice_on_complete: bool = False
+    closeout_billing_reconciliation: bool = False
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -74,6 +78,7 @@ def _read(db: Session, tid: UUID) -> dict[str, bool]:
         "require_hours_on_complete": bool(row[4]),
         "require_signature_on_complete": bool(row[5]),
         "require_invoice_on_complete": bool(row[6]),
+        "closeout_billing_reconciliation": bool(row[7]),
     }
 
 
@@ -103,8 +108,8 @@ def update_flags(
             "workflow_post_arrival_event, workflow_sms_arrival_notify, "
             "workflow_require_parts_on_complete, workflow_require_hours_on_complete, "
             "workflow_require_signature_on_complete, "
-            "workflow_require_invoice_on_complete) "
-            "VALUES (:tid, :a, :b, :c, :d, :e, :f, :g) "
+            "workflow_require_invoice_on_complete, closeout_billing_reconciliation) "
+            "VALUES (:tid, :a, :b, :c, :d, :e, :f, :g, :h) "
             "ON CONFLICT (tenant_id) DO UPDATE SET "
             "  workflow_lock_schedule_on_start = EXCLUDED.workflow_lock_schedule_on_start, "
             "  workflow_post_arrival_event = EXCLUDED.workflow_post_arrival_event, "
@@ -112,7 +117,8 @@ def update_flags(
             "  workflow_require_parts_on_complete = EXCLUDED.workflow_require_parts_on_complete, "
             "  workflow_require_hours_on_complete = EXCLUDED.workflow_require_hours_on_complete, "
             "  workflow_require_signature_on_complete = EXCLUDED.workflow_require_signature_on_complete, "
-            "  workflow_require_invoice_on_complete = EXCLUDED.workflow_require_invoice_on_complete"
+            "  workflow_require_invoice_on_complete = EXCLUDED.workflow_require_invoice_on_complete, "
+            "  closeout_billing_reconciliation = EXCLUDED.closeout_billing_reconciliation"
         ),
         {
             "tid": str(tid),
@@ -123,6 +129,7 @@ def update_flags(
             "e": payload.require_hours_on_complete,
             "f": payload.require_signature_on_complete,
             "g": payload.require_invoice_on_complete,
+            "h": payload.closeout_billing_reconciliation,
         },
     )
     db.commit()

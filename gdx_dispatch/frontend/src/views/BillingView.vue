@@ -99,6 +99,46 @@
         </template>
       </Card>
 
+      <!-- §12: jobs re-closed-out after they were billed. Only rendered when
+           the company toggle is on AND there's something to reconcile. -->
+      <Card v-if="closeoutDiscrepancies.length" class="ready-billing-card" data-testid="closeout-discrepancies">
+        <template #title>
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-exclamation-triangle" style="color: var(--p-amber-500)" />
+            Closeout changed after billing
+            <Tag :value="String(closeoutDiscrepancies.length)" severity="warn" rounded />
+          </div>
+        </template>
+        <template #content>
+          <p class="muted" style="margin-top:0">
+            These jobs were invoiced, then re-closed-out — the invoice may no longer match the work. Review before it re-bills.
+          </p>
+          <DataTable responsiveLayout="scroll" :value="closeoutDiscrepancies" :rows="5" size="small" stripedRows data-testid="closeout-discrepancies-table">
+            <Column field="customer_name" header="Customer" />
+            <Column header="Invoice">
+              <template #body="{ data }">
+                {{ data.invoice.invoice_number }} · {{ currency(data.invoice.total) }} · {{ data.invoice.status }}
+              </template>
+            </Column>
+            <Column header="Change">
+              <template #body="{ data }">
+                <span class="muted">
+                  hrs {{ data.billed_against?.hours_worked ?? '?' }} → {{ data.current_closeout?.hours_worked ?? '?' }},
+                  techs {{ data.billed_against?.techs_on_site ?? '?' }} → {{ data.current_closeout?.techs_on_site ?? '?' }},
+                  parts {{ data.billed_against?.parts_count ?? '?' }} → {{ data.current_closeout?.parts_count ?? '?' }}
+                </span>
+              </template>
+            </Column>
+            <Column header="Action" style="width: 10rem">
+              <template #body="{ data }">
+                <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
+                  @click="reviewJob({ id: data.job_id })" data-testid="review-closeout-discrepancy" />
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
       <!-- Toolbar: Search + Date filter + Create -->
       <div class="billing-toolbar">
         <span class="p-input-icon-left search-wrap">
@@ -500,6 +540,7 @@ const readyJobs = ref([]);
 // PR4 — /api/parts-needed/unbilled-consumed: parts used on completed jobs
 // that never reached an invoice, grouped per job.
 const leakedParts = ref([]);
+const closeoutDiscrepancies = ref([]);
 const creating = ref(false);
 const recordingPayment = ref(false);
 const invoices = ref([]);
@@ -1152,6 +1193,15 @@ async function loadData() {
     } catch (e) {
       console.warn("unbilled_consumed_parts_failed", e);
       leakedParts.value = [];
+    }
+    // §12 — jobs re-closed-out after billing. Server gates on the company
+    // toggle (enabled:false → empty), so the card just stays hidden when off.
+    try {
+      const disc = await api.get("/api/invoices/closeout-discrepancies");
+      closeoutDiscrepancies.value = disc && Array.isArray(disc.items) ? disc.items : [];
+    } catch (e) {
+      console.warn("closeout_discrepancies_failed", e);
+      closeoutDiscrepancies.value = [];
     }
   } catch (e) {
     console.error("billing_loadData_failed", e);
