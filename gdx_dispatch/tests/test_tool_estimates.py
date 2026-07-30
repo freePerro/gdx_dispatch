@@ -35,6 +35,7 @@ def _scalars_iter(values):
     s = MagicMock()
     inner = MagicMock()
     inner.__iter__ = lambda self: iter(values)
+    inner.all.return_value = list(values)  # next_estimate_number uses .scalars().all()
     s.scalars.return_value = inner
     return s
 
@@ -59,7 +60,9 @@ async def test_create_draft_preview_then_apply():
     customer = SimpleNamespace(id=cid, name="ACME")
     db = MagicMock()
     db.get.return_value = customer
-    db.execute.return_value = _scalar_result(2)
+    # next_estimate_number reads existing numbers via .scalars().all() and takes
+    # the max canonical suffix — two live EST-NNNNNN rows -> next is EST-000003.
+    db.execute.return_value = _scalars_iter(["EST-000001", "EST-000002"])
 
     p = _Principal(capabilities=[("write", "estimate")])
 

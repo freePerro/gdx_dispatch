@@ -5,7 +5,6 @@ import secrets
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
 
 from gdx_dispatch.core.mcp_registry import register_tool
 from gdx_dispatch.core.mcp_tool_descriptor import ToolDescriptor
@@ -46,10 +45,10 @@ DESCRIPTOR = ToolDescriptor(
 
 
 def _next_estimate_number(db: Any) -> str:
-    from gdx_dispatch.modules.proposals.models import Estimate
-
-    count = db.execute(select(func.count(Estimate.id))).scalar_one() or 0
-    return f"EST-{count + 1:06d}"
+    # Single source of truth — count(*)+1 skipped numbers once "-N" option
+    # variants existed (and collided on deletes). See proposals.service.
+    from gdx_dispatch.modules.proposals.service import next_estimate_number
+    return next_estimate_number(db)
 
 
 async def handler(

@@ -213,17 +213,15 @@ def _resolved_services(db: Session, request: Request) -> list[dict[str, Any]]:
 
 
 def _next_estimate_number(db: Session) -> str:
-    """Generate the next estimate number. Mirrors estimates._next_estimate_number."""
-    row = db.execute(
-        _text("SELECT estimate_number FROM estimates ORDER BY created_at DESC LIMIT 1")
-    ).first()
-    if row and row[0] and row[0].startswith("EST-"):
-        try:
-            n = int(row[0].split("-", 1)[1]) + 1
-            return f"EST-{n:06d}"
-        except (ValueError, AttributeError):
-            pass
-    return f"EST-{datetime.now(UTC):%y%m}{secrets.token_hex(2).upper()}"
+    """The next canonical estimate number — delegates to the ONE minter.
+
+    The old version read the most-recent number and did int(split("-",1)[1]);
+    once desktop duplicates began minting "-N" option variants (EST-000042-1),
+    that threw and fell back to a RANDOM number. The shared minter takes the max
+    of canonical EST-NNNNNN and ignores variants.
+    """
+    from gdx_dispatch.modules.proposals.service import next_estimate_number
+    return next_estimate_number(db)
 
 
 # ---------------------------------------------------------------------------

@@ -73,19 +73,9 @@ def _derive_margin_pct(cost: Decimal | float | None, unit_price: Decimal | float
 
 
 def _next_estimate_number(db: Session) -> str:
-    # Take the max numeric suffix of canonical EST-NNNNNN numbers (across BOTH live and
-    # soft-deleted rows — the unique constraint covers everything), +1. Legacy formats
-    # like EST-JOB-2026-0018 are ignored. count(*)+1 collides whenever rows are deleted
-    # or numbers are skipped (prod incident 2026-05-07: EST-000027 already taken).
-    rows = db.execute(select(Estimate.estimate_number)).scalars().all()
-    highest = 0
-    for n in rows:
-        if not n or len(n) != 10 or not n.startswith("EST-"):
-            continue
-        suffix = n[4:]
-        if suffix.isdigit():
-            highest = max(highest, int(suffix))
-    return f"EST-{highest + 1:06d}"
+    # Single source of truth — see proposals.service.next_estimate_number.
+    from gdx_dispatch.modules.proposals.service import next_estimate_number
+    return next_estimate_number(db)
 
 
 def _next_duplicate_label(db: Session, source_label: str | None) -> str | None:
@@ -126,6 +116,46 @@ def _next_duplicate_label(db: Session, source_label: str | None) -> str | None:
     suffix = f"-{n}"
     # Respect the String(200) label column limit if the base is very long.
     return f"{base[: 200 - len(suffix)]}{suffix}"
+
+
+def _next_duplicate_estimate_number(db: Session, source_number: str | None) -> str:
+    """Option-variant number for a duplicated estimate: ``<canonical>-N``.
+
+    Doug 2026-07-30: ~95% of duplicates are multiple options for ONE customer,
+    so the copy should stay visibly tied to the original — EST-000042 ->
+    EST-000042-1, -2, -3 — instead of getting an unrelated fresh number.
+    Re-duplicating any variant increments the SHARED base (EST-000042-1 ->
+    EST-000042-2, never a stacked -1-1), and we pick the lowest free N.
+
+    Only canonical ``EST-NNNNNN`` numbers get this treatment; a legacy/odd
+    source number falls back to a fresh canonical number. Suffixed variants are
+    len != 10 so _next_estimate_number ignores them — an option never advances
+    the main EST counter.
+    """
+    import re
+
+    m = re.match(r"^(EST-\d{6})(?:-\d+)?$", source_number or "")
+    if not m:
+        return _next_estimate_number(db)
+    base = m.group(1)
+
+    like_base = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    existing = db.execute(
+        select(Estimate.estimate_number).where(
+            Estimate.estimate_number.like(f"{like_base}-%", escape="\\")
+        )
+    ).scalars().all()
+    used: set[int] = set()
+    pattern = re.compile(re.escape(base) + r"-(\d+)$")
+    for num in existing:
+        mm = pattern.match(num or "")
+        if mm:
+            used.add(int(mm.group(1)))
+
+    n = 1
+    while n in used:
+        n += 1
+    return f"{base}-{n}"
 
 
 def _serialize_line(line: EstimateLine) -> dict[str, object]:
@@ -2117,9 +2147,11 @@ def duplicate_estimate(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Full clone of an estimate: same customer / jobsite / description /
-    notes / tax / lines. The job name (label) gets an incrementing "-N" suffix
-    so option variants stay distinguishable (see _next_duplicate_label). Resets
-    status=draft, mints a new estimate_number and public_token, clears
+    notes / tax / lines. Both the job name (label) AND the estimate_number get
+    an incrementing "-N" suffix so the copy reads as an option variant of the
+    same base — EST-000042 -> EST-000042-1, -2, -3 (see
+    _next_duplicate_estimate_number / _next_duplicate_label). Resets
+    status=draft, mints a fresh public_token, clears
     sent/accepted/declined/signed state and job linkage.
 
     Edge cases (auditor 2026-05-27):
@@ -2148,7 +2180,8 @@ def duplicate_estimate(
     new_estimate = Estimate(
         job_id=None,  # duplicates start unattached; original Job keeps its estimate
         customer_id=cloned_customer_id,
-        estimate_number=_next_estimate_number(db),
+        # Option variant of the same base — EST-000042-1, -2, -3 (Doug 2026-07-30).
+        estimate_number=_next_duplicate_estimate_number(db, source.estimate_number),
         label=_next_duplicate_label(db, source.label),
         jobsite_address=source.jobsite_address,
         description=source.description,
