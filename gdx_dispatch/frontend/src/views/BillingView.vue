@@ -280,6 +280,27 @@
         <Column field="due_date" header="Due Date" sortable>
           <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
         </Column>
+        <!-- Plan §11: the office-verification state. Unverified = the tech's
+             mobile Send is refused; the Verify action lives on the invoice
+             detail. Badge only drafts/sent-nothing — a delivered invoice's
+             verification state is history, not a to-do. -->
+        <Column header="Verified" style="width: 110px">
+          <template #body="{ data }">
+            <Tag
+              v-if="data.verified_at"
+              value="Verified"
+              severity="success"
+              :data-testid="`invoice-verified-${data.id}`"
+            />
+            <Tag
+              v-else
+              value="Unverified"
+              severity="warn"
+              v-tooltip="'Tech cannot send this from the field until the office verifies it'"
+              :data-testid="`invoice-unverified-${data.id}`"
+            />
+          </template>
+        </Column>
         <!-- QB-backfilled invoices carry sent_at as UTC midnight of the
              invoice date ("day known, minute not") — formatStampDate keeps
              those on the right calendar day and the time-of-day tooltip

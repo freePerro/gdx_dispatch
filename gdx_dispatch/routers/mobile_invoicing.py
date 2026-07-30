@@ -132,6 +132,7 @@ def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session
         "due_date": inv.due_date.isoformat() if inv.due_date else None,
         "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
         "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
+        "verified_at": inv.verified_at.isoformat() if inv.verified_at else None,
         "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
         "notes": inv.notes,
     }
@@ -323,6 +324,10 @@ def job_financial_summary(
                 # billed from the truck at all.
                 "billing_type": inv.billing_type or "standard",
                 "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
+                # §11: the tech UI shows "awaiting office verification" and
+                # disables Send with the reason — an invisible gate reads as
+                # a broken button and gets retried (the §4 lesson).
+                "verified_at": inv.verified_at.isoformat() if inv.verified_at else None,
             }
             for inv in invoices
         ],
@@ -800,6 +805,24 @@ def mobile_send_invoice(
     if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
 
+    # Plan §11 (audit A5): NOTHING a tech types from a truck reaches a
+    # customer until the office has verified the invoice. On the hourly lane
+    # the closeout hours ARE the price, typed from memory — a fat-fingered 8
+    # instead of 3 mails an $800 invoice with no second pair of eyes. The
+    # office verifies from the billing screen; this endpoint just refuses
+    # until then, with a message that says what happens next.
+    if invoice.verified_at is None:
+        return _jr(
+            {
+                "detail": (
+                    "This invoice is waiting for office verification — it "
+                    "will be sendable once the office has checked the hours."
+                ),
+                "awaiting_verification": True,
+            },
+            409,
+        )
+
     # PR1-billing-capture (audit catch): the desktop /send now 409s on void,
     # but this path still EMAILED voided invoices to customers. Same guard.
     if invoice.status == "void":
@@ -860,6 +883,21 @@ def mobile_send_receipt(
     tenant_id = _tenant_id(request)
     if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
+
+    # §11 (audit round 2): a receipt EMAILS the customer too — same rule as
+    # send. Nothing a tech triggers reaches the customer's inbox over
+    # unverified hours.
+    if invoice.verified_at is None:
+        return _jr(
+            {
+                "detail": (
+                    "This invoice is waiting for office verification — "
+                    "receipts unlock once the office has checked the hours."
+                ),
+                "awaiting_verification": True,
+            },
+            409,
+        )
 
     # Find the payment to receipt — explicit payment_id wins, else most recent.
     payment_row = None

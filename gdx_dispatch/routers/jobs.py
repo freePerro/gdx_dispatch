@@ -1482,6 +1482,11 @@ class CloseoutPart(BaseModel):
 class CloseoutPayload(BaseModel):
     parts: list[CloseoutPart] = Field(default_factory=list, max_length=100)
     hours: float = Field(ge=0, le=99)
+    # Plan §11 (Doug): "ask how many techs on site". Crew size for the
+    # attested duration — BILLING input only (billed man-hours = hours ×
+    # techs under §8), never payroll. Bounded 1..10: a 0 would zero the
+    # bill, and >10 on a residential door job is a typo, not a crew.
+    techs_on_site: int = Field(default=1, ge=1, le=10)
     signature_data: str | None = Field(default=None, max_length=200_000)
     signed_by: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=4000)
@@ -1644,6 +1649,7 @@ def _closeout_row_to_dict(row: JobCloseout, names: dict[str, str]) -> dict[str, 
     return {
         "id": str(row.id),
         "hours_worked": float(row.hours_worked or 0),
+        "techs_on_site": int(getattr(row, "techs_on_site", 1) or 1),
         "notes": row.notes,
         "parts_used": parts,
         "no_parts_used": bool(row.no_parts_used),
@@ -1708,9 +1714,12 @@ def get_job_closeout(
         if perms is None:
             perms = _load_user_permissions(db, request, current_user or {})
             request.state.user_permissions = perms
-        if WILDCARD not in perms and "jobs.read_all" not in perms:
-            if not job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user)):
-                return jsonable_response({"detail": "job not found"}, 404)
+        if (
+            WILDCARD not in perms
+            and "jobs.read_all" not in perms
+            and not job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user))
+        ):
+            return jsonable_response({"detail": "job not found"}, 404)
 
         from gdx_dispatch.core.closeouts import (
             get_closeout_history,
@@ -2084,6 +2093,7 @@ def closeout_job(
             prior_snapshot = {
                 "id": str(prior_closeout.id),
                 "hours": float(prior_closeout.hours_worked or 0),
+                "techs_on_site": int(getattr(prior_closeout, "techs_on_site", 1) or 1),
                 "no_parts_used": bool(prior_closeout.no_parts_used),
                 "parts_count": len(prior_closeout.parts_used or []),
                 "closed_at": prior_closeout.closed_at.isoformat()
@@ -2097,6 +2107,7 @@ def closeout_job(
             parts_used=part_lines,
             no_parts_used=bool(payload.no_parts_used),
             hours_worked=float(payload.hours or 0),
+            techs_on_site=int(payload.techs_on_site or 1),
             signature_data=payload.signature_data or None,
             signed_by=payload.signed_by or None,
             signed_at=now if (payload.signature_data or "").strip() else None,
@@ -2137,6 +2148,7 @@ def closeout_job(
                 "closeout_id": str(closeout.id),
                 "parts_count": len(part_lines),
                 "hours": float(payload.hours or 0),
+                "techs_on_site": int(payload.techs_on_site or 1),
                 "signature_present": bool(payload.signature_data),
                 "supersedes_id": prior_snapshot["id"] if prior_snapshot else None,
             },
@@ -2157,6 +2169,7 @@ def closeout_job(
                     "new": {
                         "id": str(closeout.id),
                         "hours": float(payload.hours or 0),
+                        "techs_on_site": int(payload.techs_on_site or 1),
                         "no_parts_used": bool(payload.no_parts_used),
                         "parts_count": len(part_lines),
                     },

@@ -253,6 +253,14 @@ async function sendReceipt(inv) {
               severity="info"
               data-testid="mid-deposit-tag"
             />
+            <!-- Plan §11: an invisible gate reads as a broken button and gets
+                 retried (the §4 lesson) — say WHY Send is unavailable. -->
+            <Tag
+              v-if="!inv.verified_at"
+              value="awaiting office verification"
+              severity="warn"
+              data-testid="mid-awaiting-verification"
+            />
           </div>
           <div class="invoice-totals">
             <span>{{ fmtMoney(inv.total) }}</span>
@@ -262,6 +270,7 @@ async function sendReceipt(inv) {
           </div>
           <div class="invoice-actions">
             <Button
+              v-if="inv.verified_at"
               label="Re-send"
               icon="pi pi-envelope"
               size="small"
@@ -269,6 +278,9 @@ async function sendReceipt(inv) {
               :loading="submitting"
               @click="resendInvoice(inv)"
             />
+            <span v-else class="muted" data-testid="mid-send-blocked">
+              Send unlocks when the office verifies the hours.
+            </span>
             <Button
               label="Send receipt"
               icon="pi pi-receipt"

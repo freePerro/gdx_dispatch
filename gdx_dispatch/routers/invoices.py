@@ -142,6 +142,10 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "locked": bool(invoice.locked),
         "locked_at": _iso_dt(invoice.locked_at),
         "sent_at": _iso_dt(invoice.sent_at),
+        # §11: office verification state — the billing screens badge it and
+        # the mobile side keys "awaiting verification" off it.
+        "verified_at": _iso_dt(invoice.verified_at),
+        "verified_by_user_id": invoice.verified_by_user_id,
         "paid_at": _iso_dt(invoice.paid_at),
         "public_token": invoice.public_token,
         "created_at": _iso_dt(invoice.created_at),
@@ -2193,6 +2197,69 @@ def batch_create_invoices(
 # ---------------------------------------------------------------------------
 # Credit Memos (#219)
 # ---------------------------------------------------------------------------
+
+@router.post(
+    "/{invoice_id}/verify",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.read_all"))],
+)
+def verify_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """Office verification — plan §11 (Doug: "have the office be called to
+    verify the invoice").
+
+    Stamps verified_at/verified_by_user_id. The mobile send endpoint refuses
+    while verified_at is NULL, so a tech can CREATE an invoice from the truck
+    but nothing reaches a customer until a second pair of eyes approved it —
+    on the hourly lane the closeout hours ARE the price, and they are typed
+    from memory. Gated on invoices.read_all (any office tier can verify;
+    verification is an approval, not a money mutation). Idempotent: verifying
+    twice keeps the FIRST stamp — approval history belongs to whoever looked
+    first, and re-stamping would quietly launder a later look as the review.
+    """
+    _validate_uuid(invoice_id, "Invoice")
+    # Row-locked re-select (concurrency guard, audit round 2): two office users
+    # verifying at once must not both "win". with_for_update serializes them —
+    # the second blocks until the first commits, then sees verified_at set.
+    # A no-op on SQLite, a real row lock on Postgres. Mutation is via ORM
+    # attributes (NOT a raw Core UPDATE) so the money-write governance guard
+    # and the ledger flush hook both see it.
+    invoice = db.execute(
+        select(Invoice).where(
+            Invoice.id == UUID(invoice_id), Invoice.deleted_at.is_(None)
+        ).with_for_update()
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.verified_at is not None:
+        return {
+            "invoice_id": str(invoice.id),
+            "verified_at": invoice.verified_at.isoformat(),
+            "verified_by_user_id": invoice.verified_by_user_id,
+            "already_verified": True,
+        }
+    invoice.verified_at = datetime.now(UTC)
+    invoice.verified_by_user_id = _actor_id(_)
+    log_audit_event_sync(
+        db=db, tenant_id=None, user_id=_actor_id(_),
+        action="invoice_verified", entity_type="invoice", entity_id=str(invoice.id),
+        details={
+            "invoice_number": invoice.invoice_number,
+            "total": float(invoice.total or 0),
+            "status": invoice.status,
+        },
+    )
+    db.commit()
+    return {
+        "invoice_id": str(invoice.id),
+        "verified_at": invoice.verified_at.isoformat(),
+        "verified_by_user_id": invoice.verified_by_user_id,
+        "already_verified": False,
+    }
+
 
 class CreditMemoIn(BaseModel):
     amount: float = Field(gt=0)

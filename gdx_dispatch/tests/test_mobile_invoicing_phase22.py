@@ -352,6 +352,26 @@ def test_send_invoice_marks_sent(session_factory):
             )
             inv = _as_json(create)
             assert inv["status"] == "draft"  # not sent
+
+            # Plan §11: an UNVERIFIED tech-created invoice must not send —
+            # the office reviews the hours first. 409 with the awaiting flag.
+            blocked = mobile_invoicing.mobile_send_invoice(
+                invoice_id=inv["id"],
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+            assert blocked.status_code == 409
+            assert _as_json(blocked).get("awaiting_verification") is True
+
+            # Office verifies → send proceeds.
+            from datetime import UTC as _UTC
+            from datetime import datetime as _dt
+
+            from gdx_dispatch.models.tenant_models import Invoice as _Inv
+            row = db.get(_Inv, __import__("uuid").UUID(inv["id"]))
+            row.verified_at = _dt.now(_UTC)
+            row.verified_by_user_id = "office-user"
+            db.commit()
+
             send = mobile_invoicing.mobile_send_invoice(
                 invoice_id=inv["id"],
                 request=_request(), current_user=_TEST_USER, db=db,
@@ -378,6 +398,24 @@ def test_send_receipt_no_payment_404(session_factory):
                 request=_request(), current_user=_TEST_USER, db=db,
             )
         inv = _as_json(create)
+
+        # §11: receipts email the customer too — unverified refuses first.
+        blocked = mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"],
+            payload=mobile_invoicing.SendReceiptIn(),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert blocked.status_code == 409
+        assert _as_json(blocked).get("awaiting_verification") is True
+
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
+        from gdx_dispatch.models.tenant_models import Invoice as _Inv
+        row = db.get(_Inv, __import__("uuid").UUID(inv["id"]))
+        row.verified_at = _dt.now(_UTC)
+        db.commit()
+
         resp = mobile_invoicing.mobile_send_receipt(
             invoice_id=inv["id"],
             payload=mobile_invoicing.SendReceiptIn(),
