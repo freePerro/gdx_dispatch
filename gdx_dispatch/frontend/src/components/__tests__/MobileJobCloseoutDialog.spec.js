@@ -75,6 +75,19 @@ async function setInput(wrapper, testid, value) {
   await el.trigger('input');
 }
 
+
+// §11: submit is a two-tap contract (review strip + dwell). This helper
+// performs the full confirmed submit for tests that aren't ABOUT the strip.
+async function confirmedSubmit(wrapper) {
+  await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+  await flushPromises();
+  const realNow = Date.now;
+  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 2000);
+  await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+  await flushPromises();
+  vi.mocked(Date.now).mockRestore();
+}
+
 describe('MobileJobCloseoutDialog', () => {
   beforeEach(() => {
     apiGet.mockReset();
@@ -111,14 +124,36 @@ describe('MobileJobCloseoutDialog', () => {
     await setInput(wrapper, 'mjco-hours', '1.5');
     await setInput(wrapper, 'mjco-signed-by', 'Eric W');
 
+    // Plan §11: the FIRST tap shows the review strip (hours × techs =
+    // billed man-hours) and does NOT post — "is this how many hours you
+    // meant?" is a real gate, not decoration.
+    await setInput(wrapper, 'mjco-techs-on-site', '3');
+
     await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
     await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+    const strip = wrapper.find('[data-testid="mjco-confirm-strip"]');
+    expect(strip.exists()).toBe(true);
+    // techs=3 on purpose (audit round 2): ×1 proves nothing — this fails if
+    // the techs input is disconnected from the math.
+    expect(strip.text()).toContain('4.50 man-hours'); // 1.5 h × 3 techs
+
+    // A too-fast second tap is REFUSED (the dwell) — then confirms.
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 2000);
+    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
+    await flushPromises();
+    vi.mocked(Date.now).mockRestore();
 
     expect(apiPost).toHaveBeenCalledWith(
       '/api/jobs/job-test-1/closeout',
       expect.objectContaining({
         parts: [],
         hours: 1.5,
+        techs_on_site: 3,
         notes: 'No issues.',
         signed_by: 'Eric W',
       }),
@@ -143,8 +178,7 @@ describe('MobileJobCloseoutDialog', () => {
     await flushPromises();
     await setInput(wrapper, 'mjco-notes', 'force-submit');
 
-    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
-    await flushPromises();
+    await confirmedSubmit(wrapper);
 
     const warnToast = toastAdd.mock.calls.find((c) => c[0]?.severity === 'warn');
     expect(warnToast).toBeTruthy();
@@ -195,8 +229,7 @@ describe('MobileJobCloseoutDialog', () => {
 
     // Submit and inspect the part_id in the payload.
     apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-2' });
-    await wrapper.find('[data-testid="mjco-submit"]').trigger('click');
-    await flushPromises();
+    await confirmedSubmit(wrapper);
 
     const calledWith = apiPost.mock.calls[0][1];
     expect(calledWith.parts[0]).toMatchObject({

@@ -44,11 +44,12 @@ from gdx_dispatch.models.tenant_models import (
     JobPartNeeded,
     Payment,
     Technician,
+    TenantRole,
     TimeEntry,
     User,
+    UserRoleAssignment,
 )
 from gdx_dispatch.modules.inventory.models import JobPart, Part
-from gdx_dispatch.models.tenant_models import TenantRole, UserRoleAssignment
 from gdx_dispatch.routers.jobs import (
     CloseoutPart,
     CloseoutPayload,
@@ -263,3 +264,48 @@ def test_dispatcher_reads_via_jobs_read_all(db) -> None:
     status, body = _read(db, str(job.id), role="dispatcher", user_id=str(uuid4()))
     assert status == 200
     assert body["closeout"]["hours_worked"] == 3.0
+
+
+def test_verify_endpoint_stamps_once_and_audits(db) -> None:
+    """POST /api/invoices/{id}/verify — direct coverage (audit round 2: the
+    phase22 test stamped the column by hand, leaving the endpoint itself
+    untested). First call stamps + audits; second reports already_verified
+    and keeps the FIRST stamp (guarded UPDATE — approval history belongs to
+    whoever looked first)."""
+    from gdx_dispatch.models.tenant_models import Invoice
+    from gdx_dispatch.routers.invoices import verify_invoice
+
+    job = _seed_job(db)
+    inv = Invoice(
+        job_id=job.id,
+        customer_id=job.customer_id,
+        invoice_number="INV-VERIFY-1",
+        company_id=TENANT,
+        status="draft",
+        total=100,
+        balance_due=100,
+        public_token="tok-verify-1",
+    )
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+
+    first = verify_invoice(invoice_id=str(inv.id), db=db, _={"user_id": "office-a"})
+    assert first["already_verified"] is False
+    assert first["verified_at"]
+
+    second = verify_invoice(invoice_id=str(inv.id), db=db, _={"user_id": "office-b"})
+    assert second["already_verified"] is True
+    assert second["verified_at"] == first["verified_at"], "first stamp must win"
+    assert second["verified_by_user_id"] == first["verified_by_user_id"]
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    events = list(
+        db.execute(
+            _select(AuditLog).where(AuditLog.action == "invoice_verified")
+        ).scalars()
+    )
+    assert len(events) == 1, "exactly one approval event — the losing call logs nothing"

@@ -441,6 +441,12 @@ class Invoice(Base):
     hide_line_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Plan §11: the office's explicit approval of a tech-created invoice.
+    # Mobile send 409s while NULL — nothing a tech types from a truck reaches
+    # a customer without a second pair of eyes. Distinct from sent_at (a
+    # delivery fact); never overload either.
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     public_token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True, default=0)
@@ -2252,6 +2258,12 @@ class JobCloseout(Base):
     # this flag; bare silence still 422s (Doug 2026-07-07).
     no_parts_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     hours_worked: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    # Plan §11 (Doug 2026-07-29): crew size for the attested on-site duration.
+    # BILLING ONLY — billed man-hours = hours_worked × techs_on_site under §8.
+    # It must NEVER create payable hours for the other techs (their pay is
+    # their own day clock; one tech attesting "there were two of us" is a
+    # billing fact, not a payroll attestation for a colleague).
+    techs_on_site: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     hourly_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
     signature_data: Mapped[str] = mapped_column(Text, nullable=True)
     signed_by: Mapped[str] = mapped_column(String(200), nullable=True)

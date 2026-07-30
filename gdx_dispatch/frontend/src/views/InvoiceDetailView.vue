@@ -363,6 +363,29 @@
           <!-- Tier-2 UI doors (contract-gap sweep 2026-07-24): the credit
                lifecycle was fully built server-side with zero entry points —
                the office could SEE a credit memo but never issue one. -->
+          <!-- Plan §11: the office's explicit approval. Until verified the
+               tech's mobile Send is refused (409) — on the hourly lane the
+               closeout hours ARE the price, typed from memory, so a second
+               pair of eyes stands between the truck and the customer's
+               inbox. (Audit round 2: the first version of this change added
+               the handler and NO button — every tech invoice would have
+               409'd forever with no way to unblock it.) -->
+          <Button
+            v-if="!invoice.verified_at"
+            label="Verify invoice"
+            icon="pi pi-check-square"
+            severity="success"
+            data-testid="verify-invoice-btn"
+            :loading="verifying"
+            @click="verifyInvoice"
+          />
+          <Tag
+            v-else
+            value="Verified"
+            severity="success"
+            data-testid="invoice-verified-tag"
+            v-tooltip="'Office-verified — the tech can send it from the field'"
+          />
           <Button
             v-if="['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) && balanceDue > 0"
             label="Credit Memo"
@@ -765,6 +788,20 @@ const editNotes = ref("");
 const editHideLinePrices = ref(false);
 const tenantDefaultRatePct = computed(() => taxRate.value * 100);
 
+const verifying = ref(false);
+async function verifyInvoice() {
+  verifying.value = true;
+  try {
+    const r = await api.post(`/api/invoices/${route.params.id}/verify`, {});
+    invoice.value.verified_at = r?.verified_at || new Date().toISOString();
+    toast.add({ severity: "success", summary: "Invoice verified", detail: "The tech can now send it from the field.", life: 3000 });
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Verify failed", detail: e?.message || "Try again.", life: 4000 });
+  } finally {
+    verifying.value = false;
+  }
+}
+
 const invoice = ref({
   id: null,
   invoice_number: "",
@@ -945,6 +982,7 @@ function normalizeInvoice(payload) {
     invoice_date: payload.invoice_date || payload.invoiceDate || "",
     due_date: payload.due_date || payload.dueDate || "",
     created_at: payload.created_at || payload.createdAt || "",
+    verified_at: payload.verified_at || null,
     sent_at: payload.sent_at || "",
     notes: payload.notes || "",
     // Deposit lifecycle (2026-07-24): the tag, the "View Estimate" link and

@@ -108,6 +108,14 @@ function pickSuggestion(row, s) {
 
 // ─── Hours / signature / notes ───────────────────────────────────────
 const hours = ref(0)
+// Plan §11 (Doug): "ask how many techs on site". Billing input only — billed
+// man-hours = hours × techs under §8; never payroll for the other techs.
+const techsOnSite = ref(1)
+// The confirm step: submit first shows the man-hours consequence IN the
+// dialog (not an overlay — overlay-on-dialog is a z-index gamble, and this
+// control must fail CLOSED). "Is this how many hours you meant?"
+const confirmStep = ref(false)
+const confirmArmedAt = ref(0)
 const notes = ref('')
 const signedBy = ref('')
 const sigCanvas = ref(null)
@@ -181,6 +189,20 @@ const canSubmit = computed(() => {
 
 async function submit() {
   if (!canSubmit.value || saving.value) return
+  // Plan §11: first tap shows the review strip with the consequence
+  // (hours × techs = billed man-hours); only an explicit second confirm
+  // POSTs. A bare "are you sure?" gets tapped through — the NUMBER is what
+  // makes a typed-from-memory figure trustworthy enough to bill.
+  if (!confirmStep.value) {
+    confirmStep.value = true
+    // Dwell (audit round 2): the strip appears exactly where the button was,
+    // so an impatient double-tap would confirm unread. Refuse the second tap
+    // for a beat.
+    confirmArmedAt.value = Date.now()
+    return
+  }
+  if (Date.now() - confirmArmedAt.value < 1200) return
+  confirmStep.value = false
   saving.value = true
 
   let signature_data = null
@@ -199,6 +221,7 @@ async function submit() {
     })),
     no_parts_used: noPartsUsed.value,
     hours: Number(hours.value) || 0,
+    techs_on_site: Math.max(1, Math.min(10, Number(techsOnSite.value) || 1)),
     signature_data,
     signed_by: signedBy.value.trim() || null,
     notes: notes.value.trim() || null,
@@ -277,6 +300,8 @@ function requestCancel() {
 function _resetForm() {
   parts.value = []
   hours.value = 0
+  techsOnSite.value = 1
+  confirmStep.value = false
   notes.value = ''
   // Pre-fill the signer with the customer's name when known — saves the
   // tech a tap on every closeout. They can edit if a different person
@@ -403,6 +428,33 @@ watch(open, async (v) => {
             data-testid="mjco-hours"
             inputmode="decimal"
           />
+        </div>
+        <div class="form-field">
+          <label for="mjco-techs">Techs on site</label>
+          <input
+            id="mjco-techs"
+            v-model.number="techsOnSite"
+            type="number"
+            min="1"
+            max="10"
+            step="1"
+            class="hours-input"
+            data-testid="mjco-techs-on-site"
+            inputmode="numeric"
+          />
+          <small class="muted">Counts toward the bill, not anyone's paycheck.</small>
+        </div>
+        <!-- §11 review strip — rendered IN the dialog so it cannot silently
+             fail open the way an overlay confirm can (issue #215's lesson). -->
+        <div v-if="confirmStep" class="confirm-strip" data-testid="mjco-confirm-strip">
+          <p>
+            You entered <strong>{{ (Number(hours) || 0).toFixed(2) }} h</strong>
+            with <strong>{{ techsOnSite }} tech{{ techsOnSite === 1 ? '' : 's' }}</strong>
+            on site — that bills
+            <strong>{{ ((Number(hours) || 0) * techsOnSite).toFixed(2) }} man-hours</strong>.
+            Is that what you meant?
+          </p>
+          <small class="muted">Tap "Close out job" again to confirm, or change the numbers above.</small>
         </div>
       </section>
 
@@ -599,4 +651,14 @@ watch(open, async (v) => {
   padding: 0.2rem 0.55rem;
   cursor: pointer;
 }
+
+/* §11 review strip — high-contrast in both themes via theme vars. */
+.confirm-strip {
+  border: 1px solid var(--p-amber-400, #fbbf24);
+  background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 12%, transparent);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  margin-top: 0.5rem;
+}
+.confirm-strip p { margin: 0 0 0.25rem; }
 </style>
