@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,12 @@ _COLS = (
     "estimate_email_body_template",
     "estimate_deposit_pct",
     "estimates_hide_line_prices",
+    "estimate_expiry_days",
 )
+
+# Per-column default for int columns. A single shared "50" fallback would have
+# defaulted estimate_expiry_days to 50, not 60 — the reason this dict exists.
+_INT_DEFAULTS = {"estimate_deposit_pct": 50, "estimate_expiry_days": 60}
 
 
 class FeaturesPayload(BaseModel):
@@ -32,6 +37,8 @@ class FeaturesPayload(BaseModel):
     estimate_email_body_template: str = ""
     estimate_deposit_pct: int = 50
     estimates_hide_line_prices: bool = False
+    # 1..365 days — 0 would expire an estimate the instant it's sent.
+    estimate_expiry_days: int = Field(default=60, ge=1, le=365)
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -59,14 +66,13 @@ def _read(db: Session, tid: UUID) -> dict[str, Any]:
             {"tid": str(tid)},
         ).first()
     text_cols = {"estimates_default_terms", "estimate_email_subject_template", "estimate_email_body_template"}
-    int_cols = {"estimate_deposit_pct"}
     out: dict[str, Any] = {}
     for i, col in enumerate(_COLS):
         val = row[i]
         if col in text_cols:
             out[col] = str(val or "")
-        elif col in int_cols:
-            out[col] = int(val if val is not None else 50)
+        elif col in _INT_DEFAULTS:
+            out[col] = int(val if val is not None else _INT_DEFAULTS[col])
         else:
             out[col] = bool(val)
     return out

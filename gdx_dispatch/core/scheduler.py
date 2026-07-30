@@ -170,6 +170,15 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=4, minute=0),  # 04:00 UTC nightly
             "options": {"queue": "priority:low"},
         },
+        "expire-stale-estimates-nightly": {
+            # Plan §15 win/loss. Mark still-'sent' estimates past their
+            # valid_until as 'expired' so the pipeline stops showing months-old
+            # quotes as live. valid_until is stamped on send from the tenant's
+            # estimate_expiry_days (default 60).
+            "task": "estimates.expire_stale_nightly",
+            "schedule": crontab(hour=4, minute=15),  # 04:15 UTC nightly
+            "options": {"queue": "priority:low"},
+        },
         "refresh-customer-rolling-volumes-nightly": {
             # Sprint 1.0.6 — defensive backstop. Hot paths refresh on
             # payment.received and on stale-read at estimate-create; this

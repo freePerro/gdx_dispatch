@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from datetime import timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -172,6 +173,11 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         "hide_line_prices": getattr(estimate, "hide_line_prices", None),
         "status": estimate.status,
         "total": _to_float(estimate.total),
+        # valid_until is the expiry date (set on send from the tenant's
+        # estimate_expiry_days). It was never serialized, so the detail view's
+        # "Expires:" line always showed "—". The frontend maps valid_until →
+        # expires_at, so emitting it here is the fix.
+        "valid_until": estimate.valid_until.isoformat() if getattr(estimate, "valid_until", None) else None,
         "sent_at": estimate.sent_at.isoformat() if estimate.sent_at else None,
         "accepted_at": estimate.accepted_at.isoformat() if estimate.accepted_at else None,
         "declined_at": estimate.declined_at.isoformat() if estimate.declined_at else None,
@@ -1364,6 +1370,46 @@ def estimate_email_compose(
     }
 
 
+def _apply_send_expiry(estimate: Estimate) -> None:
+    """On send, stamp valid_until = sent_at + the tenant's estimate_expiry_days
+    (default 60). Without this, valid_until stayed NULL and the nightly expire
+    task never fired.
+
+    Refresh rule: set valid_until when it's missing OR already in the past
+    (relative to this send) — so re-sending an expired estimate gives it a
+    FRESH window instead of leaving a stale past date the nightly task would
+    just re-expire the next night. A still-future valid_until (a deliberately
+    hand-picked date) is respected and left alone.
+
+    Note: this relies on create NOT persisting a valid_until — the /estimates
+    create handler drops the field, so a fresh estimate reaches send with
+    valid_until = NULL. If create is ever changed to honor payload.valid_until,
+    a create-time default would look like a hand-picked future date here and
+    silently defeat the tenant setting. Keep create dropping it, or teach this
+    helper to distinguish a default from an override.
+
+    Best-effort: a features read failure must not block the send."""
+    sent_at = estimate.sent_at
+    if not sent_at:
+        return
+    existing = getattr(estimate, "valid_until", None)
+    if existing is not None:
+        # SQLite (tests) returns naive datetimes; PG returns aware. Normalize
+        # both to UTC-aware so the comparison never raises on a naive/aware mix.
+        if existing.tzinfo is None:
+            existing = existing.replace(tzinfo=timezone.utc)
+        sent_cmp = sent_at if sent_at.tzinfo is not None else sent_at.replace(tzinfo=timezone.utc)
+        if existing > sent_cmp:
+            return
+    try:
+        days = int(get_features(str(estimate.company_id or "")).estimate_expiry_days or 60)
+    except Exception:
+        days = 60
+    if days < 1:
+        days = 60
+    estimate.valid_until = estimate.sent_at + timedelta(days=days)
+
+
 @router.post("/{estimate_id}/mark-sent", response_model=None)
 def mark_estimate_sent(
     estimate_id: UUID,
@@ -1377,6 +1423,7 @@ def mark_estimate_sent(
         raise HTTPException(status_code=409, detail="estimate is finalized")
     estimate.status = "sent"
     estimate.sent_at = utcnow()
+    _apply_send_expiry(estimate)
     estimate.updated_at = utcnow()
     db.commit()
     db.refresh(estimate)
@@ -1404,6 +1451,7 @@ def send_estimate(
         raise HTTPException(status_code=409, detail="estimate is finalized")
     estimate.status = "sent"
     estimate.sent_at = utcnow()
+    _apply_send_expiry(estimate)
     estimate.updated_at = utcnow()
     db.commit()
     db.refresh(estimate)
