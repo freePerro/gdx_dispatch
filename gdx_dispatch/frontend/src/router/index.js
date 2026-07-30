@@ -60,6 +60,7 @@ const MobileInboxView = () => import('../views/MobileInboxView.vue');
 const MobileEstimatesView = () => import('../views/MobileEstimatesView.vue');
 const MobileBillingView = () => import('../views/MobileBillingView.vue');
 const MobileInventoryView = () => import('../views/MobileInventoryView.vue');
+const MobileDoorListingsView = () => import('../views/MobileDoorListingsView.vue');
 const MobilePartsToOrderView = () => import('../views/MobilePartsToOrderView.vue');
 const TechMobileSettingsView = () => import('../views/admin/TechMobileSettingsView.vue');
 const CatalogView = () => import('../views/CatalogView.vue');
@@ -361,6 +362,7 @@ export const routes = [
   { path: '/mobile/estimates', name: 'mobile-estimates', component: MobileEstimatesView, meta: { noSidebar: true } },
   { path: '/mobile/billing', name: 'mobile-billing', component: MobileBillingView, meta: { noSidebar: true, requiresPermission: 'invoices.read_all' } },
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
+  { path: '/mobile/door-listings', name: 'mobile-door-listings', component: MobileDoorListingsView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },
   // Sprint 0.9-o: SS-14..35 admin/user routes
   { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer, meta: { requiresPermission: 'settings.write' } },
