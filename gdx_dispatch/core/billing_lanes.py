@@ -34,6 +34,7 @@ a bill; nothing may rewrite an attestation.
 from __future__ import annotations
 
 import math
+import uuid as _uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -59,6 +60,10 @@ class ServiceLaborLine:
 
 def _money(v: float | Decimal) -> Decimal:
     return Decimal(str(v)).quantize(Decimal("0.01"))
+
+
+def _as_uuid(v: str) -> _uuid.UUID:
+    return v if isinstance(v, _uuid.UUID) else _uuid.UUID(str(v))
 
 
 def roundup_to_half(hours: float) -> float:
@@ -110,6 +115,51 @@ def service_labor_line(
         techs_on_site=crew,
         first_hour_price=first,
         hourly_rate=hourly,
+    )
+
+
+@dataclass(frozen=True)
+class InstallLaborLine:
+    description: str
+    quantity: int
+    unit_price: Decimal
+    line_total: Decimal
+    matrix_item_id: str
+
+
+def install_labor_line(db: Session, item_id: str) -> InstallLaborLine | None:
+    """Flat install price from the picked labor-matrix row. Reads flat_price
+    LIVE (the row may have been repriced since closeout — the bill reflects
+    the current book, and the office verification gate is the backstop).
+    Returns None if the row is gone/inactive → caller falls to office-priced,
+    never guesses."""
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+
+    try:
+        item = db.execute(
+            select(LaborPriceItem).where(LaborPriceItem.id == _as_uuid(item_id))
+        ).scalar_one_or_none()
+    except (ValueError, AttributeError):
+        return None
+    if item is None or not getattr(item, "active", True):
+        return None
+    # A row retired by date is not billable even if active still reads True
+    # (LaborPriceItem documents supersede-by-effective_to). Audit round 2.
+    eff_to = getattr(item, "effective_to", None)
+    if eff_to is not None:
+        import datetime as _dt
+
+        if eff_to < _dt.date.today():
+            return None
+    price = _money(item.flat_price or 0)
+    if price <= 0:
+        return None  # a $0 matrix row is not a customer line (F-75)
+    return InstallLaborLine(
+        description=f"Install — {item.description}"[:500],
+        quantity=1,
+        unit_price=price,
+        line_total=price,
+        matrix_item_id=str(item.id),
     )
 
 

@@ -99,3 +99,34 @@ def test_rates_come_from_settings_and_can_diverge(db) -> None:
 
 def test_defaults_are_one_hundred_when_unconfigured(db) -> None:
     assert service_rates(db) == (Decimal("100.00"), Decimal("100.00"))
+
+
+def test_install_labor_line_flat_prices_from_matrix(db) -> None:
+    """Plan §8 install lane: flat price from the picked matrix row, read live.
+    A gone/inactive/$0 row → None (caller falls to office-priced)."""
+    import datetime as _dt
+    from uuid import uuid4
+
+    from gdx_dispatch.core.billing_lanes import install_labor_line
+    from gdx_dispatch.models.labor_pricing import LaborPriceItem
+
+    LaborPriceItem.__table__.create(bind=db.get_bind(), checkfirst=True)
+    item = LaborPriceItem(
+        id=uuid4(), description="16x7 Sectional Install", service_type="install",
+        flat_price=Decimal("650"), assumed_man_hours=Decimal("6.5"),
+        default_crew_size=1, min_wall_clock_minutes=15, active=True,
+        effective_from=_dt.date(2026, 1, 1), sort_order=1,
+    )
+    db.add(item)
+    db.commit()
+
+    line = install_labor_line(db, str(item.id))
+    assert line is not None
+    assert line.line_total == Decimal("650.00")
+    assert "16x7 Sectional Install" in line.description
+
+    item.active = False
+    db.commit()
+    assert install_labor_line(db, str(item.id)) is None
+    assert install_labor_line(db, str(uuid4())) is None
+    assert install_labor_line(db, "not-a-uuid") is None

@@ -601,6 +601,7 @@
         v-model:visible="closeoutOpen"
         :job-id="closeoutJob?.id || ''"
         :job-title="closeoutJob?.title || ''"
+        :job-type="closeoutJob?.job_type || ''"
         :customer-name="closeoutJob?.customer_name || ''"
         @closed-out="onCloseoutDone"
       />

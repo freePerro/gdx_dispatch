@@ -1487,6 +1487,9 @@ class CloseoutPayload(BaseModel):
     # techs under §8), never payroll. Bounded 1..10: a 0 would zero the
     # bill, and >10 on a residential door job is a typo, not a crew.
     techs_on_site: int = Field(default=1, ge=1, le=10)
+    # Plan §8 install lane: the labor-matrix row picked for a flat-priced
+    # install. Optional — service jobs don't set it.
+    labor_matrix_item_id: str | None = Field(default=None, max_length=36)
     signature_data: str | None = Field(default=None, max_length=200_000)
     signed_by: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=4000)
@@ -1650,6 +1653,7 @@ def _closeout_row_to_dict(row: JobCloseout, names: dict[str, str]) -> dict[str, 
         "id": str(row.id),
         "hours_worked": float(row.hours_worked or 0),
         "techs_on_site": int(getattr(row, "techs_on_site", 1) or 1),
+        "labor_matrix_item_id": getattr(row, "labor_matrix_item_id", None),
         "notes": row.notes,
         "parts_used": parts,
         "no_parts_used": bool(row.no_parts_used),
@@ -2108,6 +2112,7 @@ def closeout_job(
             no_parts_used=bool(payload.no_parts_used),
             hours_worked=float(payload.hours or 0),
             techs_on_site=int(payload.techs_on_site or 1),
+            labor_matrix_item_id=(payload.labor_matrix_item_id or None),
             signature_data=payload.signature_data or None,
             signed_by=payload.signed_by or None,
             signed_at=now if (payload.signature_data or "").strip() else None,

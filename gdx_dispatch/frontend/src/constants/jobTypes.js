@@ -25,5 +25,38 @@ export const DEFAULT_JOB_TYPE = 'Service Call';
 export const SERVICE_LANE_TYPES = ['Service Call', 'Repair', 'Maintenance'];
 
 export function isServiceLane(jobType) {
-  return SERVICE_LANE_TYPES.includes(jobType);
+  return pricingLane(jobType) === 'service';
+}
+
+// Canonical lane resolver — the JS mirror of core/job_taxonomy.pricing_lane.
+// Folds every legacy spelling (audit: a hardcoded `=== 'Installation'` missed
+// the quote flow's lowercase 'installation' and legacy 'Install'/'Service').
+// Two lists diverging is the ORIGINAL §9 bug; test_job_taxonomy pins this
+// file's canonical set against the Python module.
+const _ALIASES = {
+  service: 'Service Call',
+  'service call': 'Service Call',
+  servicecall: 'Service Call',
+  repair: 'Repair',
+  maintenance: 'Maintenance',
+  install: 'Installation',
+  installation: 'Installation',
+};
+
+export function canonicalJobType(jobType) {
+  if (jobType == null) return null;
+  const key = String(jobType).trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!key) return null;
+  return _ALIASES[key] || String(jobType).trim();
+}
+
+export function pricingLane(jobType) {
+  const c = canonicalJobType(jobType);
+  if (SERVICE_LANE_TYPES.includes(c)) return 'service';
+  if (c === 'Installation') return 'install';
+  return 'office';
+}
+
+export function isInstallLane(jobType) {
+  return pricingLane(jobType) === 'install';
 }

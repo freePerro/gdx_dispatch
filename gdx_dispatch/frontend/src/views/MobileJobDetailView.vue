@@ -500,6 +500,7 @@
         v-model:visible="closeoutOpen"
         :job-id="String(job.id)"
         :job-title="job.title || ''"
+        :job-type="job.job_type || ''"
         :customer-name="customer?.name || ''"
         @closed-out="onCloseoutDone"
       />
