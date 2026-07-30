@@ -129,10 +129,12 @@
                 </span>
               </template>
             </Column>
-            <Column header="Action" style="width: 10rem">
+            <Column header="Action" style="width: 20rem">
               <template #body="{ data }">
-                <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
+                <Button label="Review" icon="pi pi-search" size="small" severity="secondary" class="mr-2"
                   @click="reviewJob({ id: data.job_id })" data-testid="review-closeout-discrepancy" />
+                <Button label="Create supplemental" icon="pi pi-plus" size="small"
+                  @click="createSupplemental(data)" data-testid="create-supplemental" />
               </template>
             </Column>
           </DataTable>
@@ -1243,6 +1245,21 @@ function reviewJob(job) {
   // shouldn't be one-click invoiced; they need a double-check + a chance
   // to add parts that the tech may have forgotten.
   if (job?.id) router.push(`/jobs/${job.id}`);
+}
+
+// §12: guided supplemental — deep-link to the invoice editor pre-scoped to the
+// job, carrying the original invoice so the new one records adjusts_invoice_id.
+// The office confirms the lines/amount; nothing is auto-computed.
+function createSupplemental(item) {
+  if (!item?.job_id) return;
+  router.push({
+    path: "/billing/new",
+    query: {
+      job_id: item.job_id,
+      adjusts_invoice_id: item.invoice?.id,
+      adjusts_invoice_number: item.invoice?.invoice_number,
+    },
+  });
 }
 
 function openPaymentDialog(inv) {

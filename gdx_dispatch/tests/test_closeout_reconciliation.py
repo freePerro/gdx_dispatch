@@ -47,30 +47,32 @@ def _closeout(db, job, *, created, supersedes=None, superseded_at=None, hours=2,
     return jc
 
 
-def _invoice(db, job, *, created, estimate_id=None, status="sent"):
+def _invoice(db, job, *, created, estimate_id=None, status="sent", adjusts_invoice_id=None):
     inv = Invoice(
         id=uuid.uuid4(), job_id=job.id, invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
         public_token=uuid.uuid4().hex, customer_id=job.customer_id, company_id="t",
         status=status, total=500, estimate_id=estimate_id, created_at=created,
+        adjusts_invoice_id=adjusts_invoice_id,
     )
     db.add(inv)
     return inv
 
 
 def _seed_revised_and_billed(db):
-    """Original closeout → invoice → revised closeout. The classic §12 case."""
+    """Original closeout → invoice → revised closeout. The classic §12 case.
+    Returns (job, invoice) — the invoice is the flagged original."""
     job = _seed_job(db)
     orig = _closeout(db, job, created=T0, superseded_at=T0 + timedelta(days=2), hours=2)
-    _invoice(db, job, created=T0 + timedelta(days=1))          # billed against orig
+    inv = _invoice(db, job, created=T0 + timedelta(days=1))     # billed against orig
     _closeout(db, job, created=T0 + timedelta(days=2), supersedes=orig, hours=5)  # revised, now live
     db.commit()
-    return job
+    return job, inv
 
 
 def test_detects_reclose_after_billing_when_enabled(db, monkeypatch):
     import gdx_dispatch.core.closeout_reconciliation as m
     monkeypatch.setattr(m, "closeout_reconciliation_enabled", lambda _tid: True)
-    job = _seed_revised_and_billed(db)
+    job, _inv = _seed_revised_and_billed(db)
 
     result = m.find_closeout_billing_discrepancies(db, "t")
     assert result["enabled"] is True
@@ -120,6 +122,50 @@ def test_detects_historical_revision_with_null_supersedes_id(db, monkeypatch):
     assert len(result["items"]) == 1
     assert result["items"][0]["current_closeout"]["hours_worked"] == 5
     assert result["items"][0]["billed_against"]["hours_worked"] == 2
+
+
+def test_supplemental_invoice_clears_the_discrepancy(db, monkeypatch):
+    """A supplemental that EXPLICITLY adjusts the flagged invoice reconciles it."""
+    import gdx_dispatch.core.closeout_reconciliation as m
+    monkeypatch.setattr(m, "closeout_reconciliation_enabled", lambda _tid: True)
+    job, inv = _seed_revised_and_billed(db)          # flagged before reconciliation
+    assert len(m.find_closeout_billing_discrepancies(db, "t")["items"]) == 1
+
+    _invoice(db, job, created=T0 + timedelta(days=3), adjusts_invoice_id=inv.id)
+    db.commit()
+
+    assert m.find_closeout_billing_discrepancies(db, "t")["items"] == []
+
+
+def test_credit_memo_clears_the_discrepancy(db, monkeypatch):
+    """A down-revision reconciles via a credit memo (invoice_adjustments), which
+    is never a new Invoice row — the clear must see it too."""
+    from gdx_dispatch.models.tenant_models import InvoiceAdjustment
+    import gdx_dispatch.core.closeout_reconciliation as m
+    monkeypatch.setattr(m, "closeout_reconciliation_enabled", lambda _tid: True)
+    job, inv = _seed_revised_and_billed(db)
+    assert len(m.find_closeout_billing_discrepancies(db, "t")["items"]) == 1
+
+    db.add(InvoiceAdjustment(
+        id=uuid.uuid4(), invoice_id=inv.id, kind="credit_memo", amount=80,
+        company_id="t", created_at=T0 + timedelta(days=3),
+    ))
+    db.commit()
+
+    assert m.find_closeout_billing_discrepancies(db, "t")["items"] == []
+
+
+def test_unrelated_later_invoice_does_not_clear(db, monkeypatch):
+    """A later invoice with NO adjusts link (a recurring/deposit bill, or an
+    abandoned draft) must NOT clear a real discrepancy — that would re-introduce
+    Doug's original 'billed even though we've been paid' complaint."""
+    import gdx_dispatch.core.closeout_reconciliation as m
+    monkeypatch.setattr(m, "closeout_reconciliation_enabled", lambda _tid: True)
+    job, _inv = _seed_revised_and_billed(db)
+    _invoice(db, job, created=T0 + timedelta(days=3), status="draft")   # unrelated, no adjusts link
+    db.commit()
+
+    assert len(m.find_closeout_billing_discrepancies(db, "t")["items"]) == 1
 
 
 def test_first_time_closeout_is_not_a_discrepancy(db, monkeypatch):

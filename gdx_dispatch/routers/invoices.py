@@ -382,6 +382,10 @@ class InvoiceCreateIn(BaseModel):
         return self
     # billing_type is enum-ish ("standard"/"recurring"/etc.), short bounded.
     billing_type: str = Field(default="standard", min_length=1, max_length=50)
+    # §12: when the office bills a supplemental to reconcile a closeout that
+    # changed after billing, this points at the original invoice it adjusts.
+    # Provenance only — the office confirms the lines/amount; nothing auto-computes.
+    adjusts_invoice_id: UUID | None = None
     # tax_rate (preferred) is a decimal fraction — 0.0738 == 7.38%. When
     # supplied, _recalculate_invoice computes tax_amount from it on every
     # line change. tax_amount remains accepted for legacy callers and
@@ -818,6 +822,8 @@ def create_invoice(
         estimate_id=payload.estimate_id,
         invoice_number=_next_invoice_number(db),
         billing_type=payload.billing_type,
+        # §12 supplemental provenance — the original invoice this one adjusts.
+        adjusts_invoice_id=payload.adjusts_invoice_id,
         sequence_number=1,
         subtotal=_money(subtotal_value),
         tax_rate=resolved_rate,
