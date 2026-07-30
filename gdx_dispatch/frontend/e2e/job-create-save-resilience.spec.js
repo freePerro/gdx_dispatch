@@ -23,7 +23,11 @@
 //      never needed.
 //   3. the operator's appointment note survives in the job's dispatch notes
 //      (JobCreate had no `notes` field at all until this change).
-//   4. appointment unticked → clean success, dialog closes, job appears.
+//   4. appointment unticked → clean success, dialog closes, and the UNDATED
+//      job is visible on page 1 — JobsView requests order=activity (opt-in:
+//      the default NULLS LAST ordering is a load-bearing eviction policy for
+//      ~15 capped picker views and stays untouched).
+//   5. every row this spec creates is deleted in afterAll (no tenant junk).
 //
 // Credentials come from env (E2E_EMAIL/E2E_PASSWORD/E2E_TENANT_SLUG) so no
 // secret is committed.
@@ -38,6 +42,40 @@ const stamp = process.env.E2E_STAMP || String(Date.now());
 // One login for the whole file. Logging in per test 429s on the rate limiter
 // even with the e2e bypass header.
 let cachedToken = null;
+
+// Rows this run creates in the target tenant, deleted in afterAll — earlier
+// versions of this spec left a customer + job behind on every run (audit
+// finding). Ids are pushed the moment they're known, so a mid-test failure
+// still gets its customer cleaned up; a job created through the UI is only
+// identifiable after the search step, so a failure before that point keeps
+// the job row as debugging evidence.
+const created = { jobs: [], customers: [] };
+
+test.afterAll(async ({ request }) => {
+  if (!cachedToken) return;
+  const headers = {
+    authorization: `Bearer ${cachedToken}`,
+    'x-tenant-id': TENANT,
+    'x-e2e-test': 'true',
+  };
+  // A silent no-op cleanup is worse than none (audit round 2): every DELETE's
+  // status is checked, and a failure is SAID — request.delete does not throw
+  // on 4xx/5xx, so `.catch` alone covers only network errors.
+  const failed = [];
+  for (const id of created.jobs) {
+    const r = await request.delete(`/api/jobs/${id}`, { headers }).catch(() => null);
+    if (!r || !r.ok()) failed.push(`job ${id} (${r ? r.status() : 'network'})`);
+  }
+  // Jobs first, then their customers — the FK direction.
+  for (const id of created.customers) {
+    const r = await request.delete(`/api/customers/${id}`, { headers }).catch(() => null);
+    if (!r || !r.ok()) failed.push(`customer ${id} (${r ? r.status() : 'network'})`);
+  }
+  if (failed.length) {
+    // eslint-disable-next-line no-console
+    console.warn(`[cleanup] ${failed.length} row(s) NOT deleted: ${failed.join(', ')}`);
+  }
+});
 
 async function login(baseURL) {
   const api = await pwRequest.newContext({
@@ -90,6 +128,7 @@ test.describe('job create — a saved job never looks unsaved', () => {
       data: { name: custName, phone: '5550009931' },
     });
     expect(cust.ok(), await cust.text()).toBeTruthy();
+    created.customers.push((await cust.json()).id);
 
     await primeSession(page, token);
 
@@ -158,6 +197,7 @@ test.describe('job create — a saved job never looks unsaved', () => {
     const rows = Array.isArray(listBody) ? listBody : listBody?.data || listBody?.items || [];
     const mine = rows.find((j) => (j.title || '') === jobTitle);
     expect(mine, 'created job should be findable').toBeTruthy();
+    created.jobs.push(mine.id);
     expect(mine.scheduled_at, 'appointment date must reach scheduled_at').toBeTruthy();
 
     const detail = await api.get(`/api/jobs/${mine.id}`, {
@@ -194,6 +234,7 @@ test.describe('job create — a saved job never looks unsaved', () => {
       data: { name: custName, phone: '5550009932' },
     });
     expect(cust.ok(), await cust.text()).toBeTruthy();
+    created.customers.push((await cust.json()).id);
 
     await primeSession(page, token);
 
@@ -201,22 +242,37 @@ test.describe('job create — a saved job never looks unsaved', () => {
     await openNewJob(page, { title: jobTitle, customerName: custName });
     await page.locator('[data-testid="job-submit-btn"]').click();
 
+    // Toast names the job — proof that survives any filter/search state.
+    // (Auto-waiting assert first: reading innerText immediately races the
+    // toast's render.)
+    await expect(page.locator('[data-testid="jobs-toast"]')).toContainText(/JOB-/, {
+      timeout: 15000,
+    });
+
     await expect(page.locator('[data-testid="jobs-form-dialog"]')).toBeHidden({ timeout: 20000 });
 
-    // Deliberately NOT asserting the row is on screen. The list is ordered by
-    // scheduled date with undated jobs last, so a dateless job lands on the
-    // final page — a real discoverability gap, tracked separately. What must
-    // hold is that the save is confirmed by name and the job really exists.
-    const toastText = await page.locator('[data-testid="jobs-toast"]').innerText();
-    expect(toastText).toMatch(/JOB-/);
+    // The undated job must be VISIBLE on the first page. This used to be
+    // impossible: `scheduled_at DESC NULLS LAST` sank every undated job below
+    // every dated one (page 12 of 12 on real data). JobsView now requests
+    // order=activity, which slots it in by creation time. NOTE: on a tenant
+    // with under one page of dated jobs this assertion would pass under the
+    // old ordering too — the SQLite tests in test_jobs_list_ordering.py are
+    // the revert-catcher; this asserts the END-TO-END wiring (param sent,
+    // honored, rendered) against real data.
+    await expect(page.locator('[data-testid="jobs-datatable"]')).toContainText(jobTitle, {
+      timeout: 20000,
+    });
 
+    // Track for cleanup.
     const found = await api.get(`/api/jobs?search=${encodeURIComponent(jobTitle)}&page_size=5`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(found.ok(), await found.text()).toBeTruthy();
     const listBody = await found.json();
     const rows = Array.isArray(listBody) ? listBody : listBody?.data || listBody?.items || [];
-    expect(rows.some((j) => (j.title || '') === jobTitle), 'job must exist').toBe(true);
+    const mine = rows.find((j) => (j.title || '') === jobTitle);
+    expect(mine, 'job must exist').toBeTruthy();
+    created.jobs.push(mine.id);
 
     await api.dispose();
   });

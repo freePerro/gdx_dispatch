@@ -562,6 +562,7 @@ def list_jobs(
     date: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    order: str | None = None,
 ):
     _ = current_user
     tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
@@ -620,6 +621,26 @@ def list_jobs(
         page_size = 500
 
     page_size = max(1, min(page_size, 500))
+
+    # Ordering is an EVICTION POLICY, not presentation — every capped fetch of
+    # this endpoint keeps the first page_size rows and drops the rest, and
+    # ~15 views consume it as their job picker with caps of 50/200/500.
+    #
+    # Default (`scheduled`): `scheduled_at DESC NULLS LAST` — dated work always
+    #   survives a cap; undated backlog is what gets evicted. Load-bearing for
+    #   the picker views; do not change it out from under them.
+    # Opt-in (`order=activity`, 2026-07-29): COALESCE(scheduled_at, created_at)
+    #   DESC — undated jobs slot into the timeline by creation time. Exists for
+    #   the /jobs list view, where the old default sank a just-created undated
+    #   job below every dated job in the tenant (last page, invisible the
+    #   moment it was saved → the operator concluded the save failed and saved
+    #   again). Under a cap this evicts the oldest of the coalesced timeline,
+    #   so it is NOT the right ordering for pickers that must never lose old
+    #   scheduled-but-unfinished work.
+    if (order or "").strip().lower() == "activity":
+        order_sql = "ORDER BY COALESCE(j.scheduled_at, j.created_at) DESC, j.created_at DESC "
+    else:
+        order_sql = "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
     offset = (page - 1) * page_size
 
     # Dynamic WHERE — kept as raw SQL because of ILIKE, CAST on PG enum, and
@@ -691,7 +712,7 @@ def list_jobs(
                 f"LEFT JOIN technicians t ON CAST(t.id AS TEXT) = CAST(j.assigned_to AS TEXT) AND t.deleted_at IS NULL "
                 "LEFT JOIN customer_locations cl ON cl.id = j.location_id AND cl.deleted_at IS NULL "
                 f"WHERE {where_sql} "
-                "ORDER BY j.scheduled_at DESC NULLS LAST, j.created_at DESC "
+                f"{order_sql}"
                 "LIMIT :page_size OFFSET :offset"
             ),
             {**params, "page_size": page_size, "offset": offset},

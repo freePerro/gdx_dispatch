@@ -1140,11 +1140,12 @@ async function submitForm() {
         }
       }
 
-      // Name the job in the confirmation. The list is ordered by scheduled
-      // date with undated jobs last, so a job created without a date can land
-      // on the final page and be invisible right after saving — which is the
-      // same "did that save?" doubt this whole change exists to remove. The
-      // number is proof even when the row isn't on screen.
+      // Name the job in the confirmation. This view fetches with
+      // order=activity so a just-created undated job is visible on page 1
+      // (the default ordering banishes undated jobs below every dated one);
+      // the number in the toast is the belt to that suspender, and stays
+      // useful when a search/tab filter is active and the row legitimately
+      // isn't on screen.
       const createdNumber = createdJob?.job_number || createdJob?.job?.job_number || "";
       const named = createdNumber ? `${createdNumber} created.` : "New job created successfully.";
       toast.add({
@@ -1206,10 +1207,18 @@ async function fetchJobs() {
   isLoading.value = true;
   try {
     const [jobsResult, customersResult, techResult] = await Promise.all([
-      // Server defaults to page_size=50; bump to 1000 (server cap) so the
-      // /jobs view shows all 180 GDX jobs in one page instead of the first
-      // 50 — the paginator stayed local to those 50 even though total=180.
-      api.get("/api/jobs?per_page=1000"),
+      // Server defaults to page_size=50; ask for the max. NOTE: the server
+      // CLAMPS page_size at 500 (routers/jobs.py) — the old comment here
+      // claimed 1000 was "the server cap", which was never true. At 500+
+      // live jobs this view silently truncates and needs real pagination.
+      //
+      // order=activity (2026-07-29): slots undated jobs into the timeline by
+      // creation time, so a just-created dateless job is visible on page 1
+      // instead of sinking below every dated job in the tenant. Opt-in on
+      // purpose — for capped picker fetches the default ordering is an
+      // eviction policy that must keep old scheduled work, so only THIS view
+      // requests the activity ordering.
+      api.get("/api/jobs?per_page=1000&order=activity"),
       api.get("/api/customers?per_page=1000").catch(() => []),
       api.get("/api/technicians").catch(() => ({ data: [] })),
     ]);
