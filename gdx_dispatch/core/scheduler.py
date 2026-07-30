@@ -98,6 +98,14 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # fan-outs are dropped instead of stacking into a burst.
             "options": {"queue": "priority:low", "expires": 540},
         },
+        "audit-chain-verify-nightly": {
+            # Plan §13: the audit hash-chain's tamper-evidence was never run
+            # outside tests. Nightly integrity check; logs an ERROR (→ Sentry)
+            # when the chain is broken. Cheap — a single sequential hash walk.
+            "task": "audit.verify_chain_nightly",
+            "schedule": crontab(hour=4, minute=30),
+            "options": {"queue": "priority:low"},
+        },
         "phone-com-reconcile-nightly": {
             # P1.5 — webhooks cover the live path; this is a daily backstop
             # for missed deliveries (transient Phone.com outages, brief

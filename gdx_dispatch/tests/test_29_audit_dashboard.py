@@ -257,3 +257,115 @@ def test_verify_audit_chain_broken(db_session):
     assert result["ok"] is False
     assert result["broken_at_row"] is not None
     assert result["broken_at_row"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Plan §13: the on-demand /api/audit/verify-chain endpoint + nightly task.
+# The chain was tamper-evident but NEVER verified outside tests — no endpoint,
+# no schedule. These pin both entry points, seeding via the REAL
+# log_audit_event_sync so the core hash chain the endpoint verifies is valid.
+# ---------------------------------------------------------------------------
+
+
+def _seed_real_chain(db, n=3):
+    from gdx_dispatch.core.audit import log_audit_event_sync
+
+    for i in range(n):
+        log_audit_event_sync(
+            db, tenant_id="tenant-1", user_id=f"u{i}",
+            action="job_closeout", entity_type="job", entity_id=f"job-{i}",
+            details={"i": i},
+        )
+    db.commit()
+
+
+def test_verify_chain_endpoint_ok(db_session):
+    from gdx_dispatch.routers.audit import verify_audit_chain_endpoint
+
+    _seed_real_chain(db_session, 3)
+    res = verify_audit_chain_endpoint(entity_type=None, entity_id=None, _={"role": "admin"}, db=db_session)
+    assert res["ok"] is True
+    assert res["rows_checked"] >= 3
+    assert res["scope"] == "all"
+    assert res["unchained_rows"] == 0
+    assert res["tamper_suspected"] is False
+
+
+def test_verify_chain_endpoint_detects_tamper(db_session):
+    import datetime
+    import uuid
+
+    from sqlalchemy import text as _text
+
+    from gdx_dispatch.routers.audit import verify_audit_chain_endpoint
+
+    _seed_real_chain(db_session, 3)
+    # audit_logs is IMMUTABLE (append-only enforced), so a row cannot be
+    # UPDATE-tampered — that immutability IS the guarantee. A realistic break
+    # is a mis-linked INSERT: a row whose prev_hash/row_hash don't chain. Raw
+    # SQL because the ORM path computes correct hashes.
+    db_session.execute(
+        _text(
+            "INSERT INTO audit_logs (id, tenant_id, user_id, action, entity_type, "
+            "entity_id, details, prev_hash, row_hash, hash, created_at) VALUES "
+            "(:id, 'tenant-1', 'x', 'job_closeout', 'job', 'jX', '{}', "
+            "'BADPREV', 'BADHASH', 'BADHASH', :ts)"
+        ),
+        {"id": uuid.uuid4().hex, "ts": datetime.datetime.now(datetime.UTC).isoformat()},
+    )
+    db_session.commit()
+
+    res = verify_audit_chain_endpoint(entity_type=None, entity_id=None, _={"role": "admin"}, db=db_session)
+    assert res["ok"] is False
+    # The mis-linked row carries a (wrong) non-empty hash, so nothing is
+    # "unchained" — this reads as a genuine tamper, not a data-hygiene gap.
+    assert res["unchained_rows"] == 0
+    assert res["tamper_suspected"] is True
+
+
+def _seed_unchained_row(db):
+    """A row written OUTSIDE the chain (empty row_hash), like the GL writers."""
+    import datetime
+    import uuid
+
+    from sqlalchemy import text as _t
+    db.execute(
+        _t("INSERT INTO audit_logs (id, tenant_id, user_id, action, entity_type, "
+           "entity_id, details, prev_hash, row_hash, hash, created_at) VALUES "
+           "(:id,'tenant-1','gl','gl_posted','ledger','x','{}','','','',:ts)"),
+        {"id": uuid.uuid4().hex, "ts": datetime.datetime.now(datetime.UTC).isoformat()},
+    )
+    db.commit()
+
+
+def test_unchained_rows_read_as_data_hygiene_not_tamper(db_session):
+    """A GL-style empty-hash row breaks verify but is NOT tampering — the
+    endpoint must distinguish it (unchained_rows>0, tamper_suspected False)."""
+    from gdx_dispatch.routers.audit import verify_audit_chain_endpoint
+
+    _seed_real_chain(db_session, 2)
+    _seed_unchained_row(db_session)
+    res = verify_audit_chain_endpoint(entity_type=None, entity_id=None, _={"role": "admin"}, db=db_session)
+    assert res["ok"] is False
+    assert res["unchained_rows"] >= 1
+    assert res["tamper_suspected"] is False
+
+
+def test_nightly_task_logs_and_returns(db_session, monkeypatch):
+    """The beat task returns {ok, rows} and never raises (a scheduled integrity
+    check must not crash the beat)."""
+    import gdx_dispatch.tasks.audit_chain_verify as mod
+
+    class _Ctx:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(mod, "SessionLocal", lambda: _Ctx())
+    _seed_real_chain(db_session, 2)
+
+    out = mod.verify_chain_nightly()
+    assert out["ok"] is True
+    assert out["rows"] >= 2

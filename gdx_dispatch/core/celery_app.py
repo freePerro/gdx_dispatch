@@ -98,12 +98,13 @@ install_flush_guard()
 # Ensure external task modules are imported so Celery registers decorated tasks.
 from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401
+from gdx_dispatch.modules.bank_feeds import tasks as _bank_feeds_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.campaigns import tasks as _campaign_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.forecasting import tasks as _forecasting_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.outlook import tasks as _outlook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.phone_com import tasks as _phone_com_tasks  # noqa: E402,F401
-from gdx_dispatch.modules.bank_feeds import tasks as _bank_feeds_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.quickbooks import tasks as _quickbooks_tasks  # noqa: E402,F401
+from gdx_dispatch.tasks import audit_chain_verify as _audit_chain_verify_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import email_poller as _email_poller_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
@@ -124,6 +125,7 @@ def _check_celery_worker_encryption(**_: object) -> None:
     process init signal, with the same dev/test/pytest bypass.
     """
     import logging  # noqa: PLC0415
+
     from gdx_dispatch.core import pii  # noqa: PLC0415
 
     env = os.environ.get("GDX_ENV", "").lower()

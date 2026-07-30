@@ -102,6 +102,27 @@
       >
         Export CSV
       </button>
+      <!-- Plan §13: run the hash-chain integrity check on demand. The passive
+           badge above reflects the last logs fetch; this proves it now. -->
+      <button
+        type="button"
+        data-testid="verify-chain"
+        :disabled="verifyingChain"
+        @click="verifyChain"
+      >
+        {{ verifyingChain ? 'Verifying…' : 'Verify chain now' }}
+      </button>
+      <span
+        v-if="verifyResult"
+        :class="verifyResult.ok ? 'chain-ok' : 'chain-broken'"
+        data-testid="verify-chain-result"
+      >
+        {{ verifyResult.ok
+          ? `Chain intact — ${verifyResult.rows} rows verified`
+          : (verifyResult.tamper
+            ? 'CHAIN BROKEN — no unchained rows explain it; escalate to ops'
+            : `${verifyResult.unchained} row(s) bypass the chain (GL/legacy writers) — data-hygiene, not tampering`) }}
+      </span>
     </form>
 
     <!-- Status / loading -->
@@ -194,6 +215,30 @@ const total = ref(0);
 const offset = ref(0);
 const limit = ref(50);
 const chainIntegrity = ref(null);
+const verifyingChain = ref(false);
+const verifyResult = ref(null);  // { ok, rows } from the on-demand check
+// Plan §13: run the hash-chain integrity check on demand via the new
+// /api/audit/verify-chain endpoint. Uses the same fetchFn-injectable api the
+// rest of this standalone-testable view uses. Result updates the chain badge.
+async function verifyChain() {
+  verifyingChain.value = true;
+  verifyResult.value = null;
+  try {
+    const url = "/api/audit/verify-chain";
+    const r = props.fetchFn ? await props.fetchFn(url) : await _getApi().get(url);
+    verifyResult.value = {
+      ok: !!r?.ok,
+      rows: r?.rows_checked ?? 0,
+      unchained: r?.unchained_rows ?? 0,
+      tamper: !!r?.tamper_suspected,
+    };
+    chainIntegrity.value = { valid: !!r?.ok, break_at: r?.ok ? null : "verify" };
+  } catch (e) {
+    verifyResult.value = { ok: false, rows: 0, error: e?.message || "verify failed" };
+  } finally {
+    verifyingChain.value = false;
+  }
+}
 const loading = ref(false);
 const error = ref("");
 
