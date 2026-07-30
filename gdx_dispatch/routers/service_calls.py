@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ def create_service_call(
     try:
         from uuid import UUID as _UUID
 
+        from gdx_dispatch.core.job_taxonomy import SERVICE_CALL
         from gdx_dispatch.models.tenant_models import Job
         now_dt = datetime.now(timezone.utc)
         job = Job(
@@ -62,7 +63,7 @@ def create_service_call(
             customer_id=_UUID(payload.customer_id) if payload.customer_id else None,
             title=payload.customer_name,
             description=payload.problem_description,
-            job_type="Service Call",
+            job_type=SERVICE_CALL,
             status="Service Call",
             priority=priority,
             lifecycle_stage="service_call",
@@ -108,13 +109,18 @@ def active_service_calls(
     try:
         from sqlalchemy import case, select
 
+        from gdx_dispatch.core.job_taxonomy import SERVICE_LANE_TYPES
         from gdx_dispatch.models.tenant_models import Customer, Job
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
         stmt = (
             select(Job, Customer.name.label("customer_name"))
             .outerjoin(Customer, Job.customer_id == Customer.id)
             .where(
-                Job.job_type == "Service Call",
+                # Plan §9: the repair-dispatch queue covers the whole service
+                # LANE (Doug 2026-07-29: Repair and Maintenance are service
+                # work). The old single-literal filter made the 12 legacy
+                # "Service" jobs invisible to this queue for months.
+                Job.job_type.in_(SERVICE_LANE_TYPES),
                 Job.status.notin_(["Complete", "Completed", "Invoiced", "done"]),
                 Job.deleted_at.is_(None),
             )

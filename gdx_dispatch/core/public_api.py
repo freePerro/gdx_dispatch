@@ -159,8 +159,8 @@ async def create_job(
     try:
         row = db.execute(
             text(
-                "INSERT INTO jobs (id, title, customer_id, scheduled_at, status, company_id, created_at) "
-                "VALUES (:id, :title, :customer_id, :scheduled_at, :status, :company_id, :created_at) "
+                "INSERT INTO jobs (id, title, customer_id, scheduled_at, status, company_id, created_at, job_type) "
+                "VALUES (:id, :title, :customer_id, :scheduled_at, :status, :company_id, :created_at, 'Service Call') "
                 "RETURNING id, title, status, customer_id, scheduled_at, created_at"
             ),
             {

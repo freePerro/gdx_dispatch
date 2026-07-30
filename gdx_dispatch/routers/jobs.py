@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, get_db
 from gdx_dispatch.core.job_display_state import derive_job_display_state
+from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import (
     Appointment,
@@ -69,7 +70,10 @@ class JobCreate(BaseModel):
     # default="Scheduled" made that derivation dead code and stamped
     # phantom "Scheduled" on unscheduled service calls.
     status: str | None = Field(default=None, max_length=50)
-    job_type: str = Field(default="Service", min_length=1, max_length=50)
+    # Plan §9: default is the canonical service spelling. The old default
+    # "Service" was one of the two dropdown vocabularies that diverged and
+    # left prod with four spellings of two work kinds.
+    job_type: str = Field(default=SERVICE_CALL, min_length=1, max_length=50)
     priority: str = Field(default="Normal", min_length=1, max_length=50)
     assigned_tech_id: str | None = Field(default=None, max_length=36)
     assigned_to: str | None = Field(default=None, max_length=36)
@@ -879,7 +883,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             scheduled_at=payload.scheduled_at,
             status=payload.status or derived_status,
             priority=payload.priority or "Normal",
-            job_type=payload.job_type or "Service",
+            job_type=canonical_job_type(payload.job_type) or SERVICE_CALL,
             company_id=tenant_id,
             job_number=assigned_number,
             created_at=now,
@@ -981,7 +985,10 @@ def update_job(
     if "scheduled_at" in data:
         updates["scheduled_at"] = data["scheduled_at"]
     if "job_type" in data:
-        updates["job_type"] = data["job_type"]
+        # Plan §9 (audit round 2): a stale SPA tab still running the old
+        # CustomerDetailView dropdown can PATCH the dead "Service" spelling
+        # back in after the 042 backfill — canonicalize at the write.
+        updates["job_type"] = canonical_job_type(data["job_type"])
     if "priority" in data:
         updates["priority"] = data["priority"]
     if "notes" in data:
@@ -1644,7 +1651,7 @@ def _closeout_row_to_dict(row: JobCloseout, names: dict[str, str]) -> dict[str, 
         "signed_by": row.signed_by,
         "signed_at": row.signed_at,
         "closed_by_user_id": row.closed_by_user_id,
-        "closed_by_name": names.get(str(row.closed_by_user_id) or "", None),
+        "closed_by_name": names.get(str(row.closed_by_user_id) or ""),
         "closed_at": row.closed_at,
         "superseded_at": row.superseded_at,
         "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
@@ -3275,7 +3282,7 @@ def create_follow_up_job(
             id=new_id,
             title=f"Follow-up: {original.title}"[:200],
             customer_id=original.customer_id,
-            job_type=original.job_type or "Service",
+            job_type=canonical_job_type(original.job_type) or SERVICE_CALL,
             status="Service Call",
             company_id=tenant_id,
             parent_job_id=original.id,
@@ -3384,7 +3391,7 @@ def spawn_return_visit(
             id=new_id,
             title=title,
             customer_id=original.customer_id,
-            job_type=original.job_type or "Service",
+            job_type=canonical_job_type(original.job_type) or SERVICE_CALL,
             status=derived_status,
             company_id=tenant_id,
             parent_job_id=original.id,

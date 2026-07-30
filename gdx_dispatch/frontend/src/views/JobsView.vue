@@ -521,6 +521,7 @@ import { useApiWithToast } from "../composables/useApiWithToast";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
 import { usePermission } from "../composables/usePermission";
+import { JOB_TYPE_OPTIONS, isServiceLane } from '../constants/jobTypes';
 import { formatDate, formatMoney } from "../composables/useFormatters";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
@@ -616,7 +617,10 @@ const deleteTarget = ref(null);
 // Phase D audit fix: dropped "Sold" (not in enum, write would silently
 // fail) and "Invoiced" (lives on billing_status, not lifecycle).
 const statusFlow = ["Service Call", "Estimate", "Scheduled", "In Progress", "Complete", "Cancelled"];
-const jobTypeOptions = ["Service Call", "Installation", "Repair", "Maintenance"];
+// Plan §9: ONE vocabulary, shared with CustomerDetailView and pinned against
+// core/job_taxonomy.py by a backend test. This list diverging from the other
+// dropdown is exactly how prod ended up with four spellings of two work kinds.
+const jobTypeOptions = [...JOB_TYPE_OPTIONS];
 const priorityOptions = ["Low", "Normal", "High", "Urgent"];
 
 const jobForm = ref(emptyForm());
@@ -655,7 +659,9 @@ function emptyForm() {
 }
 
 const isEditMode = computed(() => formMode.value === "edit");
-const isServiceCall = computed(() => jobForm.value.job_type === 'Service Call');
+// Lane-aware (plan §9): Repair/Maintenance are service work too — their form
+// asks for a problem description just like a service call.
+const isServiceCall = computed(() => isServiceLane(jobForm.value.job_type));
 const jobTitleLabel = computed(() => (isServiceCall.value ? 'Problem description *' : 'Job title *'));
 
 // Dispatch settings: tenant can warn or block when a job is scheduled
