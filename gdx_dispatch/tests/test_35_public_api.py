@@ -63,7 +63,11 @@ def _bootstrap_db():
                 scheduled_at TEXT,
                 company_id TEXT NOT NULL,
                 deleted_at TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                -- 2026-07-30: the real table has carried job_type since the
+                -- beginning; the taxonomy work's INSERT now names it, and a
+                -- fixture claiming to mirror the schema must carry it too.
+                job_type TEXT
             )
         """))
         # Schema aligned to the Customer ORM model so ORM queries
