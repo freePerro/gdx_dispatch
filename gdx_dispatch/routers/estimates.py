@@ -482,7 +482,19 @@ class EstimateLinePatchIn(BaseModel):
 
 
 class DeclineIn(BaseModel):
-    reason: str | None = None
+    # Loss reason is MANDATORY (Doug 2026-07-29: "loss reason is manditory").
+    # Every lost estimate must record WHY, so win/loss can be reported on.
+    # Mirrors the mobile path (DeclineQuoteIn already requires it); this closes
+    # the desktop hole where reason was optional and 85% of declines had none.
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("a loss reason is required to decline an estimate")
+        return trimmed
 
 
 @router.get("/pipeline-summary", response_model=None)
@@ -1870,7 +1882,8 @@ def decline_estimate(
         raise HTTPException(status_code=409, detail="cannot decline an accepted estimate")
     estimate.status = "declined"
     estimate.declined_at = utcnow()
-    estimate.declined_reason = payload.reason.strip() if payload.reason else None
+    # Validator guarantees a non-empty, stripped reason — no None fallback.
+    estimate.declined_reason = payload.reason
     estimate.updated_at = utcnow()
     db.commit()
     db.refresh(estimate)
