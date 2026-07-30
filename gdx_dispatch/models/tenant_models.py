@@ -2207,10 +2207,29 @@ class JobCloseout(Base):
       audit). Authoritative `job_parts` rows still exist for inventory math.
     - Lets us migrate the schema additively without touching `jobs`.
 
-    See `ai-queue/plans/sprint_job_closeout_sheet.md`.
+    Supersede model (2026-07-29, plan §12): a re-closeout RESTATES the job's
+    closeout, but the snapshot is evidence and is never destroyed or edited —
+    the prior row gets `superseded_at` stamped and the new row points back via
+    `supersedes_id`. Exactly ONE live row per job (partial unique index below);
+    every reader takes the current row via
+    `core.closeouts.get_current_closeout`, never a bare job_id filter —
+    `scalar_one_or_none()` on job_id alone raises MultipleResultsFound the
+    first time a job is re-closed out, and aggregate readers double-count.
+
+    See `ai-queue/plans/sprint_job_closeout_sheet.md` and
+    docs/design/job-closeout-billing-visibility-plan.md §12.
     """
 
     __tablename__ = "job_closeouts"
+    __table_args__ = (
+        Index(
+            "uq_job_closeouts_live",
+            "job_id",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL AND deleted_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     job_id: Mapped[UUID] = mapped_column(
@@ -2236,6 +2255,12 @@ class JobCloseout(Base):
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     closed_by_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Supersede chain (plan §12). NULL superseded_at = the job's CURRENT
+    # closeout; a re-closeout stamps this on the prior row instead of deleting
+    # or mutating it (an attestation is evidence — it gets dated, not
+    # destroyed). supersedes_id links a restatement to what it replaced.
+    superseded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    supersedes_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, server_default=func.now(),
     )
