@@ -80,33 +80,24 @@ def _user_id(user: dict[str, Any]) -> str:
     return str(user.get("user_id") or user.get("sub") or "")
 
 
-def _job_belongs_to_tech(db: Session, job_id: str, user_id: str) -> bool:
+def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: str) -> bool:
+    """Delegates to core/job_access.job_belongs_to_user — ONE ownership gate.
+
+    A1 (adversarial audit, 2026-07-29): this used to carry its own SQL, and
+    its first check compared jobs.assigned_to to a USER id. That column holds
+    a TECHNICIAN id in 22 of 22 prod rows, so the check could never match and
+    ownership rested entirely on the job_assignments fallback — which only
+    19 of 190 completed jobs have. Net effect: field billing 404'd for the
+    tech on ~90%% of jobs, and mobile_invoice_created has ZERO audit rows
+    ever — the feature never once ran in prod. The shared gate resolves all
+    four ownership paths (assigned technician-id, legacy user-id, appointment,
+    crew assignment); never fork a second implementation of it.
+    """
     if not job_id or not user_id:
         return False
-    row = db.execute(
-        _text(
-            """
-            SELECT 1 FROM jobs
-            WHERE id = :jid AND deleted_at IS NULL AND assigned_to = :uid
-            LIMIT 1
-            """
-        ),
-        {"jid": job_id, "uid": user_id},
-    ).scalar()
-    if row:
-        return True
-    row = db.execute(
-        _text(
-            """
-            SELECT 1 FROM job_assignments ja
-            JOIN technicians t ON t.id = ja.tech_id
-            WHERE ja.job_id = :jid AND CAST(t.user_id AS TEXT) = :uid AND t.active IS NOT FALSE
-            LIMIT 1
-            """
-        ),
-        {"jid": job_id, "uid": user_id},
-    ).scalar()
-    return bool(row)
+    from gdx_dispatch.core.job_access import job_belongs_to_user
+
+    return job_belongs_to_user(db, _tenant_id(request), job_id, user_id)
 
 
 def _next_invoice_number(db: Session) -> str:
@@ -224,7 +215,7 @@ def job_financial_summary(
     """
     user = current_user or {}
     user_id = _user_id(user)
-    if not _job_belongs_to_tech(db, job_id, user_id):
+    if not _job_belongs_to_tech(db, request, job_id, user_id):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
     # The parts a tech recorded for this job. Three things were wrong here and
@@ -361,7 +352,7 @@ def mobile_create_invoice(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, job_id, user_id):
+    if not _job_belongs_to_tech(db, request, job_id, user_id):
         return _jr({"detail": "job not found or not assigned to you"}, 404)
 
     # Raw SQL — avoids SQLAlchemy Uuid type quirks across SQLite/PG when
@@ -806,7 +797,7 @@ def mobile_send_invoice(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, str(invoice.job_id), user_id):
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
 
     # PR1-billing-capture (audit catch): the desktop /send now 409s on void,
@@ -867,7 +858,7 @@ def mobile_send_receipt(
     user = current_user or {}
     user_id = _user_id(user)
     tenant_id = _tenant_id(request)
-    if not _job_belongs_to_tech(db, str(invoice.job_id), user_id):
+    if not _job_belongs_to_tech(db, request, str(invoice.job_id), user_id):
         return _jr({"detail": "invoice not on a job assigned to you"}, 403)
 
     # Find the payment to receipt — explicit payment_id wins, else most recent.
