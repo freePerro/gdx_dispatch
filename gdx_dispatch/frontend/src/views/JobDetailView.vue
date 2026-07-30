@@ -763,12 +763,31 @@
         </div>
         <div class="card time-entry-card">
           <div class="card-header"><h3>Time Entries</h3></div>
+          <!-- Plan §3: three display bugs fixed. The Tech column bound
+               `technician_name`, which _entry_to_dict never returned (always
+               blank). Clock In/Out used `:body="formatDateTime"` as a PROP —
+               PrimeVue's `body` is a SLOT, so the formatter was ignored and
+               raw ISO strings rendered. And a closeout row's clock_out is
+               stamped in the FUTURE (clock_in + attested_minutes), which reads
+               as "still working"; show a dash for it and trust the Hours
+               column (the attested truth) instead. -->
           <DataTable :value="timeEntries" striped-rows responsive-layout="scroll" emptyMessage="No time entries yet">
-            <Column field="technician_name" header="Tech" />
-            <Column field="clock_in" header="Clock In" :body="formatDateTime" />
-            <Column field="clock_out" header="Clock Out" :body="formatDateTime" />
+            <Column header="Tech">
+              <template #body="{ data }">{{ data.tech_name || data.technician_name || '—' }}</template>
+            </Column>
+            <Column header="Clock In">
+              <template #body="{ data }">{{ data.clock_in ? formatDateTime(data.clock_in) : '—' }}</template>
+            </Column>
+            <Column header="Clock Out">
+              <template #body="{ data }">
+                {{ isFutureStamp(data.clock_out) ? '—' : (data.clock_out ? formatDateTime(data.clock_out) : '—') }}
+              </template>
+            </Column>
             <Column header="Hours">
               <template #body="{ data }">{{ formatHours(data.duration_minutes) }}</template>
+            </Column>
+            <Column header="Cost">
+              <template #body="{ data }">{{ formatCurrency(data.labor_cost) }}</template>
             </Column>
           </DataTable>
         </div>
@@ -1122,6 +1141,13 @@ const financials = ref(null);
 const appointments = ref([]);
 const appointmentsLoading = ref(false);
 const timeEntries = ref([]);
+// A closeout-written labor row closes at clock_in + attested_minutes, which
+// can land in the future; don't render that as a real clock-out time.
+function isFutureStamp(iso) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && t > Date.now();
+}
 // Plan §1 — the closeout card's data. `closeout` = the CURRENT snapshot
 // (null until the job is closed out); `closeoutHistory` = every attestation
 // newest-first, so a restated closeout is visible as a revision trail.

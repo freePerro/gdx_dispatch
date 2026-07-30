@@ -325,3 +325,95 @@ def test_labor_routes_require_auth_dependency():
         # Labor management now requires the dispatch/admin gate, which itself
         # authenticates via _current_user_dependency.
         assert labor_router._require_dispatch in deps
+
+
+def test_entry_cost_falls_back_to_configured_cost_rate(db_session):
+    """Plan §3: a labor row with no stored hourly_rate is costed at the
+    tenant's configured loaded_labor_cost_per_hour ($65), not the $50 literal.
+    A stored rate still wins (never re-resolve a written rate)."""
+    from decimal import Decimal
+
+    from gdx_dispatch.models.pricing_engine import PricingSettings
+    from gdx_dispatch.models.tenant_models import TimeEntry
+
+    PricingSettings.__table__.create(bind=db_session.get_bind(), checkfirst=True)
+    db_session.add(PricingSettings(loaded_labor_cost_per_hour=Decimal("65")))
+    db_session.commit()
+
+    fallback = labor_router._cost_rate_fallback(db_session)
+    assert fallback == 65.0
+
+    no_rate = TimeEntry(
+        company_id="tenant-test", job_id=None, tech_id="t", clock_in=None,
+        duration_minutes=180, entry_type="work", hourly_rate=None,
+    )
+    # 3h × $65 = $195 (was $150 at the $50 literal).
+    assert labor_router._entry_cost(no_rate, fallback) == 195.0
+
+    stored = TimeEntry(
+        company_id="tenant-test", job_id=None, tech_id="t", clock_in=None,
+        duration_minutes=60, entry_type="work", hourly_rate=Decimal("42.5"),
+    )
+    assert labor_router._entry_cost(stored, fallback) == 42.5  # stored wins
+
+
+def test_entry_to_dict_returns_tech_name_key(db_session):
+    """Plan §3: the Tech column was blank because tech_name never existed in
+    the serialized entry. It exists now (resolved name wins; stored tech_name
+    is the fallback)."""
+    from gdx_dispatch.models.tenant_models import TimeEntry
+
+    e = TimeEntry(
+        company_id="tenant-test", job_id=None, tech_id="t", clock_in=None,
+        duration_minutes=60, entry_type="work", tech_name="Stored Name",
+    )
+    d = labor_router._entry_to_dict(e)
+    assert "tech_name" in d
+    assert d["tech_name"] == "Stored Name"
+    assert labor_router._entry_to_dict(e, name="Resolved Name")["tech_name"] == "Resolved Name"
+
+
+def test_entry_cost_stored_zero_stays_zero(db_session):
+    """A deliberate $0 labor row (warranty / no-charge) must NOT be re-rated to
+    the $65 fallback (audit round 2 — `x or fallback` treated 0.0 as falsy)."""
+    from decimal import Decimal
+
+    from gdx_dispatch.models.tenant_models import TimeEntry
+
+    zero = TimeEntry(
+        company_id="tenant-test", job_id=None, tech_id="t", clock_in=None,
+        duration_minutes=120, entry_type="work", hourly_rate=Decimal("0"),
+    )
+    assert labor_router._entry_cost(zero, 65.0) == 0.0
+    absent = TimeEntry(
+        company_id="tenant-test", job_id=None, tech_id="t", clock_in=None,
+        duration_minutes=120, entry_type="work", hourly_rate=None,
+    )
+    assert labor_router._entry_cost(absent, 65.0) == 130.0  # 2h × $65
+
+
+def test_ui_compat_time_entries_requires_dispatch():
+    """Plan §3 (audit round 2): the un-stubbed /api/labor/.../time-entries
+    serves tenant-wide cost data and must carry the SAME dispatch gate as the
+    real labor endpoint — a technician must get 403, not the rows."""
+    from fastapi import HTTPException
+
+    from gdx_dispatch.routers.ui_compat import list_labor_time_entries
+
+    with pytest.raises(HTTPException) as ei:
+        list_labor_time_entries(
+            job_id="00000000-0000-4000-8000-000000000001",
+            current_user={"role": "technician", "user_id": "u"},
+            db=None,
+        )
+    assert ei.value.status_code == 403
+    # An admin must NOT be blocked by the gate (it fails past the role check
+    # into the query, which db=None makes raise a DIFFERENT error — proving the
+    # gate itself let the admin through).
+    with pytest.raises(Exception) as ei2:
+        list_labor_time_entries(
+            job_id="00000000-0000-4000-8000-000000000001",
+            current_user={"role": "admin", "user_id": "u"},
+            db=None,
+        )
+    assert not (isinstance(ei2.value, HTTPException) and ei2.value.status_code == 403)

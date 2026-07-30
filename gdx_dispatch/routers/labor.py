@@ -33,6 +33,25 @@ router = APIRouter(prefix="/api", tags=["labor"], dependencies=[Depends(require_
 log = logging.getLogger(__name__)
 
 DEFAULT_HOURLY_RATE = 50.0
+# Plan §3: the DISPLAY cost fallback when a labor row stored no hourly_rate.
+# Prod's pricing_settings.loaded_labor_cost_per_hour is $65 (the real
+# wage-plus-burden number) — the one correctly-configured cost rate, which
+# nothing read. This is that fallback; the stored rate still wins when set
+# (the standing "never re-resolve a written rate" rule).
+DEFAULT_COST_RATE = 65.0
+
+
+def _cost_rate_fallback(db: Session) -> float:
+    try:
+        from gdx_dispatch.models.pricing_engine import PricingSettings
+        row = db.execute(select(PricingSettings).limit(1)).scalar_one_or_none()
+        if row is not None and row.loaded_labor_cost_per_hour is not None:
+            v = float(row.loaded_labor_cost_per_hour)
+            if v > 0:
+                return v
+    except SQLAlchemyError:
+        log.exception("cost_rate_fallback_read_failed")
+    return DEFAULT_COST_RATE
 OVERHEAD_RATE = 0.08
 
 
@@ -105,23 +124,33 @@ def _resolve_hourly_rate(db: Session, tech_id: str) -> float:
     return DEFAULT_HOURLY_RATE if tech.hourly_rate is None else float(tech.hourly_rate)
 
 
-def _entry_cost(entry: TimeEntry) -> float:
+def _entry_cost(entry: TimeEntry, fallback_rate: float = DEFAULT_COST_RATE) -> float:
     minutes = entry.duration_minutes or 0
-    rate = _to_float(entry.hourly_rate) or DEFAULT_HOURLY_RATE
+    # Stored rate wins — INCLUDING a deliberate $0 (warranty/comp/no-charge).
+    # `x or fallback` treats 0.0 as falsy and would silently re-rate a $0 row
+    # to $65 (audit round 2); the fallback applies ONLY when no rate is stored.
+    # Read the column directly (not _to_float, which collapses None→0.0 and
+    # would make an ABSENT rate indistinguishable from a stored $0).
+    stored = entry.hourly_rate
+    rate = fallback_rate if stored is None else float(stored)
     return round((minutes / 60.0) * rate, 2)
 
 
-def _entry_to_dict(entry: TimeEntry) -> dict[str, Any]:
+def _entry_to_dict(
+    entry: TimeEntry, *, name: str | None = None, fallback_rate: float = DEFAULT_COST_RATE,
+) -> dict[str, Any]:
     return {
         "id": str(entry.id),
         "job_id": str(entry.job_id),
         "tech_id": entry.tech_id,
+        # Plan §3: the Tech column was blank because this key never existed.
+        "tech_name": name or entry.tech_name or None,
         "clock_in": entry.clock_in.isoformat() if entry.clock_in else None,
         "clock_out": entry.clock_out.isoformat() if entry.clock_out else None,
         "duration_minutes": entry.duration_minutes,
         "entry_type": entry.entry_type,
         "hourly_rate": _to_float(entry.hourly_rate),
-        "labor_cost": _entry_cost(entry),
+        "labor_cost": _entry_cost(entry, fallback_rate),
         "created_at": entry.created_at.isoformat() if entry.created_at else None,
         "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
         "deleted_at": entry.deleted_at.isoformat() if entry.deleted_at else None,
@@ -148,7 +177,60 @@ def list_job_time_entries(
         .order_by(TimeEntry.clock_in.desc())
         .all()
     )
-    return [_entry_to_dict(row) for row in rows]
+    fallback = _cost_rate_fallback(db)
+    names = _resolve_entry_names(db, rows)
+    return [
+        _entry_to_dict(r, name=names.get(str(r.id)), fallback_rate=fallback)
+        for r in rows
+    ]
+
+
+def _resolve_entry_names(db: Session, rows: list[TimeEntry]) -> dict[str, str]:
+    """entry.id → display name. A labor row identifies its tech by user_id
+    (mobile arrival) or tech_id (which holds a technicians.id OR a users.id).
+    Resolve both, prefer a real name, fall back to the stored tech_name."""
+    ids: set[str] = set()
+    for r in rows:
+        for v in (r.user_id, r.tech_id, r.technician_id):
+            if v:
+                ids.add(str(v))
+    if not ids:
+        return {str(r.id): (r.tech_name or "") for r in rows if r.tech_name}
+    from gdx_dispatch.models.tenant_models import User
+    user_names: dict[str, str] = {}
+    tech_names: dict[str, str] = {}
+    try:
+        for u in db.execute(select(User).where(User.id.in_([_maybe_uuid(i) for i in ids if _maybe_uuid(i)]))).scalars():
+            user_names[str(u.id).replace("-", "")] = (u.full_name or u.name or u.username or u.email or "")
+    except SQLAlchemyError:
+        db.rollback()
+    try:
+        for t in db.execute(select(Technician).where(Technician.id.in_(list(ids)))).scalars():
+            if t.name:
+                tech_names[str(t.id).replace("-", "")] = t.name  # normalized key
+                if t.user_id:
+                    user_names.setdefault(str(t.user_id).replace("-", ""), t.name)
+    except SQLAlchemyError:
+        db.rollback()
+    out: dict[str, str] = {}
+    for r in rows:
+        nm = None
+        for v in (r.user_id, r.tech_id, r.technician_id):
+            if not v:
+                continue
+            key = str(v).replace("-", "")
+            nm = user_names.get(key) or tech_names.get(key)
+            if nm:
+                break
+        out[str(r.id)] = nm or (r.tech_name or "")
+    return out
+
+
+def _maybe_uuid(v: str):
+    try:
+        return UUID(str(v))
+    except (ValueError, AttributeError):
+        return None
 
 
 @router.post("/jobs/{job_id}/time-entries", response_model=None, status_code=201)
