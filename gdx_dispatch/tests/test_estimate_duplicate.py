@@ -24,6 +24,57 @@ def _add_line(client: TestClient, estimate_id: str, **overrides) -> dict:
     return r.json()
 
 
+def test_next_estimate_number_ignores_option_variants(client: TestClient):
+    """The ONE minter (proposals.service.next_estimate_number, which every
+    minter now delegates to) must skip '-N' variants so a variant never advances
+    — nor corrupts — the canonical counter. Regression guard: mobile_quoting's
+    old minter produced a RANDOM number the moment a variant was the newest row.
+    """
+    import uuid as _uuid
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.modules.proposals.models import Estimate
+    from gdx_dispatch.modules.proposals.service import next_estimate_number
+
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        for num in ("EST-000042", "EST-000042-1", "EST-000042-7", "EST-JOB-2026-0018"):
+            db.add(Estimate(
+                id=_uuid.uuid4(), estimate_number=num, status="draft",
+                public_token=_uuid.uuid4().hex, company_id="tenant-test",
+            ))
+        db.commit()
+        # Max canonical is 000042; the -1/-7 variants and the legacy number are ignored.
+        assert next_estimate_number(db) == "EST-000043"
+    finally:
+        db.close()
+
+
+def test_duplicate_numbers_are_option_variants_of_the_base(client: TestClient):
+    """95% of duplicates are options for one customer, so the copy stays tied to
+    the base: EST-NNNNNN -> -1, -2, -3; re-duplicating a variant increments the
+    SHARED base, not a stacked -1-1 (Doug 2026-07-30)."""
+    customer_id = _create_customer(client, name="Options Customer")
+    src = _create_estimate(client, customer_id=customer_id, label="Garage options")
+    base = src["estimate_number"]
+    assert base.startswith("EST-") and len(base) == 10  # canonical EST-NNNNNN
+
+    dup1 = client.post(f"/api/estimates/{src['id']}/duplicate").json()
+    dup2 = client.post(f"/api/estimates/{src['id']}/duplicate").json()
+    assert dup1["estimate_number"] == f"{base}-1"
+    assert dup2["estimate_number"] == f"{base}-2"
+
+    # Duplicating a VARIANT increments the shared base, not -1-1.
+    dup3 = client.post(f"/api/estimates/{dup1['id']}/duplicate").json()
+    assert dup3["estimate_number"] == f"{base}-3"
+
+    # The variants must not have advanced the main EST counter — a brand-new
+    # estimate still gets the next canonical number after the base.
+    fresh = _create_estimate(client, customer_id=customer_id, label="Unrelated")
+    assert len(fresh["estimate_number"]) == 10
+    assert int(fresh["estimate_number"][4:]) == int(base[4:]) + 1
+
+
 def test_duplicate_copies_header_fields_and_resets_state(client: TestClient):
     customer_id = _create_customer(client, name="Source Customer")
     src = _create_estimate(

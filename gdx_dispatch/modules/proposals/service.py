@@ -12,6 +12,32 @@ from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
 from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
 
 
+def next_estimate_number(db: Session) -> str:
+    """The next canonical ``EST-NNNNNN`` number — the ONE minter.
+
+    Max numeric suffix of canonical 10-char EST-NNNNNN numbers (+1), across live
+    AND soft-deleted rows (the unique constraint covers both). Ignores:
+      * legacy formats (``EST-JOB-2026-0018``), and
+      * option variants (``EST-000042-1`` — len != 10). A variant must never
+        advance the main counter, or the next real estimate would skip numbers.
+
+    Every estimate-number minter delegates here so the three former copies can't
+    drift again — one of them (mobile_quoting) did `int(split("-",1)[1])` on the
+    most-recent number and produced a RANDOM number the moment a "-N" variant
+    existed. ``count(*)+1`` was another old approach; it collides on
+    deletes/skips (prod incident 2026-05-07: EST-000027 already taken).
+    """
+    rows = db.execute(select(Estimate.estimate_number)).scalars().all()
+    highest = 0
+    for n in rows:
+        if not n or len(n) != 10 or not n.startswith("EST-"):
+            continue
+        suffix = n[4:]
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return f"EST-{highest + 1:06d}"
+
+
 def create_estimate(job_id: UUID, estimate_number: str, db: Session, company_id: str = "tenant-test") -> Estimate:
     # company_id is NOT NULL (Build Rule 5). Default is only used by unit
     # tests that call this helper directly; production routers pull the real
