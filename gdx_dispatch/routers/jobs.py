@@ -93,6 +93,12 @@ class JobCreate(BaseModel):
     # customer_locations row this job is at. NULL → JobDetailView falls
     # back to the customer's primary location (existing behavior).
     location_id: str | None = Field(default=None, max_length=36)
+    # 2026-07-29: same class of bug as `description` above — both JobsView and
+    # MobileJobNewDialog have always POSTed `notes` (the "Dispatch notes for
+    # tech" box), pydantic had no field for it, so every note an operator typed
+    # at create time was silently dropped. Declared here AND assigned in
+    # create_job; a field without the assignment is the same bug wearing a hat.
+    notes: str | None = Field(default=None, max_length=20000)
 
 
 class JobUpdate(BaseModel):
@@ -442,6 +448,11 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "billing_status": job.billing_status,
         "scheduled_at": job.scheduled_at,
         "completed_at": job.completed_at,
+        # 2026-07-29: the third face of the same bug. `notes` (the "Dispatch
+        # notes for tech" box) was dropped by JobCreate, never assigned in
+        # create_job, AND never serialized here — so even once it persisted,
+        # nothing could read it back. Write-only fields are invisible fields.
+        "notes": job.notes,
         "priority": job.priority,
         "job_type": job.job_type,
         "customer_id": job.customer_id,
@@ -861,6 +872,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             holding_area_id=derived_holding_area,
             scheduled_duration_hours=payload.scheduled_duration_hours,
             location_id=payload.location_id or None,
+            notes=(payload.notes or "").strip() or None,
         )
         db.add(job)
         db.flush()

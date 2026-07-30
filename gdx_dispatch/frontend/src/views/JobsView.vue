@@ -947,6 +947,45 @@ function promptDelete(job) {
   showDeleteDialog.value = true;
 }
 
+// "Schedule an appointment?" — date (required) + optional time and note.
+//
+// This used to POST /api/appointments with {job_id, date, time, notes}.
+// AppointmentIn requires title/start_at/end_at and has no date/time fields at
+// all, so that call 422'd on every single submit, and being unguarded it
+// unwound past the dialog close and the list refresh (see submitForm).
+//
+// It was never needed. The backend already mirrors a scheduled job into
+// `appointments` on create — `_sync_job_appointment` in routers/jobs.py, keyed
+// on `Job.scheduled_at`, idempotent, one row per (job, tech). So the appointment
+// section just needs to feed `scheduled_at`; the appointment then gets created
+// by the same already-live path that handles every other dated job. No new code
+// path is switched on, and no second endpoint is involved.
+//
+// `scheduled_at` wins if the operator set it explicitly — this only fills the
+// gap. Returns an ISO string or null.
+function apptScheduledAt(form) {
+  if (!form.appt_schedule || !form.appt_date) return null;
+  const d = new Date(form.appt_date);
+  if (Number.isNaN(d.getTime())) return null;
+  const t = (form.appt_time || "").trim();
+  const m = /^(\d{1,2}):(\d{2})/.exec(t);
+  // No time given → 08:00 local, matching "sometime that day" rather than
+  // midnight, which reads as the day before in some timezones.
+  d.setHours(m ? Number(m[1]) : 8, m ? Number(m[2]) : 0, 0, 0);
+  return d.toISOString();
+}
+
+// The operator's appointment note has no home on the job otherwise (the
+// appointment row is written server-side and carries its own text), so it rides
+// in the dispatch notes — which only started persisting in this same change:
+// JobCreate had no `notes` field, so pydantic silently dropped every note typed
+// at create time.
+function apptRequestNote(form) {
+  const own = form.notes?.trim() || null;
+  const extra = form.appt_schedule ? form.appt_notes?.trim() || null : null;
+  return [own, extra ? `Appointment note: ${extra}` : null].filter(Boolean).join("\n\n");
+}
+
 async function submitForm() {
   formError.value = "";
   // Each save re-evaluates the soft gate from scratch — acknowledging once
@@ -992,6 +1031,15 @@ async function submitForm() {
   }
 
   isSaving.value = true;
+  // Set the moment the job row itself is written. Everything after that point
+  // is a side effect, and a side effect must never make a SAVED job look
+  // unsaved: the operator re-saves and the shop ends up with two records of
+  // one job. (Distinct from the duplicate job *numbers* in prod — those come
+  // from the numbering counter being reset backwards, not from re-saving;
+  // next_job_number is atomic, so a second save gets the next number, not a
+  // colliding one.) Read by the catch and finally below.
+  let primaryWriteOk = false;
+  let apptRequested = false;
   try {
     let customerId = jobForm.value.customer_id;
 
@@ -1017,7 +1065,11 @@ async function submitForm() {
       customer_id: customerId,
       job_type: jobForm.value.job_type,
       priority: jobForm.value.priority,
-      scheduled_at: jobForm.value.scheduled_at ? jobForm.value.scheduled_at.toISOString() : null,
+      // An explicit Scheduled date wins; otherwise a ticked appointment
+      // supplies it, which is what makes the backend create the appointment.
+      scheduled_at: jobForm.value.scheduled_at
+        ? jobForm.value.scheduled_at.toISOString()
+        : apptScheduledAt(jobForm.value),
       // Sprint dispatch-capacity — pass through as Number so the API
       // gets a NUMERIC, not a string. Blank or non-numeric input = null
       // (cleared). 0 round-trips as 0 — external writers (importers,
@@ -1038,30 +1090,29 @@ async function submitForm() {
       lead_tech_id: leadTechId,
       // Legacy fields kept for any older read paths that still inspect them.
       assigned_tech_id: techIds[0] || null,
-      notes: jobForm.value.notes || "",
+      // The requested appointment rides along in the dispatch notes.
+      // /api/appointments cannot accept this form's data (see the submit path
+      // below), and silently discarding a date the form REQUIRES is its own
+      // lie — so the request is preserved where dispatch will actually read it.
+      notes: apptRequestNote(jobForm.value) || jobForm.value.notes || "",
     };
 
     if (isEditMode.value) {
       payload.lifecycle_stage = jobForm.value.status;
       payload.status = jobForm.value.status;
       await api.patch(`/api/jobs/${jobForm.value.id}`, payload);
+      primaryWriteOk = true;
       toast.add({ severity: "success", summary: "Job Updated", detail: "Job saved successfully.", life: 3000 });
     } else {
       const createdJob = await api.post("/api/jobs", payload);
       const jobId = extractId(createdJob);
+      // The job EXISTS from here on. Nothing below may throw past this point.
+      primaryWriteOk = true;
 
-      if (jobForm.value.appt_schedule) {
-        if (!jobId) {
-          throw new Error("Job creation did not return an ID for the appointment.");
-        }
-        const appointmentPayload = {
-          job_id: jobId,
-          date: formatDateForApi(jobForm.value.appt_date),
-          time: jobForm.value.appt_time?.trim() || null,
-          notes: jobForm.value.appt_notes || "",
-        };
-        await api.post("/api/appointments", appointmentPayload);
-      }
+      // No POST to /api/appointments — see apptScheduledAt above. The date went
+      // out as `scheduled_at`, and the backend's _sync_job_appointment created
+      // the appointment row. Nothing to do here but report it.
+      apptRequested = jobForm.value.appt_schedule && !!jobForm.value.appt_date;
 
       // Attach any catalog parts staged on the form to the new job's
       // parts-to-order list, carrying the catalog sell price so they reach the
@@ -1089,16 +1140,48 @@ async function submitForm() {
         }
       }
 
-      toast.add({ severity: "success", summary: "Job Created", detail: "New job created successfully.", life: 3000 });
+      // Name the job in the confirmation. The list is ordered by scheduled
+      // date with undated jobs last, so a job created without a date can land
+      // on the final page and be invisible right after saving — which is the
+      // same "did that save?" doubt this whole change exists to remove. The
+      // number is proof even when the row isn't on screen.
+      const createdNumber = createdJob?.job_number || createdJob?.job?.job_number || "";
+      const named = createdNumber ? `${createdNumber} created.` : "New job created successfully.";
+      toast.add({
+        severity: "success",
+        summary: "Job Created",
+        detail: apptRequested
+          ? `${named} Scheduled — the appointment is on the calendar.`
+          : named,
+        life: 4000,
+      });
     }
-
-    showFormDialog.value = false;
-    await fetchJobs();
   } catch (error) {
-    formError.value = error?.message || "Failed to save job.";
-    toast.add({ severity: "error", summary: "Error", detail: formError.value, life: 5000 });
+    const msg = error?.message || "Failed to save job.";
+    if (primaryWriteOk) {
+      // The job is on disk. Report the follow-up failure, but never as a
+      // failed save — the dialog still closes and the list still refreshes
+      // in the finally, so the operator sees their job and doesn't re-save.
+      toast.add({
+        severity: "warn",
+        summary: "Job saved",
+        detail: `Saved, but a follow-up step failed: ${msg}`,
+        life: 6000,
+      });
+    } else {
+      formError.value = msg;
+      toast.add({ severity: "error", summary: "Error", detail: msg, life: 5000 });
+    }
   } finally {
     isSaving.value = false;
+    // Guaranteed, not best-effort: if the job row was written, the dialog
+    // closes and the list refreshes no matter what happened afterwards.
+    // Leaving these on the try's happy path is what let one failing side
+    // call hide a successful save.
+    if (primaryWriteOk) {
+      showFormDialog.value = false;
+      await fetchJobs();
+    }
   }
 }
 

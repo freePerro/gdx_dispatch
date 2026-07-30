@@ -202,3 +202,68 @@ def test_update_job_also_validates_holding_area_id() -> None:
         "phantom/soft-deleted lane and vanish it from dispatch. Add the "
         "same guard as create_job."
     )
+
+
+# ---------------------------------------------------------------------------
+# The OTHER direction: fields the frontend SENDS that JobCreate never declared.
+#
+# The test above catches `payload.x` reads with no field (AttributeError → 500).
+# This catches the silent twin: the browser posts a value, pydantic has no field
+# for it, and the data is dropped with no error anywhere. That has now happened
+# three times — `description` (fixed 2026-07-22), and `notes` (fixed 2026-07-29,
+# which was worse: undeclared on the schema, unassigned in create_job, AND
+# unserialized in _job_to_dict, so it was invisible in all three directions).
+# ---------------------------------------------------------------------------
+
+JOBSVIEW_SRC = (
+    REPO_ROOT / "gdx_dispatch/frontend/src/views/JobsView.vue"
+).read_text(encoding="utf-8")
+
+
+def test_notes_survives_all_three_layers() -> None:
+    """`notes` (the "Dispatch notes for tech" box) must be declared, assigned
+    and serialized. Any one of the three missing makes the field a black hole."""
+    assert "notes" in _class_field_names(JOBS_SRC, "JobCreate"), (
+        "JobCreate lost its `notes` field — every dispatch note typed at "
+        "create time is silently dropped again."
+    )
+    body = _func_body(JOBS_SRC, "create_job")
+    assert "notes=" in body, (
+        "create_job declares `notes` but never assigns it to the Job row — "
+        "a declared field without the assignment is the same bug in a hat."
+    )
+    assert '"notes": job.notes' in JOBS_SRC, (
+        "_job_to_dict no longer serializes `notes` — the value persists but "
+        "nothing can read it back, so JobDetailView shows nothing."
+    )
+
+
+def test_jobsview_create_payload_fields_are_all_declared() -> None:
+    """Every key JobsView puts in its POST /api/jobs body must be a declared
+    JobCreate field. This is the brake that would have caught `notes` and
+    `description` the day they were added to the form."""
+    declared = _class_field_names(JOBS_SRC, "JobCreate")
+    # The payload object literal inside submitForm.
+    start = JOBSVIEW_SRC.find("const payload = {")
+    assert start != -1, "JobsView payload literal moved — re-point this test."
+    depth = 0
+    end = start
+    for i in range(JOBSVIEW_SRC.find("{", start), len(JOBSVIEW_SRC)):
+        if JOBSVIEW_SRC[i] == "{":
+            depth += 1
+        elif JOBSVIEW_SRC[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    literal = JOBSVIEW_SRC[start:end]
+    # Top-level `key:` at the literal's own indent (6 spaces in this file).
+    sent = set(re.findall(r"^\s{6}([a-zA-Z_]\w*):", literal, re.MULTILINE))
+    # Fields the create path deliberately ignores (edit-only / legacy aliases).
+    allowed_extra = {"lifecycle_stage"}
+    undeclared = sent - declared - allowed_extra
+    assert not undeclared, (
+        f"JobsView POSTs fields JobCreate does not declare: {sorted(undeclared)}. "
+        "Pydantic drops them silently — the operator's input vanishes with no "
+        "error. Declare them on JobCreate (and assign them in create_job)."
+    )
