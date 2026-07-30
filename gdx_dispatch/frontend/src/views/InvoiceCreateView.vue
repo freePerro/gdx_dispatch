@@ -36,6 +36,11 @@
       </div>
     </header>
 
+    <Message v-if="adjustsInvoiceId" severity="warn" :closable="false" data-testid="supplemental-banner">
+      Supplemental invoice{{ adjustsInvoiceNumber ? ' adjusting ' + adjustsInvoiceNumber : '' }}
+      — the closeout changed after billing. Add only the difference; the original invoice stays as-is.
+    </Message>
+
     <Card v-if="!loading">
       <template #content>
         <div class="form-grid">
@@ -209,6 +214,7 @@ import { computed, ref, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
+import Message from 'primevue/message';
 import Select from 'primevue/select';
 import DatePicker from 'primevue/datepicker';
 import InputNumber from 'primevue/inputnumber';
@@ -226,6 +232,8 @@ const toast = useToast();
 
 const loading = ref(true);
 const creating = ref(false);
+const adjustsInvoiceId = ref('');
+const adjustsInvoiceNumber = ref('');
 
 // S122-b — same category set EstimateView uses (EstimateView.vue:563), so
 // the same Select options render on /billing/new and /estimates/new.
@@ -508,6 +516,7 @@ async function createInvoice() {
       from_part_ids: form.value.from_part_ids || [],
       from_change_order_ids: form.value.from_change_order_ids || [],
     };
+    if (adjustsInvoiceId.value) payload.adjusts_invoice_id = adjustsInvoiceId.value;
 
     let created;
     try {
@@ -589,6 +598,13 @@ onMounted(async () => {
       if (j) form.value.customer_id = j.customer_id;
     }
     await prefillFromJobEstimate(qJobId);
+  }
+  // §12 supplemental: BillingView's "Create supplemental" deep-link passes the
+  // original invoice id (and number, for the banner). We record it as
+  // provenance on the new invoice — the office still confirms the lines/amount.
+  if (q.adjusts_invoice_id) {
+    adjustsInvoiceId.value = String(q.adjusts_invoice_id);
+    adjustsInvoiceNumber.value = q.adjusts_invoice_number ? String(q.adjusts_invoice_number) : '';
   }
   // Final guarantee — if a customer_id is selected but its option isn't in
   // the bulk-loaded list, fetch it by ID so the dropdown can render the name.

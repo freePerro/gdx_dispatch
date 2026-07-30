@@ -28,7 +28,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.settings_flags import closeout_reconciliation_enabled
-from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, JobCloseout
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    Invoice,
+    InvoiceAdjustment,
+    Job,
+    JobCloseout,
+)
 
 
 def _closeout_summary(jc: JobCloseout | None) -> dict[str, Any] | None:
@@ -85,6 +91,32 @@ def find_closeout_billing_discrepancies(db: Session, tenant_id: str) -> dict[str
             .order_by(Invoice.created_at.asc())
         ).scalars().first()
         if invoice is None:
+            continue
+
+        # Reconciled? Only a DELIBERATE reconciliation of THIS invoice clears it
+        # — not any unrelated later bill (a recurring/deposit invoice, or an
+        # abandoned draft, must not silently clear a real discrepancy and
+        # re-introduce "billed even though we've been paid"). Two signals:
+        #   1) a supplemental invoice explicitly adjusts this invoice
+        #      (adjusts_invoice_id link — the guided §12 action), or
+        #   2) a credit memo / refund was posted on this invoice at/after the
+        #      revision (the over-billed / down-revision path, which lands in
+        #      invoice_adjustments, never a new Invoice row).
+        supplemental = db.execute(
+            select(Invoice.id).where(
+                Invoice.adjusts_invoice_id == invoice.id,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
+            )
+        ).scalars().first()
+        credit = db.execute(
+            select(InvoiceAdjustment.id).where(
+                InvoiceAdjustment.invoice_id == invoice.id,
+                InvoiceAdjustment.kind.in_(("credit_memo", "refund")),
+                InvoiceAdjustment.created_at >= jc.created_at,
+            )
+        ).scalars().first()
+        if supplemental is not None or credit is not None:
             continue
 
         job = db.get(Job, jc.job_id)
