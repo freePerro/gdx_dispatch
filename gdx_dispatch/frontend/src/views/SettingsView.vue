@@ -590,6 +590,21 @@
                     data-testid="est-deposit-pct"
                   />
                 </div>
+                <Divider />
+                <div style="display:flex; flex-direction:column; gap:0.4rem;">
+                  <strong>Estimate expiry (days)</strong>
+                  <div class="muted">
+                    When an estimate is sent, it stays valid for this many days.
+                    After that a nightly job marks it "expired" so old quotes
+                    stop showing as live in the pipeline. Default 60.
+                  </div>
+                  <InputNumber
+                    v-model="estimatesFeatures.estimate_expiry_days"
+                    :min="1" :max="365" suffix=" days"
+                    style="width: 10rem"
+                    data-testid="est-expiry-days"
+                  />
+                </div>
                 <div>
                   <Button label="Save Estimate Settings" icon="pi pi-save" @click="saveEstimatesFeatures" :loading="estimatesFeaturesSaving" data-testid="estimates-features-save" />
                 </div>
@@ -1696,6 +1711,7 @@ const estimatesFeatures = reactive({
   estimate_email_body_template: "",
   estimate_deposit_pct: 50,
   estimates_hide_line_prices: false,
+  estimate_expiry_days: 60,
 });
 const emailSubjectPlaceholder = "{{job_title}}";
 const emailBodyPlaceholder = "Hi {{customer_name}},\n\nPlease see the attached estimate for {{job_title}}.\n\nReply with any questions, or to move forward.\n\nThanks,\n{{company_name}}";

@@ -108,6 +108,7 @@ from gdx_dispatch.tasks import audit_chain_verify as _audit_chain_verify_tasks  
 from gdx_dispatch.tasks import customer_volume_refresh as _customer_volume_refresh_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import email_poller as _email_poller_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # noqa: E402,F401
+from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_followup as _estimate_followup_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import recurring as _recurring_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import reminders as _reminder_tasks  # noqa: E402,F401

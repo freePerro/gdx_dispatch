@@ -433,6 +433,101 @@ def test_send_estimate_marks_sent(client: TestClient):
     assert data["sent_at"] is not None
 
 
+def test_send_populates_valid_until_from_expiry_days(client: TestClient, monkeypatch):
+    """On send, valid_until = sent_at + the tenant's estimate_expiry_days
+    (plan §15). Without this, valid_until stayed NULL and estimates never
+    expired. get_features is monkeypatched so the window is deterministic."""
+    from datetime import datetime
+
+    from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates.get_features",
+        lambda _tid: EstimatesFeatures(estimate_expiry_days=30),
+    )
+    estimate = _create_estimate(client)
+
+    data = client.post(f"/api/estimates/{estimate['id']}/send").json()
+    assert data["valid_until"] is not None
+    sent = datetime.fromisoformat(data["sent_at"])
+    valid = datetime.fromisoformat(data["valid_until"])
+    assert (valid - sent).days == 30
+
+
+def _set_valid_until(client: TestClient, estimate_id: str, iso_dt: str) -> None:
+    """Set valid_until directly on the row — the API create/patch payloads don't
+    wire it (it's populated on send), so the tests reach into the test DB. Uses
+    the ORM so the Uuid PK coerces correctly (it stores 32-hex on SQLite, dashed
+    on PG — a raw string WHERE would miss)."""
+    import uuid as _uuid
+    from datetime import datetime
+
+    from gdx_dispatch.modules.proposals.models import Estimate
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        est = db.query(Estimate).filter(Estimate.id == _uuid.UUID(estimate_id)).one()
+        est.valid_until = datetime.fromisoformat(iso_dt)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_send_does_not_overwrite_existing_valid_until(client: TestClient, monkeypatch):
+    """A hand-picked valid_until (or a re-send) must not be pushed out."""
+    from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates.get_features",
+        lambda _tid: EstimatesFeatures(estimate_expiry_days=30),
+    )
+    estimate = _create_estimate(client)
+    _set_valid_until(client, estimate["id"], "2099-12-31T00:00:00+00:00")
+
+    data = client.post(f"/api/estimates/{estimate['id']}/send").json()
+    assert data["valid_until"].startswith("2099-12-31")
+
+
+def test_resend_refreshes_a_past_valid_until(client: TestClient, monkeypatch):
+    """Re-sending an estimate whose window has lapsed gives it a FRESH window,
+    instead of leaving the stale past date the nightly task would re-expire."""
+    from datetime import datetime, timezone
+
+    from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates.get_features",
+        lambda _tid: EstimatesFeatures(estimate_expiry_days=30),
+    )
+    estimate = _create_estimate(client)
+    client.post(f"/api/estimates/{estimate['id']}/send")
+    _set_valid_until(client, estimate["id"], "2000-01-01T00:00:00+00:00")
+
+    data = client.post(f"/api/estimates/{estimate['id']}/send").json()
+    valid = datetime.fromisoformat(data["valid_until"])
+    if valid.tzinfo is None:  # SQLite serializes naive; treat as UTC
+        valid = valid.replace(tzinfo=timezone.utc)
+    assert valid > datetime.now(timezone.utc)  # refreshed into the future
+
+
+def test_expire_stale_marks_past_due_sent_expired(client: TestClient, monkeypatch):
+    """The expiry sweep flips a sent estimate whose valid_until has passed to
+    'expired' — the same past-due logic the nightly task applies (the endpoint
+    also sweeps drafts; the task narrows to 'sent')."""
+    from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates.get_features",
+        lambda _tid: EstimatesFeatures(estimate_expiry_days=30),
+    )
+    estimate = _create_estimate(client)
+    client.post(f"/api/estimates/{estimate['id']}/send")
+    # Force the window into the past, then sweep.
+    _set_valid_until(client, estimate["id"], "2000-01-01T00:00:00+00:00")
+
+    swept = client.post("/api/estimates/expire-stale")
+    assert swept.status_code == 200, swept.text
+    assert estimate["id"] in swept.json()["estimate_ids"]
+
+    got = client.get(f"/api/estimates/{estimate['id']}").json()
+    assert got["status"] == "expired"
+
+
 def test_accept_estimate_marks_accepted(client: TestClient):
     estimate = _create_estimate(client)
     client.post(f"/api/estimates/{estimate['id']}/send")

@@ -22,6 +22,9 @@ class EstimatesFeatures:
     # Tenant-wide default for "total-only" estimates. Per-estimate
     # Estimate.hide_line_prices (NULL = inherit this) wins when set.
     hide_line_prices: bool = False
+    # Days an estimate stays valid after it's sent (plan §15). On send,
+    # valid_until = sent_at + this; the nightly task expires past-due ones.
+    estimate_expiry_days: int = 60
 
 
 def effective_hide_line_prices(override: bool | None, default: bool) -> bool:
@@ -44,7 +47,8 @@ def get_features(tenant_id: str) -> EstimatesFeatures:
                     "       COALESCE(estimate_email_subject_template, ''), "
                     "       COALESCE(estimate_email_body_template, ''), "
                     "       COALESCE(estimate_deposit_pct, 50), "
-                    "       COALESCE(estimates_hide_line_prices, false) "
+                    "       COALESCE(estimates_hide_line_prices, false), "
+                    "       COALESCE(estimate_expiry_days, 60) "
                     "FROM tenant_settings WHERE tenant_id = :tid"
                 ),
                 {"tid": tenant_id},
@@ -58,6 +62,7 @@ def get_features(tenant_id: str) -> EstimatesFeatures:
                 email_body_template=str(row[3] or ""),
                 deposit_pct=int(row[4] or 0),
                 hide_line_prices=bool(row[5]),
+                estimate_expiry_days=int(row[6]) if row[6] else 60,
             )
     except Exception:
         log.exception("estimates_features_read_failed", extra={"tenant_id": tenant_id})
