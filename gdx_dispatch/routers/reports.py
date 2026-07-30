@@ -329,6 +329,127 @@ def revenue_by_period(
     }
 
 
+def _rollup_sales_tax(rows) -> tuple[list[dict], dict]:
+    """Fold per-(period, source) tax rows into per-period cards + grand totals.
+
+    Pure over the SQL result so the money math is testable without Postgres
+    (the query's date_trunc is PG-only). Each input row is a mapping with
+    period_start (date|None), source ('gdx'|'quickbooks'), tax_total,
+    tax_collected, invoice_count, taxable_base. Outstanding is derived, never
+    trusted from input — total minus collected, so it can't disagree.
+    """
+    def _empty_source() -> dict:
+        return {"tax_total": 0.0, "tax_collected": 0.0, "invoice_count": 0}
+
+    periods: dict[str, dict] = {}
+    for r in rows:
+        ps = r["period_start"]
+        key = ps.isoformat() if hasattr(ps, "isoformat") else (str(ps) if ps else "unknown")
+        p = periods.setdefault(key, {
+            "period_start": key,
+            "gdx": _empty_source(),
+            "quickbooks": _empty_source(),
+        })
+        src = r["source"] if r["source"] in ("gdx", "quickbooks") else "quickbooks"
+        p[src] = {
+            "tax_total": float(r["tax_total"] or 0),
+            "tax_collected": float(r["tax_collected"] or 0),
+            "invoice_count": int(r["invoice_count"] or 0),
+        }
+    items = sorted(periods.values(), key=lambda p: p["period_start"])
+    for p in items:
+        p["tax_total"] = round(p["gdx"]["tax_total"] + p["quickbooks"]["tax_total"], 2)
+        p["tax_collected"] = round(p["gdx"]["tax_collected"] + p["quickbooks"]["tax_collected"], 2)
+        p["tax_outstanding"] = round(p["tax_total"] - p["tax_collected"], 2)
+
+    totals = {
+        "tax_total": round(sum(p["tax_total"] for p in items), 2),
+        "tax_collected": round(sum(p["tax_collected"] for p in items), 2),
+        "tax_outstanding": round(sum(p["tax_total"] - p["tax_collected"] for p in items), 2),
+        "gdx_tax": round(sum(p["gdx"]["tax_total"] for p in items), 2),
+        "quickbooks_tax": round(sum(p["quickbooks"]["tax_total"] for p in items), 2),
+    }
+    return items, totals
+
+
+@router.get("/sales-tax", response_model=None)
+def sales_tax_report(
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    period: str = Query(default="month", pattern="^(month|quarter)$"),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sales tax collected, by period — plan §16 (Doug 2026-07-29: "we need to
+    track sales tax and do a report on it").
+
+    Splits GDX-generated invoices (INV-*) from QuickBooks imports (everything
+    else) because they carry different provenance — the QB tax was computed in
+    QuickBooks, the GDX tax by this app — and the office reconciles them
+    separately. Also splits collected (paid) vs outstanding tax, since tax on
+    an unpaid invoice isn't yet a remittance liability.
+
+    Grouped on invoice_date (the tax point), not created_at. Counts ISSUED
+    invoices only — status in (sent, paid, overdue). Drafts are excluded: a
+    draft is a speculative invoice not yet handed to the customer, so its tax
+    is not a liability and would otherwise inflate "outstanding" with amounts
+    that may never be billed. Deposits (money before the work — no tax event)
+    and voids are excluded too.
+
+    The A2 question this report exists to ANSWER, not settle: whether GDX
+    should be charging the 7.38% default at all on construction-contract work
+    (see mn-sales-tax rule) is an accountant call — this shows the numbers.
+
+    KNOWN LIMITATION — reads invoices.tax_amount only, does NOT net credit
+    memos or supersessions. invoice_adjustments (credit_memo/refund) carries a
+    flat `amount` with no tax component, and a superseded original stays in
+    sent/paid status (per the §12 "adjustment, never void-and-reissue"
+    decision). So once §12 supplemental/supersession invoices exist, tax that
+    was credited back still counts here, and a full replacement double-counts
+    against its original. Harmless today (0 invoices with adjusts_invoice_id,
+    1 credit memo with no tax); MUST be reconciled when §12 lands — track the
+    net-of-adjustments tax there, not by patching this read path in isolation.
+    """
+    start_dt, end_dt, end_resolved = _resolve_date_range(start_date, end_date)
+    trunc = "quarter" if period == "quarter" else "month"
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT
+                    date_trunc(:trunc, invoice_date) AS period_start,
+                    CASE WHEN invoice_number LIKE 'INV-%' THEN 'gdx'
+                         ELSE 'quickbooks' END AS source,
+                    COUNT(*) AS invoice_count,
+                    COALESCE(SUM(tax_amount), 0) AS tax_total,
+                    COALESCE(SUM(CASE WHEN paid_at IS NOT NULL
+                                      THEN tax_amount ELSE 0 END), 0) AS tax_collected
+                FROM invoices
+                WHERE deleted_at IS NULL
+                  AND status IN ('sent', 'paid', 'overdue')
+                  AND (billing_type IS NULL OR billing_type != 'deposit')
+                  AND invoice_date IS NOT NULL
+                  AND invoice_date >= :start_dt
+                  AND invoice_date < :end_dt
+                GROUP BY 1, 2
+                ORDER BY 1 ASC, 2 ASC
+                """
+            ),
+            {"trunc": trunc, "start_dt": start_dt, "end_dt": end_dt},
+        ).mappings().all()
+    except Exception:
+        log.exception("sales_tax_report_failed")
+        raise HTTPException(status_code=500, detail="Unable to compute the sales-tax report") from None
+
+    items, totals = _rollup_sales_tax(rows)
+    return {
+        "items": items,
+        "period": period,
+        "totals": totals,
+        "range": {"start": start_dt, "end": end_dt, "end_date": end_resolved.isoformat()},
+    }
+
+
 @router.get("/daily-snapshot", response_model=None)
 def daily_snapshot(
     start_date: str | None = Query(default=None),
