@@ -5,12 +5,12 @@ import io
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.activity_feed import collapse_runs, feed_filter, wanted_fetch_size
+from gdx_dispatch.core.audit import AuditLog, verify_audit_chain
 from gdx_dispatch.core.audit_labels import decorate_rows
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
@@ -182,3 +182,56 @@ def get_user_audit_trail(
 ) -> dict[str, Any]:
     where = AuditLog.user_id == user_id
     return _list_rows(db, page=page, page_size=page_size, where=where)
+
+
+@router.get("/verify-chain")
+def verify_audit_chain_endpoint(
+    entity_type: str | None = Query(default=None),
+    entity_id: str | None = Query(default=None),
+    _: dict[str, Any] = Depends(_require_admin),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Plan §13: exercise the tamper-evidence that was NEVER run outside tests.
+
+    The audit log is hash-chained (prev_hash/row_hash), but verify_audit_chain
+    was referenced only from the test suite — there was no endpoint and no
+    scheduled check, so a broken chain would have gone unnoticed indefinitely.
+    This is the admin-facing verifier; a periodic Celery beat calls it too
+    (tasks/audit_chain_verify). Optional entity_type/entity_id scope the check
+    to one record's trail. `ok: false` means the chain is broken — a tampered,
+    reordered, or deleted row — and is a compliance incident, not a soft
+    warning."""
+    ok = verify_audit_chain(db, entity_type=entity_type, entity_id=entity_id)
+
+    # Count rows written OUTSIDE the hash chain (empty row_hash) — the GL
+    # ledger writers build AuditLog directly and legacy rows predate hashing.
+    # A non-zero count is why an all-scope `ok:false` is a DATA-HYGIENE signal
+    # (writers bypass the chain), NOT proof of tampering; a real tamper is
+    # ok:false WITH unchained_rows == 0. Callers key their alerting on that.
+    q = select(func.count()).select_from(AuditLog).where(
+        or_(AuditLog.row_hash.is_(None), AuditLog.row_hash == "")
+    )
+    if entity_type:
+        q = q.where(AuditLog.entity_type == entity_type)
+        if entity_id:
+            q = q.where(AuditLog.entity_id == entity_id)
+    unchained = int(db.execute(q).scalar() or 0)
+
+    cq = select(func.count()).select_from(AuditLog)
+    if entity_type:
+        cq = cq.where(AuditLog.entity_type == entity_type)
+        if entity_id:
+            cq = cq.where(AuditLog.entity_id == entity_id)
+    count = int(db.execute(cq).scalar() or 0)
+
+    scope: Any = "all"
+    if entity_type:
+        scope = {"entity_type": entity_type, "entity_id": entity_id}
+    return {
+        "ok": bool(ok),
+        "scope": scope,
+        "rows_checked": count,
+        "unchained_rows": unchained,
+        # A tamper is a break with NOTHING legitimately unchained.
+        "tamper_suspected": bool(not ok and unchained == 0),
+    }
