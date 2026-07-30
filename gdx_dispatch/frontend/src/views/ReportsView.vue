@@ -84,6 +84,63 @@
             </DataTable>
           </template>
         </Card>
+
+        <!-- Sales Tax collected — plan §16 (Doug: "track sales tax and report on
+             it"). Split by provenance: GDX invoices (this app computed the tax)
+             vs QuickBooks imports (QB computed it), so the office reconciles the
+             two sources separately. Collected = tax on paid invoices (the
+             remittance liability); Outstanding = billed-but-unpaid tax. -->
+        <Card class="sales-tax-card" data-testid="report-sales-tax">
+          <template #title>
+            <div class="sales-tax-title">
+              <span>Sales Tax Collected</span>
+              <div class="sales-tax-totals" data-testid="sales-tax-totals">
+                <span class="tax-chip">Collected {{ formatCurrencyCents(salesTax.totals.tax_collected) }}</span>
+                <span class="tax-chip tax-chip-muted">Outstanding {{ formatCurrencyCents(salesTax.totals.tax_outstanding) }}</span>
+                <span class="tax-chip tax-chip-total">Total {{ formatCurrencyCents(salesTax.totals.tax_total) }}</span>
+              </div>
+            </div>
+          </template>
+          <template #content>
+            <p class="report-sub muted">
+              GDX-generated {{ formatCurrencyCents(salesTax.totals.gdx_tax) }} ·
+              QuickBooks import {{ formatCurrencyCents(salesTax.totals.quickbooks_tax) }}.
+              Issued invoices only, grouped by invoice date; drafts, deposits, and voids excluded.
+            </p>
+            <div v-if="salesTaxError" class="inline-error" data-testid="sales-tax-error">
+              Couldn't load the sales-tax report. Try Apply again.
+            </div>
+            <div v-else-if="salesTax.items.length === 0" class="muted" data-testid="sales-tax-empty">
+              No sales tax recorded for this period.
+            </div>
+            <DataTable
+              v-else
+              responsiveLayout="scroll"
+              :value="salesTax.items"
+              data-testid="sales-tax-table"
+              striped-rows
+            >
+              <Column header="Period">
+                <template #body="{ data }">{{ formatTaxPeriod(data.period_start) }}</template>
+              </Column>
+              <Column header="GDX Tax">
+                <template #body="{ data }">{{ formatCurrencyCents(data.gdx.tax_total) }}</template>
+              </Column>
+              <Column header="QB Tax">
+                <template #body="{ data }">{{ formatCurrencyCents(data.quickbooks.tax_total) }}</template>
+              </Column>
+              <Column header="Collected">
+                <template #body="{ data }">{{ formatCurrencyCents(data.tax_collected) }}</template>
+              </Column>
+              <Column header="Outstanding">
+                <template #body="{ data }">{{ formatCurrencyCents(data.tax_outstanding) }}</template>
+              </Column>
+              <Column header="Total">
+                <template #body="{ data }"><strong>{{ formatCurrencyCents(data.tax_total) }}</strong></template>
+              </Column>
+            </DataTable>
+          </template>
+        </Card>
       </template>
     </section>
 </template>
@@ -121,6 +178,15 @@ const summary = ref({
 });
 const topCustomers = ref([]);
 const revenueByPeriod = ref([]);
+const salesTax = ref({
+  items: [],
+  totals: {
+    tax_total: 0, tax_collected: 0, tax_outstanding: 0,
+    gdx_tax: 0, quickbooks_tax: 0,
+  },
+});
+// Distinct from "no items": a failed fetch must not read as a tax-free month.
+const salesTaxError = ref(false);
 
 const jobStatusCounts = ref({});
 
@@ -174,6 +240,35 @@ function formatCurrency(value) {
   }).format(Number(value) || 0);
 }
 
+// Tax needs the cents — $11.07 rounded to $11 loses the remittance amount.
+function formatCurrencyCents(value) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
+}
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// period_start is a calendar date (month or quarter start), possibly serialized
+// with a UTC time part. Parse the y/m from the STRING — never via `new Date()`,
+// which would shift "2026-07-01T00:00:00+00:00" back to Jun 30 in a timezone
+// behind UTC (Doug's) and mislabel the whole row.
+function formatTaxPeriod(iso) {
+  if (!iso || typeof iso !== "string") return "—";
+  const m = iso.match(/^(\d{4})-(\d{2})/);
+  if (!m) return iso;
+  const year = m[1];
+  const monthIdx = parseInt(m[2], 10) - 1;
+  if (monthIdx < 0 || monthIdx > 11) return iso;
+  if (salesTax.value && salesTax.value.period === "quarter") {
+    return `Q${Math.floor(monthIdx / 3) + 1} ${year}`;
+  }
+  return `${MONTH_NAMES[monthIdx]} ${year}`;
+}
+
 function buildDateParams() {
   if (!dateRange.value || !Array.isArray(dateRange.value) || !dateRange.value[0]) return "";
   const fmt = (d) => d.toISOString().split("T")[0];
@@ -187,11 +282,12 @@ async function loadReports() {
   loadError.value = "";
   const params = buildDateParams();
   try {
-    const [summaryData, customersData, revenueData, jobsData] = await Promise.allSettled([
+    const [summaryData, customersData, revenueData, jobsData, taxData] = await Promise.allSettled([
       api.get(`/api/reports/summary${params}`),
       api.get(`/api/reports/top-customers${params}`),
       api.get(`/api/reports/revenue-by-period${params}`),
       api.get(`/api/jobs${params || "?"}&page_size=1000`),
+      api.get(`/api/reports/sales-tax${params}`),
     ]);
 
     if (summaryData.status === "fulfilled" && summaryData.value) {
@@ -215,6 +311,21 @@ async function loadReports() {
       jobList.forEach((j) => { counts[j.status || "unknown"] = (counts[j.status || "unknown"] || 0) + 1; });
       jobStatusCounts.value = counts;
     }
+
+    if (taxData.status === "fulfilled" && taxData.value) {
+      salesTaxError.value = false;
+      const td = taxData.value;
+      salesTax.value = {
+        items: Array.isArray(td.items) ? td.items : [],
+        totals: { ...salesTax.value.totals, ...(td.totals || {}) },
+        period: td.period || "month",
+      };
+    } else {
+      // Rejected (e.g. a 500 from the endpoint). Flag it so the card shows an
+      // error, not the "No sales tax recorded" empty state, which would be a
+      // silent lie about a tax-free period.
+      salesTaxError.value = true;
+    }
   } catch (error) {
     loadError.value = error?.message || "Failed to load reports.";
   } finally {
@@ -235,6 +346,48 @@ onMounted(() => {
 <style scoped>
 .page-title {
   margin: 0;
+}
+
+.sales-tax-card {
+  margin-top: 1.5rem;
+}
+
+.sales-tax-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sales-tax-totals {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Theme vars, not literal colors — Doug runs dark mode. The surface-N scale
+   does NOT invert with the theme (--p-surface-100 stays #f4f4f5 in dark), which
+   gave white-on-light chips; use a transparent fill with tokens that DO flip
+   (content-border-color, text-color, text-muted-color). Verified light+dark. */
+.tax-chip {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--p-text-color, #1e293b);
+  border: 1px solid var(--p-content-border-color, #e2e8f0);
+}
+
+.tax-chip-muted {
+  color: var(--p-text-muted-color, #64748b);
+}
+
+.tax-chip-total {
+  background: var(--p-primary-color, #0ea5e9);
+  color: var(--p-primary-contrast-color, #ffffff);
+  border-color: transparent;
 }
 
 .date-range-row {

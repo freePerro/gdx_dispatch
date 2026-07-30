@@ -322,11 +322,87 @@ def test_reports_router_has_required_dependencies():
         "/api/reports/revenue-analytics",
         "/api/reports/customer-ltv",
         "/api/reports/outstanding-aging",
+        "/api/reports/sales-tax",
     ]:
         route = route_map[path]
         dep_calls = {dep.call for dep in route.dependant.dependencies}
         assert get_current_user in dep_calls
         assert get_db in dep_calls
+
+
+# ---------------------------------------------------------------------------
+# Sales-tax report (plan §16). The endpoint's SQL uses Postgres date_trunc,
+# so we unit-test the pure rollup helper — the money math is what matters:
+# GDX-vs-QB provenance split, collected-vs-outstanding, derived outstanding.
+# ---------------------------------------------------------------------------
+
+
+def _tax_row(period_start, source, tax_total, tax_collected, invoice_count=1):
+    return {
+        "period_start": period_start,
+        "source": source,
+        "tax_total": tax_total,
+        "tax_collected": tax_collected,
+        "invoice_count": invoice_count,
+    }
+
+
+def test_rollup_sales_tax_splits_gdx_and_quickbooks():
+    from datetime import date
+
+    rows = [
+        _tax_row(date(2026, 7, 1), "gdx", 128.34, 128.34),
+        _tax_row(date(2026, 7, 1), "quickbooks", 50.00, 0.0),
+    ]
+    items, totals = reports._rollup_sales_tax(rows)
+
+    assert len(items) == 1
+    row = items[0]
+    assert row["period_start"] == "2026-07-01"
+    assert row["gdx"]["tax_total"] == 128.34
+    assert row["quickbooks"]["tax_total"] == 50.00
+    # Period total is GDX + QB; collected is only the paid (gdx) portion.
+    assert row["tax_total"] == 178.34
+    assert row["tax_collected"] == 128.34
+    # Outstanding is DERIVED (total - collected), never trusted from input.
+    assert row["tax_outstanding"] == 50.00
+    assert totals["tax_total"] == 178.34
+    assert totals["tax_collected"] == 128.34
+    assert totals["tax_outstanding"] == 50.00
+    assert totals["gdx_tax"] == 128.34
+    assert totals["quickbooks_tax"] == 50.00
+
+
+def test_rollup_sales_tax_orders_periods_and_sums_totals():
+    from datetime import date
+
+    rows = [
+        _tax_row(date(2026, 5, 1), "gdx", 371.54, 371.54),
+        _tax_row(date(2026, 3, 1), "quickbooks", 703.41, 100.00),
+        _tax_row(date(2026, 4, 1), "gdx", 199.38, 0.0),
+        _tax_row(date(2026, 4, 1), "quickbooks", 7.74, 7.74),
+    ]
+    items, totals = reports._rollup_sales_tax(rows)
+
+    # Ascending period order regardless of input order.
+    assert [i["period_start"] for i in items] == ["2026-03-01", "2026-04-01", "2026-05-01"]
+    # April merges both sources into one card.
+    april = next(i for i in items if i["period_start"] == "2026-04-01")
+    assert april["tax_total"] == 207.12
+    assert april["tax_collected"] == 7.74
+    # Grand totals sum every period.
+    assert totals["tax_total"] == round(703.41 + 207.12 + 371.54, 2)
+    assert totals["gdx_tax"] == round(371.54 + 199.38, 2)
+    assert totals["quickbooks_tax"] == round(703.41 + 7.74, 2)
+
+
+def test_rollup_sales_tax_empty_is_all_zero():
+    items, totals = reports._rollup_sales_tax([])
+    assert items == []
+    assert totals == {
+        "tax_total": 0, "tax_collected": 0, "tax_outstanding": 0,
+        "gdx_tax": 0, "quickbooks_tax": 0,
+    }
 
 
 def test_summary_returns_dashboard_kpis(tenant_db_session):
