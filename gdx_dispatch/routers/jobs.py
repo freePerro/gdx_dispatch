@@ -1607,6 +1607,151 @@ def _close_labor_entry(
     entry.updated_at = now
 
 
+def _closeout_row_to_dict(row: JobCloseout, names: dict[str, str]) -> dict[str, Any]:
+    """Closeout snapshot for the read API — plan §1.
+
+    The raw signature blob is NEVER serialized here, by design (audit A4):
+    routers/mobile.py:2053 already redacts `signature_data` for a tech
+    browsing under techs_see_all_jobs, and a closeout endpoint returning the
+    snapshot verbatim would walk straight around that control. What every
+    caller actually needs is "was it signed, by whom, when" — metadata. The
+    blob (≤1.4MB of pen strokes) stays where it already lives for the PDF
+    paths.
+    """
+    # Parts: WHAT was used, never what it COST (audit round 3). The snapshot
+    # rows carry the tech-entered unit_cost/line_total for the costing paths;
+    # this read API serves screens any authenticated user can open, so the
+    # money columns stay home. name × qty is the attestation.
+    parts = [
+        {
+            "name": p.get("name"),
+            "sku": p.get("sku"),
+            "qty": p.get("qty"),
+            "note": p.get("note"),
+            "in_inventory": p.get("in_inventory"),
+            "already_billed": p.get("already_billed", False),
+        }
+        for p in (row.parts_used or [])
+        if isinstance(p, dict)
+    ]
+    return {
+        "id": str(row.id),
+        "hours_worked": float(row.hours_worked or 0),
+        "notes": row.notes,
+        "parts_used": parts,
+        "no_parts_used": bool(row.no_parts_used),
+        "signature_present": bool((row.signature_data or "").strip()),
+        "signed_by": row.signed_by,
+        "signed_at": row.signed_at,
+        "closed_by_user_id": row.closed_by_user_id,
+        "closed_by_name": names.get(str(row.closed_by_user_id) or "", None),
+        "closed_at": row.closed_at,
+        "superseded_at": row.superseded_at,
+        "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
+    }
+
+
+@router.get("/{job_id}/closeout", response_model=None)
+def get_job_closeout(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The job's closeout — current snapshot plus full revision history.
+
+    Plan §1: `job_closeouts` was write-only for 2.5 months — hours, work
+    notes, the parts attestation and the signer name went into the database
+    and never reached any screen, so the office billed blind and the tech
+    couldn't confirm what he submitted. This is the read side.
+
+    Access (audit round 3 — flat authentication was NOT acceptable here):
+    ``jobs.read_all`` (the office tiers) OR a real claim on the job
+    (``core.job_access.job_belongs_to_user`` — assignment, appointment or
+    crew row). Mobile built a three-tier grant precisely so one tech can't
+    browse another tech's attested records; a desktop endpoint handing the
+    same records to any authenticated user would have walked around it. An
+    outsider gets the same 404 as a missing job, not a 403 — don't confirm
+    the job exists.
+
+    History comes back newest-first, and the current row is deliberately also
+    history[0] — the card renders one list with a "current" tag rather than
+    stitching two shapes (plan §14 gap 4).
+    """
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        job = db.execute(
+            select(Job.id).where(Job.id == job_uuid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if job is None:
+            return jsonable_response({"detail": "job not found"}, 404)
+
+        # Office tiers hold jobs.read_all; a tech passes via an actual claim
+        # on this job. Both resolved with the same helpers the rest of the
+        # app uses — no bespoke ACL.
+        from gdx_dispatch.core.job_access import job_belongs_to_user
+        from gdx_dispatch.core.modules import _load_user_permissions
+        from gdx_dispatch.core.permissions import WILDCARD
+
+        perms = getattr(request.state, "user_permissions", None)
+        if perms is None:
+            perms = _load_user_permissions(db, request, current_user or {})
+            request.state.user_permissions = perms
+        if WILDCARD not in perms and "jobs.read_all" not in perms:
+            if not job_belongs_to_user(db, tenant_id, job_id, _user_id(current_user)):
+                return jsonable_response({"detail": "job not found"}, 404)
+
+        from gdx_dispatch.core.closeouts import (
+            get_closeout_history,
+            get_current_closeout,
+        )
+
+        current = get_current_closeout(db, job_uuid)
+        history = get_closeout_history(db, job_uuid)
+
+        # Resolve closer ids → display names in one query. users has four
+        # name-ish columns; take the first non-empty in the same precedence
+        # the rest of the app displays.
+        # ORM lookup, not raw SQL (audit round 3): closed_by_user_id is a
+        # dashed-uuid varchar while users.id is Uuid(as_uuid=True) — the ORM
+        # binds real UUID objects, which is dialect-portable for free, where a
+        # hand-written text comparison hits the dashed-vs-32hex trap.
+        name_of: dict[str, str | None] = {}
+        closer_ids = {str(r.closed_by_user_id) for r in history if r.closed_by_user_id}
+        if closer_ids:
+            parseable: dict[str, uuid.UUID] = {}
+            for cid in closer_ids:
+                try:
+                    parseable[cid] = uuid.UUID(cid)
+                except (ValueError, AttributeError):
+                    name_of[cid] = None
+            if parseable:
+                from gdx_dispatch.models.tenant_models import User
+
+                users = db.execute(
+                    select(User).where(User.id.in_(list(parseable.values())))
+                ).scalars().all()
+                by_uuid = {
+                    u.id: (u.full_name or u.name or u.username or u.email)
+                    for u in users
+                }
+                for cid, cuid in parseable.items():
+                    name_of[cid] = by_uuid.get(cuid)
+
+        return jsonable_response({
+            "job_id": str(job_uuid),
+            "closeout": _closeout_row_to_dict(current, name_of) if current else None,
+            "history": [_closeout_row_to_dict(r, name_of) for r in history],
+        })
+    except SQLAlchemyError:
+        log.exception("get_job_closeout_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": "closeout read failed"}, 500)
+
+
 @router.post("/{job_id}/closeout", response_model=None, status_code=201)
 def closeout_job(
     payload: CloseoutPayload,
