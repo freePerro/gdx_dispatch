@@ -529,6 +529,32 @@ def test_decline_estimate_marks_declined_and_reason(client: TestClient):
     assert data["declined_reason"] == "Price too high"
 
 
+def test_decline_requires_a_loss_reason(client: TestClient):
+    """Loss reason is MANDATORY (Doug 2026-07-29) — decline without one is 422,
+    and the estimate stays undeclined."""
+    estimate = _create_estimate(client)
+
+    # Missing reason entirely
+    r_missing = client.post(f"/api/estimates/{estimate['id']}/decline", json={})
+    assert r_missing.status_code == 422, r_missing.text
+
+    # Present but blank / whitespace-only
+    r_blank = client.post(f"/api/estimates/{estimate['id']}/decline", json={"reason": "   "})
+    assert r_blank.status_code == 422, r_blank.text
+
+    # The estimate must NOT have been declined by the rejected attempts.
+    got = client.get(f"/api/estimates/{estimate['id']}").json()
+    assert got["status"] != "declined"
+    assert got["declined_reason"] is None
+
+
+def test_decline_trims_the_loss_reason(client: TestClient):
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/decline", json={"reason": "  Went with a competitor  "})
+    assert r.status_code == 200, r.text
+    assert r.json()["declined_reason"] == "Went with a competitor"
+
+
 def test_cannot_accept_declined_estimate(client: TestClient):
     estimate = _create_estimate(client)
     decline = client.post(f"/api/estimates/{estimate['id']}/decline", json={"reason": "No"})

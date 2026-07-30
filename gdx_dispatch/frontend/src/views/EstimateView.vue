@@ -70,6 +70,36 @@
         </template>
       </Dialog>
 
+      <!-- Decline dialog — a loss reason is MANDATORY (Doug: win/loss must be
+           trackable). Preset chips make common reasons consistent strings so
+           the pipeline report can group them; free text is always allowed. -->
+      <Dialog v-model:visible="declineDialogOpen" header="Decline Estimate" :style="{ width: '480px' }" modal data-testid="decline-dialog">
+        <p class="text-sm mb-3">
+          Mark {{ estimate?.label || "this estimate" }} as Declined? The customer-portal view flips immediately.
+        </p>
+        <div class="decline-presets mb-2">
+          <Button v-for="preset in DECLINE_PRESETS" :key="preset"
+            :label="preset" size="small" outlined severity="secondary"
+            :data-testid="`decline-preset-${preset}`"
+            @click="declineReason = preset" />
+        </div>
+        <label for="decline-reason" class="text-sm" style="display:block; margin-bottom:.25rem;">
+          Loss reason <span style="color: var(--p-red-500, #ef4444);">*</span>
+        </label>
+        <Textarea id="decline-reason" v-model="declineReason" rows="3" autoResize
+          class="w-full" style="width:100%;" data-testid="decline-reason-input"
+          placeholder="Why was this lost? e.g. price, timing, went with a competitor…" />
+        <small v-if="declineAttempted && !declineReason.trim()" class="p-error" data-testid="decline-reason-error">
+          A loss reason is required.
+        </small>
+        <template #footer>
+          <Button label="Cancel" text @click="declineDialogOpen = false" />
+          <Button label="Decline" icon="pi pi-times" severity="danger" :loading="declineBusy"
+            :disabled="!declineReason.trim()" data-testid="decline-dialog-confirm"
+            @click="doDeclineEstimate" />
+        </template>
+      </Dialog>
+
       <Dialog v-model:visible="requestDepositOpen" header="Request Deposit" :style="{ width: '460px' }" modal data-testid="request-deposit-dialog">
         <p class="text-sm mb-3">
           Create a deposit invoice for this accepted estimate. Collect it by
@@ -2313,25 +2343,42 @@ async function copyDepositPayLink() {
   }
 }
 
+// Loss reason is mandatory, so decline goes through a dialog with a required
+// reason field — not the fire-and-forget confirm (which also auto-accepts,
+// issue #215). Presets keep common reasons consistent for the win/loss report.
+const DECLINE_PRESETS = [
+  "Price too high",
+  "Timing / not ready",
+  "Went with a competitor",
+  "No response",
+  "Scope changed",
+];
+const declineDialogOpen = ref(false);
+const declineReason = ref("");
+const declineBusy = ref(false);
+const declineAttempted = ref(false);
+
 function declineEstimate() {
-  confirmDestructive({
-    message: `Mark ${estimate.value?.label || "this estimate"} as Declined? The customer-portal view flips immediately.`,
-    header: "Decline Estimate",
-    icon: "pi pi-times",
-    acceptClass: "p-button-danger",
-    acceptLabel: "Decline",
-    rejectLabel: "Cancel",
-    accept: () => doDeclineEstimate(),
-  });
+  declineReason.value = "";
+  declineAttempted.value = false;
+  declineDialogOpen.value = true;
 }
 
 async function doDeclineEstimate() {
+  declineAttempted.value = true;
+  const reason = declineReason.value.trim();
+  if (!reason) return; // required — the button is also disabled, this is belt-and-suspenders
+  declineBusy.value = true;
   try {
-    const result = await api.post(`/api/estimates/${route.params.id}/decline`, {});
+    const result = await api.post(`/api/estimates/${route.params.id}/decline`, { reason });
     estimate.value.status = _titleCase(result?.status || "declined");
+    if (result?.declined_reason) estimate.value.declined_reason = result.declined_reason;
+    declineDialogOpen.value = false;
     toast.add({ severity: "warn", summary: "Declined", detail: "Estimate declined", life: 3000 });
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to decline", life: 3000 });
+  } finally {
+    declineBusy.value = false;
   }
 }
 
@@ -2447,6 +2494,12 @@ onUnmounted(() => {
 .estimate-view {
   max-width: 1280px;
   margin: 0 auto;
+}
+
+.decline-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 /* Captured-door folder explorer (plugin picker) */

@@ -110,6 +110,19 @@
         </template>
       </Dialog>
 
+      <!-- Decline dialog — loss reason is mandatory. -->
+      <Dialog v-model:visible="declineDialogOpen" header="Decline estimate" modal :style="{ width: '92vw', maxWidth: '440px' }" data-test="me-decline-dialog">
+        <div class="decline-presets">
+          <Button v-for="preset in DECLINE_PRESETS" :key="preset" :label="preset" size="small" outlined severity="secondary" @click="declineReason = preset" />
+        </div>
+        <label for="me-decline-reason" style="display:block; margin:.5rem 0 .25rem; font-size:.85rem;">Loss reason *</label>
+        <Textarea id="me-decline-reason" v-model="declineReason" rows="3" autoResize style="width:100%;" data-test="me-decline-reason" placeholder="Why was this lost?" />
+        <template #footer>
+          <Button label="Cancel" text @click="declineDialogOpen = false" />
+          <Button label="Decline" icon="pi pi-times" severity="danger" :loading="actionSaving" :disabled="!declineReason.trim()" data-test="me-decline-submit" @click="submitDecline" />
+        </template>
+      </Dialog>
+
       <!-- Signature dialog -->
       <Dialog
         v-model:visible="signOpen"
@@ -244,6 +257,7 @@ import { useToast } from 'primevue/usetoast'
 
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
+import Textarea from 'primevue/textarea'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import SelectButton from 'primevue/selectbutton'
@@ -277,6 +291,9 @@ const error = ref(null)
 
 const detailOpen = ref(false)
 const detail = ref(null)
+const declineDialogOpen = ref(false)
+const declineReason = ref('')
+const DECLINE_PRESETS = ['Price too high', 'Timing / not ready', 'Went with a competitor', 'No response', 'Scope changed']
 const detailLoading = ref(false)
 const actionSaving = ref(false)
 
@@ -427,12 +444,22 @@ async function copyPayLink() {
   }
 }
 
-async function decline() {
+// A loss reason is mandatory — open a dialog to capture it instead of the
+// bare yes/no confirm (which also posted no reason and would now 422).
+function decline() {
   if (!detail.value) return
-  if (!(await confirmAsync({ header: 'Confirm', message: 'Decline this estimate?' }))) return
+  declineReason.value = ''
+  declineDialogOpen.value = true
+}
+
+async function submitDecline() {
+  if (!detail.value) return
+  const reason = declineReason.value.trim()
+  if (!reason) return
   actionSaving.value = true
   try {
-    await api.post(`/api/estimates/${detail.value.id}/decline`, {})
+    await api.post(`/api/estimates/${detail.value.id}/decline`, { reason })
+    declineDialogOpen.value = false
     toast.add({ severity: 'success', summary: 'Estimate declined', life: 2500 })
     await fetchEstimates()
     closeDetail()
@@ -544,6 +571,11 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.decline-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
 .mobile-estimates {
   padding: 0.75rem 0.75rem calc(5rem + env(safe-area-inset-bottom));
   max-width: 800px;
