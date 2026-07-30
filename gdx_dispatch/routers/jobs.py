@@ -12,7 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy import text as _text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
@@ -1557,8 +1557,10 @@ def _owned_closeout_labor_entry(db: Session, job_uuid: uuid.UUID) -> TimeEntry |
     """The labor row an earlier closeout of this JOB already wrote.
 
     Scoped to the job, not the closer: a closeout is a job-level attestation
-    (one JobCloseout per job, re-closeout restates it — see the parts replace
-    above). Keying this on the closer instead would dedupe only when the same
+    (one LIVE JobCloseout per job under the supersede model — a re-closeout
+    stamps the prior snapshot superseded and this labor row is restated in
+    place; see core/closeouts.py). Keying this on the closer instead would
+    dedupe only when the same
     human closes twice, and a tech closing 2h followed by a dispatcher closing
     3h would bill 5h for a 3h job.
     """
@@ -1908,7 +1910,35 @@ def closeout_job(
                 },
             )
 
-        # 3) JobCloseout snapshot row.
+        # 3) JobCloseout snapshot row — under the supersede model (plan §12).
+        #    This used to be a bare INSERT: the comment at
+        #    _owned_closeout_labor_entry says "one JobCloseout per job,
+        #    re-closeout restates it", but that was only ever true of the
+        #    LABOR row — the snapshot was append-only, so a re-closeout left
+        #    TWO live rows and every job_id reader either 500'd
+        #    (MultipleResultsFound) or double-counted (tech_efficiency).
+        #    Now the prior snapshot is stamped superseded — never deleted or
+        #    edited, an attestation is evidence — and the new row links back.
+        from gdx_dispatch.core.closeouts import get_current_closeout
+
+        prior_closeout = get_current_closeout(db, job.id)
+        prior_snapshot: dict[str, Any] | None = None
+        if prior_closeout is not None:
+            prior_closeout.superseded_at = now
+            prior_closeout.updated_at = now
+            # Captured pre-commit for the audit event: §13's rule is that a
+            # change records OLD and NEW explicitly — reconstructing a delta
+            # by diffing two events is how changes get missed.
+            prior_snapshot = {
+                "id": str(prior_closeout.id),
+                "hours": float(prior_closeout.hours_worked or 0),
+                "no_parts_used": bool(prior_closeout.no_parts_used),
+                "parts_count": len(prior_closeout.parts_used or []),
+                "closed_at": prior_closeout.closed_at.isoformat()
+                if prior_closeout.closed_at
+                else None,
+            }
+
         closeout = JobCloseout(
             id=uuid.uuid4(),
             job_id=uuid.UUID(job_id),
@@ -1923,6 +1953,7 @@ def closeout_job(
             closed_at=now,
             created_at=now,
             updated_at=now,
+            supersedes_id=(prior_closeout.id if prior_closeout is not None else None),
         )
         db.add(closeout)
 
@@ -1938,9 +1969,13 @@ def closeout_job(
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
         job.updated_at = now
 
-        db.flush()
-        db.commit()
-
+        # Audit events join the SAME transaction as the closeout (adversarial
+        # audit, round 2). The old shape committed the closeout first and the
+        # events in a second commit — so a failed audit write 500'd a closeout
+        # that was already durable (the tech retried and stacked a spurious
+        # restatement), and could silently lose the job_closeout_superseded
+        # event that §12's discrepancy flow keys on. log_audit_event_sync only
+        # add()+flush()es, so it composes into this transaction.
         log_audit_event_sync(
             db=db, tenant_id=tenant_id, user_id=user_id,
             action="job_closeout",
@@ -1951,10 +1986,34 @@ def closeout_job(
                 "parts_count": len(part_lines),
                 "hours": float(payload.hours or 0),
                 "signature_present": bool(payload.signature_data),
+                "supersedes_id": prior_snapshot["id"] if prior_snapshot else None,
             },
             ip_address=request.client.host if request.client else None,
             request=request,
         )
+        if prior_snapshot is not None:
+            # §13: a restatement is its own auditable fact, with OLD and NEW
+            # side by side — this event is what the office's "closeout changed
+            # after billing" discrepancy flow (plan §12) will key on.
+            log_audit_event_sync(
+                db=db, tenant_id=tenant_id, user_id=user_id,
+                action="job_closeout_superseded",
+                entity_type="job",
+                entity_id=str(job.id),
+                details={
+                    "old": prior_snapshot,
+                    "new": {
+                        "id": str(closeout.id),
+                        "hours": float(payload.hours or 0),
+                        "no_parts_used": bool(payload.no_parts_used),
+                        "parts_count": len(part_lines),
+                    },
+                },
+                ip_address=request.client.host if request.client else None,
+                request=request,
+            )
+
+        db.flush()
         db.commit()
 
         return jsonable_response({
@@ -1964,6 +2023,37 @@ def closeout_job(
             "completed_at": job.completed_at,
             "parts_count": len(part_lines),
         }, 201)
+    except IntegrityError as exc:
+        # Two people closing out the same job within the same moment: B's
+        # get_current_closeout ran before A committed, so B's INSERT hits the
+        # uq_job_closeouts_live partial index at flush. The rollback is clean
+        # (parts/stock/timer mutations all live in this one transaction) and
+        # this is a coordination event, not breakage — say so, instead of a
+        # 500 with psycopg2 internals on a phone screen.
+        db.rollback()
+        # Postgres names the index; SQLite reports "UNIQUE constraint failed:
+        # job_closeouts.job_id". Match both, or the test harness exercises a
+        # branch prod never takes (and vice versa).
+        _msg = str(exc)
+        if "uq_job_closeouts_live" in _msg or (
+            "UNIQUE constraint failed" in _msg and "job_closeouts" in _msg
+        ):
+            log.warning(
+                "closeout_job_concurrent_conflict",
+                extra={"tenant_id": tenant_id, "job_id": job_id},
+            )
+            return jsonable_response(
+                {
+                    "detail": (
+                        "Someone else closed this job out at the same moment. "
+                        "Reload the job to review their closeout, then restate "
+                        "it if yours differs."
+                    )
+                },
+                409,
+            )
+        log.exception("closeout_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
     except SQLAlchemyError as exc:
         db.rollback()
         log.exception("closeout_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id})

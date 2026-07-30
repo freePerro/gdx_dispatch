@@ -20,7 +20,7 @@ the smaller-blast-radius path.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -78,7 +78,13 @@ def _query_efficiency(
                 j.assigned_to
             FROM job_closeouts jc
             JOIN jobs j ON j.id = jc.job_id
-            WHERE jc.deleted_at IS NULL
+            -- Supersede model (plan §12): only the job's CURRENT closeout
+            -- counts. Without this filter a re-closed-out job contributes
+            -- every restatement to the SUMs — hours double-count and the
+            -- efficiency ratio silently rots. Same filter as
+            -- core/closeouts.get_current_closeout.
+            WHERE jc.superseded_at IS NULL
+              AND jc.deleted_at IS NULL
               AND j.deleted_at IS NULL
               AND jc.closed_at >= :start
               AND jc.closed_at <  :end

@@ -1280,9 +1280,9 @@ end, with an outcome recorded at the point the customer said yes or no. Every
 audit requirement in §13 applies: a status change to won/lost, and the reason,
 are events.
 
-**Decision needed:** whether a loss reason is mandatory (I'd make it mandatory — an
-unexplained loss teaches nothing, and these are the numbers you'd use to decide
-pricing).
+**DECIDED (Doug 2026-07-29): loss reason is MANDATORY on decline** — short picker
+(price / timing / went elsewhere / scope changed / no response) + optional free
+text; the API rejects a decline without one.
 
 ### 15.5 Expiry window — DECIDED: company setting, default 60 days
 
@@ -1436,9 +1436,13 @@ Revised after the §10 audit:
 creates the thing being audited.** No item above is "done" without its events. Same
 for the backfill batch records in items 9 and 6.
 
-Outside this plan, raised by the audit and needing you rather than code: **A2 —
-whether the 13 GDX-generated invoices carrying $3,208.75 of sales tax are
-correct** for construction-contract work.
+**§16 (added 2026-07-29, Doug): sales tax must be TRACKED and REPORTABLE.**
+Upgraded from the A2 "flag for the accountant" item to a build piece: a sales-tax
+report over invoices (tax collected by month/quarter, GDX-generated vs QB-import
+provenance, paid vs outstanding), so the accountant question can be answered from
+a screen instead of a psql session. The A2 correctness question (construction
+contract vs the 7.38% default, `tax_labor=false` inconsistency) stays a human
+decision — the report is what makes it answerable.
 
 Verification for §8 specifically: a real closeout → invoice → send on a
 throwaway container against real data, in both light and dark mode, plus the
