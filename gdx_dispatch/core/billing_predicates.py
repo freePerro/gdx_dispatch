@@ -52,11 +52,23 @@ def job_billed_exists():
         query.filter(job_billed_exists())          # billed jobs
         query.filter(~job_billed_exists())         # unbilled jobs
     """
+    # NULL-safe (plan §7.3): SQL three-valued logic makes `status != 'void'`
+    # and `billing_type != 'deposit'` evaluate to NULL (→ EXISTS fails →
+    # job reads UNBILLED) whenever the column is NULL — even on a paid
+    # invoice. The Python twin `invoice_bills_job` coalesces and returns the
+    # opposite, so the two halves would silently disagree the first time a
+    # NULL lands in either column. Prod has none today, but a QB import or a
+    # future writer could, and the tests pin both against fixtures that always
+    # set the field. `IS NULL OR …` restores the intended "a missing type is
+    # not a deposit / not a void" reading.
     return exists().where(
         Invoice.job_id == Job.id,
         Invoice.deleted_at.is_(None),
-        Invoice.status != "void",
-        Invoice.billing_type != "deposit",
+        or_(Invoice.status.is_(None), Invoice.status != "void"),
+        or_(Invoice.billing_type.is_(None), Invoice.billing_type != "deposit"),
+        # The total>0 arm already rescues a paid invoice with a NULL status;
+        # a NULL status at $0 stays unbilled (a fabricated placeholder must
+        # not drop a job out of Ready-for-Billing — cash-flow-safe).
         or_(Invoice.total > 0, Invoice.status != "draft"),
     )
 
@@ -83,4 +95,7 @@ def invoice_bills_job(
     # progress/final invoices bill a job.
     if (billing_type or "").strip().lower() == "deposit":
         return False
-    return float(total or 0) > 0 or s != "draft"
+    # NULL/empty status reads like draft here (indeterminate = not advanced
+    # past draft), so a $0 NULL-status invoice is unbilled — lockstep with the
+    # SQL, whose `status != 'draft'` goes NULL and fails EXISTS for that row.
+    return float(total or 0) > 0 or s not in ("", "draft")
