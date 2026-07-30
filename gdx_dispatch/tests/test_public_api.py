@@ -115,7 +115,11 @@ def _make_tenant_engine():
                 scheduled_at TEXT,
                 company_id TEXT,
                 created_at TEXT,
-                deleted_at TEXT
+                deleted_at TEXT,
+                -- 2026-07-30: the real table has carried job_type since the
+                -- beginning; the taxonomy work's INSERT now names it, and a
+                -- fixture claiming to mirror the ORM must carry it too.
+                job_type TEXT
             )
             """
         ))
@@ -369,7 +373,7 @@ class TestPublicJobsAPI:
             headers=self._headers,
             json={"title": "Test Job from API", "status": "lead"},
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 201, f"got {resp.status_code}: {resp.text[:500]}"
         body = resp.json()
         assert "data" in body
         assert "id" in body["data"]

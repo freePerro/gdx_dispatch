@@ -2221,7 +2221,19 @@ def verify_invoice(
     first, and re-stamping would quietly launder a later look as the review.
     """
     _validate_uuid(invoice_id, "Invoice")
-    invoice = _get_invoice_or_404(UUID(invoice_id), db)
+    # Row-locked re-select (concurrency guard, audit round 2): two office users
+    # verifying at once must not both "win". with_for_update serializes them —
+    # the second blocks until the first commits, then sees verified_at set.
+    # A no-op on SQLite, a real row lock on Postgres. Mutation is via ORM
+    # attributes (NOT a raw Core UPDATE) so the money-write governance guard
+    # and the ledger flush hook both see it.
+    invoice = db.execute(
+        select(Invoice).where(
+            Invoice.id == UUID(invoice_id), Invoice.deleted_at.is_(None)
+        ).with_for_update()
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
     if invoice.verified_at is not None:
         return {
             "invoice_id": str(invoice.id),
@@ -2229,25 +2241,7 @@ def verify_invoice(
             "verified_by_user_id": invoice.verified_by_user_id,
             "already_verified": True,
         }
-    # Guarded UPDATE, not check-then-write (audit round 2): two office users
-    # verifying concurrently must not both "win" — the first stamp is the
-    # approval record and last-write would quietly launder the second look.
-    now_verify = datetime.now(UTC)
-    claimed = db.execute(
-        update(Invoice)
-        .where(Invoice.id == invoice.id, Invoice.verified_at.is_(None))
-        .values(verified_at=now_verify, verified_by_user_id=_actor_id(_))
-    ).rowcount
-    if not claimed:
-        db.rollback()
-        db.refresh(invoice)
-        return {
-            "invoice_id": str(invoice.id),
-            "verified_at": invoice.verified_at.isoformat() if invoice.verified_at else None,
-            "verified_by_user_id": invoice.verified_by_user_id,
-            "already_verified": True,
-        }
-    invoice.verified_at = now_verify
+    invoice.verified_at = datetime.now(UTC)
     invoice.verified_by_user_id = _actor_id(_)
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),

@@ -18,12 +18,12 @@
 
 IF NOT EXISTS on all three — same create_all-vs-alembic split as 040–043.
 
-Revision ID: 044_service_pricing_and_adjustments
+Revision ID: 044_service_pricing
 Revises: 043_closeout_verification_rails
 """
 from alembic import op
 
-revision = "044_service_pricing_and_adjustments"
+revision = "044_service_pricing"
 down_revision = "043_closeout_verification_rails"
 branch_labels = None
 depends_on = None
