@@ -9,12 +9,12 @@ flat_price live from the row anyway.
 IF NOT EXISTS — same create_all-vs-alembic split as 040–044.
 
 Revision ID: 045_closeout_matrix_item
-Revises: 044_service_pricing_and_adjustments
+Revises: 044_service_pricing
 """
 from alembic import op
 
 revision = "045_closeout_matrix_item"
-down_revision = "044_service_pricing_and_adjustments"
+down_revision = "044_service_pricing"
 branch_labels = None
 depends_on = None
 
