@@ -447,6 +447,12 @@ class Invoice(Base):
     # delivery fact); never overload either.
     verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     verified_by_user_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    # Plan §12: correction traceability. A supplemental invoice (hours went
+    # UP after billing) or a credit memo's host points at the invoice it
+    # corrects. A plain nullable column ON PURPOSE — adding an enum value to
+    # billing_type would be a Postgres ADD VALUE inside alembic's single
+    # transaction, the known migration hazard.
+    adjusts_invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     public_token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True, default=0)

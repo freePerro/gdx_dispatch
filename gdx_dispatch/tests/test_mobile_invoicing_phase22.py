@@ -229,13 +229,17 @@ def test_create_invoice_from_accepted_quote(session_factory):
             )
         assert resp.status_code == 201, resp.body
         body = _as_json(resp)
-        assert body["status"] == "sent"
+        # Plan §11 (audit): a tech-created invoice is NEVER auto-sent — it
+        # lands as a draft awaiting office verification even when the caller
+        # asked to send. send_email is deferred, not honored.
+        assert body["status"] == "draft"
+        assert body["awaiting_verification"] is True
         assert body["total"] > 0
         assert len(body["lines"]) >= 1
         # Invoice carries the BETTER tier total (~$439 from spring better preset)
         # — proves we filtered to the chosen tier, not all 3.
         assert body["total"] < 800  # would be much higher if all 3 tiers' lines copied
-        send_mock.assert_called_once()
+        send_mock.assert_not_called()  # nothing reaches the customer unverified
     finally:
         db.close()
 
@@ -535,5 +539,96 @@ def test_mobile_send_invoice_void_409_no_email(session_factory):
         send_mock.assert_not_called()
         db.refresh(inv)
         assert inv.status == "void"
+    finally:
+        db.close()
+
+
+def test_invoice_from_closeout_service_lane_prices_hourly(session_factory):
+    """Plan §8 (audit: the router assembly had ZERO test coverage). A Service
+    Call job with a closeout and no estimate → hourly labor line by the
+    decided math, draft + awaiting verification (never auto-sent)."""
+    from uuid import UUID as _U
+
+    from gdx_dispatch.models.pricing_engine import PricingSettings
+    from gdx_dispatch.models.tenant_models import JobCloseout
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        db.execute(
+            text("UPDATE jobs SET job_type = 'Service Call' WHERE id = :j"),
+            {"j": seed["job_id"]},
+        )
+        db.add(PricingSettings())  # defaults 100/100
+        db.add(JobCloseout(
+            id=uuid4(),
+            job_id=_U(seed["job_id"]),
+            parts_used=[],
+            no_parts_used=True,
+            hours_worked=3.0,
+            techs_on_site=2,
+            closed_by_user_id="user-1",
+            closed_at=datetime.now(UTC),
+        ))
+        db.commit()
+
+        resp = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(send_email=True),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        # 3.0 h × 2 techs = 6.0 man-hours → $600 (Doug's crew example).
+        assert float(body["total"]) == 600.0, body["total"]
+        assert body["status"] == "draft"
+        assert body["awaiting_verification"] is True
+        labor = [ln for ln in body["lines"] if "man-hours" in (ln["description"] or "")]
+        assert len(labor) == 1
+        assert "6.00 man-hours" in labor[0]["description"]
+    finally:
+        db.close()
+
+
+def test_invoice_from_closeout_office_lane_leaves_labor_unpriced(session_factory):
+    """A non-service, non-install job (e.g. QB Import) with a closeout: labor
+    is NOT priced (office lane), the invoice is a $0 draft, and — crucially —
+    it is NOT auto-sent, so the §11 gate holds it off the customer and the
+    job stays in Ready-for-Billing rather than silently billed at $0."""
+    from uuid import UUID as _U
+
+    from gdx_dispatch.models.tenant_models import JobCloseout
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        db.execute(
+            text("UPDATE jobs SET job_type = 'QB Import' WHERE id = :j"),
+            {"j": seed["job_id"]},
+        )
+        db.add(JobCloseout(
+            id=uuid4(),
+            job_id=_U(seed["job_id"]),
+            parts_used=[],
+            no_parts_used=True,
+            hours_worked=3.0,
+            techs_on_site=1,
+            closed_by_user_id="user-1",
+            closed_at=datetime.now(UTC),
+        ))
+        db.commit()
+
+        resp = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(send_email=True),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        assert float(body["total"]) == 0.0
+        assert body["status"] == "draft", "a $0 office-lane invoice must NOT auto-send"
+        assert body["awaiting_verification"] is True
+        labor = [ln for ln in body.get("lines", []) if "man-hours" in (ln.get("description") or "")]
+        assert not labor, "office lane must not price labor"
     finally:
         db.close()

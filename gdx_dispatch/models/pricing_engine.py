@@ -126,6 +126,17 @@ class PricingSettings(TenantBase):
     target_labor_blended_rate_per_hour: Mapped[Decimal] = mapped_column(
         Numeric(8, 2), nullable=False, default=Decimal("100"), server_default="100"
     )
+    # Plan §8/§15.5 (Doug 2026-07-29): the service-call SELL pricing. Two
+    # columns even though both are $100 today, so "first hour $125 then $100"
+    # is a settings change, not a code change. Deliberately NOT in
+    # routers/pricing.py — its labor_rates dict is module-level in-memory
+    # state, lost on restart; a money rate cannot live there.
+    service_call_first_hour_price: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2), nullable=False, default=Decimal("100"), server_default="100"
+    )
+    service_call_hourly_rate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2), nullable=False, default=Decimal("100"), server_default="100"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

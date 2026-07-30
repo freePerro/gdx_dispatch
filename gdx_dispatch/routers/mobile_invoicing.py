@@ -26,7 +26,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
@@ -364,13 +364,14 @@ def mobile_create_invoice(
     # the seed used a hyphenated UUID string vs. a 32-char hex.
     job_row = db.execute(
         _text(
-            "SELECT customer_id FROM jobs WHERE id = :jid AND deleted_at IS NULL"
+            "SELECT customer_id, job_type FROM jobs WHERE id = :jid AND deleted_at IS NULL"
         ),
         {"jid": job_id},
     ).first()
     if job_row is None:
         return _jr({"detail": "job not found"}, 404)
     job_customer_id = job_row[0]
+    job_job_type = job_row[1]
 
     # Estimate (optional — if present must be accepted + on this job).
     estimate: Estimate | None = None
@@ -388,6 +389,20 @@ def mobile_create_invoice(
                 {"detail": f"estimate must be 'accepted' to invoice; current: {estimate.status}"},
                 409,
             )
+    else:
+        # Plan §15.1 (audit round: precedence must be SERVER-side): if the job
+        # has an accepted estimate, the customer agreed that price — bill from
+        # it, never hourly, even when the caller forgot to pass estimate_id.
+        estimate = db.execute(
+            select(Estimate)
+            .where(
+                Estimate.job_id == _UUID(job_id),
+                Estimate.status == "accepted",
+                Estimate.deleted_at.is_(None),
+            )
+            .order_by(Estimate.accepted_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
 
     customer_id = None
     if job_customer_id is not None:
@@ -566,6 +581,89 @@ def mobile_create_invoice(
             invoice.total = _money(new_subtotal)
             invoice.balance_due = _money(new_subtotal)
 
+    if estimate is None:
+        # Plan §8 — invoice FROM THE CLOSEOUT. No accepted estimate, so the
+        # lanes decide (core/billing_lanes): service → hourly labor line;
+        # install (until the matrix picker ships) and everything else →
+        # labor stays UNPRICED and the §11 verification gate is the flag —
+        # the invoice cannot reach a customer until the office reviewed it,
+        # so nothing is ever silently $0-lined onto a PDF.
+        from gdx_dispatch.core.billing_lanes import lane_for_job, service_labor_line
+        from gdx_dispatch.core.closeouts import get_current_closeout
+
+        closeout = get_current_closeout(db, _UUID(job_id))
+        _sort = 1
+        _new_lines_total = Decimal("0")
+        if closeout is not None:
+            lane = lane_for_job(job_job_type)
+            if lane == "service" and float(closeout.hours_worked or 0) > 0:
+                labor = service_labor_line(
+                    db,
+                    hours_worked=float(closeout.hours_worked or 0),
+                    techs_on_site=int(getattr(closeout, "techs_on_site", 1) or 1),
+                )
+                db.add(InvoiceLine(
+                    id=uuid4(),
+                    invoice_id=invoice.id,
+                    description=labor.description,
+                    quantity=labor.quantity,
+                    unit_price=labor.unit_price,
+                    line_total=labor.line_total,
+                    sort_order=_sort,
+                    company_id=str(tenant_id),
+                ))
+                _new_lines_total += labor.line_total
+                _sort += 1
+
+            # Parts: the closeout's attested, still-unbilled checklist rows.
+            # PRICED rows become lines and are claimed with the same
+            # stamp-first rule as the office path (a row the stamp cannot
+            # claim was billed by a concurrent invoice — skip it, never
+            # double-bill). UNPRICED rows are deliberately left unstamped:
+            # they stay on the office checklist, and the verification gate
+            # holds the invoice until someone prices them.
+            candidate_rows = db.execute(
+                select(JobPartNeeded).where(
+                    JobPartNeeded.job_id == str(job_id),
+                    JobPartNeeded.source == "closeout",
+                    JobPartNeeded.billed_invoice_id.is_(None),
+                    JobPartNeeded.unit_price.is_not(None),
+                    JobPartNeeded.unit_price > 0,
+                )
+            ).scalars().all()
+            for part_row in candidate_rows:
+                from sqlalchemy import update as _update
+
+                claimed = db.execute(
+                    _update(JobPartNeeded)
+                    .where(
+                        JobPartNeeded.id == part_row.id,
+                        JobPartNeeded.billed_invoice_id.is_(None),
+                    )
+                    .values(billed_invoice_id=invoice.id)
+                ).rowcount
+                if not claimed:
+                    continue
+                qty = int(part_row.quantity or 1)
+                unit = _money(part_row.unit_price or 0)
+                db.add(InvoiceLine(
+                    id=uuid4(),
+                    invoice_id=invoice.id,
+                    description=(part_row.part_name or part_row.sku or "Part")[:500],
+                    quantity=qty,
+                    unit_price=unit,
+                    line_total=_money(float(unit) * qty),
+                    sort_order=_sort,
+                    company_id=str(tenant_id),
+                ))
+                _new_lines_total += _money(float(unit) * qty)
+                _sort += 1
+
+        if _new_lines_total > 0:
+            invoice.subtotal = _money(_new_lines_total)
+            invoice.total = _money(_new_lines_total)
+            invoice.balance_due = _money(_new_lines_total)
+
     # Deposit netting (2026-07-23): the truck's final invoice subtracts the
     # job's PAID deposit as a negative line and supersedes any unpaid
     # deposit remainder — same rules as the office create paths. Totals
@@ -598,15 +696,14 @@ def mobile_create_invoice(
     )
     db.commit()
 
-    # Optionally send the invoice email immediately (S2-B2).
-    if payload.send_email:
-        delivered = _send_invoice_email(db, invoice, tenant_id=tenant_id)
-        transition_invoice_status(db, invoice, "sent")  # GL S5: P1 posts here when the flag is on
-        # sent_at = delivery fact ("Last Sent" in Billing), not attempt fact.
-        if delivered:
-            invoice.sent_at = datetime.now(UTC)
-        db.commit()
-        db.refresh(invoice)
+    # Plan §11 (audit): a tech-created invoice is NEVER verified at creation,
+    # and NOTHING unverified reaches a customer — so send-on-create is
+    # deferred, not honored. The office verifies from the billing screen, then
+    # the invoice becomes sendable (mobile send / the office's own send). The
+    # response's awaiting_verification tells the truck why it didn't go.
+    # (This closes the bypass the old send_email=True branch left open: it
+    # emailed unverified, memory-typed hours straight to the customer.)
+    awaiting_verification = bool(payload.send_email)
 
     # Surface the netting result to the truck — the office create paths
     # return it (InvoiceCreateView renders the toast) but this one dropped
@@ -615,6 +712,19 @@ def mobile_create_invoice(
     resp_payload = _serialize_invoice(invoice, include_lines=True, db=db)
     if _dep_result:
         resp_payload["deposit_netting"] = _dep_result
+    resp_payload["awaiting_verification"] = awaiting_verification
+    # Unpriced closeout parts left on the office checklist (audit: a partial
+    # invoice must not look complete) — the office prices them before the
+    # invoice is verified/sent.
+    _unpriced = db.execute(
+        select(func.count()).select_from(JobPartNeeded).where(
+            JobPartNeeded.job_id == str(job_id),
+            JobPartNeeded.source == "closeout",
+            JobPartNeeded.billed_invoice_id.is_(None),
+            or_(JobPartNeeded.unit_price.is_(None), JobPartNeeded.unit_price <= 0),
+        )
+    ).scalar() or 0
+    resp_payload["unpriced_parts_remaining"] = int(_unpriced)
     return _jr(resp_payload, 201)
 
 
