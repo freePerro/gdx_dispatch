@@ -310,8 +310,8 @@ def create_job(
         row = db.execute(
             text(
                 """
-                INSERT INTO jobs (id, title, lifecycle_stage, customer_id, scheduled_at, created_at)
-                VALUES (:id, :title, :status, :customer_id, :scheduled_at, :created_at)
+                INSERT INTO jobs (id, title, lifecycle_stage, customer_id, scheduled_at, created_at, job_type)
+                VALUES (:id, :title, :status, :customer_id, :scheduled_at, :created_at, 'Service Call')
                 RETURNING id, title, lifecycle_stage AS status,
                           customer_id, scheduled_at, created_at
                 """

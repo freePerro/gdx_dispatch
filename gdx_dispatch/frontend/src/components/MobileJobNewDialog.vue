@@ -19,10 +19,12 @@
 // can re-try with the now-existing customer). Same for parts: a job is
 // created even if a part add fails (parts can be appended later from job
 // detail). This matches what desktop JobsView already does.
+import { DEFAULT_JOB_TYPE, JOB_TYPE_OPTIONS } from '../constants/jobTypes'
 import { ref, reactive, computed, watch, nextTick } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { useToast } from 'primevue/usetoast'
@@ -156,6 +158,12 @@ function clearCustomer() {
 const job = reactive({
   title: '',
   description: '',
+  // Plan §9 / §14 Gap 1: without a picker every phone-created job took the
+  // backend default — so a tech creating an INSTALL from the truck had no way
+  // to say so, and under the §8 two-lane pricing that install would bill
+  // hourly instead of its flat price. Defaults to the canonical service
+  // spelling (most field-created jobs are service calls).
+  job_type: DEFAULT_JOB_TYPE,
   // Sprint dispatch-capacity (2026-05-20) — scheduler's expected hours
   // (decimal, e.g. 1.5). Optional; dispatch falls back to the estimate
   // calc, then to "?h" if nothing's known.
@@ -286,6 +294,7 @@ async function submit() {
         title: job.title.trim(),
         description: job.description.trim() || '',
         customer_id: customerId,
+        job_type: job.job_type || DEFAULT_JOB_TYPE,
         scheduled_duration_hours:
           job.scheduled_duration_hours != null && job.scheduled_duration_hours !== ''
             ? Number(job.scheduled_duration_hours)
@@ -376,6 +385,7 @@ function _resetForm() {
   newCust.address = ''
   job.title = ''
   job.description = ''
+  job.job_type = DEFAULT_JOB_TYPE
   job.scheduled_duration_hours = null
   job.location_id = null
   customerLocations.value = []
@@ -576,6 +586,15 @@ watch(open, async (v) => {
             placeholder="e.g. Replace broken springs"
             data-testid="mjn-job-title"
             autocomplete="off"
+          />
+        </div>
+        <div class="form-field">
+          <label>Job type</label>
+          <Select
+            v-model="job.job_type"
+            :options="[...JOB_TYPE_OPTIONS]"
+            class="w-full"
+            data-testid="mjn-job-type"
           />
         </div>
         <div class="form-field">

@@ -13,9 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_taxonomy import INSTALLATION
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.models.tenant_models import Invoice, Job, Proposal
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -174,6 +175,10 @@ def convert_proposal_to_job(proposal_id: str, request: Request, user: dict = Dep
             customer_id=proposal.customer_id,
             status="New",
             lifecycle_stage="scheduled",
+            # Plan §9 (audit round 2): a converted proposal is SOLD work —
+            # the same taxonomy rule as estimates.py's convert path
+            # (job_type="Installation"); omitting it minted the default.
+            job_type=INSTALLATION,
             company_id=tenant_id,
             created_at=now,
         )

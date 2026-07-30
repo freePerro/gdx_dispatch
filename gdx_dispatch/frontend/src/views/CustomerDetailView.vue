@@ -642,6 +642,7 @@
 </template>
 
 <script setup>
+import { JOB_TYPE_OPTIONS } from "../constants/jobTypes";
 import { computed, ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -758,7 +759,9 @@ const isSavingEquipment = ref(false);
 const recurringJobs = ref([]);
 const showRecurringDialog = ref(false);
 const recurringForm = ref({ title: "", job_type: "", interval_days: 365, next_due_date: null, description: "" });
-const jobTypeOptions = ["Service", "Installation", "New Construction", "Repair", "Maintenance", "Inspection", "Other"];
+// Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
+// where the 12 mis-spelled prod rows came from.
+const jobTypeOptions = [...JOB_TYPE_OPTIONS];
 const recurringError = ref("");
 const isSavingRecurring = ref(false);
 const communications = ref([]);

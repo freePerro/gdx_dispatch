@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Job, JobTemplate
 from gdx_dispatch.routers.auth import get_current_user
@@ -126,6 +127,11 @@ def create_job_from_template(
         customer_id=customer_id,
         title=str(template.title or "Recurring job"),
         description=f"Template type: {template.job_type}",
+        # Plan §9 (audit round 2): the materializer DROPPED the template's
+        # job_type — recurring jobs minted the model default forever. The
+        # template's own value wins, canonicalized; unknown text lanes to
+        # office rather than being guessed at.
+        job_type=canonical_job_type(template.job_type) or SERVICE_CALL,
         lifecycle_stage=derived_lifecycle,
         dispatch_status="unassigned",
         billing_status="unbilled",

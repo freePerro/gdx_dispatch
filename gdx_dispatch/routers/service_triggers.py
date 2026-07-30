@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_taxonomy import MAINTENANCE
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import Job, ServiceTrigger
 from gdx_dispatch.routers.auth import get_current_user
@@ -171,6 +172,10 @@ def run_triggers(
                 customer_id=trigger.customer_id,
                 title=f"Scheduled maintenance (agreement {trigger.agreement_id})",
                 description=f"Scheduled maintenance (agreement {trigger.agreement_id})",
+                # Plan §9 (audit round 2): these ARE maintenance visits —
+                # omitting job_type minted the model default and hid every
+                # agreement job from the service lane.
+                job_type=MAINTENANCE,
                 lifecycle_stage="scheduled",
                 dispatch_status="unassigned",
                 billing_status="unbilled",

@@ -289,7 +289,11 @@ class Job(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=True)
     is_return_visit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     parent_job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
-    job_type: Mapped[str] = mapped_column(String(100), nullable=True, default="Service")
+    # Plan §9 (audit round 2): the canonical service spelling. Constructors
+    # that omit job_type inherit THIS — the old "Service" default was the leak
+    # under the 042 backfill's mop (template materializer, service triggers,
+    # proposal conversion all omitted it and kept minting the dead spelling).
+    job_type: Mapped[str] = mapped_column(String(100), nullable=True, default="Service Call")
     status: Mapped[str] = mapped_column(String(50), nullable=True)
     priority: Mapped[str] = mapped_column(String(50), nullable=True, default="Normal")
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
