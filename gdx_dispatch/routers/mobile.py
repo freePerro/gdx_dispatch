@@ -2057,6 +2057,35 @@ def get_mobile_job_detail(
         # metadata stays — "was it signed" is legitimate context.
         job["signature_data"] = None
 
+    # Plan §1: the Time card on the mobile job detail told the tech "hours for
+    # this job come from what you entered at close-out" and then never showed
+    # the number — job_closeouts was write-only. Attach the current snapshot's
+    # summary so he can confirm what he submitted. Metadata only, no signature
+    # blob, so the company-grant redaction above has nothing to leak here.
+    job["closeout"] = None
+    try:
+        from gdx_dispatch.core.closeouts import get_current_closeout
+
+        _co = get_current_closeout(db, _UUID(str(job["id"])))
+        if _co is not None:
+            job["closeout"] = {
+                "hours_worked": float(_co.hours_worked or 0),
+                "notes": _co.notes,
+                "no_parts_used": bool(_co.no_parts_used),
+                "parts_count": len(_co.parts_used or []),
+                "closed_at": _co.closed_at.isoformat() if _co.closed_at else None,
+                "signature_present": bool((_co.signature_data or "").strip()),
+            }
+    except Exception:  # noqa: BLE001 — summary must never sink the screen
+        # Deliberately broad (audit round 3): this block decorates the payload
+        # with a SUMMARY. A schema-drifted env (superseded_at missing before
+        # migration 041 — the plugin-drift pattern), a transient DB error, or
+        # MultipleResultsFound must degrade to closeout:null, not 500 the
+        # tech's entire job screen in a driveway. A failed statement aborts
+        # the PG transaction, so roll back before the payload's later reads.
+        db.rollback()
+        logging.getLogger(__name__).exception("mobile_job_detail_closeout_read_failed")
+
     customer = None
     if job.get("customer_id"):
         try:

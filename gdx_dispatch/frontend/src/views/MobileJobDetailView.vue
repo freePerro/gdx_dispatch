@@ -385,9 +385,12 @@
            Stop button would close the timer and switch that guard off — an
            attested 2h job then bills 5h. Read-only until that is fixed and
            proven on Postgres. -->
-      <div v-if="job.arrived_at" class="detail-card">
+      <!-- Also shown when a closeout exists with no arrival stamp (a job
+           entered after the fact, or a dispatcher closing for a tech) — the
+           attested hours are the point of this card, not the arrival. -->
+      <div v-if="job.arrived_at || job.closeout" class="detail-card">
         <h2>Time</h2>
-        <div class="detail-meta" data-testid="mobile-job-detail-timer">
+        <div v-if="job.arrived_at" class="detail-meta" data-testid="mobile-job-detail-timer">
           <i class="pi pi-clock" />
           <!-- Deliberately NOT "arrived → completed". A job arrived at in May
                and closed out in July spans two months, and labelling that span
@@ -398,6 +401,20 @@
             Arrived {{ formatScheduled(job.arrived_at) }} · closed out {{ formatScheduled(job.completed_at) }}
           </span>
           <span v-else>Tracking since you arrived, {{ formatScheduled(job.arrived_at) }}</span>
+        </div>
+        <!-- Plan §1: this card used to NAME the source of the hours and then
+             withhold the number — job_closeouts was write-only. Now the
+             attested figure and the submitted notes come back so the tech can
+             confirm what he sent. -->
+        <div v-if="job.closeout" class="detail-meta" data-testid="mobile-closeout-summary">
+          <i class="pi pi-check-circle" />
+          <span>
+            You attested {{ Number(job.closeout.hours_worked).toFixed(2) }} h
+            {{ job.closeout.no_parts_used ? '· no parts used' : `· ${job.closeout.parts_count} part line(s)` }}
+          </span>
+        </div>
+        <div v-if="job.closeout && job.closeout.notes" class="detail-meta detail-meta-muted" data-testid="mobile-closeout-notes">
+          "{{ job.closeout.notes }}"
         </div>
         <div class="detail-meta detail-meta-muted">
           Hours for this job come from what you entered at close-out. Your paid

@@ -367,6 +367,62 @@
           </DataTable>
           <p v-else class="muted">No blocking jobs.</p>
         </div>
+
+        <!-- Plan §1 — the closeout card. job_closeouts was WRITE-ONLY for 2.5
+             months: the tech's attested hours, work notes, parts attestation
+             and signer name went into the database and never reached a
+             screen, so the office billed blind. This card is what the office
+             reads to bill. Never renders the raw signature blob (audit A4) —
+             the API doesn't even send it. -->
+        <div v-if="closeout" class="card" data-testid="job-closeout-card">
+          <div class="card-header">
+            <h3>Closeout — work performed</h3>
+          </div>
+          <div class="detail-row">
+            <span>Hours attested</span>
+            <strong data-testid="closeout-hours">{{ Number(closeout.hours_worked).toFixed(2) }} h</strong>
+          </div>
+          <div class="detail-row">
+            <span>Parts</span>
+            <strong data-testid="closeout-parts">
+              {{ closeout.no_parts_used ? 'Tech attested: no parts used' : `${(closeout.parts_used || []).length} part line(s)` }}
+            </strong>
+          </div>
+          <div v-if="(closeout.parts_used || []).length" class="closeout-parts-list">
+            <div v-for="(p, i) in closeout.parts_used" :key="i" class="detail-row">
+              <span>{{ p.name || p.sku || 'part' }}</span>
+              <strong>× {{ p.qty }}</strong>
+            </div>
+          </div>
+          <div v-if="closeout.notes" class="detail-row closeout-notes">
+            <span>Work notes</span>
+            <strong data-testid="closeout-notes">{{ closeout.notes }}</strong>
+          </div>
+          <div class="detail-row">
+            <span>Signature</span>
+            <strong data-testid="closeout-signature">
+              {{ closeout.signature_present ? `Signed${closeout.signed_by ? ' by ' + closeout.signed_by : ''}` : 'Not signed' }}
+            </strong>
+          </div>
+          <div class="detail-row">
+            <span>Closed out</span>
+            <strong>{{ formatDateTime(closeout.closed_at) }}{{ closeout.closed_by_name ? ' — ' + closeout.closed_by_name : '' }}</strong>
+          </div>
+          <!-- Revision history (plan §14 gap 4): the supersede model keeps
+               every attestation; the office must SEE that a closeout was
+               restated, or the model is invisible. -->
+          <div v-if="closeoutHistory.length > 1" class="closeout-history" data-testid="closeout-history">
+            <div class="card-header"><h4>Revisions</h4></div>
+            <div v-for="h in closeoutHistory" :key="h.id" class="detail-row">
+              <span>{{ formatDateTime(h.closed_at) }}{{ h.closed_by_name ? ' — ' + h.closed_by_name : '' }}</span>
+              <strong>
+                {{ Number(h.hours_worked).toFixed(2) }} h
+                <Tag v-if="!h.superseded_at" value="current" severity="success" style="margin-left: .4rem" />
+                <Tag v-else value="superseded" severity="secondary" style="margin-left: .4rem" />
+              </strong>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div v-else-if="activeTab === 'schedule'" class="tab-panel">
@@ -1066,6 +1122,11 @@ const financials = ref(null);
 const appointments = ref([]);
 const appointmentsLoading = ref(false);
 const timeEntries = ref([]);
+// Plan §1 — the closeout card's data. `closeout` = the CURRENT snapshot
+// (null until the job is closed out); `closeoutHistory` = every attestation
+// newest-first, so a restated closeout is visible as a revision trail.
+const closeout = ref(null);
+const closeoutHistory = ref([]);
 const documents = ref([]);
 const activityLog = ref([]);
 const installData = ref(null);
@@ -1302,6 +1363,7 @@ async function refreshRelated() {
     fetchNotes(),
     fetchCosting(),
     fetchPartsNeeded(),
+    fetchCloseout(),
     fetchTechnicians(),
     fetchAssignments(),
     fetchAppointments(),
@@ -1421,6 +1483,19 @@ async function fetchPartsNeeded() {
     partsNeeded.value = Array.isArray(data) ? data : data?.items || [];
   } catch {
     partsNeeded.value = [];
+  }
+}
+
+async function fetchCloseout() {
+  try {
+    const data = await api.get(`/api/jobs/${route.params.id}/closeout`, {
+      suppressErrorToast: true,
+    });
+    closeout.value = data?.closeout || null;
+    closeoutHistory.value = Array.isArray(data?.history) ? data.history : [];
+  } catch {
+    closeout.value = null;
+    closeoutHistory.value = [];
   }
 }
 
