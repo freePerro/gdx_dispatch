@@ -91,8 +91,8 @@ def _seed_job(db, *, stage: str = "completed", title: str = "Job", **kw) -> Job:
 
 
 def _seed_invoice(
-    db, job, *, status: str, total: float, deleted: bool = False,
-    billing_type: str = "standard",
+    db, job, *, status: str | None, total: float, deleted: bool = False,
+    billing_type: str | None = "standard",
 ) -> Invoice:
     inv = Invoice(
         company_id="tenant-1",
@@ -129,6 +129,14 @@ MATRIX = [
     # Deposit invoices (2026-07-23): money BEFORE the work never bills the
     # job — it must stay in Ready-for-Billing for the final invoice.
     ("deposit_sent", {"status": "sent", "total": 500.0, "billing_type": "deposit"}, False),
+    # Plan §7.3 — NULL columns. Before the IS NULL guards, `status != 'void'`
+    # and `billing_type != 'deposit'` went NULL in SQL and the paid job read
+    # UNBILLED, while the coalescing Python twin said BILLED — a silent split.
+    # A NULL billing_type is "not a deposit"; a NULL status on a $500 invoice
+    # is "not a void, not a draft" → billed.
+    ("null_billing_type_sent", {"status": "sent", "total": 500.0, "billing_type": None}, True),
+    ("null_status_500", {"status": None, "total": 500.0}, True),
+    ("null_status_zero", {"status": None, "total": 0.0}, False),
 ]
 
 
