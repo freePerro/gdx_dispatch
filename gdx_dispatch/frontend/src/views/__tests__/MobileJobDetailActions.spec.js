@@ -26,6 +26,10 @@
  *     #154 shipped (`_open_job_timers` filters clock_out IS NULL), so closeout
  *     would then synthesize a SECOND row: an attested 2h job bills 5h.
  */
+// Must precede any import that pulls in Dexie (lib/offlineDb) — jsdom has no
+// IndexedDB, so without the polyfill every queued action's background write
+// rejects with MissingAPIError as an unhandled rejection (24 per run).
+import "fake-indexeddb/auto";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
