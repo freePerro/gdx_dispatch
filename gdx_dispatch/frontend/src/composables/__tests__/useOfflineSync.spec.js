@@ -142,6 +142,35 @@ describe('queueAction', () => {
     const rows = await db.sync_queue.toArray()
     expect(rows[0].status).toBe(QUEUE_STATUS.SYNCED)
   })
+
+  it('online + 409 with conflictIsError → THROWS with the server detail, row FAILED', async () => {
+    // Payments 409 business refusals (void invoice, closed-out deposit,
+    // locked GL period) — pre-fix these were filed as "synced" and the tech
+    // saw "Payment recorded" for money the server refused.
+    global.fetch.mockResolvedValueOnce(
+      jsonResponse(409, { detail: 'invoice is void — un-void it before recording a payment' })
+    )
+    await expect(
+      queueAction('POST', '/api/invoices/inv-1/payments', { amount: 50 }, { conflictIsError: true })
+    ).rejects.toMatchObject({
+      status: 409,
+      message: 'invoice is void — un-void it before recording a payment',
+    })
+    const rows = await db.sync_queue.toArray()
+    expect(rows[0].status).toBe(QUEUE_STATUS.FAILED)
+    expect(rows[0].last_error_code).toBe(409)
+  })
+
+  it('replayed conflictIsError entry: 409 marks the row FAILED, not synced', async () => {
+    isOnline.value = false
+    await queueAction('POST', '/api/invoices/inv-1/payments', { amount: 50 }, { conflictIsError: true })
+    isOnline.value = true
+    global.fetch.mockResolvedValue(jsonResponse(409, { detail: 'payment date falls in a locked accounting period' }))
+    await syncNow()
+    const rows = await db.sync_queue.toArray()
+    expect(rows[0].status).toBe(QUEUE_STATUS.FAILED)
+    expect(rows[0].last_error).toMatch(/locked accounting period/)
+  })
 })
 
 describe('syncNow', () => {

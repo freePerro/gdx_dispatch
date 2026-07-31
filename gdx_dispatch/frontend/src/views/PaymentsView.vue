@@ -105,6 +105,7 @@
               id="payments-date"
               type="date"
               v-model="form.date"
+              :max="todayKey()"
               class="w-full"
               data-testid="payments-date-input"
             />
@@ -201,6 +202,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDate, formatMoney as formatCurrency } from '../composables/useFormatters';
+import { useTenantTimezone } from '../composables/useTenantTimezone';
 import EmptyState from '../components/EmptyState.vue';
 import AutoComplete from 'primevue/autocomplete';
 import Button from 'primevue/button';
@@ -235,8 +237,12 @@ const entryTypeOptions = [
 ];
 const paymentTabs = ['All', 'Completed', 'Voided', 'Refunded'];
 
+// Tenant-zone calendar day — a UTC slice dates evening payments tomorrow.
+const { zonedDateKey } = useTenantTimezone();
+const todayKey = () => zonedDateKey(new Date());
+
 const emptyForm = () => ({
-  date: new Date().toISOString().split('T')[0],
+  date: todayKey(),
   customer: '',
   invoice_id: '',
   invoice_uuid: '',

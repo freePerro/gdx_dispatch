@@ -445,6 +445,17 @@
               data-testid="payment-method"
             />
           </div>
+          <div class="form-field">
+            <label for="pay-date">Payment Date *</label>
+            <InputText
+              id="pay-date"
+              v-model="newPayment.date"
+              type="date"
+              :max="todayKey()"
+              data-testid="payment-date"
+            />
+            <small class="form-hint">Bank deposit / receipt date — backdate for corrections</small>
+          </div>
           <div class="form-field full-width">
             <label for="pay-reference">Reference #</label>
             <InputText
@@ -461,7 +472,7 @@
           <Button
             label="Record Payment"
             data-testid="confirm-record-payment"
-            :disabled="!newPayment.amount || !newPayment.method"
+            :disabled="!newPayment.amount || !newPayment.method || !newPayment.date"
             :loading="recordingPayment"
             @click="recordPayment"
           />
@@ -489,12 +500,23 @@
             data-testid="bulk-paid-method"
           />
         </div>
+        <div class="form-field">
+          <label for="bulk-paid-date">Payment Date *</label>
+          <InputText
+            id="bulk-paid-date"
+            v-model="bulkPaidDate"
+            type="date"
+            :max="todayKey()"
+            data-testid="bulk-paid-date"
+          />
+          <small class="form-hint">One date for the whole batch — e.g. the deposit date of a stack of checks</small>
+        </div>
         <template #footer>
           <Button label="Cancel" severity="secondary" @click="showBulkPaidDialog = false" />
           <Button
             label="Record Payments"
             data-testid="bulk-mark-paid-confirm"
-            :disabled="!bulkPaidMethod"
+            :disabled="!bulkPaidMethod || !bulkPaidDate"
             @click="confirmBulkMarkPaid"
           />
         </template>
@@ -514,6 +536,7 @@ import { formatDate, formatDateTime, formatStampDate, isDateOnlyStamp, stampTime
 import { openAuthedFile } from "../composables/useAuthedFile";
 import { useListPrefs } from "../composables/useListPrefs";
 import { useTableExport } from "../composables/useTableExport";
+import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Card from "primevue/card";
@@ -713,9 +736,11 @@ async function bulkSend() {
 // payment method because that's what feeds the GL cash account.
 const showBulkPaidDialog = ref(false);
 const bulkPaidMethod = ref('Check');
+const bulkPaidDate = ref('');
 
 async function bulkMarkPaid() {
   bulkPaidMethod.value = 'Check';
+  bulkPaidDate.value = todayKey();
   showBulkPaidDialog.value = true;
 }
 
@@ -728,7 +753,7 @@ async function confirmBulkMarkPaid() {
   let ok = 0;
   let skipped = selectedInvoices.value.length - total;
   const failed = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const payDay = bulkPaidDate.value || todayKey();
   bulkProgress.value = { active: true, label: 'Mark Paid', completed: 0, total };
   for (const inv of targets) {
     const balance = toNum(inv.balance_due ?? inv.total);
@@ -741,7 +766,7 @@ async function confirmBulkMarkPaid() {
       await api.post(`/api/invoices/${inv.id}/payments`, {
         amount: balance,
         method: bulkPaidMethod.value,
-        date: today,
+        date: payDay,
         reference: 'bulk mark-paid',
       });
       ok += 1;
@@ -893,7 +918,12 @@ useListPrefs(
 
 const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
 
-const newPayment = ref({ amount: 0, method: "Cash", reference: "" });
+const newPayment = ref({ amount: 0, method: "Cash", reference: "", date: "" });
+// Payment dates are calendar days in the TENANT's zone. toISOString() is the
+// UTC day — after ~7 PM Central it is tomorrow, so every evening payment was
+// dated a day late. Same off-by-one-day family as the scheduling fix.
+const { zonedDateKey } = useTenantTimezone();
+const todayKey = () => zonedDateKey(new Date());
 
 const filteredInvoices = computed(() => {
   let list = invoices.value;
@@ -1264,7 +1294,7 @@ function createSupplemental(item) {
 
 function openPaymentDialog(inv) {
   paymentTarget.value = inv;
-  newPayment.value = { amount: 0, method: "Cash", reference: "" };
+  newPayment.value = { amount: 0, method: "Cash", reference: "", date: todayKey() };
   showPaymentDialog.value = true;
 }
 
@@ -1276,9 +1306,7 @@ async function recordPayment() {
       amount: newPayment.value.amount,
       method: newPayment.value.method,
       reference: newPayment.value.reference,
-      // The dialog has no date picker; the API requires `date` (422
-      // without it). Same today-default as InvoiceDetail/MobileInvoice.
-      date: new Date().toISOString().slice(0, 10),
+      date: newPayment.value.date || todayKey(),
     });
     showPaymentDialog.value = false;
     toast.add({ severity: "success", summary: "Recorded", detail: "Payment recorded", life: 3000 });

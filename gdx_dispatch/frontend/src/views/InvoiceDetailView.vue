@@ -330,7 +330,7 @@
             severity="success"
             data-testid="record-payment-btn"
             :disabled="String(invoice.status || '').toLowerCase() === 'paid'"
-            @click="showPaymentDialog = true"
+            @click="openPaymentDialog"
           />
           <Button
             label="Download PDF"
@@ -572,6 +572,17 @@
             />
           </div>
           <div class="form-field">
+            <label for="pay-date">Payment Date *</label>
+            <InputText
+              id="pay-date"
+              v-model="newPayment.date"
+              type="date"
+              :max="todayKey()"
+              data-testid="payment-date"
+            />
+            <small class="form-hint">Bank deposit / receipt date — backdate for corrections</small>
+          </div>
+          <div class="form-field">
             <label for="pay-ref">Reference #</label>
             <InputText
               id="pay-ref"
@@ -586,7 +597,7 @@
           <Button
             label="Save Payment"
             data-testid="save-payment"
-            :disabled="!newPayment.amount || !newPayment.method"
+            :disabled="!newPayment.amount || !newPayment.method || !newPayment.date"
             :loading="savingPayment"
             @click="recordPayment"
           />
@@ -704,6 +715,7 @@ import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
+import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -741,7 +753,15 @@ const composerLoading = ref(false);
 const composerSending = ref(false);
 const composer = ref({ to: "", subject: "", body_text: "", pdf: null, extras: [] });
 const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
-const newPayment = ref({ amount: 0, method: "Cash", reference: "" });
+const newPayment = ref({ amount: 0, method: "Cash", reference: "", date: "" });
+// Tenant-zone calendar day — a UTC slice dates evening payments tomorrow.
+const { zonedDateKey } = useTenantTimezone();
+const todayKey = () => zonedDateKey(new Date());
+
+function openPaymentDialog() {
+  newPayment.value = { amount: 0, method: "Cash", reference: "", date: todayKey() };
+  showPaymentDialog.value = true;
+}
 // Tier-2 UI doors — credit lifecycle + finalize
 const showCreditMemoDialog = ref(false);
 const creditMemo = ref({ amount: 0, reason: "" });
@@ -1322,15 +1342,11 @@ async function finalizeInvoice() {
 async function recordPayment() {
   savingPayment.value = true;
   try {
-    // Backend PaymentCreateIn requires `date`. The dialog doesn't expose a
-    // date picker (operators record payments same-day in the field) so
-    // default to today. Pre-fix Save Payment 422'd on every click with
-    // {type: "missing", loc: ["body", "date"]}.
     const result = await api.post(`/api/invoices/${route.params.id}/payments`, {
       amount: newPayment.value.amount,
       method: newPayment.value.method,
       reference: newPayment.value.reference,
-      date: new Date().toISOString().slice(0, 10),
+      date: newPayment.value.date || todayKey(),
     });
     const saved = result?.data || result || {};
     invoice.value.payments.push({
@@ -1338,14 +1354,14 @@ async function recordPayment() {
       amount: toNum(saved.amount || newPayment.value.amount),
       method: saved.method || newPayment.value.method,
       reference: saved.reference || newPayment.value.reference,
-      date: saved.date || new Date().toISOString().slice(0, 10),
+      date: saved.date || newPayment.value.date || todayKey(),
     });
     // Update status if fully paid
     if (balanceDue.value <= 0) {
       invoice.value.status = "Paid";
     }
     showPaymentDialog.value = false;
-    newPayment.value = { amount: 0, method: "Cash", reference: "" };
+    newPayment.value = { amount: 0, method: "Cash", reference: "", date: "" };
     toast.add({ severity: "success", summary: "Recorded", detail: "Payment recorded", life: 3000 });
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to record payment", life: 3000 });

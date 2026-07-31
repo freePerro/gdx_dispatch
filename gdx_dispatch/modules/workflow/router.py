@@ -32,6 +32,11 @@ _FLAG_COLUMNS = (
     # §12 (Doug 2026-07-30): surface jobs re-closed-out AFTER they were billed
     # so the office can reconcile. Company-wide on/off. Default OFF.
     "closeout_billing_reconciliation",
+    # QB phase-out (Doug 2026-07-30, payment-date plan): pause the QB→GDX
+    # invoice/payment pulls so GDX-entered payment corrections can't be
+    # overwritten or duplicated by a webhook-triggered sync. Default OFF;
+    # flip ON before starting the backfill.
+    "qb_money_pull_paused",
 )
 
 
@@ -44,6 +49,7 @@ class WorkflowFlags(BaseModel):
     require_signature_on_complete: bool = False
     require_invoice_on_complete: bool = False
     closeout_billing_reconciliation: bool = False
+    qb_money_pull_paused: bool = False
 
 
 def _tenant_uuid(request: Request) -> UUID:
@@ -70,6 +76,10 @@ def _read(db: Session, tid: UUID) -> dict[str, bool]:
             text(f"SELECT {cols} FROM tenant_settings WHERE tenant_id = :tid"),
             {"tid": str(tid)},
         ).first()
+    if row is None:
+        # Unreachable — the upsert above guarantees the row — but the guard
+        # narrows Row|None for every row[N] read below (9 mypy errors gone).
+        raise HTTPException(status_code=500, detail="tenant_settings seed failed")
     return {
         "lock_schedule_on_start": bool(row[0]),
         "post_arrival_event": bool(row[1]),
@@ -79,6 +89,7 @@ def _read(db: Session, tid: UUID) -> dict[str, bool]:
         "require_signature_on_complete": bool(row[5]),
         "require_invoice_on_complete": bool(row[6]),
         "closeout_billing_reconciliation": bool(row[7]),
+        "qb_money_pull_paused": bool(row[8]),
     }
 
 
@@ -108,8 +119,9 @@ def update_flags(
             "workflow_post_arrival_event, workflow_sms_arrival_notify, "
             "workflow_require_parts_on_complete, workflow_require_hours_on_complete, "
             "workflow_require_signature_on_complete, "
-            "workflow_require_invoice_on_complete, closeout_billing_reconciliation) "
-            "VALUES (:tid, :a, :b, :c, :d, :e, :f, :g, :h) "
+            "workflow_require_invoice_on_complete, closeout_billing_reconciliation, "
+            "qb_money_pull_paused) "
+            "VALUES (:tid, :a, :b, :c, :d, :e, :f, :g, :h, :i) "
             "ON CONFLICT (tenant_id) DO UPDATE SET "
             "  workflow_lock_schedule_on_start = EXCLUDED.workflow_lock_schedule_on_start, "
             "  workflow_post_arrival_event = EXCLUDED.workflow_post_arrival_event, "
@@ -118,7 +130,8 @@ def update_flags(
             "  workflow_require_hours_on_complete = EXCLUDED.workflow_require_hours_on_complete, "
             "  workflow_require_signature_on_complete = EXCLUDED.workflow_require_signature_on_complete, "
             "  workflow_require_invoice_on_complete = EXCLUDED.workflow_require_invoice_on_complete, "
-            "  closeout_billing_reconciliation = EXCLUDED.closeout_billing_reconciliation"
+            "  closeout_billing_reconciliation = EXCLUDED.closeout_billing_reconciliation, "
+            "  qb_money_pull_paused = EXCLUDED.qb_money_pull_paused"
         ),
         {
             "tid": str(tid),
@@ -130,6 +143,7 @@ def update_flags(
             "f": payload.require_signature_on_complete,
             "g": payload.require_invoice_on_complete,
             "h": payload.closeout_billing_reconciliation,
+            "i": payload.qb_money_pull_paused,
         },
     )
     db.commit()

@@ -447,6 +447,18 @@ class PaymentCreateIn(BaseModel):
     # cells rendered empty for every payment recorded via the UI.
     reference: str | None = Field(default=None, max_length=200)
 
+    @field_validator("date")
+    @classmethod
+    def _no_future_dates(cls, v: _datetime.date) -> _datetime.date:
+        # Backdating is the point (2026 QB-era corrections reach into 2025);
+        # forward-dating is not — a post-dated check isn't received cash.
+        # No slack needed: the client stamps the company-zone (America/
+        # Chicago) day, which is BEHIND UTC — it can never exceed the UTC
+        # day. Slack would only legalize genuine tomorrow-dating.
+        if v > datetime.now(UTC).date():
+            raise ValueError("payment date cannot be in the future")
+        return v
+
 
 @router.get("/summary", response_model=None, dependencies=[Depends(require_permission("invoices.read_all"))])
 def billing_summary(
@@ -1958,7 +1970,37 @@ def record_payment(
     db.add(payment)
     db.flush()
 
+    # Snapshot BEFORE the recalc: only the payment that flips the invoice to
+    # paid in THIS request may carry paid_at with it. Deriving from
+    # MAX(payment_date) instead would misfire on invoices settled by credit
+    # memos (paid with zero payments) or backdate to an old partial.
+    was_unpaid = invoice.paid_at is None
+    if payment.payment_date < datetime.now(UTC).date():
+        # QB phase-out sequencing breadcrumb: backfilling corrections while
+        # the QB money pull can still run risks a webhook pull re-stamping
+        # this very date. Warn, don't block — the pause is the office's
+        # rollout step, and the log is how a missed step surfaces in triage.
+        try:
+            from gdx_dispatch.core.settings_flags import qb_money_pull_paused
+            # Deliberately NOT the request session: a failed SELECT on the
+            # in-flight transaction would poison it (InFailedSqlTransaction
+            # on the next recalc) even with the exception swallowed. The
+            # reader's own short-lived session keeps the breadcrumb inert.
+            if not qb_money_pull_paused(invoice.company_id):
+                log.warning(
+                    "backdated_payment_with_qb_pull_active invoice=%s date=%s — "
+                    "flip the QB money-pull pause before backfilling",
+                    invoice.id, payment.payment_date,
+                )
+        except Exception:
+            log.exception("qb_pause_breadcrumb_check_failed")
     _recalculate_invoice(invoice, db)
+    if was_unpaid and invoice.paid_at is not None and payload.date < datetime.now(UTC).date():
+        # Backdated zeroing payment: paid_at follows the payment's day as a
+        # date-only stamp (UTC midnight) — the same "day known, minute not"
+        # convention QB sync writes and formatStampDate/isDateOnlyStamp
+        # render. Same-day payments keep the precise now() the recalc set.
+        invoice.paid_at = datetime.combine(payload.date, datetime.min.time(), tzinfo=UTC)
     # GL S6 (P3): the payment posts AFTER the recalc so a draft paid in full
     # posts P1 (auto-flip transition) before P3 in the same transaction —
     # negative AR is structurally impossible (spec §5.1/§5.3).
