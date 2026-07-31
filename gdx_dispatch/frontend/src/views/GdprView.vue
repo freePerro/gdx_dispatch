@@ -68,14 +68,14 @@
           {{ actionCopy }}
         </p>
         <p class="muted">
-          Type <strong>DELETE</strong> to confirm. This cannot be undone.
+          Type <strong>{{ confirmationExpected }}</strong> to confirm. This cannot be undone.
         </p>
         <div class="form-field">
           <label for="gdpr-confirm">Confirmation</label>
           <InputText
             id="gdpr-confirm"
             v-model="confirmationInput"
-            placeholder="Type DELETE to continue"
+            :placeholder="`Type ${confirmationExpected} to continue`"
           />
         </div>
         <template #footer>
@@ -134,7 +134,18 @@ const actionCopy = computed(() => {
     : `Mark ${name} as opted-out under CCPA.`;
 });
 
-const isConfirmationValid = computed(() => confirmationInput.value.trim().toUpperCase() === "DELETE");
+// Delete requires typing the customer's exact name — mirrored server-side
+// (409 on mismatch), so a stale dialog or scripted loop can't redact PII
+// with a generic token. Nameless customers fall back to the id, same as the
+// server. CCPA opt-out (reversible) keeps the generic DELETE gate.
+const confirmationExpected = computed(() => {
+  if (actionType.value !== "delete") return "DELETE";
+  const c = actionCustomer.value || {};
+  return (c.name || c.customer_name || "").trim() || c.id || "DELETE";
+});
+
+const isConfirmationValid = computed(() =>
+  confirmationInput.value.trim().toLowerCase() === String(confirmationExpected.value).trim().toLowerCase());
 
 async function loadCustomers() {
   loading.value = true;
@@ -172,7 +183,10 @@ async function confirmAction() {
     const endpoint = actionType.value === "delete"
       ? `/api/gdpr/delete-customer/${encodeURIComponent(id)}`
       : `/api/ccpa/opt-out/${encodeURIComponent(id)}`;
-    await api.post(endpoint, {}, {
+    const body = actionType.value === "delete"
+      ? { confirm_name: confirmationInput.value.trim() }
+      : {};
+    await api.post(endpoint, body, {
       successMessage: actionType.value === "delete" ? "Customer data deleted" : "Customer opted out",
     });
     await loadCustomers();

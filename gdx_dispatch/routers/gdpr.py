@@ -22,6 +22,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -336,6 +337,20 @@ def export_customer(
 # 3. Soft-delete + PII redaction — admin/owner only
 # ---------------------------------------------------------------------------
 
+class GdprDeleteIn(BaseModel):
+    """Server-enforced confirmation for the irreversible PII redaction.
+
+    On 2026-04-08, 12 customers were redacted in one sitting with no audit
+    trail — whether a script, a stale tab, or the auto-accepting confirm
+    dialog (issue #215), a client-side gate demonstrably wasn't enough.
+    The caller must echo the customer's exact current name; a bulk loop or
+    misfired dialog can't produce that without deliberately looking it up
+    per customer.
+    """
+
+    confirm_name: str
+
+
 @router.post(
     "/api/gdpr/delete-customer/{customer_id}",
     response_model=None,
@@ -343,6 +358,7 @@ def export_customer(
 )
 def delete_customer_gdpr(
     customer_id: UUID,
+    payload: GdprDeleteIn,
     request: Request,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -353,6 +369,18 @@ def delete_customer_gdpr(
     customer = _fetch_customer(db, cid, tenant_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Nameless customers (they exist — QB import artifacts) can't be
+    # name-confirmed; an empty-for-empty match would let a stray
+    # {"confirm_name": ""} redact every one of them. Fall back to the id.
+    expected = (customer.name or "").strip() or cid
+    if payload.confirm_name.strip().casefold() != expected.casefold():
+        raise HTTPException(
+            status_code=409,
+            detail="confirm_name does not match the customer's name — "
+            "redaction is irreversible and requires typing the exact name "
+            "(or the customer id when the name is blank)",
+        )
 
     now = datetime.now(timezone.utc)
     try:
