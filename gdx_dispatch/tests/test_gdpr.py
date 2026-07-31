@@ -23,6 +23,7 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models.tenant_models import Customer, Job, User
 from gdx_dispatch.routers.gdpr import (
+    GdprDeleteIn,
     ccpa_opt_out,
     delete_customer_gdpr,
     export_customer,
@@ -188,6 +189,7 @@ def test_delete_customer_redacts_pii(tenant_db_session):
 
     out = delete_customer_gdpr(
         customer_id=uuid.UUID(cid),
+        payload=GdprDeleteIn(confirm_name="Original Name"),
         request=_mock_request(),
         user=_mock_user(role="admin"),
         db=tenant_db_session,
@@ -218,11 +220,72 @@ def test_delete_customer_not_found(tenant_db_session):
     with pytest.raises(HTTPException) as exc:
         delete_customer_gdpr(
             customer_id=uuid.uuid4(),
+            payload=GdprDeleteIn(confirm_name="whoever"),
             request=_mock_request(),
             user=_mock_user(role="admin"),
             db=tenant_db_session,
         )
     assert exc.value.status_code == 404
+
+
+def test_delete_customer_wrong_confirm_name_409s_and_redacts_nothing(tenant_db_session):
+    cid = _seed_customer(tenant_db_session, name="Keep Me", email="keep@example.com")
+
+    with pytest.raises(HTTPException) as exc:
+        delete_customer_gdpr(
+            customer_id=uuid.UUID(cid),
+            payload=GdprDeleteIn(confirm_name="Someone Else"),
+            request=_mock_request(),
+            user=_mock_user(role="admin"),
+            db=tenant_db_session,
+        )
+    assert exc.value.status_code == 409
+
+    from sqlalchemy import select
+    row = tenant_db_session.execute(
+        select(Customer).where(Customer.id == uuid.UUID(cid))
+    ).scalar_one_or_none()
+    assert row.name == "Keep Me"
+    assert row.email == "keep@example.com"
+    assert row.deleted_at is None
+
+
+def test_delete_customer_confirm_name_is_case_and_space_tolerant(tenant_db_session):
+    cid = _seed_customer(tenant_db_session, name="Jane Doe")
+
+    out = delete_customer_gdpr(
+        customer_id=uuid.UUID(cid),
+        payload=GdprDeleteIn(confirm_name="  jane doe  "),
+        request=_mock_request(),
+        user=_mock_user(role="admin"),
+        db=tenant_db_session,
+    )
+    assert out["ok"] is True
+
+
+def test_delete_customer_blank_name_requires_id_not_empty_string(tenant_db_session):
+    # A customer with no name (QB import artifacts exist) must NOT be
+    # deletable via {"confirm_name": ""} — the id is the fallback token.
+    cid = _seed_customer(tenant_db_session, name="", email="noname@example.com")
+
+    with pytest.raises(HTTPException) as exc:
+        delete_customer_gdpr(
+            customer_id=uuid.UUID(cid),
+            payload=GdprDeleteIn(confirm_name=""),
+            request=_mock_request(),
+            user=_mock_user(role="admin"),
+            db=tenant_db_session,
+        )
+    assert exc.value.status_code == 409
+
+    out = delete_customer_gdpr(
+        customer_id=uuid.UUID(cid),
+        payload=GdprDeleteIn(confirm_name=cid),
+        request=_mock_request(),
+        user=_mock_user(role="admin"),
+        db=tenant_db_session,
+    )
+    assert out["ok"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +354,7 @@ def test_tenant_scope(tenant_db_session):
     with pytest.raises(HTTPException) as exc:
         delete_customer_gdpr(
             customer_id=uuid.UUID(cid_a),
+            payload=GdprDeleteIn(confirm_name="whoever"),
             request=_mock_request(tenant_id=TENANT_B),
             user=_mock_user(role="admin"),
             db=tenant_db_session,
