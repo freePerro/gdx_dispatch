@@ -44,10 +44,38 @@ log = logging.getLogger(__name__)
 DEPOSIT_CATEGORY = "Deposit"
 
 
+# Client-safe reasons for refusing a deposit, keyed by DepositError.code.
+# Responses must surface these constants via deposit_skip_reason(), never
+# str(exc) — exception text flowing into a response is flagged as
+# py/stack-trace-exposure, and the constant table keeps that guarantee even
+# if a future raise site wraps another exception's text.
+DEPOSIT_ERROR_MESSAGES: dict[str, str] = {
+    "no_customer": "estimate has no customer — a deposit invoice needs one",
+    "amount_not_positive": "deposit amount must be greater than zero",
+    "exceeds_estimate_total": "deposit exceeds the estimate total",
+}
+
+
 class DepositError(ValueError):
     """A deposit request that must not become an invoice (bad amount, no
     customer). Callers translate to a 4xx or a skipped-with-reason field —
-    never a 500, and never a failed acceptance."""
+    never a 500, and never a failed acceptance.
+
+    Constructed with a code from DEPOSIT_ERROR_MESSAGES; catch sites that
+    answer HTTP requests use deposit_skip_reason(exc), not str(exc)."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(DEPOSIT_ERROR_MESSAGES.get(code, code))
+
+
+def deposit_skip_reason(exc: DepositError) -> str:
+    """The constant client-facing message for a DepositError. The lookup by
+    code means the returned string always originates from the literal table
+    above, never from exception state."""
+    return DEPOSIT_ERROR_MESSAGES.get(
+        getattr(exc, "code", ""), "deposit request rejected"
+    )
 
 
 def _to_f(value) -> float:
@@ -121,10 +149,10 @@ def create_deposit_invoice(
         return existing
 
     if estimate.customer_id is None:
-        raise DepositError("estimate has no customer — a deposit invoice needs one")
+        raise DepositError("no_customer")
     amount_dec = _money(Decimal(str(amount or 0)))
     if amount_dec <= 0:
-        raise DepositError("deposit amount must be greater than zero")
+        raise DepositError("amount_not_positive")
 
     # Sanity cap: never invoice a deposit larger than the estimate itself.
     # compute_estimate_totals is the canonical total (tiers/discount/tax);
@@ -137,9 +165,13 @@ def create_deposit_invoice(
         log.exception("deposit_estimate_total_failed estimate=%s", estimate.id)
         est_total = _to_f(estimate.total)
     if est_total > 0 and float(amount_dec) > est_total + 0.005:
-        raise DepositError(
-            f"deposit ({float(amount_dec):.2f}) exceeds the estimate total ({est_total:.2f})"
+        # The amounts stay out of the message (constant table) but land in
+        # the log so the office can still see what was actually asked for.
+        log.info(
+            "deposit_exceeds_estimate estimate=%s deposit=%.2f total=%.2f",
+            estimate.id, float(amount_dec), est_total,
         )
+        raise DepositError("exceeds_estimate_total")
 
     now = datetime.now(UTC)
     company_id = str(tenant_id or estimate.company_id or "")

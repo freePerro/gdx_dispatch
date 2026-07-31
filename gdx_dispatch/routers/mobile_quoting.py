@@ -627,6 +627,7 @@ def accept_quote(
         from gdx_dispatch.modules.deposits import (
             DepositError,
             create_deposit_invoice,
+            deposit_skip_reason,
             deposit_summary,
         )
         from gdx_dispatch.modules.estimates_features import get_features
@@ -648,7 +649,7 @@ def accept_quote(
                 )
                 deposit_payload = deposit_summary(dep_inv)
             except DepositError as exc:
-                deposit_skipped = str(exc)
+                deposit_skipped = deposit_skip_reason(exc)
     except Exception:
         logging.getLogger(__name__).exception(
             "mobile_accept_deposit_failed estimate=%s", estimate.id
