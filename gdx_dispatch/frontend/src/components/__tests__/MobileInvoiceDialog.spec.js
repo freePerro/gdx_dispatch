@@ -21,6 +21,11 @@ vi.mock('../../composables/useApi', () => ({
 vi.mock('primevue/usetoast', () => ({
   useToast: () => ({ add: toastAdd }),
 }));
+// Deterministic tenant-zone day (and keeps the composable's /api/me/timezone
+// fetch out of the apiGet call-count assertions).
+vi.mock('../../composables/useTenantTimezone', () => ({
+  useTenantTimezone: () => ({ zonedDateKey: () => '2026-07-30' }),
+}));
 
 import MobileInvoiceDialog from '../MobileInvoiceDialog.vue';
 
@@ -98,10 +103,35 @@ describe('MobileInvoiceDialog — field payment capture', () => {
     const [url, payload, opts] = apiPostQueued.mock.calls[0];
     expect(url).toBe('/api/invoices/inv-1/payments');
     expect(payload).toMatchObject({ amount: 500, method: 'cash' });
-    expect(payload.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Tenant-zone capture day (mocked) — not a UTC slice.
+    expect(payload.date).toBe('2026-07-30');
     expect(opts.actionType).toBe('invoice.payment');
+    // Payment 409s are business refusals (void invoice, locked period) —
+    // the queue must surface them instead of filing them as synced.
+    expect(opts.conflictIsError).toBe(true);
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success' }));
     expect(apiGet).toHaveBeenCalledTimes(2); // initial + reload after payment
+  });
+
+  it('refused payment (409 business refusal) shows an error toast, not success', async () => {
+    const refusal = new Error('invoice is void — un-void it before recording a payment');
+    refusal.status = 409;
+    apiPostQueued.mockRejectedValueOnce(refusal);
+    const w = mountDialog();
+    await flushPromises();
+    await w.get('[data-testid="mid-open-pay"]').trigger('click');
+    await w.get('[data-testid="mid-pay-submit"]').trigger('click');
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'error',
+        summary: 'Could not record payment',
+        detail: 'invoice is void — un-void it before recording a payment',
+      })
+    );
+    expect(toastAdd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'success' })
+    );
   });
 
   it('offline (queued) payment shows the saved-offline warn toast', async () => {

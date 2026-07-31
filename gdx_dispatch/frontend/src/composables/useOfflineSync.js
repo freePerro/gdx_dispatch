@@ -66,6 +66,11 @@ export async function queueAction(method, url, body = null, opts = {}) {
     url,
     body,
     headers: opts.headers || {},
+    // Endpoints that use 409 for BUSINESS refusals (payments: void invoice,
+    // closed-out deposit, locked GL period) opt in here so the refusal is
+    // surfaced instead of being filed as "synced". Dedup of true replays is
+    // the Idempotency-Key middleware's job, and its replays are 2xx.
+    conflict_is_error: !!opts.conflictIsError,
     status: QUEUE_STATUS.PENDING,
     attempt_count: 0,
     last_error: null,
@@ -88,8 +93,9 @@ export async function queueAction(method, url, body = null, opts = {}) {
       // 4xx (validation/authz) is a real answer, not an outage: the row is
       // already marked FAILED and will never be replayed, so returning the
       // "queued" stub here would tell the caller a dead request was saved.
-      // Rethrow so the caller's error path runs. (409 never reaches here —
-      // _drainOne treats it as synced.)
+      // Rethrow so the caller's error path runs. (An unflagged 409 never
+      // reaches here — _drainOne treats it as synced; a conflict_is_error
+      // 409 throws like any other 4xx so the caller can show the refusal.)
       //
       // 401 is the exception: _drainOne left it PENDING to retry, so it is an
       // outage in disguise. Rethrowing would tell the tech "could not save"
@@ -184,8 +190,12 @@ async function _drainOne(entry) {
     throw netErr
   }
 
-  // 2xx OR 409 (server-side dedup detected the duplicate replay) → synced.
-  if (resp.ok || resp.status === 409) {
+  // 2xx OR 409 (assumed server-side dedup of a duplicate replay) → synced.
+  // EXCEPT entries flagged conflict_is_error: their endpoints 409 business
+  // refusals (e.g. payments against a void invoice or locked GL period) —
+  // filing those as synced showed "Payment recorded" for money the server
+  // refused. Flagged 409s fall through to the 4xx-failed branch below.
+  if (resp.ok || (resp.status === 409 && !entry.conflict_is_error)) {
     await db.sync_queue.update(entry.id, {
       status: QUEUE_STATUS.SYNCED,
       last_error: null,

@@ -820,6 +820,13 @@
                     <div class="muted">When a job is re-closed-out after it was already invoiced, surface it on the Billing page so the office can reconcile — instead of silently re-billing. OFF by default.</div>
                   </div>
                 </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                  <ToggleSwitch v-model="workflowFlags.qb_money_pull_paused" data-testid="wf-qb-pull-pause" />
+                  <div>
+                    <strong>Pause QuickBooks money pull (phase-out)</strong>
+                    <div class="muted">Stops QB→GDX invoice and payment syncs so payments entered in GDX can't be overwritten or duplicated by QuickBooks. Turn ON before backfilling payment corrections. Customer and item sync keep running.</div>
+                  </div>
+                </div>
                 <div>
                   <Button label="Save Workflow Settings" icon="pi pi-save" @click="saveWorkflowFlags" :loading="workflowSaving" data-testid="workflow-save" />
                 </div>
@@ -1881,6 +1888,7 @@ const workflowFlags = reactive({
   require_signature_on_complete: false,
   require_invoice_on_complete: false,
   closeout_billing_reconciliation: false,
+  qb_money_pull_paused: false,
 });
 const workflowSaving = ref(false);
 

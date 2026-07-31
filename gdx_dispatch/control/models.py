@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -200,6 +201,15 @@ class TenantSettings(Base):
     # completion is the normal shop flow; the daily follow-up loop chases
     # those. The flag exists for operators who invoice up-front.
     workflow_require_invoice_on_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # §12 closeout→billing reconciliation (migration 047). Added to the ORM
+    # after the fact — 047 shipped as migration-only and left this model
+    # behind, so every create_all()-built schema (tests included) lacked the
+    # column and the /api/workflow/flags surface was untestable-by-
+    # construction. Same drift trap as the plugin tables.
+    closeout_billing_reconciliation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # QB phase-out money-pull pause (migration 049) — blocks QB→GDX
+    # invoice/payment pulls while payment corrections are entered in GDX.
+    qb_money_pull_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_warn_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_block_save_no_tech: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     dispatch_show_unassigned_lane: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
@@ -230,5 +240,9 @@ class TenantSettings(Base):
     # new estimates whose per-estimate hide_line_prices is NULL render the
     # customer PDF/email with per-line prices hidden. Per-estimate override wins.
     estimates_hide_line_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+    # server_default mirrors prod (baseline: DEFAULT now() NOT NULL). Without
+    # it, the workflow router's raw-SQL seed INSERT — which bypasses ORM
+    # client defaults — works on prod but NOT-NULL-crashes on any
+    # create_all()-built schema, which is why this table was untestable.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow, server_default=func.now())

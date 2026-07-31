@@ -93,6 +93,26 @@ def _assert_money_pull_allowed(tenant_id: str, db: Session, operation: str) -> N
             "(credit memo, void, adjustment) and push it to QuickBooks instead."
         )
 
+    # QB phase-out pause (Doug 2026-07-30, payment-date plan): a standalone
+    # tenant_settings toggle that stops the money back-flow without the GL
+    # flag's side effects (period locks, overpayment gates). While payment
+    # corrections are entered in GDX, a webhook-triggered pull would re-stamp
+    # payment_date from QB on mapped rows and mint duplicates for anything
+    # double-entered — so the pause must land BEFORE the backfill starts.
+    from gdx_dispatch.core.settings_flags import qb_money_pull_paused  # noqa: PLC0415
+
+    if qb_money_pull_paused(tenant_id, db):
+        log.warning(
+            "qb_money_pull_blocked tenant=%s operation=%s — qb_money_pull_paused: "
+            "QB phase-out in progress; payments/invoices are entered in GDX.",
+            tenant_id, operation,
+        )
+        raise QBPullDisabledError(
+            f"QuickBooks {operation} pull is paused: QB phase-out — GDX is the "
+            "system of entry. Turn the pause off in Settings → Workflow if the "
+            "pull is genuinely needed."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

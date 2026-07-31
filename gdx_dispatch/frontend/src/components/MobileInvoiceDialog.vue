@@ -22,6 +22,7 @@ import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import { formatMoney } from '../composables/useFormatters'
+import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
 
 const props = defineProps({
@@ -31,6 +32,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'invoiced'])
 
 const api = useApi()
+const { zonedDateKey } = useTenantTimezone()
 const toast = useToast()
 
 const open = computed({
@@ -101,12 +103,16 @@ async function recordPayment(inv) {
       amount,
       method: payMethod.value,
       // Client-side date is deliberate: a payment collected offline must
-      // carry the day it was actually taken, not the replay day.
-      date: new Date().toISOString().slice(0, 10),
+      // carry the day it was actually taken, not the replay day. Tenant-zone
+      // day, not a UTC slice — toISOString() after ~7 PM Central is tomorrow.
+      date: zonedDateKey(new Date()),
       reference: payReference.value.trim() || null,
     }
     const r = await api.postQueued(`/api/invoices/${inv.id}/payments`, payload, {
       actionType: 'invoice.payment', resourceId: String(inv.id),
+      // A payments 409 is a business refusal (void invoice, closed-out
+      // deposit, locked GL period) — never a dedup verdict. Surface it.
+      conflictIsError: true,
     })
     if (r?.queued) {
       toast.add({
