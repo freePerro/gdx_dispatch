@@ -885,3 +885,237 @@ def put_schedule(
         raise HTTPException(status_code=422, detail=str(exc)) from None
     _audit(db, request, current_user, "bank_feeds_schedule_updated")
     return service.schedule_dict(row)
+
+
+# ── statement import (evidence layer — plan §5, audit §11) ─────────────
+#
+# Import is bank_feeds.manage; reads are bank_feeds.read. Every outcome of
+# an upload is a per-file structured result — a failed tie-out is a stored,
+# reportable object, not an HTTP error.
+
+from fastapi import File, UploadFile  # noqa: E402  (grouped with the section)
+
+from gdx_dispatch.modules.bank_feeds import statement_service  # noqa: E402
+from gdx_dispatch.modules.bank_feeds.statement_models import (  # noqa: E402
+    ACCOUNT_KINDS,
+    BankAccount,
+    BankStatementImport,
+    BankStatementLine,
+)
+
+
+def _account_out(account: BankAccount) -> dict:
+    return {
+        "id": str(account.id),
+        "name": account.name,
+        "kind": account.kind,
+        "institution": account.institution,
+        "last4": account.last4,
+        "statement_import_format": account.statement_import_format,
+    }
+
+
+def _import_out(imp: BankStatementImport, *, include_report: bool = False) -> dict:
+    out = {
+        "id": str(imp.id),
+        "bank_account_id": str(imp.bank_account_id),
+        "original_filename": imp.original_filename,
+        "period_start": imp.period_start.isoformat(),
+        "period_end": imp.period_end.isoformat(),
+        "beginning_balance_cents": imp.beginning_balance_cents,
+        "ending_balance_cents": imp.ending_balance_cents,
+        "deposits_count": imp.deposits_count,
+        "deposits_total_cents": imp.deposits_total_cents,
+        "debits_count": imp.debits_count,
+        "debits_total_cents": imp.debits_total_cents,
+        "service_charge_cents": imp.service_charge_cents,
+        "interest_cents": imp.interest_cents,
+        "tie_out_status": imp.tie_out_status,
+        "lines_added": imp.lines_added,
+        "lines_deduped": imp.lines_deduped,
+        "voided_at": imp.voided_at.isoformat() if imp.voided_at else None,
+        "created_at": imp.created_at.isoformat() if imp.created_at else None,
+    }
+    if include_report:
+        out["tie_out_report"] = imp.tie_out_report
+    return out
+
+
+@router.get("/statements/accounts", dependencies=[_MODULE])
+def list_statement_accounts(
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    rows = db.scalars(select(BankAccount).order_by(BankAccount.created_at)).all()
+    return {"items": [_account_out(a) for a in rows]}
+
+
+class StatementAccountPatch(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+
+
+@router.patch("/statements/accounts/{account_id}", dependencies=[_MODULE])
+def patch_statement_account(
+    account_id: str,
+    body: StatementAccountPatch,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        account = db.get(BankAccount, UUID(str(account_id)))
+    except ValueError:
+        account = None
+    if account is None:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name must not be empty")
+        account.name = name[:120]
+    if body.kind is not None:
+        if body.kind not in ACCOUNT_KINDS:
+            raise HTTPException(status_code=422, detail=f"kind must be one of {ACCOUNT_KINDS}")
+        account.kind = body.kind
+    db.commit()
+    _audit(db, request, current_user, "bank_statement_account_updated", str(account.id))
+    return _account_out(account)
+
+
+@router.post("/statements/import", dependencies=[_MODULE])
+def import_statements(
+    request: FastAPIRequest,
+    files: list[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not files:
+        raise HTTPException(status_code=422, detail="no files uploaded")
+    user_id = str(current_user.get("sub") or current_user.get("user_id") or "")[:64] or None
+    results = []
+    for upload in files:
+        pdf_bytes = upload.file.read()
+        result = statement_service.import_statement(
+            db, pdf_bytes, upload.filename or "statement.pdf", imported_by=user_id
+        )
+        if result.get("import_id"):
+            _audit(db, request, current_user,
+                   f"bank_statement_import_{result['status']}", result["import_id"])
+        results.append(result)
+    return {"results": results}
+
+
+@router.get("/statements/imports", dependencies=[_MODULE])
+def list_statement_imports(
+    account_id: str | None = None,
+    include_voided: bool = False,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    query = select(BankStatementImport).order_by(
+        BankStatementImport.period_start.desc(), BankStatementImport.created_at.desc()
+    )
+    if account_id:
+        try:
+            query = query.where(BankStatementImport.bank_account_id == UUID(str(account_id)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid account_id") from None
+    if not include_voided:
+        query = query.where(BankStatementImport.voided_at.is_(None))
+    rows = db.scalars(query).all()
+    return {"items": [_import_out(i) for i in rows]}
+
+
+def _load_statement_import(db: Session, import_id: str) -> BankStatementImport:
+    try:
+        imp = db.get(BankStatementImport, UUID(str(import_id)))
+    except ValueError:
+        imp = None
+    if imp is None:
+        raise HTTPException(status_code=404, detail="Statement import not found")
+    return imp
+
+
+@router.get("/statements/imports/{import_id}", dependencies=[_MODULE])
+def get_statement_import(
+    import_id: str,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _import_out(_load_statement_import(db, import_id), include_report=True)
+
+
+@router.post("/statements/imports/{import_id}/void", dependencies=[_MODULE])
+def void_statement_import(
+    import_id: str,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    db: Session = Depends(get_db),
+) -> dict:
+    imp = _load_statement_import(db, import_id)
+    result = statement_service.void_import(db, imp)
+    if result["status"] == "voided":
+        _audit(db, request, current_user, "bank_statement_import_voided", str(imp.id))
+    return result
+
+
+@router.get("/statements/lines", dependencies=[_MODULE])
+def list_statement_lines(
+    account_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    section: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    query = select(BankStatementLine)
+    count_query = select(func.count(BankStatementLine.id))
+    conditions = []
+    if account_id:
+        try:
+            conditions.append(BankStatementLine.bank_account_id == UUID(str(account_id)))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid account_id") from None
+    if date_from:
+        conditions.append(BankStatementLine.txn_date >= date_from)
+    if date_to:
+        conditions.append(BankStatementLine.txn_date <= date_to)
+    if section:
+        conditions.append(BankStatementLine.section == section)
+    if q:
+        conditions.append(BankStatementLine.description.ilike(f"%{q}%"))
+    for cond in conditions:
+        query = query.where(cond)
+        count_query = count_query.where(cond)
+    total = db.scalar(count_query) or 0
+    rows = db.scalars(
+        query.order_by(BankStatementLine.txn_date, BankStatementLine.created_at)
+        .limit(limit).offset(offset)
+    ).all()
+    return {
+        "items": [
+            {
+                "id": str(l.id),
+                "bank_account_id": str(l.bank_account_id),
+                "import_id": str(l.import_id),
+                "txn_date": l.txn_date.isoformat(),
+                "amount_cents": l.amount_cents,
+                "description": l.description,
+                "section": l.section,
+                "check_number": l.check_number,
+            }
+            for l in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
