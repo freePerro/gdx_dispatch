@@ -23,6 +23,7 @@ from gdx_dispatch.modules.deposits import (
     DepositError,
     adopt_orphan_deposit_invoices,
     create_deposit_invoice,
+    deposit_skip_reason,
     deposit_summary,
     find_deposit_invoice_for_estimate,
 )
@@ -1837,7 +1838,7 @@ def request_deposit_invoice(
             source="office_request",
         )
     except DepositError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=deposit_skip_reason(exc)) from exc
     out = deposit_summary(dep_inv)
     out["existing"] = False
     return out
@@ -1927,7 +1928,7 @@ def accept_estimate(
             )
             deposit_info = deposit_summary(dep_inv)
         except DepositError as exc:
-            deposit_skipped = str(exc)
+            deposit_skipped = deposit_skip_reason(exc)
         except Exception:
             logging.getLogger(__name__).exception(
                 "deposit_invoice_failed_on_accept estimate=%s", estimate.id

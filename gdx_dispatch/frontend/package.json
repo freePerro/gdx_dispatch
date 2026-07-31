@@ -24,7 +24,7 @@
     "@sentry/vue": "^10.47.0",
     "chart.js": "^4.5.1",
     "dexie": "^4.4.2",
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.12",
     "driver.js": "^1.4.0",
     "fake-indexeddb": "^6.2.5",
     "markdown-it": "^14.2.0",
@@ -48,11 +48,12 @@
     "vitest": "^4.1.4"
   },
   "overrides": {
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.0",
     "ws": "^8.21.0",
-    "shell-quote": "^1.8.4",
+    "shell-quote": "^1.9.0",
     "js-cookie": "^3.0.7",
     "esbuild": "^0.28.1",
-    "launch-editor": "^2.14.1"
+    "launch-editor": "^2.14.1",
+    "linkify-it": "^5.0.2"
   }
 }
