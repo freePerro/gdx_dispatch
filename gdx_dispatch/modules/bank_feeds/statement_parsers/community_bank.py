@@ -72,6 +72,18 @@ class StatementStructureError(StatementParseError):
 
 
 @dataclass
+class CaptionEntry:
+    """One check-image caption from the trailing images page(s):
+    ``Check: N Amount: $X Date: M/D/YYYY``. ``check_no`` "0" = a deposit
+    ticket (the bank's virtual BUSINESS DEPOSIT document); nonzero = a
+    written check. Captions carry FULL dates (unlike transaction rows)."""
+
+    check_no: str
+    amount_cents: int
+    caption_date: date
+
+
+@dataclass
 class ParsedTxn:
     txn_date: date
     amount_cents: int          # signed; negative = money out
@@ -98,6 +110,11 @@ class ParsedStatement:
     interest_cents: int
     lines: list[ParsedTxn] = field(default_factory=list)
     daily_balances: list[tuple[date, int]] = field(default_factory=list)
+    # Image captions in reading order (see CaptionEntry). NOT transactions —
+    # they duplicate deposits/checks already listed — and they never enter
+    # the tie-out arithmetic; they exist to pair extracted check/slip
+    # images to evidence lines.
+    captions: list[CaptionEntry] = field(default_factory=list)
     # ACCOUNT SERVICE CHARGE detail rows (fee breakdown; NOT evidence lines —
     # the -SC row in the debits section is the charge; this only cross-checks).
     service_charge_detail_cents: int = 0
@@ -156,7 +173,6 @@ _SKIP = (
     re.compile(r"^\s*Notice: See reverse side"),
     re.compile(r"Member FDIC\s*$"),
     re.compile(r"^\s*Page\s+\d+\s+of\s+\d+\s*$"),
-    re.compile(r"^\s*Check:\s*\d+\s+Amount:"),                     # caption page
     re.compile(r"^\s*\* Denotes missing check numbers"),
     # Fees block — pypdf may emit it repeatedly (overlapping draws).
     re.compile(r"^\s*Total For\b|^\s*This Period\b"),
@@ -171,6 +187,15 @@ _SKIP = (
 _PAGE_HEADER = re.compile(r"Date\s+\d{1,2}/\d{1,2}/\d{2}\s+Page\s+\d+")
 
 _INTEREST_DEPOSIT_DESC = re.compile(r"^interest deposit$", re.IGNORECASE)
+
+# Image-page caption: "Check: N Amount: $X Date: M/D/YYYY", up to three per
+# line. Full dates, unlike transaction rows. Parsed (not skipped) so the
+# extracted check/slip images can be paired to evidence lines; NEVER counted
+# as transactions.
+_CAPTION = re.compile(
+    r"Check:\s*(?P<check_no>\d+)\s+Amount:\s*\$(?P<amt>[\d,]+\.\d{2})\s+"
+    r"Date:\s*(?P<date>\d{1,2}/\d{1,2}/\d{4})"
+)
 
 
 def _cents(s: str) -> int:
@@ -221,6 +246,59 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
 
 def parse_statement_pdf(pdf_bytes: bytes) -> ParsedStatement:
     return parse_statement_text(extract_pdf_text(pdf_bytes))
+
+
+# Empirically verified against the real corpus: caption pages carry one
+# scanned document per caption (deposit tickets ~1312×600, written checks
+# ~1200×550) plus blank filler pages (~1020×1320, pure white) and the small
+# repeated bank logo (<500px wide). Blank + logo are furniture.
+_MIN_IMAGE_WIDTH = 500
+
+
+def extract_caption_images(pdf_bytes: bytes) -> list:
+    """Extract the check/deposit-ticket scans from the trailing images
+    page(s), as PIL images in caption order. Pages qualify by containing
+    caption text; furniture (logo, blank backs) is filtered by width and
+    blankness. Returns [] when the statement has no images page (savings).
+
+    NOTE: these scans show full account numbers and signatures — callers
+    must store them under the private uploads tree only, never anywhere
+    public.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception as exc:  # noqa: BLE001
+        raise StatementParseError(f"could not read PDF: {exc}") from exc
+
+    images = []
+    for page in reader.pages:
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:  # noqa: BLE001
+            page_text = ""
+        if not _CAPTION.search(page_text):
+            continue
+        for pdf_image in page.images:
+            try:
+                pil = pdf_image.image
+            except Exception:  # noqa: BLE001 — undecodable codec (e.g. JBIG2)
+                continue
+            if pil is None or pil.width < _MIN_IMAGE_WIDTH:
+                continue
+            # Alpha-flatten onto white BEFORE the blankness check: a blank
+            # RGBA filler converts to L with black transparent pixels and
+            # would sneak past a bare extrema test (PR-2 audit finding).
+            if pil.mode in ("RGBA", "LA", "PA"):
+                from PIL import Image as _Image
+
+                flat = _Image.new("RGB", pil.size, (255, 255, 255))
+                flat.paste(pil.convert("RGBA"), mask=pil.convert("RGBA").split()[-1])
+                pil = flat
+            lo, _hi = pil.convert("L").getextrema()
+            if lo >= 250:  # pure-white filler page
+                continue
+            images.append(pil)
+    return images
 
 
 def parse_statement_text(text: str) -> ParsedStatement:  # noqa: C901
@@ -297,6 +375,16 @@ def parse_statement_text(text: str) -> ParsedStatement:  # noqa: C901
             in_page_header = True
             continue
         if not stripped:
+            continue
+        if "Check:" in line and (caption_hits := _CAPTION.findall(line)):
+            for check_no, amt, full_date in caption_hits:
+                try:
+                    cap_date = datetime.strptime(full_date, "%m/%d/%Y").date()
+                except ValueError as exc:
+                    raise StatementStructureError(f"bad caption date {full_date!r}") from exc
+                parsed.captions.append(
+                    CaptionEntry(check_no=check_no, amount_cents=_cents(amt), caption_date=cap_date)
+                )
             continue
         if any(p.search(line) for p in _SKIP):
             continue

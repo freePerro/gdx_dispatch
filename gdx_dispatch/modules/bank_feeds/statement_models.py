@@ -208,6 +208,39 @@ class BankStatementLine(TenantBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class BankStatementLineImage(TenantBase):
+    """A check or deposit-ticket scan extracted from a statement's images
+    page, paired to its evidence line via the page's caption (amount +
+    full date + check number). ``line_id`` is NULL when pairing couldn't
+    be established (caption/image count mismatch, or no matching line) —
+    the scan still lands in the import's gallery rather than being lost.
+
+    The scans show full account numbers and signatures: files live under
+    the private uploads tree and are served ONLY through the path-guarded,
+    permission-gated download endpoint.
+
+    Deleted when their import is voided (unlike evidence lines, images
+    belong to the import that extracted them; a co-attesting overlap
+    import contributes its own rows).
+    """
+
+    __tablename__ = "bank_statement_line_images"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    import_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_statement_imports.id"), nullable=False, index=True
+    )
+    line_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_statement_lines.id"), nullable=True, index=True
+    )
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    caption_check_no: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    caption_amount_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    caption_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class BankStatementLineSource(TenantBase):
     """Attestation: import X vouches for line Y.
 

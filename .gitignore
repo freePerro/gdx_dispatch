@@ -136,3 +136,4 @@ backups/
 
 # Verification-gate artifact (local commit/push gate; not source)
 /VERIFICATION_MANIFEST.md
+uploads/
