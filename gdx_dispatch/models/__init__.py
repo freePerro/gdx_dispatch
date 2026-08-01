@@ -290,6 +290,9 @@ try:
     # import↔line attestations. Migration 050 mirrors these (IF NOT EXISTS).
     from gdx_dispatch.modules.bank_feeds.statement_models import (  # noqa: F401
         BankAccount,
+        BankMatch,
+        BankMatchExternal,
+        BankMatchLine,
         BankStatementImport,
         BankStatementLine,
         BankStatementLineImage,
