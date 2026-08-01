@@ -620,7 +620,7 @@ def test_images_pair_to_lines_via_captions(svc, monkeypatch):
 
     images = svc.query(BankStatementLineImage).order_by(BankStatementLineImage.sort_order).all()
     assert len(images) == 3
-    lines_by_id = {l.id: l for l in svc.query(BankStatementLine).all()}
+    lines_by_id = {line.id: line for line in svc.query(BankStatementLine).all()}
     deposit = lines_by_id[images[0].line_id]
     assert deposit.section == SECTION_DEPOSIT and deposit.amount_cents == 50_000
     check_1062 = lines_by_id[images[1].line_id]
@@ -694,6 +694,6 @@ def test_image_endpoints_and_path_guard(svc, monkeypatch):
         account_id=account_id, date_from=None, date_to=None, section=None,
         q=None, limit=100, offset=0, _perm=None, db=svc,
     )
-    with_images = [l for l in lines["items"] if l["image_ids"]]
+    with_images = [line for line in lines["items"] if line["image_ids"]]
     assert len(with_images) == 3  # the $500 deposit ticket + checks 1062/1083
-    assert {l["section"] for l in with_images} == {SECTION_DEPOSIT, SECTION_CHECK}
+    assert {line["section"] for line in with_images} == {SECTION_DEPOSIT, SECTION_CHECK}

@@ -41,12 +41,15 @@ the parser", which is a defect and must stay loud.
 from __future__ import annotations
 
 import io
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 
 from pypdf import PdfReader
+
+log = logging.getLogger(__name__)
 
 PARSER_NAME = "community_bank_v1"
 
@@ -282,6 +285,7 @@ def extract_caption_images(pdf_bytes: bytes) -> list:
             try:
                 pil = pdf_image.image
             except Exception:  # noqa: BLE001 — undecodable codec (e.g. JBIG2)
+                log.debug("skipping undecodable statement image", exc_info=True)
                 continue
             if pil is None or pil.width < _MIN_IMAGE_WIDTH:
                 continue

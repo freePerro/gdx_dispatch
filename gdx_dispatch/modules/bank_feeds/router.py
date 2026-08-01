@@ -1110,23 +1110,23 @@ def list_statement_lines(
     image_ids: dict = {}
     if rows:
         for img in db.scalars(
-            select(_Img).where(_Img.line_id.in_([l.id for l in rows])).order_by(_Img.sort_order)
+            select(_Img).where(_Img.line_id.in_([row.id for row in rows])).order_by(_Img.sort_order)
         ).all():
             image_ids.setdefault(img.line_id, []).append(str(img.id))
     return {
         "items": [
             {
-                "id": str(l.id),
-                "bank_account_id": str(l.bank_account_id),
-                "import_id": str(l.import_id),
-                "txn_date": l.txn_date.isoformat(),
-                "amount_cents": l.amount_cents,
-                "description": l.description,
-                "section": l.section,
-                "check_number": l.check_number,
-                "image_ids": image_ids.get(l.id, []),
+                "id": str(line.id),
+                "bank_account_id": str(line.bank_account_id),
+                "import_id": str(line.import_id),
+                "txn_date": line.txn_date.isoformat(),
+                "amount_cents": line.amount_cents,
+                "description": line.description,
+                "section": line.section,
+                "check_number": line.check_number,
+                "image_ids": image_ids.get(line.id, []),
             }
-            for l in rows
+            for line in rows
         ],
         "total": total,
         "limit": limit,
@@ -1209,7 +1209,7 @@ from gdx_dispatch.modules.bank_feeds.statement_models import (  # noqa: E402
 )
 
 
-def _load_bank_account(db: Session, account_id: str) -> "BankAccount":
+def _load_bank_account(db: Session, account_id: str) -> BankAccount:
     try:
         account = db.get(BankAccount, UUID(str(account_id)))
     except ValueError:
@@ -1302,15 +1302,13 @@ def list_matches(
     items = [_match_out(db, m) for m in matches]
     if date_from or date_to:
         def in_range(m):
-            dates = [l["txn_date"] for l in m["lines"]]
+            dates = [entry["txn_date"] for entry in m["lines"]]
             if not dates:
                 return True
             lo, hi = min(dates), max(dates)
             if date_from and hi < date_from.isoformat():
                 return False
-            if date_to and lo > date_to.isoformat():
-                return False
-            return True
+            return not (date_to and lo > date_to.isoformat())
         items = [m for m in items if in_range(m)]
     return {"items": items}
 

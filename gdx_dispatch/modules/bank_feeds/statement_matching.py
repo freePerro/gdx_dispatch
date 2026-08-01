@@ -157,7 +157,7 @@ def _new_match(db: Session, account: BankAccount, rule: str, *, lines,
                externals=(), classification=None, confidence=None, note=None,
                rejected_signatures=None) -> BankMatch | None:
     if rejected_signatures is not None:
-        signature = (frozenset(l.id for l in lines), frozenset(externals))
+        signature = (frozenset(line.id for line in lines), frozenset(externals))
         if signature in rejected_signatures:
             return None
     match = BankMatch(
@@ -261,8 +261,8 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
             stats["classified"] += 1
     lines = remaining
 
-    deposits = [l for l in lines if l.section == SECTION_DEPOSIT]
-    debits = [l for l in lines if l.section in (SECTION_DEBIT, SECTION_CHECK)]
+    deposits = [line for line in lines if line.section == SECTION_DEPOSIT]
+    debits = [line for line in lines if line.section in (SECTION_DEBIT, SECTION_CHECK)]
 
     # ── R2 deposits: exact 1:1, bipartite degree 1 on both sides ───────
     window_lo = date_from - timedelta(days=R3_WINDOW_BACK_DAYS)
@@ -284,7 +284,7 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
                 and _cents(p.amount) == line.amount_cents
                 and _business_days_apart(p.payment_date, line.txn_date) <= R2_BUSINESS_DAYS]
 
-    line_to_payments = {l.id: r2_candidates(l) for l in deposits}
+    line_to_payments = {line.id: r2_candidates(line) for line in deposits}
 
     # The payment side of the degree check must see competitors the request
     # window (and this account) can't: a same-amount deposit a few days
@@ -294,14 +294,14 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
     # over the padded window.
     pad = timedelta(days=R3_WINDOW_BACK_DAYS)
     competitor_deposits = [
-        l for l in db.scalars(
+        line for line in db.scalars(
             select(BankStatementLine).where(
                 BankStatementLine.section == SECTION_DEPOSIT,
                 BankStatementLine.txn_date >= date_from - pad,
                 BankStatementLine.txn_date <= date_to + pad,
             )
         ).all()
-        if l.id not in matched_lines and not _is_transfer(l)
+        if line.id not in matched_lines and not _is_transfer(line)
     ]
     payment_to_lines: dict = {}
     for line in competitor_deposits:
@@ -426,7 +426,7 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
                 continue
         stats["unmatched"] += 1
 
-    stats["unmatched"] += sum(1 for l in still_open_deposits if l.id not in r3_matched_line_ids)
+    stats["unmatched"] += sum(1 for line in still_open_deposits if line.id not in r3_matched_line_ids)
     try:
         db.commit()
     except Exception as exc:  # noqa: BLE001 — IntegrityError from a concurrent writer
@@ -508,7 +508,7 @@ def create_manual_match(
         external_cents += _cents(amount or 0)
         validated.append((source_table, source_id))
 
-    line_cents = sum(abs(l.amount_cents) for l in lines)
+    line_cents = sum(abs(line.amount_cents) for line in lines)
     imbalance = line_cents - external_cents if validated else 0
     full_note = note or ""
     if validated and imbalance != 0:
@@ -531,7 +531,7 @@ def create_manual_match(
     return match
 
 
-def _dead_external_reason(db: Session, ext: "BankMatchExternal") -> str | None:
+def _dead_external_reason(db: Session, ext: BankMatchExternal) -> str | None:
     """Why a confirmed match's books record no longer counts: voided,
     soft-deleted, void-status, or hard-deleted (no FK on source_id — a
     GDPR purge leaves a dangling reference)."""
@@ -647,11 +647,11 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
             "has_suggestion": line.id in suggested_line_ids,
         }
 
-    unmatched_deposits = [line_out(l) for l in lines
-                          if l.section == SECTION_DEPOSIT and l.id not in confirmed_line_ids]
-    unmatched_debits = [line_out(l) for l in lines
-                        if l.section in (SECTION_DEBIT, SECTION_CHECK)
-                        and l.id not in confirmed_line_ids]
+    unmatched_deposits = [line_out(line) for line in lines
+                          if line.section == SECTION_DEPOSIT and line.id not in confirmed_line_ids]
+    unmatched_debits = [line_out(line) for line in lines
+                        if line.section in (SECTION_DEBIT, SECTION_CHECK)
+                        and line.id not in confirmed_line_ids]
 
     # Books side: payments in range never confirmed against ANY line, on
     # ANY account — settlement is deliberately bank-wide, not per-account:
@@ -714,10 +714,10 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
     for match in confirmed_matches:
         match_lines = [db.get(BankStatementLine, ml.line_id) for ml in db.scalars(
             select(BankMatchLine).where(BankMatchLine.match_id == match.id)).all()]
-        match_lines = [l for l in match_lines if l and date_from <= l.txn_date <= date_to]
+        match_lines = [line for line in match_lines if line and date_from <= line.txn_date <= date_to]
         if not match_lines:
             continue
-        bank_date = min(l.txn_date for l in match_lines)
+        bank_date = min(line.txn_date for line in match_lines)
         dead_externals = []
         for ext in db.scalars(
                 select(BankMatchExternal).where(BankMatchExternal.match_id == match.id)).all():
@@ -746,7 +746,7 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
             broken_matches.append({
                 "match_id": str(match.id),
                 "rule": match.rule,
-                "lines": [line_out(l) for l in match_lines],
+                "lines": [line_out(line) for line in match_lines],
                 "dead_externals": dead_externals,
             })
 
@@ -755,10 +755,10 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
         "payments_scope": "bank_wide",
         "broken_matches": broken_matches,
         "unmatched_deposits": unmatched_deposits,
-        "unmatched_deposits_total_cents": sum(l["amount_cents"] for l in unmatched_deposits),
+        "unmatched_deposits_total_cents": sum(line["amount_cents"] for line in unmatched_deposits),
         "unmatched_payments": unmatched_payments,
         "unmatched_payments_total_cents": sum(p["amount_cents"] for p in unmatched_payments),
         "date_drift": drift,
         "unmatched_debits": unmatched_debits,
-        "unmatched_debits_total_cents": sum(-l["amount_cents"] for l in unmatched_debits),
+        "unmatched_debits_total_cents": sum(-line["amount_cents"] for line in unmatched_debits),
     }

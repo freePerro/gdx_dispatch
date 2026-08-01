@@ -78,8 +78,8 @@ def run_matcher(db, account):
 
 
 def match_for_line(db, description_fragment):
-    line = next(l for l in db.query(BankStatementLine).all()
-                if description_fragment in l.description)
+    line = next(line for line in db.query(BankStatementLine).all()
+                if description_fragment in line.description)
     child = db.query(BankMatchLine).filter(
         BankMatchLine.line_id == line.id,
         BankMatchLine.match_status != MATCH_REJECTED).first()
@@ -214,7 +214,7 @@ def test_lifecycle_and_rerun_stability(world):
 def test_manual_match_validates_and_confirms(world):
     db, account = world
     payment = make_payment(db, 480.00, date(2026, 6, 1))
-    line = next(l for l in db.query(BankStatementLine).all() if "Deposit/Credit" in l.description)
+    line = next(line for line in db.query(BankStatementLine).all() if "Deposit/Credit" in line.description)
 
     match = statement_matching.create_manual_match(
         db, account, [line.id], [("payments", payment.id)], None, "office says so", "tester")
@@ -226,7 +226,7 @@ def test_manual_match_validates_and_confirms(world):
     with pytest.raises(ValueError, match="already belongs"):
         statement_matching.create_manual_match(
             db, account, [line.id], [("payments", other.id)], None, None, "tester")
-    check_line = next(l for l in db.query(BankStatementLine).all() if l.check_number == "1062")
+    check_line = next(line for line in db.query(BankStatementLine).all() if line.check_number == "1062")
     with pytest.raises(ValueError, match="already matched"):
         statement_matching.create_manual_match(
             db, account, [check_line.id], [("payments", payment.id)], None, None, "tester")
@@ -278,8 +278,8 @@ def test_manual_candidates_shape(world):
     db, account = world
     make_payment(db, 123.00, date(2026, 6, 5))
     make_expense(db, 55.00, date(2026, 6, 4))
-    deposit = next(l for l in db.query(BankStatementLine).all() if "Deposit/Credit" in l.description)
-    debit = next(l for l in db.query(BankStatementLine).all() if "DBT CRD 1100" in l.description)
+    deposit = next(line for line in db.query(BankStatementLine).all() if "Deposit/Credit" in line.description)
+    debit = next(line for line in db.query(BankStatementLine).all() if "DBT CRD 1100" in line.description)
 
     deposit_candidates = statement_matching.manual_candidates(db, deposit)
     assert len(deposit_candidates["payments"]) == 1
@@ -320,7 +320,7 @@ def test_vendor_invoice_rung_refuses_shared_bill(world):
     # side: checks 1062 ($75) and nothing else at 75 — so use two bills
     # instead to prove external-side refusal, and line-side via expenses
     # below. Here: one bill matching the unique $100 line MUST still match.
-    bill = make_vendor_invoice(db, 100.00, date(2026, 6, 3))
+    make_vendor_invoice(db, 100.00, date(2026, 6, 3))
     stats = run_matcher(db, account)
     assert stats["r2_vendor_invoices"] == 1
 
@@ -385,10 +385,8 @@ def test_expense_rung_refuses_two_lines_one_expense(world):
     # equal to TWO lines' amount. Fixture has single $25 and single $100 —
     # so make expense match the $75 check AND the... amounts are unique in
     # the fixture. Reuse the twins statement for a true repro.
-    text = checking_text()
-    result_lines = db.query(BankStatementLine).count()
-    assert result_lines  # fixture imported by `world`
-    expense = make_expense(db, 25.00, date(2026, 6, 15))
+    assert db.query(BankStatementLine).count()  # fixture imported by `world`
+    make_expense(db, 25.00, date(2026, 6, 15))
     stats = run_matcher(db, account)
     assert stats["r2_expenses"] == 1  # unique: fine
 
@@ -484,7 +482,7 @@ def test_manual_match_children_commit_confirmed_and_settle_reports(world):
     the DB, the reports must settle, and void must refuse."""
     db, account = world
     payment = make_payment(db, 500.00, date(2026, 6, 1))
-    line = next(l for l in db.query(BankStatementLine).all() if "Deposit/Credit" in l.description)
+    line = next(line for line in db.query(BankStatementLine).all() if "Deposit/Credit" in line.description)
     statement_matching.create_manual_match(
         db, account, [line.id], [("payments", payment.id)], None, None, "tester")
     db.expire_all()  # read committed DB state, not session cache
