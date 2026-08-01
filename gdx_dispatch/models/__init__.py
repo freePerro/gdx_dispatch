@@ -285,6 +285,18 @@ try:
 except ImportError:
     pass
 try:
+    # 2026-07-31 — Bank statement evidence layer (GL Phase 2 reserved tables):
+    # account registry, import batches, append-only statement lines,
+    # import↔line attestations. Migration 050 mirrors these (IF NOT EXISTS).
+    from gdx_dispatch.modules.bank_feeds.statement_models import (  # noqa: F401
+        BankAccount,
+        BankStatementImport,
+        BankStatementLine,
+        BankStatementLineSource,
+    )
+except ImportError:
+    pass
+try:
     from gdx_dispatch.routers.change_orders import ChangeOrder  # noqa: F401
 except ImportError:
     pass
