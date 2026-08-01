@@ -1,6 +1,6 @@
 # Bank Statement Import + Verification — Plan
 
-**Status:** IN PROGRESS — branch `feat/bank-statement-import`; evidence tables + migration 050 built
+**Status:** IN PROGRESS — PR 1 (evidence layer) = PR #254; PR 2 (import UI + check/deposit-ticket images) built on `feat/bank-statement-import-ui`, browser-verified against the full real corpus
 **Date:** 2026-07-31 (revised same day after adversarial audit — see §11)
 **Purpose:** Import monthly bank statements (PDF) into GDX as an evidence layer, and use them to *verify that recorded information is correct* — payments, expenses, vendor bill payments — against what actually hit the bank.
 
@@ -139,9 +139,18 @@ Matches never mutate the matched records; confirming/rejecting is metadata-only 
 ## 7. UI
 
 Extend `BankFeedsView.vue`:
-- **Statements tab** gains an **Import** action (multi-file upload) and shows imported statements alongside Banno-fetched documents, with tie-out badges (✓ passed / ✗ failed with report drill-down).
+- **Statements tab** (BUILT, PR 2): an **Import statement PDFs** action (multi-file upload) and an "Imported statements" table above the Banno-fetched documents — tie-out badges (✓ passed / ✗ failed), lines added/deduped, details dialog with the full check report, continuity warnings, and the paired **check/deposit-ticket image gallery** (scans fetched as authenticated blobs — they show full account numbers and are never plain URLs). Void uses a local confirm Dialog on purpose — `useDestructiveConfirm` can auto-accept without rendering (issue #215).
 - New **Reconcile tab** (Phase B): per-account period picker → statement lines with match status, suggestion confirm/reject, the four verification reports, deposit-grouping UI for R3 manual cases.
 - Nav/module: enable the `bank_feeds` module grant at ship time; permissions `bank_feeds.read` (view) / `bank_feeds.manage` (import, void) / match-confirm under `accounting.write`.
+
+**Deploy step — enabling the module grant** (the surface is dark until this runs; the `bootstrap_modules_for_tenant.py` tool referenced in `core/modules.py:186` does not exist in the repo, so the grant is a one-row SQL insert on the tenant DB, verified working during PR 2 browser acceptance):
+
+```sql
+INSERT INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
+SELECT gen_random_uuid(), '<company-id>', 'bank_feeds', now(), now()
+WHERE NOT EXISTS (SELECT 1 FROM company_module_grants
+                  WHERE company_id = '<company-id>' AND module_key = 'bank_feeds');
+```
 
 ## 8. Testing & acceptance
 
@@ -156,7 +165,7 @@ Extend `BankFeedsView.vue`:
 ## 9. Delivery slices
 
 1. **PR 1 — evidence layer:** migration 050 (`bank_accounts`, `bank_statement_imports`, `bank_statement_lines`, `bank_statement_line_sources` — **no match table**), parser, tie-out + overlap-integrity service, import/list/detail/void endpoints, synthetic-fixture test suite.
-2. **PR 2 — UI:** Statements-tab import + tie-out display; module grant enablement note in the deploy steps.
+2. **PR 2 — UI + images (BUILT):** Statements-tab import + tie-out display + details dialog; **check/deposit-ticket image extraction** (migration 051, `bank_statement_line_images`): the statement's trailing images page carries one scan per caption — deposit tickets and written checks — parsed captions pair scans to evidence lines by check number / (amount + full date), in caption order, degrading to an unpaired gallery on any count mismatch. Empirical acceptance: 34/34 scans paired across the real corpus; browser-verified end-to-end (all 9 PDFs uploaded through the real UI on a throwaway container, light + dark, void + re-import-after-void exercised live). Deploy step: the §7 module-grant SQL.
 3. **PR 3 — verification:** migration for the three match tables (§4 shape), R1–R6 matcher, match endpoints, Reconcile tab, the four reports.
 4. **Later (separate effort):** GL Phase 2 proper — re-target matcher right-hand side to GL lines, tie-out-to-GL assertion, period locks, posting rules. Evidence tables unchanged. Banno feeder converges here too (its `line_hash` gains `occurrence_n` at that point, per the Phase 2 note).
 
@@ -176,5 +185,7 @@ An adversarial review re-ran the whole corpus through a scratch parser and live 
 3. **Two invariants were false as naively stated:** the daily-balance table contains period-start seed rows on days with no transactions (4/9 real files), and continuity is only true *period-aware* (a quarterly restatement's predecessor is the statement before the restated window, not the previous by date). → §2.6 redefines both; §8 adds both to fixtures so synthetic tests can actually fail on them.
 4. **pypdf ≠ pdftotext:** the production extractor quadruplicates the fees block and shifts all column offsets vs the tool the format was first surveyed with. → §2.1 documents it; parser is per-line-regex with stateless skips; fixtures are pypdf-shaped; the extraction step's coverage boundary is stated honestly in §8.
 5. **Void-by-batch was undecidable under overlap** (the corpus contains the exact triggering pair). → the `bank_statement_line_sources` attestation table (§4): voiding deletes attestations, and only orphaned lines drop. Runner-up finds folded in: anchored account resolution (§5.2), both transfer grammars (§6 R5), the DBA entity note (§2).
+
+A **third adversarial audit ran on the PR 2 diff** (UI + images) before its commit. It found and forced fixes for: a **dead toast** (`api.toast` doesn't exist on `useApi` — duplicate-file and parse-error outcomes, which create no table row, would have been completely invisible in the UI; now uses PrimeVue `useToast` directly, and the same pre-existing dead call in the OAuth popup path was fixed too); **gallery failures could veto evidence** (undecodable image codecs like JBIG2, CMYK→PNG saves, disk errors — now every extraction/save failure degrades to a smaller or absent gallery, never a failed import); **RGBA blank filler beat the blankness filter** (transparent pixels convert to black in L mode — now alpha-flattened onto white first); **void unlinked files before commit** (a failed commit would leave rows pointing at deleted files — now commits first, unlinks after); and a blob-URL leak when the details dialog closes mid-fetch. Accepted-risk items it confirmed rather than broke: equal-count order-swap mispairing (structurally undetectable without OCR; the visible caption text beside each scan is the human catch), and the pairing thresholds being tuned to a 9-file corpus.
 
 A **second adversarial audit ran on the implementation diff** before the first commit. It independently reproduced the 9/9 real-corpus acceptance and confirmed the arithmetic core, and found: a live crash (impossible date like `6/31` escaped as a bare ValueError → 500 mid-batch — fixed + regression-tested); fabricated `0` stored for blank summary counts (columns made nullable, stored as parsed); no stated recovery for a legitimate hash drift (documented: void conflicting imports, re-import both — deliberately no force flag); and the two §8 honesty notes above (checking-account wrap-fidelity hole; OD-fee refusal mode). Line-hash stability across pypdf version bumps remains an accepted risk — the overlap check fails loudly, never silently, if it breaks.

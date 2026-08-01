@@ -583,3 +583,117 @@ def test_router_import_list_detail_void_lines(svc):
     assert listing["items"] == []
     listing = r.list_statement_imports(None, True, None, svc)
     assert len(listing["items"]) == 1
+
+
+# ── check/deposit-ticket images (PR 2) ─────────────────────────────────
+#
+# The checking fixture's caption page carries 3 captions: a $500.00 deposit
+# ticket (6/2) and written checks 1062 ($75.00, 6/27) / 1083 ($40.00, 6/13).
+# Image extraction is stubbed (PIL images made in-test); pairing, storage,
+# void cleanup, and the serve endpoints run for real.
+
+
+def _fake_images(n):
+    from PIL import Image
+
+    return [Image.new("L", (60, 30), color=17) for _ in range(n)]
+
+
+def test_captions_parse_but_never_count_as_transactions():
+    p = parse_statement_text(checking_text())
+    assert [(c.check_no, c.amount_cents, c.caption_date.isoformat()) for c in p.captions] == [
+        ("0", 50_000, "2026-06-02"),
+        ("1062", 7_500, "2026-06-27"),
+        ("1083", 4_000, "2026-06-13"),
+    ]
+    assert len(p.lines) == 8  # unchanged — captions are not transactions
+
+
+def test_images_pair_to_lines_via_captions(svc, monkeypatch):
+    monkeypatch.setattr(statement_service.community_bank, "extract_caption_images",
+                        lambda pdf_bytes: _fake_images(3))
+    result = _import(svc, checking_text())
+    assert result["status"] == "imported"
+    assert result["images_extracted"] == 3 and result["images_paired"] == 3
+
+    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage
+
+    images = svc.query(BankStatementLineImage).order_by(BankStatementLineImage.sort_order).all()
+    assert len(images) == 3
+    lines_by_id = {line.id: line for line in svc.query(BankStatementLine).all()}
+    deposit = lines_by_id[images[0].line_id]
+    assert deposit.section == SECTION_DEPOSIT and deposit.amount_cents == 50_000
+    check_1062 = lines_by_id[images[1].line_id]
+    assert check_1062.check_number == "1062"
+    check_1083 = lines_by_id[images[2].line_id]
+    assert check_1083.check_number == "1083"
+    import os as _os
+
+    assert all(_os.path.isfile(i.storage_path) for i in images)
+
+
+def test_image_count_mismatch_degrades_to_gallery(svc, monkeypatch):
+    monkeypatch.setattr(statement_service.community_bank, "extract_caption_images",
+                        lambda pdf_bytes: _fake_images(2))  # 2 scans, 3 captions
+    result = _import(svc, checking_text())
+    assert result["status"] == "imported"
+    assert result["images_extracted"] == 2 and result["images_paired"] == 0
+
+    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage
+
+    images = svc.query(BankStatementLineImage).all()
+    assert len(images) == 2
+    assert all(i.line_id is None and i.caption_amount_cents is None for i in images)
+
+
+def test_void_deletes_images_and_files(svc, monkeypatch):
+    import os as _os
+
+    monkeypatch.setattr(statement_service.community_bank, "extract_caption_images",
+                        lambda pdf_bytes: _fake_images(3))
+    result = _import(svc, checking_text())
+
+    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage
+
+    paths = [i.storage_path for i in svc.query(BankStatementLineImage).all()]
+    imp = svc.get(BankStatementImport, __import__("uuid").UUID(result["import_id"]))
+    statement_service.void_import(svc, imp)
+    assert svc.query(BankStatementLineImage).count() == 0
+    assert not any(_os.path.isfile(p) for p in paths)
+
+
+def test_image_endpoints_and_path_guard(svc, monkeypatch):
+    monkeypatch.setattr(statement_service.community_bank, "extract_caption_images",
+                        lambda pdf_bytes: _fake_images(3))
+    result = _import(svc, checking_text())
+
+    from fastapi import HTTPException
+
+    from gdx_dispatch.modules.bank_feeds import router as r
+    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage
+
+    gallery = r.list_statement_import_images(result["import_id"], None, svc)
+    assert len(gallery["items"]) == 3
+    assert gallery["items"][0]["caption_check_no"] == "0"
+
+    image_id = gallery["items"][0]["id"]
+    response = r.download_statement_image(image_id, None, svc)
+    assert response.media_type == "image/png"
+
+    # Path guard: a storage_path outside the uploads root must 404.
+    image = svc.get(BankStatementLineImage, __import__("uuid").UUID(image_id))
+    image.storage_path = "/etc/passwd"
+    svc.commit()
+    with pytest.raises(HTTPException) as exc_info:
+        r.download_statement_image(image_id, None, svc)
+    assert exc_info.value.status_code == 404
+
+    # Lines listing carries image refs.
+    account_id = result["account"]["id"]
+    lines = r.list_statement_lines(
+        account_id=account_id, date_from=None, date_to=None, section=None,
+        q=None, limit=100, offset=0, _perm=None, db=svc,
+    )
+    with_images = [line for line in lines["items"] if line["image_ids"]]
+    assert len(with_images) == 3  # the $500 deposit ticket + checks 1062/1083
+    assert {line["section"] for line in with_images} == {SECTION_DEPOSIT, SECTION_CHECK}

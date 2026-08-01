@@ -63,7 +63,8 @@ def main(statements_dir: str) -> int:
         failures += 0 if ok else 1
         print(f"{'PASS' if ok else 'FAIL':4} {pdf.name[:52]:52} -> {status}"
               f"  +{result.get('lines_added', 0)} lines"
-              f" / {result.get('lines_deduped', 0)} deduped")
+              f" / {result.get('lines_deduped', 0)} deduped"
+              f"  imgs {result.get('images_paired', 0)}/{result.get('images_extracted', 0)} paired")
         for warning in result.get("continuity_warnings", []):
             failures += 1
             print(f"       CONTINUITY WARNING: {warning}")

@@ -1101,6 +1101,13 @@ def list_statement_lines(
         query.order_by(BankStatementLine.txn_date, BankStatementLine.created_at)
         .limit(limit).offset(offset)
     ).all()
+    from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage as _Img
+    image_ids: dict = {}
+    if rows:
+        for img in db.scalars(
+            select(_Img).where(_Img.line_id.in_([l.id for l in rows])).order_by(_Img.sort_order)
+        ).all():
+            image_ids.setdefault(img.line_id, []).append(str(img.id))
     return {
         "items": [
             {
@@ -1112,6 +1119,7 @@ def list_statement_lines(
                 "description": l.description,
                 "section": l.section,
                 "check_number": l.check_number,
+                "image_ids": image_ids.get(l.id, []),
             }
             for l in rows
         ],
@@ -1119,3 +1127,61 @@ def list_statement_lines(
         "limit": limit,
         "offset": offset,
     }
+
+
+# ── statement check/deposit-ticket images (PR 2) ───────────────────────
+#
+# The scans show full account numbers and signatures: read permission +
+# module gate + the normpath/startswith path guard (CodeQL-recognized),
+# same as the Banno documents download.
+
+from gdx_dispatch.modules.bank_feeds.statement_models import BankStatementLineImage  # noqa: E402
+
+
+def _image_out(image: BankStatementLineImage) -> dict:
+    return {
+        "id": str(image.id),
+        "import_id": str(image.import_id),
+        "line_id": str(image.line_id) if image.line_id else None,
+        "caption_check_no": image.caption_check_no,
+        "caption_amount_cents": image.caption_amount_cents,
+        "caption_date": image.caption_date.isoformat() if image.caption_date else None,
+        "sort_order": image.sort_order,
+    }
+
+
+@router.get("/statements/imports/{import_id}/images", dependencies=[_MODULE])
+def list_statement_import_images(
+    import_id: str,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    imp = _load_statement_import(db, import_id)
+    rows = db.scalars(
+        select(BankStatementLineImage)
+        .where(BankStatementLineImage.import_id == imp.id)
+        .order_by(BankStatementLineImage.sort_order)
+    ).all()
+    return {"items": [_image_out(i) for i in rows]}
+
+
+@router.get("/statements/images/{image_id}/file", dependencies=[_MODULE])
+def download_statement_image(
+    image_id: str,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+):
+    try:
+        image = db.get(BankStatementLineImage, UUID(str(image_id)))
+    except ValueError:
+        image = None
+    if image is None or not image.storage_path:
+        raise HTTPException(status_code=404, detail="Image not found")
+    uploads_root = os.path.normpath(os.getenv("UPLOAD_DIR", "/app/uploads/"))
+    resolved = os.path.normpath(image.storage_path)
+    if not resolved.startswith(uploads_root + os.sep):
+        raise HTTPException(status_code=404, detail="Image not found")
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="Image file missing from disk")
+    return FileResponse(resolved, media_type="image/png",
+                        filename=f"statement-image-{image.sort_order:02d}.png")

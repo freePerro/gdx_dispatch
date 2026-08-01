@@ -22,7 +22,9 @@ environments.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import logging
 import os
 import re
 from datetime import date, timedelta
@@ -37,6 +39,7 @@ from gdx_dispatch.modules.bank_feeds.statement_models import (
     BankAccount,
     BankStatementImport,
     BankStatementLine,
+    BankStatementLineImage,
     BankStatementLineSource,
 )
 from gdx_dispatch.modules.bank_feeds.statement_parsers import community_bank
@@ -58,6 +61,8 @@ __all__ = [
     "StatementParseError",
     "StatementStructureError",
 ]
+
+log = logging.getLogger(__name__)
 
 MAX_STATEMENT_BYTES = 10 * 1024 * 1024
 
@@ -227,7 +232,7 @@ def _overlap_integrity(
                 BankStatementLine.txn_date <= w_end,
             )
         ).all()
-        existing_by_hash = {l.line_hash: l for l in existing}
+        existing_by_hash = {line.line_hash: line for line in existing}
         new_by_hash = {h: t for t, _o, h in hashed if w_start <= t.txn_date <= w_end}
 
         missing_from_new = set(existing_by_hash) - set(new_by_hash)
@@ -361,6 +366,7 @@ def import_statement(
     db.flush()
 
     added = deduped = 0
+    txn_line_ids: dict[int, object] = {}
     if tie_out_status == TIE_OUT_PASSED:
         for txn, occurrence, line_hash in hashed:
             line = db.scalars(
@@ -386,9 +392,20 @@ def import_statement(
                 added += 1
             else:
                 deduped += 1
+            txn_line_ids[id(txn)] = line.id
             db.add(BankStatementLineSource(line_id=line.id, import_id=imp.id))
         imp.lines_added = added
         imp.lines_deduped = deduped
+
+    image_stats = {"images_extracted": 0, "images_paired": 0}
+    if tie_out_status == TIE_OUT_PASSED and parsed.captions:
+        # Images are display metadata; a gallery failure (undecodable codec,
+        # disk error, exotic color space) must NEVER veto evidence import.
+        try:
+            image_stats = _attach_images(db, imp, parsed, pdf_bytes, sha, txn_line_ids)
+        except Exception:  # noqa: BLE001
+            log.exception("statement image extraction failed; importing without gallery")
+            image_stats = {"images_extracted": 0, "images_paired": 0, "images_error": True}
 
     db.commit()
     return {
@@ -402,7 +419,76 @@ def import_statement(
         "lines_added": added,
         "lines_deduped": deduped,
         "continuity_warnings": report["continuity_warnings"],
+        **image_stats,
     }
+
+
+def _attach_images(
+    db: Session, imp: BankStatementImport, parsed: ParsedStatement,
+    pdf_bytes: bytes, sha: str, txn_line_ids: dict[int, object],
+) -> dict:
+    """Extract the check/deposit-ticket scans and pair them to evidence
+    lines via the captions (empirically: one scan per caption, in order).
+
+    Pairing is display metadata, never evidence — so it degrades instead of
+    failing: a scan/caption count mismatch stores every scan gallery-only
+    (line_id NULL), and a caption with no matching line keeps its scan in
+    the gallery too. Written checks pair by check number; deposit tickets
+    pair by (amount, full caption date), consuming candidates in order so
+    identical same-day deposits pair one each.
+    """
+    try:
+        pils = community_bank.extract_caption_images(pdf_bytes)
+    except StatementParseError:
+        pils = []
+    if not pils:
+        return {"images_extracted": 0, "images_paired": 0}
+
+    img_dir = _imports_dir() / f"import-{sha[:24]}-img"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    counts_match = len(pils) == len(parsed.captions)
+    consumed: set[int] = set()
+
+    def _line_for(caption) -> object | None:
+        for txn in parsed.lines:
+            if id(txn) in consumed or id(txn) not in txn_line_ids:
+                continue
+            if caption.check_no != "0":
+                hit = txn.section == SECTION_CHECK and txn.check_number == caption.check_no
+            else:
+                hit = (txn.section == SECTION_DEPOSIT
+                       and txn.amount_cents == caption.amount_cents
+                       and txn.txn_date == caption.caption_date)
+            if hit:
+                consumed.add(id(txn))
+                return txn_line_ids[id(txn)]
+        return None
+
+    paired = 0
+    for i, pil in enumerate(pils):
+        path = img_dir / f"img-{i:02d}.png"
+        try:
+            if pil.mode not in ("RGB", "L"):
+                pil = pil.convert("RGB")  # PNG can't hold CMYK etc.
+            pil.save(path)
+        except OSError:
+            log.exception("could not save statement image %s; skipping it", path)
+            continue
+        caption = parsed.captions[i] if counts_match else None
+        line_id = _line_for(caption) if caption else None
+        if line_id is not None:
+            paired += 1
+        db.add(BankStatementLineImage(
+            import_id=imp.id,
+            line_id=line_id,
+            storage_path=str(path),
+            caption_check_no=caption.check_no if caption else None,
+            caption_amount_cents=caption.amount_cents if caption else None,
+            caption_date=caption.caption_date if caption else None,
+            sort_order=i,
+        ))
+    return {"images_extracted": len(pils), "images_paired": paired}
 
 
 def void_import(db: Session, imp: BankStatementImport) -> dict:
@@ -416,6 +502,19 @@ def void_import(db: Session, imp: BankStatementImport) -> dict:
 
     if imp.voided_at is not None:
         return {"status": "already_voided", "import_id": str(imp.id)}
+
+    # Images belong to the import that extracted them (a co-attesting
+    # overlap import contributes its own rows). Collect paths now, DELETE
+    # rows now, but unlink files only AFTER the commit succeeds — otherwise
+    # a failed commit leaves rows pointing at deleted files (audit finding).
+    image_paths: list[str] = []
+    for image in db.scalars(
+        select(BankStatementLineImage).where(BankStatementLineImage.import_id == imp.id)
+    ).all():
+        if image.storage_path:
+            image_paths.append(image.storage_path)
+        db.delete(image)
+    db.flush()
 
     attested_line_ids = list(db.scalars(
         select(BankStatementLineSource.line_id).where(BankStatementLineSource.import_id == imp.id)
@@ -441,5 +540,8 @@ def void_import(db: Session, imp: BankStatementImport) -> dict:
 
     imp.voided_at = utcnow()
     db.commit()
+    for path in image_paths:
+        with contextlib.suppress(OSError):
+            Path(path).unlink(missing_ok=True)
     return {"status": "voided", "import_id": str(imp.id),
             "lines_removed": removed, "lines_kept_co_attested": kept}

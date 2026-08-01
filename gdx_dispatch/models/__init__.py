@@ -292,6 +292,7 @@ try:
         BankAccount,
         BankStatementImport,
         BankStatementLine,
+        BankStatementLineImage,
         BankStatementLineSource,
     )
 except ImportError:

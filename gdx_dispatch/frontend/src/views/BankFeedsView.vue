@@ -231,6 +231,89 @@
 
         <!-- ── Statements ────────────────────────────────────────── -->
         <TabPanel value="statements">
+          <!-- Imported statements (manual PDF upload — evidence layer) -->
+          <div class="imports-header">
+            <h3 class="imports-title">Imported statements</h3>
+            <FileUpload
+              v-if="canManage"
+              mode="basic"
+              custom-upload
+              multiple
+              accept="application/pdf"
+              choose-label="Import statement PDFs"
+              choose-icon="pi pi-upload"
+              :auto="true"
+              :disabled="importing"
+              data-testid="bank-stmt-import-upload"
+              @uploader="importStatements"
+            />
+          </div>
+          <DataTable
+            :value="statementImports"
+            :loading="importsLoading"
+            striped-rows
+            responsiveLayout="scroll"
+            data-testid="bank-stmt-imports-table"
+          >
+            <template #empty>
+              <EmptyState
+                icon="pi pi-file-import"
+                title="No imported statements"
+                :message="canManage
+                  ? 'Upload statement PDFs from your bank — every import is arithmetic-checked against the statement\'s own balances before any transaction is accepted.'
+                  : 'Imported bank statements will appear here.'"
+              />
+            </template>
+            <Column header="Period" :style="{ minWidth: '170px' }">
+              <template #body="{ data }">{{ data.period_start }} → {{ data.period_end }}</template>
+            </Column>
+            <Column header="Account" :style="{ minWidth: '160px' }">
+              <template #body="{ data }">{{ accountLabel(data.bank_account_id) }}</template>
+            </Column>
+            <Column header="Tie-out" :style="{ width: '110px' }">
+              <template #body="{ data }">
+                <Tag
+                  :value="data.tie_out_status"
+                  :severity="data.tie_out_status === 'passed' ? 'success' : 'danger'"
+                  :data-testid="`bank-stmt-tieout-${data.id}`"
+                />
+              </template>
+            </Column>
+            <Column header="Lines" :style="{ width: '110px' }">
+              <template #body="{ data }">
+                {{ data.lines_added }}<span v-if="data.lines_deduped" class="muted"> (+{{ data.lines_deduped }} dup)</span>
+              </template>
+            </Column>
+            <Column header="Ending balance" :style="{ width: '140px' }">
+              <template #body="{ data }">{{ formatCents(data.ending_balance_cents) }}</template>
+            </Column>
+            <Column header="" :style="{ minWidth: '190px' }">
+              <template #body="{ data }">
+                <div class="row-actions">
+                  <Button
+                    label="Details"
+                    size="small"
+                    class="p-button-text"
+                    icon="pi pi-search"
+                    :data-testid="`bank-stmt-details-${data.id}`"
+                    @click="openImportDetails(data)"
+                  />
+                  <Button
+                    v-if="canManage && !data.voided_at"
+                    label="Void"
+                    size="small"
+                    severity="danger"
+                    class="p-button-text"
+                    icon="pi pi-times"
+                    @click="askVoidImport(data)"
+                  />
+                  <Tag v-if="data.voided_at" value="voided" severity="secondary" />
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+
+          <h3 class="imports-title bank-docs-title">Bank-delivered statements</h3>
           <div class="filters-row">
             <Select
               v-model="docFilters.document_type"
@@ -399,11 +482,95 @@
         />
       </template>
     </Dialog>
+
+    <!-- ── Imported statement details ─────────────────────────────── -->
+    <Dialog
+      v-model:visible="showImportDetails"
+      :header="importDetails ? `Statement ${importDetails.period_start} → ${importDetails.period_end}` : 'Statement'"
+      :style="{ width: 'min(860px, 95vw)' }"
+      modal
+      data-testid="bank-stmt-details-dialog"
+      @hide="closeImportDetails"
+    >
+      <template v-if="importDetails">
+        <div class="stmt-summary-grid">
+          <div><span class="muted">Beginning</span> {{ formatCents(importDetails.beginning_balance_cents) }}</div>
+          <div><span class="muted">Deposits</span> {{ formatCents(importDetails.deposits_total_cents) }} ({{ importDetails.deposits_count ?? '—' }})</div>
+          <div><span class="muted">Debits</span> {{ formatCents(importDetails.debits_total_cents) }} ({{ importDetails.debits_count ?? '—' }})</div>
+          <div><span class="muted">Ending</span> {{ formatCents(importDetails.ending_balance_cents) }}</div>
+        </div>
+
+        <h4>Tie-out checks</h4>
+        <DataTable :value="importDetails.tie_out_report?.checks || []" size="small" striped-rows>
+          <Column field="name" header="Check" :style="{ minWidth: '170px' }" />
+          <Column header="Result" :style="{ width: '90px' }">
+            <template #body="{ data }">
+              <Tag :value="data.ok ? 'ok' : 'FAIL'" :severity="data.ok ? 'success' : 'danger'" />
+            </template>
+          </Column>
+          <Column header="Detail" :style="{ minWidth: '260px' }">
+            <template #body="{ data }">
+              <span v-if="data.ok" class="muted">—</span>
+              <span v-else>expected {{ data.expected }}, got {{ formatCheckActual(data.actual) }}</span>
+            </template>
+          </Column>
+        </DataTable>
+
+        <div v-if="(importDetails.tie_out_report?.continuity_warnings || []).length" class="continuity-warnings">
+          <Tag severity="warn" value="continuity" />
+          <span>{{ importDetails.tie_out_report.continuity_warnings.length }} continuity warning(s) against adjacent statements — see report.</span>
+        </div>
+
+        <h4>Check &amp; deposit images <span class="muted">({{ importImages.length }})</span></h4>
+        <p v-if="!importImages.length" class="muted">This statement's PDF has no images page.</p>
+        <div v-else class="stmt-image-grid">
+          <figure v-for="img in importImages" :key="img.id" class="stmt-image-card">
+            <img v-if="img.url" :src="img.url" :alt="imageCaption(img)" loading="lazy" />
+            <div v-else class="stmt-image-loading"><ProgressSpinner style="width:24px;height:24px" /></div>
+            <figcaption>
+              <Tag
+                :value="img.caption_check_no === '0' ? 'deposit' : `check ${img.caption_check_no || '?'}`"
+                :severity="img.caption_check_no === '0' ? 'info' : 'secondary'"
+              />
+              <span v-if="img.caption_amount_cents != null">{{ formatCents(img.caption_amount_cents) }}</span>
+              <span v-if="img.caption_date" class="muted">{{ img.caption_date }}</span>
+              <Tag v-if="!img.line_id" value="unpaired" severity="warn" />
+            </figcaption>
+          </figure>
+        </div>
+      </template>
+    </Dialog>
+
+    <!-- ── Void confirm (local dialog — deliberate, not useDestructiveConfirm) ── -->
+    <Dialog
+      v-model:visible="showVoidConfirm"
+      header="Void this import?"
+      :style="{ width: 'min(460px, 95vw)' }"
+      modal
+      data-testid="bank-stmt-void-dialog"
+    >
+      <p v-if="voidTarget">
+        Voiding removes this statement's transactions from the evidence table
+        (lines also vouched for by an overlapping import are kept). The same
+        PDF can be imported again afterwards.
+      </p>
+      <template #footer>
+        <Button label="Cancel" class="p-button-text" @click="showVoidConfirm = false" />
+        <Button
+          label="Void import"
+          severity="danger"
+          :loading="actionLoading === 'void'"
+          data-testid="bank-stmt-void-confirm"
+          @click="voidImport"
+        />
+      </template>
+    </Dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { useToast } from 'primevue/usetoast';
 import { useAuthStore } from '../stores/auth';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDateTime } from '../composables/useFormatters';
@@ -414,6 +581,7 @@ import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
+import FileUpload from 'primevue/fileupload';
 import InputNumber from 'primevue/inputnumber';
 import InputSwitch from 'primevue/inputswitch';
 import InputText from 'primevue/inputtext';
@@ -430,6 +598,9 @@ import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
 const auth = useAuthStore();
+// useApi keeps its toast internal — `api.toast` does not exist (a silent
+// no-op the PR-2 audit caught live). Use PrimeVue's useToast directly.
+const toast = useToast();
 
 const canManage = computed(() => auth.hasPermission('bank_feeds.manage'));
 
@@ -489,7 +660,7 @@ const connectBank = async (inst) => {
     if (response?.redirect_url) {
       const popup = window.open(response.redirect_url, '_blank', 'width=600,height=700');
       if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-        api.toast?.add?.({
+        toast.add({
           severity: 'warn',
           summary: 'Popup blocked',
           detail: 'Redirecting in this window instead...',
@@ -740,6 +911,144 @@ const downloadDocument = async (doc) => {
   URL.revokeObjectURL(url);
 };
 
+// ── imported statements (evidence layer) ───────────────────────────
+
+const statementImports = ref([]);
+const statementAccounts = ref([]);
+const importsLoading = ref(false);
+const importing = ref(false);
+
+const loadStatementImports = async () => {
+  importsLoading.value = true;
+  try {
+    const [imports, accts] = await Promise.all([
+      api.get('/api/bank-feeds/statements/imports?include_voided=true'),
+      api.get('/api/bank-feeds/statements/accounts'),
+    ]);
+    statementImports.value = imports.items || [];
+    statementAccounts.value = accts.items || [];
+  } catch {
+    // Module dark or older API — the section just shows its empty state.
+    statementImports.value = [];
+    statementAccounts.value = [];
+  } finally {
+    importsLoading.value = false;
+  }
+};
+
+const accountLabel = (accountId) => {
+  const account = statementAccounts.value.find((a) => a.id === accountId);
+  return account ? `${account.name} ····${account.last4}` : '—';
+};
+
+const formatCheckActual = (actual) => {
+  if (actual == null) return '—';
+  return typeof actual === 'object' ? JSON.stringify(actual) : String(actual);
+};
+
+const importStatements = async (event) => {
+  const files = event.files || [];
+  if (!files.length) return;
+  importing.value = true;
+  try {
+    const fd = new FormData();
+    files.forEach((f) => fd.append('files', f));
+    const result = await api.post('/api/bank-feeds/statements/import', fd);
+    const outcomes = (result?.results || []).map((r) => `${r.filename}: ${r.status}`);
+    const failed = (result?.results || []).some((r) => r.status !== 'imported');
+    // duplicate_file / parse_error return HTTP 200 with NO table row — this
+    // toast is their only user-visible surface, so it must actually fire.
+    toast.add({
+      severity: failed ? 'warn' : 'success',
+      summary: failed ? 'Import finished with issues' : 'Statements imported',
+      detail: outcomes.join(' · '),
+      life: failed ? 8000 : 4000,
+    });
+    await loadStatementImports();
+  } finally {
+    importing.value = false;
+  }
+};
+
+// Details dialog (+ authenticated image blobs — the scans carry full
+// account numbers, so they are never plain <img src> URLs).
+
+const showImportDetails = ref(false);
+const importDetails = ref(null);
+const importImages = ref([]);
+
+const authedFetchBlobUrl = async (path) => {
+  const headers = new Headers();
+  const tenantId = deriveTenantId();
+  if (tenantId) headers.set('x-tenant-id', tenantId);
+  if (auth.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`);
+  const response = await fetch(path, { headers, credentials: 'include' });
+  if (!response.ok) return null;
+  return URL.createObjectURL(await response.blob());
+};
+
+const openImportDetails = async (row) => {
+  importDetails.value = null;
+  importImages.value = [];
+  showImportDetails.value = true;
+  const [detail, gallery] = await Promise.all([
+    api.get(`/api/bank-feeds/statements/imports/${row.id}`),
+    api.get(`/api/bank-feeds/statements/imports/${row.id}/images`),
+  ]);
+  importDetails.value = detail;
+  const images = (gallery.items || []).map((img) => ({ ...img, url: null }));
+  importImages.value = images;
+  for (const img of images) {
+    const url = await authedFetchBlobUrl(`/api/bank-feeds/statements/images/${img.id}/file`);
+    // Dialog closed mid-fetch: the array was detached by closeImportDetails —
+    // revoke instead of leaking the blob URL, and stop fetching.
+    if (importImages.value !== images) {
+      if (url) URL.revokeObjectURL(url);
+      break;
+    }
+    img.url = url;
+  }
+};
+
+const closeImportDetails = () => {
+  importImages.value.forEach((img) => { if (img.url) URL.revokeObjectURL(img.url); });
+  importImages.value = [];
+  importDetails.value = null;
+};
+
+const imageCaption = (img) => {
+  const kind = img.caption_check_no === '0' ? 'Deposit ticket' : `Check ${img.caption_check_no || ''}`;
+  return `${kind} ${img.caption_date || ''}`.trim();
+};
+
+// Void (local confirm dialog on purpose — see issue #215:
+// useDestructiveConfirm can auto-accept without rendering).
+
+const showVoidConfirm = ref(false);
+const voidTarget = ref(null);
+
+const askVoidImport = (row) => {
+  voidTarget.value = row;
+  showVoidConfirm.value = true;
+};
+
+const voidImport = async () => {
+  if (!voidTarget.value) return;
+  actionLoading.value = 'void';
+  try {
+    await api.post(
+      `/api/bank-feeds/statements/imports/${voidTarget.value.id}/void`,
+      {},
+      { successMessage: 'Import voided' },
+    );
+    showVoidConfirm.value = false;
+    voidTarget.value = null;
+    await loadStatementImports();
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
 // ── schedule ───────────────────────────────────────────────────────
 
 const scheduleForm = reactive({ frequency: 'manual', backfill_days: 365 });
@@ -771,6 +1080,7 @@ onMounted(() => {
   loadStatus();
   loadTransactions();
   loadDocuments();
+  loadStatementImports();
 });
 
 onBeforeUnmount(() => {
@@ -780,6 +1090,72 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.imports-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.imports-title {
+  margin: 0;
+}
+.bank-docs-title {
+  margin-top: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+.stmt-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+}
+.stmt-summary-grid .muted {
+  display: block;
+  font-size: 0.85em;
+}
+.continuity-warnings {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.stmt-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+.stmt-image-card {
+  margin: 0;
+  border: 1px solid var(--surface-border, var(--p-content-border-color, #ddd));
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: var(--surface-card, var(--p-content-background, transparent));
+}
+.stmt-image-card img {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  /* Scans are white paper — keep the surface white in BOTH themes, and pin
+     dark text with it so alt text can't go white-on-white in dark mode. */
+  background: #fff;
+  color: #334155;
+}
+.stmt-image-card figcaption {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+  font-size: 0.9em;
+}
+.stmt-image-loading {
+  display: flex;
+  justify-content: center;
+  padding: 1.25rem 0;
+}
+
 .bank-feeds-tabview {
   margin-top: 1rem;
 }
