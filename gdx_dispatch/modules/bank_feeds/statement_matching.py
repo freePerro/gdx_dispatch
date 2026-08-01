@@ -118,8 +118,35 @@ def _used_externals(db: Session) -> set:
     ).all())
 
 
+def _rejected_signatures(db: Session, account: BankAccount) -> set:
+    """(line-id-set, external-set) of every REJECTED match on the account —
+    a re-run must not resurrect a pairing the office already rejected
+    (stack-audit F2: rejection is sticky, not a per-run opinion)."""
+    signatures = set()
+    for match in db.scalars(
+        select(BankMatch).where(
+            BankMatch.bank_account_id == account.id,
+            BankMatch.status == MATCH_REJECTED,
+        )
+    ).all():
+        line_ids = frozenset(db.scalars(
+            select(BankMatchLine.line_id).where(BankMatchLine.match_id == match.id)).all())
+        externals = frozenset(
+            (row[0], row[1]) for row in db.execute(
+                select(BankMatchExternal.source_table, BankMatchExternal.source_id)
+                .where(BankMatchExternal.match_id == match.id)).all()
+        )
+        signatures.add((line_ids, externals))
+    return signatures
+
+
 def _new_match(db: Session, account: BankAccount, rule: str, *, lines,
-               externals=(), classification=None, confidence=None, note=None) -> BankMatch:
+               externals=(), classification=None, confidence=None, note=None,
+               rejected_signatures=None) -> BankMatch | None:
+    if rejected_signatures is not None:
+        signature = (frozenset(l.id for l in lines), frozenset(externals))
+        if signature in rejected_signatures:
+            return None
     match = BankMatch(
         bank_account_id=account.id, rule=rule, status=MATCH_SUGGESTED,
         classification=classification, confidence=confidence, note=note,
@@ -186,6 +213,7 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
 
     matched_lines = _matched_line_ids(db)
     used_externals = _used_externals(db)
+    rejected_sigs = _rejected_signatures(db, account)
 
     lines = [
         line for line in db.scalars(
@@ -205,15 +233,19 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
     remaining = []
     for line in lines:
         if line.section == SECTION_SERVICE_CHARGE:
-            _new_match(db, account, "R5", lines=[line], classification="bank_fee", confidence=0.99)
+            created = _new_match(db, account, "R5", lines=[line], classification="bank_fee",
+                                 confidence=0.99, rejected_signatures=rejected_sigs)
         elif line.section == SECTION_INTEREST:
-            _new_match(db, account, "R5", lines=[line], classification="interest", confidence=0.99)
+            created = _new_match(db, account, "R5", lines=[line], classification="interest",
+                                 confidence=0.99, rejected_signatures=rejected_sigs)
         elif _is_transfer(line):
-            _new_match(db, account, "R5", lines=[line], classification="transfer", confidence=0.95)
+            created = _new_match(db, account, "R5", lines=[line], classification="transfer",
+                                 confidence=0.95, rejected_signatures=rejected_sigs)
         else:
             remaining.append(line)
             continue
-        stats["classified"] += 1
+        if created is not None:
+            stats["classified"] += 1
     lines = remaining
 
     deposits = [l for l in lines if l.section == SECTION_DEPOSIT]
@@ -270,10 +302,16 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
         candidates = line_to_payments[line.id]
         if len(candidates) == 1 and len(payment_to_lines[candidates[0].id]) == 1:
             payment = candidates[0]
-            _new_match(db, account, "R2", lines=[line],
-                       externals=[("payments", payment.id)], confidence=0.95)
-            r2_matched_payment_ids.add(payment.id)
-            stats["r2_payments"] += 1
+            created = _new_match(db, account, "R2", lines=[line],
+                                 externals=[("payments", payment.id)], confidence=0.95,
+                                 rejected_signatures=rejected_sigs)
+            if created is not None:
+                r2_matched_payment_ids.add(payment.id)
+                stats["r2_payments"] += 1
+            else:
+                # This exact pairing was rejected — a DIFFERENT pairing
+                # (an R3 sweep) may still be right for this line.
+                still_open_deposits.append(line)
         else:
             still_open_deposits.append(line)
 
@@ -303,12 +341,14 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
                 break
         if len(hits) == 1:
             combo = hits[0]
-            _new_match(db, account, "R3", lines=[line],
-                       externals=[("payments", p.id) for p in combo], confidence=0.9,
-                       note=f"deposit sweep of {len(combo)} payments")
-            swept_payment_ids.update(p.id for p in combo)
-            r3_matched_line_ids.add(line.id)
-            stats["r3_sweeps"] += 1
+            created = _new_match(db, account, "R3", lines=[line],
+                                 externals=[("payments", p.id) for p in combo], confidence=0.9,
+                                 note=f"deposit sweep of {len(combo)} payments",
+                                 rejected_signatures=rejected_sigs)
+            if created is not None:
+                swept_payment_ids.update(p.id for p in combo)
+                r3_matched_line_ids.add(line.id)
+                stats["r3_sweeps"] += 1
 
     # ── R2 debits: Expense exact, else VendorInvoice total (weak) ──────
     expenses = [
@@ -355,17 +395,21 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
     for line in debits:
         expense_hits = _expense_hits(line)
         if len(expense_hits) == 1 and len(expense_to_lines[expense_hits[0].id]) == 1:
-            _new_match(db, account, "R2", lines=[line],
-                       externals=[("expenses", expense_hits[0].id)], confidence=0.9)
-            stats["r2_expenses"] += 1
-            continue
+            created = _new_match(db, account, "R2", lines=[line],
+                                 externals=[("expenses", expense_hits[0].id)], confidence=0.9,
+                                 rejected_signatures=rejected_sigs)
+            if created is not None:
+                stats["r2_expenses"] += 1
+                continue
         vendor_hits = _vendor_hits(line)
         if len(vendor_hits) == 1 and len(vendor_to_lines[vendor_hits[0].id]) == 1:
-            _new_match(db, account, "R2", lines=[line],
-                       externals=[("vendor_invoices", vendor_hits[0].id)], confidence=0.6,
-                       note="matched on vendor invoice total — verify it was paid from this account")
-            stats["r2_vendor_invoices"] += 1
-            continue
+            created = _new_match(db, account, "R2", lines=[line],
+                                 externals=[("vendor_invoices", vendor_hits[0].id)], confidence=0.6,
+                                 note="matched on vendor invoice total — verify it was paid from this account",
+                                 rejected_signatures=rejected_sigs)
+            if created is not None:
+                stats["r2_vendor_invoices"] += 1
+                continue
         stats["unmatched"] += 1
 
     stats["unmatched"] += sum(1 for l in still_open_deposits if l.id not in r3_matched_line_ids)
@@ -462,6 +506,12 @@ def create_manual_match(
     match.created_by = user_id
     match.confirmed_by = user_id
     match.confirmed_at = utcnow()
+    # Stack-audit F1: sessions run autoflush=False, so without this flush
+    # _sync_children's SELECT cannot see the pending children — they would
+    # commit as 'suggested' under a 'confirmed' parent, the reports would
+    # contradict each other about this match, and the void seam (which
+    # trusts child match_status) would silently delete a confirmed match.
+    db.flush()
     _sync_children(db, match)
     db.commit()
     return match

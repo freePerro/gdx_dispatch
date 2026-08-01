@@ -997,7 +997,9 @@ def import_statements(
     user_id = str(current_user.get("sub") or current_user.get("user_id") or "")[:64] or None
     results = []
     for upload in files:
-        pdf_bytes = upload.file.read()
+        # Bounded read (stack-audit F5): never pull more than cap+1 into
+        # memory — the service's own size check then rejects the overage.
+        pdf_bytes = upload.file.read(statement_service.MAX_STATEMENT_BYTES + 1)
         result = statement_service.import_statement(
             db, pdf_bytes, upload.filename or "statement.pdf", imported_by=user_id
         )
@@ -1349,6 +1351,11 @@ def reject_match(
     db: Session = Depends(get_db),
 ) -> dict:
     match = _load_match(db, match_id)
+    # Stack-audit F3: a confirmed match is an office assertion — the same
+    # unconfirm-first ceremony the void endpoint demands applies here, or
+    # one click destroys a confirmed reconciliation.
+    if match.status == MATCH_CONFIRMED:
+        raise HTTPException(status_code=409, detail="Confirmed match — unconfirm it first, then reject")
     user_id = str(current_user.get("sub") or "")[:64] or None
     result = statement_matching.set_match_status(db, match, MATCH_REJECTED, user_id)
     _audit(db, request, current_user, "bank_match_rejected", str(match.id))

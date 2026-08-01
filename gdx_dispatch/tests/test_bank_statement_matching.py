@@ -203,14 +203,12 @@ def test_lifecycle_and_rerun_stability(world):
     assert match.confirmed_at is None
 
     statement_matching.set_match_status(db, match, MATCH_REJECTED, "tester")
-    # A rejected match releases both sides: the payment becomes matchable
-    # again on the next run.
+    # Rejection releases both sides for OTHER pairings, but the identical
+    # pairing is sticky-rejected (stack-audit F2) — it must not resurrect.
     stats = run_matcher(db, account)
-    assert stats["r2_payments"] == 1
-    new_match = match_for_line(db, "Deposit/Credit")
-    assert new_match.id != match.id
-    externals = db.query(BankMatchExternal).filter_by(match_id=new_match.id).all()
-    assert externals[0].source_id == payment.id
+    assert stats["r2_payments"] == 0
+    assert match_for_line(db, "Deposit/Credit") is None
+    assert payment.voided_at is None  # the payment itself is untouched
 
 
 def test_manual_match_validates_and_confirms(world):
@@ -474,3 +472,79 @@ def test_void_removes_suggested_matches_with_their_lines(world):
     assert db.query(BankMatch).count() == 0
     assert db.query(BankMatchLine).count() == 0
     assert db.query(BankMatchExternal).count() == 0
+
+
+# ── stack-audit regressions (fifth audit, whole-feature) ───────────────
+
+
+def test_manual_match_children_commit_confirmed_and_settle_reports(world):
+    """Stack-audit F1: autoflush=False let manual-match children commit as
+    'suggested' under a 'confirmed' parent — reports contradicted each
+    other and the void seam was defeated. Children must be CONFIRMED in
+    the DB, the reports must settle, and void must refuse."""
+    db, account = world
+    payment = make_payment(db, 500.00, date(2026, 6, 1))
+    line = next(l for l in db.query(BankStatementLine).all() if "Deposit/Credit" in l.description)
+    statement_matching.create_manual_match(
+        db, account, [line.id], [("payments", payment.id)], None, None, "tester")
+    db.expire_all()  # read committed DB state, not session cache
+
+    children = db.query(BankMatchLine).all()
+    assert children and all(c.match_status == MATCH_CONFIRMED for c in children)
+    externals = db.query(BankMatchExternal).all()
+    assert externals and all(e.match_status == MATCH_CONFIRMED for e in externals)
+
+    reports = statement_matching.build_reports(db, account, date(2026, 6, 1), date(2026, 6, 30))
+    assert all(d["id"] != str(line.id) for d in reports["unmatched_deposits"])
+    assert all(p["id"] != str(payment.id) for p in reports["unmatched_payments"])
+
+    imp = db.query(BankStatementImport).one()
+    with pytest.raises(ValueError, match="unconfirm them first"):
+        statement_service.void_import(db, imp)
+    db.rollback()
+
+
+def test_rejected_pairing_never_resurrects(world):
+    """Stack-audit F2: rejection is sticky — an identical pairing must not
+    come back on the next suggest run; a DIFFERENT pairing still may."""
+    db, account = world
+    make_payment(db, 500.00, date(2026, 6, 1))
+    run_matcher(db, account)
+    match = match_for_line(db, "Deposit/Credit")
+    assert match is not None
+    statement_matching.set_match_status(db, match, MATCH_REJECTED, "tester")
+
+    stats = run_matcher(db, account)
+    assert stats["r2_payments"] == 0
+    assert match_for_line(db, "Deposit/Credit") is None
+
+    # A different pairing for the same line is still allowed: an R3 sweep.
+    make_payment(db, 300.00, date(2026, 6, 1))
+    make_payment(db, 200.00, date(2026, 6, 1))
+    stats = run_matcher(db, account)
+    assert stats["r3_sweeps"] == 1
+
+
+def test_reject_endpoint_refuses_confirmed_match(world):
+    """Stack-audit F3: rejecting a confirmed match needs the same
+    unconfirm-first ceremony as void."""
+    from fastapi import HTTPException
+    from starlette.requests import Request as StarletteRequest
+
+    from gdx_dispatch.modules.bank_feeds import router as r
+
+    db, account = world
+    make_payment(db, 500.00, date(2026, 6, 1))
+    run_matcher(db, account)
+    match = match_for_line(db, "Deposit/Credit")
+    statement_matching.set_match_status(db, match, MATCH_CONFIRMED, "tester")
+
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": [],
+             "query_string": b"", "client": ("127.0.0.1", 80), "state": {}}
+    request = StarletteRequest(scope)
+    request.state.tenant = {"id": COMPANY}
+    with pytest.raises(HTTPException) as exc_info:
+        r.reject_match(str(match.id), request, {"sub": "tester"}, None, db)
+    assert exc_info.value.status_code == 409
+    db.refresh(match)
+    assert match.status == MATCH_CONFIRMED
