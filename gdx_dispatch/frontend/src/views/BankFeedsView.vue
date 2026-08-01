@@ -440,6 +440,45 @@
               </div>
             </div>
 
+            <template v-if="(reports.broken_matches || []).length">
+              <h3 class="imports-title broken-title">
+                ⚠ Broken matches <span class="muted">({{ reports.broken_matches.length }})</span>
+              </h3>
+              <p class="muted recon-note">
+                These confirmed matches reference payments or records that were voided or
+                deleted afterwards — the statement line still shows as settled by dead money.
+                Unconfirm to put the line back in the worklist.
+              </p>
+              <DataTable :value="reports.broken_matches" striped-rows size="small" data-testid="recon-broken-table">
+                <Column header="Statement side" :style="{ minWidth: '240px' }">
+                  <template #body="{ data }">
+                    <div v-for="l in data.lines" :key="l.id">
+                      {{ l.txn_date }} · {{ formatCents(l.amount_cents) }} · {{ l.description }}
+                    </div>
+                  </template>
+                </Column>
+                <Column header="What died" :style="{ minWidth: '200px' }">
+                  <template #body="{ data }">
+                    <div v-for="d in data.dead_externals" :key="d.source_id">
+                      <Tag :value="d.reason" severity="danger" />
+                    </div>
+                  </template>
+                </Column>
+                <Column header="" :style="{ width: '140px' }">
+                  <template #body="{ data }">
+                    <Button
+                      v-if="canReconcile"
+                      label="Unconfirm"
+                      size="small"
+                      severity="warn"
+                      :data-testid="`recon-unconfirm-${data.match_id}`"
+                      @click="actOnMatch(data.match_id, 'unconfirm')"
+                    />
+                  </template>
+                </Column>
+              </DataTable>
+            </template>
+
             <h3 class="imports-title">Suggestions <span class="muted">({{ suggestions.length }})</span></h3>
             <DataTable :value="suggestions" striped-rows size="small" data-testid="recon-suggestions-table">
               <template #empty><span class="muted">No open suggestions — run "Suggest matches".</span></template>
@@ -1294,8 +1333,13 @@ const runSuggest = async () => {
 };
 
 const actOnMatch = async (matchId, action) => {
+  const messages = {
+    confirm: 'Match confirmed',
+    reject: 'Suggestion rejected',
+    unconfirm: 'Match unconfirmed — line returned to the worklist',
+  };
   await api.post(`/api/bank-feeds/statements/matches/${matchId}/${action}`, {},
-    { successMessage: action === 'confirm' ? 'Match confirmed' : 'Suggestion rejected' });
+    { successMessage: messages[action] || 'Done' });
   await loadReconciliation();
 };
 
@@ -1514,6 +1558,9 @@ onBeforeUnmount(() => {
 .manual-note {
   width: 100%;
   margin-top: 0.5rem;
+}
+.broken-title {
+  color: var(--p-red-500, #dc2626);
 }
 
 .bank-feeds-tabview {

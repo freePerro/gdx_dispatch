@@ -73,9 +73,22 @@ R3_MAX_CANDIDATES = 12
 R3_MAX_SUBSET = 6
 VENDOR_INVOICE_WINDOW_DAYS = 10
 
-# Card-family payments settle through the processor as batched payouts,
-# not as per-payment deposit-slip money — excluded from R3 sweeps.
-_PROCESSOR_METHODS = {"card", "credit", "credit_card", "debit_card", "stripe"}
+# The method vocabulary the codebase ACTUALLY writes (integration audit
+# F2 — the original set was guesses): the payment UI writes lowercased
+# cash/check/card/zelle/venmo/ach/other; Stripe ACH writes "ach"
+# (core/payments.py); the QB import writes "quickbooks"
+# (modules/quickbooks/sync.py) — instrument unknown.
+#
+# Processor-settled methods arrive as batched payouts minus fees, never as
+# per-payment deposit-slip money — excluded from BOTH R2 and R3 (a card
+# payment 1:1-matching a deposit is usually wrong too).
+_PROCESSOR_METHODS = {"card", "credit", "credit_card", "debit_card", "stripe", "ach"}
+# QB-imported payments carry an unknown instrument: exact R2 (amount+date
+# unique both ways) is strong evidence regardless, but letting them into
+# R3 subset-sums lets hidden card money complete plausible-looking sweeps
+# (proven by the audit's probe) — excluded from R3 only. They remain
+# offered in the manual-match dialog, method visible.
+_R3_EXCLUDED_METHODS = _PROCESSOR_METHODS | {"quickbooks"}
 
 
 def _cents(amount) -> int:
@@ -267,7 +280,8 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
 
     def r2_candidates(line):
         return [p for p in payments
-                if _cents(p.amount) == line.amount_cents
+                if (p.method or "").strip().lower() not in _PROCESSOR_METHODS
+                and _cents(p.amount) == line.amount_cents
                 and _business_days_apart(p.payment_date, line.txn_date) <= R2_BUSINESS_DAYS]
 
     line_to_payments = {l.id: r2_candidates(l) for l in deposits}
@@ -318,7 +332,7 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
     # ── R3 deposit sweep: unique subset-sum of unconsumed payments ─────
     sweep_pool = [p for p in payments
                   if p.id not in r2_matched_payment_ids
-                  and (p.method or "").strip().lower() not in _PROCESSOR_METHODS]
+                  and (p.method or "").strip().lower() not in _R3_EXCLUDED_METHODS]
     swept_payment_ids: set = set()
     r3_matched_line_ids: set = set()
     for line in still_open_deposits:
@@ -517,6 +531,31 @@ def create_manual_match(
     return match
 
 
+def _dead_external_reason(db: Session, ext: "BankMatchExternal") -> str | None:
+    """Why a confirmed match's books record no longer counts: voided,
+    soft-deleted, void-status, or hard-deleted (no FK on source_id — a
+    GDPR purge leaves a dangling reference)."""
+    if ext.source_table == "payments":
+        row = db.get(Payment, ext.source_id)
+        if row is None:
+            return "payment record missing"
+        if row.voided_at is not None:
+            return "payment voided"
+    elif ext.source_table == "expenses":
+        row = db.get(Expense, ext.source_id)
+        if row is None:
+            return "expense record missing"
+        if row.deleted_at is not None:
+            return "expense deleted"
+    elif ext.source_table == "vendor_invoices" and VendorInvoice is not None:
+        row = db.get(VendorInvoice, ext.source_id)
+        if row is None:
+            return "vendor invoice record missing"
+        if row.status == "void":
+            return "vendor invoice voided"
+    return None
+
+
 MANUAL_CANDIDATE_WINDOW_DAYS = 30
 
 
@@ -655,9 +694,17 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
 
     unmatched_payments = [payment_out(p) for p in payments if p.id not in confirmed_payment_ids]
 
-    # Date drift: confirmed line↔payment pairs where the recorded date
-    # differs from the bank date — verifies the payment-date backfill.
+    # Confirmed-match pass: date drift (recorded vs bank date — verifies
+    # the payment-date backfill) AND broken-match detection (integration
+    # audit F1: the books can void a payment / soft-delete an expense /
+    # void a vendor bill AFTER the office confirmed it against a statement
+    # line — nothing in those code paths knows matches exist, so without
+    # this sweep the line stays "settled by dead money" and every report
+    # goes silent about the contradiction). A broken match stays settled
+    # until a human unconfirms it — never silently unlinked — but it is
+    # surfaced loudly here.
     drift = []
+    broken_matches = []
     confirmed_matches = db.scalars(
         select(BankMatch).where(
             BankMatch.bank_account_id == account.id,
@@ -671,13 +718,20 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
         if not match_lines:
             continue
         bank_date = min(l.txn_date for l in match_lines)
+        dead_externals = []
         for ext in db.scalars(
                 select(BankMatchExternal).where(BankMatchExternal.match_id == match.id)).all():
+            dead_reason = _dead_external_reason(db, ext)
+            if dead_reason:
+                dead_externals.append({
+                    "source_table": ext.source_table,
+                    "source_id": str(ext.source_id),
+                    "reason": dead_reason,
+                })
+                continue
             if ext.source_table != "payments":
                 continue
             payment = db.get(Payment, ext.source_id)
-            if payment is None:
-                continue
             days = (payment.payment_date - bank_date).days
             if days != 0:
                 drift.append({
@@ -688,10 +742,18 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
                     "amount_cents": _cents(payment.amount),
                     "match_id": str(match.id),
                 })
+        if dead_externals:
+            broken_matches.append({
+                "match_id": str(match.id),
+                "rule": match.rule,
+                "lines": [line_out(l) for l in match_lines],
+                "dead_externals": dead_externals,
+            })
 
     return {
         "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
         "payments_scope": "bank_wide",
+        "broken_matches": broken_matches,
         "unmatched_deposits": unmatched_deposits,
         "unmatched_deposits_total_cents": sum(l["amount_cents"] for l in unmatched_deposits),
         "unmatched_payments": unmatched_payments,
