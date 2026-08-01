@@ -22,6 +22,7 @@ environments.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -231,7 +232,7 @@ def _overlap_integrity(
                 BankStatementLine.txn_date <= w_end,
             )
         ).all()
-        existing_by_hash = {l.line_hash: l for l in existing}
+        existing_by_hash = {line.line_hash: line for line in existing}
         new_by_hash = {h: t for t, _o, h in hashed if w_start <= t.txn_date <= w_end}
 
         missing_from_new = set(existing_by_hash) - set(new_by_hash)
@@ -540,9 +541,7 @@ def void_import(db: Session, imp: BankStatementImport) -> dict:
     imp.voided_at = utcnow()
     db.commit()
     for path in image_paths:
-        try:
+        with contextlib.suppress(OSError):
             Path(path).unlink(missing_ok=True)
-        except OSError:
-            pass
     return {"status": "voided", "import_id": str(imp.id),
             "lines_removed": removed, "lines_kept_co_attested": kept}
