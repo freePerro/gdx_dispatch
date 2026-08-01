@@ -1057,7 +1057,10 @@ def void_statement_import(
     db: Session = Depends(get_db),
 ) -> dict:
     imp = _load_statement_import(db, import_id)
-    result = statement_service.void_import(db, imp)
+    try:
+        result = statement_service.void_import(db, imp)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if result["status"] == "voided":
         _audit(db, request, current_user, "bank_statement_import_voided", str(imp.id))
     return result

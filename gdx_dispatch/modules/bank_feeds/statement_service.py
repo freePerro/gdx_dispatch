@@ -502,6 +502,45 @@ def void_import(db: Session, imp: BankStatementImport) -> dict:
     if imp.voided_at is not None:
         return {"status": "already_voided", "import_id": str(imp.id)}
 
+    # ── read-only phase: decide everything BEFORE mutating anything ────
+    attested_line_ids = list(db.scalars(
+        select(BankStatementLineSource.line_id).where(BankStatementLineSource.import_id == imp.id)
+    ).all())
+    # A line dies with this void iff this import is its ONLY attestation.
+    doomed_line_ids = [
+        line_id for line_id in attested_line_ids
+        if db.scalars(
+            select(BankStatementLineSource).where(
+                BankStatementLineSource.line_id == line_id,
+                BankStatementLineSource.import_id != imp.id,
+            )
+        ).first() is None
+    ]
+
+    # Cross-PR seam (stack audit): PR 3's match children hold FKs to the
+    # lines this void is about to delete. A CONFIRMED match is an office
+    # assertion — never silently unlink it: refuse the whole void (before
+    # any mutation) and make the human unconfirm first. Suggested/rejected
+    # matches are derived data and are removed with their lines.
+    from gdx_dispatch.modules.bank_feeds.statement_models import (
+        MATCH_CONFIRMED,
+        BankMatch,
+        BankMatchExternal,
+        BankMatchLine,
+    )
+
+    referencing = db.scalars(
+        select(BankMatchLine).where(BankMatchLine.line_id.in_(doomed_line_ids))
+    ).all() if doomed_line_ids else []
+    confirmed_match_ids = {ml.match_id for ml in referencing if ml.match_status == MATCH_CONFIRMED}
+    if confirmed_match_ids:
+        raise ValueError(
+            f"{len(confirmed_match_ids)} confirmed match(es) reference this "
+            "statement's transactions — unconfirm them first, then void"
+        )
+    stale_match_ids = {ml.match_id for ml in referencing}
+
+    # ── mutation phase ─────────────────────────────────────────────────
     # Images belong to the import that extracted them (a co-attesting
     # overlap import contributes its own rows). Collect paths now, DELETE
     # rows now, but unlink files only AFTER the commit succeeds — otherwise
@@ -513,29 +552,28 @@ def void_import(db: Session, imp: BankStatementImport) -> dict:
         if image.storage_path:
             image_paths.append(image.storage_path)
         db.delete(image)
-    db.flush()
 
-    attested_line_ids = list(db.scalars(
-        select(BankStatementLineSource.line_id).where(BankStatementLineSource.import_id == imp.id)
-    ).all())
     for source in db.scalars(
         select(BankStatementLineSource).where(BankStatementLineSource.import_id == imp.id)
     ).all():
         db.delete(source)
     db.flush()
 
-    removed = kept = 0
-    for line_id in attested_line_ids:
-        remaining = db.scalars(
-            select(BankStatementLineSource).where(BankStatementLineSource.line_id == line_id)
-        ).first()
-        if remaining is None:
-            line = db.get(BankStatementLine, line_id)
-            if line is not None:
-                db.delete(line)
-                removed += 1
-        else:
-            kept += 1
+    if stale_match_ids:
+        db.query(BankMatchLine).filter(
+            BankMatchLine.match_id.in_(stale_match_ids)).delete(synchronize_session=False)
+        db.query(BankMatchExternal).filter(
+            BankMatchExternal.match_id.in_(stale_match_ids)).delete(synchronize_session=False)
+        db.query(BankMatch).filter(
+            BankMatch.id.in_(stale_match_ids)).delete(synchronize_session=False)
+        db.flush()
+
+    removed = len(doomed_line_ids)
+    kept = len(attested_line_ids) - removed
+    for line_id in doomed_line_ids:
+        line = db.get(BankStatementLine, line_id)
+        if line is not None:
+            db.delete(line)
 
     imp.voided_at = utcnow()
     db.commit()

@@ -23,6 +23,7 @@ from gdx_dispatch.modules.bank_feeds.statement_models import (
     BankMatch,
     BankMatchExternal,
     BankMatchLine,
+    BankStatementImport,
     BankStatementLine,
 )
 from gdx_dispatch.modules.bank_feeds.statement_parsers import community_bank
@@ -437,3 +438,39 @@ def test_r5_classifies_interest_from_savings_form(world):
     assert stats["classified"] == 2  # interest row + the transfer debit
     interest_match = match_for_line(db, "Interest Deposit")
     assert interest_match.classification == "interest"
+
+
+# ── cross-PR seam: void ↔ matches (stack audit) ────────────────────────
+
+
+def test_void_refuses_when_confirmed_matches_reference_lines(world):
+    db, account = world
+    make_payment(db, 500.00, date(2026, 6, 1))
+    run_matcher(db, account)
+    match = match_for_line(db, "Deposit/Credit")
+    statement_matching.set_match_status(db, match, MATCH_CONFIRMED, "tester")
+
+    imp = db.query(BankStatementImport).one()
+    with pytest.raises(ValueError, match="unconfirm them first"):
+        statement_service.void_import(db, imp)
+    # Refusal must be clean: nothing voided, evidence intact, match intact.
+    db.rollback()
+    assert db.query(BankStatementImport).one().voided_at is None
+    assert db.query(BankStatementLine).count() == 8
+    db.refresh(match)
+    assert match.status == MATCH_CONFIRMED
+
+
+def test_void_removes_suggested_matches_with_their_lines(world):
+    db, account = world
+    make_payment(db, 500.00, date(2026, 6, 1))
+    run_matcher(db, account)  # suggestions only — derived data
+    assert db.query(BankMatch).count() > 0
+
+    imp = db.query(BankStatementImport).one()
+    result = statement_service.void_import(db, imp)
+    assert result["status"] == "voided" and result["lines_removed"] == 8
+    # No orphaned match children pointing at deleted lines, no stale matches.
+    assert db.query(BankMatch).count() == 0
+    assert db.query(BankMatchLine).count() == 0
+    assert db.query(BankMatchExternal).count() == 0
