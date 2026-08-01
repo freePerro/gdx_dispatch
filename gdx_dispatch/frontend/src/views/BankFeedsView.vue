@@ -236,7 +236,7 @@
           <div class="imports-header">
             <h3 class="imports-title">Imported statements</h3>
             <FileUpload
-              v-if="canManage"
+              v-if="canImportStatements"
               mode="basic"
               custom-upload
               multiple
@@ -260,7 +260,7 @@
               <EmptyState
                 icon="pi pi-file-import"
                 title="No imported statements"
-                :message="canManage
+                :message="canImportStatements
                   ? 'Upload statement PDFs from your bank — every import is arithmetic-checked against the statement\'s own balances before any transaction is accepted.'
                   : 'Imported bank statements will appear here.'"
               />
@@ -300,7 +300,7 @@
                     @click="openImportDetails(data)"
                   />
                   <Button
-                    v-if="canManage && !data.voided_at"
+                    v-if="canImportStatements && !data.voided_at"
                     label="Void"
                     size="small"
                     severity="danger"
@@ -717,8 +717,9 @@
           <span>{{ importDetails.tie_out_report.continuity_warnings.length }} continuity warning(s) against adjacent statements — see report.</span>
         </div>
 
-        <h4>Check &amp; deposit images <span class="muted">({{ importImages.length }})</span></h4>
-        <p v-if="!importImages.length" class="muted">This statement's PDF has no images page.</p>
+        <h4>Check &amp; deposit images <span v-if="canViewScans" class="muted">({{ importImages.length }})</span></h4>
+        <p v-if="!canViewScans" class="muted">Check images are restricted to accounting staff.</p>
+        <p v-else-if="!importImages.length" class="muted">This statement's PDF has no images page.</p>
         <div v-else class="stmt-image-grid">
           <figure v-for="img in importImages" :key="img.id" class="stmt-image-card">
             <img v-if="img.url" :src="img.url" :alt="imageCaption(img)" loading="lazy" />
@@ -855,6 +856,12 @@ const auth = useAuthStore();
 const toast = useToast();
 
 const canManage = computed(() => auth.hasPermission('bank_feeds.manage'));
+// Statement import/void is the accounting role's job (Doug 2026-08-01) —
+// its own key, because bank_feeds.manage also carries Banno credentials.
+const canImportStatements = computed(() => auth.hasPermission('bank_feeds.statements'));
+// Check/deposit-ticket scans show full account numbers + signatures:
+// higher office only (accounting.write), per Doug.
+const canViewScans = computed(() => auth.hasPermission('accounting.write'));
 
 const activeTab = ref('banks');
 const loading = ref(true);
@@ -1245,7 +1252,9 @@ const openImportDetails = async (row) => {
   showImportDetails.value = true;
   const [detail, gallery] = await Promise.all([
     api.get(`/api/bank-feeds/statements/imports/${row.id}`),
-    api.get(`/api/bank-feeds/statements/imports/${row.id}/images`),
+    canViewScans.value
+      ? api.get(`/api/bank-feeds/statements/imports/${row.id}/images`)
+      : Promise.resolve({ items: [] }),
   ]);
   importDetails.value = detail;
   const images = (gallery.items || []).map((img) => ({ ...img, url: null }));

@@ -94,6 +94,12 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     # Bank feeds (Banno) — 2026-07-17
     ("bank_feeds.read", "View bank accounts, transactions, and statements", "bank_feeds"),
     ("bank_feeds.manage", "Connect bank accounts and manage feed settings", "bank_feeds"),
+    # 2026-08-01 (Doug): statement work is the accounting role's job, but
+    # bank_feeds.manage also carries Banno CREDENTIAL management — so
+    # statement import/void gets its own key instead of widening manage.
+    # Check/deposit-ticket scans (full account numbers, signatures) are
+    # gated on accounting.write — "higher office people" only, per Doug.
+    ("bank_feeds.statements", "Import bank statement PDFs and void imports", "bank_feeds"),
 
     # Settings
     ("settings.read", "View settings", "settings"),
@@ -211,7 +217,7 @@ BUILTIN_ROLES: Final[dict[str, list[str]]] = {
         "payments.read", "payments.process",
         "payroll.read", "payroll.write", "payroll.export",
         "accounting.read", "accounting.write", "accounting.export",
-        "bank_feeds.read",
+        "bank_feeds.read", "bank_feeds.statements",
         "reports.read", "reports.export",
         "billing.read",
         "pricing.labor_matrix.read", "pricing.labor_matrix.write",

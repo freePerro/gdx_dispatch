@@ -961,7 +961,7 @@ def patch_statement_account(
     body: StatementAccountPatch,
     request: FastAPIRequest,
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
@@ -989,7 +989,7 @@ def import_statements(
     request: FastAPIRequest,
     files: list[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     if not files:
@@ -1055,7 +1055,7 @@ def void_statement_import(
     import_id: str,
     request: FastAPIRequest,
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     imp = _load_statement_import(db, import_id)
@@ -1173,7 +1173,7 @@ def list_statement_import_images(
 @router.get("/statements/images/{image_id}/file", dependencies=[_MODULE])
 def download_statement_image(
     image_id: str,
-    _perm: None = Depends(require_permission("bank_feeds.read")),
+    _perm: None = Depends(require_permission("accounting.write")),
     db: Session = Depends(get_db),
 ):
     try:
