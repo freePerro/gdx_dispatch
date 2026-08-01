@@ -961,7 +961,7 @@ def patch_statement_account(
     body: StatementAccountPatch,
     request: FastAPIRequest,
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
@@ -989,7 +989,7 @@ def import_statements(
     request: FastAPIRequest,
     files: list[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     if not files:
@@ -997,7 +997,9 @@ def import_statements(
     user_id = str(current_user.get("sub") or current_user.get("user_id") or "")[:64] or None
     results = []
     for upload in files:
-        pdf_bytes = upload.file.read()
+        # Bounded read (stack-audit F5): never pull more than cap+1 into
+        # memory — the service's own size check then rejects the overage.
+        pdf_bytes = upload.file.read(statement_service.MAX_STATEMENT_BYTES + 1)
         result = statement_service.import_statement(
             db, pdf_bytes, upload.filename or "statement.pdf", imported_by=user_id
         )
@@ -1053,11 +1055,14 @@ def void_statement_import(
     import_id: str,
     request: FastAPIRequest,
     current_user: dict = Depends(get_current_user),
-    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    _perm: None = Depends(require_permission("bank_feeds.statements")),
     db: Session = Depends(get_db),
 ) -> dict:
     imp = _load_statement_import(db, import_id)
-    result = statement_service.void_import(db, imp)
+    try:
+        result = statement_service.void_import(db, imp)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     if result["status"] == "voided":
         _audit(db, request, current_user, "bank_statement_import_voided", str(imp.id))
     return result
@@ -1105,23 +1110,23 @@ def list_statement_lines(
     image_ids: dict = {}
     if rows:
         for img in db.scalars(
-            select(_Img).where(_Img.line_id.in_([l.id for l in rows])).order_by(_Img.sort_order)
+            select(_Img).where(_Img.line_id.in_([row.id for row in rows])).order_by(_Img.sort_order)
         ).all():
             image_ids.setdefault(img.line_id, []).append(str(img.id))
     return {
         "items": [
             {
-                "id": str(l.id),
-                "bank_account_id": str(l.bank_account_id),
-                "import_id": str(l.import_id),
-                "txn_date": l.txn_date.isoformat(),
-                "amount_cents": l.amount_cents,
-                "description": l.description,
-                "section": l.section,
-                "check_number": l.check_number,
-                "image_ids": image_ids.get(l.id, []),
+                "id": str(line.id),
+                "bank_account_id": str(line.bank_account_id),
+                "import_id": str(line.import_id),
+                "txn_date": line.txn_date.isoformat(),
+                "amount_cents": line.amount_cents,
+                "description": line.description,
+                "section": line.section,
+                "check_number": line.check_number,
+                "image_ids": image_ids.get(line.id, []),
             }
-            for l in rows
+            for line in rows
         ],
         "total": total,
         "limit": limit,
@@ -1168,7 +1173,7 @@ def list_statement_import_images(
 @router.get("/statements/images/{image_id}/file", dependencies=[_MODULE])
 def download_statement_image(
     image_id: str,
-    _perm: None = Depends(require_permission("bank_feeds.read")),
+    _perm: None = Depends(require_permission("accounting.write")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -1185,3 +1190,260 @@ def download_statement_image(
         raise HTTPException(status_code=404, detail="Image file missing from disk")
     return FileResponse(resolved, media_type="image/png",
                         filename=f"statement-image-{image.sort_order:02d}.png")
+
+
+# ── reconciliation: matcher + the four verification reports (PR 3) ─────
+#
+# Reads under bank_feeds.read; anything that creates/changes matches under
+# accounting.write (plan §7) — matching asserts facts about the books.
+
+from gdx_dispatch.modules.bank_feeds import statement_matching  # noqa: E402
+from gdx_dispatch.modules.bank_feeds.statement_models import (  # noqa: E402
+    CLASSIFICATIONS,
+    MATCH_CONFIRMED,
+    MATCH_REJECTED,
+    MATCH_SUGGESTED,
+    BankMatch,
+    BankMatchExternal,
+    BankMatchLine,
+)
+
+
+def _load_bank_account(db: Session, account_id: str) -> BankAccount:
+    try:
+        account = db.get(BankAccount, UUID(str(account_id)))
+    except ValueError:
+        account = None
+    if account is None:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    return account
+
+
+def _parse_range(date_from: date | None, date_to: date | None) -> tuple[date, date]:
+    if date_from is None or date_to is None:
+        raise HTTPException(status_code=422, detail="date_from and date_to are required")
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must be <= date_to")
+    return date_from, date_to
+
+
+class SuggestIn(BaseModel):
+    account_id: str
+    date_from: date
+    date_to: date
+
+
+@router.post("/statements/reconcile/suggest", dependencies=[_MODULE])
+def reconcile_suggest(
+    body: SuggestIn,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    account = _load_bank_account(db, body.account_id)
+    date_from, date_to = _parse_range(body.date_from, body.date_to)
+    try:
+        stats = statement_matching.suggest_matches(db, account, date_from, date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    _audit(db, request, current_user, "bank_reconcile_suggest", str(account.id))
+    return {"stats": stats}
+
+
+def _match_out(db: Session, match: BankMatch) -> dict:
+    lines = []
+    for child in db.scalars(select(BankMatchLine).where(BankMatchLine.match_id == match.id)).all():
+        line = db.get(BankStatementLine, child.line_id)
+        if line is not None:
+            lines.append({
+                "id": str(line.id),
+                "txn_date": line.txn_date.isoformat(),
+                "amount_cents": line.amount_cents,
+                "description": line.description.split("\n", 1)[0],
+                "section": line.section,
+                "check_number": line.check_number,
+            })
+    externals = [
+        {"source_table": e.source_table, "source_id": str(e.source_id)}
+        for e in db.scalars(
+            select(BankMatchExternal).where(BankMatchExternal.match_id == match.id)).all()
+    ]
+    return {
+        "id": str(match.id),
+        "rule": match.rule,
+        "status": match.status,
+        "classification": match.classification,
+        "confidence": float(match.confidence) if match.confidence is not None else None,
+        "note": match.note,
+        "lines": lines,
+        "externals": externals,
+        "confirmed_by": match.confirmed_by,
+        "created_at": match.created_at.isoformat() if match.created_at else None,
+    }
+
+
+@router.get("/statements/matches", dependencies=[_MODULE])
+def list_matches(
+    account_id: str,
+    status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    account = _load_bank_account(db, account_id)
+    query = select(BankMatch).where(BankMatch.bank_account_id == account.id)
+    if status:
+        if status not in (MATCH_SUGGESTED, MATCH_CONFIRMED, MATCH_REJECTED):
+            raise HTTPException(status_code=422, detail="invalid status")
+        query = query.where(BankMatch.status == status)
+    matches = db.scalars(query.order_by(BankMatch.created_at)).all()
+    items = [_match_out(db, m) for m in matches]
+    if date_from or date_to:
+        def in_range(m):
+            dates = [entry["txn_date"] for entry in m["lines"]]
+            if not dates:
+                return True
+            lo, hi = min(dates), max(dates)
+            if date_from and hi < date_from.isoformat():
+                return False
+            return not (date_to and lo > date_to.isoformat())
+        items = [m for m in items if in_range(m)]
+    return {"items": items}
+
+
+def _load_match(db: Session, match_id: str) -> BankMatch:
+    try:
+        match = db.get(BankMatch, UUID(str(match_id)))
+    except ValueError:
+        match = None
+    if match is None:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return match
+
+
+@router.post("/statements/matches/{match_id}/confirm", dependencies=[_MODULE])
+def confirm_match(
+    match_id: str,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    match = _load_match(db, match_id)
+    if match.status == MATCH_REJECTED:
+        raise HTTPException(status_code=409, detail="Rejected match — re-run suggestions instead")
+    user_id = str(current_user.get("sub") or "")[:64] or None
+    result = statement_matching.set_match_status(db, match, MATCH_CONFIRMED, user_id)
+    _audit(db, request, current_user, "bank_match_confirmed", str(match.id))
+    return result
+
+
+@router.post("/statements/matches/{match_id}/reject", dependencies=[_MODULE])
+def reject_match(
+    match_id: str,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    match = _load_match(db, match_id)
+    # Stack-audit F3: a confirmed match is an office assertion — the same
+    # unconfirm-first ceremony the void endpoint demands applies here, or
+    # one click destroys a confirmed reconciliation.
+    if match.status == MATCH_CONFIRMED:
+        raise HTTPException(status_code=409, detail="Confirmed match — unconfirm it first, then reject")
+    user_id = str(current_user.get("sub") or "")[:64] or None
+    result = statement_matching.set_match_status(db, match, MATCH_REJECTED, user_id)
+    _audit(db, request, current_user, "bank_match_rejected", str(match.id))
+    return result
+
+
+@router.post("/statements/matches/{match_id}/unconfirm", dependencies=[_MODULE])
+def unconfirm_match(
+    match_id: str,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    match = _load_match(db, match_id)
+    if match.status != MATCH_CONFIRMED:
+        raise HTTPException(status_code=409, detail="Only confirmed matches can be unconfirmed")
+    user_id = str(current_user.get("sub") or "")[:64] or None
+    result = statement_matching.set_match_status(db, match, MATCH_SUGGESTED, user_id)
+    _audit(db, request, current_user, "bank_match_unconfirmed", str(match.id))
+    return result
+
+
+class ManualExternalIn(BaseModel):
+    source_table: str
+    source_id: str
+
+
+class ManualMatchIn(BaseModel):
+    account_id: str
+    line_ids: list[str]
+    externals: list[ManualExternalIn] = []
+    classification: str | None = None
+    note: str | None = None
+
+
+@router.post("/statements/matches", dependencies=[_MODULE])
+def create_match(
+    body: ManualMatchIn,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    account = _load_bank_account(db, body.account_id)
+    if body.classification is not None and body.classification not in CLASSIFICATIONS:
+        raise HTTPException(status_code=422, detail=f"classification must be one of {CLASSIFICATIONS}")
+    try:
+        line_ids = [UUID(str(x)) for x in body.line_ids]
+        externals = [(e.source_table, UUID(str(e.source_id))) for e in body.externals]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid id") from None
+    user_id = str(current_user.get("sub") or "")[:64] or None
+    try:
+        match = statement_matching.create_manual_match(
+            db, account, line_ids, externals, body.classification, body.note, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    _audit(db, request, current_user, "bank_match_created_manual", str(match.id))
+    return _match_out(db, match)
+
+
+@router.get("/statements/reconciliation", dependencies=[_MODULE])
+def reconciliation_reports(
+    account_id: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    account = _load_bank_account(db, account_id)
+    date_from, date_to = _parse_range(date_from, date_to)
+    return statement_matching.build_reports(db, account, date_from, date_to)
+
+
+@router.get("/statements/reconcile/candidates", dependencies=[_MODULE])
+def match_candidates(
+    account_id: str,
+    line_id: str,
+    _perm: None = Depends(require_permission("bank_feeds.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Candidate books records for the manual-match dialog: unconsumed
+    payments (deposits) or expenses/vendor bills (debits) near the line's
+    date, widest-window, no amount filter — the human is the judge."""
+    account = _load_bank_account(db, account_id)
+    try:
+        line = db.get(BankStatementLine, UUID(str(line_id)))
+    except ValueError:
+        line = None
+    if line is None or line.bank_account_id != account.id:
+        raise HTTPException(status_code=404, detail="Statement line not found")
+    return statement_matching.manual_candidates(db, line)

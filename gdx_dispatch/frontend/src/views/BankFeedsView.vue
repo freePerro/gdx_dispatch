@@ -22,6 +22,7 @@
         <Tab value="accounts" data-testid="bank-feeds-tab-accounts">Accounts</Tab>
         <Tab value="transactions" data-testid="bank-feeds-tab-transactions">Transactions</Tab>
         <Tab value="statements" data-testid="bank-feeds-tab-statements">Statements</Tab>
+        <Tab value="reconcile" data-testid="bank-feeds-tab-reconcile">Reconcile</Tab>
         <Tab value="settings" data-testid="bank-feeds-tab-settings">Settings</Tab>
       </TabList>
       <TabPanels>
@@ -235,7 +236,7 @@
           <div class="imports-header">
             <h3 class="imports-title">Imported statements</h3>
             <FileUpload
-              v-if="canManage"
+              v-if="canImportStatements"
               mode="basic"
               custom-upload
               multiple
@@ -259,7 +260,7 @@
               <EmptyState
                 icon="pi pi-file-import"
                 title="No imported statements"
-                :message="canManage
+                :message="canImportStatements
                   ? 'Upload statement PDFs from your bank — every import is arithmetic-checked against the statement\'s own balances before any transaction is accepted.'
                   : 'Imported bank statements will appear here.'"
               />
@@ -299,7 +300,7 @@
                     @click="openImportDetails(data)"
                   />
                   <Button
-                    v-if="canManage && !data.voided_at"
+                    v-if="canImportStatements && !data.voided_at"
                     label="Void"
                     size="small"
                     severity="danger"
@@ -382,6 +383,201 @@
               </template>
             </Column>
           </DataTable>
+        </TabPanel>
+
+        <!-- ── Reconcile (PR 3): matcher + the four verification reports ── -->
+        <TabPanel value="reconcile">
+          <div class="filters-row">
+            <Select
+              v-model="reconAccountId"
+              :options="statementAccounts"
+              optionLabel="name"
+              optionValue="id"
+              placeholder="Account"
+              class="filter-input"
+              data-testid="recon-account-select"
+              @change="loadReconciliation"
+            />
+            <DatePicker v-model="reconFrom" dateFormat="yy-mm-dd" placeholder="From" class="filter-input" @update:modelValue="loadReconciliation" />
+            <DatePicker v-model="reconTo" dateFormat="yy-mm-dd" placeholder="To" class="filter-input" @update:modelValue="loadReconciliation" />
+            <Button
+              v-if="canReconcile"
+              label="Suggest matches"
+              icon="pi pi-sparkles"
+              :loading="actionLoading === 'suggest'"
+              :disabled="!reconAccountId"
+              data-testid="recon-suggest-btn"
+              @click="runSuggest"
+            />
+          </div>
+
+          <EmptyState
+            v-if="!reconAccountId"
+            icon="pi pi-check-square"
+            title="Pick an account"
+            message="Reconciliation compares imported statement evidence against recorded payments and expenses."
+          />
+          <template v-else>
+            <div class="recon-summary">
+              <div class="recon-card" data-testid="recon-card-deposits">
+                <span class="recon-count">{{ reports.unmatched_deposits?.length ?? '—' }}</span>
+                <span>unmatched deposits</span>
+                <span class="muted">{{ formatCents(reports.unmatched_deposits_total_cents) }}</span>
+              </div>
+              <div class="recon-card" data-testid="recon-card-payments">
+                <span class="recon-count">{{ reports.unmatched_payments?.length ?? '—' }}</span>
+                <span>payments not on statement</span>
+                <span class="muted">{{ formatCents(reports.unmatched_payments_total_cents) }}</span>
+              </div>
+              <div class="recon-card">
+                <span class="recon-count">{{ reports.date_drift?.length ?? '—' }}</span>
+                <span>date drift</span>
+              </div>
+              <div class="recon-card">
+                <span class="recon-count">{{ reports.unmatched_debits?.length ?? '—' }}</span>
+                <span>unmatched debits</span>
+                <span class="muted">{{ formatCents(reports.unmatched_debits_total_cents) }}</span>
+              </div>
+            </div>
+
+            <template v-if="(reports.broken_matches || []).length">
+              <h3 class="imports-title broken-title">
+                ⚠ Broken matches <span class="muted">({{ reports.broken_matches.length }})</span>
+              </h3>
+              <p class="muted recon-note">
+                These confirmed matches reference payments or records that were voided or
+                deleted afterwards — the statement line still shows as settled by dead money.
+                Unconfirm to put the line back in the worklist.
+              </p>
+              <DataTable :value="reports.broken_matches" striped-rows size="small" data-testid="recon-broken-table">
+                <Column header="Statement side" :style="{ minWidth: '240px' }">
+                  <template #body="{ data }">
+                    <div v-for="l in data.lines" :key="l.id">
+                      {{ l.txn_date }} · {{ formatCents(l.amount_cents) }} · {{ l.description }}
+                    </div>
+                  </template>
+                </Column>
+                <Column header="What died" :style="{ minWidth: '200px' }">
+                  <template #body="{ data }">
+                    <div v-for="d in data.dead_externals" :key="d.source_id">
+                      <Tag :value="d.reason" severity="danger" />
+                    </div>
+                  </template>
+                </Column>
+                <Column header="" :style="{ width: '140px' }">
+                  <template #body="{ data }">
+                    <Button
+                      v-if="canReconcile"
+                      label="Unconfirm"
+                      size="small"
+                      severity="warn"
+                      :data-testid="`recon-unconfirm-${data.match_id}`"
+                      @click="actOnMatch(data.match_id, 'unconfirm')"
+                    />
+                  </template>
+                </Column>
+              </DataTable>
+            </template>
+
+            <h3 class="imports-title">Suggestions <span class="muted">({{ suggestions.length }})</span></h3>
+            <DataTable :value="suggestions" striped-rows size="small" data-testid="recon-suggestions-table">
+              <template #empty><span class="muted">No open suggestions — run "Suggest matches".</span></template>
+              <Column header="Rule" :style="{ width: '90px' }">
+                <template #body="{ data }">
+                  <Tag :value="data.classification || data.rule" severity="info" />
+                </template>
+              </Column>
+              <Column header="Statement side" :style="{ minWidth: '240px' }">
+                <template #body="{ data }">
+                  <div v-for="l in data.lines" :key="l.id">
+                    {{ l.txn_date }} · {{ formatCents(l.amount_cents) }} · {{ l.description }}
+                  </div>
+                </template>
+              </Column>
+              <Column header="Books side" :style="{ minWidth: '200px' }">
+                <template #body="{ data }">
+                  <span v-if="!data.externals.length" class="muted">classification only</span>
+                  <div v-else>{{ data.externals.length }} record(s) · {{ data.note || '' }}</div>
+                </template>
+              </Column>
+              <Column header="" :style="{ minWidth: '190px' }">
+                <template #body="{ data }">
+                  <div v-if="canReconcile" class="row-actions">
+                    <Button label="Confirm" size="small" icon="pi pi-check"
+                            :data-testid="`recon-confirm-${data.id}`"
+                            @click="actOnMatch(data.id, 'confirm')" />
+                    <Button label="Reject" size="small" severity="danger" class="p-button-text"
+                            @click="actOnMatch(data.id, 'reject')" />
+                  </div>
+                </template>
+              </Column>
+            </DataTable>
+
+            <h3 class="imports-title">Unmatched deposits</h3>
+            <DataTable :value="reports.unmatched_deposits || []" striped-rows size="small" data-testid="recon-deposits-table">
+              <template #empty><span class="muted">Every deposit in range is confirmed-matched. 🎉</span></template>
+              <Column field="txn_date" header="Date" :style="{ width: '110px' }" />
+              <Column header="Amount" :style="{ width: '120px' }">
+                <template #body="{ data }">{{ formatCents(data.amount_cents) }}</template>
+              </Column>
+              <Column field="description" header="Description" :style="{ minWidth: '220px' }" />
+              <Column header="" :style="{ width: '210px' }">
+                <template #body="{ data }">
+                  <Tag v-if="data.has_suggestion" value="suggestion above" severity="info" />
+                  <Button v-else-if="canReconcile" label="Match…" size="small" class="p-button-text"
+                          icon="pi pi-link" @click="openManualMatch(data)" />
+                </template>
+              </Column>
+            </DataTable>
+
+            <h3 class="imports-title">Payments never seen by the bank</h3>
+            <DataTable :value="reports.unmatched_payments || []" striped-rows size="small" data-testid="recon-payments-table">
+              <template #empty><span class="muted">Every recorded payment in range is confirmed against the statement.</span></template>
+              <Column field="payment_date" header="Recorded" :style="{ width: '110px' }" />
+              <Column header="Amount" :style="{ width: '120px' }">
+                <template #body="{ data }">{{ formatCents(data.amount_cents) }}</template>
+              </Column>
+              <Column field="method" header="Method" :style="{ width: '100px' }" />
+              <Column field="invoice_number" header="Invoice" :style="{ width: '130px' }" />
+              <Column field="customer_name" header="Customer" :style="{ minWidth: '160px' }" />
+              <Column field="reference" header="Reference" :style="{ minWidth: '120px' }" />
+            </DataTable>
+            <p class="muted recon-note">
+              Card payments settle through the processor as batched payouts — a card
+              payment listed here may be inside a payout, not missing.
+            </p>
+
+            <h3 class="imports-title">Date drift <span class="muted">(recorded vs bank)</span></h3>
+            <DataTable :value="reports.date_drift || []" striped-rows size="small">
+              <template #empty><span class="muted">No confirmed match has a date discrepancy.</span></template>
+              <Column field="payment_date" header="Recorded" :style="{ width: '110px' }" />
+              <Column field="bank_date" header="Bank" :style="{ width: '110px' }" />
+              <Column header="Drift" :style="{ width: '90px' }">
+                <template #body="{ data }">{{ data.drift_days > 0 ? '+' : '' }}{{ data.drift_days }}d</template>
+              </Column>
+              <Column header="Amount" :style="{ minWidth: '120px' }">
+                <template #body="{ data }">{{ formatCents(data.amount_cents) }}</template>
+              </Column>
+            </DataTable>
+
+            <h3 class="imports-title">Unmatched debits</h3>
+            <DataTable :value="reports.unmatched_debits || []" striped-rows size="small" data-testid="recon-debits-table">
+              <template #empty><span class="muted">Every debit in range is confirmed-matched.</span></template>
+              <Column field="txn_date" header="Date" :style="{ width: '110px' }" />
+              <Column header="Amount" :style="{ width: '120px' }">
+                <template #body="{ data }">{{ formatCents(-data.amount_cents) }}</template>
+              </Column>
+              <Column field="description" header="Description" :style="{ minWidth: '220px' }" />
+              <Column field="check_number" header="Check #" :style="{ width: '90px' }" />
+              <Column header="" :style="{ width: '210px' }">
+                <template #body="{ data }">
+                  <Tag v-if="data.has_suggestion" value="suggestion above" severity="info" />
+                  <Button v-else-if="canReconcile" label="Match…" size="small" class="p-button-text"
+                          icon="pi pi-link" @click="openManualMatch(data)" />
+                </template>
+              </Column>
+            </DataTable>
+          </template>
         </TabPanel>
 
         <!-- ── Settings ──────────────────────────────────────────── -->
@@ -521,8 +717,9 @@
           <span>{{ importDetails.tie_out_report.continuity_warnings.length }} continuity warning(s) against adjacent statements — see report.</span>
         </div>
 
-        <h4>Check &amp; deposit images <span class="muted">({{ importImages.length }})</span></h4>
-        <p v-if="!importImages.length" class="muted">This statement's PDF has no images page.</p>
+        <h4>Check &amp; deposit images <span v-if="canViewScans" class="muted">({{ importImages.length }})</span></h4>
+        <p v-if="!canViewScans" class="muted">Check images are restricted to accounting staff.</p>
+        <p v-else-if="!importImages.length" class="muted">This statement's PDF has no images page.</p>
         <div v-else class="stmt-image-grid">
           <figure v-for="img in importImages" :key="img.id" class="stmt-image-card">
             <img v-if="img.url" :src="img.url" :alt="imageCaption(img)" loading="lazy" />
@@ -538,6 +735,62 @@
             </figcaption>
           </figure>
         </div>
+      </template>
+    </Dialog>
+
+    <!-- ── Manual match dialog ────────────────────────────────────── -->
+    <Dialog
+      v-model:visible="showManualMatch"
+      :header="manualLine ? `Match ${manualLine.txn_date} · ${formatCents(Math.abs(manualLine.amount_cents))}` : 'Match'"
+      :style="{ width: 'min(680px, 95vw)' }"
+      modal
+      data-testid="recon-manual-dialog"
+    >
+      <template v-if="manualLine">
+        <p class="muted">{{ manualLine.description }}</p>
+        <h4 v-if="manualCandidates.payments.length">Payments</h4>
+        <div v-for="p in manualCandidates.payments" :key="p.id" class="manual-candidate">
+          <Checkbox v-model="manualSelected" :inputId="p.id" :value="`payments:${p.id}`" />
+          <label :for="p.id">
+            {{ p.payment_date }} · {{ formatCents(p.amount_cents) }} · {{ p.method }}
+            · {{ p.invoice_number || '—' }} · {{ p.customer_name || '—' }}
+            <span v-if="p.reference" class="muted">ref {{ p.reference }}</span>
+          </label>
+        </div>
+        <h4 v-if="manualCandidates.expenses.length">Expenses</h4>
+        <div v-for="e in manualCandidates.expenses" :key="e.id" class="manual-candidate">
+          <Checkbox v-model="manualSelected" :inputId="e.id" :value="`expenses:${e.id}`" />
+          <label :for="e.id">{{ e.date }} · {{ formatCents(e.amount_cents) }} · {{ e.vendor }} · {{ e.category }}</label>
+        </div>
+        <h4 v-if="manualCandidates.vendor_invoices.length">Vendor bills</h4>
+        <div v-for="v in manualCandidates.vendor_invoices" :key="v.id" class="manual-candidate">
+          <Checkbox v-model="manualSelected" :inputId="v.id" :value="`vendor_invoices:${v.id}`" />
+          <label :for="v.id">{{ v.invoice_date }} · {{ formatCents(v.total_cents) }} · {{ v.vendor_key }} #{{ v.invoice_number }}</label>
+        </div>
+
+        <div class="settings-row manual-classify-row">
+          <label>Or classify as</label>
+          <Select
+            v-model="manualClassification"
+            :options="classificationOptions"
+            optionLabel="label"
+            optionValue="value"
+            showClear
+            placeholder="—"
+            class="filter-input"
+          />
+        </div>
+        <InputText v-model="manualNote" placeholder="Note (optional)" class="manual-note" />
+      </template>
+      <template #footer>
+        <Button label="Cancel" class="p-button-text" @click="showManualMatch = false" />
+        <Button
+          label="Create confirmed match"
+          :disabled="!manualSelected.length && !manualClassification"
+          :loading="actionLoading === 'manual'"
+          data-testid="recon-manual-save"
+          @click="saveManualMatch"
+        />
       </template>
     </Dialog>
 
@@ -603,6 +856,12 @@ const auth = useAuthStore();
 const toast = useToast();
 
 const canManage = computed(() => auth.hasPermission('bank_feeds.manage'));
+// Statement import/void is the accounting role's job (Doug 2026-08-01) —
+// its own key, because bank_feeds.manage also carries Banno credentials.
+const canImportStatements = computed(() => auth.hasPermission('bank_feeds.statements'));
+// Check/deposit-ticket scans show full account numbers + signatures:
+// higher office only (accounting.write), per Doug.
+const canViewScans = computed(() => auth.hasPermission('accounting.write'));
 
 const activeTab = ref('banks');
 const loading = ref(true);
@@ -993,7 +1252,9 @@ const openImportDetails = async (row) => {
   showImportDetails.value = true;
   const [detail, gallery] = await Promise.all([
     api.get(`/api/bank-feeds/statements/imports/${row.id}`),
-    api.get(`/api/bank-feeds/statements/imports/${row.id}/images`),
+    canViewScans.value
+      ? api.get(`/api/bank-feeds/statements/imports/${row.id}/images`)
+      : Promise.resolve({ items: [] }),
   ]);
   importDetails.value = detail;
   const images = (gallery.items || []).map((img) => ({ ...img, url: null }));
@@ -1019,6 +1280,123 @@ const closeImportDetails = () => {
 const imageCaption = (img) => {
   const kind = img.caption_check_no === '0' ? 'Deposit ticket' : `Check ${img.caption_check_no || ''}`;
   return `${kind} ${img.caption_date || ''}`.trim();
+};
+
+// ── reconciliation (PR 3) ──────────────────────────────────────────
+
+const canReconcile = computed(() => auth.hasPermission('accounting.write'));
+const reconAccountId = ref(null);
+const reconFrom = ref(null);
+const reconTo = ref(null);
+const reports = ref({});
+const suggestions = ref([]);
+
+const isoDate = (d) => {
+  if (!d) return null;
+  const dt = d instanceof Date ? d : new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+};
+
+const defaultReconRange = () => {
+  const mine = statementImports.value.filter(
+    (i) => i.bank_account_id === reconAccountId.value && !i.voided_at);
+  if (!mine.length) return;
+  reconFrom.value = new Date(`${mine.reduce((a, i) => (i.period_start < a ? i.period_start : a), mine[0].period_start)}T12:00:00`);
+  reconTo.value = new Date(`${mine.reduce((a, i) => (i.period_end > a ? i.period_end : a), mine[0].period_end)}T12:00:00`);
+};
+
+const loadReconciliation = async () => {
+  if (!reconAccountId.value) return;
+  if (!reconFrom.value || !reconTo.value) defaultReconRange();
+  if (!reconFrom.value || !reconTo.value) return;
+  const range = `date_from=${isoDate(reconFrom.value)}&date_to=${isoDate(reconTo.value)}`;
+  const [reportData, matchData] = await Promise.all([
+    api.get(`/api/bank-feeds/statements/reconciliation?account_id=${reconAccountId.value}&${range}`),
+    // Same range as the report cards beside it — a suggestions list that
+    // ignores the date pickers reads as a different period's data.
+    api.get(`/api/bank-feeds/statements/matches?account_id=${reconAccountId.value}&status=suggested&${range}`),
+  ]);
+  reports.value = reportData;
+  suggestions.value = matchData.items || [];
+};
+
+const runSuggest = async () => {
+  actionLoading.value = 'suggest';
+  try {
+    const stats = await api.post('/api/bank-feeds/statements/reconcile/suggest', {
+      account_id: reconAccountId.value,
+      date_from: isoDate(reconFrom.value),
+      date_to: isoDate(reconTo.value),
+    });
+    const s = stats?.stats || {};
+    toast.add({
+      severity: 'success',
+      summary: 'Matching complete',
+      detail: `${s.classified ?? 0} classified · ${(s.r2_payments ?? 0) + (s.r2_expenses ?? 0) + (s.r2_vendor_invoices ?? 0)} exact · ${s.r3_sweeps ?? 0} deposit sweeps · ${s.unmatched ?? 0} unmatched`,
+      life: 6000,
+    });
+    await loadReconciliation();
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
+const actOnMatch = async (matchId, action) => {
+  const messages = {
+    confirm: 'Match confirmed',
+    reject: 'Suggestion rejected',
+    unconfirm: 'Match unconfirmed — line returned to the worklist',
+  };
+  await api.post(`/api/bank-feeds/statements/matches/${matchId}/${action}`, {},
+    { successMessage: messages[action] || 'Done' });
+  await loadReconciliation();
+};
+
+// Manual match dialog
+const showManualMatch = ref(false);
+const manualLine = ref(null);
+const manualCandidates = ref({ payments: [], expenses: [], vendor_invoices: [] });
+const manualSelected = ref([]);
+const manualClassification = ref(null);
+const manualNote = ref('');
+const classificationOptions = [
+  { label: 'Transfer between accounts', value: 'transfer' },
+  { label: 'Bank fee', value: 'bank_fee' },
+  { label: 'Interest', value: 'interest' },
+  { label: 'Owner draw / contribution', value: 'owner' },
+  { label: 'Processor payout', value: 'processor' },
+  { label: 'Other (non-books)', value: 'other' },
+];
+
+const openManualMatch = async (line) => {
+  manualLine.value = line;
+  manualSelected.value = [];
+  manualClassification.value = null;
+  manualNote.value = '';
+  manualCandidates.value = { payments: [], expenses: [], vendor_invoices: [] };
+  showManualMatch.value = true;
+  manualCandidates.value = await api.get(
+    `/api/bank-feeds/statements/reconcile/candidates?account_id=${reconAccountId.value}&line_id=${line.id}`);
+};
+
+const saveManualMatch = async () => {
+  actionLoading.value = 'manual';
+  try {
+    await api.post('/api/bank-feeds/statements/matches', {
+      account_id: reconAccountId.value,
+      line_ids: [manualLine.value.id],
+      externals: manualSelected.value.map((key) => {
+        const [source_table, source_id] = key.split(':');
+        return { source_table, source_id };
+      }),
+      classification: manualClassification.value,
+      note: manualNote.value || null,
+    }, { successMessage: 'Match created' });
+    showManualMatch.value = false;
+    await loadReconciliation();
+  } finally {
+    actionLoading.value = '';
+  }
 };
 
 // Void (local confirm dialog on purpose — see issue #215:
@@ -1154,6 +1532,44 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   padding: 1.25rem 0;
+}
+.recon-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+.recon-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--surface-border, var(--p-content-border-color, #ddd));
+  border-radius: 8px;
+}
+.recon-count {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.recon-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.9em;
+}
+.manual-candidate {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+.manual-classify-row {
+  margin-top: 0.75rem;
+}
+.manual-note {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+.broken-title {
+  color: var(--p-red-500, #dc2626);
 }
 
 .bank-feeds-tabview {

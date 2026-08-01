@@ -37,6 +37,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -205,6 +206,113 @@ class BankStatementLine(TenantBase):
     check_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     occurrence_n: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     line_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+# ── match lifecycle (Phase B / PR 3) ───────────────────────────────────
+MATCH_SUGGESTED = "suggested"
+MATCH_CONFIRMED = "confirmed"
+MATCH_REJECTED = "rejected"
+VALID_MATCH_STATUSES = (MATCH_SUGGESTED, MATCH_CONFIRMED, MATCH_REJECTED)
+
+MATCH_RULES = ("R2", "R3", "R5", "manual")
+
+# Classify-only matches: bank-only reality that no books record should exist
+# for (or that is recorded elsewhere) — a confirmed classification removes
+# the line from the exception reports without inventing a books record.
+CLASSIFICATIONS = ("transfer", "bank_fee", "interest", "owner", "processor", "other")
+
+EXTERNAL_SOURCES = ("payments", "expenses", "vendor_invoices")
+
+
+class BankMatch(TenantBase):
+    """A suggest-and-confirm match between statement evidence and books
+    records — the GL Phase 2 §3.2 three-table shape, pointed at operational
+    records until the GL goes live.
+
+    Cardinality: one match ↔ N statement lines AND N externals (the
+    dominant revenue event is a batched deposit slip = one line ↔ many
+    per-invoice payments, which a single line_id·matched_id row physically
+    cannot hold — the plan-level audit's foundational finding).
+
+    Matches NEVER mutate the matched records; confirming is metadata-only
+    in this phase, and every confirm is reversible (unconfirm → suggested).
+    ``classification`` set (with no externals) = classify-only (R5).
+    """
+
+    __tablename__ = "bank_matches"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    bank_account_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_accounts.id"), nullable=False, index=True
+    )
+    rule: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default=MATCH_SUGGESTED, index=True)
+    classification: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence: Mapped[object | None] = mapped_column(Numeric(3, 2), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class BankMatchLine(TenantBase):
+    """Statement side of a match. ``match_status`` is denormalized from the
+    parent (synced in the service on every transition, single-writer) so
+    exclusivity is expressible as a partial unique index: a line may sit in
+    at most ONE non-rejected match."""
+
+    __tablename__ = "bank_match_lines"
+    __table_args__ = (
+        Index(
+            "uq_bank_match_line_active",
+            "line_id",
+            unique=True,
+            postgresql_where=text("match_status <> 'rejected'"),
+            sqlite_where=text("match_status <> 'rejected'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    match_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_matches.id"), nullable=False, index=True
+    )
+    line_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_statement_lines.id"), nullable=False, index=True
+    )
+    match_status: Mapped[str] = mapped_column(String(12), nullable=False, default=MATCH_SUGGESTED)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class BankMatchExternal(TenantBase):
+    """Books side of a match: a row in payments / expenses / vendor_invoices
+    (no FK — three possible tables; existence validated at write time).
+    Same denormalized-status exclusivity as the line side: a books record
+    is consumed by at most one non-rejected match."""
+
+    __tablename__ = "bank_match_externals"
+    __table_args__ = (
+        Index(
+            "uq_bank_match_external_active",
+            "source_table",
+            "source_id",
+            unique=True,
+            postgresql_where=text("match_status <> 'rejected'"),
+            sqlite_where=text("match_status <> 'rejected'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    match_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_matches.id"), nullable=False, index=True
+    )
+    source_table: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    match_status: Mapped[str] = mapped_column(String(12), nullable=False, default=MATCH_SUGGESTED)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
