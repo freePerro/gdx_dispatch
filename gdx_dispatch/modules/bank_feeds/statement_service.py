@@ -66,6 +66,17 @@ log = logging.getLogger(__name__)
 
 MAX_STATEMENT_BYTES = 10 * 1024 * 1024
 
+# Client-facing parse-error messages, keyed by flavor. Constant table — never
+# str(exc) — because parser raise sites wrap library exceptions (pypdf) whose
+# text must not reach the HTTP response (py/stack-trace-exposure; the same
+# reason-code pattern as DEPOSIT_ERROR_MESSAGES). The diagnostic detail goes
+# to the server log at the catch site instead.
+PARSE_ERROR_MESSAGES: dict[str, str] = {
+    "structure": "statement matches this bank's layout but its structure "
+                 "defeated the parser — see server logs",
+    "not_recognized": "not a recognized bank statement PDF for a supported layout",
+}
+
 _WS = re.compile(r"\s+")
 
 
@@ -318,9 +329,13 @@ def import_statement(
     try:
         parsed = community_bank.parse_statement_pdf(pdf_bytes)
     except StatementStructureError as exc:
-        return {"status": "parse_error", "flavor": "structure", "filename": filename, "error": str(exc)}
+        log.warning("statement %s: structure defeated the parser: %s", filename, exc)
+        return {"status": "parse_error", "flavor": "structure", "filename": filename,
+                "error": PARSE_ERROR_MESSAGES["structure"]}
     except StatementParseError as exc:
-        return {"status": "parse_error", "flavor": "not_recognized", "filename": filename, "error": str(exc)}
+        log.info("statement %s: not recognized: %s", filename, exc)
+        return {"status": "parse_error", "flavor": "not_recognized", "filename": filename,
+                "error": PARSE_ERROR_MESSAGES["not_recognized"]}
 
     account = _get_or_create_account(db, parsed)
     hashed = _hashed_lines(parsed)
