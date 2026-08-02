@@ -429,17 +429,21 @@ def test_failed_tie_out_stores_report_but_no_lines(svc):
                for c in imp.tie_out_report["checks"])
 
 
-def test_parse_error_flavors(svc):
-    not_ours = _import(svc, "INVOICE\nTotal due: 100.00\n")
+def test_parse_error_flavors(svc, caplog):
+    with caplog.at_level("INFO", logger=statement_service.__name__):
+        not_ours = _import(svc, "INVOICE\nTotal due: 100.00\n")
     assert not_ours["status"] == "parse_error"
     assert not_ours["flavor"] == "not_recognized"
-    assert "ACCOUNT NUMBER" in not_ours["error"]  # names the missing anchor
+    # The response carries only the constant message (py/stack-trace-exposure);
+    # the log names the missing anchor.
+    assert not_ours["error"] == statement_service.PARSE_ERROR_MESSAGES["not_recognized"]
+    assert "ACCOUNT NUMBER" in caplog.text
     broken = _import(svc, checking_text().replace("           25.00-\n", "           25.00\n"))
     assert broken["flavor"] == "structure"
     assert svc.query(BankStatementImport).count() == 0
 
 
-def test_impossible_date_is_structure_error_not_500(svc):
+def test_impossible_date_is_structure_error_not_500(svc, caplog):
     # Audit finding: a row dated 6/31 raised a bare ValueError that escaped
     # the service's except-arms as a 500 mid-batch. It must surface as a
     # structured parse_error result instead.
@@ -447,10 +451,12 @@ def test_impossible_date_is_structure_error_not_500(svc):
         "   6/02     Deposit/Credit",
         "   6/31     Deposit/Credit",
     )
-    result = _import(svc, text)
+    with caplog.at_level("WARNING", logger=statement_service.__name__):
+        result = _import(svc, text)
     assert result["status"] == "parse_error"
     assert result["flavor"] == "structure"
-    assert "6/31" in result["error"]
+    assert result["error"] == statement_service.PARSE_ERROR_MESSAGES["structure"]
+    assert "6/31" in caplog.text
     assert svc.query(BankStatementImport).count() == 0
 
 
