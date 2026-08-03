@@ -6,10 +6,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.routers.planner import TaskIn, TaskPatch, create_task, delete_task, list_tasks, update_task
 
 
@@ -210,3 +210,97 @@ def test_tenant_isolation(ctx):
     items = _items(list_tasks(request=req2, user=user, db=db))
     # Visible via shared test session — isolation now at connection boundary.
     assert len(items) >= 1
+
+
+# ── Date serialization (2026-08-03 tz fix) ─────────────────────────────────
+# str(datetime) sent '2026-08-03 00:00:00+00:00' to the browser, which parsed
+# it as UTC and rendered the previous local day. due_date is a calendar date:
+# it goes out as bare 'YYYY-MM-DD'; real timestamps go out as ISO with 'T'.
+
+def test_due_date_serializes_as_bare_calendar_date(ctx):
+    db, req, user, _ = ctx
+    create_task(body=TaskIn(title="Date check", due_date="2026-08-03"), request=req, user=user, db=db)
+    items = _items(list_tasks(request=req, user=user, db=db))
+    assert items[0]["due_date"] == "2026-08-03", (
+        f"due_date must be a bare calendar date, got {items[0]['due_date']!r}"
+    )
+
+
+def test_created_at_serializes_as_iso_t_separator(ctx):
+    db, req, user, _ = ctx
+    create_task(body=TaskIn(title="Stamp check"), request=req, user=user, db=db)
+    items = _items(list_tasks(request=req, user=user, db=db))
+    created = items[0]["created_at"]
+    assert created and "T" in created and " " not in created, (
+        f"created_at must be ISO-8601 with 'T', got {created!r}"
+    )
+
+
+def test_patch_due_date_string_round_trips(ctx):
+    db, req, user, _ = ctx
+    made = create_task(body=TaskIn(title="Patch date", due_date="2026-08-03"), request=req, user=user, db=db)
+    update_task(task_id=made["id"], body=TaskPatch(due_date="2026-08-05"), request=req, user=user, db=db)
+    items = _items(list_tasks(request=req, user=user, db=db))
+    assert items[0]["due_date"] == "2026-08-05"
+
+
+def test_unparseable_due_date_is_rejected_422(ctx):
+    # Audit 2026-08-03: silently ignoring a bad date is data loss — the user
+    # thinks the date saved. Reject loudly instead.
+    from fastapi import HTTPException
+
+    db, req, user, _ = ctx
+    with pytest.raises(HTTPException) as exc:
+        create_task(body=TaskIn(title="Bad date", due_date="not-a-date"), request=req, user=user, db=db)
+    assert exc.value.status_code == 422
+
+    made = create_task(body=TaskIn(title="Good"), request=req, user=user, db=db)
+    with pytest.raises(HTTPException) as exc:
+        update_task(task_id=made["id"], body=TaskPatch(due_date="garbage"), request=req, user=user, db=db)
+    assert exc.value.status_code == 422
+
+
+def test_explicit_null_clears_due_date(ctx):
+    # The edit dialogs ship :showClear on the due-date picker; an explicitly
+    # sent null must persist the clear (it used to be silently skipped).
+    db, req, user, _ = ctx
+    made = create_task(body=TaskIn(title="Clear me", due_date="2026-08-03"), request=req, user=user, db=db)
+    update_task(task_id=made["id"], body=TaskPatch(due_date=None, title="Clear me"), request=req, user=user, db=db)
+    items = _items(list_tasks(request=req, user=user, db=db))
+    assert items[0]["due_date"] is None
+
+
+def test_quick_capture_default_due_is_business_local_today(ctx):
+    # Was `_now()` — a real evening timestamp whose UTC calendar day is
+    # tomorrow after ~7pm CDT. Must be the business-local calendar date.
+    from datetime import datetime
+
+    from gdx_dispatch.routers.planner import _BUSINESS_TZ
+
+    db, req, user, _ = ctx
+    create_task(body=TaskIn(title="Capture", source="quick_capture"), request=req, user=user, db=db)
+    items = _items(list_tasks(request=req, user=user, db=db))
+    assert items[0]["due_date"] == datetime.now(_BUSINESS_TZ).date().isoformat()
+
+
+def test_date_helpers_direct():
+    from datetime import datetime, timezone
+
+    from gdx_dispatch.routers.planner import _date_out, _parse_due_date, _ts_out, calendar_today_utc
+
+    parsed = _parse_due_date("2026-08-03")
+    assert parsed == datetime(2026, 8, 3, tzinfo=timezone.utc)
+    assert _date_out(parsed) == "2026-08-03"
+    # Naive datetimes (SQLite reads) must not crash or shift.
+    assert _date_out(datetime(2026, 8, 3)) == "2026-08-03"
+    # Legacy real-timestamp rows (old `_now()` writers): the calendar day is
+    # the BUSINESS-local one — 2026-08-04T01:30Z is Aug 3 evening in Chicago.
+    assert _date_out(datetime(2026, 8, 4, 1, 30, tzinfo=timezone.utc)) == "2026-08-03"
+    # calendar_today_utc stores the D@00:00 UTC convention.
+    today = calendar_today_utc()
+    assert (today.hour, today.minute, today.second) == (0, 0, 0)
+    assert today.tzinfo == timezone.utc
+    assert _parse_due_date(None) is None
+    assert _parse_due_date("nope") is None
+    assert _ts_out(None) is None
+    assert "T" in _ts_out(datetime(2026, 8, 3, 14, 30, tzinfo=timezone.utc))

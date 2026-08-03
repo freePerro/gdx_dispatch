@@ -31,6 +31,20 @@ export function parseLocalDateString(input) {
   return isNaN(local) ? null : local;
 }
 
+/**
+ * Inverse of parseLocalDateString: a Date (or parseable input) → LOCAL
+ * "YYYY-MM-DD". The widespread `new Date().toISOString().slice(0, 10)`
+ * idiom yields the UTC date — after ~7pm CDT that's TOMORROW, so "due
+ * today" quick-captures created in the evening landed a day late (caught
+ * in the 2026-08-03 planner date fix). Returns null for empty/invalid.
+ */
+export function localDateString(input) {
+  const d = _toDate(input);
+  if (!d) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function _toDate(input) {
   if (input === null || input === undefined || input === '') return null;
   if (input instanceof Date) return isNaN(input) ? null : input;
@@ -66,7 +80,9 @@ export function formatDateTime(input, { locale, options } = {}) {
  * date instead. A real send at exactly 00:00:00 UTC degrades to date-only
  * display — acceptable.
  */
-const DATE_ONLY_STAMP = /T00:00:00(?:\.0+)?(?:\+00:00|Z)?$/;
+// Accepts both the ISO 'T' separator and str(datetime)'s space separator —
+// several backend routes serialize with str() (e.g. '2026-08-03 00:00:00+00:00').
+const DATE_ONLY_STAMP = /[T ]00:00:00(?:\.0+)?(?:\+00:00|Z)?$/;
 
 export function isDateOnlyStamp(input) {
   return typeof input === 'string' && DATE_ONLY_STAMP.test(input);

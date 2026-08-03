@@ -77,7 +77,11 @@
                 <span v-else-if="task.priority === 'high'" class="pill pill-warn">HIGH</span>
                 <span v-if="task.due_date" class="meta-item">
                   <i class="pi pi-calendar" />
-                  {{ shortDate(task.due_date) }}
+                  Due {{ shortDate(task.due_date) }}
+                </span>
+                <span v-if="task.created_at" class="meta-item">
+                  <i class="pi pi-clock" />
+                  Added {{ shortDate(task.created_at) }}
                 </span>
                 <span v-if="task.assignee_name" class="meta-item">
                   <i class="pi pi-user" />
@@ -312,6 +316,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApiWithToast } from '../composables/useApiWithToast'
+import { formatDate, localDateString, parseLocalDateString } from '../composables/useFormatters'
 import CustomerFormDialog from '../components/CustomerFormDialog.vue'
 
 import Button from 'primevue/button'
@@ -402,12 +407,11 @@ function emptyTaskForm() {
 }
 
 function shortDate(d) {
+  // useFormatters parses date-only strings as LOCAL calendar dates — the raw
+  // new Date('YYYY-MM-DD') path rendered due dates a day early (2026-08-03).
   if (!d) return ''
-  try {
-    return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  } catch {
-    return d
-  }
+  const out = formatDate(d, { options: { month: 'short', day: 'numeric' } })
+  return out === '—' ? '' : out
 }
 
 function shortTime(d) {
@@ -510,7 +514,7 @@ async function createTask() {
   taskSaving.value = true
   try {
     const due = taskForm.value.due_date instanceof Date
-      ? taskForm.value.due_date.toISOString().slice(0, 10)
+      ? localDateString(taskForm.value.due_date)
       : taskForm.value.due_date
     await api.post('/api/planner/tasks', { ...taskForm.value, due_date: due }, { successMessage: 'Task created' })
     showTaskForm.value = false
@@ -537,7 +541,9 @@ function editTask(task) {
     description: task.description || '',
     priority: task.priority || 'low',
     status: task.status || 'todo',
-    due_date: task.due_date || null,
+    // DatePicker needs a real Date; parse the 'YYYY-MM-DD' as LOCAL so the
+    // dialog doesn't walk the date back a day on every open/save cycle.
+    due_date: parseLocalDateString(task.due_date) || null,
     assigned_to: task.assigned_to || null,
     job_id: task.job_id || null,
     customer_id: task.customer_id || null,
@@ -587,7 +593,7 @@ async function saveTaskEdits() {
       description: t.description,
       priority: t.priority,
       status: t.status,
-      due_date: t.due_date,
+      due_date: t.due_date instanceof Date ? localDateString(t.due_date) : t.due_date,
       assigned_to: t.assigned_to,
       job_id: t.job_id,
       customer_id: t.customer_id,
