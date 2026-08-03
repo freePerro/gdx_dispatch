@@ -529,3 +529,189 @@ def test_sync_recent_messages_uses_known_extensions_and_window(setup):
         assert ts.query(PhoneComMessage).count() == 1
     finally:
         ts.close()
+
+
+@respx.mock
+def test_sync_recent_calls_windowed_pulls_calls_and_voicemails(setup):
+    """The calls-only frequent poll walks call-logs with a
+    filters[start_time]=gt: window and synthesizes inline voicemail rows —
+    no extension/message/catalog pulls (respx strict mode would 500 them)."""
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
+
+    csm, tsm, tid = setup
+    route = respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {
+                "id": "phc-call-RECENT", "direction": "in",
+                "caller_id": "+15555550142",
+                "voicemail_url": "https://api.phone.com/.../vm.wav",
+                "voicemail_cp_url": "https://cp.phone.com/.../vm.wav",
+                "voicemail_transcript": "call me back please",
+                "voicemail_duration": 12,
+            },
+        ])),
+    )
+
+    cs = csm()
+    try:
+        result = sync_recent_calls(cs, tid, window_hours=48)
+    finally:
+        cs.close()
+
+    assert result["ok"] is True
+    assert result["calls_synced"] == 1
+    assert result["voicemails_synced"] == 1
+    params = dict(route.calls.last.request.url.params)
+    window_filter = params.get("filters[start_time]", "")
+    assert window_filter.startswith("gt:")
+    # The epoch must be seconds (not ms) and actually ~48h back — a
+    # unit or sign bug here silently turns the poll into a full pull.
+    from datetime import datetime, timedelta, timezone
+
+    sent_epoch = int(window_filter.removeprefix("gt:"))
+    expected = (datetime.now(timezone.utc) - timedelta(hours=48)).timestamp()
+    assert abs(sent_epoch - expected) < 300
+
+    ts = tsm()
+    try:
+        assert ts.query(PhoneComCall).count() == 1
+        vm = ts.query(PhoneComVoicemail).first()
+        assert vm is not None
+        assert vm.transcript == "call me back please"
+        assert vm.call_id is not None
+    finally:
+        ts.close()
+
+
+@respx.mock
+def test_sync_recent_calls_idempotent_on_rerun(setup):
+    """Re-walking an overlapping window must not duplicate call or
+    voicemail rows — both upserts key on the Phone.com object id."""
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
+
+    csm, tsm, tid = setup
+    respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {
+                "id": "phc-call-DUP", "direction": "in",
+                "caller_id": "+15555550142",
+                "voicemail_url": "https://api.phone.com/.../vm.wav",
+            },
+        ])),
+    )
+
+    for _ in range(2):
+        cs = csm()
+        try:
+            result = sync_recent_calls(cs, tid, window_hours=48)
+        finally:
+            cs.close()
+        assert result["ok"] is True
+
+    ts = tsm()
+    try:
+        assert ts.query(PhoneComCall).count() == 1
+        assert ts.query(PhoneComVoicemail).count() == 1
+    finally:
+        ts.close()
+
+
+@respx.mock
+def test_sync_recent_calls_survives_upsert_race(setup, monkeypatch):
+    """A concurrent nightly resync can win the query-then-insert race on a
+    new call id. The loser must roll back THAT row and keep walking — races
+    formerly aborted run_full_resync's entire nightly."""
+    from sqlalchemy.exc import IntegrityError as _IE
+
+    from gdx_dispatch.modules.phone_com import upserts as _ups
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
+
+    csm, tsm, tid = setup
+    respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {"id": "phc-call-RACED", "direction": "in",
+             "voicemail_url": "https://api.phone.com/.../vm.wav"},
+            {"id": "phc-call-CLEAN", "direction": "in"},
+        ])),
+    )
+
+    real_upsert_call = _ups.upsert_call
+
+    def racy_upsert_call(tenant_db, payload):
+        if payload.get("id") == "phc-call-RACED":
+            raise _IE("INSERT INTO phone_com_calls", {}, Exception("duplicate key"))
+        return real_upsert_call(tenant_db, payload)
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.phone_com.sync.upserts.upsert_call", racy_upsert_call,
+    )
+
+    cs = csm()
+    try:
+        result = sync_recent_calls(cs, tid, window_hours=48)
+    finally:
+        cs.close()
+
+    # The raced row is skipped (not counted, no voicemail synthesized);
+    # the row after it still lands.
+    assert result["ok"] is True
+    assert result["calls_synced"] == 1
+    assert result["voicemails_synced"] == 0
+    ts = tsm()
+    try:
+        rows = ts.query(PhoneComCall).all()
+        assert [r.phone_com_call_id for r in rows] == ["phc-call-CLEAN"]
+    finally:
+        ts.close()
+
+
+@respx.mock
+def test_sync_recent_calls_respects_cap(setup):
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
+
+    csm, tsm, tid = setup
+    respx.get(f"{BASE_URL}/accounts/{VID}/call-logs").mock(
+        return_value=httpx.Response(200, json=_envelope([
+            {"id": f"phc-call-{i}", "direction": "in"} for i in range(3)
+        ])),
+    )
+
+    cs = csm()
+    try:
+        result = sync_recent_calls(cs, tid, window_hours=48, cap=2)
+    finally:
+        cs.close()
+
+    assert result["ok"] is True
+    assert result["calls_synced"] == 2
+    ts = tsm()
+    try:
+        assert ts.query(PhoneComCall).count() == 2
+    finally:
+        ts.close()
+
+
+def test_sync_recent_calls_no_token_returns_error(control_engine, tenant_engine, monkeypatch):
+    from gdx_dispatch.modules.phone_com.sync import sync_recent_calls
+
+    csm = sessionmaker(bind=control_engine, expire_on_commit=False)
+    cs = csm()
+    tid = uuid4()
+    cs.add(Tenant(id=tid, slug="t1", name="T"))
+    cs.commit()
+    cs.close()
+    # No key_storage.set_token call
+
+    tsm = sessionmaker(bind=tenant_engine, expire_on_commit=False)
+    monkeypatch.setattr("gdx_dispatch.modules.phone_com.sync.SessionLocal", tsm)
+
+    cs = csm()
+    try:
+        result = sync_recent_calls(cs, tid)
+    finally:
+        cs.close()
+
+    assert result["ok"] is False
+    assert "not configured" in result["error"]
+    assert result["calls_synced"] == 0
+    assert result["voicemails_synced"] == 0
