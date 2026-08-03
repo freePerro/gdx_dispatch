@@ -4,9 +4,13 @@
 // worker and wipe its caches. A prior deploy shipped a cache-first SW that
 // pre-cached the HTML shell, stranding returning visitors on stale Vue
 // chunks after every frontend rebuild (ForgotPasswordView-kX2FGQDn.css 404
-// on 2026-04-11 is the incident that prompted this). Nothing in the current
-// Vue frontend registers a service worker; this file only runs inside
-// browsers that still have the legacy SW installed from a past visit.
+// on 2026-04-11 is the incident that prompted this).
+//
+// 2026-08-03: the Vue frontend now DOES ship a real SW (frontend/public/sw.js
+// — Web Push display only, no fetch handler). core/pwa.py serves that one
+// when a dist build exists; this kill-switch is only served from backend-only
+// images with no frontend build, where the right move is still to dismantle
+// whatever SW a browser has installed.
 //
 // On next visit, the browser fetches /sw.js, byte-compares it to the
 // installed version, sees it has changed, and installs this kill-switch.

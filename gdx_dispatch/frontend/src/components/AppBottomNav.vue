@@ -89,13 +89,14 @@
     >
       <i class="pi pi-plus" aria-hidden="true" />
     </button>
-    <QuickCaptureSheet v-model:visible="captureOpen" @saved="onCaptureSaved" />
+    <QuickCaptureSheet v-model:visible="captureOpen" :initial-note="captureSeed" @saved="onCaptureSaved" />
   </nav>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useToast } from 'primevue/usetoast';
 import Drawer from 'primevue/drawer';
 import InputText from 'primevue/inputtext';
 import { useTenantModules } from '../composables/useTenantModules';
@@ -106,6 +107,7 @@ import QuickCaptureSheet from './QuickCaptureSheet.vue';
 
 const route = useRoute();
 const router = useRouter();
+const toast = useToast();
 const { allEnabledModules } = useTenantModules();
 const auth = useAuthStore();
 
@@ -122,6 +124,54 @@ function onCaptureSaved() {
   // planner screen). Harmless no-op elsewhere.
   window.dispatchEvent(new CustomEvent('gdx:planner-refresh'));
 }
+
+// ── PWA entry points (2026-08-03) ──
+// The manifest's share_target lands Android shares on /mobile/planner with
+// ?share_title/&share_text/&share_url; the "Quick note" app shortcut uses
+// ?capture=1. Both open the capture sheet — shares with the text prefilled.
+const captureSeed = ref('');
+const SHARE_KEYS = ['share_title', 'share_text', 'share_url'];
+
+function consumeCaptureParams() {
+  const q = route.query;
+  const wantsCapture = q.capture === '1' || SHARE_KEYS.some((k) => q[k] != null);
+  if (!wantsCapture) return;
+  if (!showCapture.value) {
+    // Tech role: capture is office-only (same gate as the FAB). Never eat a
+    // share silently — say why nothing happened. (Audit 2026-08-03 finding.)
+    toast.add({
+      severity: 'info',
+      summary: 'Not captured',
+      detail: 'Planner quick capture is available to office roles only.',
+      life: 6000,
+    });
+  } else {
+    // Title → text → url, skipping empties and anything already contained in
+    // an earlier part (Android commonly repeats the URL inside the text).
+    const parts = [];
+    for (const key of SHARE_KEYS) {
+      const v = typeof q[key] === 'string' ? q[key].trim() : '';
+      if (v && !parts.some((p) => p.includes(v))) parts.push(v);
+    }
+    captureSeed.value = parts.join('\n');
+    captureOpen.value = true;
+  }
+  // Strip the params either way so back/refresh doesn't re-open the sheet
+  // (and a tech shared here isn't left with dead params in the URL).
+  const rest = { ...q };
+  delete rest.capture;
+  for (const key of SHARE_KEYS) delete rest[key];
+  router.replace({ path: route.path, query: rest });
+}
+
+onMounted(consumeCaptureParams);
+// A share can also arrive while the installed app is already running — it
+// lands as an in-app navigation, not a fresh mount.
+watch(() => route.fullPath, consumeCaptureParams);
+// One-shot seed: once the sheet closes, a manual FAB open starts blank.
+watch(captureOpen, (v) => {
+  if (!v) captureSeed.value = '';
+});
 
 function closeDrawer() {
   moreOpen.value = false;

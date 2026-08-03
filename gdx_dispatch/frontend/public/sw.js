@@ -28,8 +28,8 @@ self.addEventListener('push', (event) => {
   const title = payload.title || 'GDX';
   const opts = {
     body: payload.body || '',
-    icon: payload.icon || '/static/icon-192.png',
-    badge: payload.badge || '/static/icon-192.png',
+    icon: payload.icon || '/icons/icon-192.png',
+    badge: payload.badge || '/icons/icon-192.png',
     data: { url: payload.url || '/dashboard', payload: payload.data || null },
     tag: payload.tag || undefined,
     renotify: payload.renotify || false,
