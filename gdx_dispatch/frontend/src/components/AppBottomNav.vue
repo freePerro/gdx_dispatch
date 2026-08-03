@@ -195,6 +195,11 @@ const MOBILE_ROUTE_OVERRIDES = {
   // Doors for Sale has a purpose-built field screen: photo-first capture at
   // the tear-out, no pricing (the office sets that at approval).
   '/door-listings': '/mobile/door-listings',
+  // Phone.com voicemail/calls + SMS companions (2026-08-03). The catalog
+  // gates these entries on nav.office (frontend visibility shaping —
+  // techs don't get them in the drawer; the API itself is not role-gated).
+  '/phone-com/calls': '/mobile/phone',
+  '/phone-com/messages': '/mobile/sms',
   // /delivery-loadsheet stays on /delivery-loadsheet — it's already
   // mobile-friendly via @media rules in its scoped styles.
 };
@@ -220,6 +225,8 @@ const MOBILE_FRIENDLY_PATHS = new Set([
   '/mobile/inventory',
   '/mobile/parts-to-order',
   '/mobile/door-listings',
+  '/mobile/phone',
+  '/mobile/sms',
   '/jobs', // bottom-nav handles the mobile redirect at the view level
   '/dispatch',
   '/timeclock',

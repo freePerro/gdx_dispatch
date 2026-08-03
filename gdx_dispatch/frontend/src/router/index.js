@@ -62,6 +62,8 @@ const MobileBillingView = () => import('../views/MobileBillingView.vue');
 const MobileInventoryView = () => import('../views/MobileInventoryView.vue');
 const MobileDoorListingsView = () => import('../views/MobileDoorListingsView.vue');
 const MobilePartsToOrderView = () => import('../views/MobilePartsToOrderView.vue');
+const MobilePhoneView = () => import('../views/MobilePhoneView.vue');
+const MobileSmsView = () => import('../views/MobileSmsView.vue');
 const TechMobileSettingsView = () => import('../views/admin/TechMobileSettingsView.vue');
 const CatalogView = () => import('../views/CatalogView.vue');
 const VendorsView = () => import('../views/VendorsView.vue');
@@ -364,6 +366,13 @@ export const routes = [
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
   { path: '/mobile/door-listings', name: 'mobile-door-listings', component: MobileDoorListingsView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },
+  // Phone.com companions (voicemail/calls + SMS). nav.office = the
+  // "above technician" tier — same FRONTEND gate the desktop phone_hub
+  // modules carry in the catalog. NB this is nav/route shaping only:
+  // the /api/phone-com/* backend enforces auth + module enablement but
+  // no per-role permission (pre-existing, shared with the desktop views).
+  { path: '/mobile/phone', name: 'mobile-phone', component: MobilePhoneView, meta: { noSidebar: true, requiresPermission: 'nav.office' } },
+  { path: '/mobile/sms', name: 'mobile-sms', component: MobileSmsView, meta: { noSidebar: true, requiresPermission: 'nav.office' } },
   // Sprint 0.9-o: SS-14..35 admin/user routes
   { path: '/admin/audit-log', name: 'admin-audit-log', component: AuditLogViewer, meta: { requiresPermission: 'settings.write' } },
   // 2026-05-05 — removed routes for platform-admin views whose backends never mounted.
