@@ -102,6 +102,71 @@ def _sync_messages_for_extensions(
     return synced
 
 
+def _sync_calls_with_voicemails(
+    tenant_db: Session,
+    client: PhoneComClient,
+    *,
+    cap: int,
+    from_epoch: int,
+) -> tuple[int, int]:
+    """Walk ``list_calls`` from ``from_epoch`` and upsert calls + inline voicemails.
+
+    Voicemail data is inline on call payloads (``voicemail_url`` /
+    ``voicemail_cp_url`` / ``voicemail_transcript``); synthesize a voicemail
+    upsert keyed on the call's id whenever any is present. Both upserts are
+    idempotent, so re-walking an overlapping window is safe.
+    """
+    calls_synced = 0
+    voicemails_synced = 0
+    for item in client.paginate(client.list_calls, limit=50, from_epoch=from_epoch):
+        if calls_synced >= cap:
+            log.warning(
+                "phone_com_sync: call cap %d hit — remaining calls skipped this run",
+                cap,
+            )
+            break
+        try:
+            upserts.upsert_call(tenant_db, item)
+            calls_synced += 1
+
+            # Inline voicemail on the call payload — synthesize a voicemail
+            # row keyed on the call's id. Carry the cp_url through
+            # raw_payload so the audio proxy can use the presigned
+            # (unauthed) variant.
+            if (
+                item.get("voicemail_url")
+                or item.get("voicemail_cp_url")
+                or item.get("voicemail_transcript")
+            ):
+                vm_payload = {
+                    "id": f"vm-from-call-{item.get('id')}",
+                    "call_id": item.get("id"),
+                    "audio_url": (
+                        item.get("voicemail_url")
+                        or item.get("voicemail_cp_url")
+                    ),
+                    "voicemail_cp_url": item.get("voicemail_cp_url"),
+                    "transcript": item.get("voicemail_transcript"),
+                    "duration": item.get("voicemail_duration"),
+                }
+                upserts.upsert_voicemail(tenant_db, vm_payload)
+                voicemails_synced += 1
+        except IntegrityError:
+            # The 10-min poll and the nightly resync both walk newest-first
+            # call ids with query-then-insert upserts, so overlapping runs
+            # can race the same new id. Roll back the loser's row and keep
+            # walking — the row already exists (the winner wrote it), and
+            # rows committed before this one are unaffected. Before this
+            # per-item handling, a race here aborted run_full_resync's
+            # ENTIRE nightly (messages backstop, catalogs, stamps included).
+            log.exception(
+                "phone_com_sync: call upsert race for id=%s (non-fatal)",
+                item.get("id"),
+            )
+            tenant_db.rollback()
+    return calls_synced, voicemails_synced
+
+
 def _build_client(control_db: Session, tenant_id: UUID, tenant_db: Session) -> PhoneComClient | None:
     token = key_storage.get_token(control_db, tenant_id)
     if token is None:
@@ -164,35 +229,9 @@ def run_full_resync(
                 # Phone.com defaults to a ~30-day window when no
                 # filters[start_time] is set. Use a 2000-01-01 anchor to
                 # pull effectively-everything (Phone.com 422s on gt:0).
-                for item in client.paginate(client.list_calls, limit=50, from_epoch=946684800):
-                    if calls_synced >= cap:
-                        break
-                    upserts.upsert_call(tenant_db, item)
-                    calls_synced += 1
-
-                    # Inline voicemail on the call payload — synthesize a
-                    # voicemail row keyed on the call's id when a
-                    # voicemail_url or transcript is present. Carry the
-                    # cp_url through raw_payload so the audio proxy can
-                    # use the presigned (unauthed) variant.
-                    if (
-                        item.get("voicemail_url")
-                        or item.get("voicemail_cp_url")
-                        or item.get("voicemail_transcript")
-                    ):
-                        vm_payload = {
-                            "id": f"vm-from-call-{item.get('id')}",
-                            "call_id": item.get("id"),
-                            "audio_url": (
-                                item.get("voicemail_url")
-                                or item.get("voicemail_cp_url")
-                            ),
-                            "voicemail_cp_url": item.get("voicemail_cp_url"),
-                            "transcript": item.get("voicemail_transcript"),
-                            "duration": item.get("voicemail_duration"),
-                        }
-                        upserts.upsert_voicemail(tenant_db, vm_payload)
-                        voicemails_synced += 1
+                calls_synced, voicemails_synced = _sync_calls_with_voicemails(
+                    tenant_db, client, cap=cap, from_epoch=946684800,
+                )
 
                 # 2. Extensions (Wave C / S4) — synced BEFORE messages since
                 # messages are pulled per-extension. Small list; `paginate`
@@ -328,5 +367,67 @@ def sync_recent_messages(
     except PhoneComAPIError as exc:
         log.exception("phone_com_sync_recent_messages upstream error tenant=%s", tenant_id)
         return {"ok": False, "error": str(exc), "messages_synced": 0}
+    finally:
+        tenant_db.close()
+
+
+def sync_recent_calls(
+    control_db: Session,
+    tenant_id: UUID,
+    *,
+    window_hours: int = 48,
+    cap: int = 500,
+) -> dict[str, Any]:
+    """Calls-only frequent poll — the live path for voicemails.
+
+    Voicemail rows are synthesized from inline call-log payloads, so before
+    this poll they only landed at the 03:45 UTC nightly resync (webhooks have
+    never delivered; see sync_recent_messages). A voicemail left in the
+    morning would not be visible until the next day. Windowed to the last
+    ``window_hours`` so each run is one or two small requests; the nightly
+    full resync remains the completeness backstop. Re-walking an overlapping
+    window is safe — both upserts are keyed on the Phone.com object id.
+    """
+    tenant_db = _open_tenant_session(control_db, tenant_id)
+    if tenant_db is None:
+        return {
+            "ok": False,
+            "error": "tenant db unavailable",
+            "calls_synced": 0,
+            "voicemails_synced": 0,
+        }
+    try:
+        client = _build_client(control_db, tenant_id, tenant_db)
+        if client is None:
+            return {
+                "ok": False,
+                "error": "phone_com integration not configured",
+                "calls_synced": 0,
+                "voicemails_synced": 0,
+            }
+        from_epoch = int(
+            (datetime.now(timezone.utc) - timedelta(hours=window_hours)).timestamp()
+        )
+        with client:
+            calls_synced, voicemails_synced = _sync_calls_with_voicemails(
+                tenant_db, client, cap=cap, from_epoch=from_epoch,
+            )
+        log.info(
+            "phone_com_sync_recent_calls ok tenant=%s calls=%d voicemails=%d window_h=%d",
+            tenant_id, calls_synced, voicemails_synced, window_hours,
+        )
+        return {
+            "ok": True,
+            "calls_synced": calls_synced,
+            "voicemails_synced": voicemails_synced,
+        }
+    except PhoneComAPIError as exc:
+        log.exception("phone_com_sync_recent_calls upstream error tenant=%s", tenant_id)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "calls_synced": 0,
+            "voicemails_synced": 0,
+        }
     finally:
         tenant_db.close()

@@ -29,6 +29,7 @@ from gdx_dispatch.modules.phone_com.stats import roll_up_recent
 from gdx_dispatch.modules.phone_com.sync import (
     _open_tenant_session,
     run_full_resync,
+    sync_recent_calls,
     sync_recent_messages,
 )
 
@@ -109,6 +110,39 @@ def sync_all_recent_messages(self) -> dict[str, int]:
     for tid in tenant_ids:
         sync_recent_messages_task.delay(tid)
     log.info("phone_com.sync_all_recent_messages dispatched=%d", len(tenant_ids))
+    return {"dispatched": len(tenant_ids)}
+
+
+@celery_app.task(name="phone_com.sync_recent_calls", queue="priority:low", bind=True)
+def sync_recent_calls_task(self, tenant_id: str) -> dict[str, Any]:
+    """Per-tenant calls-only poll (see sync.sync_recent_calls). This is the
+    voicemail live path — voicemails ride inline on call-log payloads, and
+    Phone.com webhooks don't deliver to us."""
+    _ = self
+    tid = UUID(tenant_id) if not isinstance(tenant_id, UUID) else tenant_id
+    with contextlib.closing(SessionLocal()) as cdb:
+        try:
+            result = sync_recent_calls(cdb, tid)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("phone_com.sync_recent_calls failed tenant=%s", tid)
+            return {"ok": False, "error": str(exc), "tenant_id": str(tid)}
+    return result | {"tenant_id": str(tid)}
+
+
+@celery_app.task(name="phone_com.sync_all_recent_calls", queue="priority:low", bind=True)
+def sync_all_recent_calls(self) -> dict[str, int]:
+    """Beat task — fan out the calls-only poll to every configured tenant."""
+    _ = self
+    with contextlib.closing(SessionLocal()) as cdb:
+        rows = (
+            cdb.query(TenantSettings.tenant_id)
+            .filter(TenantSettings.phone_com_token_enc.isnot(None))
+            .all()
+        )
+        tenant_ids = [str(r[0]) for r in rows]
+    for tid in tenant_ids:
+        sync_recent_calls_task.delay(tid)
+    log.info("phone_com.sync_all_recent_calls dispatched=%d", len(tenant_ids))
     return {"dispatched": len(tenant_ids)}
 
 

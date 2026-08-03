@@ -98,6 +98,21 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             # fan-outs are dropped instead of stacking into a burst.
             "options": {"queue": "priority:low", "expires": 540},
         },
+        "phone-com-calls-refresh": {
+            # Voicemail live path. Voicemail rows are synthesized from inline
+            # call-log payloads, so before this poll they only landed at the
+            # 03:45 UTC nightly resync — a morning voicemail stayed invisible
+            # until the next day (found 2026-08-03). Calls only, windowed to
+            # 48h — one or two small requests per run. Offset 5 min from the
+            # messages poll above so the two fan-outs don't burst together.
+            # NB the :45 firing overlaps phone-com-reconcile-nightly at
+            # 03:45 — safe: the shared call harvest tolerates the upsert
+            # race per-item (rollback + continue), so neither run can abort
+            # the other's work.
+            "task": "phone_com.sync_all_recent_calls",
+            "schedule": crontab(minute="5-59/10"),
+            "options": {"queue": "priority:low", "expires": 540},
+        },
         "audit-chain-verify-nightly": {
             # Plan §13: the audit hash-chain's tamper-evidence was never run
             # outside tests. Nightly integrity check; logs an ERROR (→ Sentry)

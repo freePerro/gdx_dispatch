@@ -254,6 +254,53 @@ def test_beat_schedule_includes_messages_refresh():
     assert entry["task"] == "phone_com.sync_all_recent_messages"
 
 
+# ── calls-refresh beat task (voicemail live path, 2026-08-03) ───────────
+
+
+def test_sync_all_recent_calls_dispatches_only_token_set_tenants(control_db):
+    sm = control_db
+    s = sm()
+    a, b = uuid4(), uuid4()
+    for tid, slug in [(a, "ta"), (b, "tb")]:
+        s.add(Tenant(id=tid, slug=slug, name=slug.upper()))
+    s.commit()
+    key_storage.set_token(s, a, "phc-good-a-12345")
+    s.commit()
+    s.close()
+
+    with patch.object(pc_tasks.sync_recent_calls_task, "delay") as mock_delay:
+        result = pc_tasks.sync_all_recent_calls.run()
+    assert result == {"dispatched": 1}
+    assert mock_delay.call_args_list[0].args[0] == str(a)
+
+
+def test_sync_recent_calls_task_invokes_sync(control_db, monkeypatch):
+    seen = {}
+
+    def fake(cdb, tid, **kw):
+        seen["tid"] = tid
+        return {"ok": True, "calls_synced": 3, "voicemails_synced": 1}
+
+    monkeypatch.setattr(
+        "gdx_dispatch.modules.phone_com.tasks.sync_recent_calls", fake,
+    )
+    tid = uuid4()
+    result = pc_tasks.sync_recent_calls_task.run(str(tid))
+    assert result["ok"] is True
+    assert result["calls_synced"] == 3
+    assert result["voicemails_synced"] == 1
+    assert seen["tid"] == tid
+
+
+def test_beat_schedule_includes_calls_refresh():
+    from gdx_dispatch.core.scheduler import build_beat_schedule
+
+    sched = build_beat_schedule()
+    assert "phone-com-calls-refresh" in sched
+    entry = sched["phone-com-calls-refresh"]
+    assert entry["task"] == "phone_com.sync_all_recent_calls"
+
+
 def test_rotate_refuses_without_tenant_base_domain(control_db, monkeypatch):
     """Rotating with TENANT_BASE_DOMAIN unset would PATCH the Phone.com
     callback to https://{slug}.example.com/... and silently kill webhook
