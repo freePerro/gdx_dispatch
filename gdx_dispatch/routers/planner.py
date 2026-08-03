@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -37,6 +38,67 @@ def _uid(user: dict) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# due_date is a CALENDAR date. Storage convention: date D = D@00:00:00 UTC.
+# "Today" for a garage-door business is the shop's local day, not UTC's —
+# after ~7pm CDT those differ, which put evening captures a day late.
+try:
+    from zoneinfo import ZoneInfo
+
+    _BUSINESS_TZ = ZoneInfo(os.getenv("GDX_BUSINESS_TZ", "America/Chicago"))
+except Exception:  # tzdata missing — degrade to UTC rather than crash the router
+    _BUSINESS_TZ = timezone.utc
+
+
+def calendar_today_utc() -> datetime:
+    """Today's business-local calendar date, stored per the D@00:00 UTC
+    convention. Shared with other planner-task writers (outlook capture)."""
+    today = datetime.now(_BUSINESS_TZ).date()
+    return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+
+
+def _parse_due_date(value) -> datetime | None:
+    """Client due dates are calendar dates ('YYYY-MM-DD') or ISO stamps.
+    Normalize to a tz-aware UTC datetime so every writer stores one
+    convention (naive input used to depend on the DB session timezone)."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        log.warning("unparseable due_date %r — ignoring", value)
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _date_out(dt: datetime | None) -> str | None:
+    """due_date OUT is a bare calendar date ('YYYY-MM-DD'). str(datetime)
+    ('2026-08-03 00:00:00+00:00') made browsers parse UTC midnight and
+    render the previous local day — the 2026-08-03 off-by-one fix.
+
+    Two row shapes coexist: UTC-midnight rows (the calendar convention —
+    return that date verbatim) and real-timestamp rows written by older
+    server defaults (quick-capture/outlook `now()`) — those are instants,
+    so their calendar day is the BUSINESS-local one. A genuine event at
+    exactly 00:00:00 UTC degrades to the convention read — acceptable,
+    same trade the useFormatters stamp helpers make."""
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    utc_dt = dt.astimezone(timezone.utc)
+    if (utc_dt.hour, utc_dt.minute, utc_dt.second) == (0, 0, 0):
+        return utc_dt.date().isoformat()
+    return dt.astimezone(_BUSINESS_TZ).date().isoformat()
+
+
+def _ts_out(dt: datetime | None) -> str | None:
+    """Real timestamps go out as proper ISO-8601 ('T' separator + offset),
+    not str(datetime)'s space-separated form."""
+    return dt.isoformat() if dt else None
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -137,13 +199,13 @@ def list_tasks(
         {
             "id": str(t.id), "title": t.title, "description": t.description,
             "status": t.status, "priority": t.priority,
-            "due_date": str(t.due_date) if t.due_date else None,
+            "due_date": _date_out(t.due_date),
             "assigned_to": t.assigned_to, "created_by": t.created_by,
             "job_id": t.job_id, "customer_id": t.customer_id,
             "contact_phone": t.contact_phone, "phone_com_call_id": t.phone_com_call_id,
             "source": t.source,
-            "created_at": str(t.created_at) if t.created_at else None,
-            "completed_at": str(t.completed_at) if t.completed_at else None,
+            "created_at": _ts_out(t.created_at),
+            "completed_at": _ts_out(t.completed_at),
         }
         for t in rows
     ]}
@@ -152,19 +214,19 @@ def list_tasks(
 @router.post("/tasks", status_code=201)
 def create_task(body: TaskIn, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     tid, uid = _tid(request), _uid(user)
-    due_dt = None
-    if body.due_date:
-        try:
-            due_dt = datetime.fromisoformat(body.due_date.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            logging.getLogger(__name__).exception("create_task caught exception")
-            due_dt = None
+    due_dt = _parse_due_date(body.due_date)
+    if body.due_date and due_dt is None:
+        # A due date was sent but doesn't parse — reject loudly instead of
+        # silently creating an undated task (audit 2026-08-03).
+        raise HTTPException(status_code=422, detail="Invalid due_date")
     # Server-guarantee the "captures never scroll away" invariant: a quick-capture
-    # with no due date defaults to now, so the needs_action sort (which puts
+    # with no due date defaults to TODAY (business-local calendar date, stored
+    # per the D@00:00 UTC convention), so the needs_action sort (which puts
     # undated tasks last) always surfaces it near the top. Don't rely on the
-    # client to send today's date.
+    # client to send today's date. Was `_now()` — a real evening timestamp
+    # whose UTC calendar day is tomorrow (audit 2026-08-03).
     if due_dt is None and body.source == "quick_capture":
-        due_dt = _now()
+        due_dt = calendar_today_utc()
 
     # Call-capture auto-match: fill customer_id from the linked call or the typed
     # number when the caller didn't already pick a customer. Never overrides an
@@ -407,13 +469,27 @@ def update_task(task_id: str, body: TaskPatch, request: Request, user: dict = De
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Explicitly-sent nulls CLEAR nullable fields (the edit dialogs ship
+    # :showClear on the due-date picker; before 2026-08-03 the None-skip
+    # meant clearing a due date silently never persisted). Fields the client
+    # didn't send (absent from model_fields_set) are left untouched.
+    _clearable = {"due_date", "assigned_to", "job_id", "customer_id"}
     updated = []
     for field in ["title", "description", "status", "priority", "due_date",
                   "assigned_to", "job_id", "customer_id"]:
-        val = getattr(body, field, None)
-        if val is not None:
-            setattr(task, field, val)
-            updated.append(field)
+        if field not in body.model_fields_set:
+            continue
+        val = getattr(body, field)
+        if val is None and field not in _clearable:
+            continue
+        if field == "due_date" and val is not None:
+            # Normalize like create_task — a raw string here previously
+            # leaned on the DB driver's implicit cast.
+            val = _parse_due_date(val)
+            if val is None:
+                raise HTTPException(status_code=422, detail="Invalid due_date")
+        setattr(task, field, val)
+        updated.append(field)
     if not updated:
         raise HTTPException(status_code=400, detail="Nothing to update")
     if body.status == "done":
@@ -475,7 +551,8 @@ def create_plan(body: PlanIn, request: Request, user: dict = Depends(get_current
     db.add(plan)
     for i, step in enumerate(body.steps):
         db.add(PlanStep(id=str(uuid4()), plan_id=plan.id, title=step.get("title", ""),
-                        assigned_to=step.get("assigned_to"), due_date=step.get("due_date"), sort_order=i))
+                        assigned_to=step.get("assigned_to"),
+                        due_date=_parse_due_date(step.get("due_date")), sort_order=i))
     db.commit()
     return {"id": str(plan.id), "title": body.title, "steps": len(body.steps)}
 
@@ -492,9 +569,9 @@ def get_plan(plan_id: str, request: Request, user: dict = Depends(get_current_us
     return {
         **{"id": str(plan.id), "title": plan.title, "description": plan.description,
            "is_template": plan.is_template, "created_by": plan.created_by,
-           "created_at": str(plan.created_at) if plan.created_at else None},
+           "created_at": _ts_out(plan.created_at)},
         "steps": [{"id": str(s.id), "title": s.title, "assigned_to": s.assigned_to,
-                   "status": s.status, "due_date": str(s.due_date) if s.due_date else None,
+                   "status": s.status, "due_date": _date_out(s.due_date),
                    "sort_order": s.sort_order} for s in steps],
         "total_steps": total, "done_steps": done,
         "progress": round(done / max(total, 1) * 100),

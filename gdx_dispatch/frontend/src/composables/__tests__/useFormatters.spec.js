@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   formatDate,
   formatDateTime,
+  formatStampDate,
+  localDateString,
+  parseLocalDateString,
   formatMoney,
   formatPercent,
   formatNumber,
@@ -130,5 +133,44 @@ describe('formatUser', () => {
 
   it('passes through non-UUID opaque actors (e.g. API keys)', () => {
     expect(formatUser('gdx_live_0f26c7d')).toBe('gdx_live_0f26c7d');
+  });
+});
+
+// ── Planner date fix (2026-08-03): date-only values are LOCAL calendar dates ──
+describe('localDateString', () => {
+  it('renders local components, not the UTC date (evening-safe)', () => {
+    // 11:30pm local on Aug 3. In any west-of-UTC zone (all US zones) the
+    // UTC date is already Aug 4 — prove the two methods actually disagree
+    // there, so this test can't silently pass over a toISOString revert.
+    // (In a UTC CI runner the guard is vacuous; the backend serial tests
+    // pin the business-timezone behavior independently.)
+    const evening = new Date(2026, 7, 3, 23, 30);
+    if (evening.getTimezoneOffset() > 0) {
+      expect(evening.toISOString().slice(0, 10)).toBe('2026-08-04');
+    }
+    expect(localDateString(evening)).toBe('2026-08-03');
+  });
+
+  it('round-trips with parseLocalDateString', () => {
+    expect(localDateString(parseLocalDateString('2026-08-03'))).toBe('2026-08-03');
+  });
+
+  it('returns null for empty/invalid input', () => {
+    expect(localDateString(null)).toBeNull();
+    expect(localDateString('')).toBeNull();
+    expect(localDateString('not-a-date')).toBeNull();
+  });
+});
+
+describe('date-only rendering stays on the calendar date', () => {
+  it('formatDate renders YYYY-MM-DD as that day in every timezone', () => {
+    expect(formatDate('2026-08-03', { locale: LOCALE, options: { month: 'short', day: 'numeric' } }))
+      .toBe('Aug 3');
+  });
+
+  it('formatStampDate handles str(datetime) space-separated UTC-midnight stamps', () => {
+    // Several backend routes serialize with str(): '2026-08-03 00:00:00+00:00'.
+    expect(formatStampDate('2026-08-03 00:00:00+00:00', { locale: LOCALE, options: { month: 'short', day: 'numeric' } }))
+      .toBe('Aug 3');
   });
 });

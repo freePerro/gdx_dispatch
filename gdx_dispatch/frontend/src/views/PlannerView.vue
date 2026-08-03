@@ -36,7 +36,8 @@
                 <Tag v-if="task.priority === 'urgent'" value="URGENT" severity="danger" size="small" />
                 <Tag v-else-if="task.priority === 'high'" value="HIGH" severity="warn" size="small" />
                 <span v-if="task.assignee_name" class="meta-item"><i class="pi pi-user"></i> {{ task.assignee_name }}</span>
-                <span v-if="task.due_date" class="meta-item"><i class="pi pi-calendar"></i> {{ shortDate(task.due_date) }}</span>
+                <span v-if="task.due_date" class="meta-item"><i class="pi pi-calendar"></i> Due {{ shortDate(task.due_date) }}</span>
+                <span v-if="task.created_at" class="meta-item"><i class="pi pi-clock"></i> Added {{ shortDate(task.created_at) }}</span>
                 <span v-if="jobLabelFor(task.job_id)" class="meta-item"><i class="pi pi-briefcase"></i> {{ jobLabelFor(task.job_id) }}</span>
                 <span v-if="customerLabelFor(task.customer_id)" class="meta-item"><i class="pi pi-user-edit"></i> {{ customerLabelFor(task.customer_id) }}</span>
               </div>
@@ -174,7 +175,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
-import { formatDate, formatTime } from "../composables/useFormatters";
+import { formatDate, formatTime, localDateString, parseLocalDateString } from "../composables/useFormatters";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
@@ -327,7 +328,7 @@ async function loadJobsAndCustomers() {
 async function createTask() {
   taskSaving.value = true;
   try {
-    const due = taskForm.value.due_date instanceof Date ? taskForm.value.due_date.toISOString().slice(0, 10) : taskForm.value.due_date;
+    const due = taskForm.value.due_date instanceof Date ? localDateString(taskForm.value.due_date) : taskForm.value.due_date;
     await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due }, { successMessage: "Task created" });
     showTaskForm.value = false;
     taskForm.value = {
@@ -363,7 +364,9 @@ function editTask(task) {
     description: task.description || "",
     priority: task.priority || "low",
     status: task.status || "todo",
-    due_date: task.due_date || null,
+    // DatePicker needs a real Date; parse 'YYYY-MM-DD' as LOCAL so the edit
+    // dialog doesn't walk the date back a day (see useFormatters).
+    due_date: parseLocalDateString(task.due_date) || null,
     assigned_to: task.assigned_to || null,
     job_id: task.job_id || null,
     customer_id: task.customer_id || null,
@@ -381,7 +384,7 @@ async function saveTaskEdits() {
       description: t.description,
       priority: t.priority,
       status: t.status,
-      due_date: t.due_date,
+      due_date: t.due_date instanceof Date ? localDateString(t.due_date) : t.due_date,
       assigned_to: t.assigned_to,
       job_id: t.job_id,
       customer_id: t.customer_id,

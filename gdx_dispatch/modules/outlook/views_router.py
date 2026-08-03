@@ -894,6 +894,7 @@ def create_task_from_message(
     from uuid import uuid4  # noqa: PLC0415
 
     from gdx_dispatch.models.tenant_models import PlannerTask, User  # noqa: PLC0415
+    from gdx_dispatch.routers.planner import calendar_today_utc  # noqa: PLC0415
 
     # An assignee that doesn't exist produces a task nobody will ever see in
     # their "mine" view — invisible work, the worst kind.
@@ -920,7 +921,10 @@ def create_task_from_message(
         description=description.replace("\x00", "")[:4000],
         status="todo",
         priority=payload.priority,
-        due_date=datetime.now(timezone.utc),
+        # Business-local TODAY at the D@00:00-UTC convention — a raw now()
+        # captured after ~7pm CDT carries tomorrow's UTC calendar day and
+        # rendered "due tomorrow" (planner date fix, 2026-08-03).
+        due_date=calendar_today_utc(),
         created_by=str(uid),
         assigned_to=payload.assigned_to or None,
         job_id=str(msg.linked_job_id) if msg.linked_job_id else None,

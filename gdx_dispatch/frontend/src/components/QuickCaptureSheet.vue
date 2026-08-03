@@ -83,6 +83,7 @@ import Textarea from 'primevue/textarea';
 import InputText from 'primevue/inputtext';
 import Button from 'primevue/button';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { localDateString } from '../composables/useFormatters';
 
 const open = defineModel('visible', { type: Boolean, default: false });
 const emit = defineEmits(['saved']);
@@ -165,7 +166,9 @@ async function save() {
   const title = lines[0].slice(0, 300);
   const description = lines.length > 1 ? body : '';
   // Due today so an unhandled note goes overdue tomorrow and surfaces loudly.
-  const dueToday = new Date().toISOString().slice(0, 10);
+  // LOCAL date, not toISOString (UTC) — after ~7pm CDT the UTC date is
+  // tomorrow, which made evening captures due a day late.
+  const dueToday = localDateString(new Date());
   try {
     await api.post(
       '/api/planner/tasks',
