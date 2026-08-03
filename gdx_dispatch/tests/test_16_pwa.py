@@ -48,7 +48,11 @@ def test_sw_js_endpoint_200():
 # ── 2: manifest.json returns valid JSON ────────────────────────────────────
 
 def test_manifest_json_valid():
-    """GET /manifest.json must return valid JSON with required PWA fields."""
+    """GET /manifest.json must return valid JSON with required PWA fields.
+
+    Holds for BOTH branches: the dist-built manifest.webmanifest and the
+    inline backend-only fallback.
+    """
     client = _pwa_client()
     resp = client.get("/manifest.json")
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -60,6 +64,34 @@ def test_manifest_json_valid():
     assert "display" in data, "manifest missing 'display'"
     assert data["display"] == "standalone"
     assert data["short_name"] == "GDX"
+
+
+def test_manifest_json_prefers_dist_build(monkeypatch, tmp_path):
+    """When frontend/dist/manifest.webmanifest exists, /manifest.json serves it
+    verbatim — one manifest, not two drifting ones."""
+    import gdx_dispatch.core.pwa as pwa
+
+    dist_manifest = tmp_path / "manifest.webmanifest"
+    dist_manifest.write_text('{"name": "GDX Dispatch", "short_name": "GDX", "dist_marker": true}')
+    monkeypatch.setattr(pwa, "_MANIFEST_DIST_PATH", dist_manifest)
+
+    resp = _pwa_client().get("/manifest.json")
+    assert resp.status_code == 200
+    assert resp.json().get("dist_marker") is True
+
+
+def test_manifest_json_fallback_without_dist(monkeypatch, tmp_path):
+    """Backend-only image (no frontend build): the inline fallback still
+    produces an installable manifest."""
+    import gdx_dispatch.core.pwa as pwa
+
+    monkeypatch.setattr(pwa, "_MANIFEST_DIST_PATH", tmp_path / "missing.webmanifest")
+
+    resp = _pwa_client().get("/manifest.json")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["short_name"] == "GDX"
+    assert data["display"] == "standalone"
 
 
 # ── 3: push subscribe endpoint ─────────────────────────────────────────────
@@ -141,30 +173,27 @@ def test_send_notification_mock(monkeypatch):
     assert calls[0]["payload"]["title"] == "Test Notification"
 
 
-# ── 6: sw.js is a kill-switch (no cache-first, unregisters legacy PWA) ─────
+# ── 6: sw.js — never cache-first again, dist push SW preferred ─────────────
+#
+# History: a cache-first SW stranded returning visitors on stale Vue chunks
+# (2026-04-11), so /sw.js became a kill-switch. The tech-mobile sprint later
+# shipped a real push SW in frontend/dist — which this route silently
+# shadowed with the kill-switch until 2026-08-03. Now: dist push SW when a
+# frontend build exists, kill-switch fallback when it doesn't, and NEITHER
+# may ever carry a fetch handler or precache list.
 
-def test_sw_js_is_kill_switch():
-    """sw.js must be a kill-switch: unregister self, delete all caches, no fetch handler.
-
-    A prior deploy shipped a cache-first SW that stranded returning visitors on
-    stale Vue chunks after every frontend rebuild. The current Vue frontend does
-    not register a service worker; /sw.js exists only to dismantle legacy SWs
-    still installed in returning visitors' browsers.
-    """
+def test_sw_js_never_reintroduces_cache_first():
+    """Whatever /sw.js serves: no fetch handler, no precache, no-cache headers."""
     client = _pwa_client()
     resp = client.get("/sw.js")
     assert resp.status_code == 200
 
     body = resp.text
-    assert "self.registration.unregister" in body, (
-        "sw.js must call self.registration.unregister() to dismantle legacy PWA"
-    )
-    assert "caches.delete" in body, "sw.js must delete all caches"
     assert "gdx-v1" not in body, (
-        "Legacy 'gdx-v1' cache name must not be present — kill-switch only"
+        "Legacy 'gdx-v1' cache name must not be present in any served SW"
     )
     assert "APP_SHELL" not in body, (
-        "APP_SHELL precache list must not be present — kill-switch only"
+        "APP_SHELL precache list must not be present in any served SW"
     )
     assert "addEventListener('fetch'" not in body and 'addEventListener("fetch"' not in body, (
         "sw.js must not register a fetch handler — all requests must pass through to network"
@@ -174,6 +203,37 @@ def test_sw_js_is_kill_switch():
     assert "no-cache" in cache_control or "no-store" in cache_control, (
         f"sw.js must have no-cache headers, got: {cache_control}"
     )
+
+
+def test_sw_js_prefers_dist_push_sw(monkeypatch, tmp_path):
+    """With a frontend build present, /sw.js serves the dist push SW — the
+    regression that kept Web Push dead in prod was this route shadowing it."""
+    import gdx_dispatch.core.pwa as pwa
+
+    dist_sw = tmp_path / "sw.js"
+    dist_sw.write_text("self.addEventListener('push', () => {}); // dist_marker\n")
+    monkeypatch.setattr(pwa, "_SW_DIST_PATH", dist_sw)
+
+    resp = _pwa_client().get("/sw.js")
+    assert resp.status_code == 200
+    assert "dist_marker" in resp.text
+    assert resp.headers.get("Service-Worker-Allowed") == "/"
+
+
+def test_sw_js_kill_switch_without_dist(monkeypatch, tmp_path):
+    """Backend-only image (no frontend build): serve the kill-switch so any
+    installed SW dismantles itself rather than going stale."""
+    import gdx_dispatch.core.pwa as pwa
+
+    monkeypatch.setattr(pwa, "_SW_DIST_PATH", tmp_path / "missing-sw.js")
+
+    resp = _pwa_client().get("/sw.js")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "self.registration.unregister" in body, (
+        "fallback sw.js must call self.registration.unregister() to dismantle legacy PWA"
+    )
+    assert "caches.delete" in body, "fallback sw.js must delete all caches"
 
 
 # ── 7: route registration check ───────────────────────────────────────────

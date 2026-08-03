@@ -223,11 +223,26 @@ def test_pwa_version_endpoint():
     assert "/sw.js" in routes
 
 
-def test_pwa_service_worker_contains_cache_version():
-    from gdx_dispatch.core.pwa import _SW_JS_PATH
-    assert _SW_JS_PATH.exists(), f"Service worker file not found at {_SW_JS_PATH}"
-    sw_content = _SW_JS_PATH.read_text(encoding="utf-8")
-    assert "CACHE_VERSION" in sw_content or "cache" in sw_content.lower(), "Service worker should reference caching"
+def test_pwa_service_worker_files_exist_and_stay_cache_free():
+    # 2026-08-03: was `test_pwa_service_worker_contains_cache_version`, a relic
+    # asserting the SW "references caching" — the property the 2026-04-11
+    # kill-switch exists to DISMANTLE (it only passed because "caches.delete"
+    # contains "cache"). Assert the real contract instead: both SW sources
+    # exist, the fallback dismantles, and the real SW never goes cache-first.
+    from gdx_dispatch.core.pwa import _SW_DIST_PATH, _SW_KILL_SWITCH_PATH
+
+    assert _SW_KILL_SWITCH_PATH.exists(), "kill-switch fallback missing from static/"
+    assert "unregister" in _SW_KILL_SWITCH_PATH.read_text(encoding="utf-8")
+
+    # The real SW ships from frontend/public (Vite copies it into dist, which
+    # is gitignored — CI has no build here, so check the source file).
+    src_sw = _SW_DIST_PATH.parent.parent / "public" / "sw.js"
+    assert src_sw.exists(), f"push SW source not found at {src_sw}"
+    body = src_sw.read_text(encoding="utf-8")
+    assert "addEventListener('push'" in body, "real SW must handle Web Push"
+    assert "addEventListener('fetch'" not in body, (
+        "SW must never register a fetch handler (2026-04-11 stale-chunk incident)"
+    )
 
 
 def test_gdpr_export_endpoint_exists():

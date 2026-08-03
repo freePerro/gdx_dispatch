@@ -86,6 +86,11 @@ import { useApiWithToast } from '../composables/useApiWithToast';
 
 const open = defineModel('visible', { type: Boolean, default: false });
 const emit = defineEmits(['saved']);
+// Seed text for the note box — used by the Android share target (share a
+// page/text into GDX → lands here). Applied on open, after the reset.
+const props = defineProps({
+  initialNote: { type: String, default: '' },
+});
 
 const api = useApiWithToast();
 
@@ -109,6 +114,7 @@ function reset() {
 
 async function onShow() {
   reset();
+  if (props.initialNote) note.value = props.initialNote;
   try {
     const data = await api.get('/api/planner/recent-calls?limit=5');
     recentCalls.value = Array.isArray(data?.items) ? data.items : [];

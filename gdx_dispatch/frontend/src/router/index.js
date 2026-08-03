@@ -452,7 +452,10 @@ export function createAppRouter() {
         // strictly an improvement.
         if (to.path === '/jobs') return { path: '/mobile/jobs' };
         if (to.path === '/timeclock') return { path: '/mobile/timeclock' };
-        if (to.path === '/dispatch' || to.path === '/planner' || to.path === '/mobile/planner') return { path: '/mobile' };
+        // Preserve the query: the PWA share_target lands on /mobile/planner
+        // with ?share_* params — dropping them here would silently eat a
+        // tech's share (AppBottomNav on /mobile consumes them and explains).
+        if (to.path === '/dispatch' || to.path === '/planner' || to.path === '/mobile/planner') return { path: '/mobile', query: to.query };
         // DT-2: /dashboard renders admin-shape KPIs (Revenue Billed, Overdue
         // Invoices, audit-logs feed) and fires two 403-firing API calls on
         // mount for tech (audit/logs + jobs/ready-for-billing). Tech's home
