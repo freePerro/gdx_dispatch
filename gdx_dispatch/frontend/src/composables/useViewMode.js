@@ -69,6 +69,12 @@ export function useViewMode() {
     // override, because the drawer is only one of the ways a tech arrives — a
     // bookmark, the back button, or the command palette all route through here.
     '/door-listings': '/mobile/door-listings',
+    // Phone.com voicemail/calls + SMS (2026-08-03): the desktop calls
+    // table + 640px detail dialog are exactly the wide-table problem this
+    // map exists for. Companion routes carry the same nav.office frontend
+    // gate as the desktop drawer entries.
+    '/phone-com/calls': '/mobile/phone',
+    '/phone-com/messages': '/mobile/sms',
     // NOTE: '/jobs' is intentionally NOT mapped here — /mobile/jobs is
     // tech-scoped ("My Jobs") and would hide office/admin data. See
     // MH-5b follow-up for a non-tech-scoped /mobile/jobs-list.
