@@ -241,13 +241,36 @@
       </Card>
 
       <!-- Needs Attention section -->
-      <Card v-if="attentionItems.length" class="attention-card" data-testid="needs-attention">
+      <Card v-if="attentionItems.length || nextActions.length" class="attention-card" data-testid="needs-attention">
         <template #title><i class="pi pi-exclamation-triangle" style="color:#f59e0b"></i> Needs Attention</template>
         <template #content>
           <div class="attention-list">
             <div v-for="item in attentionItems" :key="item.id" class="attention-item" @click="router.push(item.link)">
               <Tag :value="item.type" :severity="item.severity" size="small" />
               <span class="attention-text">{{ item.text }}</span>
+            </div>
+            <div
+              v-for="a in nextActions"
+              :key="a.id"
+              class="attention-item attention-item--action"
+              data-testid="next-action-row"
+              @click="a.action_url && router.push(a.action_url)"
+            >
+              <Tag :value="nextActionTag(a).label" :severity="nextActionTag(a).severity" size="small" />
+              <span class="attention-text">
+                <strong>{{ a.title }}</strong>
+                <span v-if="a.description" class="attention-desc"> — {{ a.description }}</span>
+              </span>
+              <span class="attention-action-buttons">
+                <Button
+                  icon="pi pi-check" text size="small" aria-label="Mark done"
+                  data-testid="next-action-done" @click.stop="completeNextAction(a)"
+                />
+                <Button
+                  icon="pi pi-clock" text size="small" aria-label="Snooze for a week"
+                  data-testid="next-action-snooze" @click.stop="snoozeNextAction(a)"
+                />
+              </span>
             </div>
           </div>
         </template>
@@ -485,6 +508,53 @@ const activityIsAuditBacked = ref(false);
 const todaysJobs = ref([]);
 
 // "Needs Attention" — exception-based items for the owner
+// Persisted next-actions — the nags background loops file (billing follow-up,
+// reminders-off, email-sync alarm). The channel existed since PR5 but no SPA
+// surface ever read GET /api/next-actions (found 2026-08-04: $13K of
+// uncollected invoices and 12 unbilled jobs sat invisible in it for weeks).
+// Ephemeral "auto:" rows are excluded: their content is already summarized by
+// the client-computed lines above (e.g. "N overdue invoices need collection"),
+// and they can't be completed or snoozed server-side.
+const nextActions = ref([]);
+
+async function loadNextActions() {
+  try {
+    const rows = await api.get('/api/next-actions', { suppressErrorToast: true });
+    nextActions.value = (Array.isArray(rows) ? rows : []).filter(
+      (a) => a && typeof a.id === 'string' && !a.id.startsWith('auto:'),
+    );
+  } catch {
+    nextActions.value = []; // best-effort: never take the dashboard down
+  }
+}
+
+const NEXT_ACTION_TAGS = {
+  billing_followup: { label: 'Billing', severity: 'danger' },
+  dunning_disabled_nudge: { label: 'Reminders', severity: 'warn' },
+  email_sync_health: { label: 'Email', severity: 'warn' },
+};
+
+function nextActionTag(a) {
+  const bySeverity = { high: 'danger', medium: 'warn', low: 'info' };
+  return NEXT_ACTION_TAGS[a.action_type]
+    || { label: 'Attention', severity: bySeverity[a.priority] || 'info' };
+}
+
+async function completeNextAction(a) {
+  try {
+    await api.post(`/api/next-actions/${a.id}/complete`, {}, { successMessage: 'Marked done' });
+    nextActions.value = nextActions.value.filter((x) => x.id !== a.id);
+  } catch { /* toast already shown by useApi */ }
+}
+
+async function snoozeNextAction(a) {
+  const until = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    await api.post(`/api/next-actions/${a.id}/snooze`, { until }, { successMessage: 'Snoozed for a week' });
+    nextActions.value = nextActions.value.filter((x) => x.id !== a.id);
+  } catch { /* toast already shown by useApi */ }
+}
+
 const attentionItems = computed(() => {
   const items = [];
   const s = summary.value;
@@ -846,6 +916,7 @@ async function loadDashboard() {
     loadOps(),
     loadCash(),
     loadReadyForBilling(),
+    loadNextActions(),
   ]);
 }
 
@@ -1023,4 +1094,7 @@ onMounted(() => {
 .attention-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem; border-radius: 6px; cursor: pointer; }
 .attention-item:hover { background: rgba(245, 158, 11, 0.1); }
 .attention-text { font-size: 0.9rem; }
+.attention-item--action .attention-text { flex: 1; min-width: 0; }
+.attention-desc { color: var(--p-text-muted-color, #6b7280); }
+.attention-action-buttons { display: flex; gap: 0.15rem; flex-shrink: 0; }
 </style>
