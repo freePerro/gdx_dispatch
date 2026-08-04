@@ -354,6 +354,8 @@ import { useTenantTimezone } from "../composables/useTenantTimezone";
 import { formatMoney, formatPercent, formatDateTime as fmtDateTime, formatUser } from "../composables/useFormatters";
 import { ENTITY_ICONS, formatActivityTitle } from "../constants/activityLabels";
 import { useAuthStore } from "../stores/auth";
+import { useEmailUnreadStore } from "../stores/emailUnread";
+import { useSmsUnreadStore } from "../stores/smsUnread";
 import { normalizeRole } from "../constants/roles";
 import { useToast } from "primevue/usetoast";
 import Button from "primevue/button";
@@ -371,6 +373,12 @@ const router = useRouter();
 const { zonedDateKey } = useTenantTimezone();
 const toast = useToast();
 const auth = useAuthStore();
+// Same stores that drive the sidebar badges — one source of truth, so the
+// dashboard entry and the badge can never show different numbers. Both
+// endpoints are the REAL DB-backed counts (outlook sync / phone.com poller);
+// both stores swallow module-off and transient errors internally.
+const emailUnread = useEmailUnreadStore();
+const smsUnread = useSmsUnreadStore();
 const canSeePipeline = computed(() => {
   // Mirrors server gate: owner/admin/dispatcher/sales/accounting/manager.
   // Technician + viewer hidden — same rule as EstimateProfitPanel.
@@ -622,6 +630,34 @@ const attentionItems = computed(() => {
       link: '/dispatch',
     });
   }
+  // Unread comms — "a customer wrote and nobody saw it" is the same silent
+  // leak as an unscheduled return visit, just on the phone/email side. Info
+  // severity: unread mail is a steady state in a real office, not an alarm —
+  // the severity sort below keeps these under danger/warn rows.
+  // The email count is per-viewer visibility-filtered server-side, so no
+  // client gate is needed. The SMS count is TENANT-WIDE with no role check,
+  // and the sidebar hides its pin behind nav.office — mirror that gate here
+  // or the dashboard advertises a path into every SMS thread the nav hides.
+  const emailN = toNumber(emailUnread.count);
+  if (emailN > 0) {
+    items.push({
+      id: 'email-unread',
+      type: 'Inbox',
+      severity: 'info',
+      text: `${emailN} unread email${emailN === 1 ? '' : 's'} in the inbox`,
+      link: '/inbox',
+    });
+  }
+  const smsN = toNumber(smsUnread.count);
+  if (smsN > 0 && auth.hasPermission('nav.office')) {
+    items.push({
+      id: 'sms-unread',
+      type: 'SMS',
+      severity: 'info',
+      text: `${smsN} unread text message${smsN === 1 ? '' : 's'}`,
+      link: '/phone-com/messages',
+    });
+  }
   const pto = partsToOrder.value;
   if (pto.needed > 0) {
     // A critical part is a tech stuck on a job — escalate the row. Urgent
@@ -657,7 +693,12 @@ const attentionItems = computed(() => {
       link: '/billing',
     });
   }
-  return items;
+  // Render order = urgency, not insertion order. Without this, an info row
+  // (unread email — a steady state in a real office) sits above a danger row
+  // (critical part = tech stuck on a job). Stable sort keeps insertion order
+  // within a severity band.
+  const rank = { danger: 0, warn: 1, success: 2, info: 3 };
+  return items.sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
 });
 
 function toNumber(value) {
@@ -994,6 +1035,11 @@ async function loadDashboard() {
     loadReturnVisits(),
     loadPartsToOrder(),
     loadNextActions(),
+    // One refresh each so the dashboard is correct before the sidebar's 60s
+    // poll ticks. Both fetchCounts swallow their own errors and dedupe
+    // concurrent calls in the store.
+    emailUnread.fetchCount(),
+    smsUnread.fetchCount(),
   ]);
 }
 

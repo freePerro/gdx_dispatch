@@ -33,6 +33,23 @@ describe('emailUnread store', () => {
     expect(store.count).toBe(4);
   });
 
+  it('dedupes concurrent fetches — dashboard load + sidebar poll share one request', async () => {
+    const store = useEmailUnreadStore();
+    let resolveGet;
+    apiMock.get.mockReturnValueOnce(new Promise((res) => { resolveGet = res; }));
+    const first = store.fetchCount();
+    const second = store.fetchCount();
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+    resolveGet({ count: 7 });
+    await Promise.all([first, second]);
+    expect(store.count).toBe(7);
+    // The guard releases: a later call fetches again.
+    apiMock.get.mockResolvedValueOnce({ count: 8 });
+    await store.fetchCount();
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    expect(store.count).toBe(8);
+  });
+
   it('collapses errors to 0 — a tenant without email never badges', async () => {
     const store = useEmailUnreadStore();
     apiMock.get.mockRejectedValueOnce(new Error('403'));
@@ -90,6 +107,10 @@ describe('emailUnread store', () => {
     apiMock.get.mockResolvedValue({ count: 0 });
     store.startPolling(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(1);
+    // Let the first fetch settle (releases the in-flight dedup guard) the
+    // way it always does in real time before a 60s tick can fire.
+    await Promise.resolve();
+    await Promise.resolve();
     vi.advanceTimersByTime(60000);
     expect(apiMock.get).toHaveBeenCalledTimes(2);
     store.stopPolling();

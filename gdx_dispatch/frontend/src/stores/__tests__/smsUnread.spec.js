@@ -32,6 +32,22 @@ describe('smsUnread store', () => {
     expect(store.count).toBe(3);
   });
 
+  it('dedupes concurrent fetches — dashboard load + sidebar poll share one request', async () => {
+    const store = useSmsUnreadStore();
+    let resolveGet;
+    apiMock.get.mockReturnValueOnce(new Promise((res) => { resolveGet = res; }));
+    const first = store.fetchCount();
+    const second = store.fetchCount();
+    expect(apiMock.get).toHaveBeenCalledTimes(1);
+    resolveGet({ count: 5 });
+    await Promise.all([first, second]);
+    expect(store.count).toBe(5);
+    apiMock.get.mockResolvedValueOnce({ count: 6 });
+    await store.fetchCount();
+    expect(apiMock.get).toHaveBeenCalledTimes(2);
+    expect(store.count).toBe(6);
+  });
+
   it('collapses errors to 0 (module off / auth issues stay silent)', async () => {
     const store = useSmsUnreadStore();
     store.count = 5;
