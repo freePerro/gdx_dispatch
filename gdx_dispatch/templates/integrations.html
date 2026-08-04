@@ -290,14 +290,12 @@
         <p class="text-xs text-gray-500">Manage API keys for direct REST API access.</p>
       </div>
     </div>
-    <a href="/developer"
-       class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-      </svg>
-      Go to Developer Portal
-    </a>
+    <!-- The Developer Portal UI was removed with the multi-tenant control
+         plane. Keys are managed via the /api/developer/keys endpoints
+         (core/api_keys.py) or tools/create_api_key.py in the app container. -->
+    <span class="inline-flex items-center px-4 py-2 text-sm text-gray-500">
+      Managed via <code class="mx-1">/api/developer/keys</code>
+    </span>
   </div>
 
 </div>
