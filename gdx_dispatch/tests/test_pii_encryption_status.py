@@ -13,10 +13,15 @@ from __future__ import annotations
 
 import dataclasses
 
-import pytest
-from sqlalchemy import Column, String
+from sqlalchemy import String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+# These tests assert on the LIVE EncryptedString column inventory, which
+# encryption_status() reads from the mapper registries — so the models that
+# declare those columns must actually be imported. Without this, the file
+# only passed when some earlier-collected test file happened to import the
+# models (standalone runs and unlucky shard splits saw columns == ()).
+import gdx_dispatch.models  # noqa: E402,F401  (registers tenant/control mappers)
 from gdx_dispatch.core import pii
 
 
@@ -176,6 +181,7 @@ def test_drift_map_matches_actual_rendered_pg_type():
     strip parens before comparing.
     """
     from sqlalchemy.dialects import postgresql
+
     from gdx_dispatch.tools.tenant_schema_drift_check import _ORM_TO_PG
 
     rendered = pii.EncryptedString().compile(dialect=postgresql.dialect()).lower()
@@ -198,6 +204,7 @@ def test_real_model_writes_ciphertext_when_key_set(monkeypatch):
     """
     import base64
     import os as _os
+
     from cryptography.fernet import Fernet
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
@@ -206,7 +213,6 @@ def test_real_model_writes_ciphertext_when_key_set(monkeypatch):
     key = base64.urlsafe_b64encode(_os.urandom(32))
     monkeypatch.setattr(pii, "_FERNET", Fernet(key))
 
-    from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.core.webhooks.models import WebhookEndpoint
 
     engine = create_engine(

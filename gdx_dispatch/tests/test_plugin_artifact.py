@@ -4,10 +4,6 @@
 wheel/sdist gets written to on disk, so it must strip paths and reject anything
 that isn't a wheel/sdist (no traversal, no executable scripts).
 """
-import os
-
-os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost/x")
-
 from gdx_dispatch.plugin_host.reconcile import safe_artifact_name
 
 

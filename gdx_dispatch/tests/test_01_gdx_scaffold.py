@@ -71,6 +71,21 @@ def test_health_endpoint(gdx_client):
         )
 
 
+def test_health_endpoint_sqlite_url_is_healthy(gdx_client, monkeypatch):
+    """A sqlite-backed instance must not report permanently unhealthy.
+
+    Regression pin for the /health probe's connect_args: ``connect_timeout``
+    is a psycopg2 kwarg that sqlite3.Connection rejects with TypeError, so
+    before 2026-08-04 any sqlite DATABASE_URL made /health 503 forever.
+    """
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    monkeypatch.delenv("CONTROL_DATABASE_URL", raising=False)
+    rv = gdx_client.get("/health")
+    assert rv.status_code == 200, (
+        f"/health must be green on a sqlite URL, got {rv.status_code}: {rv.text}"
+    )
+
+
 def test_health_endpoint_denylist_probe_fail_open(gdx_client, monkeypatch):
     """SS-7 Slice M — /health stays green when the denylist probe raises.
 

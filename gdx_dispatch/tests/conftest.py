@@ -56,6 +56,15 @@ _ss12a_bootstrap_log("conftest_import_reached")
 import pytest
 from sqlalchemy import create_engine, event
 
+# Register ALL tenant/control mappers up front. Several tests (PII
+# encryption attestation, raw-SQL scans, model-inventory checks) assert on
+# the live mapper registry; before this import they only passed when an
+# earlier-collected test file happened to import the models — i.e. their
+# outcome depended on pytest-split shard boundaries. Class-level fix for
+# the 2026-08-04 unforked-suite find; individual files also import it so
+# they stay standalone-runnable.
+import gdx_dispatch.models  # noqa: E402,F401
+
 
 def iter_app_routes(app):
     """Yield ``(full_path, route)`` for every leaf route in ``app``.
@@ -229,7 +238,7 @@ def _reset_module_state():
 
 def make_fresh_db():
     """Create a fully isolated in-memory SQLite DB with all tenant tables."""
-    import gdx_dispatch.models  # noqa: F401 — registers ALL tenant models on metadata
+    # gdx_dispatch.models is imported at conftest top level (registers all mappers).
     from gdx_dispatch.core.audit import TenantBase
     from gdx_dispatch.models.tenant_models import Base as TenantModelsBase
     from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentServiceHistory
