@@ -621,6 +621,24 @@ async function loadVendorBills() {
   }
 }
 
+// Website leads still marked status='new' — nobody has called them back.
+// The landing form was silently dropping leads until 2026-07-19; now that
+// they flow again, a lead that cools uncontacted is the front-door version
+// of the same leak the other queues close. 'contacted'/'discarded' are the
+// handled states.
+const newLeadCount = ref(0);
+
+async function loadWebsiteLeads() {
+  try {
+    await auth.loadPermissions();
+    if (!auth.hasPermission('leads.read')) return;
+    const rows = await api.get('/api/landing-leads?status=new&limit=100', { suppressErrorToast: true });
+    newLeadCount.value = Array.isArray(rows) ? rows.length : 0;
+  } catch {
+    newLeadCount.value = 0;
+  }
+}
+
 // Persisted next-actions — the nags background loops file (billing follow-up,
 // reminders-off, email-sync alarm). The channel existed since PR5 but no SPA
 // surface ever read GET /api/next-actions (found 2026-08-04: $13K of
@@ -714,6 +732,18 @@ const attentionItems = computed(() => {
       severity: 'info',
       text: `${smsN} unread text message${smsN === 1 ? '' : 's'}`,
       link: '/phone-com/messages',
+    });
+  }
+  const leadsN = toNumber(newLeadCount.value);
+  if (leadsN > 0) {
+    items.push({
+      id: 'website-leads',
+      type: 'New Lead',
+      severity: 'warn',
+      // The fetch caps at 100 rows — above that the count is a floor, and
+      // the copy must say so rather than understate.
+      text: `${leadsN >= 100 ? '100+' : leadsN} new website lead${leadsN === 1 ? '' : 's'} waiting for a first call`,
+      link: '/leads',
     });
   }
   // Auto-ingested vendor bills nobody has reviewed. Unreviewed bills are
@@ -1106,6 +1136,7 @@ async function loadDashboard() {
     loadReturnVisits(),
     loadPartsToOrder(),
     loadVendorBills(),
+    loadWebsiteLeads(),
     loadNextActions(),
     // One refresh each so the dashboard is correct before the sidebar's 60s
     // poll ticks. Both fetchCounts swallow their own errors and dedupe

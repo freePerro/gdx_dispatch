@@ -144,12 +144,36 @@
             <template #body="{ data }">{{ formatPhone(data.phone) || '—' }}</template>
           </Column>
           <Column field="source" header="Source" sortable />
+          <!-- Status column (2026-08-04): the dashboard's "N new website
+               leads" count is status='new' — without this column the page
+               it links to couldn't show WHICH rows are the N. -->
+          <Column field="status" header="Status" style="width:110px" sortable>
+            <template #body="{ data }">
+              <Tag
+                :value="data.status || 'new'"
+                :severity="data.status === 'contacted' ? 'info' : data.status === 'discarded' ? 'secondary' : 'warn'"
+                data-testid="landing-status-tag"
+              />
+            </template>
+          </Column>
           <Column field="created_at" header="Submitted" style="width:140px" sortable>
             <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
           </Column>
-          <Column header="Actions" style="width:280px">
+          <Column header="Actions" style="width:340px">
             <template #body="{ data }">
               <div class="row-actions">
+                <Button
+                  v-if="canWrite && (data.status || 'new') === 'new'"
+                  label="Contacted"
+                  icon="pi pi-phone"
+                  size="small"
+                  severity="success"
+                  outlined
+                  data-testid="landing-mark-contacted"
+                  :loading="landingContactingId === data.id"
+                  :disabled="landingConvertingId === data.id || landingDeletingId === data.id || landingContactingId === data.id"
+                  @click.stop="markLandingContacted(data)"
+                />
                 <Button
                   v-if="canWrite"
                   label="Convert"
@@ -320,6 +344,7 @@ import DataTable from 'primevue/datatable';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
 import Select from 'primevue/select';
+import Tag from 'primevue/tag';
 import Textarea from 'primevue/textarea';
 import Badge from 'primevue/badge';
 import ProgressSpinner from 'primevue/progressspinner';
@@ -353,6 +378,7 @@ const saving = ref(false);
 const convertingLeadId = ref(null);
 const advancingLeadId = ref(null);
 const landingConvertingId = ref(null);
+const landingContactingId = ref(null);
 const landingDeletingId = ref(null);
 const deletingLeadId = ref(null);
 const showLandingDialog = ref(false);
@@ -582,6 +608,24 @@ async function convertLandingLead(landingLead) {
     await refreshLeads();
   } finally {
     landingConvertingId.value = null;
+  }
+}
+
+// "I called them, they're not (yet) a pipeline lead" — the exit that used to
+// not exist. Before this, the only ways out of status='new' were convert or
+// delete, so a called-but-declined submission nagged the dashboard forever
+// (or forced a fake Lead / a deleted contact record into the books).
+async function markLandingContacted(landingLead) {
+  landingContactingId.value = landingLead.id;
+  try {
+    await api.patch(
+      `/api/landing-leads/${landingLead.id}/status`,
+      { status: 'contacted' },
+      { successMessage: `${landingLead.name || 'Lead'} marked contacted` },
+    );
+    await loadLandingLeads();
+  } finally {
+    landingContactingId.value = null;
   }
 }
 
