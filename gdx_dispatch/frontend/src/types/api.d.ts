@@ -340,6 +340,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/return-visits-unscheduled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Return Visits Unscheduled
+         * @description Return-visit child jobs no one has dealt with in ANY way.
+         *
+         *     The closeout's needs_return_visit path creates the child unscheduled,
+         *     unassigned, and unparked — if nothing surfaces it, "I need to come back"
+         *     is exactly the silent-disappearing-job leak the closeout sheet exists to
+         *     close. Every clause below is an "already dealt with" exit, so the count
+         *     can't nag about work that's on a board somewhere:
+         *
+         *     * scheduled_at set → it's on the dispatch board for that day.
+         *     * assigned_to set (spawn-return-visit can pre-assign without a date) →
+         *       it's on that tech's column.
+         *     * holding_area_id set → deliberately parked (e.g. Waiting on Parts —
+         *       the DESIGNED state for a return visit whose part is on order, since
+         *       parts-to-order is this feature's sibling); the holding-area board is
+         *       its surface. Counting parked jobs here would nag forever and teach
+         *       everyone to ignore the entry.
+         *     * completed/cancelled excluded (stage predicate matching the closeout's
+         *       open-child check; every writer of is_return_visit sets a non-NULL
+         *       lifecycle_stage, so notin_'s NULL blindness can't bite).
+         *
+         *     jobs.read_all gate: office tiers only, same silent-403 contract as
+         *     ready-for-billing — the dashboard drops the entry for ungranted roles.
+         */
+        get: operations["return_visits_unscheduled_api_jobs_return_visits_unscheduled_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/create-invoice": {
         parameters: {
             query?: never;
@@ -24504,7 +24545,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 16305913b4a117a0625787083df95407568118cde96cf0623e62146b2b75e581
+             * @default d125df4318f806579c220d0b881e5cb939df2facb5c102f34cf6f76e753b9b65
              */
             secret: string;
         };
@@ -30728,6 +30769,37 @@ export interface operations {
         };
     };
     ready_for_billing_api_jobs_ready_for_billing_get: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    return_visits_unscheduled_api_jobs_return_visits_unscheduled_get: {
         parameters: {
             query?: {
                 request?: unknown;

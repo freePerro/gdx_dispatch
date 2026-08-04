@@ -495,6 +495,21 @@ async function loadReadyForBilling() {
   }
 }
 
+// Return visits the closeout minted (needs_return_visit, PR #267) that
+// dispatch hasn't scheduled. They're unscheduled + unassigned by design, so
+// no board leads with them — without this count, "I need to come back" is
+// the silent-disappearing-job leak wearing a new shape.
+const returnVisitCount = ref(0);
+
+async function loadReturnVisits() {
+  try {
+    const rows = await api.get('/api/jobs/return-visits-unscheduled', { suppressErrorToast: true });
+    returnVisitCount.value = Array.isArray(rows) ? rows.length : 0;
+  } catch {
+    returnVisitCount.value = 0;
+  }
+}
+
 // 2026-05-09 (UX sprint Phase 10) — loading flag prevents KPI tiles from
 // flashing "0" → real-value, which looked to users like data dropped to zero.
 // Skeleton renders in place of the formatted value while summary is in flight.
@@ -564,6 +579,16 @@ const attentionItems = computed(() => {
   const unassigned = todaysJobs.value.filter((j) => !j.technician_name || j.technician_name === 'Unassigned').length;
   if (unassigned > 0) {
     items.push({ id: 'unassigned', type: 'Unassigned', severity: 'warn', text: `${unassigned} jobs today have no technician assigned`, link: '/dispatch' });
+  }
+  const rv = toNumber(returnVisitCount.value);
+  if (rv > 0) {
+    items.push({
+      id: 'return-visits',
+      type: 'Return Visit',
+      severity: 'warn',
+      text: `${rv} return visit${rv === 1 ? '' : 's'} from completed jobs awaiting scheduling`,
+      link: '/dispatch',
+    });
   }
   if (toNumber(s.open_jobs) > 100) {
     items.push({ id: 'backlog', type: 'Backlog', severity: 'info', text: `${s.open_jobs} open jobs — consider scheduling more capacity`, link: '/jobs' });
@@ -916,6 +941,7 @@ async function loadDashboard() {
     loadOps(),
     loadCash(),
     loadReadyForBilling(),
+    loadReturnVisits(),
     loadNextActions(),
   ]);
 }
