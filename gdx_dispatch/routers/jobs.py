@@ -2481,6 +2481,75 @@ def ready_for_billing(
         return []
 
 
+@router.get("/return-visits-unscheduled", response_model=None, dependencies=[Depends(require_permission("jobs.read_all"))])
+def return_visits_unscheduled(
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Return-visit child jobs no one has dealt with in ANY way.
+
+    The closeout's needs_return_visit path creates the child unscheduled,
+    unassigned, and unparked — if nothing surfaces it, "I need to come back"
+    is exactly the silent-disappearing-job leak the closeout sheet exists to
+    close. Every clause below is an "already dealt with" exit, so the count
+    can't nag about work that's on a board somewhere:
+
+    * scheduled_at set → it's on the dispatch board for that day.
+    * assigned_to set (spawn-return-visit can pre-assign without a date) →
+      it's on that tech's column.
+    * holding_area_id set → deliberately parked (e.g. Waiting on Parts —
+      the DESIGNED state for a return visit whose part is on order, since
+      parts-to-order is this feature's sibling); the holding-area board is
+      its surface. Counting parked jobs here would nag forever and teach
+      everyone to ignore the entry.
+    * completed/cancelled excluded (stage predicate matching the closeout's
+      open-child check; every writer of is_return_visit sets a non-NULL
+      lifecycle_stage, so notin_'s NULL blindness can't bite).
+
+    jobs.read_all gate: office tiers only, same silent-403 contract as
+    ready-for-billing — the dashboard drops the entry for ungranted roles.
+    """
+    _ = current_user
+    try:
+        results = db.execute(
+            select(Job, Customer)
+            .outerjoin(Customer, Job.customer_id == Customer.id)
+            .where(
+                Job.is_return_visit.is_(True),
+                Job.deleted_at.is_(None),
+                Job.scheduled_at.is_(None),
+                Job.assigned_to.is_(None),
+                Job.holding_area_id.is_(None),
+                Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+            )
+            # Oldest first — the trip that's been waiting longest is the one
+            # the customer has been waiting on longest.
+            .order_by(Job.created_at.asc())
+            .limit(100)
+        ).all()
+        return [
+            {
+                "id": str(job.id),
+                "title": job.title or "",
+                # The WHY the tech attested at closeout — dispatch reads this
+                # to slot the trip.
+                "description": job.description or "",
+                "customer_name": customer.name if customer else "",
+                "customer_id": str(job.customer_id) if job.customer_id else None,
+                "job_number": job.job_number,
+                "parent_job_id": str(job.parent_job_id) if job.parent_job_id else None,
+                "created_at": str(job.created_at) if job.created_at else None,
+            }
+            for job, customer in results
+        ]
+    except Exception:
+        log.exception("return_visits_unscheduled_failed")
+        with contextlib.suppress(Exception):
+            db.rollback()
+        return []
+
+
 @router.post("/{job_id}/create-invoice", response_model=None)
 def create_invoice_from_job(
     job_id: str,

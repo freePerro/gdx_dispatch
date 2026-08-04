@@ -1059,6 +1059,51 @@
         }
       }
     },
+    "/api/jobs/return-visits-unscheduled": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Return Visits Unscheduled",
+        "description": "Return-visit child jobs no one has dealt with in ANY way.\n\nThe closeout's needs_return_visit path creates the child unscheduled,\nunassigned, and unparked \u2014 if nothing surfaces it, \"I need to come back\"\nis exactly the silent-disappearing-job leak the closeout sheet exists to\nclose. Every clause below is an \"already dealt with\" exit, so the count\ncan't nag about work that's on a board somewhere:\n\n* scheduled_at set \u2192 it's on the dispatch board for that day.\n* assigned_to set (spawn-return-visit can pre-assign without a date) \u2192\n  it's on that tech's column.\n* holding_area_id set \u2192 deliberately parked (e.g. Waiting on Parts \u2014\n  the DESIGNED state for a return visit whose part is on order, since\n  parts-to-order is this feature's sibling); the holding-area board is\n  its surface. Counting parked jobs here would nag forever and teach\n  everyone to ignore the entry.\n* completed/cancelled excluded (stage predicate matching the closeout's\n  open-child check; every writer of is_return_visit sets a non-NULL\n  lifecycle_stage, so notin_'s NULL blindness can't bite).\n\njobs.read_all gate: office tiers only, same silent-403 contract as\nready-for-billing \u2014 the dashboard drops the entry for ungranted roles.",
+        "operationId": "return_visits_unscheduled_api_jobs_return_visits_unscheduled_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/create-invoice": {
       "post": {
         "tags": [
@@ -58328,108 +58373,6 @@
           }
         }
       },
-      "put": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "patch": {
         "tags": [
           "plugins"
@@ -58482,6 +58425,108 @@
         }
       },
       "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
         "tags": [
           "plugins"
         ],
@@ -58586,110 +58631,6 @@
           }
         }
       },
-      "put": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "patch": {
         "tags": [
           "plugins"
@@ -58743,6 +58684,110 @@
         }
       },
       "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
         "tags": [
           "plugins"
         ],
@@ -89446,7 +89491,7 @@
           "secret": {
             "type": "string",
             "title": "Secret",
-            "default": "16305913b4a117a0625787083df95407568118cde96cf0623e62146b2b75e581"
+            "default": "d125df4318f806579c220d0b881e5cb939df2facb5c102f34cf6f76e753b9b65"
           }
         },
         "type": "object",
