@@ -186,6 +186,44 @@ describe('dashboard attention queue: unread comms', () => {
   });
 });
 
+describe('dashboard attention queue: website leads', () => {
+  it('counts status=new landing leads and asks for the first call', async () => {
+    const w = mountDashboard({
+      '/api/landing-leads': [{ id: 'l1', status: 'new' }, { id: 'l2', status: 'new' }],
+    });
+    await flushPromises();
+    expect(
+      attentionTexts(w).some((t) => t.includes('2 new website leads waiting for a first call')),
+    ).toBe(true);
+    const call = mockGet.mock.calls.find(([url]) => url.startsWith('/api/landing-leads'));
+    expect(call[0]).toContain('status=new');
+  });
+
+  it('renders the capped count as a floor ("100+") — the fetch stops at 100 rows', async () => {
+    const w = mountDashboard({
+      '/api/landing-leads': Array.from({ length: 100 }, (_, i) => ({ id: `l${i}`, status: 'new' })),
+    });
+    await flushPromises();
+    expect(attentionTexts(w).some((t) => t.includes('100+ new website leads'))).toBe(true);
+  });
+
+  it('does not fetch without leads.read, and survives a failing fetch', async () => {
+    mockAuth.hasPermission.mockImplementation((key) => key !== 'leads.read');
+    try {
+      const w1 = mountDashboard({ '/api/landing-leads': [{ id: 'l1' }] });
+      await flushPromises();
+      expect(attentionTexts(w1).some((t) => t.includes('website lead'))).toBe(false);
+      expect(mockGet.mock.calls.some(([url]) => url.startsWith('/api/landing-leads'))).toBe(false);
+    } finally {
+      mockAuth.hasPermission.mockReturnValue(true);
+    }
+    const w2 = mountDashboard({}, { reject: ['/api/landing-leads'] });
+    await flushPromises();
+    expect(attentionTexts(w2).some((t) => t.includes('website lead'))).toBe(false);
+    expect(w2.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
+  });
+});
+
 // Minimal cash-risk payload so the Cash & Risk card (home of the A/P tile)
 // renders. Shape mirrors /api/reports/cash-risk.
 const CASH_RISK = {
