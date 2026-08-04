@@ -22907,6 +22907,37 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /**
+         * CloseoutPartToOrder
+         * @description A part the job still NEEDS — the office orders it. Distinct from
+         *     CloseoutPart, which attests a part already USED: these land as
+         *     job_parts_needed rows with status='needed' (the Parts-to-Order queue),
+         *     never as inventory decrements or billable used-part lines.
+         *
+         *     'critical' is deliberately NOT accepted here: the C5 critical-part
+         *     dispatcher push fires only on the Parts card path (add_part_needed),
+         *     so a closeout-path critical would skip the fan-out silently — the one
+         *     urgency level where silence is the bug. Critical asks go through the
+         *     job screen's Parts card until the push is wired here too.
+         */
+        CloseoutPartToOrder: {
+            /** Name */
+            name: string;
+            /** Sku */
+            sku?: string | null;
+            /**
+             * Qty
+             * @default 1
+             */
+            qty: number;
+            /**
+             * Urgency
+             * @default normal
+             */
+            urgency: string;
+            /** Note */
+            note?: string | null;
+        };
         /** CloseoutPayload */
         CloseoutPayload: {
             /** Parts */
@@ -22931,6 +22962,15 @@ export interface components {
              * @default false
              */
             no_parts_used: boolean;
+            /**
+             * Needs Return Visit
+             * @default false
+             */
+            needs_return_visit: boolean;
+            /** Return Visit Reason */
+            return_visit_reason?: string | null;
+            /** Parts To Order */
+            parts_to_order?: components["schemas"]["CloseoutPartToOrder"][];
         };
         /** CollectionPatchIn */
         CollectionPatchIn: {
@@ -24439,7 +24479,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 85a1b3bfe11442a22ee0d9bc428af4a7ca93269d2c50c70939c29691f39a49ac
+             * @default 1e57b436329ae3e98bb335f04ff63fff35ceb40114021e3b7b0bbc290b4645a3
              */
             secret: string;
         };
