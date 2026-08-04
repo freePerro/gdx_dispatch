@@ -18,6 +18,7 @@ from gdx_dispatch.models.tenant_models import (
     InvoiceAdjustment,
     InvoiceLine,
     Job,
+    JobCloseout,
     Payment,
     TimeEntry,
     WarrantyClaim,
@@ -1090,11 +1091,36 @@ def operations_kpis(
     same_day_rate = (same_day / booking_total) if booking_total else None
     next_day_rate = ((same_day + next_day) / booking_total) if booking_total else None
 
-    # Avg job duration — needs started_at + completed_at, both reliably
-    # populated. started_at is empty on the prod GDX db (D35). Surface as
-    # unavailable rather than fudging from created_at/completed_at delta
-    # which leaks dispatch lag into the duration number.
-    duration_unavailable = "jobs.started_at not yet captured by mobile clock-in flow"
+    # Avg job duration — powered by closeout ATTESTED hours (this tile
+    # predates Phase 2 closeouts; its "data not yet captured" claim went
+    # stale once they began capturing hours_worked). The closeout's
+    # hours_worked is the tech's attested on-site duration — evidence,
+    # unlike a created_at/completed_at delta, which would leak dispatch lag
+    # into the number. Three exclusions, each load-bearing:
+    #   * current rows only (supersede model keeps every restatement;
+    #     averaging non-live rows double-counts a re-closed job);
+    #   * hours_worked > 0 — zero is legal end-to-end (signature-only
+    #     closeouts with require_hours_on_complete off, the default), and a
+    #     zero row is "no duration attested", not "the job took 0 hours" —
+    #     counting it dilutes an average labeled "attested";
+    #   * jobs completed through legacy /complete paths never filed a
+    #     closeout at all — jobs_measured tells the reader the sample size.
+    duration_count, duration_sum = db.execute(
+        select(func.count(), func.coalesce(func.sum(JobCloseout.hours_worked), 0)).where(
+            JobCloseout.deleted_at.is_(None),
+            JobCloseout.superseded_at.is_(None),
+            JobCloseout.hours_worked > 0,
+            JobCloseout.closed_at >= last30_start_dt,
+            JobCloseout.closed_at < tomorrow_start_dt,
+        )
+    ).one()
+    duration_count = int(duration_count or 0)
+    avg_duration_hours = (
+        round(float(duration_sum) / duration_count, 2) if duration_count else None
+    )
+    duration_unavailable = (
+        None if duration_count else "no closeouts with attested hours in the window"
+    )
 
     # Tech utilization — needs time_entries.clock_in + clock_out. clock_out
     # is empty (D35). Same treatment.
@@ -1116,7 +1142,10 @@ def operations_kpis(
             "window_days": 30,
         },
         "avg_job_duration": {
-            "value": None,
+            "value": avg_duration_hours,
+            "unit": "hours",
+            "jobs_measured": duration_count,
+            "window_days": 30,
             "unavailable_reason": duration_unavailable,
         },
         "tech_utilization": {

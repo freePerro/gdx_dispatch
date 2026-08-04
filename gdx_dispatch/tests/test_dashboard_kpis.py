@@ -101,6 +101,16 @@ def kpi_db():
         )
     """))
     db.execute(text("""
+        CREATE TABLE job_closeouts (
+            id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
+            parts_used TEXT, no_parts_used INTEGER DEFAULT 0,
+            hours_worked REAL NOT NULL, techs_on_site INTEGER DEFAULT 1,
+            closed_by_user_id TEXT, closed_at TEXT NOT NULL,
+            superseded_at TEXT, supersedes_id TEXT,
+            created_at TEXT, updated_at TEXT, deleted_at TEXT
+        )
+    """))
+    db.execute(text("""
         CREATE TABLE invoice_adjustments (
             id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL,
             kind TEXT NOT NULL, amount REAL NOT NULL, reason TEXT,
@@ -353,6 +363,68 @@ def _seed_payment(db, *, amount, payment_date, voided_at=None):
         "created": _iso(datetime.now(UTC)),
     })
     db.commit()
+
+
+def _seed_closeout(db, *, hours, closed_at, superseded_at=None, deleted_at=None):
+    db.execute(text("""
+        INSERT INTO job_closeouts (id, job_id, hours_worked, closed_by_user_id,
+                                   closed_at, superseded_at, deleted_at, created_at)
+        VALUES (:id, :job, :hrs, 'user-test', :closed, :sup, :del, :closed)
+    """), {
+        "id": uuid.uuid4().hex, "job": uuid.uuid4().hex, "hrs": hours,
+        "closed": _iso(closed_at),
+        "sup": _iso(superseded_at) if superseded_at else None,
+        "del": _iso(deleted_at) if deleted_at else None,
+    })
+    db.commit()
+
+
+def test_operations_avg_job_duration_from_attested_closeouts(kpi_db):
+    """The tile said "data not yet captured" since S107 — stale since Phase 2
+    closeouts began attesting hours_worked on every completion. Average is
+    over CURRENT closeout rows only (supersede model): a re-closed job must
+    not count twice, and a restated attestation must not count at all."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(reports.router)
+    _override_deps(app, kpi_db)
+    from gdx_dispatch.core.modules import require_module
+    app.dependency_overrides[require_module("reports_advanced")] = lambda: None
+
+    now = datetime.now(UTC)
+    _seed_closeout(kpi_db, hours=3.0, closed_at=now - timedelta(days=2))
+    _seed_closeout(kpi_db, hours=1.5, closed_at=now - timedelta(days=5))
+    # Superseded restatement + soft-deleted + out-of-window: all excluded.
+    _seed_closeout(kpi_db, hours=99, closed_at=now - timedelta(days=3), superseded_at=now)
+    _seed_closeout(kpi_db, hours=88, closed_at=now - timedelta(days=4), deleted_at=now)
+    _seed_closeout(kpi_db, hours=77, closed_at=now - timedelta(days=45))
+    # Zero-hour closeouts are legal (signature-only, require_hours off — the
+    # default) and mean "no duration attested", NOT "took 0 hours". They must
+    # not dilute an average labeled 'attested'.
+    _seed_closeout(kpi_db, hours=0, closed_at=now - timedelta(days=1))
+    _seed_closeout(kpi_db, hours=0, closed_at=now - timedelta(days=6))
+
+    j = TestClient(app).get("/api/reports/operations").json()
+    assert j["avg_job_duration"]["value"] == 2.25
+    assert j["avg_job_duration"]["jobs_measured"] == 2
+    assert j["avg_job_duration"]["unit"] == "hours"
+    assert j["avg_job_duration"]["unavailable_reason"] is None
+
+
+def test_operations_avg_job_duration_empty_window_stays_dark(kpi_db):
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(reports.router)
+    _override_deps(app, kpi_db)
+    from gdx_dispatch.core.modules import require_module
+    app.dependency_overrides[require_module("reports_advanced")] = lambda: None
+
+    j = TestClient(app).get("/api/reports/operations").json()
+    assert j["avg_job_duration"]["value"] is None
+    assert j["avg_job_duration"]["jobs_measured"] == 0
+    assert j["avg_job_duration"]["unavailable_reason"]
 
 
 def _seed_refund(db, *, amount, created_at):

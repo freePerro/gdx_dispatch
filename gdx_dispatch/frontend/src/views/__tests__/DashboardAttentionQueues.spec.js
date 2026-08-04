@@ -322,6 +322,34 @@ const PART = (over = {}) => ({
   ...over,
 });
 
+// Minimal operations payload so the Operations card renders.
+const OPS = (avg) => ({
+  first_time_fix: { rate: null, completed: 0, callbacks: 0, window_days: 30 },
+  response_speed: { same_day_rate: null, same_or_next_day_rate: null, same_day: 0, next_day: 0, total_booked: 0, window_days: 30 },
+  avg_job_duration: avg,
+  tech_utilization: { value: null, unavailable_reason: 'not captured' },
+});
+
+describe('dashboard Operations: avg job duration', () => {
+  it('renders attested closeout hours when the window has data', async () => {
+    const w = mountDashboard({
+      '/api/reports/operations': OPS({ value: 2.25, unit: 'hours', jobs_measured: 12, window_days: 30, unavailable_reason: null }),
+    });
+    await flushPromises();
+    expect(w.get('[data-testid="avg-job-duration"]').text()).toBe('2.25 h');
+    expect(w.text()).toContain('attested on 12 closeouts (30d)');
+  });
+
+  it('stays honestly dark when the window has no closeouts', async () => {
+    const w = mountDashboard({
+      '/api/reports/operations': OPS({ value: null, jobs_measured: 0, unavailable_reason: 'no closeouts with attested hours in the window' }),
+    });
+    await flushPromises();
+    expect(w.get('[data-testid="avg-job-duration"]').text()).toBe('—');
+    expect(w.text()).toContain('no closeouts in window');
+  });
+});
+
 describe('dashboard Cash & Risk: collected tile', () => {
   it('renders 30d collected with count and today subtotal', async () => {
     const w = mountDashboard({

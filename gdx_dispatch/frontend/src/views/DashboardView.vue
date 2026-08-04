@@ -185,10 +185,18 @@
                 Same+next: {{ ops.response_speed.same_or_next_day_rate === null ? '—' : formatPercent(ops.response_speed.same_or_next_day_rate) }}
               </div>
             </div>
-            <div class="funnel-tile unavailable">
+            <!-- Lit by closeout attested hours (Phase 2 closeouts capture
+                 hours_worked on every completion); dark only when the
+                 window has no closeouts. -->
+            <div class="funnel-tile" :class="{ unavailable: ops.avg_job_duration.value === null }">
               <div class="funnel-tile-label">Avg Job Duration</div>
-              <div class="funnel-tile-value">—</div>
-              <div class="funnel-tile-sub" :title="ops.avg_job_duration.unavailable_reason">data not yet captured</div>
+              <div class="funnel-tile-value" data-testid="avg-job-duration">
+                {{ ops.avg_job_duration.value === null ? '—' : `${ops.avg_job_duration.value} h` }}
+              </div>
+              <div v-if="ops.avg_job_duration.value === null" class="funnel-tile-sub" :title="ops.avg_job_duration.unavailable_reason">no closeouts in window</div>
+              <div v-else class="funnel-tile-sub">
+                attested on {{ ops.avg_job_duration.jobs_measured }} closeout{{ ops.avg_job_duration.jobs_measured === 1 ? '' : 's' }} (30d)
+              </div>
             </div>
             <div class="funnel-tile unavailable">
               <div class="funnel-tile-label">Tech Utilization</div>
@@ -434,7 +442,7 @@ const funnelLoaded = ref(false);
 const ops = ref({
   first_time_fix: { rate: null, completed: 0, callbacks: 0, window_days: 30 },
   response_speed: { same_day_rate: null, same_or_next_day_rate: null, same_day: 0, next_day: 0, total_booked: 0, window_days: 30 },
-  avg_job_duration: { value: null, unavailable_reason: '' },
+  avg_job_duration: { value: null, jobs_measured: 0, unavailable_reason: '' },
   tech_utilization: { value: null, unavailable_reason: '' },
 });
 const opsLoaded = ref(false);
