@@ -227,6 +227,18 @@
                 ⚠ {{ cash.gross_margin.estimates_with_manual_lines }} estimate(s) had manual-priced lines (excluded)
               </div>
             </div>
+            <!-- Collected completes the billed → collected → outstanding
+                 story: Sales Funnel shows billed, AR shows outstanding, and
+                 this is the cash that actually arrived. -->
+            <div class="funnel-tile">
+              <div class="funnel-tile-label">Collected (30d, net of refunds)</div>
+              <div class="funnel-tile-value" data-testid="collected-30d">{{ formatCurrency(cash.collected.total) }}</div>
+              <div class="funnel-tile-sub">
+                {{ cash.collected.count }} payment{{ cash.collected.count === 1 ? '' : 's' }}
+                · {{ formatCurrency(cash.collected.today_total) }} today
+                <template v-if="toNumber(cash.collected.refunded) > 0"> · −{{ formatCurrency(cash.collected.refunded) }} refunded</template>
+              </div>
+            </div>
             <div class="funnel-tile">
               <div class="funnel-tile-label">Warranty Callbacks (30d)</div>
               <div class="funnel-tile-value" data-testid="warranty-rate">
@@ -438,6 +450,7 @@ const cash = ref({
   },
   gross_margin: { margin_pct: null, total_sell: 0, total_cost: 0, net_profit: 0, estimates_with_manual_lines: 0, window_days: 30 },
   warranty_callbacks: { rate: null, filed: 0, completed_jobs: 0, window_days: 30 },
+  collected: { total: 0, count: 0, refunded: 0, today_total: 0, window_days: 30 },
 });
 const cashLoaded = ref(false);
 
@@ -1119,7 +1132,13 @@ async function loadCash() {
   if (!canSeePipeline.value) return;
   try {
     const data = await api.get('/api/reports/cash-risk');
-    if (data) { cash.value = data; cashLoaded.value = true; }
+    if (data) {
+      // Merge over defaults instead of replacing: a server that predates a
+      // block (e.g. `collected`, added 2026-08-04) must not leave the
+      // template reading properties off undefined.
+      cash.value = { ...cash.value, ...data, collected: { ...cash.value.collected, ...(data.collected || {}) } };
+      cashLoaded.value = true;
+    }
   } catch { /* reports_advanced may be ungranted */ }
 }
 

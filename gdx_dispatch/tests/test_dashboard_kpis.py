@@ -93,6 +93,21 @@ def kpi_db():
             created_at TEXT, deleted_at TEXT
         )
     """))
+    db.execute(text("""
+        CREATE TABLE payments (
+            id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL,
+            amount REAL DEFAULT 0, method TEXT, payment_date TEXT NOT NULL,
+            reference TEXT, voided_at TEXT, created_at TEXT, company_id TEXT
+        )
+    """))
+    db.execute(text("""
+        CREATE TABLE invoice_adjustments (
+            id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL,
+            kind TEXT NOT NULL, amount REAL NOT NULL, reason TEXT,
+            refund_method TEXT, created_by TEXT, created_at TEXT NOT NULL,
+            company_id TEXT NOT NULL
+        )
+    """))
     db.commit()
     try:
         yield db
@@ -325,3 +340,98 @@ def test_cash_risk_gross_margin_and_warranty(kpi_db):
     assert j["warranty_callbacks"]["filed"] == 1
     assert j["warranty_callbacks"]["completed_jobs"] == 5
     assert j["warranty_callbacks"]["rate"] == 0.2
+
+
+def _seed_payment(db, *, amount, payment_date, voided_at=None):
+    db.execute(text("""
+        INSERT INTO payments (id, invoice_id, amount, method, payment_date, voided_at, created_at, company_id)
+        VALUES (:id, :inv, :amt, 'check', :pd, :void, :created, 'tenant-test')
+    """), {
+        "id": uuid.uuid4().hex, "inv": uuid.uuid4().hex, "amt": amount,
+        "pd": payment_date.isoformat(),
+        "void": _iso(voided_at) if voided_at else None,
+        "created": _iso(datetime.now(UTC)),
+    })
+    db.commit()
+
+
+def _seed_refund(db, *, amount, created_at):
+    db.execute(text("""
+        INSERT INTO invoice_adjustments (id, invoice_id, kind, amount, created_at, company_id)
+        VALUES (:id, :inv, 'refund', :amt, :created, 'tenant-test')
+    """), {
+        "id": uuid.uuid4().hex, "inv": uuid.uuid4().hex, "amt": amount,
+        "created": _iso(created_at),
+    })
+    db.commit()
+
+
+def test_cash_risk_collected_window(kpi_db):
+    """Collected (30d) — keyed on payment_date (backdatable receipt date),
+    voided payments excluded, outside-window payments excluded, today's
+    subtotal split out."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(reports.router)
+    _override_deps(app, kpi_db)
+    from gdx_dispatch.core.modules import require_module
+    app.dependency_overrides[require_module("reports_advanced")] = lambda: None
+
+    today = datetime.now(UTC).date()
+    _seed_payment(kpi_db, amount=400, payment_date=today)
+    _seed_payment(kpi_db, amount=250, payment_date=today - timedelta(days=10))
+    # Voided stays history — never counted.
+    _seed_payment(kpi_db, amount=999, payment_date=today - timedelta(days=5),
+                  voided_at=datetime.now(UTC))
+    # Outside the 30-day window.
+    _seed_payment(kpi_db, amount=5000, payment_date=today - timedelta(days=45))
+    # Future-dated (fat-fingered backdate) — excluded until its day arrives.
+    _seed_payment(kpi_db, amount=77, payment_date=today + timedelta(days=3))
+
+    j = TestClient(app).get("/api/reports/cash-risk").json()
+    assert j["collected"]["total"] == 650.0
+    assert j["collected"]["count"] == 2
+    assert j["collected"]["today_total"] == 400.0
+    assert j["collected"]["window_days"] == 30
+
+
+def test_cash_risk_collected_nets_office_refunds(kpi_db):
+    """Refunds are asymmetric: Stripe refunds VOID the payment row, office
+    refunds are append-only InvoiceAdjustment kind='refund' with the payment
+    left standing. 'Collected' must be NET CASH both ways — a $2K manual
+    check refund must not leave the tile overstated by $2K."""
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(reports.router)
+    _override_deps(app, kpi_db)
+    from gdx_dispatch.core.modules import require_module
+    app.dependency_overrides[require_module("reports_advanced")] = lambda: None
+
+    now = datetime.now(UTC)
+    today = now.date()
+    _seed_payment(kpi_db, amount=3000, payment_date=today - timedelta(days=3))
+    _seed_payment(kpi_db, amount=500, payment_date=today)
+    _seed_refund(kpi_db, amount=2000, created_at=now - timedelta(days=1))
+    _seed_refund(kpi_db, amount=100, created_at=now)          # today's refund
+    _seed_refund(kpi_db, amount=999, created_at=now - timedelta(days=60))  # outside window
+
+    j = TestClient(app).get("/api/reports/cash-risk").json()
+    assert j["collected"]["total"] == 3500.0 - 2100.0
+    assert j["collected"]["refunded"] == 2100.0
+    assert j["collected"]["count"] == 2
+    assert j["collected"]["today_total"] == 500.0 - 100.0
+
+
+def test_cash_risk_collected_empty(kpi_db):
+    from fastapi.testclient import TestClient
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(reports.router)
+    _override_deps(app, kpi_db)
+    from gdx_dispatch.core.modules import require_module
+    app.dependency_overrides[require_module("reports_advanced")] = lambda: None
+
+    j = TestClient(app).get("/api/reports/cash-risk").json()
+    assert j["collected"] == {"total": 0.0, "count": 0, "refunded": 0.0, "today_total": 0.0, "window_days": 30}

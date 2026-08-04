@@ -322,6 +322,27 @@ const PART = (over = {}) => ({
   ...over,
 });
 
+describe('dashboard Cash & Risk: collected tile', () => {
+  it('renders 30d collected with count and today subtotal', async () => {
+    const w = mountDashboard({
+      '/api/reports/cash-risk': {
+        ...CASH_RISK,
+        collected: { total: 4650.5, count: 7, today_total: 400, window_days: 30 },
+      },
+    });
+    await flushPromises();
+    expect(w.get('[data-testid="collected-30d"]').text()).toBe('$4,651');
+    expect(w.text()).toContain('7 payments');
+    expect(w.text()).toContain('$400 today');
+  });
+
+  it('an older server payload without `collected` renders $0, not a crash', async () => {
+    const w = mountDashboard({ '/api/reports/cash-risk': CASH_RISK });
+    await flushPromises();
+    expect(w.get('[data-testid="collected-30d"]').text()).toBe('$0');
+  });
+});
+
 describe('dashboard attention queue: parts to order', () => {
   it('counts only status=needed — ordered rows are the supplier\'s queue, not ours', async () => {
     const w = mountDashboard({
