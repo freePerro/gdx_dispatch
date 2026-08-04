@@ -57,6 +57,30 @@ def test_persist_messages_skips_when_no_id():
     assert _persist_messages(tdb, account, [{"subject": "no id"}]) == 0
 
 
+def test_persist_messages_dedupes_repeated_graph_id_in_one_batch():
+    """Graph's delta contract allows the SAME message to appear more than once
+    in a response. With autoflush off, the second occurrence used to miss the
+    pending row and INSERT again — UniqueViolation at the per-folder commit,
+    delta-token rollback, and the same page replayed forever (prod outage
+    2026-07-30 → 08-04: Inbox frozen for 5 days)."""
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = None
+    account = MagicMock(); account.id = uuid4()
+    n = _persist_messages(tdb, account, [
+        {"id": "g1", "subject": "first pass"},
+        {"id": "g1", "subject": "second pass", "isRead": True},
+    ])
+    assert n == 2
+    tdb.add.assert_called_once()  # one row, updated twice — never two inserts
+    row = tdb.add.call_args.args[0]
+    assert row.subject == "second pass"  # last occurrence wins
+    assert row.is_read is True
+    # Cross-PAGE repeats within the same per-folder transaction rely on the
+    # end-of-batch flush making this page's rows visible to the next page's
+    # DB existence check.
+    tdb.flush.assert_called_once()
+
+
 def test_persist_messages_records_body_size_when_body_present():
     """body_size_bytes is recorded but body_r2_key stays NULL until the
     R2 upload path lands. Setting r2_key without an actual upload would
@@ -250,6 +274,46 @@ def test_sync_outlook_mailbox_walks_folders_and_returns_aggregate():
     assert result["folders_upserted"] == 2
     assert result["folders_deleted"] == 0
     assert result["messages_upserted"] == 6  # 3 per folder × 2 folders
+
+
+def test_sync_outlook_mailbox_integrity_error_costs_one_folder_not_the_rest():
+    """A UniqueViolation in one folder (duplicate-message race) must cost only
+    that folder's run. Pre-fix it escaped the per-folder loop entirely and
+    every folder AFTER the poisoned one in the sync order froze — that is how
+    the 2026-07-30 dup kept Inbox stale for 5 days."""
+    from sqlalchemy.exc import IntegrityError
+
+    from gdx_dispatch.modules.outlook import tasks
+    aid, tid = uuid4(), uuid4()
+    account = MagicMock(); account.id = aid; account.user_id = uuid4()
+    poisoned = MagicMock(); poisoned.graph_folder_id = "fA"; poisoned.display_name = "Poisoned"
+    inbox = MagicMock(); inbox.graph_folder_id = "fB"; inbox.display_name = "Inbox"
+    tdb = MagicMock()
+    tdb.get.return_value = account
+    tdb.query.return_value.filter.return_value.all.return_value = [poisoned, inbox]
+
+    def _sync(_tdb, _gc, _account, folder, **kw):
+        if folder is poisoned:
+            raise IntegrityError(
+                "INSERT INTO outlook_messages ...", {},
+                Exception('duplicate key value violates unique constraint '
+                          '"uq_email_account_graph_id"'),
+            )
+        return (4, 1)
+
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.tasks.with_outlook_client") as ctx, \
+         patch("gdx_dispatch.modules.outlook.tasks._refresh_folder_cache", return_value=(2, 0)), \
+         patch("gdx_dispatch.modules.outlook.tasks._sync_one_folder", side_effect=_sync) as sync_one:
+        ctx.return_value.__enter__.return_value = MagicMock()
+        result = tasks.sync_outlook_mailbox.run(str(aid), str(tid))
+
+    assert sync_one.call_count == 2          # the loop reached the folder AFTER the poison
+    assert result["messages_upserted"] == 4  # Inbox still synced
+    assert result["messages_removed"] == 1
+    assert [f["folder"] for f in result["failed_folders"]] == ["Poisoned"]
+    tdb.rollback.assert_called()
+    assert account.last_error is None        # task completed; account not marked errored
 
 
 # ── backfill_outlook_mailbox ───────────────────────────────────────────

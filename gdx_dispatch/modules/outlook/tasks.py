@@ -35,6 +35,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func as sa_func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.celery_app import celery_app
@@ -157,11 +158,19 @@ def _persist_messages(
     # inside this loop; the per-message OutlookSettings query was an N+1 on a
     # large backfill folder).
     tag_settings = tdb.query(OutlookSettings).filter(OutlookSettings.id == 1).first()
+    # Graph's delta contract allows the SAME message to appear more than once
+    # in a response (e.g. created then changed within the tracked window).
+    # SessionLocal runs autoflush=False, so the DB existence check below can't
+    # see a row added earlier in this batch — a repeat became a second INSERT,
+    # the per-folder commit died on uq_email_account_graph_id, the rolled-back
+    # delta token replayed the same poisoned page forever, and every folder
+    # after it in the sync order froze (prod outage 2026-07-30 → 08-04).
+    added_this_batch: dict[str, OutlookMessage] = {}
     for m in graph_messages:
         graph_id = m.get("id")
         if not graph_id:
             continue
-        existing = (
+        existing = added_this_batch.get(graph_id) or (
             tdb.query(OutlookMessage)
             .filter(
                 OutlookMessage.account_id == account.id,
@@ -186,6 +195,7 @@ def _persist_messages(
             row.account_id = account.id
             row.graph_message_id = graph_id
             tdb.add(row)
+            added_this_batch[graph_id] = row
         else:
             row = existing
         if "internetMessageId" in m:
@@ -261,6 +271,10 @@ def _persist_messages(
                 log.exception("auto-tag failed for graph_id=%s (upsert kept)", graph_id)
 
         upserted += 1
+    # autoflush is off — flush so rows added this page are visible to the DB
+    # existence check when the same message shows up again on a LATER page of
+    # the same (per-folder) transaction.
+    tdb.flush()
     return upserted
 
 
@@ -664,6 +678,16 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
                         tdb.commit()
                     except OutlookGraphAPIError as exc:
                         log.warning("sync folder %s (%s) failed: %s",
+                                    f.display_name, f.graph_folder_id, exc)
+                        failed.append({"folder": f.display_name, "error": str(exc)[:200]})
+                        tdb.rollback()
+                    except IntegrityError as exc:
+                        # A constraint violation (e.g. a duplicate-message race
+                        # with a concurrent sync of the same account) must cost
+                        # only THIS folder's run, not freeze every folder after
+                        # it in the loop. The folder's delta token didn't
+                        # advance, so the next sync simply retries the page.
+                        log.warning("sync folder %s (%s) hit IntegrityError: %s",
                                     f.display_name, f.graph_folder_id, exc)
                         failed.append({"folder": f.display_name, "error": str(exc)[:200]})
                         tdb.rollback()
