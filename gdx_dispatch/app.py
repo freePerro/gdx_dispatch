@@ -1416,7 +1416,11 @@ def create_app() -> FastAPI:
         def _probe(url: str) -> bool:
             """Return True if a quick SELECT 1 succeeds, False otherwise."""
             try:
-                eng = create_engine(url, connect_args={"connect_timeout": 2})
+                # connect_timeout is a psycopg2 kwarg; sqlite3.Connection
+                # rejects it (TypeError) — which made /health permanently 503
+                # on any sqlite-backed instance.
+                connect_args = {} if url.startswith("sqlite") else {"connect_timeout": 2}
+                eng = create_engine(url, connect_args=connect_args)
                 with eng.connect() as conn:
                     conn.execute(text("SELECT 1"))
                 eng.dispose()

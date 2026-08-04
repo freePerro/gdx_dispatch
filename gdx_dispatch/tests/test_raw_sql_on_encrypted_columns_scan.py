@@ -16,6 +16,10 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+# test_repo_scan_is_clean asserts encryption_status() reports the live
+# encrypted-column inventory — the declaring models must be imported, not
+# inherited from whichever test file ran earlier in the process.
+import gdx_dispatch.models  # noqa: E402,F401  (registers tenant/control mappers)
 from gdx_dispatch.tools import raw_sql_on_encrypted_columns_scan as scan_mod
 
 

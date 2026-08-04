@@ -10,10 +10,6 @@ Imports the router module (core.database etc.) → runs in the docker image.
 """
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost/x")
-
 import pytest
 
 from gdx_dispatch.routers import admin_plugins as ap

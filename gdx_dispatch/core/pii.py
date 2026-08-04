@@ -16,14 +16,27 @@ from sqlalchemy.types import TypeDecorator
 _MASTER_KEY = os.getenv("MASTER_ENCRYPTION_KEY")
 _TENANT_ID = os.getenv("TENANT_ID", "")
 _SEARCH_HASH_SALT = os.getenv("SEARCH_HASH_SALT", "")
-if _MASTER_KEY:
-    _hkdf = HKDF(
+
+
+def derive_fernet(master_key: str, tenant_id: str = "") -> Fernet:
+    """HKDF-derive the app's Fernet keyring. Single source of truth for the
+    derivation: module init below uses it, and tests that need "the exact
+    keyring the app would build for key K" call it instead of
+    ``importlib.reload(pii)`` — reload re-creates ``EncryptedString``, which
+    splits class identity from every already-mapped column and silently
+    empties ``encryption_status()`` for the rest of the process
+    (2026-08-04 unforked-suite find)."""
+    hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=_TENANT_ID.encode("utf-8"),
+        salt=tenant_id.encode("utf-8"),
         info=b"gdx-pii-v1",
     )
-    _FERNET = Fernet(base64.urlsafe_b64encode(_hkdf.derive(_MASTER_KEY.encode("utf-8"))))
+    return Fernet(base64.urlsafe_b64encode(hkdf.derive(master_key.encode("utf-8"))))
+
+
+if _MASTER_KEY:
+    _FERNET = derive_fernet(_MASTER_KEY, _TENANT_ID)
 else:
     _FERNET = None
     # Fail closed in production: without the key, EncryptedString columns and

@@ -17,7 +17,6 @@ here:
 """
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import pytest
@@ -67,9 +66,19 @@ def test_is_fernet_ciphertext_random_string_returns_false():
 
 @pytest.fixture()
 def _reload_pii_with_key(monkeypatch: pytest.MonkeyPatch):
-    """Set MASTER_ENCRYPTION_KEY in env and reload gdx_dispatch.core.pii so its
-    module-level ``_FERNET`` rebuilds against the new key. Yields the
-    reloaded module; teardown restores the original module state.
+    """Set MASTER_ENCRYPTION_KEY in env and install a matching Fernet as
+    ``pii._FERNET``. Yields the pii module.
+
+    Deliberately does NOT ``importlib.reload(pii)`` (the pre-2026-08-04
+    version did): reload re-creates every class in the module, so columns
+    mapped earlier keep instances of the OLD ``EncryptedString`` while
+    ``encryption_status()`` isinstance-checks against the NEW one — the scan
+    silently reports zero encrypted columns for the rest of the process,
+    failing test_pii_encryption_status + test_raw_sql_on_encrypted_columns_scan
+    whenever they share a process with this file. Every consumer of this
+    fixture (including the tool's ``load_app_fernet``) reads ``pii._FERNET``
+    itself, so a monkeypatched instance preserves all the contracts;
+    monkeypatch restores the original at teardown.
     """
     fresh_key = Fernet.generate_key().decode()
     monkeypatch.setenv("MASTER_ENCRYPTION_KEY", fresh_key)
@@ -77,12 +86,12 @@ def _reload_pii_with_key(monkeypatch: pytest.MonkeyPatch):
 
     import gdx_dispatch.core.pii as pii  # noqa: PLC0415
 
-    original_fernet = pii._FERNET
-    importlib.reload(pii)
-    try:
-        yield pii
-    finally:
-        pii._FERNET = original_fernet
+    # derive_fernet is the app's REAL HKDF derivation (audit catch: a raw
+    # Fernet(fresh_key) here would share the tool's would-be-buggy key, so a
+    # tool regression to raw Fernet construction would decrypt fine and the
+    # parity test below would silently pass).
+    monkeypatch.setattr(pii, "_FERNET", pii.derive_fernet(fresh_key))
+    yield pii
 
 
 def test_load_app_fernet_returns_pii_FERNET_instance(_reload_pii_with_key):

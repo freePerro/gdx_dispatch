@@ -119,30 +119,37 @@ jobs:
           # Don't write .pyc in CI — pure overhead for a throwaway runner.
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          # --forked (pytest-forked) runs each test in its own subprocess to
-          # contain the #20 native SIGSEGV (an anyio/TestClient worker thread
-          # racing teardown). Measured ~4x slower than in-process, but a
-          # 2026-06-27 experiment (PR #60) dropping it segfaulted shard 1
-          # (exit 139) — the residual crash is NOT gone, so forking stays.
-          # Faster path requires fully fixing #20 (then drop --forked) or marking
-          # only the crash-prone TestClient teardown tests @pytest.mark.forked.
-          # The env tweaks below + --durations are kept (safe, surface slow tests).
-          # 139 = process terminated by SIGSEGV (native crash).
-          SIGSEGV_EXIT_CODE=139
+          # UNFORKED since 2026-08-04 (assessment §7 item 4). History: --forked
+          # (pytest-forked, ~4x slower) contained the #20 native SIGSEGV (an
+          # anyio/TestClient teardown race). PR #60 (2026-06-27) dropped it and
+          # shard 1 segfaulted, so it stayed. Re-tested 2026-08-04 on the
+          # post-#58 tree: 17 unforked shard runs, ZERO segfaults (the one
+          # failure was env pollution from a bogus import-time DATABASE_URL,
+          # fixed in the same PR). The retry below is now the load-bearing
+          # backstop: a residual #20 crash retries the shard once; two crashes
+          # in a row fail the job. If shards start hitting the retry regularly,
+          # revert to --forked here AND flip FORKED=1 in
+          # gdx_dispatch/tools/run_tests_split.sh (kept in lockstep).
+          # Native-crash exit codes (128+signal): 134=SIGABRT, 135=SIGBUS,
+          # 139=SIGSEGV — the #20 class can surface as any of them. Retry
+          # once on those only; assertion failures (exit 1) fail fast.
           set +e
           python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-            --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
+            --splits 7 --group ${{ matrix.group }} --tb=short -q \
             -p no:nose -p no:pastebin -p no:doctest --durations=15
           rc=$?
           set -e
-          if [ "$rc" -eq "$SIGSEGV_EXIT_CODE" ]; then
-            echo "::warning::pytest exited with ${SIGSEGV_EXIT_CODE} (native SIGSEGV). Retrying shard once."
-            python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
-              --splits 7 --group ${{ matrix.group }} --forked --tb=short -q \
-              -p no:nose -p no:pastebin -p no:doctest --durations=15
-          else
-            exit "$rc"
-          fi
+          case "$rc" in
+            134|135|139)
+              echo "::warning::pytest died with exit ${rc} (native crash, #20 class). Retrying shard once."
+              python -m pytest gdx_dispatch/tests/ --ignore=gdx_dispatch/tests/e2e \
+                --splits 7 --group ${{ matrix.group }} --tb=short -q \
+                -p no:nose -p no:pastebin -p no:doctest --durations=15
+              ;;
+            *)
+              exit "$rc"
+              ;;
+          esac
 
   build:
     runs-on: ubuntu-latest
