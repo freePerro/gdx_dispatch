@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import secrets
 import os
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -929,7 +930,14 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                         due_date=due_date_value,
                         sent_at=stamp_dt,
                         paid_at=stamp_dt if is_paid else None,
-                        public_token=f"qb-{qb_id}"[:64],
+                        # SECURITY: must be unguessable. This used to be
+                        # f"qb-{qb_id}" — sequential and enumerable, so anyone
+                        # could walk /pay/qb-1, /pay/qb-2 … and read customer
+                        # names and balances (and, after the 2026-08-04
+                        # hardening, the token IS the authorization for the
+                        # payment endpoints). Migration 054 re-mints the rows
+                        # this created. Match every other minting site.
+                        public_token=secrets.token_urlsafe(48)[:64],
                         notes="Imported from QuickBooks",
                         customer_id=customer.id,
                         company_id=tenant_id,

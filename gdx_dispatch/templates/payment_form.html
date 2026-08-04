@@ -248,7 +248,7 @@
       <span>Paid</span>
     </div>
     {% else %}
-    <div class="invoice-total">${{ "%.2f"|format(invoice.total) }}</div>
+    <div class="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
     {% endif %}
   </div>
 
@@ -284,7 +284,7 @@
       </div>
       <button type="submit" class="btn-pay" id="card-submit">
         <span class="spinner"></span>
-        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.total) }}</span>
+        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.balance_due) }}</span>
       </button>
     </form>
   </div>
@@ -308,7 +308,7 @@
       </p>
       <button type="submit" class="btn-pay" id="ach-submit">
         <span class="spinner"></span>
-        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.total) }} via ACH</span>
+        <span class="btn-text">Pay ${{ "%.2f"|format(invoice.balance_due) }} via ACH</span>
       </button>
     </form>
   </div>
@@ -327,8 +327,11 @@
 
 <script>
   const STRIPE_KEY = "{{ stripe_publishable_key }}";
-  const INVOICE_ID = "{{ invoice.id }}";
-  const AMOUNT_CENTS = {{ (invoice.total * 100) | int }};
+  // The token already addresses this page (/pay/<token>), so exposing it to
+  // the page's own JS adds no new disclosure — and it is what authorizes the
+  // payment calls below. AMOUNT_CENTS is gone on purpose: the server charges
+  // the balance due and the client no longer gets a say.
+  const INVOICE_TOKEN = "{{ invoice.public_token }}";
 
   {% if invoice.status != "paid" %}
 
@@ -407,7 +410,7 @@
     const resp = await fetch("/api/payments/create-intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ invoice_id: INVOICE_ID, amount: AMOUNT_CENTS }),
+      body: JSON.stringify({ invoice_token: INVOICE_TOKEN }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -420,7 +423,7 @@
     await fetch("/api/payments/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payment_intent_id: paymentIntentId, invoice_id: INVOICE_ID }),
+      body: JSON.stringify({ payment_intent_id: paymentIntentId, invoice_token: INVOICE_TOKEN }),
     });
   }
 
@@ -473,13 +476,13 @@
       const setupResp = await fetch("/api/payments/ach/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_email: email }),
+        body: JSON.stringify({ customer_email: email, invoice_token: INVOICE_TOKEN }),
       });
       if (!setupResp.ok) {
         const err = await setupResp.json().catch(() => ({}));
         throw new Error(err.detail || "Failed to set up bank account.");
       }
-      const { client_secret } = await setupResp.json();
+      const { client_secret, setup_intent_id } = await setupResp.json();
 
       // Step 2: collect bank account via Stripe.js
       const result = await stripe.collectBankAccountForSetup({
@@ -505,8 +508,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           payment_method_id: pmId,
-          invoice_id: INVOICE_ID,
-          amount: AMOUNT_CENTS,
+          // Proves this bank account was collected for THIS invoice.
+          setup_intent_id: setup_intent_id || result.setupIntent.id,
+          invoice_token: INVOICE_TOKEN,
         }),
       });
 
