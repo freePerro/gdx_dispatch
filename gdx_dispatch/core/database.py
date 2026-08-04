@@ -19,7 +19,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 # still import these; without the shims they raise ImportError at call time:
 #   - app_engine:        auth.core._db_verify_user — runs on EVERY authenticated
 #                        request, so its absence 401s the entire API.
-#   - control_engine:    core.sla_monitor (background task).
+#   - control_engine:    tools/ scripts (legacy alias; sla_monitor, its last
+#                        in-app consumer, was removed with the control plane).
 #   - _decrypt_db_url:   routers.bug_reports + backfill tools. DB-URL encryption
 #                        was removed (db_url_enc dropped in migrations 081-083),
 #                        so decryption is now identity.

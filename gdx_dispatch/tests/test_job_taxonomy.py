@@ -184,7 +184,7 @@ def test_model_default_and_omitting_writers() -> None:
     assert "job_type=INSTALLATION" in sr, (
         "proposal conversion lost its job_type (sold work = Installation)"
     )
-    for path in ("api/public_router.py", "core/public_api.py"):
+    for path in ("api/public_router.py",):
         src = (REPO / path).read_text(encoding="utf-8")
         assert "'Service Call'" in src and "job_type" in src, (
             f"{path}'s raw lead INSERT no longer sets job_type — website-lead "

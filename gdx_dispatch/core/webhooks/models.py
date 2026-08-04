@@ -25,8 +25,8 @@ class AIAction(TenantBase):
 class WebhookEndpoint(TenantBase):
     __tablename__ = "webhook_endpoints"
     # S122-9 slice 2 (2026-05-12): `secret` is back on the EncryptedString
-    # TypeDecorator after the two raw-SQL writers (public_router.py:493,
-    # public_api.py:395) were refactored to ORM. The lint gate
+    # TypeDecorator after the two raw-SQL writers (public_router.py:493 and
+    # the since-removed core/public_api.py) were refactored to ORM. The lint gate
     # `gdx_dispatch/tools/raw_sql_on_encrypted_columns_scan.py` enforces the contract
     # going forward. Activation depends on MASTER_ENCRYPTION_KEY being set
     # (S122-9 slice 1 already shipped that on prod).

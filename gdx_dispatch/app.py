@@ -671,24 +671,12 @@ except Exception:
     health_score_router = APIRouter(tags=["health-scores"])
 
 try:
-    from gdx_dispatch.core.distributor_dashboard import distributor_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: distributor_router")
-    distributor_router = APIRouter(prefix="/dashboard", tags=["distributor"])
-
-try:
     from gdx_dispatch.modules.distributor.order_portal import dealer_router as dealer_order_router
     from gdx_dispatch.modules.distributor.order_portal import distributor_router as distributor_order_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: dealer_order_router")
     dealer_order_router = APIRouter(prefix="/api/dealer", tags=["dealer-orders"])
     distributor_order_router = APIRouter(prefix="/api/distributor", tags=["distributor-orders"])
-
-try:
-    from gdx_dispatch.core.wholesaler_dashboard import wholesaler_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: wholesaler_router")
-    wholesaler_router = APIRouter(prefix="/dashboard", tags=["wholesaler"])
 
 try:
     from gdx_dispatch.core.jwks import JWKSRouter as jwks_router
@@ -734,18 +722,6 @@ except Exception:
     integrations_ui_router = APIRouter(tags=["integrations-ui"])
 
 try:
-    from gdx_dispatch.core.sla_monitor import router as sla_monitor_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: sla_monitor_router")
-    sla_monitor_router = APIRouter(tags=["sla"])
-
-try:
-    from gdx_dispatch.core.task_monitor import router as task_monitor_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: task_monitor_router")
-    task_monitor_router = APIRouter(tags=["task-monitor"])
-
-try:
     from gdx_dispatch.core.push_notifications import router as push_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: push_router")
@@ -766,18 +742,6 @@ except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: api_keys_router")
     api_keys_router = APIRouter(prefix="/api/developer", tags=["developer"])
     APIKeyMiddleware = None  # type: ignore[assignment,misc]
-
-try:
-    from gdx_dispatch.core.public_api import router as public_api_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: public_api_router")
-    public_api_router = APIRouter(prefix="/v1", tags=["Public API v1"])
-
-try:
-    from gdx_dispatch.core.developer_portal import router as developer_portal_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: developer_portal_router")
-    developer_portal_router = APIRouter(tags=["developer"])
 
 try:
     from gdx_dispatch.routers.resources import router as resources_router
@@ -850,14 +814,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("Failed to import router: audit_dashboard_router")
     audit_dashboard_router = APIRouter(tags=["audit-dashboard"])
-
-try:
-    from gdx_dispatch.core.platform_analytics import analytics_page_router
-    from gdx_dispatch.core.platform_analytics import router as platform_analytics_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: platform_analytics_router")
-    platform_analytics_router = APIRouter(prefix="/api/platform", tags=["platform-analytics"])
-    analytics_page_router = APIRouter(tags=["analytics-ui"])
 
 try:
     from gdx_dispatch.core.ai_recommendations import router as ai_recommendations_router
@@ -941,12 +897,6 @@ try:
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("import/init failed")
     AuditMiddleware = None  # type: ignore[assignment,misc]
-
-try:
-    from gdx_dispatch.modules.contractors import router as contractors
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("Failed to import router: contractors")
-    contractors = APIRouter(tags=["contractors"])
 
 try:
     from gdx_dispatch.routers.dispatch_ws import router as dispatch_ws_router
@@ -1324,9 +1274,9 @@ def create_app() -> FastAPI:
     install_flush_guard()
     app = FastAPI(
         title="GDX API",
-        description="DispatchApp — Multi-tenant field service dispatch platform API. "
+        description="GDX Dispatch — field service dispatch API (single-tenant). "
                     "Manages jobs, customers, estimates, invoices, technician dispatch, "
-                    "and AI-powered quoting for garage door service companies.",
+                    "and AI-powered quoting for a garage door service company.",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
@@ -1734,8 +1684,6 @@ def create_app() -> FastAPI:
     app.include_router(webhook_monitor.router if hasattr(webhook_monitor, "router") else webhook_monitor)
     app.include_router(pwa_router if hasattr(pwa_router, "routes") else APIRouter())
     app.include_router(health_score_router.router if hasattr(health_score_router, "router") else health_score_router)
-    app.include_router(distributor_router, prefix="/api/distributor", tags=["distributor"])
-    app.include_router(wholesaler_router, prefix="/api/wholesaler", tags=["wholesaler"])
     app.include_router(jwks_router)
     app.include_router(core_onboarding_router, prefix="/api", tags=["onboarding"])
     # onboarding_ui_router (Flask-era HTML wizard at /onboarding + /onboarding/{step})
@@ -1769,8 +1717,6 @@ def create_app() -> FastAPI:
     app.include_router(door_catalog_router)
     app.include_router(planner_router_mod)
     app.include_router(audit_dashboard_router)
-    app.include_router(platform_analytics_router)
-    app.include_router(analytics_page_router)
     app.include_router(ai_recommendations_router)
     app.include_router(recommendation_routes_router)
     app.include_router(ai_quote_router)
@@ -1782,13 +1728,10 @@ def create_app() -> FastAPI:
     app.include_router(gdpr_access_router)
     app.include_router(tenant_metrics_router)
     app.include_router(api_keys_router)
-    app.include_router(public_api_router)
-    app.include_router(developer_portal_router)
     app.include_router(payments_router)
     app.include_router(payments_public_router)
     app.include_router(distributor_order_router)
     app.include_router(dealer_order_router)
-    app.include_router(task_monitor_router)
     app.include_router(prometheus_router)
 
     try:
@@ -1809,19 +1752,9 @@ def create_app() -> FastAPI:
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("Failed to import router: voice")
 
-    # Task monitoring dashboard page — serves task_monitor.html at /admin/tasks
     from pathlib import Path as _Path
 
-    from fastapi import Depends as _Depends
     from fastapi.responses import HTMLResponse as _HTMLResponse
-
-    _tmpl = _Path(__file__).parent / "templates" / "task_monitor.html"
-
-    @app.get("/admin/tasks", response_class=_HTMLResponse, include_in_schema=False)
-    async def admin_tasks_page() -> _HTMLResponse:
-        if _tmpl.exists():
-            return _HTMLResponse(content=_tmpl.read_text())
-        return _HTMLResponse(content="<h1>Task monitor template not found</h1>", status_code=200)
 
     # Superadmin control panel — serves superadmin.html at /superadmin
     _sa_tmpl = _Path(__file__).parent / "templates" / "superadmin.html"
@@ -1833,40 +1766,8 @@ def create_app() -> FastAPI:
             return _HTMLResponse(content=_sa_tmpl.read_text())
         return _HTMLResponse(content="<h1>Superadmin template not found</h1>", status_code=200)
 
-    from typing import Annotated as _Annotated
-
-    from gdx_dispatch.core import status_page as _status_page
-    from gdx_dispatch.core.modules import require_role as _require_role
-    app.include_router(_status_page.router)
-    app.include_router(_status_page.admin_router)
-
-    _SlaAdminDep = _Annotated[None, _Depends(_require_role("admin", "owner"))]
-
-    @app.get("/admin/sla-report", response_class=_HTMLResponse, include_in_schema=False)
-    async def admin_sla_report(_: _SlaAdminDep) -> _HTMLResponse:
-        """Admin SLA report — renders the public status page with auth guard."""
-        _tmpl_sla = _Path(__file__).parent / "templates" / "status_page.html"
-        if _tmpl_sla.exists():
-            return _HTMLResponse(content=_tmpl_sla.read_text())
-        return _HTMLResponse(content="<h1>SLA report template not found</h1>", status_code=200)
-
-    @app.get("/api/status", tags=["sla"], include_in_schema=True)
-    async def api_status() -> dict:
-        """Public status endpoint — returns current platform status JSON."""
-        return _status_page.get_current_status()
-
-    @app.get("/status", response_class=_HTMLResponse, include_in_schema=False)
-    async def status_html() -> _HTMLResponse:
-        """Public status page — no authentication required."""
-        _tmpl_status = _Path(__file__).parent / "templates" / "status_page.html"
-        if _tmpl_status.exists():
-            return _HTMLResponse(content=_tmpl_status.read_text())
-        return _HTMLResponse(content="<h1>Status page not found</h1>", status_code=200)
-
     app.include_router(integrations_router)
     app.include_router(integrations_ui_router)
-    app.include_router(sla_monitor_router)
-    app.include_router(contractors.router if hasattr(contractors, "router") else contractors)
     app.include_router(van_inventory_router.router if hasattr(van_inventory_router, "router") else van_inventory_router)
     app.include_router(po_workflow_router.router if hasattr(po_workflow_router, "router") else po_workflow_router)
     app.include_router(commission_router.router if hasattr(commission_router, "router") else commission_router)

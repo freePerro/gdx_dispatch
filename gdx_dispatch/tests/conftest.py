@@ -319,14 +319,6 @@ def make_fresh_db():
     for tbl in _sprint5_tables:
         tbl.create(bind=engine, checkfirst=True)
 
-    # Contractors module tables
-    try:
-        from gdx_dispatch.modules.contractors.models import Contractor, ContractorAssignment
-        Contractor.__table__.create(bind=engine, checkfirst=True)
-        ContractorAssignment.__table__.create(bind=engine, checkfirst=True)
-    except Exception:
-        pass
-
     # Next-action queue table
     try:
         from gdx_dispatch.core.next_action import NextAction
