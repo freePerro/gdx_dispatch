@@ -30,6 +30,12 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('../../stores/auth', () => ({
   useAuthStore: () => mockAuth,
 }));
+vi.mock('../../stores/emailUnread', () => ({
+  useEmailUnreadStore: () => ({ count: 0, fetchCount: vi.fn().mockResolvedValue(undefined) }),
+}));
+vi.mock('../../stores/smsUnread', () => ({
+  useSmsUnreadStore: () => ({ count: 0, fetchCount: vi.fn().mockResolvedValue(undefined) }),
+}));
 
 import DashboardView from '../DashboardView.vue';
 

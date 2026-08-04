@@ -33,7 +33,22 @@ export const useEmailUnreadStore = defineStore('emailUnread', () => {
     };
   }
 
-  async function fetchCount() {
+  // In-flight dedup (2026-08-04): the dashboard is now a second concurrent
+  // caller (its load fires alongside the sidebar's poll). Two overlapping
+  // GETs can resolve out of order — the older response then overwrites the
+  // newer count and the baseline/onIncrease logic misfires a "new mail"
+  // toast. One request at a time; concurrent callers share it.
+  let _inFlight = null;
+
+  function fetchCount() {
+    if (_inFlight) return _inFlight;
+    _inFlight = _fetchCount().finally(() => {
+      _inFlight = null;
+    });
+    return _inFlight;
+  }
+
+  async function _fetchCount() {
     let next = 0;
     try {
       const api = createApiClient();

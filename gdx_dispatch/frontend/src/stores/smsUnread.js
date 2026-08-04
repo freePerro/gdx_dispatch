@@ -15,7 +15,20 @@ export const useSmsUnreadStore = defineStore('smsUnread', () => {
   const count = ref(0);
   const _pollTimer = ref(null);
 
-  async function fetchCount() {
+  // In-flight dedup — same rationale as the email store: the dashboard's
+  // load now runs concurrently with the sidebar poll, and out-of-order
+  // responses would let an older count overwrite a newer one.
+  let _inFlight = null;
+
+  function fetchCount() {
+    if (_inFlight) return _inFlight;
+    _inFlight = _fetchCount().finally(() => {
+      _inFlight = null;
+    });
+    return _inFlight;
+  }
+
+  async function _fetchCount() {
     try {
       const api = createApiClient();
       const data = await api.get('/api/phone-com/messages/unread-count');

@@ -8,6 +8,7 @@
  */
 import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
+import { reactive } from 'vue';
 
 const mockGet = vi.fn();
 const mockAuth = {
@@ -29,6 +30,17 @@ vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('../../stores/auth', () => ({
   useAuthStore: () => mockAuth,
+}));
+// The unread stores are the sidebar-badge singletons; the dashboard reads the
+// same counts. reactive() so the attentionItems computed tracks count changes
+// exactly like the real pinia store. Reset in mountDashboard.
+const mockEmailUnread = reactive({ count: 0, fetchCount: vi.fn().mockResolvedValue(undefined) });
+const mockSmsUnread = reactive({ count: 0, fetchCount: vi.fn().mockResolvedValue(undefined) });
+vi.mock('../../stores/emailUnread', () => ({
+  useEmailUnreadStore: () => mockEmailUnread,
+}));
+vi.mock('../../stores/smsUnread', () => ({
+  useSmsUnreadStore: () => mockSmsUnread,
 }));
 
 import DashboardView from '../DashboardView.vue';
@@ -59,6 +71,8 @@ const RETURN_VISIT = {
 
 function mountDashboard(routes, { reject = [] } = {}) {
   mockGet.mockReset();
+  mockEmailUnread.count = 0;
+  mockSmsUnread.count = 0;
   mockGet.mockImplementation((url) => {
     const path = url.split('?')[0];
     if (reject.includes(path)) return Promise.reject(new Error('403'));
@@ -108,6 +122,67 @@ describe('dashboard attention queue: return visits', () => {
     await flushPromises();
     expect(attentionTexts(w).some((t) => t.includes('return visit'))).toBe(false);
     expect(w.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
+  });
+});
+
+describe('dashboard attention queue: unread comms', () => {
+  it('shows unread email and SMS entries from the sidebar-badge stores', async () => {
+    const w = mountDashboard({});
+    mockEmailUnread.count = 3;
+    mockSmsUnread.count = 1;
+    await flushPromises();
+    const texts = attentionTexts(w);
+    expect(texts.some((t) => t.includes('3 unread emails in the inbox'))).toBe(true);
+    expect(texts.some((t) => t.includes('1 unread text message'))).toBe(true);
+  });
+
+  it('renders neither entry at zero', async () => {
+    const w = mountDashboard({});
+    await flushPromises();
+    const texts = attentionTexts(w);
+    expect(texts.some((t) => t.includes('unread'))).toBe(false);
+  });
+
+  it('refreshes both counts on dashboard load', async () => {
+    mockEmailUnread.fetchCount.mockClear();
+    mockSmsUnread.fetchCount.mockClear();
+    mountDashboard({});
+    await flushPromises();
+    expect(mockEmailUnread.fetchCount).toHaveBeenCalledTimes(1);
+    expect(mockSmsUnread.fetchCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the SMS row without nav.office — the count is tenant-wide and the sidebar hides the pin behind that permission', async () => {
+    mockAuth.hasPermission.mockImplementation((key) => key !== 'nav.office');
+    try {
+      const w = mountDashboard({});
+      mockSmsUnread.count = 4;
+      mockEmailUnread.count = 2;
+      await flushPromises();
+      const texts = attentionTexts(w);
+      expect(texts.some((t) => t.includes('text message'))).toBe(false);
+      // Email stays: its count is per-viewer filtered server-side.
+      expect(texts.some((t) => t.includes('2 unread emails'))).toBe(true);
+    } finally {
+      mockAuth.hasPermission.mockReturnValue(true);
+    }
+  });
+
+  it('info rows sort below danger/warn — unread mail is a steady state, a critical part is a stuck tech', async () => {
+    const w = mountDashboard({
+      '/api/parts-needed/pending': [PART({ urgency: 'critical' })],
+      '/api/jobs/return-visits-unscheduled': [RETURN_VISIT],
+    });
+    mockEmailUnread.count = 5;
+    await flushPromises();
+    const texts = attentionTexts(w);
+    const idxParts = texts.findIndex((t) => t.includes('awaiting order'));
+    const idxRv = texts.findIndex((t) => t.includes('return visit'));
+    const idxEmail = texts.findIndex((t) => t.includes('unread emails'));
+    expect(idxParts).toBeGreaterThanOrEqual(0);
+    expect(idxRv).toBeGreaterThanOrEqual(0);
+    expect(idxEmail).toBeGreaterThan(idxParts);
+    expect(idxEmail).toBeGreaterThan(idxRv);
   });
 });
 
