@@ -27,6 +27,8 @@ import {
   isPushSupported,
   getCurrentPermission,
   subscribeToPush,
+  ensureSubscribed,
+  fetchVapidPublicKey,
 } from '../composables/usePushSubscription'
 import { useOfflineSync } from '../composables/useOfflineSync'
 import { useMobileTour } from '../composables/useMobileTour'
@@ -1001,7 +1003,23 @@ onMounted(async () => {
   // C4 fallback: surface dispatch updates the tech missed since last view.
   refreshAllUnseenCounts()
   // E2: gate the "Enable notifications" CTA on browser support + perm.
-  refreshPushCta()
+  // 2026-08-04: two hard-won additions —
+  //   * permission already granted: silently heal a missing subscription
+  //     (VAPID keys landed on prod AFTER Doug's phone granted; the CTA
+  //     never re-shows once perm != 'default', so without this the device
+  //     is granted-but-unsubscribed forever).
+  //   * permission still 'default': only render the CTA when the backend
+  //     actually serves a VAPID key — otherwise the tap dead-ends in a
+  //     "Push setup failed (no_vapid_key)" toast.
+  if (isPushSupported() && getCurrentPermission() === 'granted') {
+    ensureSubscribed(api).then((r) => {
+      if (r.healed) console.info('[push] healed missing subscription')
+    }).catch(() => { /* background heal — never surface */ })
+  } else if (isPushSupported() && getCurrentPermission() === 'default') {
+    fetchVapidPublicKey(api).then((key) => {
+      if (key) refreshPushCta()
+    }).catch(() => { /* no CTA when the key can't be fetched */ })
+  }
   // Phase 4.5 — fire the first-login tour after the page paints. nextTick
   // alone isn't enough because PrimeVue tags + buttons render lazily.
   setTimeout(() => {
