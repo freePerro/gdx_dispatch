@@ -132,5 +132,39 @@ export async function unsubscribeFromPush(api) {
   return { ok: true, endpoint };
 }
 
+// 2026-08-04: heal the granted-but-unsubscribed state. Permission is a
+// browser-level grant; the subscription is a separate object that can be
+// missing (VAPID keys configured AFTER the user granted — the prod v1.37.0
+// state — or the push service expired the subscription). subscribe() needs
+// no user gesture once permission is already granted, so this is safe to
+// run on app open. Returns { ok, healed } — healed=true only when a new
+// subscription was actually created.
+export async function ensureSubscribed(api) {
+  if (!isPushSupported()) return { ok: false, healed: false, reason: 'unsupported' };
+  if (getCurrentPermission() !== 'granted') {
+    return { ok: false, healed: false, reason: 'not_granted' };
+  }
+  const reg = await registerServiceWorker();
+  if (!reg) return { ok: false, healed: false, reason: 'sw_register_failed' };
+  let existing = null;
+  try {
+    existing = await reg.pushManager.getSubscription();
+  } catch { /* treat as missing */ }
+  if (existing) return { ok: true, healed: false };
+  const r = await subscribeToPush(api);
+  return { ok: r.ok, healed: r.ok, reason: r.reason };
+}
+
+// Fetch the tenant's VAPID public key; empty string = push not configured
+// server-side (the CTA should not render — tapping it is a dead end).
+export async function fetchVapidPublicKey(api) {
+  try {
+    const r = await api.get('/api/push/v2/vapid-public', { suppressErrorToast: true });
+    return r?.public_key || '';
+  } catch {
+    return '';
+  }
+}
+
 // Exported only for tests.
 export const _internal = { urlBase64ToUint8Array };
