@@ -771,7 +771,11 @@ watch(open, async (v) => {
   gap: 0.4rem;
   align-items: start;
 }
-.part-row-main { display: flex; flex-direction: column; }
+/* min-width: 0 — grid items default to min-width:auto, and the InputText's
+   intrinsic width (~233px) is wider than 1fr's share on a 390px phone, so
+   the whole grid blew out and pushed the remove ✕ off-screen (caught in the
+   2026-08-04 browser walk; affected parts-used rows too). */
+.part-row-main { display: flex; flex-direction: column; min-width: 0; }
 
 .suggest-list {
   list-style: none;
