@@ -31,9 +31,16 @@ def test_health_endpoint(gdx_client):
     without leaking ``REDIS_URL``/connection-string content.
     """
     rv = gdx_client.get("/health")
-    if rv.status_code == 503 and "could not translate host name" in rv.text.lower() or "name or service" in rv.text.lower() or rv.status_code == 503:
-        import pytest as _p
-        _p.skip("control DB unreachable from this environment (local venv w/o docker-postgres)")
+    # Skip ONLY for a DNS-resolution 503 (no docker-postgres in this env).
+    # Any other 503 is a real health failure and must go red — the previous
+    # condition ended in `or rv.status_code == 503`, which silently skipped
+    # every 503 regardless of cause.
+    dns_failure = any(
+        marker in rv.text.lower()
+        for marker in ("could not translate host name", "name or service")
+    )
+    if rv.status_code == 503 and dns_failure:
+        pytest.skip("control DB unreachable from this environment (local venv w/o docker-postgres)")
     assert rv.status_code == 200
     data = rv.json()
     assert data.get("status") == "ok"

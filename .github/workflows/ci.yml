@@ -212,6 +212,18 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: UX gate (PrimeVue vocab, native confirm/alert, component registry)
+        # The negative-test runs FIRST: it asserts each gate rule still fires
+        # on synthetic violations, so a regex drift can't quietly turn the
+        # gate into a no-op. Then the gate itself blocks new violations
+        # (pre-existing native-confirm sites are grandfathered as WARN in
+        # ux_gate.mjs pending issue #215). Neither runs under vitest —
+        # ux_gate.test.mjs is a plain node CLI (see vitest.config.js exclude).
+        run: |
+          cd gdx_dispatch/frontend
+          node scripts/ux_gate.test.mjs
+          npm run lint:ux
+
       - name: Run vitest
         run: |
           cd gdx_dispatch/frontend

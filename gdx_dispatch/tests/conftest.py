@@ -200,13 +200,6 @@ def _reset_all_in_memory_state() -> None:
     except Exception:
         pass
 
-    # Superadmin impersonation
-    try:
-        from gdx_dispatch.core.superadmin import _impersonation_tokens
-        _impersonation_tokens.clear()
-    except Exception:
-        pass
-
     # Circuit breaker lru_cache
     try:
         from gdx_dispatch.core.circuit_breaker import get_redis_client
