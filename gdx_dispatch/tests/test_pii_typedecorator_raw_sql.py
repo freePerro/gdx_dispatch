@@ -130,9 +130,10 @@ def test_raw_sql_insert_bypasses_bind_param(encrypted_session):
     ``process_result_value`` on plaintext and raises ``InvalidToken``.
 
     This is the writer-side mirror of the S122-1b Customer bug. The two
-    raw-SQL writers identified at sprint close are
-    ``gdx_dispatch/api/public_router.py:493`` and ``gdx_dispatch/core/public_api.py:395``,
-    both inserting into ``webhook_endpoints.secret``. Those columns are
+    raw-SQL writers identified at sprint close were
+    ``gdx_dispatch/api/public_router.py:493`` and the since-removed
+    ``core/public_api.py``, both inserting into
+    ``webhook_endpoints.secret``. Those columns are
     now plain ``Text`` (S122-1c round-2 extended Option A) so the
     bypass has no observable effect today. The test still pins the
     SQLAlchemy contract so any future ``EncryptedString`` user gets a

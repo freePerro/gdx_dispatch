@@ -58,7 +58,6 @@ LEGACY_MODULE_ALIASES = {
     "purchase_orders": "inventory",
     "fleet": "equipment_tracking",
     "service_areas": "dispatch",
-    "contractors": "jobs",
     "service_agreements": "jobs",
 }
 

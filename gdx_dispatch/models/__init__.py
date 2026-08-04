@@ -165,10 +165,6 @@ try:
 except ImportError:
     pass
 try:
-    from gdx_dispatch.modules.contractors.models import Contractor, ContractorAssignment  # noqa: F401
-except ImportError:
-    pass
-try:
     from gdx_dispatch.modules.equipment.models import CustomerEquipment, EquipmentServiceHistory  # noqa: F401
 except ImportError:
     pass

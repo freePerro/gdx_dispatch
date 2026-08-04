@@ -70,8 +70,9 @@ class EncryptedString(TypeDecorator[str]):
     typing was theater. S122-1b activation broke 269 Customer pages
     because ~20 raw-SQL routers bypassed ``process_result_value`` on
     reads. The symmetric writer-side bypass exists at
-    ``gdx_dispatch/api/public_router.py:493`` and ``gdx_dispatch/core/public_api.py:395``
-    (raw INSERT into ``webhook_endpoints.secret``). Both bypass classes
+    ``gdx_dispatch/api/public_router.py:493`` (raw INSERT into
+    ``webhook_endpoints.secret``; a second writer lived in the since-removed
+    ``core/public_api.py``). Both bypass classes
     are inert today because none of the affected columns are typed
     ``EncryptedString`` anymore.
 
@@ -281,7 +282,6 @@ def _default_bases() -> tuple[list[Any], str | None]:
     candidates = [
         ("TenantBase", "gdx_dispatch.core.audit", "TenantBase"),
         ("ControlBase", "gdx_dispatch.control.models", "Base"),
-        ("TaskMonitorBase", "gdx_dispatch.core.task_monitor", "ControlBase"),
     ]
     for label, module, attr in candidates:
         try:
