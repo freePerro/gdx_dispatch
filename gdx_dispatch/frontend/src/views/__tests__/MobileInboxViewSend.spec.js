@@ -140,11 +140,16 @@ describe('MobileInboxView reply payload (D2)', () => {
   });
 
   it('reply POSTs array to (from sender), body_html, in_reply_to', async () => {
-    // First list call = messages; then message detail; then /body.
-    apiGet
-      .mockResolvedValueOnce([{ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true }])
-      .mockResolvedValueOnce({ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true, body_preview: 'hi' })
-      .mockResolvedValue({ fetched: false, reason: 'graph_error' });
+    // URL-routed, not positional: the mount-time sync-health fetch made
+    // mockResolvedValueOnce chains consume the wrong responses.
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/sync-health')) return Promise.resolve({ status: 'healthy', problems: [] });
+      if (url.includes('/messages/m1/body')) return Promise.resolve({ fetched: false, reason: 'graph_error' });
+      if (url.includes('/messages/m1')) {
+        return Promise.resolve({ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true, body_preview: 'hi' });
+      }
+      return Promise.resolve([{ id: 'm1', subject: 'Quote', from_address: 'cust@x.com', is_read: true }]);
+    });
     const w = mountView();
     await flushPromises();
     await w.find('[data-test="mi-msg-row"]').trigger('click'); // openMessage
@@ -174,9 +179,14 @@ describe('MobileInboxView pagination / load-more (D7)', () => {
   });
 
   it('appends the next page and hides Load more when has_more is false', async () => {
-    apiGet
-      .mockResolvedValueOnce({ items: [{ id: 'a', subject: 'A', is_read: true }], has_more: true, next_offset: 50 })
-      .mockResolvedValueOnce({ items: [{ id: 'b', subject: 'B', is_read: true }], has_more: false, next_offset: 100 });
+    // URL-routed (see reply test): message pages by offset, sync-health inert.
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/sync-health')) return Promise.resolve({ status: 'healthy', problems: [] });
+      if (url.includes('offset=50')) {
+        return Promise.resolve({ items: [{ id: 'b', subject: 'B', is_read: true }], has_more: false, next_offset: 100 });
+      }
+      return Promise.resolve({ items: [{ id: 'a', subject: 'A', is_read: true }], has_more: true, next_offset: 50 });
+    });
     const w = mountView();
     await flushPromises();
     expect(w.findAll('[data-test="mi-msg-row"]')).toHaveLength(1);
@@ -186,7 +196,8 @@ describe('MobileInboxView pagination / load-more (D7)', () => {
     await more.trigger('click');
     await flushPromises();
 
-    expect(apiGet.mock.calls[1][0]).toContain('offset=50');
+    const msgCalls = apiGet.mock.calls.filter((c) => c[0].includes('/api/outlook/messages'));
+    expect(msgCalls[1][0]).toContain('offset=50');
     expect(w.findAll('[data-test="mi-msg-row"]')).toHaveLength(2);
     expect(w.find('[data-test="mi-load-more"]').exists()).toBe(false);
   });
@@ -196,6 +207,39 @@ describe('MobileInboxView pagination / load-more (D7)', () => {
     const w = mountView();
     await flushPromises();
     expect(w.find('[data-test="mi-load-more"]').exists()).toBe(false);
+  });
+});
+
+
+describe('MobileInboxView sync-health banner', () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiPost.mockReset().mockResolvedValue({ ok: true });
+    apiPatch.mockReset().mockResolvedValue({});
+  });
+
+  it('shows the banner when sync is broken', async () => {
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/sync-health')) {
+        return Promise.resolve({ status: 'unhealthy', problems: ['Inbox frozen'], newest_sync_at: null });
+      }
+      return Promise.resolve({ items: [], has_more: false, next_offset: 0 });
+    });
+    const w = mountView();
+    await flushPromises();
+    const banner = w.find('[data-test="mi-sync-health-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('Email is not syncing');
+  });
+
+  it('stays hidden when healthy — and when the health call itself fails', async () => {
+    apiGet.mockImplementation((url) => {
+      if (url.includes('/sync-health')) return Promise.reject(new Error('boom'));
+      return Promise.resolve({ items: [], has_more: false, next_offset: 0 });
+    });
+    const w = mountView();
+    await flushPromises();
+    expect(w.find('[data-test="mi-sync-health-banner"]').exists()).toBe(false);
   });
 });
 

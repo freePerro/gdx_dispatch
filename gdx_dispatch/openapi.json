@@ -58277,63 +58277,12 @@
       }
     },
     "/api/plugins/{path}": {
-      "get": {
+      "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58384,58 +58333,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58486,7 +58384,109 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58534,64 +58534,12 @@
       }
     },
     "/api/plugins": {
-      "get": {
+      "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_get",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58643,59 +58591,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_get",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58747,7 +58643,111 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_get",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -75787,6 +75787,54 @@
         }
       }
     },
+    "/api/outlook/sync-health": {
+      "get": {
+        "tags": [
+          "outlook",
+          "views"
+        ],
+        "summary": "Get Sync Health",
+        "description": "Live sync-health signal for the inbox banner.\n\nThe 2026-07-30 poison-loop outage ran FIVE DAYS before anyone noticed\nthe inbox had gone quiet \u2014 this puts \"mail is not syncing\" in front of\nthe people who would otherwise find out by wondering. Same detector the\nhourly ``outlook.sync_health_check`` alarm uses.",
+        "operationId": "get_sync_health_api_outlook_sync_health_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncHealthOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/outlook/messages/unread-count": {
       "get": {
         "tags": [
@@ -89398,7 +89446,7 @@
           "secret": {
             "type": "string",
             "title": "Secret",
-            "default": "1e57b436329ae3e98bb335f04ff63fff35ceb40114021e3b7b0bbc290b4645a3"
+            "default": "16305913b4a117a0625787083df95407568118cde96cf0623e62146b2b75e581"
           }
         },
         "type": "object",
@@ -101635,6 +101683,38 @@
           "actions"
         ],
         "title": "SyncBatchBody"
+      },
+      "SyncHealthOut": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems"
+          },
+          "newest_sync_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Sync At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "problems"
+        ],
+        "title": "SyncHealthOut"
       },
       "SyncIn": {
         "properties": {

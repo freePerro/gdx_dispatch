@@ -70,6 +70,18 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=7, minute=15),
             "options": {"queue": "priority:low"},
         },
+        "outlook-sync-health-check-hourly": {
+            # 2026-08-04 incident: one duplicated delta message froze 29
+            # folders (incl. Inbox) for FIVE DAYS while the fallback poller
+            # kept reporting "healthy" — its check looks at webhook
+            # subscription state only, never sync outcomes. This is the
+            # alarm: folder-lag/stall detection → Sentry ERROR + a
+            # self-clearing NextAction so a broken mailbox sync is seen the
+            # same day, not when someone wonders why the inbox is quiet.
+            "task": "outlook.sync_health_check",
+            "schedule": crontab(minute=35),
+            "options": {"queue": "priority:low"},
+        },
         "outlook-retag-untagged-hourly": {
             # D3: forward-tagging only tags NEW mail. This picks up (a) the
             # historical backlog synced before tagging existed, and (b) any

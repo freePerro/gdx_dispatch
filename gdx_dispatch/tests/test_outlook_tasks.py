@@ -437,9 +437,15 @@ def test_renew_all_create_failure_is_counted_not_fatal():
 # ── poll_outlook_mailboxes_fallback ────────────────────────────────────
 
 
-def _account(connected=True):
+def _account(connected=True, last_sync_minutes_ago=5):
     a = MagicMock(); a.id = uuid4()
     a.access_token_enc = "fernet" if connected else None
+    # Real datetime, not an auto-Mock: the poller now compares last_sync_at
+    # against the FALLBACK_STALE_MINUTES cutoff.
+    a.last_sync_at = (
+        None if last_sync_minutes_ago is None
+        else datetime.now(timezone.utc) - timedelta(minutes=last_sync_minutes_ago)
+    )
     return a
 
 
@@ -472,6 +478,40 @@ def test_poller_triggers_for_expired_subscription():
     from gdx_dispatch.modules.outlook import tasks
     account = _account()
     sub = _sub(expired=True)
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.all.return_value = [account]
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = sub
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.tasks.sync_outlook_mailbox") as sync:
+        result = tasks.poll_outlook_mailboxes_fallback.run()
+    sync.delay.assert_called_once()
+    assert result["triggered"] == 1
+
+
+def test_poller_triggers_when_healthy_sub_but_sync_stale():
+    """A live webhook subscription is NOT proof mail is flowing: during the
+    2026-07-30 poison-loop outage every sync failed for 5 days while the
+    poller skipped the account as healthy. A stale last_sync_at now triggers
+    a sync even when the subscription looks fine."""
+    from gdx_dispatch.modules.outlook import tasks
+    account = _account(last_sync_minutes_ago=120)  # > FALLBACK_STALE_MINUTES
+    sub = _sub()  # healthy
+    tdb = MagicMock()
+    tdb.query.return_value.filter.return_value.all.return_value = [account]
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = sub
+    with patch("gdx_dispatch.modules.outlook.tasks.SessionLocal", return_value=tdb), \
+         patch("gdx_dispatch.modules.outlook.tasks.sync_outlook_mailbox") as sync:
+        result = tasks.poll_outlook_mailboxes_fallback.run()
+    sync.delay.assert_called_once()
+    assert result["triggered"] == 1
+    assert result["triggered_stale"] == 1
+    assert result["skipped_healthy"] == 0
+
+
+def test_poller_triggers_when_never_synced():
+    from gdx_dispatch.modules.outlook import tasks
+    account = _account(last_sync_minutes_ago=None)
+    sub = _sub()  # healthy
     tdb = MagicMock()
     tdb.query.return_value.filter.return_value.all.return_value = [account]
     tdb.query.return_value.filter.return_value.one_or_none.return_value = sub

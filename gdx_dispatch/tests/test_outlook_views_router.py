@@ -1150,3 +1150,24 @@ def test_detail_exposes_the_mailbox_address_for_reply_all(app):
     assert r.status_code == 200
     # Normalized for a case-insensitive compare against the recipient list.
     assert r.json()["mailbox_address"] == "office@gdx.com"
+
+
+def test_sync_health_endpoint_exposes_detector_output(app):
+    """Feeds the /inbox banner (2026-08-04: five days of frozen sync were
+    invisible in the UI). Detector logic is covered by
+    test_outlook_sync_health.py; here we pin the HTTP contract."""
+    client, _ = app
+    with patch(
+        "gdx_dispatch.modules.outlook.tasks._compute_sync_health",
+        return_value={
+            "status": "unhealthy",
+            "problems": ["2 folder(s) frozen more than 24h behind the rest (Archive, Inbox)"],
+            "newest_sync_at": "2026-08-04T12:41:55+00:00",
+        },
+    ):
+        r = client.get("/api/outlook/sync-health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "unhealthy"
+    assert "Archive" in body["problems"][0]
+    assert body["newest_sync_at"].startswith("2026-08-04")

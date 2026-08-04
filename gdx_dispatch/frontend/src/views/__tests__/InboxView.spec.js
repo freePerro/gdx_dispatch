@@ -97,8 +97,11 @@ const FAKE_DETAIL = {
 };
 
 
-function defaultFetch({ messages = FAKE_MESSAGES, folders = FAKE_FOLDERS, sendCapture = null } = {}) {
+const HEALTHY_SYNC = { status: 'healthy', problems: [], newest_sync_at: null };
+
+function defaultFetch({ messages = FAKE_MESSAGES, folders = FAKE_FOLDERS, sendCapture = null, syncHealth = HEALTHY_SYNC } = {}) {
   return vi.fn(async (url, init) => {
+    if (url.endsWith('/api/outlook/sync-health')) return mkResponse(syncHealth);
     if (url.endsWith('/api/outlook/folders')) return mkResponse(folders);
     if (url.includes('/api/outlook/messages?') && url.includes('folder_id=')) return mkResponse(messages);
     if (url.includes('/api/outlook/messages?')) return mkResponse(messages);
@@ -144,6 +147,31 @@ describe('InboxView', () => {
     const wrapper = mount(InboxView, { global: globalConfig });
     await flushPromises();
     expect(wrapper.text()).toContain('No messages.');
+  });
+
+  it('shows the sync-health banner when sync is broken', async () => {
+    // 2026-08-04: five days of frozen sync were invisible in the UI —
+    // the banner is the "let us know" surface.
+    globalThis.fetch = defaultFetch({
+      syncHealth: {
+        status: 'unhealthy',
+        problems: ['29 folder(s) frozen more than 24h behind the rest (Archive, Inbox, Microsoft +26 more)'],
+        newest_sync_at: '2026-08-04T12:41:55+00:00',
+      },
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    const banner = wrapper.find('[data-test="sync-health-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('Email is not syncing');
+    expect(banner.text()).toContain('Archive');
+  });
+
+  it('hides the sync-health banner when healthy', async () => {
+    globalThis.fetch = defaultFetch();
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    expect(wrapper.find('[data-test="sync-health-banner"]').exists()).toBe(false);
   });
 
   it('opens detail pane when a row is clicked', async () => {

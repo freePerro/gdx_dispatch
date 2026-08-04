@@ -10,6 +10,16 @@
         </div>
       </header>
 
+      <div
+        v-if="syncHealth && syncHealth.status === 'unhealthy'"
+        class="mi-sync-health-banner"
+        role="alert"
+        data-test="mi-sync-health-banner"
+      >
+        <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+        <span><strong>Email is not syncing.</strong> New mail will be missing until this is fixed.</span>
+      </div>
+
       <div class="mi-search">
         <i class="pi pi-search" aria-hidden="true" />
         <input
@@ -229,6 +239,18 @@ const toast = useToast()
 const messages = ref([])
 const loading = ref(false)
 const error = ref(null)
+
+// Sync-health banner (same signal as desktop /inbox; see the 2026-07-30
+// five-day silent outage). Best-effort — never blocks the mail list.
+const syncHealth = ref(null)
+
+async function fetchSyncHealth() {
+  try {
+    syncHealth.value = await api.get('/api/outlook/sync-health')
+  } catch {
+    syncHealth.value = null
+  }
+}
 
 const detailOpen = ref(false)
 const detail = ref(null)
@@ -615,7 +637,10 @@ async function sendCompose() {
   }
 }
 
-onMounted(fetchMessages)
+onMounted(() => {
+  fetchSyncHealth()  // not awaited — banner must not delay the mail list
+  fetchMessages()
+})
 </script>
 
 <style scoped>
@@ -818,6 +843,22 @@ onMounted(fetchMessages)
 }
 
 /* ── search ── */
+.mi-sync-health-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.9rem;
+}
+.mi-sync-health-banner .pi {
+  color: var(--color-warning-500);
+  margin-top: 0.1rem;
+}
+
 .mi-search {
   display: flex;
   align-items: center;

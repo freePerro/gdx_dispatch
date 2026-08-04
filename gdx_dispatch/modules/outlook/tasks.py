@@ -34,11 +34,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import and_ as sa_and
 from sqlalchemy import func as sa_func
+from sqlalchemy import or_ as sa_or
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.celery_app import celery_app
+from gdx_dispatch.core.next_action import NextAction
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
 from gdx_dispatch.modules.outlook.models import (
@@ -102,6 +106,15 @@ SKIP_SYNC_WELL_KNOWN = {
     "serverfailures",
 }
 
+# Sync-health alarm thresholds (sync_health_check below). The 2026-07-30
+# poison-loop outage ran 5 days with zero operator-visible signal — these
+# bounds define "not syncing correctly" for the hourly alarm.
+SYNC_STALL_HOURS = float(os.getenv("OUTLOOK_SYNC_STALL_HOURS", "26") or "26")
+SYNC_FOLDER_LAG_HOURS = float(os.getenv("OUTLOOK_SYNC_FOLDER_LAG_HOURS", "24") or "24")
+# Fallback poller: a healthy webhook subscription is no longer enough to skip
+# an account — if nothing has synced in this long, trigger one anyway.
+FALLBACK_STALE_MINUTES = float(os.getenv("OUTLOOK_FALLBACK_STALE_MINUTES", "45") or "45")
+
 MAX_FOLDER_DEPTH = 5
 MAX_FOLDERS_PER_ACCOUNT = 500
 
@@ -118,6 +131,13 @@ def _parse_iso(value: str | None) -> datetime | None:
     except ValueError:
         log.debug("could not parse Microsoft Graph ISO datetime: %r", value)
         return None
+
+
+def _aware_utc(dt: datetime | None) -> datetime | None:
+    # SQLite hands back naive datetimes from tz-aware columns.
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 # Envelope keys whose collective ABSENCE marks a partial delta item (a resume
@@ -1197,7 +1217,7 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
     """Beat task: trigger sync for any connected OutlookAccount whose
     subscription is missing/expired/errored. Webhook safety net. 15-min cadence."""
     tenant_id_str = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
-    triggered = skipped_healthy = skipped_disconnected = 0
+    triggered = skipped_healthy = skipped_disconnected = triggered_stale = 0
     now = datetime.now(timezone.utc)
 
     tdb = SessionLocal()
@@ -1218,7 +1238,18 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
                 and sub.expiration_at > now
                 and not sub.last_error
             )
-            if healthy:
+            # A healthy-looking subscription is NOT proof mail is flowing:
+            # during the 2026-07-30 poison-loop outage every sync failed for
+            # 5 days while this branch skipped the account as "healthy".
+            # If nothing has completed a sync recently, trigger one anyway —
+            # the sync either catches up (missed webhooks) or fails loudly
+            # where sync_health_check and Sentry can see it.
+            last_sync = _aware_utc(account.last_sync_at)
+            sync_stale = (
+                last_sync is None
+                or last_sync < now - timedelta(minutes=FALLBACK_STALE_MINUTES)
+            )
+            if healthy and not sync_stale:
                 skipped_healthy += 1
                 continue
             if account.access_token_enc is None:
@@ -1226,6 +1257,8 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
                 continue
             sync_outlook_mailbox.delay(str(account.id), tenant_id_str)
             triggered += 1
+            if healthy and sync_stale:
+                triggered_stale += 1
     except Exception:
         # DB may lack outlook_* tables (module not provisioned).
         log.warning("fallback_poll: tenant %s skipped (likely missing outlook tables)", tenant_id_str)
@@ -1235,4 +1268,168 @@ def poll_outlook_mailboxes_fallback(self) -> dict:
         "triggered": triggered,
         "skipped_healthy": skipped_healthy,
         "skipped_disconnected": skipped_disconnected,
+        "triggered_stale": triggered_stale,
     }
+
+
+# ── sync-health alarm ──────────────────────────────────────────────────
+# Born from the 2026-07-30 → 08-04 outage: one duplicated delta message
+# froze 29 folders (incl. Inbox) for 5 days with zero operator-visible
+# signal — the poller reported "healthy" (it only checked the webhook
+# subscription) and account.last_error stayed NULL (the crash bypassed it).
+
+EMAIL_SYNC_ACTION_TYPE = "email_sync_health"
+EMAIL_SYNC_REFERENCE_ID = "email-sync-health-singleton"
+
+
+def _compute_sync_health(tdb: Session, now: datetime) -> dict:
+    """Detect the three ways sync breaks, from folder-level ground truth.
+
+    - stall: no folder has completed a sync in SYNC_STALL_HOURS;
+    - partial freeze: some folders advance while others sit more than
+      SYNC_FOLDER_LAG_HOURS behind the newest (the poison-loop signature —
+      account-level last_sync_at alone can NOT see this);
+    - account error: reconnect-required style failures stamped by the sync.
+
+    Folders in SKIP_SYNC_WELL_KNOWN (Junk, Deleted, …) are never synced by
+    design — their permanently-stale state rows must not alarm.
+    """
+    problems: list[str] = []
+    newest_overall: datetime | None = None
+    accounts = (
+        tdb.query(OutlookAccount)
+        .filter(OutlookAccount.access_token_enc.isnot(None))
+        .all()
+    )
+    if not accounts:
+        return {"status": "no_accounts", "problems": [], "newest_sync_at": None}
+    for account in accounts:
+        if account.last_error:
+            problems.append(f"account error: {account.last_error[:160]}")
+        rows = (
+            tdb.query(OutlookFolderSyncState, OutlookFolder)
+            .join(
+                OutlookFolder,
+                sa_and(
+                    OutlookFolder.account_id == OutlookFolderSyncState.account_id,
+                    OutlookFolder.graph_folder_id == OutlookFolderSyncState.folder_id,
+                ),
+            )
+            .filter(
+                OutlookFolderSyncState.account_id == account.id,
+                sa_or(
+                    OutlookFolder.well_known_name.is_(None),
+                    OutlookFolder.well_known_name.notin_(SKIP_SYNC_WELL_KNOWN),
+                ),
+            )
+            .all()
+        )
+        synced = [(f, _aware_utc(st.last_sync_at)) for st, f in rows]
+        times = [t for _, t in synced if t is not None]
+        newest = max(times) if times else None
+        if newest is not None and (newest_overall is None or newest > newest_overall):
+            newest_overall = newest
+        if newest is None or newest < now - timedelta(hours=SYNC_STALL_HOURS):
+            problems.append(
+                "no folder has completed a sync since "
+                + (newest.strftime("%Y-%m-%d %H:%M UTC") if newest else "the account connected")
+            )
+            continue  # everything is behind; per-folder lag would just repeat it
+        lag_cut = newest - timedelta(hours=SYNC_FOLDER_LAG_HOURS)
+        stale = sorted(
+            (f.display_name or f.graph_folder_id[:12])
+            for f, t in synced
+            if t is None or t < lag_cut
+        )
+        if stale:
+            shown = ", ".join(stale[:3]) + (f" +{len(stale) - 3} more" if len(stale) > 3 else "")
+            problems.append(
+                f"{len(stale)} folder(s) frozen more than "
+                f"{int(SYNC_FOLDER_LAG_HOURS)}h behind the rest ({shown})"
+            )
+    return {
+        "status": "unhealthy" if problems else "healthy",
+        "problems": problems,
+        "newest_sync_at": newest_overall.isoformat() if newest_overall else None,
+    }
+
+
+def _upsert_sync_health_action(tdb: Session, tenant_id: str, problems: list[str]) -> str:
+    """One persistent NextAction, updated in place; clears itself when sync
+    is healthy again. Same shape (and snooze contract) as billing_followup."""
+    existing = tdb.execute(
+        select(NextAction).where(
+            NextAction.tenant_id == tenant_id,
+            NextAction.action_type == EMAIL_SYNC_ACTION_TYPE,
+            NextAction.reference_id == EMAIL_SYNC_REFERENCE_ID,
+            NextAction.status.notin_(("completed",)),
+            NextAction.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+    if not problems:
+        if existing is not None:
+            existing.status = "completed"
+            existing.completed_at = datetime.now(timezone.utc)
+            tdb.commit()
+            return "cleared"
+        return "clean"
+
+    description = (
+        "Email is NOT syncing correctly: " + "; ".join(problems)
+        + ". New mail is missing from /inbox until this is fixed — "
+        "check the celery-low logs / Sentry for the failing folder."
+    )
+    if existing is not None:
+        existing.title = "Email inbox is not syncing"
+        existing.description = description
+        existing.priority = "high"
+        existing.action_url = "/inbox"
+        _su = _aware_utc(existing.snoozed_until)
+        is_snoozed = (
+            existing.status == "snoozed"
+            and _su is not None
+            and _su > datetime.now(timezone.utc)
+        )
+        if not is_snoozed:
+            existing.status = "pending"
+        tdb.commit()
+        return "updated"
+
+    tdb.add(NextAction(
+        tenant_id=tenant_id,
+        user_id=None,
+        action_type=EMAIL_SYNC_ACTION_TYPE,
+        title="Email inbox is not syncing",
+        description=description,
+        priority="high",
+        action_url="/inbox",
+        reference_id=EMAIL_SYNC_REFERENCE_ID,
+    ))
+    tdb.commit()
+    return "created"
+
+
+@celery_app.task(name="outlook.sync_health_check", bind=True)
+def sync_health_check(self) -> dict:
+    """Beat task (hourly): alarm when mail sync is broken.
+
+    Two channels, both self-clearing: log.error → Sentry for the ops loop,
+    and a persistent NextAction so the office sees it in the app without
+    reading logs.
+    """
+    tenant_id = os.getenv("GDX_TENANT_ID") or os.getenv("GDX_DEFAULT_TENANT_ID") or "gdx"
+    tdb = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        health = _compute_sync_health(tdb, now)
+        if health["status"] == "no_accounts":
+            return {**health, "action": "skipped"}
+        if health["problems"]:
+            log.error("outlook_sync_unhealthy: %s", "; ".join(health["problems"]))
+        action = _upsert_sync_health_action(tdb, tenant_id, health["problems"])
+        result = {**health, "action": action}
+        log.info("outlook_sync_health_check %s", result)
+        return result
+    finally:
+        tdb.close()

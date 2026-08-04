@@ -182,6 +182,20 @@ async function fetchFolders() {
   }
 }
 
+// Sync-health banner. The 2026-07-30 outage ran five days before anyone
+// noticed the inbox had gone quiet — this tells the office the moment sync
+// breaks, right where they're already looking. Best-effort: a failure here
+// must never take the inbox down.
+const syncHealth = ref(null)
+
+async function fetchSyncHealth() {
+  try {
+    syncHealth.value = await api.get('/api/outlook/sync-health')
+  } catch {
+    syncHealth.value = null
+  }
+}
+
 const MSG_PAGE_SIZE = 50
 const msgOffset = ref(0)
 const hasMoreMessages = ref(false)
@@ -939,6 +953,7 @@ const sortedMessages = computed(() =>
 // ── lifecycle ────────────────────────────────────────────────────────
 
 onMounted(async () => {
+  fetchSyncHealth()  // deliberately not awaited — banner must not delay mail
   await fetchFolders()
   // Default to Inbox if present
   const inbox = folders.value.find(f => f.well_known_name === 'inbox')
@@ -994,6 +1009,21 @@ onMounted(async () => {
     </div>
 
     <div v-if="error" class="status-error">{{ error }}</div>
+
+    <div
+      v-if="syncHealth && syncHealth.status === 'unhealthy'"
+      class="sync-health-banner"
+      role="alert"
+      data-test="sync-health-banner"
+    >
+      <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+      <span>
+        <strong>Email is not syncing.</strong>
+        {{ syncHealth.problems.join('; ') }}<template v-if="syncHealth.newest_sync_at">
+          — last successful sync {{ fmtDate(syncHealth.newest_sync_at) }}</template>.
+        New mail will be missing until this is fixed.
+      </span>
+    </div>
 
     <div class="inbox-layout">
       <!-- ── folder rail ── -->
@@ -1829,4 +1859,20 @@ onMounted(async () => {
 .muted { color: var(--text-secondary); }
 .center { text-align: center; padding: 2rem; }
 .status-error { color: var(--color-danger-500, #b91c1c); }
+
+.sync-health-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 8px;
+  background: var(--color-warning-bg);
+  color: var(--color-text, inherit);
+}
+.sync-health-banner .pi {
+  color: var(--color-warning-500);
+  margin-top: 0.15rem;
+}
 </style>
