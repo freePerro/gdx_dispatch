@@ -1,18 +1,26 @@
 """Stripe Elements embedded payment collection + ACH bank transfer support.
 
-Endpoints
----------
+These endpoints back the anonymous ``/pay/{token}`` page, so they have no user
+to authenticate. Authorization is structural instead — see the "Public-payment
+authorization" section below: the caller proves which invoice they may touch by
+presenting its token, and the amount, the intent↔invoice binding and the ACH
+method↔invoice binding are all decided server-side.
+
+Endpoints (all take ``invoice_token``)
+--------------------------------------
 POST /api/payments/create-intent   — create PaymentIntent for an invoice
 POST /api/payments/confirm         — confirm payment after Stripe.js completes
 POST /api/payments/ach/setup       — create SetupIntent for ACH bank account
-POST /api/payments/ach/charge      — charge a saved ACH payment method
-GET  /api/payments/methods         — list saved payment methods for a customer
-DELETE /api/payments/methods/{pm_id} — remove a saved payment method
+POST /api/payments/ach/charge      — charge the bank account collected for it
+
+Saved-payment-method management lives on the AUTHENTICATED portal router
+(``gdx_dispatch/routers/payments.py``, ``/payments/methods``). This module's
+unauthenticated duplicates were removed 2026-08-04.
 
 Public (no auth):
 GET  /pay/{invoice_token}          — serve the Stripe Elements payment form
 
-Webhook helper (called from stripe_webhook router):
+Webhook entry point (dispatched from routers/stripe_webhook.py):
     handle_payment_webhook(event, db)
 """
 from __future__ import annotations
@@ -26,7 +34,6 @@ from uuid import UUID
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from fastapi.security import OAuth2PasswordBearer
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -37,7 +44,13 @@ from gdx_dispatch.models.tenant_models import Invoice, Payment
 
 logger = logging.getLogger(__name__)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+# NOTE: this module used to declare `oauth2_scheme = OAuth2PasswordBearer(
+# auto_error=False)` and give every handler `token: str | None =
+# Depends(oauth2_scheme)` — a parameter that was never read. With
+# auto_error=False the dependency never rejects anything, so the signatures
+# LOOKED authenticated in review while enforcing nothing. It survived multiple
+# audits that way. Removed 2026-08-04; if you need auth here, use a dependency
+# whose result you actually consume.
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 public_router = APIRouter(tags=["payments-public"])
@@ -89,25 +102,47 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+# NOTE ON SHAPE (2026-08-04 payment-authorization hardening):
+# ``invoice_token`` is the credential — it is the same unguessable token that
+# addresses the /pay/{token} page, so possessing it is what authorizes the
+# request. ``invoice_id`` and ``amount`` are DEPRECATED client inputs kept
+# nullable for ONE release so a /pay tab opened before the deploy does not
+# 422 in the middle of a payment. They are never trusted for authorization:
+# the amount is always recomputed from the invoice, the PaymentIntent is
+# bound to the invoice through Stripe metadata, and the ACH method is bound
+# through its SetupIntent. Remove both fields (and _LEGACY_SHAPE_DEADLINE
+# below) in the release after this one.
+_LEGACY_SHAPE_DEADLINE = "2026-09-01"
+
+
 class CreateIntentRequest(BaseModel):
-    invoice_id: str
-    amount: int  # cents
+    invoice_token: str | None = None
+    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
+    amount: int | None = None  # DEPRECATED + IGNORED — server derives from balance
     currency: str = "usd"
 
 
 class ConfirmPaymentRequest(BaseModel):
     payment_intent_id: str
-    invoice_id: str
+    invoice_token: str | None = None
+    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
 
 
 class ACHSetupRequest(BaseModel):
     customer_email: str
+    invoice_token: str | None = None
+    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
 
 
 class ACHChargeRequest(BaseModel):
     payment_method_id: str
-    invoice_id: str
-    amount: int  # cents
+    # The SetupIntent that collected ``payment_method_id``. REQUIRED: it is
+    # what proves the bank account was collected for THIS invoice. Without it
+    # any caller could charge any saved payment method they knew the id of.
+    setup_intent_id: str | None = None
+    invoice_token: str | None = None
+    invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
+    amount: int | None = None  # DEPRECATED + IGNORED — server derives from balance
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +173,98 @@ def _stripe_extra(tenant: dict) -> dict[str, Any]:
     """Return Stripe Connect kwargs if tenant has a connected account."""
     acct = tenant.get("stripe_connect_account_id")
     return {"stripe_account": acct} if acct else {}
+
+
+# ---------------------------------------------------------------------------
+# Public-payment authorization (2026-08-04)
+# ---------------------------------------------------------------------------
+# These endpoints serve the anonymous /pay/{token} page, so there is no user to
+# authenticate. Authorization is therefore structural: the caller proves which
+# invoice they may touch by presenting its token, and every other money-bearing
+# decision (how much, which payment method) is made server-side. Before this,
+# the client supplied invoice_id, amount AND payment_method_id, so a caller
+# holding any one leaked identifier could credit a payment to an unrelated
+# invoice or debit an unrelated bank account.
+
+
+def _resolve_public_invoice(
+    db: Session,
+    *,
+    invoice_token: str | None,
+    invoice_id: str | None,
+    op: str,
+    require_balance: bool = True,
+) -> Invoice:
+    """Resolve (and gate) the invoice a public payment request may act on.
+
+    ``invoice_token`` is authoritative. ``invoice_id`` is the deprecated legacy
+    shape (see NOTE ON SHAPE) and is accepted only until
+    ``_LEGACY_SHAPE_DEADLINE``; it is safe in the interim because callers can no
+    longer choose the amount, the PaymentIntent binding, or the ACH method.
+    """
+    invoice: Invoice | None = None
+    if invoice_token:
+        invoice = (
+            db.query(Invoice)
+            .filter(Invoice.public_token == invoice_token, Invoice.deleted_at.is_(None))
+            .first()
+        )
+        if invoice is None:
+            # Same response as an unknown invoice — never reveal whether a
+            # token merely mismatched an existing invoice.
+            raise HTTPException(status_code=404, detail="Invoice not found")
+    elif invoice_id:
+        logger.warning(
+            "public_payment_legacy_shape op=%s — client sent invoice_id without "
+            "invoice_token; support ends %s",
+            op,
+            _LEGACY_SHAPE_DEADLINE,
+        )
+        try:
+            invoice_uuid = UUID(invoice_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=422, detail="Invalid invoice_id format") from None
+        invoice = db.get(Invoice, invoice_uuid)
+        if invoice is None or invoice.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+    else:
+        raise HTTPException(status_code=422, detail="invoice_token is required")
+
+    # An open /pay tab can outlive the invoice — voided, or a deposit settled
+    # when the final invoice superseded it. Don't move money nothing is owed on.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    # `require_balance=False` for RECORDING operations (confirm). The signed
+    # webhook usually beats the browser's confirm call, so by the time confirm
+    # runs the balance is legitimately zero — rejecting it there would 409 the
+    # customer's own success callback on every fast payment.
+    if require_balance and float(invoice.balance_due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
+    return invoice
+
+
+def _amount_cents(invoice: Invoice) -> int:
+    """The only amount this module will ever charge: what is actually owed.
+
+    Never the client's number, and never ``invoice.total`` — a partially paid,
+    credit-memo'd or deposit-applied invoice owes less than its total, and
+    charging the total overcharges a real customer.
+    """
+    return int(round(float(invoice.balance_due or 0) * 100))
+
+
+def _idempotency_key(invoice: Invoice, amount_cents: int, method: str) -> str:
+    """Stripe idempotency key for a public payment attempt.
+
+    MUST vary with amount AND method. Stripe rejects a reused key whose
+    parameters differ (for 24h), so:
+      * ``gdx-pi-{invoice_id}`` alone wedges the customer out of paying as soon
+        as the balance changes between attempts (partial payment lands, or an
+        earlier attempt sent the old client-supplied amount);
+      * omitting the method wedges the customer who tries card, fails, then
+        switches to ACH for the same balance — different params, same key.
+    """
+    return f"gdx-pi-{invoice.id}-{method}-{amount_cents}"
 
 
 def _mark_invoice_paid(
@@ -220,49 +347,44 @@ def create_intent(
     body: CreateIntentRequest,
     request: Request,
     db: Session = Depends(get_db),
-    token: str | None = Depends(oauth2_scheme),
 ) -> dict:
-    """Create a Stripe PaymentIntent for an invoice.
+    """Create a Stripe PaymentIntent for the invoice the caller's token names.
 
-    Idempotency key ``gdx-pi-{invoice_id}`` prevents duplicate charges if the
-    client retries the same request.
+    The amount is the invoice's balance due — the client's ``amount`` is
+    ignored. ``metadata.invoice_id`` binds the intent to this invoice so
+    ``confirm`` can refuse to credit it anywhere else.
     """
     _init_stripe()
-    try:
-        invoice_uuid = UUID(body.invoice_id)
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=422, detail="Invalid invoice_id format") from None
-
-    invoice = db.get(Invoice, invoice_uuid)
-    if not invoice or invoice.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    # 2026-07-23 (deposit-invoice audit catch, but correct universally): an
-    # open /pay tab can outlive the invoice — voided, or a deposit settled
-    # when the final invoice superseded it. Don't charge money nothing is
-    # owed on.
-    if invoice.status == "void":
-        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
-    if float(invoice.balance_due or 0) <= 0:
-        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
-
+    invoice = _resolve_public_invoice(
+        db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="create-intent"
+    )
+    amount_cents = _amount_cents(invoice)
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
     try:
         pi = stripe.PaymentIntent.create(
-            amount=body.amount,
+            amount=amount_cents,
             currency=body.currency,
             metadata={
-                "invoice_id": body.invoice_id,
+                "invoice_id": str(invoice.id),
                 "tenant_id": str(tenant.get("id", "")),
             },
-            idempotency_key=f"gdx-pi-{body.invoice_id}",
+            idempotency_key=_idempotency_key(invoice, amount_cents, "card"),
             **_stripe_extra(tenant),
         )
     except stripe.StripeError as exc:
         logger.error("Stripe create_intent error: %s", exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
 
-    return {"client_secret": pi.client_secret, "payment_intent_id": pi.id}
+    return {
+        "client_secret": pi.client_secret,
+        "payment_intent_id": pi.id,
+        # What will actually be charged. The pay page renders the balance
+        # server-side and does not read this back — it is here so any API
+        # consumer (and anyone debugging a disputed charge) can see the
+        # server's figure rather than inferring it.
+        "amount": amount_cents,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -273,31 +395,49 @@ def create_intent(
 def confirm_payment(
     body: ConfirmPaymentRequest,
     db: Session = Depends(get_db),
-    token: str | None = Depends(oauth2_scheme),
 ) -> dict:
     """Confirm payment after Stripe.js reports success.
 
-    Retrieves the PaymentIntent from Stripe and, if its status is
-    ``succeeded``, marks the local invoice as paid.
+    The PaymentIntent must carry ``metadata.invoice_id`` matching the invoice
+    the caller's token resolves to. Without that check a succeeded intent could
+    be replayed against any invoice — idempotency is keyed on
+    ``(invoice_id, reference)``, so one real payment could settle a different
+    invoice as well as its own.
     """
     _init_stripe()
+    invoice = _resolve_public_invoice(
+        db,
+        invoice_token=body.invoice_token,
+        invoice_id=body.invoice_id,
+        op="confirm",
+        require_balance=False,
+    )
+
     try:
         pi = stripe.PaymentIntent.retrieve(body.payment_intent_id)
     except stripe.StripeError as exc:
         logger.error("Stripe retrieve error: %s", exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
 
+    intent_invoice_id = str((getattr(pi, "metadata", None) or {}).get("invoice_id") or "")
+    if intent_invoice_id != str(invoice.id):
+        logger.warning(
+            "payment_confirm_invoice_mismatch pi=%s intent_invoice=%s requested_invoice=%s",
+            body.payment_intent_id,
+            intent_invoice_id or "<none>",
+            invoice.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="This payment does not belong to this invoice.",
+        )
+
     if pi.status == "succeeded":
-        try:
-            invoice_uuid = UUID(body.invoice_id)
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=422, detail="Invalid invoice_id format") from None
+        _mark_invoice_paid(
+            invoice, db, external_ref=pi.id, method="card", amount=(pi.amount or 0) / 100.0
+        )
 
-        invoice = db.get(Invoice, invoice_uuid)
-        if invoice and invoice.deleted_at is None:
-            _mark_invoice_paid(invoice, db, external_ref=pi.id, method="card", amount=(pi.amount or 0) / 100.0)
-
-    return {"status": pi.status, "invoice_id": body.invoice_id}
+    return {"status": pi.status, "invoice_id": str(invoice.id)}
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +448,36 @@ def confirm_payment(
 def ach_setup(
     body: ACHSetupRequest,
     request: Request,
-    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Create a SetupIntent so Stripe.js can collect ACH bank account details.
 
-    Returns a ``client_secret`` that the frontend passes to
-    ``stripe.collectBankAccountForSetup()``.
+    Scoped to an invoice: previously this took only an email, so anyone could
+    mint unlimited SetupIntents. The ``metadata.invoice_id`` stamped here is
+    what ``ach/charge`` later checks to prove the collected bank account was
+    gathered for THIS invoice.
     """
     _init_stripe()
+    invoice = _resolve_public_invoice(
+        db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="ach-setup"
+    )
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
     try:
         si = stripe.SetupIntent.create(
             payment_method_types=["us_bank_account"],
-            metadata={"email": body.customer_email, "tenant_id": str(tenant.get("id", ""))},
+            metadata={
+                "email": body.customer_email,
+                "invoice_id": str(invoice.id),
+                "tenant_id": str(tenant.get("id", "")),
+            },
             **_stripe_extra(tenant),
         )
     except stripe.StripeError as exc:
         logger.error("Stripe ach_setup error: %s", exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
 
-    return {"client_secret": si.client_secret}
+    return {"client_secret": si.client_secret, "setup_intent_id": si.id}
 
 
 # ---------------------------------------------------------------------------
@@ -340,44 +489,71 @@ def ach_charge(
     body: ACHChargeRequest,
     request: Request,
     db: Session = Depends(get_db),
-    token: str | None = Depends(oauth2_scheme),
 ) -> dict:
-    """Charge a saved ACH bank account payment method.
+    """Charge the bank account collected for this invoice.
 
     Creates a PaymentIntent with ``confirm=True`` so the charge is initiated
     immediately. ACH payments are typically pending for 1-2 business days.
+
+    ``setup_intent_id`` is required and must be a SetupIntent minted by
+    ``ach/setup`` for THIS invoice that collected THIS payment method. That
+    chain is the authorization: without it, knowing any ``pm_`` id was enough
+    to debit an unrelated person's bank account (an unauthorized ACH debit,
+    which is a NACHA violation regardless of where the money lands).
     """
     _init_stripe()
+    invoice = _resolve_public_invoice(
+        db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="ach-charge"
+    )
+
+    if not body.setup_intent_id:
+        # Fail closed. An ACH tab opened before this deploy has no
+        # setup_intent_id; retrying from a fresh page costs the customer one
+        # reload, whereas charging an unverifiable bank account is a debit we
+        # cannot justify.
+        raise HTTPException(
+            status_code=409,
+            detail="This payment session is out of date. Please refresh the page and try again.",
+        )
+
     try:
-        invoice_uuid = UUID(body.invoice_id)
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=422, detail="Invalid invoice_id format") from None
+        si = stripe.SetupIntent.retrieve(body.setup_intent_id)
+    except stripe.StripeError as exc:
+        logger.error("Stripe ach_charge setup-intent retrieve error: %s", exc)
+        raise HTTPException(status_code=402, detail=str(exc)) from None
 
-    invoice = db.get(Invoice, invoice_uuid)
-    if not invoice or invoice.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    # 2026-07-23 (deposit-invoice audit catch, but correct universally): an
-    # open /pay tab can outlive the invoice — voided, or a deposit settled
-    # when the final invoice superseded it. Don't charge money nothing is
-    # owed on.
-    if invoice.status == "void":
-        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
-    if float(invoice.balance_due or 0) <= 0:
-        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
+    si_invoice_id = str((getattr(si, "metadata", None) or {}).get("invoice_id") or "")
+    si_payment_method = str(getattr(si, "payment_method", "") or "")
+    if si_invoice_id != str(invoice.id) or si_payment_method != body.payment_method_id:
+        logger.warning(
+            "ach_charge_binding_mismatch si=%s si_invoice=%s si_pm=%s "
+            "requested_invoice=%s requested_pm=%s",
+            body.setup_intent_id,
+            si_invoice_id or "<none>",
+            si_payment_method or "<none>",
+            invoice.id,
+            body.payment_method_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="This bank account was not set up for this invoice.",
+        )
 
+    amount_cents = _amount_cents(invoice)
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
     try:
         pi = stripe.PaymentIntent.create(
-            amount=body.amount,
+            amount=amount_cents,
             currency="usd",
             payment_method=body.payment_method_id,
             payment_method_types=["us_bank_account"],
             confirm=True,
             metadata={
-                "invoice_id": body.invoice_id,
+                "invoice_id": str(invoice.id),
                 "tenant_id": str(tenant.get("id", "")),
             },
+            idempotency_key=_idempotency_key(invoice, amount_cents, "ach"),
             **_stripe_extra(tenant),
         )
     except stripe.StripeError as exc:
@@ -391,65 +567,11 @@ def ach_charge(
     return {"status": pi.status, "payment_intent_id": pi.id}
 
 
-# ---------------------------------------------------------------------------
-# GET /api/payments/methods
-# ---------------------------------------------------------------------------
-
-@router.get("/methods", operation_id="api_list_payment_methods")
-def list_methods(
-    customer_id: str,
-    request: Request,
-    token: str | None = Depends(oauth2_scheme),
-) -> dict:
-    """List all saved payment methods (card + ACH) for a Stripe customer."""
-    _init_stripe()
-    tenant: dict = getattr(request.state, "tenant", {}) or {}
-    extra = _stripe_extra(tenant)
-
-    methods: list[dict] = []
-    for pm_type in ("card", "us_bank_account"):
-        try:
-            page = stripe.PaymentMethod.list(customer=customer_id, type=pm_type, **extra)
-            methods.extend(page.data)
-        except stripe.StripeError as exc:
-            logger.warning("Stripe list_methods (%s) error: %s", pm_type, exc)
-
-    return {
-        "methods": [
-            {
-                "id": pm.id,
-                "type": pm.type,
-                "card": pm.card.to_dict() if pm.type == "card" and pm.card else None,
-                "us_bank_account": (
-                    pm.us_bank_account.to_dict()
-                    if pm.type == "us_bank_account" and pm.us_bank_account
-                    else None
-                ),
-                "created": pm.created,
-            }
-            for pm in methods
-        ]
-    }
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/payments/methods/{pm_id}
-# ---------------------------------------------------------------------------
-
-@router.delete("/methods/{pm_id}", operation_id="api_delete_payment_method")
-def delete_method(
-    pm_id: str,
-    token: str | None = Depends(oauth2_scheme),
-) -> dict:
-    """Detach (remove) a saved payment method from the Stripe customer."""
-    _init_stripe()
-    try:
-        stripe.PaymentMethod.detach(pm_id)
-    except stripe.StripeError as exc:
-        logger.error("Stripe detach error: %s", exc)
-        raise HTTPException(status_code=402, detail=str(exc)) from None
-
-    return {"status": "detached", "pm_id": pm_id}
+# NOTE: ``GET /api/payments/methods`` and ``DELETE /api/payments/methods/{pm_id}``
+# were removed 2026-08-04. They were unauthenticated (leaking card brand/last4
+# and bank details for any Stripe customer id, and detaching any payment
+# method) and had no production caller — the payment-methods UI has always used
+# the portal router's authenticated ``/payments/methods``.
 
 
 # ---------------------------------------------------------------------------
@@ -502,43 +624,125 @@ def pay_invoice(
 # Webhook helper (called from gdx_dispatch/routers/stripe_webhook.py)
 # ---------------------------------------------------------------------------
 
+def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
+    """Void the Payment row recorded for ``reference`` and re-open the invoice.
+
+    Money that arrived can leave again: an ACH debit can be returned days later
+    (R01 insufficient funds, R10 unauthorized), a card charge can be refunded,
+    a customer can dispute. Recording only the arrival is how books drift —
+    the invoice reads paid, dunning stops chasing, and the cash is gone.
+
+    Voiding (rather than deleting) keeps the history; ``_recalculate_invoice``
+    excludes voided payments, so the balance comes back and the status flips
+    off "paid" on its own.
+    """
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    if not reference:
+        return {"status": "no_reference"}
+
+    payment = db.scalars(
+        _select(Payment).where(Payment.reference == reference, Payment.voided_at.is_(None))
+    ).first()
+    if payment is None:
+        # Nothing recorded for this charge (e.g. the reversal arrived before we
+        # ever saw the success). Not an error.
+        return {"status": "no_payment_to_reverse", "reference": reference}
+
+    payment.voided_at = datetime.now(timezone.utc)
+    # Flush explicitly: _recalculate_invoice SUMs non-voided payments with a
+    # SELECT, and on an autoflush=False session the pending void would not be
+    # visible to it — the balance would come back unchanged and the invoice
+    # would stay "paid" with the money gone.
+    db.flush()
+    invoice = db.get(Invoice, payment.invoice_id)
+    if invoice is not None:
+        _recalculate_invoice(invoice, db)
+        # _recalculate_invoice only ever flips an invoice TO "paid"; there is
+        # no reverse edge, so an invoice whose payment just got voided keeps
+        # reading "paid" with a positive balance. Un-pay it explicitly, back
+        # to "sent" (it was, in fact, sent to the customer) so it re-enters
+        # aging and dunning.
+        if invoice.status == "paid" and float(invoice.balance_due or 0) > 0:
+            from gdx_dispatch.modules.ledger.service import transition_invoice_status
+
+            transition_invoice_status(db, invoice, "sent", actor="stripe-webhook")
+            invoice.paid_at = None
+    db.commit()
+    logger.warning(
+        "payment_reversed reference=%s invoice=%s reason=%s — invoice re-opened",
+        reference, payment.invoice_id, reason,
+    )
+    return {"status": "reversed", "invoice_id": str(payment.invoice_id), "reason": reason}
+
+
 def handle_payment_webhook(event: dict, db: Session) -> dict:
     """Process Stripe payment events from the webhook router.
 
-    This function is called by the existing stripe_webhook router after
-    deduplication. It handles per-invoice payment lifecycle events.
-
-    Returns a dict with ``{"status": ...}`` for logging/response purposes.
+    Raises on unexpected failure — the router turns that into a 500 so Stripe
+    retries with backoff. Swallowing the error and returning 200 (the pre-
+    2026-08-04 behavior) tells Stripe the event was handled and it is never
+    redelivered, so a transient DB failure silently loses a payment.
     """
     event_type: str = event.get("type", "")
     data: dict = event.get("data", {}).get("object", {})
 
     if event_type == "payment_intent.succeeded":
         invoice_id: str = (data.get("metadata") or {}).get("invoice_id", "")
-        if invoice_id:
-            try:
-                invoice = db.get(Invoice, UUID(invoice_id))
-                if invoice and invoice.deleted_at is None and invoice.status != "paid":
-                    _mark_invoice_paid(invoice, db, external_ref=data.get("id"), method="card", amount=(data.get("amount_received") or 0) / 100.0)
-                    logger.info("Invoice %s marked paid via webhook", invoice_id)
-                    # Receipt email placeholder — wire up notification service here
-                    # send_receipt_email(invoice)
-                    return {"status": "paid", "invoice_id": invoice_id}
-            except Exception as exc:
-                logger.error("handle_payment_webhook succeeded error: %s", exc)
-                return {"status": "error", "detail": str(exc)}
-        return {"status": "no_invoice_id"}
+        if not invoice_id:
+            return {"status": "no_invoice_id"}
+        # ACH settles asynchronously (1-2 business days), so this webhook —
+        # not /confirm — is how most bank payments get recorded. Label the
+        # method from the intent instead of assuming "card", or every ACH
+        # payment lands in the books as a card payment.
+        pm_types = data.get("payment_method_types") or []
+        method = "ach" if "us_bank_account" in pm_types else "card"
+        invoice = db.get(Invoice, UUID(invoice_id))
+        if invoice is None or invoice.deleted_at is not None:
+            return {"status": "no_invoice", "invoice_id": invoice_id}
+        # NOTE: no `status != "paid"` guard. _mark_invoice_paid is idempotent
+        # on (invoice_id, reference), so a redelivery is a no-op, but a SECOND
+        # genuine payment on an already-paid invoice must still be recorded —
+        # otherwise the customer's money sits at Stripe with no Payment row
+        # and nothing to refund against.
+        _mark_invoice_paid(
+            invoice, db,
+            external_ref=data.get("id"),
+            method=method,
+            amount=(data.get("amount_received") or 0) / 100.0,
+        )
+        logger.info("Invoice %s marked paid via webhook", invoice_id)
+        # Receipt email placeholder — wire up notification service here
+        # send_receipt_email(invoice)
+        return {"status": "paid", "invoice_id": invoice_id}
+
+    # Money leaving again. `charge.*` events carry the PaymentIntent id in
+    # `payment_intent`; that is the same value stored as Payment.reference.
+    if event_type in ("charge.refunded", "charge.dispute.created", "charge.failed"):
+        return _reverse_recorded_payment(
+            db, str(data.get("payment_intent") or ""), event_type
+        )
 
     if event_type == "payment_intent.payment_failed":
         invoice_id = (data.get("metadata") or {}).get("invoice_id", "")
-        failure_msg = data.get("last_payment_error", {}).get("message", "unknown")
+        failure_msg = (data.get("last_payment_error") or {}).get("message", "unknown")
         logger.warning(
             "PaymentIntent failed for invoice %s: %s",
             invoice_id,
             failure_msg,
         )
+        # An ACH return can arrive as payment_failed AFTER a succeeded event,
+        # so reverse anything already recorded for this intent.
+        reversal = _reverse_recorded_payment(db, str(data.get("id") or ""), event_type)
         # Tenant notification placeholder — wire up notification service here
         # notify_tenant_payment_failed(invoice_id, failure_msg)
-        return {"status": "failed", "invoice_id": invoice_id, "reason": failure_msg}
+        return {
+            "status": "failed",
+            "invoice_id": invoice_id,
+            "reason": failure_msg,
+            "reversal": reversal["status"],
+        }
 
     return {"status": "ignored"}

@@ -93,6 +93,43 @@ def _current_portal_user(
     return user
 
 
+def _require_own_unpaid_invoice(db: Session, user: CustomerUser, invoice_ref: Any) -> Any:
+    """Resolve an invoice the portal user is actually allowed to pay.
+
+    Enforces the authorization the charge path was missing: the invoice must
+    exist, belong to THIS portal user's customer, not be void, and still owe
+    money. Returns the Invoice row so the caller can derive the amount from it
+    rather than trusting a client-supplied figure.
+    """
+    from uuid import UUID as _UUID  # noqa: PLC0415
+
+    from gdx_dispatch.models.tenant_models import Invoice  # noqa: PLC0415
+
+    if not invoice_ref:
+        raise HTTPException(status_code=422, detail="metadata.invoice_id is required")
+    try:
+        invoice_uuid = _UUID(str(invoice_ref))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="Invalid invoice_id") from None
+
+    invoice = db.get(Invoice, invoice_uuid)
+    if invoice is None or invoice.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if str(invoice.customer_id) != str(user.customer_id):
+        # Same 404 as a missing invoice — don't confirm that someone else's
+        # invoice id is real.
+        logger.warning(
+            "portal_charge_invoice_ownership_denied user=%s customer=%s invoice=%s",
+            getattr(user, "id", "?"), getattr(user, "customer_id", "?"), invoice_uuid,
+        )
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    if float(invoice.balance_due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
+    return invoice
+
+
 def _require_stripe_customer(user: CustomerUser) -> str:
     """Return the Stripe customer ID or raise 400 if not set."""
     stripe_cid = getattr(user, "stripe_customer_id", None)
@@ -246,8 +283,22 @@ def charge_method(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Charge a previously saved payment method off-session."""
+    """Charge a previously saved payment method off-session.
+
+    The invoice named in ``metadata.invoice_id`` must belong to the logged-in
+    portal user, and the amount charged is that invoice's balance due.
+
+    Before 2026-08-04 both came from the request body with no ownership check:
+    authentication was enforced but authorization was not, so any portal
+    customer could charge their own saved card and have the payment recorded
+    against ANY invoice in the system — including another customer's.
+    """
     stripe_cid = _require_stripe_customer(user)
+
+    invoice = _require_own_unpaid_invoice(db, user, (body.metadata or {}).get("invoice_id"))
+    amount_cents = int(round(float(invoice.balance_due or 0) * 100))
+    metadata = {**(body.metadata or {}), "invoice_id": str(invoice.id)}
+
     # Prevent double-charge on retry/double-click: forward an idempotency key to
     # Stripe (Idempotency-Key header wins; ChargeRequest.idempotency_key fallback).
     _idem = idempotency_key or body.idempotency_key
@@ -255,9 +306,9 @@ def charge_method(
         intent = charge_saved_method(
             customer_id=stripe_cid,
             payment_method_id=method_id,
-            amount_cents=body.amount_cents,
+            amount_cents=amount_cents,
             currency=body.currency,
-            metadata=body.metadata,
+            metadata=metadata,
             idempotency_key=_idem,
         )
     except stripe.error.StripeError as exc:
@@ -272,22 +323,16 @@ def charge_method(
     # GL S6 (bug #1, spec §5.3 Stripe consolidation): the portal charge was
     # the last money path moving processor funds with NO Payment row. Route
     # through the one recording function — idempotent on the intent id.
-    invoice_ref = (body.metadata or {}).get("invoice_id")
-    if intent.status == "succeeded" and invoice_ref:
+    if intent.status == "succeeded":
         try:
-            from uuid import UUID as _UUID
-
             from gdx_dispatch.core.payments import _mark_invoice_paid
-            from gdx_dispatch.models.tenant_models import Invoice
 
-            invoice = db.get(Invoice, _UUID(str(invoice_ref)))
-            if invoice is not None and invoice.deleted_at is None:
-                _mark_invoice_paid(
-                    invoice, db,
-                    external_ref=intent.id,
-                    method="card",
-                    amount=(intent.amount or 0) / 100.0,
-                )
+            _mark_invoice_paid(
+                invoice, db,
+                external_ref=intent.id,
+                method="card",
+                amount=(intent.amount or 0) / 100.0,
+            )
         except Exception:
             # The charge SUCCEEDED at Stripe — never 500 the customer for a
             # local recording failure; the log line is the reconciliation cue.

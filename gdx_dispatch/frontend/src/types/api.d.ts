@@ -1935,6 +1935,14 @@ export interface paths {
         /**
          * Charge Method
          * @description Charge a previously saved payment method off-session.
+         *
+         *     The invoice named in ``metadata.invoice_id`` must belong to the logged-in
+         *     portal user, and the amount charged is that invoice's balance due.
+         *
+         *     Before 2026-08-04 both came from the request body with no ownership check:
+         *     authentication was enforced but authorization was not, so any portal
+         *     customer could charge their own saved card and have the payment recorded
+         *     against ANY invoice in the system — including another customer's.
          */
         post: operations["charge_method_payments_methods__method_id__charge_post"];
         delete?: never;
@@ -15243,17 +15251,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        get: operations["proxy_to_plugin_host_api_plugins__path__get"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        put: operations["proxy_to_plugin_host_api_plugins__path__get"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        post: operations["proxy_to_plugin_host_api_plugins__path__get"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        delete: operations["proxy_to_plugin_host_api_plugins__path__get"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        patch: operations["proxy_to_plugin_host_api_plugins__path__get"];
         trace?: never;
     };
     "/api/plugins": {
@@ -15264,17 +15272,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins_post"];
+        get: operations["proxy_to_plugin_host_api_plugins_get"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins_post"];
+        put: operations["proxy_to_plugin_host_api_plugins_get"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins_post"];
+        post: operations["proxy_to_plugin_host_api_plugins_get"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins_post"];
+        delete: operations["proxy_to_plugin_host_api_plugins_get"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins_post"];
+        patch: operations["proxy_to_plugin_host_api_plugins_get"];
         trace?: never;
     };
     "/api/admin/plugins": {
@@ -17142,10 +17150,11 @@ export interface paths {
         put?: never;
         /**
          * Create Intent
-         * @description Create a Stripe PaymentIntent for an invoice.
+         * @description Create a Stripe PaymentIntent for the invoice the caller's token names.
          *
-         *     Idempotency key ``gdx-pi-{invoice_id}`` prevents duplicate charges if the
-         *     client retries the same request.
+         *     The amount is the invoice's balance due — the client's ``amount`` is
+         *     ignored. ``metadata.invoice_id`` binds the intent to this invoice so
+         *     ``confirm`` can refuse to credit it anywhere else.
          */
         post: operations["create_intent_api_payments_create_intent_post"];
         delete?: never;
@@ -17167,8 +17176,11 @@ export interface paths {
          * Confirm Payment
          * @description Confirm payment after Stripe.js reports success.
          *
-         *     Retrieves the PaymentIntent from Stripe and, if its status is
-         *     ``succeeded``, marks the local invoice as paid.
+         *     The PaymentIntent must carry ``metadata.invoice_id`` matching the invoice
+         *     the caller's token resolves to. Without that check a succeeded intent could
+         *     be replayed against any invoice — idempotency is keyed on
+         *     ``(invoice_id, reference)``, so one real payment could settle a different
+         *     invoice as well as its own.
          */
         post: operations["confirm_payment_api_payments_confirm_post"];
         delete?: never;
@@ -17190,8 +17202,10 @@ export interface paths {
          * Ach Setup
          * @description Create a SetupIntent so Stripe.js can collect ACH bank account details.
          *
-         *     Returns a ``client_secret`` that the frontend passes to
-         *     ``stripe.collectBankAccountForSetup()``.
+         *     Scoped to an invoice: previously this took only an email, so anyone could
+         *     mint unlimited SetupIntents. The ``metadata.invoice_id`` stamped here is
+         *     what ``ach/charge`` later checks to prove the collected bank account was
+         *     gathered for THIS invoice.
          */
         post: operations["ach_setup_api_payments_ach_setup_post"];
         delete?: never;
@@ -17211,53 +17225,19 @@ export interface paths {
         put?: never;
         /**
          * Ach Charge
-         * @description Charge a saved ACH bank account payment method.
+         * @description Charge the bank account collected for this invoice.
          *
          *     Creates a PaymentIntent with ``confirm=True`` so the charge is initiated
          *     immediately. ACH payments are typically pending for 1-2 business days.
+         *
+         *     ``setup_intent_id`` is required and must be a SetupIntent minted by
+         *     ``ach/setup`` for THIS invoice that collected THIS payment method. That
+         *     chain is the authorization: without it, knowing any ``pm_`` id was enough
+         *     to debit an unrelated person's bank account (an unauthorized ACH debit,
+         *     which is a NACHA violation regardless of where the money lands).
          */
         post: operations["ach_charge_api_payments_ach_charge_post"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/payments/methods": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Methods
-         * @description List all saved payment methods (card + ACH) for a Stripe customer.
-         */
-        get: operations["api_list_payment_methods"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/payments/methods/{pm_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete Method
-         * @description Detach (remove) a saved payment method from the Stripe customer.
-         */
-        delete: operations["api_delete_payment_method"];
         options?: never;
         head?: never;
         patch?: never;
@@ -21452,10 +21432,14 @@ export interface components {
         ACHChargeRequest: {
             /** Payment Method Id */
             payment_method_id: string;
+            /** Setup Intent Id */
+            setup_intent_id?: string | null;
+            /** Invoice Token */
+            invoice_token?: string | null;
             /** Invoice Id */
-            invoice_id: string;
+            invoice_id?: string | null;
             /** Amount */
-            amount: number;
+            amount?: number | null;
         };
         /**
          * AITask
@@ -22923,37 +22907,6 @@ export interface components {
             /** Note */
             note?: string | null;
         };
-        /**
-         * CloseoutPartToOrder
-         * @description A part the job still NEEDS — the office orders it. Distinct from
-         *     CloseoutPart, which attests a part already USED: these land as
-         *     job_parts_needed rows with status='needed' (the Parts-to-Order queue),
-         *     never as inventory decrements or billable used-part lines.
-         *
-         *     'critical' is deliberately NOT accepted here: the C5 critical-part
-         *     dispatcher push fires only on the Parts card path (add_part_needed),
-         *     so a closeout-path critical would skip the fan-out silently — the one
-         *     urgency level where silence is the bug. Critical asks go through the
-         *     job screen's Parts card until the push is wired here too.
-         */
-        CloseoutPartToOrder: {
-            /** Name */
-            name: string;
-            /** Sku */
-            sku?: string | null;
-            /**
-             * Qty
-             * @default 1
-             */
-            qty: number;
-            /**
-             * Urgency
-             * @default normal
-             */
-            urgency: string;
-            /** Note */
-            note?: string | null;
-        };
         /** CloseoutPayload */
         CloseoutPayload: {
             /** Parts */
@@ -22978,15 +22931,6 @@ export interface components {
              * @default false
              */
             no_parts_used: boolean;
-            /**
-             * Needs Return Visit
-             * @default false
-             */
-            needs_return_visit: boolean;
-            /** Return Visit Reason */
-            return_visit_reason?: string | null;
-            /** Parts To Order */
-            parts_to_order?: components["schemas"]["CloseoutPartToOrder"][];
         };
         /** CollectionPatchIn */
         CollectionPatchIn: {
@@ -23047,8 +22991,10 @@ export interface components {
         ConfirmPaymentRequest: {
             /** Payment Intent Id */
             payment_intent_id: string;
+            /** Invoice Token */
+            invoice_token?: string | null;
             /** Invoice Id */
-            invoice_id: string;
+            invoice_id?: string | null;
         };
         /** ConnectIn */
         ConnectIn: {
@@ -24493,7 +24439,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 8147d843b96ab885e05da24a42f10a2ab2e6882ded5000d8f864d22f8d7f75ec
+             * @default 85a1b3bfe11442a22ee0d9bc428af4a7ca93269d2c50c70939c29691f39a49ac
              */
             secret: string;
         };
@@ -29578,13 +29524,19 @@ export interface components {
         gdx_dispatch__core__payments__ACHSetupRequest: {
             /** Customer Email */
             customer_email: string;
+            /** Invoice Token */
+            invoice_token?: string | null;
+            /** Invoice Id */
+            invoice_id?: string | null;
         };
         /** CreateIntentRequest */
         gdx_dispatch__core__payments__CreateIntentRequest: {
+            /** Invoice Token */
+            invoice_token?: string | null;
             /** Invoice Id */
-            invoice_id: string;
+            invoice_id?: string | null;
             /** Amount */
-            amount: number;
+            amount?: number | null;
             /**
              * Currency
              * @default usd
@@ -64616,7 +64568,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__get: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64649,7 +64601,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__get: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64682,7 +64634,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__get: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64715,7 +64667,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__get: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64748,7 +64700,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__get: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64781,7 +64733,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -64813,7 +64765,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -64845,7 +64797,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -64877,7 +64829,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -64909,7 +64861,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_get: {
         parameters: {
             query?: {
                 path?: string;
@@ -68818,7 +68770,9 @@ export interface operations {
     };
     ach_setup_api_payments_ach_setup_post: {
         parameters: {
-            query?: never;
+            query?: {
+                request?: unknown;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -68865,72 +68819,6 @@ export interface operations {
                 "application/json": components["schemas"]["ACHChargeRequest"];
             };
         };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    api_list_payment_methods: {
-        parameters: {
-            query: {
-                customer_id: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    api_delete_payment_method: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                pm_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

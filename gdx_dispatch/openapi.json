@@ -6720,7 +6720,7 @@
           "payments"
         ],
         "summary": "Charge Method",
-        "description": "Charge a previously saved payment method off-session.",
+        "description": "Charge a previously saved payment method off-session.\n\nThe invoice named in ``metadata.invoice_id`` must belong to the logged-in\nportal user, and the amount charged is that invoice's balance due.\n\nBefore 2026-08-04 both came from the request body with no ownership check:\nauthentication was enforced but authorization was not, so any portal\ncustomer could charge their own saved card and have the payment recorded\nagainst ANY invoice in the system \u2014 including another customer's.",
         "operationId": "charge_method_payments_methods__method_id__charge_post",
         "security": [
           {
@@ -58277,12 +58277,63 @@
       }
     },
     "/api/plugins/{path}": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58333,58 +58384,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58435,7 +58435,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58486,7 +58486,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58534,12 +58534,64 @@
       }
     },
     "/api/plugins": {
+      "get": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58591,59 +58643,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58695,7 +58695,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58747,7 +58747,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -65223,13 +65223,8 @@
           "payments"
         ],
         "summary": "Create Intent",
-        "description": "Create a Stripe PaymentIntent for an invoice.\n\nIdempotency key ``gdx-pi-{invoice_id}`` prevents duplicate charges if the\nclient retries the same request.",
+        "description": "Create a Stripe PaymentIntent for the invoice the caller's token names.\n\nThe amount is the invoice's balance due \u2014 the client's ``amount`` is\nignored. ``metadata.invoice_id`` binds the intent to this invoice so\n``confirm`` can refuse to credit it anywhere else.",
         "operationId": "create_intent_api_payments_create_intent_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "request",
@@ -65282,13 +65277,8 @@
           "payments"
         ],
         "summary": "Confirm Payment",
-        "description": "Confirm payment after Stripe.js reports success.\n\nRetrieves the PaymentIntent from Stripe and, if its status is\n``succeeded``, marks the local invoice as paid.",
+        "description": "Confirm payment after Stripe.js reports success.\n\nThe PaymentIntent must carry ``metadata.invoice_id`` matching the invoice\nthe caller's token resolves to. Without that check a succeeded intent could\nbe replayed against any invoice \u2014 idempotency is keyed on\n``(invoice_id, reference)``, so one real payment could settle a different\ninvoice as well as its own.",
         "operationId": "confirm_payment_api_payments_confirm_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "request",
@@ -65341,17 +65331,27 @@
           "payments"
         ],
         "summary": "Ach Setup",
-        "description": "Create a SetupIntent so Stripe.js can collect ACH bank account details.\n\nReturns a ``client_secret`` that the frontend passes to\n``stripe.collectBankAccountForSetup()``.",
+        "description": "Create a SetupIntent so Stripe.js can collect ACH bank account details.\n\nScoped to an invoice: previously this took only an email, so anyone could\nmint unlimited SetupIntents. The ``metadata.invoice_id`` stamped here is\nwhat ``ach/charge`` later checks to prove the collected bank account was\ngathered for THIS invoice.",
         "operationId": "ach_setup_api_payments_ach_setup_post",
+        "parameters": [
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/gdx_dispatch__core__payments__ACHSetupRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -65359,8 +65359,8 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "type": "object",
+                  "additionalProperties": true,
                   "title": "Response Ach Setup Api Payments Ach Setup Post"
                 }
               }
@@ -65376,12 +65376,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/payments/ach/charge": {
@@ -65390,13 +65385,8 @@
           "payments"
         ],
         "summary": "Ach Charge",
-        "description": "Charge a saved ACH bank account payment method.\n\nCreates a PaymentIntent with ``confirm=True`` so the charge is initiated\nimmediately. ACH payments are typically pending for 1-2 business days.",
+        "description": "Charge the bank account collected for this invoice.\n\nCreates a PaymentIntent with ``confirm=True`` so the charge is initiated\nimmediately. ACH payments are typically pending for 1-2 business days.\n\n``setup_intent_id`` is required and must be a SetupIntent minted by\n``ach/setup`` for THIS invoice that collected THIS payment method. That\nchain is the authorization: without it, knowing any ``pm_`` id was enough\nto debit an unrelated person's bank account (an unauthorized ACH debit,\nwhich is a NACHA violation regardless of where the money lands).",
         "operationId": "ach_charge_api_payments_ach_charge_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
         "parameters": [
           {
             "name": "request",
@@ -65426,106 +65416,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Ach Charge Api Payments Ach Charge Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/payments/methods": {
-      "get": {
-        "tags": [
-          "payments"
-        ],
-        "summary": "List Methods",
-        "description": "List all saved payment methods (card + ACH) for a Stripe customer.",
-        "operationId": "api_list_payment_methods",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "customer_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Customer Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Api List Payment Methods"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/payments/methods/{pm_id}": {
-      "delete": {
-        "tags": [
-          "payments"
-        ],
-        "summary": "Delete Method",
-        "description": "Detach (remove) a saved payment method from the Stripe customer.",
-        "operationId": "api_delete_payment_method",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "pm_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Pm Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Api Delete Payment Method"
                 }
               }
             }
@@ -79752,20 +79642,54 @@
             "type": "string",
             "title": "Payment Method Id"
           },
+          "setup_intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setup Intent Id"
+          },
+          "invoice_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Token"
+          },
           "invoice_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Invoice Id"
           },
           "amount": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Amount"
           }
         },
         "type": "object",
         "required": [
-          "payment_method_id",
-          "invoice_id",
-          "amount"
+          "payment_method_id"
         ],
         "title": "ACHChargeRequest"
       },
@@ -84555,15 +84479,32 @@
             "type": "string",
             "title": "Payment Intent Id"
           },
+          "invoice_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Token"
+          },
           "invoice_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Invoice Id"
           }
         },
         "type": "object",
         "required": [
-          "payment_intent_id",
-          "invoice_id"
+          "payment_intent_id"
         ],
         "title": "ConfirmPaymentRequest"
       },
@@ -89379,7 +89320,7 @@
           "secret": {
             "type": "string",
             "title": "Secret",
-            "default": "b1870ce0cd4fbb6a32802b5477787c7096fbbc5c00e38649e6cc1fd84da8575b"
+            "default": "85a1b3bfe11442a22ee0d9bc428af4a7ca93269d2c50c70939c29691f39a49ac"
           }
         },
         "type": "object",
@@ -106120,6 +106061,28 @@
           "customer_email": {
             "type": "string",
             "title": "Customer Email"
+          },
+          "invoice_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Token"
+          },
+          "invoice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Id"
           }
         },
         "type": "object",
@@ -106130,12 +106093,37 @@
       },
       "gdx_dispatch__core__payments__CreateIntentRequest": {
         "properties": {
+          "invoice_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Token"
+          },
           "invoice_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Invoice Id"
           },
           "amount": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Amount"
           },
           "currency": {
@@ -106145,10 +106133,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "invoice_id",
-          "amount"
-        ],
         "title": "CreateIntentRequest"
       },
       "gdx_dispatch__modules__ledger__router__SettingsPatchIn": {
