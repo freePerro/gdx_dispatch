@@ -510,6 +510,38 @@ async function loadReturnVisits() {
   }
 }
 
+// Parts awaiting an order (status='needed' — the state with the "Mark
+// Ordered" button in PartsToOrderView). 'ordered' rows are excluded: they're
+// the office waiting on a supplier, not an action anyone here can take.
+// Closeout free-text parts (PR #267) land in this same queue — note those
+// max out at urgency='urgent' (the closeout path refuses 'critical' so the
+// C5 dispatcher push can't be skipped), so criticals only arrive via the
+// job-screen Parts card.
+const partsToOrder = ref({ needed: 0, critical: 0, urgent: 0 });
+
+async function loadPartsToOrder() {
+  try {
+    // inventory.read is NOT default-granted to dispatcher/sales/accounting
+    // (unlike the sibling queues' jobs.read_all / invoices.read_all), so an
+    // unguarded fetch would be a GUARANTEED 403 on every dashboard load for
+    // those roles — the exact red-console-noise pattern loadRecentActivity's
+    // comment forbids. Check the resolved permission set first; the loader
+    // is cached + inflight-deduped, and hasPermission fails open for admins
+    // whose set hasn't resolved (UX-only — the backend stays the enforcer).
+    await auth.loadPermissions();
+    if (!auth.hasPermission('inventory.read')) return;
+    const rows = await api.get('/api/parts-needed/pending', { suppressErrorToast: true });
+    const needed = (Array.isArray(rows) ? rows : []).filter((p) => p && p.status === 'needed');
+    partsToOrder.value = {
+      needed: needed.length,
+      critical: needed.filter((p) => p.urgency === 'critical').length,
+      urgent: needed.filter((p) => p.urgency === 'urgent').length,
+    };
+  } catch {
+    partsToOrder.value = { needed: 0, critical: 0, urgent: 0 };
+  }
+}
+
 // 2026-05-09 (UX sprint Phase 10) — loading flag prevents KPI tiles from
 // flashing "0" → real-value, which looked to users like data dropped to zero.
 // Skeleton renders in place of the formatted value while summary is in flight.
@@ -588,6 +620,24 @@ const attentionItems = computed(() => {
       severity: 'warn',
       text: `${rv} return visit${rv === 1 ? '' : 's'} from completed jobs awaiting scheduling`,
       link: '/dispatch',
+    });
+  }
+  const pto = partsToOrder.value;
+  if (pto.needed > 0) {
+    // A critical part is a tech stuck on a job — escalate the row. Urgent
+    // (the strongest signal a closeout can send) is named in the copy so it
+    // doesn't render identically to normal.
+    const flags = [
+      pto.critical > 0 ? `${pto.critical} critical` : null,
+      pto.urgent > 0 ? `${pto.urgent} urgent` : null,
+    ].filter(Boolean).join(', ');
+    items.push({
+      id: 'parts-to-order',
+      type: 'Parts',
+      severity: pto.critical > 0 ? 'danger' : 'warn',
+      text: `${pto.needed} part${pto.needed === 1 ? '' : 's'} awaiting order`
+        + (flags ? ` — ${flags}` : ''),
+      link: '/parts-to-order',
     });
   }
   if (toNumber(s.open_jobs) > 100) {
@@ -942,6 +992,7 @@ async function loadDashboard() {
     loadCash(),
     loadReadyForBilling(),
     loadReturnVisits(),
+    loadPartsToOrder(),
     loadNextActions(),
   ]);
 }

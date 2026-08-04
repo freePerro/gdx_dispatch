@@ -10,7 +10,14 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 
 const mockGet = vi.fn();
-const mockAuth = { isAdmin: true, role: 'admin' };
+const mockAuth = {
+  isAdmin: true,
+  role: 'admin',
+  loadPermissions: vi.fn().mockResolvedValue(new Set()),
+  // Per-test override point: the parts queue checks inventory.read before
+  // fetching (it is not default-granted to dispatcher/sales/accounting).
+  hasPermission: vi.fn().mockReturnValue(true),
+};
 
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({ get: mockGet, post: vi.fn(), patch: vi.fn() }),
@@ -101,5 +108,84 @@ describe('dashboard attention queue: return visits', () => {
     await flushPromises();
     expect(attentionTexts(w).some((t) => t.includes('return visit'))).toBe(false);
     expect(w.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
+  });
+});
+
+// Rows as /api/parts-needed/pending serializes them (status needed|ordered,
+// urgency normal|urgent|critical).
+const PART = (over = {}) => ({
+  id: `part-${Math.random()}`,
+  part_name: 'Torsion spring 0.250x2x33',
+  status: 'needed',
+  urgency: 'normal',
+  ...over,
+});
+
+describe('dashboard attention queue: parts to order', () => {
+  it('counts only status=needed — ordered rows are the supplier\'s queue, not ours', async () => {
+    const w = mountDashboard({
+      '/api/parts-needed/pending': [PART(), PART(), PART({ status: 'ordered' })],
+    });
+    await flushPromises();
+    const texts = attentionTexts(w);
+    expect(texts.some((t) => t.includes('2 parts awaiting order'))).toBe(true);
+    expect(texts.some((t) => t.includes('critical'))).toBe(false);
+  });
+
+  it('calls out criticals — a critical part is a tech stuck on a job', async () => {
+    const w = mountDashboard({
+      '/api/parts-needed/pending': [PART({ urgency: 'critical' }), PART()],
+    });
+    await flushPromises();
+    expect(attentionTexts(w).some((t) => t.includes('2 parts awaiting order — 1 critical'))).toBe(true);
+  });
+
+  it('names urgent parts — the strongest signal a closeout can send', async () => {
+    const w = mountDashboard({
+      '/api/parts-needed/pending': [
+        PART({ urgency: 'critical' }),
+        PART({ urgency: 'urgent' }),
+        PART({ urgency: 'urgent' }),
+      ],
+    });
+    await flushPromises();
+    expect(
+      attentionTexts(w).some((t) => t.includes('3 parts awaiting order — 1 critical, 2 urgent')),
+    ).toBe(true);
+  });
+
+  it('does not fetch at all without inventory.read — no guaranteed 403 noise', async () => {
+    mockAuth.hasPermission.mockImplementation((key) => key !== 'inventory.read');
+    try {
+      const w = mountDashboard({
+        '/api/parts-needed/pending': [PART()],
+      });
+      await flushPromises();
+      expect(attentionTexts(w).some((t) => t.includes('awaiting order'))).toBe(false);
+      expect(mockGet.mock.calls.some(([url]) => url.startsWith('/api/parts-needed'))).toBe(false);
+    } finally {
+      mockAuth.hasPermission.mockReturnValue(true);
+    }
+  });
+
+  it('a critical ONLY counts while still needed (ordered critical is handled)', async () => {
+    const w = mountDashboard({
+      '/api/parts-needed/pending': [PART({ urgency: 'critical', status: 'ordered' }), PART()],
+    });
+    await flushPromises();
+    const texts = attentionTexts(w);
+    expect(texts.some((t) => t.includes('1 part awaiting order'))).toBe(true);
+    expect(texts.some((t) => t.includes('critical'))).toBe(false);
+  });
+
+  it('renders nothing when the queue is empty and survives a failing fetch', async () => {
+    const w1 = mountDashboard({ '/api/parts-needed/pending': [] });
+    await flushPromises();
+    expect(attentionTexts(w1).some((t) => t.includes('awaiting order'))).toBe(false);
+
+    const w2 = mountDashboard({}, { reject: ['/api/parts-needed/pending'] });
+    await flushPromises();
+    expect(attentionTexts(w2).some((t) => t.includes('awaiting order'))).toBe(false);
+    expect(w2.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
   });
 });
