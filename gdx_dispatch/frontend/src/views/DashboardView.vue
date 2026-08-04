@@ -236,6 +236,17 @@
                 {{ cash.warranty_callbacks.filed }} filed of {{ cash.warranty_callbacks.completed_jobs }} completed
               </div>
             </div>
+            <!-- The other direction of cash: open vendor bills (A/P). The
+                 card showed only what customers owe US — money we owe
+                 suppliers was invisible on the dashboard entirely. -->
+            <div v-if="payables.loaded" class="funnel-tile">
+              <div class="funnel-tile-label">A/P — Open Vendor Bills</div>
+              <div class="funnel-tile-value" data-testid="ap-open">{{ formatCurrency(payables.total) }}</div>
+              <div class="funnel-tile-sub">
+                {{ payables.count }} open bill{{ payables.count === 1 ? '' : 's' }}
+                <template v-if="payables.next_due"> · next due {{ payables.next_due }}</template>
+              </div>
+            </div>
           </div>
         </template>
       </Card>
@@ -563,6 +574,53 @@ const activityIsAuditBacked = ref(false);
 const todaysJobs = ref([]);
 
 // "Needs Attention" — exception-based items for the owner
+// Vendor bills (auto-ingested from email/statements since v1.22–v1.29):
+// bills the parser landed that no one has reviewed, plus the open-payables
+// picture for the Cash & Risk card. vendor_invoices.read is default-granted
+// to every office role, but check anyway so a technician (or a stripped
+// custom role) never fires a guaranteed 403.
+const vendorBillsNeedsReview = ref(0);
+const payables = ref({ loaded: false, count: 0, total: 0, next_due: null });
+
+async function loadVendorBills() {
+  try {
+    await auth.loadPermissions();
+    if (!auth.hasPermission('vendor_invoices.read')) return;
+    // status=open is load-bearing: reviewed_at is only stamped by the
+    // line-by-line confirm flow, and "Mark paid" never sets it — without the
+    // status clause every paid-but-unreviewed bill counts FOREVER and the
+    // badge is permanent on day one (adversarial audit catch). An open bill
+    // awaiting review is a real queue; a paid one is history.
+    const fetches = [
+      api.get('/api/vendor-invoices?needs_review=true&status=open', { suppressErrorToast: true }),
+    ];
+    // The A/P tile lives in the Cash & Risk card, which only renders for
+    // canSeePipeline roles — don't fetch what can't be shown (viewer holds
+    // vendor_invoices.read but never sees the card).
+    if (canSeePipeline.value) {
+      fetches.push(api.get('/api/vendor-invoices/payables', { suppressErrorToast: true }));
+    }
+    const [review, open] = await Promise.all(fetches);
+    vendorBillsNeedsReview.value = Array.isArray(review) ? review.length : 0;
+    if (canSeePipeline.value) {
+      const rows = Array.isArray(open) ? open : [];
+      // next_due computed here, not read off row order — correctness must
+      // not depend on the server's ORDER BY surviving a refactor.
+      const dued = rows.map((b) => b?.due_date).filter(Boolean).sort();
+      payables.value = {
+        loaded: true,
+        count: rows.length,
+        // Decimal serializes as a string — toNumber coerces.
+        total: rows.reduce((sum, b) => sum + toNumber(b?.total), 0),
+        next_due: dued[0] || null,
+      };
+    }
+  } catch {
+    vendorBillsNeedsReview.value = 0;
+    payables.value = { loaded: false, count: 0, total: 0, next_due: null };
+  }
+}
+
 // Persisted next-actions — the nags background loops file (billing follow-up,
 // reminders-off, email-sync alarm). The channel existed since PR5 but no SPA
 // surface ever read GET /api/next-actions (found 2026-08-04: $13K of
@@ -656,6 +714,19 @@ const attentionItems = computed(() => {
       severity: 'info',
       text: `${smsN} unread text message${smsN === 1 ? '' : 's'}`,
       link: '/phone-com/messages',
+    });
+  }
+  // Auto-ingested vendor bills nobody has reviewed. Unreviewed bills are
+  // unbooked cost: the sweep files them, but until a person confirms them
+  // they're invisible to job costing and the payables picture is wrong.
+  const vbr = toNumber(vendorBillsNeedsReview.value);
+  if (vbr > 0) {
+    items.push({
+      id: 'vendor-bills-review',
+      type: 'Vendor Bills',
+      severity: 'warn',
+      text: `${vbr} vendor bill${vbr === 1 ? '' : 's'} awaiting review`,
+      link: '/vendor-bills',
     });
   }
   const pto = partsToOrder.value;
@@ -1034,6 +1105,7 @@ async function loadDashboard() {
     loadReadyForBilling(),
     loadReturnVisits(),
     loadPartsToOrder(),
+    loadVendorBills(),
     loadNextActions(),
     // One refresh each so the dashboard is correct before the sidebar's 60s
     // poll ticks. Both fetchCounts swallow their own errors and dedupe

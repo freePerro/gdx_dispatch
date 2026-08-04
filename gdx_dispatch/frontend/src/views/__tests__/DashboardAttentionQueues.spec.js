@@ -186,6 +186,94 @@ describe('dashboard attention queue: unread comms', () => {
   });
 });
 
+// Minimal cash-risk payload so the Cash & Risk card (home of the A/P tile)
+// renders. Shape mirrors /api/reports/cash-risk.
+const CASH_RISK = {
+  ar_aging: {
+    buckets: {
+      current: { label: 'Current (0-30)', count: 0, total: 0 },
+    },
+    total_outstanding: 0,
+  },
+  gross_margin: { margin_pct: null, total_sell: 0, total_cost: 0, net_profit: 0, estimates_with_manual_lines: 0, window_days: 30 },
+  warranty_callbacks: { rate: null, filed: 0, completed_jobs: 0, window_days: 30 },
+};
+
+// Rows as /api/vendor-invoices serializes them (InvoiceSummaryOut; Decimal
+// totals arrive as strings).
+const BILL = (over = {}) => ({
+  id: `vb-${Math.random()}`,
+  vendor_name_raw: 'Midland Door Solutions',
+  invoice_number: 'INV-99',
+  total: '100.00',
+  status: 'open',
+  due_date: null,
+  reviewed_at: null,
+  ...over,
+});
+
+describe('dashboard attention queue: vendor bills', () => {
+  it('counts bills awaiting review — and only OPEN ones (status=open is load-bearing)', async () => {
+    const w = mountDashboard({
+      '/api/vendor-invoices': [BILL(), BILL()],
+      '/api/vendor-invoices/payables': [],
+    });
+    await flushPromises();
+    expect(attentionTexts(w).some((t) => t.includes('2 vendor bills awaiting review'))).toBe(true);
+    // Without status=open, paid-but-never-line-confirmed bills count forever
+    // ("Mark paid" doesn't stamp reviewed_at) and the badge is permanent.
+    const call = mockGet.mock.calls.find(([url]) => url.startsWith('/api/vendor-invoices?'));
+    expect(call[0]).toContain('needs_review=true');
+    expect(call[0]).toContain('status=open');
+  });
+
+  it('sums open payables into the Cash & Risk A/P tile; next due is computed, not order-dependent', async () => {
+    const w = mountDashboard({
+      '/api/reports/cash-risk': CASH_RISK,
+      '/api/vendor-invoices': [],
+      '/api/vendor-invoices/payables': [
+        // Deliberately NOT soonest-first — the client must not trust order.
+        BILL({ total: '49.99', due_date: '2026-08-20' }),
+        BILL({ total: '150.00', due_date: '2026-08-10' }),
+        BILL({ total: '0.01' }),
+      ],
+    });
+    await flushPromises();
+    const tile = w.get('[data-testid="ap-open"]');
+    expect(tile.text()).toBe('$200');
+    expect(w.text()).toContain('3 open bills');
+    expect(w.text()).toContain('next due 2026-08-10');
+  });
+
+  it('does not fetch without vendor_invoices.read', async () => {
+    mockAuth.hasPermission.mockImplementation((key) => key !== 'vendor_invoices.read');
+    try {
+      const w = mountDashboard({
+        '/api/reports/cash-risk': CASH_RISK,
+        '/api/vendor-invoices': [BILL()],
+        '/api/vendor-invoices/payables': [BILL()],
+      });
+      await flushPromises();
+      expect(attentionTexts(w).some((t) => t.includes('vendor bill'))).toBe(false);
+      expect(w.find('[data-testid="ap-open"]').exists()).toBe(false);
+      expect(mockGet.mock.calls.some(([url]) => url.startsWith('/api/vendor-invoices'))).toBe(false);
+    } finally {
+      mockAuth.hasPermission.mockReturnValue(true);
+    }
+  });
+
+  it('a failing fetch hides both surfaces without taking the dashboard down', async () => {
+    const w = mountDashboard(
+      { '/api/reports/cash-risk': CASH_RISK },
+      { reject: ['/api/vendor-invoices', '/api/vendor-invoices/payables'] },
+    );
+    await flushPromises();
+    expect(attentionTexts(w).some((t) => t.includes('vendor bill'))).toBe(false);
+    expect(w.find('[data-testid="ap-open"]').exists()).toBe(false);
+    expect(w.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
+  });
+});
+
 // Rows as /api/parts-needed/pending serializes them (status needed|ordered,
 // urgency normal|urgent|critical).
 const PART = (over = {}) => ({
