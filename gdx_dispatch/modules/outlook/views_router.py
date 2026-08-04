@@ -540,6 +540,36 @@ class UnreadCountOut(BaseModel):
     count: int
 
 
+class SyncHealthOut(BaseModel):
+    status: str  # healthy | unhealthy | no_accounts
+    problems: list[str]
+    newest_sync_at: str | None = None
+
+
+@router.get(
+    "/sync-health",
+    response_model=SyncHealthOut,
+    dependencies=[Depends(require_module("email"))],
+)
+def get_sync_health(
+    user: dict[str, Any] = Depends(get_user_for_views),
+    tenant_db: Session = Depends(get_db_for_views),
+) -> SyncHealthOut:
+    """Live sync-health signal for the inbox banner.
+
+    The 2026-07-30 poison-loop outage ran FIVE DAYS before anyone noticed
+    the inbox had gone quiet — this puts "mail is not syncing" in front of
+    the people who would otherwise find out by wondering. Same detector the
+    hourly ``outlook.sync_health_check`` alarm uses.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    from gdx_dispatch.modules.outlook.tasks import _compute_sync_health  # noqa: PLC0415
+
+    health = _compute_sync_health(tenant_db, datetime.now(timezone.utc))
+    return SyncHealthOut(**health)
+
+
 # Folders whose unread mail must NOT badge the nav. The badge's click target
 # is the Inbox; counting Junk and Deleted Items there means a badge of 23 that
 # opens onto 4 unread messages, and a "New email" toast every time spam lands.

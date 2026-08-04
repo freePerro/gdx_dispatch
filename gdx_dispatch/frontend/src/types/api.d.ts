@@ -15251,17 +15251,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins__path__get"];
+        get: operations["proxy_to_plugin_host_api_plugins__path__post"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins__path__get"];
+        put: operations["proxy_to_plugin_host_api_plugins__path__post"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins__path__get"];
+        post: operations["proxy_to_plugin_host_api_plugins__path__post"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins__path__get"];
+        delete: operations["proxy_to_plugin_host_api_plugins__path__post"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins__path__get"];
+        patch: operations["proxy_to_plugin_host_api_plugins__path__post"];
         trace?: never;
     };
     "/api/plugins": {
@@ -15272,17 +15272,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins_get"];
+        get: operations["proxy_to_plugin_host_api_plugins_post"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins_get"];
+        put: operations["proxy_to_plugin_host_api_plugins_post"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins_get"];
+        post: operations["proxy_to_plugin_host_api_plugins_post"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins_get"];
+        delete: operations["proxy_to_plugin_host_api_plugins_post"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins_get"];
+        patch: operations["proxy_to_plugin_host_api_plugins_post"];
         trace?: never;
     };
     "/api/admin/plugins": {
@@ -20185,6 +20185,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/outlook/sync-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Sync Health
+         * @description Live sync-health signal for the inbox banner.
+         *
+         *     The 2026-07-30 poison-loop outage ran FIVE DAYS before anyone noticed
+         *     the inbox had gone quiet — this puts "mail is not syncing" in front of
+         *     the people who would otherwise find out by wondering. Same detector the
+         *     hourly ``outlook.sync_health_check`` alarm uses.
+         */
+        get: operations["get_sync_health_api_outlook_sync_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/outlook/messages/unread-count": {
         parameters: {
             query?: never;
@@ -24479,7 +24504,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 1e57b436329ae3e98bb335f04ff63fff35ceb40114021e3b7b0bbc290b4645a3
+             * @default 16305913b4a117a0625787083df95407568118cde96cf0623e62146b2b75e581
              */
             secret: string;
         };
@@ -28186,6 +28211,15 @@ export interface components {
         SyncBatchBody: {
             /** Actions */
             actions: components["schemas"]["SyncAction"][];
+        };
+        /** SyncHealthOut */
+        SyncHealthOut: {
+            /** Status */
+            status: string;
+            /** Problems */
+            problems: string[];
+            /** Newest Sync At */
+            newest_sync_at?: string | null;
         };
         /** SyncIn */
         SyncIn: {
@@ -64608,7 +64642,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__get: {
+    proxy_to_plugin_host_api_plugins__path__post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64641,7 +64675,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__get: {
+    proxy_to_plugin_host_api_plugins__path__post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64674,7 +64708,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__get: {
+    proxy_to_plugin_host_api_plugins__path__post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64707,7 +64741,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__get: {
+    proxy_to_plugin_host_api_plugins__path__post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64740,7 +64774,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__get: {
+    proxy_to_plugin_host_api_plugins__path__post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64773,7 +64807,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_get: {
+    proxy_to_plugin_host_api_plugins_post: {
         parameters: {
             query?: {
                 path?: string;
@@ -64805,7 +64839,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_get: {
+    proxy_to_plugin_host_api_plugins_post: {
         parameters: {
             query?: {
                 path?: string;
@@ -64837,7 +64871,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_get: {
+    proxy_to_plugin_host_api_plugins_post: {
         parameters: {
             query?: {
                 path?: string;
@@ -64869,7 +64903,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_get: {
+    proxy_to_plugin_host_api_plugins_post: {
         parameters: {
             query?: {
                 path?: string;
@@ -64901,7 +64935,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_get: {
+    proxy_to_plugin_host_api_plugins_post: {
         parameters: {
             query?: {
                 path?: string;
@@ -74980,6 +75014,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MessageOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_sync_health_api_outlook_sync_health_get: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncHealthOut"];
                 };
             };
             /** @description Validation Error */
