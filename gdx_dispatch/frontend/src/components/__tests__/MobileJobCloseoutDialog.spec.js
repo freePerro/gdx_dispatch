@@ -239,4 +239,92 @@ describe('MobileJobCloseoutDialog', () => {
       qty: 1,
     });
   });
+
+  it('re-editing the name after a pick clears the stale sku/part_id', async () => {
+    // The office orders by sku and inventory decrements by part_id — a
+    // renamed row carrying the old pick would order/decrement the WRONG
+    // part. Any manual edit invalidates the picked identity.
+    const wrapper = mountDialog();
+    await flushPromises();
+    await wrapper.find('[data-testid="mjco-add-part"]').trigger('click');
+    apiGet.mockResolvedValue([
+      { source: 'parts', sku: 'SPR-200', name: 'Torsion 200', qty_on_hand: 4, part_id: 'part-uuid-1' },
+    ]);
+    await setInput(wrapper, 'mjco-part-name-0', 'spr');
+    vi.advanceTimersByTime(300);
+    await flushPromises();
+    await wrapper.find('[data-testid="mjco-part-suggestion-0"]').trigger('click');
+
+    // Tech keeps typing over the picked name.
+    await setInput(wrapper, 'mjco-part-name-0', 'Torsion 200 but actually the 175');
+
+    apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-5' });
+    await confirmedSubmit(wrapper);
+
+    expect(apiPost.mock.calls[0][1].parts[0]).toMatchObject({
+      name: 'Torsion 200 but actually the 175',
+      sku: null,
+      part_id: null,
+    });
+  });
+
+  // ── Return visit + parts to order (Doug 2026-08-04) ────────────────
+
+  it('return-visit toggle blocks submit until the why is filled', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await wrapper.find('[data-testid="mjco-return-visit"] input').setValue(true);
+    // The toggle alone counts as form content, but the missing WHY blocks —
+    // same rule the backend enforces with its 422.
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeDefined();
+
+    await setInput(wrapper, 'mjco-return-reason', 'Spring on backorder');
+    expect(wrapper.find('[data-testid="mjco-submit"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('submits return visit + FREE-TEXT parts to order; success surfaces the new job', async () => {
+    apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-3', return_visit_job_id: 'rv-1' });
+
+    const wrapper = mountDialog();
+    await flushPromises();
+    await wrapper.find('[data-testid="mjco-return-visit"] input').setValue(true);
+    await setInput(wrapper, 'mjco-return-reason', 'Panel on backorder');
+
+    // Typed part, NO catalog suggestion picked — must submit with sku null.
+    await wrapper.find('[data-testid="mjco-add-order-part"]').trigger('click');
+    await setInput(wrapper, 'mjco-order-name-0', '16ft strut');
+    await setInput(wrapper, 'mjco-order-qty-0', '3');
+    await wrapper.find('[data-testid="mjco-order-urgent-0"]').setValue(true);
+
+    await confirmedSubmit(wrapper);
+
+    const payload = apiPost.mock.calls[0][1];
+    expect(payload.needs_return_visit).toBe(true);
+    expect(payload.return_visit_reason).toBe('Panel on backorder');
+    expect(payload.parts_to_order).toEqual([
+      { name: '16ft strut', sku: null, qty: 3, urgency: 'urgent' },
+    ]);
+
+    // The tech hears that dispatch now owns the return trip.
+    const infoToast = toastAdd.mock.calls.find((c) => c[0]?.severity === 'info');
+    expect(infoToast).toBeTruthy();
+    expect(infoToast[0].summary).toContain('Return visit');
+  });
+
+  it('plain closeout payload keeps the legacy defaults (no return visit, empty order list)', async () => {
+    apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-4', return_visit_job_id: null });
+
+    const wrapper = mountDialog();
+    await flushPromises();
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await confirmedSubmit(wrapper);
+
+    const payload = apiPost.mock.calls[0][1];
+    expect(payload.needs_return_visit).toBe(false);
+    expect(payload.return_visit_reason).toBeNull();
+    expect(payload.parts_to_order).toEqual([]);
+    // And no return-visit toast when the backend created nothing.
+    expect(toastAdd.mock.calls.find((c) => c[0]?.severity === 'info')).toBeFalsy();
+  });
 });
