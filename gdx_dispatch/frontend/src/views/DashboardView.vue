@@ -185,10 +185,18 @@
                 Same+next: {{ ops.response_speed.same_or_next_day_rate === null ? '—' : formatPercent(ops.response_speed.same_or_next_day_rate) }}
               </div>
             </div>
-            <div class="funnel-tile unavailable">
+            <!-- Lit by closeout attested hours (Phase 2 closeouts capture
+                 hours_worked on every completion); dark only when the
+                 window has no closeouts. -->
+            <div class="funnel-tile" :class="{ unavailable: ops.avg_job_duration.value === null }">
               <div class="funnel-tile-label">Avg Job Duration</div>
-              <div class="funnel-tile-value">—</div>
-              <div class="funnel-tile-sub" :title="ops.avg_job_duration.unavailable_reason">data not yet captured</div>
+              <div class="funnel-tile-value" data-testid="avg-job-duration">
+                {{ ops.avg_job_duration.value === null ? '—' : `${ops.avg_job_duration.value} h` }}
+              </div>
+              <div v-if="ops.avg_job_duration.value === null" class="funnel-tile-sub" :title="ops.avg_job_duration.unavailable_reason">no closeouts in window</div>
+              <div v-else class="funnel-tile-sub">
+                attested on {{ ops.avg_job_duration.jobs_measured }} closeout{{ ops.avg_job_duration.jobs_measured === 1 ? '' : 's' }} (30d)
+              </div>
             </div>
             <div class="funnel-tile unavailable">
               <div class="funnel-tile-label">Tech Utilization</div>
@@ -225,6 +233,18 @@
               </div>
               <div v-if="cash.gross_margin.estimates_with_manual_lines > 0" class="pipeline-warn">
                 ⚠ {{ cash.gross_margin.estimates_with_manual_lines }} estimate(s) had manual-priced lines (excluded)
+              </div>
+            </div>
+            <!-- Collected completes the billed → collected → outstanding
+                 story: Sales Funnel shows billed, AR shows outstanding, and
+                 this is the cash that actually arrived. -->
+            <div class="funnel-tile">
+              <div class="funnel-tile-label">Collected (30d, net of refunds)</div>
+              <div class="funnel-tile-value" data-testid="collected-30d">{{ formatCurrency(cash.collected.total) }}</div>
+              <div class="funnel-tile-sub">
+                {{ cash.collected.count }} payment{{ cash.collected.count === 1 ? '' : 's' }}
+                · {{ formatCurrency(cash.collected.today_total) }} today
+                <template v-if="toNumber(cash.collected.refunded) > 0"> · −{{ formatCurrency(cash.collected.refunded) }} refunded</template>
               </div>
             </div>
             <div class="funnel-tile">
@@ -422,7 +442,7 @@ const funnelLoaded = ref(false);
 const ops = ref({
   first_time_fix: { rate: null, completed: 0, callbacks: 0, window_days: 30 },
   response_speed: { same_day_rate: null, same_or_next_day_rate: null, same_day: 0, next_day: 0, total_booked: 0, window_days: 30 },
-  avg_job_duration: { value: null, unavailable_reason: '' },
+  avg_job_duration: { value: null, jobs_measured: 0, unavailable_reason: '' },
   tech_utilization: { value: null, unavailable_reason: '' },
 });
 const opsLoaded = ref(false);
@@ -438,6 +458,7 @@ const cash = ref({
   },
   gross_margin: { margin_pct: null, total_sell: 0, total_cost: 0, net_profit: 0, estimates_with_manual_lines: 0, window_days: 30 },
   warranty_callbacks: { rate: null, filed: 0, completed_jobs: 0, window_days: 30 },
+  collected: { total: 0, count: 0, refunded: 0, today_total: 0, window_days: 30 },
 });
 const cashLoaded = ref(false);
 
@@ -1119,7 +1140,13 @@ async function loadCash() {
   if (!canSeePipeline.value) return;
   try {
     const data = await api.get('/api/reports/cash-risk');
-    if (data) { cash.value = data; cashLoaded.value = true; }
+    if (data) {
+      // Merge over defaults instead of replacing: a server that predates a
+      // block (e.g. `collected`, added 2026-08-04) must not leave the
+      // template reading properties off undefined.
+      cash.value = { ...cash.value, ...data, collected: { ...cash.value.collected, ...(data.collected || {}) } };
+      cashLoaded.value = true;
+    }
   } catch { /* reports_advanced may be ungranted */ }
 }
 

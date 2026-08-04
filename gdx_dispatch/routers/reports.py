@@ -12,7 +12,17 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.models.tenant_models import Customer, Invoice, InvoiceLine, Job, TimeEntry, WarrantyClaim
+from gdx_dispatch.models.tenant_models import (
+    Customer,
+    Invoice,
+    InvoiceAdjustment,
+    InvoiceLine,
+    Job,
+    JobCloseout,
+    Payment,
+    TimeEntry,
+    WarrantyClaim,
+)
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -1081,11 +1091,36 @@ def operations_kpis(
     same_day_rate = (same_day / booking_total) if booking_total else None
     next_day_rate = ((same_day + next_day) / booking_total) if booking_total else None
 
-    # Avg job duration — needs started_at + completed_at, both reliably
-    # populated. started_at is empty on the prod GDX db (D35). Surface as
-    # unavailable rather than fudging from created_at/completed_at delta
-    # which leaks dispatch lag into the duration number.
-    duration_unavailable = "jobs.started_at not yet captured by mobile clock-in flow"
+    # Avg job duration — powered by closeout ATTESTED hours (this tile
+    # predates Phase 2 closeouts; its "data not yet captured" claim went
+    # stale once they began capturing hours_worked). The closeout's
+    # hours_worked is the tech's attested on-site duration — evidence,
+    # unlike a created_at/completed_at delta, which would leak dispatch lag
+    # into the number. Three exclusions, each load-bearing:
+    #   * current rows only (supersede model keeps every restatement;
+    #     averaging non-live rows double-counts a re-closed job);
+    #   * hours_worked > 0 — zero is legal end-to-end (signature-only
+    #     closeouts with require_hours_on_complete off, the default), and a
+    #     zero row is "no duration attested", not "the job took 0 hours" —
+    #     counting it dilutes an average labeled "attested";
+    #   * jobs completed through legacy /complete paths never filed a
+    #     closeout at all — jobs_measured tells the reader the sample size.
+    duration_count, duration_sum = db.execute(
+        select(func.count(), func.coalesce(func.sum(JobCloseout.hours_worked), 0)).where(
+            JobCloseout.deleted_at.is_(None),
+            JobCloseout.superseded_at.is_(None),
+            JobCloseout.hours_worked > 0,
+            JobCloseout.closed_at >= last30_start_dt,
+            JobCloseout.closed_at < tomorrow_start_dt,
+        )
+    ).one()
+    duration_count = int(duration_count or 0)
+    avg_duration_hours = (
+        round(float(duration_sum) / duration_count, 2) if duration_count else None
+    )
+    duration_unavailable = (
+        None if duration_count else "no closeouts with attested hours in the window"
+    )
 
     # Tech utilization — needs time_entries.clock_in + clock_out. clock_out
     # is empty (D35). Same treatment.
@@ -1107,7 +1142,10 @@ def operations_kpis(
             "window_days": 30,
         },
         "avg_job_duration": {
-            "value": None,
+            "value": avg_duration_hours,
+            "unit": "hours",
+            "jobs_measured": duration_count,
+            "window_days": 30,
             "unavailable_reason": duration_unavailable,
         },
         "tech_utilization": {
@@ -1245,6 +1283,49 @@ def cash_risk_kpis(
     inv_net_profit = inv_total_sell - inv_total_cost
     inv_margin_pct = (inv_net_profit / inv_total_sell) if inv_total_sell > 0 else None
 
+    # Cash actually collected (last 30 days). The dashboard led with billed
+    # revenue but never showed collected — the billed → collected →
+    # outstanding story had a hole in the middle. Keyed on payment_date (the
+    # receipt date the Record Payment dialog captures, backdatable), NOT
+    # created_at, so a backfilled payment lands in the period the money
+    # actually arrived. Voided payments stay history: excluded here exactly
+    # as _recalculate_invoice and the ledger exclude them.
+    # Refunds are asymmetric in this schema (adversarial audit catch): a
+    # Stripe refund VOIDS the payment row (already excluded above), but an
+    # office refund is an append-only InvoiceAdjustment kind='refund' with
+    # the Payment row left standing. Counting payments alone would make the
+    # tile net-of-card-refunds but gross-of-check-refunds — subtract refund
+    # adjustments in the same window so "collected" means NET CASH both ways.
+    last30_start_date = today - timedelta(days=29)
+    collected_count, collected_gross = db.execute(
+        select(func.count(), func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.voided_at.is_(None),
+            Payment.payment_date >= last30_start_date,
+            Payment.payment_date <= today,
+        )
+    ).one()
+    refunded_window = db.scalar(
+        select(func.coalesce(func.sum(InvoiceAdjustment.amount), 0)).where(
+            InvoiceAdjustment.kind == "refund",
+            InvoiceAdjustment.created_at >= last30_start_dt,
+            InvoiceAdjustment.created_at < tomorrow_start_dt,
+        )
+    ) or 0
+    today_start_dt = datetime.combine(today, time.min, tzinfo=UTC)
+    collected_today_gross = db.scalar(
+        select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.voided_at.is_(None),
+            Payment.payment_date == today,
+        )
+    ) or 0
+    refunded_today = db.scalar(
+        select(func.coalesce(func.sum(InvoiceAdjustment.amount), 0)).where(
+            InvoiceAdjustment.kind == "refund",
+            InvoiceAdjustment.created_at >= today_start_dt,
+            InvoiceAdjustment.created_at < tomorrow_start_dt,
+        )
+    ) or 0
+
     # Warranty callbacks — rate vs jobs completed in the same window.
     warranty_filed = db.scalar(
         select(func.count()).where(
@@ -1293,6 +1374,16 @@ def cash_risk_kpis(
             "rate": warranty_rate,
             "filed": int(warranty_filed),
             "completed_jobs": int(completed_window),
+            "window_days": 30,
+        },
+        "collected": {
+            # NET cash: payments minus office-refund adjustments. Stripe
+            # refunds already void their payment row, so both refund paths
+            # subtract exactly once.
+            "total": float(collected_gross or 0) - float(refunded_window or 0),
+            "count": int(collected_count or 0),
+            "refunded": float(refunded_window or 0),
+            "today_total": float(collected_today_gross or 0) - float(refunded_today or 0),
             "window_days": 30,
         },
         "as_of": now.isoformat(),
