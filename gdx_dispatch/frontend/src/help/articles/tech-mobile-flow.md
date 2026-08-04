@@ -50,15 +50,13 @@ Tap **+ Estimate** to build a Good / Better / Best quote in 30 seconds:
 When the work is done, tap **Complete**. The closeout sheet captures:
 
 - **Parts used** — drawn from your truck inventory or added as snapshot
+- **Parts to order** — anything the job still needs; type the part name (no catalog match required) and it lands in the office's Parts to Order queue
+- **Return visit** — tick "This job needs a return visit" and say why. That creates an unscheduled job for dispatch with your reason on it — no note-and-tag workaround needed
 - **Hours on site** — auto-calculated from Arrived → Complete, editable
 - **Customer signature** — fingertip on the screen
 - **Notes** — for the office or for next visit
 
-Your shop may require all four before the job will close — that's a workflow gate set by the owner. Don't fight it; it keeps billing accurate so you get paid right.
-
-## After hours
-
-If the job has follow-up (warranty, return visit), add a note and a tag. Dispatch will see it the next morning and book the return.
+Your shop may require parts, hours, and signature before the job will close — that's a workflow gate set by the owner. Don't fight it; it keeps billing accurate so you get paid right.
 
 ## Related
 - [Jobs](#) — anatomy of a job record

@@ -1479,6 +1479,24 @@ class CloseoutPart(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class CloseoutPartToOrder(BaseModel):
+    """A part the job still NEEDS — the office orders it. Distinct from
+    CloseoutPart, which attests a part already USED: these land as
+    job_parts_needed rows with status='needed' (the Parts-to-Order queue),
+    never as inventory decrements or billable used-part lines.
+
+    'critical' is deliberately NOT accepted here: the C5 critical-part
+    dispatcher push fires only on the Parts card path (add_part_needed),
+    so a closeout-path critical would skip the fan-out silently — the one
+    urgency level where silence is the bug. Critical asks go through the
+    job screen's Parts card until the push is wired here too."""
+    name: str = Field(min_length=1, max_length=200)
+    sku: str | None = Field(default=None, max_length=255)
+    qty: int = Field(default=1, ge=1, le=99)
+    urgency: str = Field(default="normal", pattern="^(normal|urgent)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
 class CloseoutPayload(BaseModel):
     parts: list[CloseoutPart] = Field(default_factory=list, max_length=100)
     hours: float = Field(ge=0, le=99)
@@ -1496,6 +1514,13 @@ class CloseoutPayload(BaseModel):
     # PR5 — the deliberate "No parts used" checkbox (satisfies the
     # require_parts gate; silence still 422s).
     no_parts_used: bool = False
+    # Doug 2026-08-04: the tech attests at closeout whether the job needs a
+    # return visit and WHY. The reason is mandatory when the flag is set —
+    # an unexplained return visit is exactly the tribal knowledge this
+    # replaces (the old flow was "add a note and a tag").
+    needs_return_visit: bool = False
+    return_visit_reason: str | None = Field(default=None, max_length=1000)
+    parts_to_order: list[CloseoutPartToOrder] = Field(default_factory=list, max_length=50)
 
 
 # The labor row a closeout owns, so a re-closeout updates it instead of
@@ -1813,6 +1838,15 @@ def closeout_job(
     if payload.no_parts_used and payload.parts:
         return jsonable_response(
             {"detail": "no_parts_used cannot be combined with a parts list"},
+            422,
+        )
+    # A return visit without a reason is not accepted — dispatch schedules
+    # from the reason, so "yes but I won't say why" is the exact silence
+    # this field exists to end. Same 422 shape as the tenant gates so the
+    # mobile toast path renders it.
+    if payload.needs_return_visit and not (payload.return_visit_reason or "").strip():
+        return jsonable_response(
+            {"detail": "completion requirements unmet", "missing": ["return_visit_reason"]},
             422,
         )
     missing: list[str] = []
@@ -2137,6 +2171,152 @@ def closeout_job(
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
         job.updated_at = now
 
+        # 5) Parts the job still NEEDS (Doug 2026-08-04) — filed as the same
+        #    row the job-screen Parts card creates (status='needed',
+        #    source='request') so they land in the office Parts-to-Order
+        #    queue unchanged. Deliberately NOT source='closeout': that tag
+        #    means "attested used" and the restatement replace step above
+        #    deletes+reinserts it — a needed row must survive a re-closeout
+        #    once dispatch starts acting on it (ordered/received + ETA).
+        #
+        #    Replay guard (audit 2026-08-04): a queued offline closeout can
+        #    reach this handler twice (idempotency cache is redis — TTL
+        #    expiry / pass-through when redis is down), and a restatement
+        #    re-submits the same list. Without a guard the office orders
+        #    double springs. Exact-match dedup only — same requester, name
+        #    (case-folded), sku and qty against this job's unbilled request
+        #    rows: a different qty or part is a new ask and always lands.
+        #    Matching an open Parts-card row is equally correct — same
+        #    person asking for the same thing on the same job IS one ask.
+        _open_request_keys = {
+            (
+                (r.part_name or "").strip().lower(),
+                (r.sku or "").strip().lower() or None,
+                int(r.quantity or 0),
+                r.requested_by_user_id,
+            )
+            for r in db.execute(
+                select(JobPartNeeded).where(
+                    JobPartNeeded.job_id == str(job.id),
+                    JobPartNeeded.source == "request",
+                    JobPartNeeded.billed_invoice_id.is_(None),
+                )
+            ).scalars().all()
+        }
+        parts_to_order_new = 0
+        for p in payload.parts_to_order:
+            _key = (
+                p.name.strip().lower(),
+                (p.sku or "").strip().lower() or None,
+                int(p.qty),
+                user_id,
+            )
+            if _key in _open_request_keys:
+                continue
+            _open_request_keys.add(_key)
+            parts_to_order_new += 1
+            db.add(JobPartNeeded(
+                id=str(uuid.uuid4()),
+                company_id=tenant_id,
+                job_id=str(job.id),
+                part_name=p.name.strip(),
+                sku=(p.sku or "").strip() or None,
+                quantity=int(p.qty),
+                urgency=p.urgency,
+                status="needed",
+                source="request",
+                notes=(p.note or "").strip() or None,
+                requested_by_user_id=user_id,
+                created_at=now,
+                updated_at=now,
+            ))
+
+        # 6) Return visit. One OPEN child per job: a re-closeout (or an
+        #    offline replay that slipped past the idempotency cache) reuses
+        #    the existing open child instead of minting a sibling — dispatch
+        #    schedules ONE return trip, not one per submit.
+        return_visit_job_id: str | None = None
+        reason_text = (payload.return_visit_reason or "").strip()
+        if payload.needs_return_visit:
+            existing_child = db.execute(
+                select(Job).where(
+                    Job.parent_job_id == job.id,
+                    Job.is_return_visit.is_(True),
+                    Job.deleted_at.is_(None),
+                    Job.lifecycle_stage.notin_(["completed", "cancelled"]),
+                )
+            ).scalars().first()
+            if existing_child is not None:
+                return_visit_job_id = str(existing_child.id)
+                # Reuse must not discard the attested WHY (audit
+                # 2026-08-04: the 422 forces the reason, so throwing it
+                # away on this branch would make the requirement theater).
+                # Append it to the open child — dispatch sees every reason
+                # given — unless this exact text is already there (replay).
+                if reason_text and reason_text not in (existing_child.description or ""):
+                    existing_child.description = (
+                        (existing_child.description + "\n\n" if existing_child.description else "")
+                        + reason_text
+                    )
+                    existing_child.updated_at = now
+            else:
+                # Same guarded allocation as spawn_return_visit: the number
+                # counter commits on its own session. On failure the child
+                # keeps job_number NULL — this code has no fallback; the
+                # jobs list renders the UUID prefix for NULL numbers — and
+                # the closeout is never blocked on numbering.
+                assigned_number: str | None = None
+                try:
+                    with SessionLocal() as cdb:
+                        cust_name = None
+                        if job.customer_id:
+                            cust = db.execute(
+                                _text("SELECT name FROM customers WHERE id = :cid"),
+                                {"cid": str(job.customer_id)},
+                            ).first()
+                            if cust:
+                                cust_name = cust[0]
+                        assigned_number = next_job_number(cdb, tenant_id, customer_name=cust_name)
+                        cdb.commit()
+                except Exception:
+                    log.exception("closeout_return_visit_number_alloc_failed")
+                child = Job(
+                    id=uuid.uuid4(),
+                    title=f"Return visit: {job.title}"[:200],
+                    # The WHY is the description — it's what dispatch reads
+                    # when slotting the trip.
+                    description=reason_text,
+                    customer_id=job.customer_id,
+                    job_type=canonical_job_type(job.job_type) or SERVICE_CALL,
+                    status="Service Call",
+                    company_id=tenant_id,
+                    parent_job_id=job.id,
+                    job_number=assigned_number,
+                    created_at=now,
+                    updated_at=now,
+                    is_demo=False,
+                    lifecycle_stage="service_call",
+                    dispatch_status="unassigned",
+                    billing_status="unbilled",
+                    priority=job.priority or "Normal",
+                    is_return_visit=True,
+                )
+                db.add(child)
+                return_visit_job_id = str(child.id)
+                log_audit_event_sync(
+                    db=db, tenant_id=tenant_id, user_id=user_id,
+                    action="return_visit_spawned",
+                    entity_type="job",
+                    entity_id=return_visit_job_id,
+                    details={
+                        "original_job_id": str(job.id),
+                        "reason": reason_text[:500],
+                        "source": "closeout",
+                    },
+                    ip_address=request.client.host if request.client else None,
+                    request=request,
+                )
+
         # Audit events join the SAME transaction as the closeout (adversarial
         # audit, round 2). The old shape committed the closeout first and the
         # events in a second commit — so a failed audit write 500'd a closeout
@@ -2156,6 +2336,24 @@ def closeout_job(
                 "techs_on_site": int(payload.techs_on_site or 1),
                 "signature_present": bool(payload.signature_data),
                 "supersedes_id": prior_snapshot["id"] if prior_snapshot else None,
+                "needs_return_visit": bool(payload.needs_return_visit),
+                # The attested WHY + asked-for parts live HERE durably
+                # (audit 2026-08-04): the JobCloseout snapshot has no
+                # columns for them yet, and child.description is editable —
+                # the append-only audit row is what answers "what did the
+                # tech say at closeout?" after the fact.
+                "return_visit_reason": (reason_text[:500] or None) if payload.needs_return_visit else None,
+                "return_visit_job_id": return_visit_job_id,
+                "parts_to_order": [
+                    {
+                        "name": p.name.strip(),
+                        "sku": (p.sku or "").strip() or None,
+                        "qty": int(p.qty),
+                        "urgency": p.urgency,
+                    }
+                    for p in payload.parts_to_order
+                ] or None,
+                "parts_to_order_new": parts_to_order_new,
             },
             ip_address=request.client.host if request.client else None,
             request=request,
@@ -2192,6 +2390,10 @@ def closeout_job(
             "job_id": str(job.id),
             "completed_at": job.completed_at,
             "parts_count": len(part_lines),
+            "return_visit_job_id": return_visit_job_id,
+            # Rows actually INSERTED — a replay/restatement that deduped to
+            # zero reports zero, not the size of the re-sent list.
+            "parts_to_order_count": parts_to_order_new,
         }, 201)
     except IntegrityError as exc:
         # Two people closing out the same job within the same moment: B's

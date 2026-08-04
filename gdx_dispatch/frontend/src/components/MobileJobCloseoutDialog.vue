@@ -14,10 +14,12 @@
 // the tenant gates require parts/hours/signature and the form is short.
 //
 // Sections:
-//  1. Parts (SKU autocomplete via /api/parts-needed/sku-suggest)
-//  2. Hours (defaults to open work time-entry duration if visible)
-//  3. Signature canvas
-//  4. Notes
+//  1. Parts used (SKU autocomplete via /api/parts-needed/sku-suggest)
+//  2. Parts to order (free-text; lands in the office Parts-to-Order queue)
+//  3. Return visit (toggle + required why; backend spawns the child job)
+//  4. Hours (defaults to open work time-entry duration if visible)
+//  5. Signature canvas
+//  6. Notes
 //
 // Caller wires v-model:visible + @closed-out to a parent (MobileTodayView
 // job cards or DispatchView Status="Complete" handler).
@@ -74,8 +76,12 @@ function removePartRow(idx) {
 }
 function onPartNameInput(row) {
   if (row._searchTimer) clearTimeout(row._searchTimer)
-  // Tech edits the name; selection from the suggestions list overwrites
-  // sku + part_id below.
+  // A picked catalog identity must never outlive the exact name it was
+  // picked for: the office orders by sku and inventory decrements by
+  // part_id, so a renamed row carrying the old pick would order/decrement
+  // the WRONG part. Any manual edit clears both; re-picking re-sets them.
+  row.sku = null
+  row.part_id = null
   const q = (row.name || '').trim()
   if (q.length < 2) {
     row.suggestions = []
@@ -107,6 +113,32 @@ function pickSuggestion(row, s) {
   // non-inventory rows by snapshotting only — see C2.
   row.part_id = s.source === 'parts' ? (s.part_id || null) : null
   row.suggestions = []
+}
+
+// ─── Return visit + parts to order (Doug 2026-08-04) ─────────────────
+// "Does this need a return visit and why?" asked at the moment the tech
+// knows the answer. The why is required — dispatch schedules from it.
+const returnVisitNeeded = ref(false)
+const returnVisitReason = ref('')
+// Parts the job still NEEDS — typed free-text first; the catalog suggest
+// is an upgrade, never a requirement. These land in the office
+// Parts-to-Order queue exactly like the job-screen Parts card's requests.
+const orderParts = ref([])
+function addOrderRow() {
+  orderParts.value.push({
+    name: '',
+    sku: null,
+    part_id: null, // set by pickSuggestion, ignored by the payload — needed rows never touch inventory
+    qty: 1,
+    urgent: false,
+    suggestions: [],
+    suggestionsLoading: false,
+    _searchTimer: null,
+    _searchSeq: 0,
+  })
+}
+function removeOrderRow(idx) {
+  orderParts.value.splice(idx, 1)
 }
 
 // ─── Hours / signature / notes ───────────────────────────────────────
@@ -200,12 +232,19 @@ const canSubmit = computed(() => {
   const hasHours = (Number(hours.value) || 0) > 0
   const hasSig = sigDrawn.value
   const hasNotes = (notes.value || '').trim().length > 0
-  if (!(hasParts || hasHours || hasSig || hasNotes || noPartsUsed.value)) return false
+  const hasOrders = orderParts.value.length > 0
+  if (!(hasParts || hasHours || hasSig || hasNotes || noPartsUsed.value || hasOrders || returnVisitNeeded.value)) return false
   // Required: every parts row needs a name + qty >= 1.
   for (const p of parts.value) {
     if (!p.name.trim()) return false
     if (!(Number(p.qty) >= 1)) return false
   }
+  for (const p of orderParts.value) {
+    if (!p.name.trim()) return false
+    if (!(Number(p.qty) >= 1)) return false
+  }
+  // Return visit demands its why — same rule the backend enforces.
+  if (returnVisitNeeded.value && !returnVisitReason.value.trim()) return false
   return true
 })
 
@@ -248,6 +287,16 @@ async function submit() {
     signature_data,
     signed_by: signedBy.value.trim() || null,
     notes: notes.value.trim() || null,
+    needs_return_visit: returnVisitNeeded.value,
+    return_visit_reason: returnVisitNeeded.value ? returnVisitReason.value.trim() : null,
+    parts_to_order: orderParts.value.map((p) => ({
+      name: p.name.trim(),
+      sku: p.sku || null,
+      // Same clamp rationale as the job-screen Parts card: `:max` only
+      // clamps on blur, so bound the value on the path that sends it.
+      qty: Math.min(99, Math.max(1, Math.trunc(Number(p.qty) || 1))),
+      urgency: p.urgent ? 'urgent' : 'normal',
+    })),
   }
 
   try {
@@ -272,6 +321,14 @@ async function submit() {
         detail: 'Moved to Ready for Billing — review and invoice it from /billing.',
         life: 5000,
       })
+      if (created?.return_visit_job_id) {
+        toast.add({
+          severity: 'info',
+          summary: 'Return visit created',
+          detail: 'Dispatch will schedule it — your reason is on the new job.',
+          life: 5000,
+        })
+      }
     }
     emit('closed-out', created)
     _resetForm()
@@ -283,6 +340,7 @@ async function submit() {
         parts: 'parts logged',
         hours: 'labor hours',
         signature: 'customer signature',
+        return_visit_reason: 'why the return visit is needed',
       }
       toast.add({
         severity: 'warn',
@@ -310,7 +368,10 @@ const isDirty = computed(() =>
   parts.value.length > 0 ||
   Number(hours.value) > 0 ||
   notes.value.trim() !== '' ||
-  sigDrawn.value
+  sigDrawn.value ||
+  orderParts.value.length > 0 ||
+  returnVisitNeeded.value ||
+  returnVisitReason.value.trim() !== ''
 )
 
 function requestCancel() {
@@ -327,6 +388,9 @@ function _resetForm() {
   matrixItemId.value = null
   confirmStep.value = false
   notes.value = ''
+  returnVisitNeeded.value = false
+  returnVisitReason.value = ''
+  orderParts.value = []
   // Pre-fill the signer with the customer's name when known — saves the
   // tech a tap on every closeout. They can edit if a different person
   // (spouse, manager, on-site contact) is actually signing.
@@ -434,6 +498,99 @@ watch(open, async (v) => {
           <input type="checkbox" v-model="noPartsUsed" />
           <span>No parts were used on this job</span>
         </label>
+      </section>
+
+      <!-- Parts to order — free-text first; catalog match never required.
+           Lands in the office Parts-to-Order queue as a normal request. -->
+      <section class="section">
+        <header class="section-head">
+          <h3>Parts to order <span class="muted">(optional)</span></h3>
+          <Button
+            type="button"
+            label="Add part"
+            icon="pi pi-plus"
+            size="small"
+            severity="secondary"
+            text
+            data-testid="mjco-add-order-part"
+            @click="addOrderRow"
+          />
+        </header>
+        <ul v-if="orderParts.length" class="parts-list" data-testid="mjco-order-list">
+          <li v-for="(p, idx) in orderParts" :key="idx" class="part-row">
+            <div class="part-row-main">
+              <InputText
+                v-model="p.name"
+                maxlength="200"
+                placeholder="Type the part — no catalog match needed"
+                class="w-full"
+                :data-testid="`mjco-order-name-${idx}`"
+                autocomplete="off"
+                @input="onPartNameInput(p)"
+              />
+              <ul v-if="p.suggestions.length" class="suggest-list">
+                <li
+                  v-for="s in p.suggestions"
+                  :key="`${s.source}-${s.sku}`"
+                  class="suggest-item"
+                  :data-testid="`mjco-order-suggestion-${idx}`"
+                  @click="pickSuggestion(p, s)"
+                >
+                  <strong>{{ s.sku }}</strong>
+                  <span class="muted"> · {{ s.name }}</span>
+                  <span v-if="s.qty_on_hand != null" class="qty-pill">{{ s.qty_on_hand }} on hand</span>
+                </li>
+              </ul>
+            </div>
+            <input
+              v-model.number="p.qty"
+              type="number"
+              min="1"
+              max="99"
+              class="qty-input"
+              :data-testid="`mjco-order-qty-${idx}`"
+              aria-label="Quantity"
+            />
+            <Button
+              icon="pi pi-times"
+              v-tooltip="'Remove part'"
+              aria-label="Remove part"
+              text
+              severity="danger"
+              size="small"
+              :data-testid="`mjco-order-remove-${idx}`"
+              @click="removeOrderRow(idx)"
+            />
+            <label class="order-urgent">
+              <input type="checkbox" v-model="p.urgent" :data-testid="`mjco-order-urgent-${idx}`" />
+              <span>Urgent</span>
+            </label>
+          </li>
+        </ul>
+        <p v-else class="muted hint">Need something for a return trip? Add it here — the office orders it.</p>
+      </section>
+
+      <!-- Return visit -->
+      <section class="section">
+        <header class="section-head"><h3>Return visit</h3></header>
+        <label class="no-parts-attest" data-testid="mjco-return-visit">
+          <input type="checkbox" v-model="returnVisitNeeded" />
+          <span>This job needs a return visit</span>
+        </label>
+        <div v-if="returnVisitNeeded" class="form-field">
+          <label for="mjco-return-reason">Why? <span class="muted">(required)</span></label>
+          <Textarea
+            id="mjco-return-reason"
+            v-model="returnVisitReason"
+            rows="2"
+            auto-resize
+            maxlength="1000"
+            class="w-full"
+            placeholder="Waiting on parts, warranty, second tech needed…"
+            data-testid="mjco-return-reason"
+          />
+          <small class="muted">Creates an unscheduled job for dispatch with this reason on it.</small>
+        </div>
       </section>
 
       <!-- Hours -->
@@ -661,6 +818,18 @@ watch(open, async (v) => {
   padding: 0.05rem 0.45rem;
   font-size: 0.7rem;
   font-weight: 600;
+}
+
+/* Urgent flag on a parts-to-order row — spans under the 3-column grid row
+   so the tap target isn't squeezed beside the qty box. */
+.order-urgent {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+  min-height: 32px;
 }
 
 /* dark-safe: signature paper — white is deliberate in both themes, the ink is dark */
