@@ -33,6 +33,17 @@ const SCAN_DIRS = ['src/views', 'src/components'];
 const SKIP_PATHS = [
   'src/components/games/widgets/BigButton.vue', // experimental, uses prompt+alert
 ];
+// Pre-gate native confirm()/alert() sites, grandfathered as WARN so the gate
+// can block NEW sites in CI. Migrating these to useDestructiveConfirm is
+// blocked on issue #215 (the composable auto-accepts when ConfirmationService
+// isn't registered) — swap them only after #215 is resolved, then shrink this
+// list to empty. Do NOT add entries.
+const NATIVE_CONFIRM_LEGACY = [
+  'src/views/OverheadView.vue',
+  'src/views/InvoiceCreateView.vue',
+  'src/views/MonthlyBudgetView.vue',
+  'src/components/MobileJobCloseoutDialog.vue',
+];
 const SKIP_TEST_GLOB = /(\.spec\.|\.test\.|__tests__\/|^tests\/)/;
 
 function listVueFiles() {
@@ -65,6 +76,7 @@ const violations = {
   'severity="error" on Tag/Button (those use "danger")': [],
   'severity="danger" on Toast/Message (those use "error")': [],
   'native confirm()/alert() (use useDestructiveConfirm or Toast)': [],
+  'native confirm()/alert() — grandfathered legacy sites (issue #215)': [],
   'icon-only Button without aria-label': [],
   'unregistered PrimeVue component (template tag without import)': [],
 };
@@ -130,11 +142,16 @@ for (const { abs, rel } of files) {
     violations['severity="danger" on Toast/Message (those use "error")'].push(`${rel}:${h.line}  ${h.text}`);
   }
 
-  // 4. native confirm()/alert() — exclude useConfirm, confirmAsync, ConfirmDialog
-  for (const h of grepHits(src, /\b(window\.)?(confirm|alert)\(/)) {
+  // 4. native confirm()/alert() — exclude useConfirm, confirmAsync, ConfirmDialog.
+  //    The lookbehind rejects method calls on other objects (`rs.confirm(id)`,
+  //    a store action) while still matching bare `confirm(` and `window.confirm(`.
+  for (const h of grepHits(src, /(?<![\w.$])(window\.)?(confirm|alert)\(/)) {
     const txt = h.text;
     if (/useConfirm|confirmAsync|confirmDestructive|ConfirmDialog|ConfirmationService/.test(txt)) continue;
-    violations['native confirm()/alert() (use useDestructiveConfirm or Toast)'].push(`${rel}:${h.line}  ${txt}`);
+    const bucket = NATIVE_CONFIRM_LEGACY.includes(rel)
+      ? 'native confirm()/alert() — grandfathered legacy sites (issue #215)'
+      : 'native confirm()/alert() (use useDestructiveConfirm or Toast)';
+    violations[bucket].push(`${rel}:${h.line}  ${txt}`);
   }
 
   // 6. Unregistered PrimeVue component — template uses <Foo> but no
@@ -179,8 +196,9 @@ let exitCode = 0;
 for (const [rule, hits] of Object.entries(violations)) {
   if (hits.length === 0) continue;
   total += hits.length;
-  // aria-label rule is currently warn-only (long tail of remaining sites)
-  const isWarn = rule.startsWith('icon-only Button');
+  // aria-label rule is currently warn-only (long tail of remaining sites);
+  // grandfathered native-confirm sites are warn-only until issue #215 lands.
+  const isWarn = rule.startsWith('icon-only Button') || rule.includes('grandfathered');
   console.log(`\n${isWarn ? 'WARN' : 'FAIL'}  ${rule}  [${hits.length}]`);
   for (const h of hits.slice(0, 30)) console.log(`  ${h}`);
   if (hits.length > 30) console.log(`  ... and ${hits.length - 30} more`);

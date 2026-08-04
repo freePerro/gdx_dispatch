@@ -176,34 +176,53 @@ def test_qb_token_refresh_survives_db_commit_failure():
         asyncio.run(await_close())
 
 
-def test_qb_webhook_deduplication(tenant_db):
-    """Second delivery of identical QB webhook event is silently skipped."""
+def test_qb_webhook_deduplication(tenant_db, monkeypatch):
+    """Second delivery of an identical QB webhook event is skipped by the
+    real /api/qb/webhook handler (previously this test inserted a row and
+    re-queried it — asserting SQLAlchemy identity, not the dedup code path).
+
+    Uses an entity with no per-entity sync task ("Estimate") so the dedup
+    branch is exercised without dispatching celery."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     from sqlalchemy import select
 
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.core.modules import require_module
     from gdx_dispatch.modules.quickbooks.webhook_models import QBWebhookEvent
+    from gdx_dispatch.modules.quickbooks.webhook_router import router as webhook_router
 
-    event_id = "realm1:Customer:42:Update"
+    # No verifier token → the handler skips signature enforcement.
+    monkeypatch.delenv("QB_WEBHOOK_VERIFIER_TOKEN", raising=False)
+    monkeypatch.delenv("QB_WEBHOOK_SECRET", raising=False)
 
-    # First insertion
-    evt1 = QBWebhookEvent(event_id=event_id, event_type="Customer", entity_id="42", realm_id="realm1")
-    tenant_db.add(evt1)
-    tenant_db.commit()
+    app = FastAPI()
+    app.include_router(webhook_router)
+    app.dependency_overrides[get_db] = lambda: tenant_db
+    app.dependency_overrides[require_module("quickbooks")] = lambda: None
 
-    # Simulate the dedup check the webhook endpoint performs
-    existing = tenant_db.execute(
-        select(QBWebhookEvent).where(QBWebhookEvent.event_id == event_id)
-    ).scalar_one_or_none()
-    assert existing is not None, "First event should be stored"
+    payload = {
+        "eventNotifications": [
+            {
+                "realmId": "realm1",
+                "dataChangeEvent": {
+                    "entities": [{"name": "Estimate", "id": "42", "operation": "Update"}]
+                },
+            }
+        ]
+    }
 
-    # Attempt to insert a duplicate — dedup logic should detect and skip
-    duplicate = tenant_db.execute(
-        select(QBWebhookEvent).where(QBWebhookEvent.event_id == event_id)
-    ).scalar_one_or_none()
-    assert duplicate is existing, "Dedup check returns existing row, not None"
+    with TestClient(app) as client:
+        first = client.post("/api/qb/webhook", json=payload)
+        assert first.status_code == 200
+        assert first.json()["skipped"] == 0
 
-    # Confirm only one row exists
-    all_events = tenant_db.execute(select(QBWebhookEvent)).scalars().all()
-    assert len(all_events) == 1
+        second = client.post("/api/qb/webhook", json=payload)
+        assert second.status_code == 200
+        assert second.json()["skipped"] == 1, "duplicate delivery must be deduplicated"
+
+    rows = tenant_db.execute(select(QBWebhookEvent)).scalars().all()
+    assert [r.event_id for r in rows] == ["realm1:Estimate:42:Update"]
 
 
 def test_qb_client_rate_limit_error():

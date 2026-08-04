@@ -1,183 +1,226 @@
 """
-gdx_dispatch/tests/test_39_tax_settings.py — Tax settings tests.
+gdx_dispatch/tests/test_39_tax_settings.py — Tax module endpoint tests.
 
-Tests:
-  1. test_tax_settings_get          — GET /api/tax/settings → 200 dict (TODO: implement)
-  2. test_tax_jurisdiction_list     — GET /api/tax/jurisdictions → 200 list (TODO: implement)
-  3. test_tax_rate_lookup           — GET /api/tax/rate?zip=90210 → 200 or 422 (TODO: implement)
-  4. test_tax_exempt_customer       — PATCH /api/customers/{id}/tax-exempt → 200 or 404 (TODO: implement)
-  5. test_sales_tax_report          — GET /api/reports/sales-tax?period=2026-03 → 200 dict (TODO: implement)
+History: this file used to assert 404 for /api/tax/* on the premise that "no
+tax routes exist" — but the fixture built an empty FastAPI() (its only
+include_router was try/except-wrapped around a module that had been deleted),
+so every request 404'd by construction while the real, mounted tax module
+(gdx_dispatch/modules/tax/) shipped with zero endpoint coverage. Rewritten
+2026-08-03 against the real router: /api/tax/config (GET/PATCH),
+/api/tax/exemptions (GET/POST/DELETE), /api/tax/resolve.
 
-NOTE: No tax routes exist in the current codebase.  All tests below verify that
-the routes return 404 (Not Found) at present and are annotated with
-
-When the tax module is built:
-- Each test's assertion should be updated from ``404`` to the real expected
-  status code and the ``# TODO: implement`` comment should be removed.
-- The test names intentionally match the task specification so they can be
-  searched and updated as a unit.
-
-All HTTP tests use an isolated FastAPI TestClient built from gdx_dispatch.app.create_app()
-with the real router set so the route resolution is faithful to production.
+The sales-tax *report* lives in routers/reports.py and is covered by
+test_reports.py, not here.
 """
 from __future__ import annotations
+
+from datetime import date, timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import Base as TenantModelsBase
-from gdx_dispatch.models.tenant_models import Customer
+from gdx_dispatch.core.database import get_db
+from gdx_dispatch.modules.tax.models import TaxConfig, TaxExemption
+from gdx_dispatch.modules.tax.router import router as tax_router
+from gdx_dispatch.routers.auth import get_current_user
 
 # ---------------------------------------------------------------------------
-# Minimal app fixture — includes only the routers that exist today.
-# Tax routes do not exist yet; requests to them will return 404.
+# Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def client():
-    """Minimal TestClient — no auth overrides; used for route-existence checks."""
-    app = FastAPI()
+_ADMIN = {"id": "user-admin", "role": "admin", "tenant_id": "tenant-test"}
+_TECH = {"id": "user-tech", "role": "tech", "tenant_id": "tenant-test"}
 
-    # Include routers that are known to exist (tax routes are not yet present)
-    try:
-        from gdx_dispatch.core.gdpr_router import router as gdpr_router
-        app.include_router(gdpr_router)
-    except Exception:
-        pass
-
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
-
-
-# ---------------------------------------------------------------------------
-# In-memory DB fixture for the tax-exempt customer test
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def db():
-    """Isolated in-memory tenant DB."""
+def make_client():
+    """Factory: TestClient over the real tax router with an isolated in-memory
+    DB. ``make_client(user)`` overrides auth with that user; ``make_client(None)``
+    leaves the real get_current_user dependency in place (for 401 checks).
+    The engine is shared across clients from one factory so admin/tech clients
+    in a single test see the same data."""
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    TenantModelsBase.metadata.create_all(engine, checkfirst=True)
-    TenantBase.metadata.create_all(engine, checkfirst=True)
+    TaxConfig.__table__.create(bind=engine, checkfirst=True)
+    TaxExemption.__table__.create(bind=engine, checkfirst=True)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    session = Session()
-    yield session
-    session.close()
+
+    def _override_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    clients: list[TestClient] = []
+
+    def _make(user: dict | None = _ADMIN) -> TestClient:
+        app = FastAPI()
+        app.include_router(tax_router)
+        app.dependency_overrides[get_db] = _override_db
+        if user is not None:
+            app.dependency_overrides[get_current_user] = lambda: user
+        tc = TestClient(app, raise_server_exceptions=False)
+        clients.append(tc)
+        return tc
+
+    yield _make
+
+    for tc in clients:
+        tc.app.dependency_overrides.clear()
     engine.dispose()
 
 
 # ---------------------------------------------------------------------------
-# Test 1: test_tax_settings_get
+# Reachability — the routes must exist on the REAL app
 # ---------------------------------------------------------------------------
 
-def test_tax_settings_get(client: TestClient):
-    """GET /api/tax/settings should return a 200 dict with tax configuration.
 
-    Current expectation: 404 (route not registered).
-    When implemented, assert: resp.status_code == 200 and isinstance(resp.json(), dict).
-    """
-    resp = client.get("/api/tax/settings")
-    assert resp.status_code == 404, (
-        f"Expected 404 (route not yet implemented), got {resp.status_code}"
+def test_tax_routes_mounted_in_real_app():
+    """app.py wraps router imports in try/except with an empty-router fallback,
+    so a broken import would silently 404 the whole tax surface. Assert the
+    routes are actually present on the production app object."""
+    from gdx_dispatch.app import create_app
+    from gdx_dispatch.tests.conftest import app_route_paths
+
+    paths = app_route_paths(create_app())
+    for path in ("/api/tax/config", "/api/tax/exemptions", "/api/tax/resolve"):
+        assert path in paths, f"{path} missing from the real app's route table"
+
+
+# ---------------------------------------------------------------------------
+# /api/tax/config
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_creates_default(make_client):
+    """Any authenticated role can read; first read mints the default row."""
+    resp = make_client(_TECH).get("/api/tax/config")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "Default"
+    assert body["default_rate"] == 0.0
+    assert body["tax_labor"] is False
+    assert body["configured_at"] is None
+
+
+def test_patch_config_requires_admin(make_client):
+    resp = make_client(_TECH).patch("/api/tax/config", json={"default_rate": 0.07})
+    assert resp.status_code == 403
+
+
+def test_patch_config_updates_and_persists(make_client):
+    admin = make_client(_ADMIN)
+    resp = admin.patch(
+        "/api/tax/config",
+        json={"default_rate": 0.0738, "tax_labor": True, "name": "MN default"},
     )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["default_rate"] == pytest.approx(0.0738)
+    assert body["tax_labor"] is True
+    assert body["name"] == "MN default"
+    assert body["configured_at"] is not None
+
+    # Persisted, not just echoed
+    again = admin.get("/api/tax/config")
+    assert again.status_code == 200
+    assert again.json()["default_rate"] == pytest.approx(0.0738)
+
+
+def test_patch_config_rejects_out_of_range_rate(make_client):
+    resp = make_client(_ADMIN).patch("/api/tax/config", json={"default_rate": 1.5})
+    assert resp.status_code == 422
+
+
+def test_unauthenticated_config_read_rejected(make_client):
+    resp = make_client(None).get("/api/tax/config")
+    assert resp.status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------
-# Test 2: test_tax_jurisdiction_list
+# /api/tax/exemptions + /api/tax/resolve
 # ---------------------------------------------------------------------------
 
-def test_tax_jurisdiction_list(client: TestClient):
-    """GET /api/tax/jurisdictions should return a 200 list of tax jurisdictions.
 
-    Current expectation: 404 (route not registered).
-    When implemented, assert: resp.status_code == 200 and isinstance(resp.json(), list).
-    """
-    resp = client.get("/api/tax/jurisdictions")
-    assert resp.status_code == 404, (
-        f"Expected 404 (route not yet implemented), got {resp.status_code}"
+def test_list_exemptions_requires_admin(make_client):
+    resp = make_client(_TECH).get("/api/tax/exemptions")
+    assert resp.status_code == 403
+
+
+def test_exemption_lifecycle_zeroes_then_restores_rate(make_client):
+    """POST an exemption → resolve returns 0 for that customer; DELETE it →
+    resolve returns the configured default again."""
+    admin = make_client(_ADMIN)
+    admin.patch("/api/tax/config", json={"default_rate": 0.0738})
+    customer_id = str(uuid4())
+
+    created = admin.post(
+        "/api/tax/exemptions",
+        json={"customer_id": customer_id, "reason": "non-profit", "certificate_id": "ST3-123"},
     )
+    assert created.status_code == 201
+    exemption = created.json()
+    assert exemption["customer_id"] == customer_id
+    assert exemption["exempt"] is True
+
+    listed = admin.get("/api/tax/exemptions")
+    assert listed.status_code == 200
+    assert [e["id"] for e in listed.json()] == [exemption["id"]]
+
+    exempt_rate = admin.get("/api/tax/resolve", params={"customer_id": customer_id})
+    assert exempt_rate.status_code == 200
+    assert exempt_rate.json()["rate"] == 0.0
+
+    deleted = admin.delete(f"/api/tax/exemptions/{exemption['id']}")
+    assert deleted.status_code == 204
+
+    restored = admin.get("/api/tax/resolve", params={"customer_id": customer_id})
+    assert restored.json()["rate"] == pytest.approx(0.0738)
 
 
-# ---------------------------------------------------------------------------
-# Test 3: test_tax_rate_lookup
-# ---------------------------------------------------------------------------
+def test_create_exemption_rejects_bad_customer_id(make_client):
+    resp = make_client(_ADMIN).post("/api/tax/exemptions", json={"customer_id": "not-a-uuid"})
+    assert resp.status_code == 400
 
-def test_tax_rate_lookup(client: TestClient):
-    """GET /api/tax/rate?zip=90210 should return a 200 rate dict or 422 for bad input.
 
-    Current expectation: 404 (route not registered).
-    When implemented, assert: resp.status_code in (200, 422).
-    For 200: assert "rate" in resp.json() or "tax_rate" in resp.json().
-    For 422: assert invalid zip code validation fires correctly.
-    """
-    resp = client.get("/api/tax/rate", params={"zip": "90210"})
-    assert resp.status_code == 404, (
-        f"Expected 404 (route not yet implemented), got {resp.status_code}"
+def test_delete_exemption_unknown_is_404(make_client):
+    admin = make_client(_ADMIN)
+    assert admin.delete("/api/tax/exemptions/not-a-uuid").status_code == 404
+    assert admin.delete(f"/api/tax/exemptions/{uuid4()}").status_code == 404
+
+
+def test_resolve_without_customer_returns_default_rate(make_client):
+    admin = make_client(_ADMIN)
+    admin.patch("/api/tax/config", json={"default_rate": 0.0875})
+    resp = admin.get("/api/tax/resolve")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rate"] == pytest.approx(0.0875)
+    assert body["rate_pct"] == pytest.approx(8.75)
+
+
+def test_expired_exemption_does_not_zero_rate(make_client):
+    """exempt_until in the past → the exemption no longer applies."""
+    admin = make_client(_ADMIN)
+    admin.patch("/api/tax/config", json={"default_rate": 0.0738})
+    customer_id = str(uuid4())
+    created = admin.post(
+        "/api/tax/exemptions",
+        json={
+            "customer_id": customer_id,
+            "exempt_until": (date.today() - timedelta(days=1)).isoformat(),
+        },
     )
+    assert created.status_code == 201
 
-
-# ---------------------------------------------------------------------------
-# Test 4: test_tax_exempt_customer
-# ---------------------------------------------------------------------------
-
-def test_tax_exempt_customer(db):
-    """PATCH /api/customers/{id}/tax-exempt should mark a customer as tax-exempt.
-
-    This test directly verifies the data model side: the Customer.metadata_
-    JSON field can store a tax_exempt flag.  When the HTTP route is built,
-    add a TestClient assertion in addition to this unit-level check.
-
-    When implemented:
-    - POST/PATCH to the route with a valid customer_id → 200
-    - Route with unknown customer_id → 404
-    - Customer.metadata_ should contain {"tax_exempt": True}
-    """
-    # Unit-level check: Customer.metadata_ can store tax_exempt flag
-    c = Customer(name="Tax Exempt Corp", email="taxexempt@corp.com", company_id="tenant-test")
-    db.add(c)
-    db.commit()
-    db.refresh(c)
-
-    # Simulate what the route would do
-    c.metadata_ = {**(c.metadata_ or {}), "tax_exempt": True}
-    db.commit()
-    db.expire_all()
-
-    refreshed = db.execute(select(Customer).where(Customer.id == c.id)).scalar_one()
-    assert refreshed.metadata_ is not None
-    assert refreshed.metadata_.get("tax_exempt") is True, (
-        "Customer.metadata_ must support tax_exempt flag"
-    )
-
-    # app = FastAPI(); app.include_router(customers_router)
-    # with TestClient(app, raise_server_exceptions=False) as client:
-    #     resp = client.patch(f"/api/customers/{c.id}/tax-exempt", json={"tax_exempt": True})
-    #     assert resp.status_code in (200, 404)
-
-
-# ---------------------------------------------------------------------------
-# Test 5: test_sales_tax_report
-# ---------------------------------------------------------------------------
-
-def test_sales_tax_report(client: TestClient):
-    """GET /api/reports/sales-tax?period=2026-03 should return a 200 dict with tax totals.
-
-    Current expectation: 404 (route not registered).
-    When implemented, assert:
-    - resp.status_code == 200
-    - isinstance(resp.json(), dict)
-    - "period" in resp.json() or "total_tax" in resp.json()
-    """
-    resp = client.get("/api/reports/sales-tax", params={"period": "2026-03"})
-    assert resp.status_code == 404, (
-        f"Expected 404 (route not yet implemented), got {resp.status_code}"
-    )
+    resp = admin.get("/api/tax/resolve", params={"customer_id": customer_id})
+    assert resp.json()["rate"] == pytest.approx(0.0738)
