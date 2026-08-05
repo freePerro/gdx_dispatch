@@ -384,6 +384,12 @@ def test_send_invoice_marks_sent(session_factory):
         body = _as_json(send)
         assert body["status"] == "sent"
         assert body["sent_at"] is not None
+        # Migration 057: the mobile send is a server-side email send, so the
+        # delivery channel must be recorded alongside the stamp (audit catch
+        # 2026-08-05 — this was the one send path that skipped sent_via).
+        row = db.get(_Inv, __import__("uuid").UUID(inv["id"]))
+        db.refresh(row)
+        assert row.sent_via == "email"
     finally:
         db.close()
 
