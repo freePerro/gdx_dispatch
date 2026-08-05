@@ -388,6 +388,8 @@ def test_send_invoice_marks_sent_and_sets_public_token(tenant_db_session):
     # email went out and the stamp must stay empty even though status flipped.
     assert sent["email_sent"] is False
     assert sent["sent_at"] is None
+    # No delivery → no channel either (migration 057).
+    assert sent["sent_via"] is None
 
 
 def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, monkeypatch):
@@ -434,6 +436,7 @@ def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, 
     assert sent["email_sent"] is True
     assert sent["pdf_attached"] is False
     assert sent["sent_at"] is not None  # acknowledged delivery → stamp moves
+    assert sent["sent_via"] == "email"  # server-send records its channel
     assert captured["attachments"] is None
 
 
@@ -647,6 +650,31 @@ def test_mark_invoice_sent_flips_status_without_email(tenant_db_session):
     # Critically: no email_sent / email_provider keys (those only appear on
     # the server-send path). mark-sent is the manual-channel acknowledgment.
     assert "email_sent" not in out
+    # No body → channel defaults to 'manual' (pre-057 callers keep meaning
+    # "operator says it went out, channel unknown").
+    assert out["sent_via"] == "manual"
+
+
+def test_mark_invoice_sent_mail_channel_records_paper_delivery(tenant_db_session):
+    """The paper path: a draft invoice printed and posted. channel='mail'
+    stamps sent_at (the delivery fact) + sent_via so the Billing Unsent tab
+    stops counting it — previously the only honest exits were email or
+    nothing."""
+    from gdx_dispatch.routers.invoices import MarkSentIn, mark_invoice_sent
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=tenant_db_session,
+    )
+
+    out = mark_invoice_sent(
+        invoice_id=UUID(inv["id"]), payload=MarkSentIn(channel="mail"),
+        _=_current_user(), db=tenant_db_session,
+    )
+    assert out["status"] == "sent"
+    assert out["sent_at"] is not None
+    assert out["sent_via"] == "mail"
 
 
 def test_mark_invoice_sent_rejects_paid(tenant_db_session):

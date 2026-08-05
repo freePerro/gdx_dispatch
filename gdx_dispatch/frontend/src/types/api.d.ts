@@ -216,6 +216,12 @@ export interface paths {
         /**
          * Delete Job
          * @description Soft delete — sets deleted_at. Tenant-scoped; audit logged.
+         *
+         *     jobs.write gate (2026-08-04 audit catch): this endpoint carried NO
+         *     permission at all — any authenticated role with the jobs module could
+         *     delete any job. jobs.write is the same key the create/update paths
+         *     imply, so every UI that legitimately offers Delete (JobsView, the RFB
+         *     queue) keeps working.
          */
         delete: operations["delete_job_api_jobs__job_id__delete"];
         options?: never;
@@ -335,6 +341,44 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/not-billable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Job Not Billable
+         * @description The Ready-for-Billing dismiss verb: this job will never get an invoice.
+         *
+         *     Warranty/goodwill/internal work lands in RFB with no exit other than
+         *     Create Invoice — the queue floods and becomes wallpaper (same failure
+         *     PR4 fixed for leaked parts with ``wont_bill``). The mark keeps the job
+         *     and its audit trail but leaves every unbilled-nag surface via
+         *     ``core/billing_predicates.job_billing_resolved()``. Reversible with the
+         *     DELETE twin below.
+         *
+         *     ``invoices.write`` gate (owner/admin/accounting): suppressing revenue is
+         *     an invoicing decision — NOT invoices.read_all, which the read-only
+         *     viewer role also holds.
+         */
+        post: operations["mark_job_not_billable_api_jobs__job_id__not_billable_post"];
+        /**
+         * Unmark Job Not Billable
+         * @description Undo for the mark above — the job re-enters Ready-for-Billing.
+         *
+         *     Idempotent: clearing an unmarked job is a 200 no-op (the state the
+         *     caller asked for already holds; a retry must not 4xx).
+         */
+        delete: operations["unmark_job_not_billable_api_jobs__job_id__not_billable_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2625,7 +2669,9 @@ export interface paths {
          *
          *     Used after the composer hands off to Outlook (or the mailto fallback) —
          *     the operator's mail client owns delivery, so the server just stamps
-         *     sent_at + mints the public_token. Mirrors mark_estimate_sent.
+         *     sent_at + mints the public_token. Mirrors mark_estimate_sent. `channel`
+         *     records HOW it went out — 'mail' is the paper-invoice path ("Mark as
+         *     Mailed"), the office's only honest exit from the Unsent bucket.
          */
         post: operations["mark_invoice_sent_api_invoices__invoice_id__mark_sent_post"];
         delete?: never;
@@ -15292,17 +15338,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        get: operations["proxy_to_plugin_host_api_plugins__path__delete"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        put: operations["proxy_to_plugin_host_api_plugins__path__delete"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        post: operations["proxy_to_plugin_host_api_plugins__path__delete"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        delete: operations["proxy_to_plugin_host_api_plugins__path__delete"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins__path__post"];
+        patch: operations["proxy_to_plugin_host_api_plugins__path__delete"];
         trace?: never;
     };
     "/api/plugins": {
@@ -15313,17 +15359,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins_post"];
+        get: operations["proxy_to_plugin_host_api_plugins_delete"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins_post"];
+        put: operations["proxy_to_plugin_host_api_plugins_delete"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins_post"];
+        post: operations["proxy_to_plugin_host_api_plugins_delete"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins_post"];
+        delete: operations["proxy_to_plugin_host_api_plugins_delete"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins_post"];
+        patch: operations["proxy_to_plugin_host_api_plugins_delete"];
         trace?: never;
     };
     "/api/admin/plugins": {
@@ -24545,7 +24591,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default d125df4318f806579c220d0b881e5cb939df2facb5c102f34cf6f76e753b9b65
+             * @default 7cef3ce793cee786f8e79e25e6da37303253557f5fe260e8375eef2d43825f19
              */
             secret: string;
         };
@@ -25528,6 +25574,15 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** MarkSentIn */
+        MarkSentIn: {
+            /**
+             * Channel
+             * @default manual
+             * @enum {string}
+             */
+            channel: "email" | "mail" | "manual";
+        };
         /** MarkupBatchIn */
         MarkupBatchIn: {
             /** Items */
@@ -25789,6 +25844,11 @@ export interface components {
         MyTicketsResponse: {
             /** Items */
             items: components["schemas"]["MyTicketRow"][];
+        };
+        /** NotBillablePayload */
+        NotBillablePayload: {
+            /** Reason */
+            reason: string;
         };
         /** NoteBody */
         NoteBody: {
@@ -30799,6 +30859,76 @@ export interface operations {
             };
         };
     };
+    mark_job_not_billable_api_jobs__job_id__not_billable_post: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotBillablePayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unmark_job_not_billable_api_jobs__job_id__not_billable_delete: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     return_visits_unscheduled_api_jobs_return_visits_unscheduled_get: {
         parameters: {
             query?: {
@@ -35696,7 +35826,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MarkSentIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -64714,7 +64848,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__delete: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64747,7 +64881,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__delete: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64780,7 +64914,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__delete: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64813,7 +64947,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__delete: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64846,7 +64980,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__post: {
+    proxy_to_plugin_host_api_plugins__path__delete: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64879,7 +65013,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_delete: {
         parameters: {
             query?: {
                 path?: string;
@@ -64911,7 +65045,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_delete: {
         parameters: {
             query?: {
                 path?: string;
@@ -64943,7 +65077,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_delete: {
         parameters: {
             query?: {
                 path?: string;
@@ -64975,7 +65109,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_delete: {
         parameters: {
             query?: {
                 path?: string;
@@ -65007,7 +65141,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_post: {
+    proxy_to_plugin_host_api_plugins_delete: {
         parameters: {
             query?: {
                 path?: string;

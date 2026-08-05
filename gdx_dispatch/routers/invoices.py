@@ -173,6 +173,9 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "locked": bool(invoice.locked),
         "locked_at": _iso_dt(invoice.locked_at),
         "sent_at": _iso_dt(invoice.sent_at),
+        # Migration 057 — HOW it was delivered ('email' | 'mail' | 'manual');
+        # NULL on rows delivered before the column existed.
+        "sent_via": getattr(invoice, "sent_via", None),
         # §11: office verification state — the billing screens badge it and
         # the mobile side keys "awaiting verification" off it.
         "verified_at": _iso_dt(invoice.verified_at),
@@ -1580,9 +1583,17 @@ def invoice_email_compose(
     }
 
 
+class MarkSentIn(BaseModel):
+    # 'manual' default keeps old callers' audit rows meaning what they always
+    # meant ("operator says it went out, channel unknown"); the composer paths
+    # pass 'email' and the paper-invoice button passes 'mail'.
+    channel: Literal["email", "mail", "manual"] = "manual"
+
+
 @router.post("/{invoice_id}/mark-sent", response_model=None)
 def mark_invoice_sent(
     invoice_id: UUID,
+    payload: MarkSentIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1590,13 +1601,17 @@ def mark_invoice_sent(
 
     Used after the composer hands off to Outlook (or the mailto fallback) —
     the operator's mail client owns delivery, so the server just stamps
-    sent_at + mints the public_token. Mirrors mark_estimate_sent.
+    sent_at + mints the public_token. Mirrors mark_estimate_sent. `channel`
+    records HOW it went out — 'mail' is the paper-invoice path ("Mark as
+    Mailed"), the office's only honest exit from the Unsent bucket.
     """
+    channel = payload.channel if payload else "manual"
     invoice = _get_invoice_or_404(invoice_id, db)
     if invoice.status in {"paid", "void"}:
         raise HTTPException(status_code=409, detail="invoice is finalized")
     transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5: P1 posts here when the flag is on
     invoice.sent_at = datetime.now(UTC)
+    invoice.sent_via = channel
     if not invoice.public_token:
         invoice.public_token = secrets.token_urlsafe(48)[:64]
     db.commit()
@@ -1608,7 +1623,7 @@ def mark_invoice_sent(
         action="invoice_marked_sent",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"status": invoice.status, "channel": "manual"},
+        details={"status": invoice.status, "channel": channel},
     )
     db.commit()
     return _serialize_invoice(invoice)
@@ -1801,6 +1816,7 @@ def send_invoice(
     # response's email_sent keeps the UI honest); only the stamp is gated.
     if email_sent:
         invoice.sent_at = datetime.now(UTC)
+        invoice.sent_via = "email"
         db.commit()
         db.refresh(invoice)
 

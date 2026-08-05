@@ -362,6 +362,9 @@
               v-tooltip="data.sent_at && !isDateOnlyStamp(data.sent_at) ? formatDateTime(data.sent_at) : null"
               :data-testid="`last-sent-${data.id}`"
             >{{ formatStampDate(data.sent_at) }}</span>
+            <!-- Paper invoices: the office needs to see "we mailed this" at a
+                 glance, or the empty-looking channel reads like a mistake. -->
+            <small v-if="data.sent_at && data.sent_via === 'mail'" class="muted"> · Mailed</small>
           </template>
         </Column>
         <Column header="Actions" style="width: 220px">
@@ -932,6 +935,11 @@ const paymentTarget = ref(null);
 const statusTabs = [
   { label: "All", value: "All" },
   { label: "Draft", value: "Draft" },
+  // "Unsent" is DERIVED like Partial: finalized (past Draft) but sent_at is
+  // empty — no email ever delivered, nothing marked mailed. These rows hide
+  // inside "Sent"/"Overdue" looking like the customer has them when nothing
+  // ever went out. The exit is Send (email) or Mark as Mailed (paper).
+  { label: "Unsent", value: "Unsent" },
   { label: "Sent", value: "Sent" },
   // Tier-6: Partial and Void are real effective statuses (partial payments;
   // the deposit lifecycle voids routinely) — without tabs they were only
@@ -976,6 +984,8 @@ const filteredInvoices = computed(() => {
   let list = invoices.value;
   if (activeStatus.value === "Partial") {
     list = list.filter(isPartial);
+  } else if (activeStatus.value === "Unsent") {
+    list = list.filter(isUnsent);
   } else if (activeStatus.value !== "All") {
     list = list.filter((inv) => inv.status === activeStatus.value);
   }
@@ -1189,9 +1199,25 @@ function isPartial(inv) {
     && Number.isFinite(balance) && balance > 0 && total > 0 && balance < total;
 }
 
+// "Unsent" is DERIVED — finalized but no delivery fact. sent_at is stamped
+// only on actual delivery (server email success, composer handoff, or Mark
+// as Mailed), so an empty sent_at on a Sent/Overdue row means the customer
+// has never received this invoice by any channel. Draft is excluded (its own
+// tab, not ready to go out); Paid/Void need no delivery. Deposit invoices
+// are excluded too (audit catch 2026-08-05): they're born 'sent' with
+// sent_at deliberately empty because the customer gets the pay link through
+// the portal at estimate acceptance — every unpaid deposit would sit here
+// as a false positive nagging the office to re-send something the customer
+// already has.
+function isUnsent(inv) {
+  return !inv.sent_at && inv.billing_type !== "deposit"
+    && ["Sent", "Overdue"].includes(inv.status);
+}
+
 function tabCount(status) {
   if (status === "All") return invoices.value.length;
   if (status === "Partial") return invoices.value.filter(isPartial).length;
+  if (status === "Unsent") return invoices.value.filter(isUnsent).length;
   return invoices.value.filter((inv) => inv.status === status).length;
 }
 
@@ -1213,6 +1239,7 @@ function normalizeInvoice(raw, customerMap = {}) {
     invoice_date: raw.invoice_date || "",
     created_at: raw.created_at || "",
     sent_at: raw.sent_at || "",
+    sent_via: raw.sent_via || "",
     paid_at: raw.paid_at || "",
     updated_at: raw.updated_at || "",
     notes: raw.notes || "",

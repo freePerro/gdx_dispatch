@@ -468,6 +468,12 @@ class Invoice(Base):
     hide_line_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 2026-08-05 (migration 057) — HOW the invoice was delivered: 'email'
+    # (server/Outlook send), 'mail' (postal — printed and posted, the office
+    # records it explicitly), 'manual' (went out some other way). Annotates
+    # sent_at, which stays the sole delivery fact; NULL on rows delivered
+    # before the column existed.
+    sent_via: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Plan §11: the office's explicit approval of a tech-created invoice.
     # Mobile send 409s while NULL — nothing a tech types from a truck reaches
     # a customer without a second pair of eyes. Distinct from sent_at (a

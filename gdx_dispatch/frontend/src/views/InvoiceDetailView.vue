@@ -53,6 +53,9 @@
                  correct calendar day; real sends show time-of-day. -->
             <p v-if="invoice.sent_at" data-testid="invoice-last-sent">
               Last sent: {{ formatStampDateTime(invoice.sent_at) }}
+              <!-- Paper invoices (migration 057): without the channel, a
+                   mailed invoice's stamp reads like an email nobody can find. -->
+              <span v-if="invoice.sent_via === 'mail'">(by mail)</span>
             </p>
             <p v-if="qbEnabled" data-testid="invoice-qb-sync">
               QuickBooks:
@@ -323,6 +326,20 @@
             data-testid="send-invoice-btn"
             :disabled="['paid','void'].includes(String(invoice.status || '').toLowerCase())"
             @click="sendInvoice"
+          />
+          <!-- Paper invoices: printed + posted, no email involved. Stamps the
+               delivery fact with channel 'mail' so the row leaves the Billing
+               "Unsent" tab honestly. Hidden once mailed (re-mailing the same
+               invoice is rare enough that Send/Re-send covers the rest). -->
+          <Button
+            v-if="!['paid','void'].includes(String(invoice.status || '').toLowerCase()) && invoice.sent_via !== 'mail'"
+            label="Mark as Mailed"
+            icon="pi pi-envelope"
+            severity="secondary"
+            outlined
+            :loading="markingMailed"
+            data-testid="mark-mailed-btn"
+            @click="markAsMailed"
           />
           <Button
             label="Record Payment"
@@ -822,6 +839,28 @@ async function verifyInvoice() {
   }
 }
 
+// Paper invoices — printed and posted, no email involved. mark-sent with
+// channel 'mail' stamps sent_at (the delivery fact) + sent_via, flipping
+// Draft → Sent and clearing the row from Billing's Unsent tab.
+const markingMailed = ref(false);
+async function markAsMailed() {
+  markingMailed.value = true;
+  try {
+    await api.post(`/api/invoices/${route.params.id}/mark-sent`, { channel: "mail" });
+    await fetchInvoice();
+    toast.add({
+      severity: "success",
+      summary: "Marked as mailed",
+      detail: "Recorded as delivered by mail — it no longer counts as unsent.",
+      life: 4000,
+    });
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Mark as mailed failed", detail: e?.message || "Try again.", life: 4000 });
+  } finally {
+    markingMailed.value = false;
+  }
+}
+
 const invoice = ref({
   id: null,
   invoice_number: "",
@@ -1004,6 +1043,7 @@ function normalizeInvoice(payload) {
     created_at: payload.created_at || payload.createdAt || "",
     verified_at: payload.verified_at || null,
     sent_at: payload.sent_at || "",
+    sent_via: payload.sent_via || "",
     notes: payload.notes || "",
     // Deposit lifecycle (2026-07-24): the tag, the "View Estimate" link and
     // the adjustments panel all need these — the normalizer used to drop
@@ -1185,7 +1225,7 @@ async function sendComposer() {
         attachments: atts,
       }, { suppressErrorToast: true });
       try {
-        await api.post(`/api/invoices/${route.params.id}/mark-sent`, {}, { suppressErrorToast: true });
+        await api.post(`/api/invoices/${route.params.id}/mark-sent`, { channel: "email" }, { suppressErrorToast: true });
         await fetchInvoice();
       } catch (mse) {
         // Email left the building but we couldn't flip the row. Surface so
@@ -1240,7 +1280,7 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   const mailto = `mailto:${encodeURIComponent(c.to)}?subject=${encodeURIComponent(c.subject)}&body=${encodeURIComponent(c.body_text)}`;
   window.location.href = mailto;
   try {
-    await api.post(`/api/invoices/${route.params.id}/mark-sent`, {}, { suppressErrorToast: true });
+    await api.post(`/api/invoices/${route.params.id}/mark-sent`, { channel: "email" }, { suppressErrorToast: true });
     await fetchInvoice();
   } catch (mse) {
     // Same as the Outlook path: surface a status-flip failure so the

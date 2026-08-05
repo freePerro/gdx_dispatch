@@ -974,6 +974,7 @@ def mobile_send_invoice(
         transition_invoice_status(db, invoice, "sent")  # GL S5
     if delivered:
         invoice.sent_at = datetime.now(UTC)
+        invoice.sent_via = "email"
     db.commit()
     db.refresh(invoice)
 
