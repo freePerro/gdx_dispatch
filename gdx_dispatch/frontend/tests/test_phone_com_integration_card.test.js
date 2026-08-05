@@ -19,6 +19,19 @@ vi.mock('../src/composables/useApi', () => ({
   }),
 }));
 
+// The #215 fix made confirmAsync REAL: the composable now resolves the
+// ConfirmationService (which tests/setup.js registers globally) during setup,
+// so c.require() genuinely waits for an accept — and this mount has no
+// <ConfirmDialog/> to click. Pre-fix, the test only passed because the broken
+// lazy resolution silently auto-accepted. Mock the composable: "after
+// confirm" here means confirm-was-accepted.
+vi.mock('../src/composables/useDestructiveConfirm', () => ({
+  useDestructiveConfirm: () => ({
+    confirmAsync: vi.fn().mockResolvedValue(true),
+    confirmDestructive: (opts) => Promise.resolve().then(() => opts.accept()),
+  }),
+}));
+
 const _UNSET_STATE = {
   token_set: false,
   voip_id: null,
