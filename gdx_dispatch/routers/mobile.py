@@ -391,6 +391,12 @@ def _job_is_billed(db: Session, job_id: Any) -> bool:
     `Job.billing_status` — that column is a dead cache that only ever says
     "unbilled", and every reader that trusted it counted paid jobs as unbilled
     (core/billing_predicates.py).
+
+    Deliberately NOT job_billing_resolved (055 audit catch): folding the
+    not-billable mark in here would make `billed: true` a lie for a job with
+    zero invoices, and every future consumer of the field inherits it. The
+    mark ships as its own `not_billable` key (below); the Bill-button gate
+    reads both.
     """
     from gdx_dispatch.core.billing_predicates import job_billed_exists
 
@@ -416,6 +422,31 @@ def _job_is_billed(db: Session, job_id: Any) -> bool:
         # a real failure, so it must be loud, not swallowed.
         log.exception("mobile_job_billed_check_failed", extra={"job_id": str(job_id)})
         return True
+
+
+def _job_not_billable(db: Session, job_id: Any) -> bool:
+    """055: the office marked this job never-to-be-invoiced (the RFB dismiss
+    verb). Own key, never folded into `billed` — a not-billable job has NO
+    invoice and the field must not lie about that.
+
+    Failure directions are the opposite of _job_is_billed's, on purpose: an
+    error here reads False (Bill button stays available), because suppressing
+    the billing machinery is only ever done on an explicit office decision —
+    the pre-055 status quo, not a money risk.
+    """
+    try:
+        jid = job_id if isinstance(job_id, _UUID) else _UUID(str(job_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    try:
+        return bool(
+            db.execute(
+                select(Job.id).where(Job.id == jid, Job.not_billable_at.is_not(None)).limit(1)
+            ).first()
+        )
+    except SQLAlchemyError:
+        log.exception("mobile_job_not_billable_check_failed", extra={"job_id": str(job_id)})
+        return False
 
 
 def _job_deposit_summary(db: Session, job_id: Any) -> dict[str, float] | None:
@@ -2124,6 +2155,9 @@ def get_mobile_job_detail(
     # invoiced months ago, so it needs the real answer to avoid offering to
     # re-bill it.
     job["billed"] = _job_is_billed(db, job.get("id"))
+    # 055: sibling flag, same screen — the Bill button hides when the office
+    # dismissed the job from Ready-for-Billing (billed stays honest).
+    job["not_billable"] = _job_not_billable(db, job.get("id"))
     # Deposit state rides along (2026-07-23): null when no deposit exists.
     job["deposit"] = _job_deposit_summary(db, job.get("id"))
 

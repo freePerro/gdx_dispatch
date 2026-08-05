@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
-from gdx_dispatch.core.billing_predicates import job_billed_exists
+from gdx_dispatch.core.billing_predicates import job_billing_resolved
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.core.next_action import NextAction
@@ -52,7 +52,8 @@ def _compute_counts(db) -> dict:
             Job.deleted_at.is_(None),
             Job.lifecycle_stage == "completed",
             func.coalesce(Job.completed_at, Job.created_at) < cutoff,
-            ~job_billed_exists(),
+            # 055: office-marked not-billable jobs are dealt with — no nag.
+            ~job_billing_resolved(),
         )
     ) or 0)
 

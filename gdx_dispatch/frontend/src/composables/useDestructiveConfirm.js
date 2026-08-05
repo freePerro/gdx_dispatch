@@ -42,12 +42,19 @@ const DEFAULTS = {
 };
 
 export function useDestructiveConfirm() {
-  // Lazy resolution — useConfirm throws if PrimeVue's ConfirmationService
-  // hasn't been registered (e.g., in unit tests that don't `app.use()` it).
-  // Call site decides what to do on failure: confirmAsync resolves false,
-  // confirmDestructive throws.
+  // Resolve the confirm service NOW, while the composable runs during
+  // setup(). useConfirm() is inject() under the hood and only works with an
+  // active component instance — the old lazy resolution inside the click
+  // handler ALWAYS failed (no instance there), so `_confirm` stayed null and
+  // both fallbacks proceeded as if the user had confirmed: every dialog in
+  // the app silently auto-accepted (issue #215, browser-verified). The
+  // try/catch keeps unit tests without the ConfirmationService plugin on the
+  // documented auto-accept fallback.
   let _confirm = null;
+  try { _confirm = useConfirm(); } catch { _confirm = null; }
   function getConfirm() {
+    // Retry costs nothing and covers a caller that somehow constructed the
+    // composable before the service was registered.
     if (_confirm) return _confirm;
     try { _confirm = useConfirm(); } catch { _confirm = null; }
     return _confirm;

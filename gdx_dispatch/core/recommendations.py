@@ -19,7 +19,7 @@ from redis import Redis, from_url
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.billing_predicates import job_billed_exists
+from gdx_dispatch.core.billing_predicates import job_billing_resolved
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job
 
 logger = logging.getLogger(__name__)
@@ -165,10 +165,12 @@ class RecommendationEngine:
             # ever written "unbilled"), so this rule fired for PAID jobs too.
             # Derive from invoices via the canonical predicate instead.
             try:
+                # 055: resolved = billed OR marked not billable — neither
+                # deserves an "Invoice Now" nudge.
                 job_is_unbilled = (
                     job.lifecycle_stage == "completed"
                     and tenant_db.query(Job.id)
-                    .filter(Job.id == job.id, ~job_billed_exists())
+                    .filter(Job.id == job.id, ~job_billing_resolved())
                     .first() is not None
                 )
                 if job_is_unbilled:
@@ -560,7 +562,8 @@ class RecommendationEngine:
                     tenant_db.query(Job)
                     .filter(
                         Job.lifecycle_stage == "completed",
-                        ~job_billed_exists(),
+                        # 055: not-billable-marked jobs are resolved, not unbilled.
+                        ~job_billing_resolved(),
                         Job.completed_at >= cutoff_30,
                         Job.deleted_at.is_(None),
                     )
