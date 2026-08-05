@@ -25,6 +25,10 @@ make whole bug classes impossible rather than fixing instances of them:
    applies to LIVE payments only — a voided row keeps its reference as history
    and must not block re-recording the real charge.
 
+Step 3 heals rows carrying tax with no rate, but ONLY where the derived rate
+agrees with the tenant's configured default — a production dry run showed the
+naive version would have written a nonsense rate onto 71 real invoices.
+
 Pre-existing duplicates would make the index creation fail. They are collapsed
 first: for each (invoice_id, reference) group, keep the earliest row and void
 the rest (voided payments stay as history and stop counting toward the
@@ -122,20 +126,34 @@ def upgrade() -> None:
     # -- 3. heal the frozen-tax shape (M9) --------------------------------
     # An invoice with tax_amount > 0 but tax_rate NULL sits on
     # _recalculate_invoice's legacy branch: the flat tax is preserved verbatim
-    # while the subtotal moves, so editing a line silently under-collects
-    # (subtotal 1000 -> 1500 with tax stuck at 73.75). The mobile and one-click
-    # creation paths wrote that shape; both now store the rate.
+    # while the subtotal moves, so editing a line silently under-collects. The
+    # mobile and one-click creation paths wrote that shape; both now store the
+    # rate. This heals the rows already in that state.
     #
-    # Derive the rate for existing rows HERE rather than at recalc time: right
-    # now tax_amount and the taxable subtotal are still consistent, so the
-    # quotient is the real rate. At recalc time the lines may already have
-    # changed, and the same arithmetic would bake in a wrong rate.
+    # ANCHORED to the tenant's configured rate, and this matters. A dry run
+    # against production (326 invoices, 200 in this shape) showed the naive
+    # rule -- accept any quotient in (0, 0.25] -- would have healed 111 rows
+    # correctly and written a NONSENSE rate onto 71 others: 0.39%, 2.27%,
+    # 3.84%. Those quotients are garbage because the stored tax was computed
+    # against a different base than the current taxable line sum (lines added
+    # later, taxability flags absent, partial imports). Inferring a rate
+    # backwards from inconsistent data is unsound, and a wrong rate is WORSE
+    # than the frozen tax it replaces: it silently re-prices every future edit.
     #
-    # Only rows where the quotient is a sane rate (0 < r <= 0.25) are touched;
-    # anything else is a hand-entered tax we must not reinterpret.
+    # So: only heal a row whose derived rate agrees with the tenant's
+    # configured default. Everything else keeps exactly today's behavior --
+    # frozen flat tax, no regression, and an operator can fix it deliberately.
+    #
+    # The value written is the DERIVED quotient, not the configured rate, so
+    # the invoice's existing tax_amount is reproduced to the cent on the next
+    # recalc. Healing must not itself move any number.
     bind.exec_driver_sql(
         """
-        WITH taxable AS (
+        WITH cfg AS (
+            SELECT default_rate FROM tax_config
+             WHERE default_rate IS NOT NULL AND default_rate > 0
+             LIMIT 1
+        ), taxable AS (
             SELECT i.id,
                    i.tax_amount,
                    COALESCE(SUM(l.line_total) FILTER (
@@ -146,15 +164,16 @@ def upgrade() -> None:
              WHERE i.tax_rate IS NULL
                AND i.tax_amount > 0
                AND i.totals_locked = false
+               AND i.deleted_at IS NULL
              GROUP BY i.id, i.tax_amount
         )
         UPDATE invoices i
            SET tax_rate = ROUND(t.tax_amount / t.taxable_subtotal, 6)
-          FROM taxable t
+          FROM taxable t, cfg
          WHERE i.id = t.id
            AND t.taxable_subtotal > 0
-           AND (t.tax_amount / t.taxable_subtotal) > 0
-           AND (t.tax_amount / t.taxable_subtotal) <= 0.25
+           -- within 5 basis points of the configured rate, or leave it alone
+           AND abs((t.tax_amount / t.taxable_subtotal) - cfg.default_rate) < 0.0005
         """
     )
 
