@@ -1,0 +1,1199 @@
+# Money Audit — 2026-08-04
+
+Deep audit of every code path that touches money: invoices, payments, Stripe, the
+GL, sales tax, reports, estimates/pricing, bank feeds, QuickBooks, vendor bills,
+payroll/commission, and the frontend.
+
+**Branch audited:** `feat/dashboard-next-actions` @ `7fa276e` (prod is v1.39.0).
+
+**Method.** Eight parallel deep-read passes, one per money domain, each required to
+trace call sites end to end and reproduce arithmetic with concrete numbers. Every
+finding below was then re-verified first-hand against the code before being written
+down. Findings that did not survive that second pass were dropped — see
+[§10 Rejected](#10-rejected-findings-checked-not-bugs) for the ones worth recording as
+*checked and clean*, so nobody re-investigates them.
+
+**Then the important part: nine of the findings were made executable and run.** See
+[§0.5](#05-empirical-verification-what-actually-ran). Reading code produces opinions;
+the probe suite produces evidence. Every one of the nine reproduced.
+
+**Confidence labels.** `CONFIRMED` = traced end to end in code, arithmetic
+reproduced. `PLAUSIBLE` = the code path is real but triggering it needs a condition
+I could not confirm from the repo alone (external event ordering, prod data shape).
+
+**A note on blast radius.** GDX is single-tenant and MN garage-door work is a
+construction contract, so the customer-facing sales-tax rate resolves to 0 in the
+normal case. Several findings below are tax-math defects that are *real but
+currently quiet at GDX* and would bite on taxable retail (parts-only sales, door
+listings) or any future tenant. Each says so explicitly. Do not let the "quiet
+today" note downgrade the fix priority for anything that also affects totals.
+
+---
+
+## 0. The short version
+
+If you read nothing else, these are the ones that are moving real money or are about
+to:
+
+| # | Finding | Why now |
+| --- | --- | --- |
+| M1 | Recording a payment on a QB-imported invoice rewrites its total from bad lines | Fires during the Phase-2 backfill the office is doing **right now** |
+| M2 | `/confirm` and the Stripe webhook can both insert the same payment | No DB constraint; the code's own comment says they race on every fast payment |
+| M3 | A partial Stripe refund voids the **entire** payment | One goodwill refund re-opens the full invoice and restarts dunning |
+| M4 | Client picks the currency; server records the number as dollars | A $500 invoice can be settled for ~$3 |
+| M5 | Portal "Pay" on a settled invoice charges the full total again | `balance_due <= 0` falls back to `invoice.total` |
+| M6 | `/api/commissions/calculate` mints commission from client-supplied totals, no role gate | Any authenticated tech can pay themselves |
+| M7 | Estimate discounts silently evaporate on the first invoice recalc | Customer billed more than the estimate they signed |
+| M8 | Revenue reports sum a column no code ever writes | Several reports read `$0` against real billed work |
+
+Everything is grouped by system below, worst first within each group.
+
+---
+
+## 0.5 Empirical verification — what actually ran
+
+`gdx_dispatch/tests/test_zz_money_correctness_probe.py` turns nine findings into
+tests that assert **what should be true**. A failure is therefore a proven defect,
+not an inference.
+
+Run it:
+
+```bash
+docker run --rm --entrypoint python -e JWT_SECRET="<32+ chars>" \
+  -v "$PWD":/app -w /app docker-app \
+  -m pytest gdx_dispatch/tests/test_zz_money_correctness_probe.py -m health -v
+```
+
+Result on `7fa276e` (before fixes): **9 failed, 1 passed.**
+Result after the fixes in [§0.6](#06-what-was-fixed): **10 passed.**
+
+The `-m health` is required and deliberate. The file carries the `health` marker,
+which `pytest.ini` already excludes from the default suite, so a deliberately-red
+diagnostic file cannot turn CI red — verified both ways (default run: 10 deselected;
+opt-in run: 9 failed, 1 passed). As each finding is fixed its probe flips green; when
+all ten pass, drop the marker and let them join the default gate as the regression net
+that stops the invariants rotting again.
+
+The one that passes is the control — a canonical rate-mode invoice
+($1,000 taxable + $400 labor at 7.38% → tax $73.80, total $1,473.80) holding the
+totals invariant exactly. That matters: it proves the harness is sound, so the nine
+failures are real behavior rather than fixture artifacts.
+
+| Probe | Asserted | Actual | Finding |
+| --- | --- | --- | --- |
+| Imported invoice, duplicated lines | total stays `1471.84` | **`2943.68`** — exactly doubled, invoice re-opens | M1 |
+| Imported invoice, no lines | total stays `650.00` | **`0.00`** — total destroyed outright | M1 |
+| `payments` unique constraint | exists on `(invoice_id, reference)` | **none** | M2 |
+| Same reference recorded twice | 1 payment row | **2 rows** | M2 |
+| Estimate discount carried | invoice `4500.00` | **`5000.00`** — $500 overbill | M7 |
+| Flat-tax invoice grows | tax follows subtotal | **frozen at `73.75`** while subtotal went 1000→1500 | M9 |
+| Overpayment visible | some surfaced field | **none; balance clamps to `0.00`** | M11 |
+| Labor taxability carried | labor stays non-taxable | **copied as taxable** | M24 |
+| Delete draft holding a payment | 409 | **deleted; $200 orphaned** | M37 |
+
+Two results changed my conclusions and are worth reading twice.
+
+**M2 is worse than documented.** I wrote it up as a *concurrency race* between
+`/confirm` and the webhook, needing simultaneous requests. The probe records the same
+reference twice **sequentially** and still gets two rows — because `record_payment`,
+the staff endpoint behind the Record Payment dialog, has no reference dedupe at all.
+Only the Stripe path has the check-then-insert. So this is not an exotic race: an
+ordinary double-click double-records a payment, and with the idempotency middleware
+inert (M36) nothing catches it at any layer.
+
+**M7 fires earlier than documented.** I described the discount as evaporating on the
+first recalc. The probe shows the canonical `POST /api/invoices` path never applies it
+at all — the invoice is **born** at $5,000 against an accepted $4,500. The recalc
+spring-back is a second, separate way to lose it.
+
+Two caveats on the probes. They run against SQLite via `TenantBase.metadata`, so the
+unique-constraint probe proves the constraint is absent **from the ORM models and
+migrations**; a hand-applied index on prod would not show up here — worth confirming
+against prod DDL. And the harness logs two caught `tenant_settings` read failures on
+the estimate paths; those are swallowed by the application, and both estimate probes
+fail on their own assertions with real numbers, not on that error.
+
+---
+
+## 0.6 What was fixed
+
+All ten probes pass. Regression check: **267 tests** across invoices, payments,
+estimates, tax, deposits, portal, vendor invoices and payroll, plus **218** across
+QuickBooks and GL posting — all green with the new enforcement guard active.
+
+**The enforcement rail** — `gdx_dispatch/core/invoice_invariants.py`. A
+`before_commit` guard that rejects any invoice persisting with
+`total ≠ Σ active lines + tax`. This is the "stays correct" half: the audit's worst
+findings were not bad arithmetic but *callers violating the invariant
+`_recalculate_invoice` assumes*, and fixing five of them individually does nothing
+about the sixth. The ledger has had exactly this guard for its balance rule since S4,
+which is why the GL came back clean. Two design notes learned by running it:
+
+- **Commit, not flush.** An invoice and its lines are written across several flushes
+  (insert header → get id → add lines), so a flush-time check sees half-built
+  invoices and fails on legitimate work. It broke 17 tests before being moved.
+- **Line-less invoices are exempt.** They cannot contradict a line sum, and that
+  shape belongs to `totals_locked`. The bug class this catches is a hand-set total
+  sitting *alongside* lines that disagree.
+
+`GDX_INVOICE_INVARIANT=log` downgrades it to a warning; treat needing that as an
+incident, not configuration.
+
+**Migration `056_money_correctness_rails`** — validated against real Postgres with
+seeded duplicate payments and a QB-imported invoice, not just written and hoped for:
+
+| Change | Verified result |
+| --- | --- |
+| Widen 4 tax-rate columns to `numeric(9,6)` | `0.073750` stored exactly |
+| `invoices.totals_locked` + backfill by import marker | QB row locked |
+| Collapse duplicate payments (void, keep earliest) | 2 rows → 1 live |
+| Partial unique index on `(invoice_id, reference)` | duplicate INSERT rejected; re-record after void allowed |
+| Derive `tax_rate` for frozen-tax rows | NULL → `0.073750` |
+
+**A new finding the probes surfaced that code reading missed.** `Invoice.tax_rate`
+was `Numeric(6,4)`, which **cannot represent Minnesota's 7.375%** — `0.07375` stored
+as `0.0737`. The creating request computed tax correctly from the in-memory Decimal
+($73.75 on $1,000); every recalc afterwards read the truncated rate and got it wrong
+($110.55 instead of $110.63 on $1,500). An invoice's tax silently *changed* between
+creation and its first edit. Four rate columns were affected. This is the clearest
+argument in the document for executing invariants rather than reasoning about them.
+
+**A bug in the fix itself, caught by testing the migration.** The unique index was
+first written `WHERE reference IS NOT NULL`. Voiding duplicates doesn't remove them
+from that predicate, so the index creation **failed on exactly the data the collapse
+step was meant to clear** — it would have aborted on prod. Worse, it would have
+blocked re-recording a payment after a wrongful reversal, contradicting the M14 fix
+in the same change. The predicate is now
+`reference IS NOT NULL AND voided_at IS NULL`.
+
+**Findings fixed** (probe-proven): M1, M2, M7, M9, M11, M24, M37 — plus M4 (currency
+locked to USD server-side and enforced at the webhook), M5 (portal total-fallback
+deleted, void/zero-balance 409), M6 (`payroll.write` gate on commission minting),
+M10 (mobile stores its tax rate), M14 (voided payments no longer block re-recording),
+M26 (`invariant_ok` substring check), and the QB importer's line filter.
+
+**Not yet fixed** — everything in §3 (reporting), the rest of §4, §5 and §6, and the
+frontend items in §7. The GL findings remain gated on the CPA review. §9's ordering
+still applies to what's left.
+
+---
+
+## 1. Invoice totals and the recalculation chokepoint
+
+`_recalculate_invoice` ([invoices.py:205-281](../../gdx_dispatch/routers/invoices.py#L205-L281))
+is the single function that derives `subtotal`, `tax_amount`, `total` and
+`balance_due`. Its invariant is:
+
+```text
+total = Σ(active line_total) + tax
+balance_due = max(total − Σ(non-voided payments) − Σ(credit memos), 0)
+```
+
+The math inside it is correct — Decimal throughout, `quantize(0.01, ROUND_HALF_UP)`,
+voided payments excluded, credits netted. **Every bug in this section is a caller
+that violates the invariant the function assumes.**
+
+### M1 — Recording a payment on a QB-imported invoice rewrites its total from wrong lines `CRITICAL` `CONFIRMED`
+
+**This is the most urgent finding in the audit, because the office is triggering it
+right now.**
+
+Two facts combine:
+
+1. The QB invoice **create** path inserts *every* line QB returns, including
+   `SubTotalLine` and `DiscountLine`, which QB already folded into `TotalAmt`
+   ([sync.py:948-958](../../gdx_dispatch/modules/quickbooks/sync.py#L948-L958)) —
+   there is no `DetailType` filter.
+2. `_resync_invoice_lines` — a *different* function — does filter them, and its
+   comment documents the exact prod damage:
+
+   > *"Confirmed on prod invoice #1111 2026-05-09 — lines summed to $2,741.50,
+   > persisted total $1,471.84."* ([sync.py:450-467](../../gdx_dispatch/modules/quickbooks/sync.py#L450-L467))
+
+So the fix went into the resync path and never into the create path — and create is
+the branch every first-time import takes. Those invoices are sitting in prod with a
+correct stored `total` and a line set that sums to roughly double it.
+
+The stored total is safe only while nothing recalculates. But recording a payment
+calls `_recalculate_invoice` ([invoices.py:1997](../../gdx_dispatch/routers/invoices.py#L1997)),
+which overwrites `invoice.total` from the line sum.
+
+Concretely, on the real prod invoice named in that comment: total $1,471.84, lines
+sum $2,741.50. The office records the $1,471.84 payment as part of the Phase-2
+backfill. Recalc sets total to $2,741.50 and balance to $1,269.66. **An invoice that
+was just paid in full re-opens owing $1,269.66**, re-enters aging, and would re-enter
+dunning if dunning were on.
+
+Two more shapes of the same bug:
+
+- **Discount dropped:** QB invoice with items $1,000 and a −$100 discount line, total
+  $900. Only the $1,000 item survives the filter on resync (the discount line is
+  correctly excluded there but nothing replaces it), so paying $900 leaves a phantom
+  $100 balance.
+- **Line-less imported invoice:** total $650, zero lines (there were 282 of these
+  historically). Paying $650 sets subtotal to 0 and destroys the $650 total —
+  revenue reports lose the invoice entirely.
+
+**Fix.** Two parts, and do the first one today:
+
+1. **Stop the bleeding:** make `_recalculate_invoice` refuse to recompute
+   `subtotal`/`total` for imported invoices — recalc `balance_due` and status only.
+   The imported total is the source of truth; the local lines are known-lossy. Gate
+   on a mapped QB entity or add an explicit `totals_locked` column (preferred — it
+   states the intent and survives the QB phase-out).
+2. Apply `_ITEM_LINE_TYPES` in the create branch too, or just have it call
+   `_resync_invoice_lines`.
+
+**Before shipping:** find out how many invoices are already mis-shaped, and whether
+any have *already* been recalculated by a backfill payment. A read-only query over
+imported invoices comparing `total` against `SUM(line_total)` will tell you both, and
+the ones that already drifted need their totals restored from QB.
+
+### M7 — Estimate discounts evaporate on the first recalc `HIGH` `CONFIRMED`
+
+Two independent audit passes found this from opposite directions, and the code
+comments admit it.
+
+`Estimate.discount` is a flat dollar amount
+([proposals/models.py:27](../../gdx_dispatch/modules/proposals/models.py#L27)).
+`Invoice` **has no discount column at all** — I checked the model directly. And no
+conversion path materializes the discount as a line.
+
+The one-click job path bakes the discounted figure into `invoice.total` by hand and
+deliberately skips recalc, with a comment saying exactly why:
+
+> *"this path deliberately never calls `_recalculate_invoice` (estimate-derived
+> totals carry discounts the line-sum recompute would drop)"*
+> ([jobs.py:2888-2891](../../gdx_dispatch/routers/jobs.py#L2888-L2891))
+
+That works until *anything else* touches the invoice — and eleven other call sites
+run recalc, including recording a payment, editing any line, and issuing a credit
+memo. Estimate subtotal $5,000 with a $500 discount produces a $4,500 invoice whose
+lines sum to $5,000. The customer pays $2,000; `record_payment` recalculates; the
+total springs back to **$5,000** and the balance reads $3,000 instead of $2,500. The
+customer is billed $500 more than the estimate they accepted, with no audit trail.
+
+The canonical `POST /api/invoices` path is worse — it never applies the discount at
+all, so the invoice is born at $5,000. **The probe confirms this directly**: an
+accepted estimate of $4,500 (a $5,000 gross with a $500 discount) produces an invoice
+whose total is $5,000 at creation, before any recalc runs. The spring-back on recalc
+is a second, independent way to lose the same discount.
+
+**Fix.** Materialize the discount as a negative, non-taxable `Discount` line at
+conversion, exactly the way deposit netting already does it. That makes
+`total == Σlines + tax` a true invariant instead of something individual callers
+hand-maintain and recalc destroys. Hand-adjusted totals cannot survive this codebase.
+
+### M9 — Two of three invoice-creation paths leave `tax_rate` NULL, freezing tax `MEDIUM` `CONFIRMED`
+
+`_recalculate_invoice` is rate-driven when `tax_rate` is set and falls back to
+preserving a flat stored `tax_amount` when it is NULL. Only the canonical create path
+sets it ([invoices.py:841](../../gdx_dispatch/routers/invoices.py#L841)):
+
+- [mobile_invoicing.py:457-468](../../gdx_dispatch/routers/mobile_invoicing.py#L457-L468) — no `tax_rate`
+- [jobs.py:2678-2695](../../gdx_dispatch/routers/jobs.py#L2678-L2695) — no `tax_rate`
+
+So on a mobile or one-click invoice, editing a line moves subtotal and total but
+leaves tax frozen. Subtotal $1,000 at 7.375% gives tax $73.75; adding a $500 line
+makes the subtotal $1,500 while tax stays $73.75 instead of $110.63 — under-collecting
+$36.88.
+
+The `jobs.py` path has a second defect: it computes tax with float `round()`
+(`round(subtotal_value * _rate, 2)`) rather than the Decimal `ROUND_HALF_UP` used
+everywhere else, so the same inputs give a different answer by a cent on half-way
+cases (`round(2.675, 2)` is 2.67 in float; Decimal half-up gives 2.68).
+
+*Quiet at GDX today* (rate 0), real for taxable retail.
+
+**Fix.** Set `tax_rate` on all creation paths and route the `jobs.py` math through
+`_money()`. Better still, drop the legacy NULL branch once no rows need it.
+
+### M10 — Mobile invoicing stamps tax but excludes it from the total `MEDIUM` `CONFIRMED`
+
+The mobile path writes `tax_amount` from the estimate, then both estimate branches
+overwrite `invoice.total` and `balance_due` with the line sum alone, leaving the tax
+stamped but unbilled. Accepted tier $1,100 with $81.18 tax yields an invoice showing
+total $1,100. The customer pays $1,100 in full; the office records it; recalc takes
+the legacy branch (`tax_rate` NULL, per M9) and adds the stamped tax back — the total
+becomes $1,181.18 and **the invoice re-opens with an $81.18 balance the customer was
+never asked for.**
+
+**Fix.** Recompute `total = subtotal + tax_amount` after the overwrite, or zero
+`tax_amount` if this path genuinely means tax-free.
+
+### M11 — Overpayment is clamped to zero and disappears `MEDIUM` `CONFIRMED`
+
+`balance_due = max(total − paid − credited, 0)`. There is no customer-credit concept
+outside the GL, and the GL overpayment gate only runs when
+`ledger_posting_enabled(...)` — which
+[defaults to off](../../gdx_dispatch/modules/ledger/service.py#L209-L212) ("No
+settings row = off") and is off in prod.
+
+So every double-collection in this document lands invisibly: balance reads `0.00`,
+status reads `paid`, and the excess exists only as raw `Payment` rows summing above
+the total. Nothing flags it, no refund workflow triggers.
+
+**Fix.** Independent of the GL rollout, surface
+`amount_overpaid = max(paid + credited − total, 0)` on the invoice payload and add a
+report for non-zero values. This is the detection net for M2, M3, M5 and M12 — worth
+building first because it tells you whether they have already fired.
+
+### M12 — Stale PaymentIntents outlive the balance they were minted for `MEDIUM` `CONFIRMED`
+
+The amount is frozen when the intent is created, and `confirm` deliberately runs with
+`require_balance=False`. Balance $500, customer opens `/pay`, office records a $300
+check, customer's still-open tab confirms the original $500 intent → $800 collected
+on a $500 invoice, clamped invisible.
+
+**Fix.** Cancel outstanding intents when a payment or credit is recorded, and at
+webhook time compare the amount against the remaining receivable, routing any excess
+to a visible credit plus an alert.
+
+---
+
+## 2. Stripe and payment recording
+
+The 2026-08-04 hardening (PR #268) holds where it was applied: token-scoped invoice
+resolution, server-derived amounts, ACH SetupIntent binding, webhook signature
+verification that fails closed, and a webhook that raises so Stripe retries. I
+verified each of those. The findings below are what it did not reach.
+
+The scope tell is in the tests: `test_payments_portal_authz.py` covers `charge_method`
+ownership, amount and void — and nothing about currency, the `/intent` endpoint, or
+refunds.
+
+### M2 — `/confirm` and the webhook can both insert the same payment `HIGH` `CONFIRMED`
+
+`_mark_invoice_paid` is idempotent by reading first and inserting second
+([core/payments.py:298-306](../../gdx_dispatch/core/payments.py#L298-L306)):
+
+```python
+existing = db.scalars(_select(Payment).where(
+    Payment.invoice_id == invoice.id, Payment.reference == external_ref)).first()
+if existing is not None:
+    return
+```
+
+There is **no unique constraint** on `(invoice_id, reference)` — I checked the model
+and the migrations. And two callers race by design; the module's own comment says so:
+
+> *"The signed webhook usually beats the browser's confirm call"*
+> ([core/payments.py:239-240](../../gdx_dispatch/core/payments.py#L239-L240))
+
+Two concurrent transactions both see no row and both insert. One $500 charge becomes
+two $500 `Payment` rows: payments double-counted, GL posts twice, and the balance
+clamp (M11) hides it.
+
+**The probe found this is not limited to a race.** Recording the same reference twice
+*sequentially* also produces two rows, because `record_payment` — the staff endpoint
+behind the Record Payment dialog — performs no reference dedupe whatsoever. Only the
+Stripe path has even the optimistic check. So the everyday version of this bug is a
+double-click, not a thread race, and with the idempotency middleware inert (M36)
+there is no protection at any layer of the staff payment path.
+
+The codebase knows the fix — `with_for_update` is used in inventory, purchase orders,
+bank-feed matching, and even for invoice *verification*, which
+[its own comment calls a non-money mutation](../../gdx_dispatch/routers/invoices.py#L2290-L2296).
+The locking pattern is applied to an approval flag and not to money.
+
+**Fix.** Add a partial unique index —
+`UNIQUE (invoice_id, reference) WHERE reference IS NOT NULL` — and catch
+`IntegrityError` as the idempotent no-op. That closes it at the only layer where the
+race genuinely cannot slip through. Add `with_for_update()` on the invoice row in
+`_mark_invoice_paid` as well.
+
+### M3 — A partial refund voids the entire payment `HIGH` `CONFIRMED`
+
+`charge.refunded` routes straight to `_reverse_recorded_payment`, which sets
+`voided_at` on the whole `Payment` row
+([core/payments.py:723-726](../../gdx_dispatch/core/payments.py#L723-L726)).
+`amount_refunded` is read nowhere in the codebase — I grepped to confirm.
+
+Stripe fires `charge.refunded` for partial refunds too. So refunding $50 of a $500
+payment as a goodwill credit voids the full $500: balance returns to $500, the invoice
+flips from `paid` back to `sent`, and dunning chases a customer who paid $500 and was
+refunded $50. Books understate cash by $450.
+
+**Fix.** Compare `amount_refunded` against the charge amount. Full refund → void.
+Partial → record an `InvoiceAdjustment(kind="refund")` for the refunded portion only.
+
+### M4 — The client picks the currency; the server records the number as dollars `HIGH` `CONFIRMED`
+
+`CreateIntentRequest.currency` is a client field passed verbatim to Stripe
+([core/payments.py:123](../../gdx_dispatch/core/payments.py#L123),
+[:366](../../gdx_dispatch/core/payments.py#L366)). The webhook then records
+`amount_received / 100.0` as dollars
+([:714](../../gdx_dispatch/core/payments.py#L714)) without ever checking the currency.
+
+The hardening correctly stopped trusting the client's *amount* but left the *unit*
+under client control. A $500 invoice: the server derives `amount_cents = 50000`, the
+payer requests `currency: "idr"`, Stripe charges Rp 50,000 (about **$3**), the webhook
+records **$500.00**, and the invoice is settled. For a zero-decimal currency like JPY
+the `/100` division is also arithmetically wrong regardless of intent.
+
+The same client-controlled `currency` reaches Stripe on the portal `charge_method`
+path ([routers/payments.py:53](../../gdx_dispatch/routers/payments.py#L53)).
+`ach_charge` and `portal_invoice_pay` correctly hardcode `usd`.
+
+**Fix.** Drop `currency` from both request models and hardcode `"usd"` server-side,
+then refuse to record any webhook event whose `currency != "usd"`. Both halves —
+otherwise an intent minted before the deploy still records wrong.
+
+### M5 — Portal "Pay" on a settled invoice charges the full total `HIGH` `CONFIRMED`
+
+[portal.py:523-533](../../gdx_dispatch/routers/portal.py#L523-L533):
+
+```python
+amount_due = Decimal(str(invoice.balance_due if invoice.balance_due is not None else invoice.total))
+if amount_due <= 0:
+    amount_due = Decimal(str(invoice.total or 0))
+```
+
+A zero balance means *paid*, and the code responds by charging the total again. There
+is also no `status == "void"` check and no idempotency key. A fully-paid $1,200
+invoice, tapped in the portal, mints a $1,200 intent; the webhook deliberately records
+second genuine payments ([core/payments.py:705-709](../../gdx_dispatch/core/payments.py#L705-L709));
+the clamp hides the double collection.
+
+This endpoint predates the hardening and was not part of it — the fixes went to
+`routers/payments.py` and `core/payments.py`.
+
+**Fix.** Return 409 when `balance_due <= 0` or `status == "void"`, delete the fallback
+entirely, and add a server-derived idempotency key.
+
+### M13 — Portal `/payments/intent` still takes a client amount and arbitrary metadata `MEDIUM-HIGH` `CONFIRMED`
+
+`charge_method` on this router got the full treatment — `_require_own_unpaid_invoice`,
+server-derived amount, void and ownership checks. Its sibling `/intent` on the same
+router did not ([routers/payments.py:148-190](../../gdx_dispatch/routers/payments.py#L148-L190)):
+`amount_cents` comes from the body and `metadata` is forwarded verbatim.
+
+Since the webhook records against `metadata.invoice_id` with no ownership check, an
+authenticated portal user can mint an intent carrying **any** invoice UUID and have
+the payment recorded there — cross-customer misattribution. Combined with M4, the
+caller controls amount, currency and target at once.
+
+**Fix.** Give `/intent` the same treatment `charge_method` already has: require an
+invoice reference, run the ownership check, derive the amount server-side, hardcode
+the currency, and whitelist metadata keys.
+
+### M14 — A late failure event voids a genuinely collected payment `MEDIUM` `PLAUSIBLE`
+
+`charge.failed` and `payment_intent.payment_failed` both reverse whatever is recorded
+for that PaymentIntent. Stripe does not guarantee delivery order, and a card retry
+reuses the same intent. First attempt declines, retry succeeds, `succeeded` is
+processed first and records $500, then the delayed `charge.failed` from attempt one
+arrives and voids the good payment.
+
+Recovery is blocked too: the existence check in `_mark_invoice_paid` does not filter
+`voided_at`, so a redelivered `succeeded` sees the voided row and returns early.
+
+The handler cannot currently distinguish a genuine late ACH return (which *must*
+reverse) from a stale pre-success decline.
+
+**Fix.** On any failure event, retrieve the PaymentIntent live and only reverse when
+it is not currently `succeeded`. Filter `voided_at.is_(None)` in the existence check
+so a legitimate re-record can heal a wrongful void.
+
+### M15 — Dispute handling is one-directional `MEDIUM` `CONFIRMED`
+
+`charge.dispute.created` voids the payment (correct), but there is no
+`charge.dispute.closed` handler anywhere. Winning a dispute reinstates the money at
+Stripe and nothing restores it in GDX: the payment stays voided, the invoice stays
+open, dunning chases a customer whose charge stood, and $600 sits in the bank with no
+`Payment` row.
+
+**Fix.** Handle `charge.dispute.closed` with `status == "won"`.
+
+### M16 — ACH has a double-payment window `MEDIUM` `CONFIRMED` (gap) / `PLAUSIBLE` (occurrence)
+
+Nothing is recorded while an ACH debit is `processing` — there is no
+`payment_intent.processing` handler — so the balance stays full and the Pay button
+stays live. Stripe's idempotency key expires after 24h, so a customer paying Friday
+and again Monday mints a second intent; both settle.
+
+**Fix.** Handle `payment_intent.processing` with a pending marker and suppress the pay
+URL while an intent for the current balance is in flight.
+
+### M17 — Smaller payment-path items `LOW`
+
+- **Unauthenticated tenant-wide `GET /api/payments`** ([core/payments.py:59-95](../../gdx_dispatch/core/payments.py#L59-L95))
+  has no auth dependency. It is shadowed today only because `ui_compat`'s
+  authenticated version registers first ([app.py:1649](../../gdx_dispatch/app.py#L1649)
+  vs [:1735](../../gdx_dispatch/app.py#L1735)). If that import ever fails, `app.py`
+  substitutes an empty router and the whole AR book goes public. It has no callers —
+  delete it.
+- **No idempotency fallback on `charge_method`**: the key is optional from both header
+  and body, so a double-click makes two distinct intents and two full-balance charges.
+  Derive a fallback server-side like the public path does.
+- **`confirm` records `pi.amount` while the webhook records `amount_received`** —
+  identical under auto-capture, divergent the moment manual capture appears.
+- **`_next_invoice_number` is `COUNT(*) + 1`** ([invoices.py:177-179](../../gdx_dispatch/routers/invoices.py#L177-L179)),
+  so concurrent creates collide on the unique constraint. Not a money error, but it
+  500s the loser.
+
+---
+
+## 3. Sales tax and financial reporting
+
+### M8 — Revenue reports sum a column nothing writes `HIGH` `CONFIRMED`
+
+`Invoice.total_amount` is nullable
+([tenant_models.py:479](../../gdx_dispatch/models/tenant_models.py#L479)) and **no
+invoice-creation path writes it** — I grepped every writer; the hits belong to other
+models entirely. The codebase already knows:
+
+> *"`total_amount` (nullable, almost never populated by any insert path) … which is
+> null on every prod row, so Dashboard Revenue read $0 against $712k of real billed
+> work."* ([reports.py:70-75](../../gdx_dispatch/routers/reports.py#L70-L75))
+
+Only `_summary_window` was fixed. Three surfaces still sum the bare column:
+
+- `/revenue-by-period` ([reports.py:299-300](../../gdx_dispatch/routers/reports.py#L299-L300)) — `$0` revenue every period, with a real invoice count beside it.
+- `/revenue-analytics` — `by_period` uses `total_amount` ($0) while `by_job_type` uses `COALESCE(total_amount, total)` (real dollars), so **the payload's own total contradicts its own detail rows**.
+- `/reports/export` for `invoices` and `revenue` — blank and all-zero columns in the CSVs.
+
+All three also lack a status filter, so drafts, voids and deposits count wherever the
+column *is* populated.
+
+**Fix.** `COALESCE(total_amount, total)` plus `status IN ('sent','paid','overdue')`
+everywhere, and export `total`. Then delete `total_amount` — a column nothing writes
+and five things read is a trap that keeps re-firing.
+
+### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` `CONFIRMED`
+
+The known limitation is still live: the report has no join to `invoice_adjustments`,
+and `InvoiceAdjustment` carries a flat `amount` with no tax component. Two things make
+it worse than the docstring admits:
+
+1. `adjusts_invoice_id` is accepted on `POST /api/invoices` **today**
+   ([invoices.py:388](../../gdx_dispatch/routers/invoices.py#L388),
+   [:838](../../gdx_dispatch/routers/invoices.py#L838)) — replacement invoices are
+   creatable now, not "when §12 lands".
+2. A fully-credited invoice flips to `paid` with `paid_at` stamped
+   ([invoices.py:275-280](../../gdx_dispatch/routers/invoices.py#L275-L280)), and
+   `tax_collected` keys off `paid_at IS NOT NULL`. So credited tax lands in the
+   remittance-liability bucket **with zero cash received**.
+
+$2,000 at 7.38% is $147.60 tax. Credit it in full and re-issue at $1,500 ($110.70
+tax): the report shows $258.30 liability and at least $147.60 "collected", against a
+truth of $110.70 and $0.
+
+**Fix.** Store a tax component on `invoice_adjustments` and net it per period; gate
+`tax_collected` on actual non-voided payments rather than `paid_at`.
+
+### M19 — Credit memos reduce no revenue report; deposits and finals overlap `HIGH` `CONFIRMED`
+
+`Invoice.total` is never reduced by a credit memo (only `balance_due` is), and no
+revenue aggregate joins `invoice_adjustments`. Deposit invoices are `sent`, so they
+count as revenue at accept time, while the final only nets the *paid* portion of the
+deposit and credit-memos the remainder — which flips the deposit to `paid` without
+reducing its total.
+
+A $10,000 job with a $2,000 deposit of which $500 was paid reports $2,000 + $9,500 =
+**$11,500 against $10,000 of true revenue**.
+
+**Fix.** Subtract Σ(credit_memo) per period in revenue aggregates and exclude
+`billing_type='deposit'` from billed revenue, mirroring what the sales-tax report
+already does. This and M18 are the same missing subtraction seen from two reports —
+one shared "net adjustments per period" join fixes both.
+
+### M20 — `/reports/outstanding-aging` windows AR on `created_at` and includes drafts `MEDIUM-HIGH` `CONFIRMED`
+
+The query filters `created_at >= start_dt` with a 30-day default and has no status
+filter ([reports.py:806-845](../../gdx_dispatch/routers/reports.py#L806-L845)).
+A draft's `balance_due` equals its total at creation, so drafts appear as receivables.
+And **any receivable created more than 30 days ago vanishes from aging entirely** —
+the 91+ bucket can only ever fill from QB imports whose `created_at` is the import
+date.
+
+It also ages from `invoice_date` while `/reports/cash-risk` ages from `due_date` and
+excludes paid/void/draft — two AR agings that structurally cannot agree.
+
+**Fix.** Drop the `created_at` window (aging is a point-in-time backlog), exclude
+draft and void, and anchor on `due_date` to match cash-risk.
+
+### M21 — Smaller reporting items `LOW–MEDIUM`
+
+- **Estimate tax uses float `round()`** ([proposals/totals.py:113](../../gdx_dispatch/modules/proposals/totals.py#L113))
+  while invoices use Decimal `ROUND_HALF_UP`. Taxable $36.25 at 10% gives $3.62 on the
+  estimate and $3.63 on the invoice.
+- **Business dates come from the server's UTC clock**, so an invoice created at 7:30pm
+  CDT on July 31 is dated Aug 1 and its tax is remitted in the wrong month.
+- **Five reports window on `created_at` rather than `invoice_date`**, which for
+  QB-imported rows is the import date — business-date ranges return all-or-nothing
+  around the import day.
+- **Partial-period buckets are presented as full periods**: with the default 30-day
+  window, a "quarter" card holds 30 days of tax with nothing marking it partial.
+- **`/api/exports/*` swallows all SQLAlchemy errors and returns `[]`**, so a schema
+  mismatch produces a short CSV indistinguishable from "no data"; `_fetch_invoices`
+  has no `deleted_at` filter, so soft-deleted invoices export as live.
+- **`modules/reporting/service.py`** counts deleted and void invoices in
+  `total_billed` — but I found no router callers, so it is dead-but-loaded.
+
+---
+
+## 4. Estimates, pricing and conversion
+
+The pricing engine core is sound: `sell = cost/(1−margin)` correctly implemented and
+labeled, margins validated to [0,1), tier ranges half-open with fail-loud on gaps or
+overlaps. The problems are at the estimate→invoice boundary, where a discount-aware
+totals function meets an invoice invariant that has no discount concept.
+
+### M22 — Proposal-mode estimates bill the sum of all tiers `HIGH` `CONFIRMED`
+
+Good/better/best tiers are stored as ordinary `EstimateLine` rows on one estimate, and
+accepting a tier sets `accepted_tier_id` and the estimate total without touching the
+lines. Both office conversion paths then copy **every** line with no tier filter —
+[invoices.py:858-883](../../gdx_dispatch/routers/invoices.py#L858-L883) and
+[jobs.py:2618-2637](../../gdx_dispatch/routers/jobs.py#L2618-L2637).
+
+Tiers of $800/$1,100/$1,400 with "better" accepted produce an invoice of
+**$3,300 + tax**. Every tier line also becomes a parts-needed row, so the job
+over-orders threefold.
+
+Mobile invoicing gets this right (one line for the chosen tier). The paths disagree.
+
+**Fix.** When `proposal_mode` is set with an `accepted_tier_id`, restrict the copy —
+invoice lines, job parts, and `_recalculate_total` — to the accepted tier, or collapse
+to a single line the way mobile does.
+
+### M23 — Estimates are billed without checking their status `HIGH` `CONFIRMED`
+
+The one-click path picks `order_by(created_at desc).limit(1)` with **no status
+filter** ([jobs.py:2612-2624](../../gdx_dispatch/routers/jobs.py#L2612-L2624)), and
+`POST /api/invoices` checks only that the `estimate_id` exists and matches the job.
+
+A job with accepted estimate A ($1,400) and a later declined variant B ($2,100) bills
+**B**. Mobile invoicing correctly filters `status == "accepted"`.
+
+**Fix.** Filter on accepted (ordering by `accepted_at`) in `jobs.py`, and 409 on a
+non-accepted `estimate_id` in the canonical path.
+
+### M24 — Line taxability is lost on conversion `HIGH` `CONFIRMED`
+
+The line copy forwards `category`, `cost_snapshot` and both margin snapshots — but not
+`taxable`, which defaults to `True`. Estimates exclude labor from tax when the tenant's
+`tax_labor` flag is false; invoices then tax it.
+
+Materials $2,000 plus labor $1,000 at 7.38% quotes $147.60 of tax and bills $221.40 —
+**$73.80 over the accepted total**. The per-estimate `tax_rate` override is dropped the
+same way, so an estimate deliberately quoted at 0% re-acquires the tenant default.
+
+*Quiet at GDX today* (rate 0), unconditional for any taxed tenant.
+
+**Fix.** Copy `taxable` in the line loop and use `estimate.tax_rate` when present.
+
+### M25 — Smaller pricing items `LOW–MEDIUM`
+
+- **`/api/pricing/calculate` uses markup math on values named "margin"** —
+  `cost * (1 + margin)` where the engine means `cost / (1 - margin)`. At 30% on a $100
+  cost that is $130.00 versus the engine's $142.86, a 9% revenue gap. The router is
+  mounted; its state is in-memory per worker.
+- **An explicit 0% margin override is discarded** by
+  `line.margin_pct_override or line.margin_pct_snapshot`
+  ([estimates.py:1155](../../gdx_dispatch/routers/estimates.py#L1155)) — sell-at-cost
+  silently reverts to the tier margin. The very next statement uses the correct
+  `is not None` idiom.
+- **Rolling-volume discount is configured, cached, previewed in admin — and never
+  applied to a real estimate.** Only `price_estimate` consults it, and its sole caller
+  is the admin preview.
+- **Unit-price rounding drift**: the nested-create path stores an unquantized sell
+  price, so `line_total ≠ qty × stored unit_price` and a later description-only PATCH
+  moves the total by a cent per line.
+- **Change orders**: a bare `amount` PATCH leaves stale line rows and billing follows
+  the lines ($500 billed where $700 was approved); amount-only COs show $0 on the
+  approval screen but bill amount + tax.
+- **Archived labor-matrix rows still price new lines** — `db.get` ignores
+  `active=False` and `effective_to`.
+- **Double-accept and duplicate-deposit races**: accept and deposit creation are
+  read-then-insert with no row lock or partial unique index, so two concurrent accepts
+  can mint two deposit invoices and ask the customer to pay twice.
+
+---
+
+## 5. Cost side: vendor bills, payroll, commission
+
+### M6 — `/api/commissions/calculate` mints commission from client input with no role gate `HIGH` `CONFIRMED`
+
+Three money problems in one endpoint
+([commission.py:215-266](../../gdx_dispatch/routers/commission.py#L215-L266)):
+
+1. `parts_total` and `labor_total` come from the request body (up to $10M each) — the
+   server never derives them from the job.
+2. No idempotency and no unique constraint on `(user_id, job_id, period)`, so a
+   double-click inserts two entries and `/summary` sums both.
+3. The router's only dependency is `require_module("jobs")` — I checked
+   ([commission.py:22-26](../../gdx_dispatch/routers/commission.py#L22-L26)). **No
+   admin or manager role gate.**
+
+Any authenticated technician can POST their own user id with a $10,000,000
+`parts_total` and appear in the commission summary.
+
+**Fix.** Server-derive the totals from the job's invoices, add a role gate, and make
+it an upsert on `(user_id, job_id, period)`.
+
+### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` `CONFIRMED`
+
+The invariant check exists to guard untrusted LLM-extracted money. The review queue
+reports it like this
+([vendor_invoices.py:156](../../gdx_dispatch/routers/vendor_invoices.py#L156)):
+
+```python
+invariant_ok=not (invoice.notes or "").startswith("INVARIANT_MISMATCH")
+```
+
+But the service builds notes by joining parts with `"; "` and appends the LLM marker
+**first** ([service.py:334-343](../../gdx_dispatch/modules/vendor_invoices/service.py#L334-L343)),
+so an LLM-extracted bill that fails reads:
+
+```text
+LLM_EXTRACTED (llm:claude-haiku-4-5): verify against the PDF; INVARIANT_MISMATCH: header off by …
+```
+
+`startswith` returns false, so `invariant_ok` reports **true**. The guard is defeated
+for precisely the extraction path it was built to protect — the parser path (which
+needs it least) is the only one it works on. The upload response is correct; every
+later detail fetch lies.
+
+**Fix.** `invariant_ok = "INVARIANT_MISMATCH" not in (invoice.notes or "")`, and then
+store a real boolean column rather than parsing prose for a money guard.
+
+### M27 — Commission revenue counts voided, soft-deleted and draft invoices `HIGH` `CONFIRMED`
+
+`_fetch_tech_revenue` ([payroll.py:304-316](../../gdx_dispatch/routers/payroll.py#L304-L316))
+joins invoices with no `deleted_at`, no void and no draft filter, while
+`job_costing._invoiced_for_job` does filter. An $8,000 invoice voided and re-issued
+counts twice: a 5% tech earns $800 instead of $400. Deposit plus final on one job
+inflates the basis the same way.
+
+**Fix.** Add `i.deleted_at IS NULL AND i.status NOT IN ('void','draft')`, and decide
+the deposit/final netting basis explicitly.
+
+### M28 — `job_costing` re-rates a deliberate $0 labor rate to $95/h `MEDIUM-HIGH` `CONFIRMED`
+
+`rate = Decimal(str(r[1] or DEFAULT_LABOR_RATE))` — and `0 or 95` is 95
+([job_costing.py:201](../../gdx_dispatch/routers/job_costing.py#L201)). `labor.py`
+fixed this exact trap and says so in a comment ("stored rate wins — INCLUDING a
+deliberate $0"); `job_costing` still has it.
+
+A warranty job with a 3-hour entry at a deliberate $0 rate costs $0 on one endpoint
+and **$285** on the other, and the profitability report ranks it a loser. Three
+different default rates disagree across the codebase ($95 in job_costing, $65 in
+labor.py, and two labor.py endpoints skip the tenant fallback entirely), so the same
+entry can display three different costs.
+
+**Fix.** `rate = fallback if r[1] is None else Decimal(str(r[1]))`, and unify the
+fallback into one source.
+
+### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` `CONFIRMED`
+
+PATCH flips status to `void` with no check on confirmed lines and no compensating
+action. Confirmed lines have already created `Expense` rows, incremented stock, and
+created billing rows. Voiding a $3,120 bill leaves all three behind, and the dedup
+index keys on `deleted_at` rather than status — so the corrected re-issue imports
+cleanly and the costs exist twice.
+
+**Fix.** Block the void while confirmed lines exist, or generate reversing expense and
+stock adjustments.
+
+### M30 — Smaller cost-side items `LOW–MEDIUM`
+
+- **PO receive books full quantity unconditionally** — `line.quantity_received = line.quantity_ordered`, so a short shipment (6 of 10) overstates inventory by 4 × unit cost. Two of the three PO systems are dead code; the unmounted one's `receive_po` has no already-received guard at all.
+- **Midwest statement parser silently drops credit rows**: `\$[\d,]+\.\d{2}` cannot match `-$123.45` or `($123.45)`, non-matching lines `continue` without error, and there is no printed-total reconciliation (unlike the invoice parser). A −$2,900.98 credit row vanishes and the payable is overstated by that amount.
+- **Variance report sums estimate lines across all estimates of a job** — every revision and declined draft counts, so a thrice-quoted job compares actuals against triple the estimate.
+- **Weekly overtime is computed only over the queried window**, so a 50-hour week straddling a month boundary splits as 30 regular / 0 OT instead of 40/10. The CSV's `gross_pay` column is commission only.
+- **Labor-variance "actual" is unclamped wall-clock**: `completed_at − arrived_at` with a floor but no ceiling, so an assignment closed a week late books 168h × $38 = $6,384. This is the "elapsed is not evidence" failure mode again — report-only, but exactly the shape that once implied ~$180k on one job.
+- **Budget quick-fill divides by the fixed lookback window** — the same "3× understated" bug the file's own comment flags as fixed elsewhere.
+- **Dealer order totals trust client unit prices** and never consult the catalog or tier pricing; orders carrying a PO number crash on a dict-iteration bug.
+- **Vendor-invoice confirm truncates fractional quantities** (`2.5 → 2`) and can write negative expenses the Expense API's `gt=0` forbids.
+
+---
+
+## 6. The general ledger
+
+The ledger is the best-built money code in the repo, and I verified its core myself
+rather than taking it on trust. `to_cents` rejects floats and bools loudly and rounds
+`ROUND_HALF_UP`; `allocate` is sum-preserving by construction using exact `Fraction`
+arithmetic with a deterministic tie-break, so a proration cannot create or destroy a
+cent. The balance invariant is enforced in Python *and* by a deferred Postgres
+constraint with immutability and txid sealing, and no code constructs journal entries
+outside `engine.py`. Sign conventions are correct across issuance, payment, credit
+memo, credit application, and the opening-balance events.
+
+Everything below is **latent** — `ledger_posting_enabled` defaults off and is off in
+prod. These need to be fixed before the CPA review, not before the next deploy.
+
+- **Refunding an overpayment double-dips** `HIGH` — `post_refund` always debits
+  contra-revenue and never touches the 2300 customer-credit liability. Refunding a
+  $150 payment on a $100 invoice books revenue of −$50 *and* leaves a $50 spendable
+  credit the customer can apply to their next invoice. That is $50 of real money out
+  the door once the flag is on.
+- **Cash-basis proration drops negative invoice lines** `MEDIUM` — deposit-netting
+  lines are excluded from the weights, so weights exceed the invoice total. A $1,000
+  job netted by a $300 deposit with 7.375% tax overstates cash-basis revenue by
+  **$20.61** and under-attributes tax identically. Zero drift only when tax is 0.
+- **Per-event allocation drifts per-account cents** `LOW` — each partial payment
+  allocates independently rather than cumulative-minus-already-allocated, so
+  individual accounts drift up to a cent. Totals stay exact.
+- **`MAX_RESIDUAL_CENTS = 100`** absorbs up to $1.00 per invoice into 6990 Rounding
+  Differences. For app-minted invoices the residual is structurally zero, so any
+  non-zero value is a composition error being silently swallowed.
+- **The payment-method role map accepts any role**, including AR — mapping "check" to
+  AR posts a self-cancelling wash that hides the payment from the GL entirely.
+- **Reversals default to the original entry's effective date**, silently restating a
+  prior period unless it happens to be locked.
+- **Backfill skips voided invoices**, losing the compensating entry for an opening-era
+  payment that was voided after cutover.
+
+---
+
+## 7. Frontend
+
+The important architectural result first: **no frontend surface submits a
+client-computed grand total, subtotal or tax_amount.** Invoices, estimates, change
+orders and purchase orders all POST `{lines[], tax_rate, discount}` and let the server
+recompute. There is no `0.1 + 0.2` class of persisted error, no client-side
+dollars↔cents conversion anywhere (portal and deposit payments use server-minted
+hosted `pay_url` links), and no money `parseFloat`. `useFormatters.js` is solid —
+`Intl`-based, with null and NaN rendering as an em dash, so `$NaN` cannot reach a
+screen.
+
+What is left is a narrower and more interesting class: **mutations applied at submit
+time that make the persisted invoice differ from the total the operator approved on
+screen.**
+
+### M31 — A cleared quantity becomes 1 at submit, billing a line the on-screen total excluded `HIGH` `CONFIRMED`
+
+[InvoiceCreateView.vue:481](../../gdx_dispatch/frontend/src/views/InvoiceCreateView.vue#L481):
+
+```js
+quantity: toNum(l.quantity) > 0 ? Number(l.quantity) : 1,
+```
+
+PrimeVue's `InputNumber` leaves the model **null** when the field is cleared — the
+`:min="1"` constraint does not apply to empty, and the codebase documents this exact
+behaviour elsewhere ("a transiently CLEARED price input (null, mid-retype)").
+
+So a line "Opener install" with the quantity cleared and a unit price of $650 renders
+its line total as `$0.00` and is excluded from the on-screen subtotal. The submit
+filter keeps it (it has a description and a price above zero) and substitutes
+`quantity: 1`. **The invoice is created $650 higher than the total the operator
+approved.**
+
+**Fix.** Refuse the submit, or visibly drop the line, when a kept line has no positive
+quantity. Never substitute 1 silently.
+
+### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` `CONFIRMED`
+
+[BillingView.vue:758-771](../../gdx_dispatch/frontend/src/views/BillingView.vue#L758-L771)
+posts `amount: balance` where `balance` comes from the row loaded into the browser,
+possibly minutes earlier. Since the server-side overpayment gate is dark (M11), any
+amount is accepted.
+
+INV-0102 totals $1,000. User A records a $400 check. User B's billing tab still shows
+a $1,000 balance and bulk Mark-Paid posts $1,000 → **$1,400 recorded against a $1,000
+invoice**, clamped invisible. `MobileBillingView.vue` has the same pattern with a
+smaller window.
+
+**Fix.** Add a server-side "pay remaining balance" mode that takes no amount, or send
+`expected_balance` and return 409 on mismatch. The first is better — it removes the
+client from the arithmetic entirely.
+
+### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` `CONFIRMED` (filter) / `PLAUSIBLE` (negative source)
+
+`.filter((l) => l.description && toNum(l.unit_price) > 0)` — used identically in
+`InvoiceCreateView`, `EstimateView` and `ChangeOrdersView` — drops zero and negative
+lines, while the displayed subtotal sums all of them. `prefillFromJobEstimate` copies
+`unit_price` verbatim, so a −$50 coupon line prefilled from an estimate shows in the
+on-screen total and vanishes from the payload: screen $450, invoice $500.
+
+Related and latent: invoice edit mode clamps negative prices with
+`Math.max(0, toNum(ln.unit_price))`
+([InvoiceDetailView.vue:1436](../../gdx_dispatch/frontend/src/views/InvoiceDetailView.vue#L1436)),
+and the `changed` diff then flags the line as modified even on an untouched save, so
+fixing a typo elsewhere PATCHes a −$100 promo line to $0 and raises the balance. Only
+the deposit-netting line is exempt — and its comment shows the hazard was understood
+for that one case and not generalized. I verified that **the only in-app writer of a
+negative `unit_price` is the deposit-netting line**, which is exempt, so this is
+latent today; it becomes live the moment any other negative line exists (a QB-imported
+discount line being the likely first).
+
+**Fix.** Make the filter and the display agree — either both include zero/negative
+lines or both exclude them — and restrict the clamp to genuinely new lines.
+
+### M34 — Smaller frontend items `LOW–MEDIUM`
+
+- **Invoice prefill hardcodes labor as non-taxable** rather than reading the tenant's
+  `tax_labor` setting the way `EstimateView` does. Under-collects on a tax-labor
+  tenant; irrelevant at GDX.
+- **Mobile mark-paid's fallback balance ignores credit memos** —
+  `balance_due ?? (total − amount_paid)` omits adjustments, unlike its desktop mirror,
+  and leans on the deprecated `amount_paid` (see M35).
+- **`ProposalsView` submits price fields as raw strings** from `InputText type="number"` —
+  the only view in the app not using `InputNumber`. Empty sends `""`.
+- **Estimate autosave can PATCH `quantity: null`** — the guard checks `unit_price` but
+  not quantity.
+- **Display-only rounding drift**: the create view rounds tax with JS `Math.round`
+  while the server uses Decimal `ROUND_HALF_UP`, so half-cent cases preview a cent off
+  from the invoice actually created.
+- **Custom `$${n.toFixed(2)}` formatters** in six mobile components lack thousands
+  separators and render negatives as `$-50.00` rather than `-$50.00`, contradicting
+  the sign convention `money_format.py` establishes server-side. Cosmetic; all guard
+  NaN.
+
+### M35 — `amount_paid` is written by nothing and read by five surfaces `MEDIUM` `CONFIRMED`
+
+Not strictly frontend, but this is where it surfaces. `Invoice.amount_paid` is
+deprecated — `_recalculate_invoice` deliberately ignores it
+([invoices.py:246](../../gdx_dispatch/routers/invoices.py#L246)) and no live path
+writes it. The QB repair tool set it correctly as of 2026-07-31; every payment
+recorded since has left it stale.
+
+Five surfaces still read it: [jobs.py:3284](../../gdx_dispatch/routers/jobs.py#L3284)
+(`SUM(amount_paid)` as "total_paid"), [jobs.py:515-524](../../gdx_dispatch/routers/jobs.py#L515-L524),
+[reports.py:1138](../../gdx_dispatch/routers/reports.py#L1138),
+[mobile_invoicing.py:131](../../gdx_dispatch/routers/mobile_invoicing.py#L131), and
+[job_display_state.py:115](../../gdx_dispatch/core/job_display_state.py#L115).
+
+**Fix.** Either maintain it in `_recalculate_invoice` (one line:
+`invoice.amount_paid = paid_amount`) or migrate the readers to Σ(non-voided payments)
+and drop the column. Do not leave it half-alive — a column nothing writes and five
+things read has now caused two separate findings.
+
+---
+
+## 8. More invoice-lifecycle findings
+
+These belong with §1 by subject, but they are guards and plumbing rather than
+totals math, so they are grouped here.
+
+### M36 — The idempotency middleware is a permanent pass-through `HIGH` `CONFIRMED`
+
+[core/middleware/idempotency.py:68-70](../../gdx_dispatch/core/middleware/idempotency.py#L68-L70)
+bails out when `request.state.principal` is None:
+
+```python
+principal = getattr(request.state, "principal", None)
+if principal is None:
+    return await call_next(request)
+```
+
+I grepped every assignment of `state.principal` in the repo. **The only one is in
+`tests/test_idempotency_middleware.py`.** No production code ever sets it, so the
+middleware returns early on every request and the replay cache has never functioned.
+
+This matters most for the mobile offline queue, which sends an `Idempotency-Key`
+header on replayed requests ([useOfflineSync.js:169](../../gdx_dispatch/frontend/src/composables/useOfflineSync.js#L169))
+in the belief that it is honored. A cash payment recorded from a truck, whose response
+was lost, replays and is recorded twice.
+
+Note this is a *different* layer from the Stripe idempotency keys (which are forwarded
+to Stripe and do work) and from M2 (which is a database-level race). All three need
+fixing; none substitutes for the others.
+
+**Fix.** Assign `request.state.principal` in the auth dependency, or re-key the
+middleware off the JWT it already has access to. Then add a test that asserts a
+replayed POST is served from cache in a *production-wired* app, not a hand-built one.
+
+### M37 — Deleting a draft invoice orphans its applied payments `MEDIUM` `CONFIRMED`
+
+`delete_invoice` ([invoices.py:1270-1322](../../gdx_dispatch/routers/invoices.py#L1270-L1322))
+checks only `status == "draft"`. It carefully releases parts and change orders back to
+the unbilled pool — and never looks at payments. Meanwhile `record_payment` blocks
+only `void`, so recording a partial payment on a draft is legal and leaves it a draft.
+
+A $500 draft with a $200 check recorded is deletable. The invoice soft-deletes, the
+`Payment` row survives, and every AR surface joins through non-deleted invoices —
+**$200 of real cash disappears from the books** while staying in the database.
+
+`void_invoice` has exactly the right guard four hundred lines away.
+
+**Fix.** Mirror it: 409 the delete when non-voided payments exist.
+
+### M38 — Mobile invoice creation has no double-billing guard `MEDIUM` `CONFIRMED`
+
+The desktop create path 409s on an existing live invoice for the job
+([invoices.py:678-699](../../gdx_dispatch/routers/invoices.py#L678-L699)) and the
+one-click path has the same guard. The mobile path has neither. Parts are
+stamp-protected and deposit netting has a prior-application guard, but the closeout
+labor line is re-derived on every call.
+
+A tech tapping Generate twice on a slow connection on a 3h × 2-tech service call
+produces two drafts each carrying the same $600 labor line. Only the §11
+office-verification gate stands between that and the customer — which is a review
+step, not an invariant.
+
+**Fix.** Mirror the desktop guard, or make the endpoint idempotent per
+`(job, closeout)`.
+
+### M39 — Endpoints that report success without doing anything `LOW` `CONFIRMED`
+
+Not arithmetic errors, but they lie about money:
+
+- `create_payment_plan` ([invoices.py:2571-2602](../../gdx_dispatch/routers/invoices.py#L2571-L2602))
+  computes an installment schedule, **persists nothing**, and returns a `plan_id` that
+  does not exist.
+- `send_payment_receipt` ([invoices.py:2609-2642](../../gdx_dispatch/routers/invoices.py#L2609-L2642))
+  returns `sent: True` without sending any email, and logs the deprecated
+  `amount_paid` as the amount.
+- `batch_create_invoices` mints random `INV-<hex>` numbers with $0 totals and no
+  lines.
+
+---
+
+## 9. Suggested order of work
+
+### Today, before the office records more backfill payments
+
+- **M1** — lock totals on QB-imported invoices. Then survey how many invoices already
+  drifted and restore them from QB.
+- **M11** — surface overpayment. It is small, and it is the detection net that tells
+  you whether M2, M5, M12, M32 and M36 have already fired in prod. Build it first and
+  the rest of this list gets evidence instead of speculation.
+
+### This week
+
+- **M2** and **M36** — the partial unique index on `(invoice_id, reference)`, and
+  wiring `request.state.principal` so the idempotency middleware stops being
+  decorative. Different layers, same failure.
+- **M4** and **M5** — hardcode the currency; delete the portal total-fallback. A few
+  lines each, both live money.
+- **M6** and **M26** — the commission role gate, and the one-character `invariant_ok`
+  fix.
+- **M3**, **M14**, **M15** — make reversal handling amount-aware and bidirectional.
+- **M37** — the missing payment guard on draft delete. One condition, copied from
+  `void_invoice`.
+
+### Next
+
+- **M7** with **M22**, **M23** and **M24** as one piece of work: a single
+  "materialize estimate totals as invoice lines" helper carrying discount, taxability,
+  rate and the accepted tier. These are four symptoms of one missing abstraction, and
+  fixing them separately will leave the seams.
+- **M8**, **M18**, **M19**, **M20** — the reporting cluster, sharing one
+  "net adjustments per period" join.
+- **M35** — resolve `amount_paid` one way or the other. It has now produced two
+  findings on its own.
+- The GL items in §6, gated on the CPA review rather than on a deploy.
+
+### Does fixing all of this make the math correct?
+
+No — and the distinction matters enough to state plainly.
+
+Fixing these findings removes known defects. It does not establish correctness,
+for three reasons:
+
+1. **An audit is a search, not a proof.** Nine of the findings are now proven by
+   executable tests. The other thirty are code-traced, and the whole set is bounded
+   by what one day of reading happened to look at. Two candidate findings were
+   rejected during verification (§10), which tells you the process has a nonzero
+   error rate in both directions.
+2. **Nothing was checked against production data.** For M1 especially, the code fix
+   stops future damage and says nothing about invoices whose totals were *already*
+   rewritten by a backfill payment. The code can be right while the books stay wrong.
+3. **Nothing prevents the next violation.** This is the important one. The ledger has
+   a real invariant — balance is enforced in Python *and* by a Postgres constraint, so
+   an unbalanced entry cannot be written. The invoice side has no equivalent:
+   `total = Σlines + tax` is an assumption `_recalculate_invoice` makes, not a rule
+   the system enforces. That is precisely why five different callers ended up
+   violating it. Fix all five and the sixth is still possible.
+
+Some of it also isn't a math question. Whether deposits, credit memos and
+supersessions are *accounted for* correctly — revenue recognition, cash versus
+accrual, what belongs in a remittance bucket — is a domain judgment that belongs to
+the CPA review, not to this document.
+
+**What would move toward correctness**, in rough order of leverage:
+
+- **Enforce the totals invariant** the way the ledger enforces balance — a check
+  constraint or a flush guard that rejects any invoice where
+  `total ≠ Σ active lines + tax`. This converts a whole bug class into an
+  impossibility. Everything that has to bypass it (imported invoices, per M1) then
+  has to say so explicitly, which is the honest design anyway.
+- **Make errors visible** (M11). Overpayment detection is the cheapest instrument on
+  this list and it retroactively answers "has this already happened in prod?" for
+  M2, M5, M12, M32 and M36 — a question no amount of code reading can settle.
+- **Grow the probe suite into a real gate.** Differential tests — the same estimate
+  through all three invoice paths, asserting identical totals — would have caught M7,
+  M9, M10, M22 and M24 as a group, without anyone needing to think of them
+  individually. That is the difference between fixing five bugs and closing the hole
+  that produced them.
+- **Reconcile against prod** read-only: imported invoices where
+  `total ≠ SUM(line_total)`, invoices where `Σpayments > total`, payments sharing a
+  reference. Three queries, and they convert this document from prediction to
+  inventory.
+
+### One theme worth naming
+
+Most of the serious findings are not arithmetic errors. The arithmetic in this
+codebase is good — Decimal with explicit `ROUND_HALF_UP` on the invoice side, exact
+integer cents with a sum-preserving allocator on the ledger side. The failures are
+**invariant violations by callers**: `_recalculate_invoice` guarantees
+`total = Σlines + tax`, and M1, M7, M9, M10 and M22 are all paths that store a total
+that isn't that, then get corrected by the first recalc into something nobody
+approved.
+
+The durable fix for that whole class is to make hand-set totals impossible — represent
+every adjustment (discount, deposit netting, credit) as a line, and let recalc be the
+only writer of `total`. Deposit netting already works this way and is the one part of
+the conversion story with no findings against it.
+
+## 10. Rejected findings (checked, not bugs)
+
+Recorded so nobody re-investigates them. Several of these looked like real bugs until
+traced:
+
+- **Frontend "floors fractional quantities"** — `Math.floor` on the invoice edit path
+  looks like it truncates a 2.5-hour line to 2, but `InvoiceLine.quantity` is an
+  **Integer** column ([tenant_models.py:499](../../gdx_dispatch/models/tenant_models.py#L499))
+  and no path stores a fractional quantity, so the floor is a no-op. The
+  `Math.max(1, …)` half of the same expression is real — see M31.
+- **AR aging `amount_paid` fallback** ([reports.py:1157](../../gdx_dispatch/routers/reports.py#L1157)) —
+  `inv.balance_due or (total − amount_paid)` looks like a falsy-zero trap, but the
+  query already filters `balance_due > 0`, so the fallback is unreachable.
+- **`void_invoice`** refuses while non-voided payments exist and reverses adjustments
+  correctly. (Contrast M37 — `delete_invoice` is the one missing this guard.)
+- **`issue_credit_memo`** recalculates first, caps at the remaining balance, and blocks
+  drafts.
+- **`collections.py` aging** uses `balance_due` only, with correct lowercase statuses.
+- **Cents conversion across the Stripe paths** — `int(round(float(balance) * 100))` is
+  correct for `Numeric(12,2)` values; there is no truncating `int(x * 100)` anywhere.
+- **The statement-import tie-out** is genuinely thorough: signed integer cents
+  throughout, no float, no amount tolerance in the matcher (exact equality only),
+  complete summary/daily/ending reconciliation, and zero lines inserted on failure.
+- **The `#268` hardening** holds where applied — token scoping, server-derived amounts,
+  ACH SetupIntent binding, signature verification failing closed.
+- **Deposit module** netting, capping and non-taxable netting lines are correct.
+- **`hide_line_prices`** is purely presentational and never enters stored math.
+- **Frontend formatters and totals submission** — no surface POSTs a client-computed
+  grand total; `useFormatters.js` cannot emit `$NaN`; no money `parseFloat`; no
+  client-side cents conversion.
+
+## 11. Coverage and limits
+
+Audited: invoices, payments/Stripe/portal, the GL, sales tax and reports, estimates
+and pricing, change orders, deposits, bank feeds and statement import, QuickBooks,
+vendor invoices/statements/orders, purchase orders, expenses, job costing, payroll,
+commission, budgets, overhead, and the Vue frontend.
+
+Nine findings (M1 ×2, M2 ×2, M7, M9, M11, M24, M37) are proven by the probe suite in
+§0.5. The remaining thirty are code-level traces, and the two labeled `PLAUSIBLE`
+(M14 and the negative-line half of M33) depend on conditions I could not confirm from
+the repo — Stripe event ordering, and whether QB-imported discount lines carry
+negative amounts.
+
+**Nothing in this audit was verified against production data.** Not even the nine
+proven ones: the probes prove the *code* misbehaves, not how many prod rows have
+already been damaged by it.
+
+Before acting on M1 in particular, query prod read-only to size the affected set: the
+fix is safe either way, but the cleanup depends on how many imported invoices have
+already been recalculated by a backfill payment.
+
+Two areas I deliberately did not chase: the plugin money code
+(`gdx-plugin-chi-pricing`, which is git-ignored by design and not part of the shipped
+app) and the demo seed paths, beyond noting that
+[onboarding.py:330](../../gdx_dispatch/routers/onboarding.py#L330) creates a `sent`
+demo invoice with a $285 total and no `balance_due`, which reads as paid to every
+report. Demo-only, but the same shape as a real bug.

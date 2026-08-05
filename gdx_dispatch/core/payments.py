@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.customer_views import record_customer_view
@@ -119,6 +120,11 @@ class CreateIntentRequest(BaseModel):
     invoice_token: str | None = None
     invoice_id: str | None = None  # DEPRECATED — see NOTE ON SHAPE
     amount: int | None = None  # DEPRECATED + IGNORED — server derives from balance
+    # DEPRECATED + IGNORED (M4, money audit 2026-08-04). The server derived the
+    # AMOUNT but passed the client's CURRENCY straight to Stripe, and the
+    # webhook records `amount_received / 100` as dollars without checking it —
+    # so `currency: "idr"` settled a $500 invoice for about $3. Kept on the
+    # model (ignored) for one release so an open /pay tab does not 422.
     currency: str = "usd"
 
 
@@ -148,6 +154,13 @@ class ACHChargeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# The only currency this application prices, charges and records in. The
+# recording paths treat Stripe minor units as cents-of-a-dollar, which is only
+# true for USD (JPY has no minor unit at all), so this is an invariant of the
+# money model, not a default. See M4 in the 2026-08-04 money audit.
+CURRENCY = "usd"
+
 
 def _init_stripe() -> None:
     """Set Stripe API key from environment."""
@@ -300,6 +313,12 @@ def _mark_invoice_paid(
             _select(Payment).where(
                 Payment.invoice_id == invoice.id,
                 Payment.reference == external_ref,
+                # M14 (money audit 2026-08-04): must exclude VOIDED rows. A
+                # wrongly-reversed payment (late charge.failed on a retried
+                # intent) left a voided row here, and this check then blocked
+                # the redelivered `succeeded` from re-recording it — the
+                # invoice stayed open with the money collected.
+                Payment.voided_at.is_(None),
             )
         ).first()
         if existing is not None:
@@ -332,7 +351,21 @@ def _mark_invoice_paid(
         reference=external_ref,
     )
     db.add(payment)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # M2: the existence check above is optimistic — /confirm and the
+        # webhook race by design ("the signed webhook usually beats the
+        # browser's confirm call"), and both saw no row. Migration 056's
+        # partial unique index on (invoice_id, reference) is what actually
+        # decides it; losing the race means the payment IS recorded, so this
+        # is the idempotent no-op it always claimed to be.
+        db.rollback()
+        logger.info(
+            "payment_already_recorded_by_concurrent_writer invoice=%s ref=%s",
+            invoice.id, external_ref,
+        )
+        return
     _recalculate_invoice(invoice, db)
     post_payment_received(db, payment, invoice)
     db.commit()
@@ -364,7 +397,7 @@ def create_intent(
     try:
         pi = stripe.PaymentIntent.create(
             amount=amount_cents,
-            currency=body.currency,
+            currency=CURRENCY,  # M4: never body.currency
             metadata={
                 "invoice_id": str(invoice.id),
                 "tenant_id": str(tenant.get("id", "")),
@@ -693,6 +726,18 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         invoice_id: str = (data.get("metadata") or {}).get("invoice_id", "")
         if not invoice_id:
             return {"status": "no_invoice_id"}
+        # M4: `amount_received` is in the intent's own minor unit. Recording it
+        # as dollars is only correct for USD, so refuse anything else rather
+        # than booking a foreign-currency charge at face value. Loud, because
+        # a mismatch here means money moved that we cannot record truthfully.
+        event_currency = str(data.get("currency") or CURRENCY).lower()
+        if event_currency != CURRENCY:
+            logger.error(
+                "payment_currency_mismatch invoice=%s currency=%s intent=%s — "
+                "NOT recorded; refund at the processor",
+                invoice_id, event_currency, data.get("id"),
+            )
+            return {"status": "currency_mismatch", "currency": event_currency}
         # ACH settles asynchronously (1-2 business days), so this webhook —
         # not /confirm — is how most bank payments get recorded. Label the
         # method from the intent instead of assuming "card", or every ACH

@@ -520,10 +520,18 @@ def portal_invoice_pay(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
-    amount_due = Decimal(str(invoice.balance_due if invoice.balance_due is not None else invoice.total))
+    # M5 (money audit 2026-08-04): this used to fall back to `invoice.total`
+    # when the balance was <= 0 — i.e. it charged the FULL total again on an
+    # already-settled invoice, and the webhook deliberately records second
+    # genuine payments, so the double collection landed and the balance clamp
+    # hid it. A zero balance means paid; there is nothing to charge.
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    amount_due = Decimal(str(invoice.balance_due or 0))
     if amount_due <= 0:
-        amount_due = Decimal(str(invoice.total or 0))
+        raise HTTPException(status_code=409, detail="This invoice has no balance due.")
+
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
     amount_cents = int(amount_due * 100)
 
     intent = stripe.PaymentIntent.create(

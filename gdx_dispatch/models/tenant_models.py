@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -427,10 +428,26 @@ class Invoice(Base):
     # from this rate × the sum of taxable line_totals on every recalc; the
     # legacy flat-dollar tax_amount path is preserved for invoices created
     # before the rate column existed (tax_rate IS NULL → trust tax_amount).
-    tax_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    # Numeric(9,6) — 6 fraction digits. Numeric(6,4) could NOT represent
+    # Minnesota's 7.375% (0.07375 truncated to 0.0737 on the DB round-trip),
+    # so every recalc after creation re-taxed at 7.37%: a $1,500 invoice
+    # computed $110.55 instead of $110.63, and its tax silently CHANGED
+    # between creation and the first edit. Found by the money-audit probes
+    # 2026-08-04 (migration 056).
+    tax_rate: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
     tax_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     balance_due: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    # Money audit 2026-08-04 (M1, migration 056). True = this invoice's header
+    # total is authoritative and must NOT be re-derived from its lines.
+    # Set for QuickBooks-imported invoices, whose local InvoiceLine rows are
+    # lossy (the import wrote QBO SubTotal/Discount lines as real lines, so
+    # they sum to ~2x the true total) or absent entirely. Recording a payment
+    # used to rewrite a $1,471.84 imported invoice to $2,943.68 and re-open it.
+    # `_recalculate_invoice` honors this by recomputing balance/status only.
+    totals_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     # PR6-billing-capture: per-invoice dunning mute for real payment
     # arrangements — manual reminder logs never pause the robot (Doug
     # 2026-07-07); this explicit switch does.
@@ -550,6 +567,25 @@ class InvoiceLine(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+
+    # M2 (money audit 2026-08-04, migration 056). One external reference =
+    # one payment. Stripe's /confirm and the webhook race by design, and
+    # record_payment had no dedupe at all, so a double-click recorded the same
+    # money twice. App-level checks are read-then-insert and lose that race;
+    # this index is what actually decides it. Partial — `reference` is
+    # optional and cash payments legitimately share a NULL.
+    __table_args__ = (
+        Index(
+            "uq_payments_invoice_reference",
+            "invoice_id",
+            "reference",
+            unique=True,
+            # Live payments only — a voided row keeps its reference as
+            # history and must not block re-recording the real charge.
+            postgresql_where=text("reference IS NOT NULL AND voided_at IS NULL"),
+            sqlite_where=text("reference IS NOT NULL AND voided_at IS NULL"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=False)
@@ -2958,7 +2994,8 @@ class TaxJurisdiction(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False, default=0)
+    # Numeric(9,6): 4 fraction digits cannot hold 7.375% — see Invoice.tax_rate.
+    rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False, default=0)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -3339,3 +3376,20 @@ def _mark_invoice_qb_dirty_on_change(_mapper, _connection, target: Invoice) -> N
 @event.listens_for(Customer, "before_update")
 def _mark_customer_qb_dirty_on_change(_mapper, _connection, target: Customer) -> None:
     _mark_qb_dirty_on_change(target)
+
+
+# The invoice totals invariant (money audit 2026-08-04). Registered here rather
+# than in create_app so it also covers direct-session callers — tasks, tools,
+# migrations-adjacent scripts and the router unit tests — not just HTTP
+# requests. See gdx_dispatch/core/invoice_invariants.py for what it enforces
+# and why the ledger's equivalent guard is the precedent.
+def _install_invoice_invariant() -> None:
+    try:
+        from gdx_dispatch.core.invoice_invariants import install
+
+        install()
+    except Exception:  # never let a guard's import break model loading
+        logging.getLogger(__name__).exception("invoice_invariant_install_failed")
+
+
+_install_invoice_invariant()

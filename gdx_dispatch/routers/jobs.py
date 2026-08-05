@@ -4,7 +4,7 @@ import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -2817,21 +2817,37 @@ def create_invoice_from_job(
     # Tax: if a related estimate exists, use its totals (preserves the
     # quoted price). Otherwise resolve the tenant-default rate via the
     # canonical service (honors customer exemption).
+    # M9 (money audit 2026-08-04): keep the RATE alongside the dollar tax, or
+    # the invoice lands on _recalculate_invoice's legacy branch and its tax
+    # freezes while later line edits move the subtotal.
+    tax_rate_value = None
     if est_obj is not None:
         from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
         _t = compute_estimate_totals(est_obj, db)
         subtotal_value = _t["subtotal"]
         tax_amount_value = _t["tax"]
         total_value = _t["total"]
+        tax_rate_value = _t.get("tax_rate")
     else:
-        _D = Decimal
         from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax_rate
         try:
-            _rate = float(_resolve_tax_rate(db, job.customer_id))
+            _rate = Decimal(str(_resolve_tax_rate(db, job.customer_id)))
         except Exception:
-            _rate = 0.0
-        tax_amount_value = round(subtotal_value * _rate, 2)
-        total_value = round(subtotal_value + tax_amount_value, 2)
+            _rate = Decimal("0")
+        # Decimal + ROUND_HALF_UP, matching routers/invoices._money. The old
+        # float `round()` here is banker's rounding on a binary float, so the
+        # same inputs could differ by a cent from the canonical path
+        # (round(2.675, 2) == 2.67, Decimal half-up gives 2.68).
+        _sub = Decimal(str(subtotal_value))
+        tax_amount_value = float(
+            (_sub * _rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+        total_value = float(
+            (_sub + Decimal(str(tax_amount_value))).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        )
+        tax_rate_value = float(_rate) or None
 
     invoice_id = uuid.uuid4()
     due_date = now_dt + timedelta(days=30)
@@ -2853,6 +2869,7 @@ def create_invoice_from_job(
             billing_type="standard",
             sequence_number=seq,
             subtotal=subtotal_value,
+            tax_rate=(Decimal(str(tax_rate_value)) if tax_rate_value else None),
             tax_amount=tax_amount_value,
             total=total_value,
             balance_due=total_value,

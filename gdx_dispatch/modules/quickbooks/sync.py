@@ -36,6 +36,23 @@ from gdx_dispatch.modules.quickbooks.client import QBAPIError, QBClient
 
 log = logging.getLogger(__name__)
 
+# QuickBooks Line objects come in several DetailType flavors. We want ONLY the
+# per-item charge lines — the others are summary/structure rows that QB sums
+# into the invoice TotalAmt server-side. Writing them into our InvoiceLine
+# table double-counts: the persisted invoice.subtotal is correct (from QB
+# TotalAmt) but sum(line_total) ends up nearly 2x it. Confirmed on prod invoice
+# #1111 2026-05-09 — lines summed to $2,741.50, persisted total $1,471.84.
+#
+# Module-level (money audit 2026-08-04, M1) because it was function-local to
+# _resync_invoice_lines while the CREATE branch of pull_invoices — the path
+# every first-time import takes — had no filter at all. One definition, both
+# callers; that asymmetry is exactly how the bug survived its own fix.
+_ITEM_LINE_TYPES = {
+    "SalesItemLineDetail",
+    "ItemBasedExpenseLineDetail",
+    "AccountBasedExpenseLineDetail",
+}
+
 
 # Re-export for backward compat with tasks.py
 class QBSyncError(Exception):
@@ -445,18 +462,6 @@ def _resync_invoice_lines(invoice_id: UUID, raw_lines: list[dict[str, Any]], ten
         InvoiceLine.__table__.delete().where(InvoiceLine.invoice_id == invoice_id)
     )
     written = 0
-    # QuickBooks Line objects come in several DetailType flavors. We want
-    # ONLY the per-item charge lines — the others are summary/structure
-    # rows that QB sums into the invoice TotalAmt server-side. Including
-    # them in our local InvoiceLine table double-counts: the persisted
-    # invoice.subtotal is correct (from QB TotalAmt) but sum(line_total)
-    # ends up nearly 2× the subtotal. Confirmed on prod invoice #1111
-    # 2026-05-09 — lines summed to $2,741.50, persisted total $1,471.84.
-    _ITEM_LINE_TYPES = {
-        "SalesItemLineDetail",
-        "ItemBasedExpenseLineDetail",
-        "AccountBasedExpenseLineDetail",
-    }
     for sort_order, line in enumerate(raw_lines or [], start=1):
         amount_raw = line.get("Amount")
         if amount_raw is None:
@@ -945,8 +950,27 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                     db.add(invoice)
                     db.flush()
 
-                    for sort_order, line in enumerate(raw.get("Line") or [], start=1):
-                        amount = Decimal(str(line.get("Amount") or 0))
+                    # M1 (money audit 2026-08-04): filter to real item lines.
+                    # QBO's Line[] also carries SubTotalLine (and DiscountLine),
+                    # which QB has ALREADY folded into TotalAmt — writing them
+                    # as InvoiceLine rows made Σlines ~2x the header total
+                    # (prod invoice #1111: $2,741.50 vs $1,471.84). The update/
+                    # adopt branches have filtered these since the bug was
+                    # found; this create branch — the one every first-time
+                    # import takes — was missed. Same allowlist as
+                    # _resync_invoice_lines, deliberately kept identical.
+                    sort_order = 0
+                    for line in raw.get("Line") or []:
+                        amount_raw = line.get("Amount")
+                        if amount_raw is None:
+                            continue
+                        detail_type = line.get("DetailType")
+                        # Only filter when QB tells us the type; absent =
+                        # older payload / hand-built fixture, so fall through.
+                        if detail_type and detail_type not in _ITEM_LINE_TYPES:
+                            continue
+                        sort_order += 1
+                        amount = Decimal(str(amount_raw))
                         db.add(InvoiceLine(
                             invoice_id=invoice.id,
                             description=str(line.get("Description") or "QuickBooks line"),
@@ -956,6 +980,10 @@ async def pull_invoices(tenant_id: str, db: Session, qb: QBClient) -> dict[str, 
                             sort_order=sort_order,
                             company_id=tenant_id,
                         ))
+                    # Header total from QB is authoritative; local lines stay
+                    # advisory (a discount line is dropped by the filter above,
+                    # so Σlines can legitimately differ from TotalAmt).
+                    invoice.totals_locked = True
 
                     _upsert_map(tenant_id, "invoice", str(invoice.id), qb_id, db)
                     created += 1

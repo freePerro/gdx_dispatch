@@ -23,7 +23,8 @@ class Estimate(TenantBase):
     # Per-estimate tax rate / discount overrides. Both NULL → estimate uses
     # tenant-wide default tax rate (Settings → Tax). tax_rate is stored as a
     # decimal (0.0825 = 8.25%); discount is a flat dollar amount.
-    tax_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=True)
+    # Numeric(9,6): 4 fraction digits cannot hold 7.375% — see Invoice.tax_rate.
+    tax_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=True)
     discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=True)
     proposal_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # "Total-only" display override (migration 019). NULLABLE tri-state:
