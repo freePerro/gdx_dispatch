@@ -424,12 +424,19 @@ def mobile_create_invoice(
     invoice_date_value = date.today()
     due_date_value = invoice_date_value + timedelta(days=30)
 
+    # M9 (money audit 2026-08-04): capture the RATE, not just the dollar tax.
+    # This path stamped tax_amount with tax_rate left NULL, which puts the
+    # invoice on _recalculate_invoice's legacy branch — the flat tax is then
+    # preserved verbatim while the subtotal moves, so an office line edit grew
+    # a $1,000 invoice to $1,500 with the tax frozen at $73.75.
+    tax_rate_value = None
     if estimate is not None:
         from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
         _t = compute_estimate_totals(estimate, db)
         subtotal_value = _t["subtotal"]
         tax_amount_value = _t["tax"]
         total_value = _t["total"]
+        tax_rate_value = _t.get("tax_rate")
     else:
         subtotal_value = 0.0
         tax_amount_value = 0.0
@@ -463,6 +470,7 @@ def mobile_create_invoice(
         billing_type="standard",
         sequence_number=1,
         subtotal=_money(subtotal_value),
+        tax_rate=(Decimal(str(tax_rate_value)) if tax_rate_value else None),
         tax_amount=_money(tax_amount_value),
         total=_money(total_value),
         balance_due=_money(total_value),

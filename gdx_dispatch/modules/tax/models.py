@@ -35,7 +35,7 @@ class TaxConfig(TenantBase):
     # Stored as a decimal fraction (0.0738 = 7.38%). Use Numeric for accounting
     # precision — never Float. 5 digits + 4 fraction = max 9.9999 (999.99%),
     # which is absurd but cheap and safe.
-    default_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
+    default_rate: Mapped[float] = mapped_column(Numeric(9, 6), nullable=False, default=0.0)
     # Most US jurisdictions do NOT tax labor (services). When False, lines
     # marked category == 'labor' are excluded from the taxable subtotal in
     # compute_estimate_totals. Defaults to False so a fresh tenant gets the

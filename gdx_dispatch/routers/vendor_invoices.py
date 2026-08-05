@@ -153,7 +153,13 @@ def _detail(db: Session, invoice: VendorInvoice, *, with_suggestions: bool = Tru
         **summary.model_dump(),
         lines=[LineOut.model_validate(ln) for ln in lines],
         suggestions=suggestions,
-        invariant_ok=not (invoice.notes or "").startswith("INVARIANT_MISMATCH"),
+        # M26 (money audit 2026-08-04): was `.startswith(...)`, but the service
+        # joins note parts with "; " and puts the LLM marker FIRST — so a
+        # rung-2 bill whose header arithmetic failed read
+        # "LLM_EXTRACTED (...); INVARIANT_MISMATCH: ..." and startswith
+        # returned False. The guard on untrusted LLM money reported PASS for
+        # exactly the extraction path it exists to protect.
+        invariant_ok="INVARIANT_MISMATCH" not in (invoice.notes or ""),
     )
 
 

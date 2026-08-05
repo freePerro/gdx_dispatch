@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
@@ -112,6 +113,29 @@ def _serialize_payment(payment: Payment) -> dict[str, object]:
     }
 
 
+def _amount_overpaid(invoice: Invoice) -> float:
+    """Money collected above what the invoice asks for (M11). 0 normally.
+
+    Derived from the loaded payment/adjustment relationships rather than a
+    query so the serializer stays cheap; falls back to 0 when they aren't
+    loaded, which is the honest answer for a partial serialization.
+    """
+    try:
+        payments = getattr(invoice, "payments", None) or []
+        paid = sum(
+            Decimal(str(p.amount or 0))
+            for p in payments
+            if getattr(p, "voided_at", None) is None
+        )
+    except Exception:  # detached / not loaded — don't break the payload
+        return 0.0
+    if not paid:
+        return 0.0
+    total = Decimal(str(invoice.total or 0))
+    excess = paid - total
+    return float(_money(excess)) if excess > Decimal("0.005") else 0.0
+
+
 def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_payments: bool = False) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": str(invoice.id),
@@ -130,6 +154,13 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "taxable_subtotal": _to_float(_taxable_subtotal(invoice)),
         "total": _to_float(invoice.total),
         "balance_due": _to_float(invoice.balance_due),
+        # M11 (money audit 2026-08-04): balance_due clamps at 0, so money
+        # collected ABOVE the total used to be invisible on every surface —
+        # the invoice just read "paid". The GL has an overpayment gate but it
+        # only runs when ledger posting is on (off in prod), so nothing
+        # surfaced a double-collection. Always non-negative; 0 in the normal
+        # case. This is also the detector for the duplicate-payment classes.
+        "amount_overpaid": _amount_overpaid(invoice),
         "status": invoice.status,
         "effective_status": _effective_status(invoice),
         "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
@@ -203,6 +234,16 @@ def _taxable_subtotal(invoice: Invoice) -> Decimal:
 
 
 def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
+    # M1 (money audit 2026-08-04): a totals-locked invoice keeps its header
+    # figures. QuickBooks-imported rows have a correct imported total and a
+    # lossy line set — the importer wrote QBO SubTotalLine/DiscountLine rows as
+    # real lines, so Σlines is ~2x the truth (prod invoice #1111: lines
+    # $2,741.50 vs total $1,471.84), and 282 imported rows have no lines at
+    # all. Deriving total from lines here rewrote settled invoices and re-opened
+    # them the moment the office recorded a backfill payment. Balance and status
+    # still recompute — those depend on payments, not lines.
+    locked = bool(getattr(invoice, "totals_locked", False))
+
     # Subtotal = sum of every active line. Active = not soft-deleted; legacy
     # rows without a deleted_at column read as None and stay included.
     line_rows = db.execute(
@@ -220,18 +261,29 @@ def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     # tax follows. Pre-S110 invoices have tax_rate=NULL and behave exactly
     # as they always did.
     rate = getattr(invoice, "tax_rate", None)
-    if rate is not None:
+    if rate is not None and not locked:
         taxable = sum(
             (Decimal(str(ln.line_total or 0))
              for ln in line_rows
              if bool(getattr(ln, "taxable", True))),
             Decimal("0"),
         )
+        # A materialized discount line is taxable and negative (it reduces the
+        # taxable base exactly as compute_estimate_totals does). Floor at 0 so a
+        # discount larger than the taxable goods can never mint negative tax.
+        if taxable < 0:
+            taxable = Decimal("0")
         tax_amount = _money(taxable * Decimal(str(rate)))
         invoice.tax_amount = tax_amount
     else:
         tax_amount = _money(_to_float(invoice.tax_amount))
-    total_amount = _money(subtotal_amount + tax_amount)
+
+    if locked:
+        # Header total is the truth; don't re-derive it from the lines.
+        subtotal_amount = _money(_to_float(invoice.subtotal))
+        total_amount = _money(_to_float(invoice.total))
+    else:
+        total_amount = _money(subtotal_amount + tax_amount)
 
     paid = db.execute(
         # GL S6 (P4): voided payments stay as history but stop counting.
@@ -772,6 +824,12 @@ def create_invoice(
     resolved_rate: Decimal | None = None
     if payload.tax_rate is not None:
         resolved_rate = Decimal(str(payload.tax_rate))
+    elif estimate is not None and getattr(estimate, "tax_rate", None) is not None:
+        # M24 (money audit 2026-08-04): a per-estimate rate override IS the
+        # quoted price. Falling through to the tenant default re-taxed an
+        # estimate deliberately quoted at 0%, billing more than the customer
+        # accepted.
+        resolved_rate = Decimal(str(estimate.tax_rate))
     else:
         try:
             from gdx_dispatch.modules.tax.service import resolve_rate as _resolve_tax
@@ -863,6 +921,33 @@ def create_invoice(
             .where(EstimateLine.estimate_id == estimate.id)
             .order_by(EstimateLine.sort_order.asc(), EstimateLine.created_at.asc(), EstimateLine.id.asc())
         ).scalars().all()
+        # M24 (money audit 2026-08-04): estimates exclude labor from tax when
+        # the tenant's tax_labor flag is off, but the copy below never carried
+        # `taxable`, and InvoiceLine defaults it to True — so a quote of
+        # $2,000 materials + $1,000 labor priced tax on $2,000 and then billed
+        # tax on $3,000. Resolve the flag once for the whole copy.
+        # Reuse the estimate's own helpers, not a reimplementation — the whole
+        # point is that the two sides agree, and a second copy of the
+        # category convention is how they drift apart again.
+        try:
+            from gdx_dispatch.modules.proposals.totals import (
+                _is_labor_line,
+                _load_tax_labor_flag,
+            )
+            _tax_labor = bool(_load_tax_labor_flag(db))
+        except Exception:
+            log.exception("invoice_create_tax_labor_flag_failed")
+            # Match _load_tax_labor_flag's OWN default (False = don't tax
+            # labor). Defaulting to True here would re-introduce the overbill
+            # this fix exists to remove.
+            _tax_labor = False
+
+            def _is_labor_line(ln):  # noqa: F811 — local fallback
+                return (getattr(ln, "category", None) or "").strip().lower() == "labor"
+
+        def _line_is_taxable(ln) -> bool:
+            return True if _tax_labor else not _is_labor_line(ln)
+
         for line in lines:
             # S122-b: forward category/cost/margin snapshot from estimate line
             # so invoice line shape matches estimate line shape (Doug 2026-05-11).
@@ -876,11 +961,39 @@ def create_invoice(
                     quantity=line.quantity,
                     unit_price=_money(line.unit_price),
                     line_total=_money(line.line_total),
+                    taxable=_line_is_taxable(line),
                     category=getattr(line, "category", None),
                     cost_snapshot=getattr(line, "cost_snapshot", None),
                     margin_pct_snapshot=getattr(line, "margin_pct_snapshot", None),
                     margin_pct_override=getattr(line, "margin_pct_override", None),
                     sort_order=line.sort_order,
+                )
+            )
+
+        # M7 (money audit 2026-08-04): materialize the estimate's discount as a
+        # real negative line. `Invoice` has no discount column, and every path
+        # that hand-set a discounted total lost it on the first recalc — or, on
+        # this path, never applied it at all: an accepted $4,500 estimate
+        # created a $5,000 invoice. As a line it is simply part of
+        # `total = Σlines + tax`, so no recalc can drop it.
+        #
+        # Taxable ON PURPOSE: compute_estimate_totals subtracts the discount
+        # from the taxable base, so the discount line must reduce it too or the
+        # invoice would tax the undiscounted goods. `_recalculate_invoice`
+        # floors the taxable base at 0 for the discount > goods case.
+        _discount = Decimal(str(getattr(estimate, "discount", None) or 0))
+        if _discount > 0:
+            db.add(
+                InvoiceLine(
+                    company_id=invoice.company_id,
+                    invoice_id=invoice.id,
+                    description="Discount",
+                    quantity=1,
+                    unit_price=_money(-_discount),
+                    line_total=_money(-_discount),
+                    taxable=True,
+                    category="discount",
+                    sort_order=(max((ln.sort_order or 0) for ln in lines) + 1) if lines else 1,
                 )
             )
     elif payload.line_items:
@@ -1286,6 +1399,22 @@ def delete_invoice(
             status_code=409,
             detail=f"only draft invoices can be deleted; current status: {invoice.status}. "
                    "Issue a credit memo for sent/paid invoices instead.",
+        )
+    # M37 (money audit 2026-08-04): recording a payment on a draft is legal
+    # (record_payment blocks only void), and the draft stays a draft while a
+    # balance remains — so a part-paid draft was deletable. The Payment row
+    # survived the soft-delete, but every AR surface joins through non-deleted
+    # invoices, so the cash simply vanished from the books. void_invoice has
+    # carried this exact guard all along; delete never got it.
+    live_payments = db.execute(
+        select(func.count())
+        .select_from(Payment)
+        .where(Payment.invoice_id == invoice.id, Payment.voided_at.is_(None))
+    ).scalar_one()
+    if live_payments:
+        raise HTTPException(
+            status_code=409,
+            detail="invoice has recorded payments — void or remove them first",
         )
     now = datetime.now(UTC)
     invoice.deleted_at = now
@@ -1961,16 +2090,56 @@ def record_payment(
                 ),
             )
 
+    reference_value = (payload.reference or "").strip() or None
+
+    # M2 (money audit 2026-08-04): this endpoint had NO idempotency at all, so
+    # a double-click on Record Payment — or the mobile offline queue replaying
+    # a request whose response was lost — recorded the same money twice. Proven
+    # in test_zz_money_correctness_probe.py: two rows for one reference,
+    # recorded sequentially. A reference is the operator's own claim that two
+    # requests describe the SAME payment (check #, Stripe intent), so honor it.
+    # Migration 056's partial unique index is the un-raceable backstop; this
+    # check is what turns the race into a clean 409 instead of a 500.
+    if reference_value:
+        prior = db.execute(
+            select(Payment).where(
+                Payment.invoice_id == invoice.id,
+                Payment.reference == reference_value,
+                Payment.voided_at.is_(None),
+            )
+        ).scalars().first()
+        if prior is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"a payment with reference '{reference_value}' is already recorded "
+                    f"on this invoice ({_to_float(prior.amount):.2f} on "
+                    f"{prior.payment_date.isoformat()}) — void it first to replace it"
+                ),
+            )
+
     payment = Payment(
         company_id=invoice.company_id,
         invoice_id=invoice.id,
         amount=_money(payload.amount),
         method=payload.method.strip().lower(),
         payment_date=payload.date,
-        reference=(payload.reference or "").strip() or None,
+        reference=reference_value,
     )
     db.add(payment)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        # Lost the race to a concurrent request for the same reference — the
+        # unique index caught what the SELECT above could not see.
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"a payment with reference '{reference_value}' was just recorded "
+                "on this invoice"
+            ),
+        ) from exc
 
     # Snapshot BEFORE the recalc: only the payment that flips the invoice to
     # paid in THIS request may carry paid_at with it. Deriving from

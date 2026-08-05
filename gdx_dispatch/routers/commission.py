@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import CommissionEntry, CommissionRule
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -212,7 +212,16 @@ def get_earnings(
     return [_serialize_entry(e) for e in db.execute(q).scalars().all()]
 
 
-@router.post("/calculate", status_code=201)
+@router.post(
+    "/calculate",
+    status_code=201,
+    # M6 (money audit 2026-08-04): this endpoint MINTS money owed to a person
+    # and was gated only by require_module("jobs") + any authenticated user —
+    # so a technician could POST their own user_id with a $10,000,000
+    # parts_total and appear in the commission summary. Writing payroll is a
+    # payroll.write action.
+    dependencies=[Depends(require_permission("payroll.write"))],
+)
 def calculate_commission(
     request: Request,
     payload: CalculateIn,
