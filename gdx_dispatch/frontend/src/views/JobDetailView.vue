@@ -30,6 +30,18 @@
               data-testid="job-detail-return-visit"
               v-tooltip.bottom="'Spawned as a return trip from a completed job — not fresh work'"
             />
+            <!-- 055: the RFB dismiss mark. The queue only shows unmarked
+                 jobs, so this tag is the one place a wrong mark is visible —
+                 and therefore where it gets undone. -->
+            <Tag
+              v-if="job.not_billable_at"
+              value="NOT BILLABLE"
+              severity="danger"
+              data-testid="job-detail-not-billable"
+              style="cursor: pointer"
+              v-tooltip.bottom="`${job.not_billable_reason || 'no reason recorded'} — click to make billable again`"
+              @click="makeBillable"
+            />
           </div>
         </div>
         <div class="header-actions">
@@ -1100,6 +1112,7 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import JobStateOverrideDialog from "../components/JobStateOverrideDialog.vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { formatDate, formatDateTime, formatMoney, formatMoney as formatCurrency, formatPercent as fmtPercent, formatPhone } from "../composables/useFormatters";
 import { useToast } from "primevue/usetoast";
 import { useAuthStore } from "../stores/auth";
@@ -1128,6 +1141,7 @@ import EmailTimeline from "../components/EmailTimeline.vue";
 const route = useRoute();
 const router = useRouter();
 const api = useApiWithToast();
+const { confirmAsync } = useDestructiveConfirm();
 const toast = useToast();
 const auth = useAuthStore();
 
@@ -1375,6 +1389,27 @@ async function fetchJob() {
     error.value = err?.message || "Failed to load job";
   } finally {
     loading.value = false;
+  }
+}
+
+// 055: undo for Billing's "Not billable" verb. Not destructive (the job just
+// re-enters Ready for Billing), but confirmed so a stray click on the tag
+// doesn't silently refill the queue.
+async function makeBillable() {
+  const ok = await confirmAsync({
+    header: "Make billable again?",
+    icon: "pi pi-ban",
+    message: `This job returns to Ready for Billing. (Marked not billable: ${job.value?.not_billable_reason || "no reason recorded"})`,
+    acceptLabel: "Make billable",
+    acceptClass: "p-button-primary",
+  });
+  if (!ok) return;
+  try {
+    await api.del(`/api/jobs/${job.value.id}/not-billable`);
+    toast.add({ severity: "success", summary: "Billable again", detail: "Job returned to Ready for Billing", life: 3000 });
+    await fetchJob();
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Error", detail: e.message || "Failed to update", life: 4000 });
   }
 }
 

@@ -471,6 +471,10 @@ def _job_to_dict(job: Job, customer: Customer | None = None) -> dict[str, Any]:
         "parent_job_id": job.parent_job_id,
         "source": job.source,
         "company_id": job.company_id,
+        # 055: RFB dismiss mark — JobDetailView renders the tag + undo from
+        # these; NULLs on every normal billable job.
+        "not_billable_at": job.not_billable_at,
+        "not_billable_reason": job.not_billable_reason,
     }
     if customer is not None:
         d["customer_name"] = customer.name
@@ -1157,14 +1161,21 @@ def update_job(
         return jsonable_response({"detail": f"Database error: {exc}"}, 500)
 
 
-@router.delete("/{job_id}", response_model=None)
+@router.delete("/{job_id}", response_model=None, dependencies=[Depends(require_permission("jobs.write"))])
 def delete_job(
     job_id: str,
     request: Request,
     current_user: Any = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Soft delete — sets deleted_at. Tenant-scoped; audit logged."""
+    """Soft delete — sets deleted_at. Tenant-scoped; audit logged.
+
+    jobs.write gate (2026-08-04 audit catch): this endpoint carried NO
+    permission at all — any authenticated role with the jobs module could
+    delete any job. jobs.write is the same key the create/update paths
+    imply, so every UI that legitimately offers Delete (JobsView, the RFB
+    queue) keeps working.
+    """
     try:
         uuid.UUID(job_id)
     except (ValueError, AttributeError):
@@ -2451,14 +2462,16 @@ def ready_for_billing(
         # from this queue forever — disagreeing with the display state, which
         # already excluded void.
         # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
-        from gdx_dispatch.core.billing_predicates import job_billed_exists
+        # 055: resolved = billed OR office-marked not billable — the marked
+        # jobs leave this queue (that's the whole point of the mark).
+        from gdx_dispatch.core.billing_predicates import job_billing_resolved
         results = db.execute(
             select(Job, Customer)
             .outerjoin(Customer, Job.customer_id == Customer.id)
             .where(
                 Job.lifecycle_stage == "completed",
                 Job.deleted_at.is_(None),
-                ~job_billed_exists(),
+                ~job_billing_resolved(),
             )
             .order_by(Job.created_at.desc())
             .limit(100)
@@ -2479,6 +2492,147 @@ def ready_for_billing(
         with contextlib.suppress(Exception):
             db.rollback()
         return []
+
+
+class NotBillablePayload(BaseModel):
+    # Mandatory, like every staff decline path (Doug 2026-07-30): a job
+    # leaving the billing queue with no invoice needs a why on the record.
+    reason: str = Field(min_length=1, max_length=300)
+
+
+@router.post("/{job_id}/not-billable", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
+def mark_job_not_billable(
+    job_id: str,
+    payload: NotBillablePayload,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The Ready-for-Billing dismiss verb: this job will never get an invoice.
+
+    Warranty/goodwill/internal work lands in RFB with no exit other than
+    Create Invoice — the queue floods and becomes wallpaper (same failure
+    PR4 fixed for leaked parts with ``wont_bill``). The mark keeps the job
+    and its audit trail but leaves every unbilled-nag surface via
+    ``core/billing_predicates.job_billing_resolved()``. Reversible with the
+    DELETE twin below.
+
+    ``invoices.write`` gate (owner/admin/accounting): suppressing revenue is
+    an invoicing decision — NOT invoices.read_all, which the read-only
+    viewer role also holds.
+    """
+    # Bind the parsed UUID, not the raw string — Job.id is Uuid(as_uuid=True)
+    # and the SQLite test path refuses str binds (same trap the closeout and
+    # mobile paths already dodge).
+    try:
+        jid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    reason = (payload.reason or "").strip()
+    if not reason:
+        return jsonable_response({"detail": "a reason is required"}, 422)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        job = db.execute(
+            select(Job).where(Job.id == jid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if not job:
+            return jsonable_response({"detail": "job not found"}, 404)
+        # Completed jobs only (audit catch): the verb belongs to the RFB
+        # queue, which contains nothing else. Marking a job mid-flight would
+        # also hide the mobile Bill button while the work is still live —
+        # with a require-invoice completion gate that's a deadlock.
+        if job.lifecycle_stage != "completed":
+            return jsonable_response(
+                {"detail": "only completed jobs can be marked not billable"},
+                409,
+            )
+        # A billed job isn't in the queue and "not billable" would be a lie
+        # on the record — void the invoice first if that's really the intent.
+        from gdx_dispatch.core.billing_predicates import job_billed_exists
+        if db.execute(
+            select(Job.id).where(Job.id == job.id, job_billed_exists()).limit(1)
+        ).first():
+            return jsonable_response(
+                {"detail": "job is already billed — void its invoice instead of marking it not billable"},
+                409,
+            )
+        now = datetime.now(UTC)
+        job.not_billable_at = now
+        job.not_billable_reason = reason
+        job.not_billable_by = _user_id(current_user)
+        job.updated_at = now
+        db.commit()
+        log_audit_event_sync(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=_user_id(current_user),
+            action="job_marked_not_billable",
+            entity_type="job",
+            entity_id=str(job.id),
+            details={"title": job.title, "reason": reason},
+            ip_address=request.client.host if request.client else None,
+            request=request,
+        )
+        db.commit()
+        log.info("job_marked_not_billable", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"ok": True, "id": str(job.id), "not_billable_at": now.isoformat()})
+    except SQLAlchemyError as exc:
+        db.rollback()
+        log.exception("mark_job_not_billable_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
+
+
+@router.delete("/{job_id}/not-billable", response_model=None, dependencies=[Depends(require_permission("invoices.write"))])
+def unmark_job_not_billable(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Undo for the mark above — the job re-enters Ready-for-Billing.
+
+    Idempotent: clearing an unmarked job is a 200 no-op (the state the
+    caller asked for already holds; a retry must not 4xx).
+    """
+    try:
+        jid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
+    try:
+        job = db.execute(
+            select(Job).where(Job.id == jid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if not job:
+            return jsonable_response({"detail": "job not found"}, 404)
+        was_marked = job.not_billable_at is not None
+        prior_reason = job.not_billable_reason
+        job.not_billable_at = None
+        job.not_billable_reason = None
+        job.not_billable_by = None
+        if was_marked:
+            job.updated_at = datetime.now(UTC)
+        db.commit()
+        if was_marked:
+            log_audit_event_sync(
+                db=db,
+                tenant_id=tenant_id,
+                user_id=_user_id(current_user),
+                action="job_not_billable_cleared",
+                entity_type="job",
+                entity_id=str(job.id),
+                details={"title": job.title, "prior_reason": prior_reason},
+                ip_address=request.client.host if request.client else None,
+                request=request,
+            )
+            db.commit()
+            log.info("job_not_billable_cleared", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"ok": True, "id": str(job.id)})
+    except SQLAlchemyError as exc:
+        db.rollback()
+        log.exception("unmark_job_not_billable_failed", extra={"tenant_id": tenant_id, "job_id": job_id})
+        return jsonable_response({"detail": f"Database error: {exc}"}, 500)
 
 
 @router.get("/return-visits-unscheduled", response_model=None, dependencies=[Depends(require_permission("jobs.read_all"))])

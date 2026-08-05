@@ -155,6 +155,19 @@ describe("billing guard — this screen opens ANY job, not just today's", () => 
     expect(w.find('[data-testid="mjd-bill"]').exists()).toBe(false);
   });
 
+  it("hides Bill / collect when the office marked the job not billable (055)", async () => {
+    // The RFB dismiss verb: the office said this job never gets an invoice.
+    // Ships as its own key — folding it into `billed` would make that field
+    // lie (a not-billable job has NO invoice).
+    const w = await mountWith({ dispatch_status: "done", billed: false, not_billable: true });
+    expect(w.find('[data-testid="mjd-bill"]').exists()).toBe(false);
+  });
+
+  it("an old server that doesn't send not_billable must not hide Bill", async () => {
+    const w = await mountWith({ dispatch_status: "done", billed: false, not_billable: undefined });
+    expect(w.find('[data-testid="mjd-bill"]').exists()).toBe(true);
+  });
+
   it("hides Bill / collect when the server did not say whether it's billed", async () => {
     // Absent must not read as "not billed" — that is exactly how the dead
     // billing_status column made every reader count paid jobs as unbilled.

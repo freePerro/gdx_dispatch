@@ -760,7 +760,10 @@ const canGoEnRoute = computed(() => {
 // inviting a second invoice is the one mistake here that costs money.
 const canBill = computed(() => {
   const j = job.value
-  return Boolean(j) && j.dispatch_status === 'done' && j.billed === false
+  // not_billable (055): the office dismissed this job from Ready-for-Billing
+  // — don't nudge the tech to invoice it. Loose !== true on purpose: an old
+  // server that doesn't send the key must not hide the button.
+  return Boolean(j) && j.dispatch_status === 'done' && j.billed === false && j.not_billable !== true
 })
 
 function openMaps() {

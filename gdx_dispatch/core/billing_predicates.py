@@ -73,6 +73,27 @@ def job_billed_exists():
     )
 
 
+def job_billing_resolved():
+    """SQLAlchemy clause: billing is SETTLED for the correlated Job — either a
+    billing-real invoice exists, or the office marked it not billable
+    (055_job_not_billable, 2026-08-04).
+
+    This is the exit condition for every UNBILLED-NAG surface (Ready-for-
+    Billing queue, /api/invoices/summary count, billing-followup task,
+    recommendations). Use ``~job_billing_resolved()`` there instead of
+    ``~job_billed_exists()``. The mobile Bill button gets the same outcome a
+    different way: `billed` stays the narrow predicate (it must not lie) and
+    the mark ships as its own `not_billable` key (routers/mobile.py).
+
+    Keep ``job_billed_exists()`` for the surfaces that ask the narrower
+    question "did an invoice actually go out" (closeout already-billed checks,
+    invoice-create 409 guard) — a not-billable mark must not read as "an
+    invoice exists" in those. A stale mark on a job that later got a real
+    invoice is harmless here: either arm resolves.
+    """
+    return or_(job_billed_exists(), Job.not_billable_at.is_not(None))
+
+
 def invoice_bills_job(
     status: str | None,
     total: float | None,

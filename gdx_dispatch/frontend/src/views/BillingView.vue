@@ -42,17 +42,26 @@
       responsiveLayout="scroll" :value="readyJobs" :rows="5" size="small" stripedRows>
             <Column field="customer_name" header="Customer" />
             <Column field="title" header="Job" />
-            <Column header="Action" style="width: 16rem">
+            <Column header="Action" style="width: 22rem">
               <template #body="{ data }">
-                <!-- Review FIRST — Doug 2026-05-10: completed jobs need a
-                     double-check + a chance to add parts before invoicing,
-                     not a one-click ship-it. The Review path navigates
-                     to job detail where parts/labor/notes can be confirmed. -->
-                <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
-                  class="mr-2"
-                  @click="reviewJob(data)" data-testid="review-job-before-billing" />
-                <Button label="Create Invoice" icon="pi pi-dollar" size="small" severity="success"
-                  @click="createInvoiceForJob(data)" data-testid="create-invoice-for-job" />
+                <div class="flex flex-wrap align-items-center gap-1">
+                  <!-- Review FIRST — Doug 2026-05-10: completed jobs need a
+                       double-check + a chance to add parts before invoicing,
+                       not a one-click ship-it. The Review path navigates
+                       to job detail where parts/labor/notes can be confirmed. -->
+                  <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
+                    @click="reviewJob(data)" data-testid="review-job-before-billing" />
+                  <Button label="Create Invoice" icon="pi pi-dollar" size="small" severity="success"
+                    @click="createInvoiceForJob(data)" data-testid="create-invoice-for-job" />
+                  <!-- The queue's exits for work that will never be invoiced
+                       (2026-08-04, same rationale as the leaked-parts card's
+                       Won't bill): without them a warranty/mistake row sits
+                       here forever and the queue becomes wallpaper. -->
+                  <Button label="Not billable" icon="pi pi-ban" size="small" severity="danger" text
+                    @click="openNotBillable(data)" data-testid="mark-job-not-billable" />
+                  <Button label="Delete" icon="pi pi-trash" size="small" severity="danger" text
+                    @click="deleteRfbJob(data)" data-testid="delete-rfb-job" />
+                </div>
               </template>
             </Column>
           </DataTable>
@@ -518,6 +527,44 @@
             data-testid="bulk-mark-paid-confirm"
             :disabled="!bulkPaidMethod || !bulkPaidDate"
             @click="confirmBulkMarkPaid"
+          />
+        </template>
+      </Dialog>
+
+      <Dialog
+        v-model:visible="showNotBillableDialog"
+        header="Mark not billable"
+        modal
+        :style="{ width: '420px' }"
+        data-testid="not-billable-dialog"
+      >
+        <p v-if="notBillableTarget">
+          <strong>{{ notBillableTarget.title || 'Untitled job' }}</strong>
+          <span v-if="notBillableTarget.customer_name"> — {{ notBillableTarget.customer_name }}</span>
+          leaves Ready for Billing and every billing reminder. The job itself
+          stays (audit-logged, reversible from the job page).
+        </p>
+        <div class="form-field">
+          <label for="not-billable-reason">Reason *</label>
+          <InputText
+            id="not-billable-reason"
+            v-model="notBillableReason"
+            placeholder="Warranty / goodwill / internal / duplicate…"
+            maxlength="300"
+            data-testid="not-billable-reason"
+            @keyup.enter="confirmNotBillable"
+          />
+          <small class="form-hint">Required — lands in the audit trail</small>
+        </div>
+        <template #footer>
+          <Button label="Cancel" severity="secondary" @click="showNotBillableDialog = false" />
+          <Button
+            label="Mark not billable"
+            severity="danger"
+            data-testid="confirm-not-billable"
+            :disabled="!notBillableReason.trim()"
+            :loading="notBillableSaving"
+            @click="confirmNotBillable"
           />
         </template>
       </Dialog>
@@ -1255,6 +1302,57 @@ async function dismissLeakedParts(entry) {
     toast.add({ severity: 'info', summary: "Won't bill", detail: `${(entry.parts || []).length} part(s) dismissed`, life: 3000 });
   } catch (e) {
     toast.add({ severity: 'error', summary: 'Error', detail: e.message || 'Failed to dismiss parts', life: 4000 });
+  }
+}
+
+// 2026-08-04 — the RFB queue's two escape hatches. "Not billable" is the
+// job-level twin of the leaked-parts Won't-bill verb (backend: POST
+// /api/jobs/:id/not-billable, invoices.write); Delete reuses the standard
+// soft-delete for jobs that only exist by mistake (dup from the create
+// retry, wrong customer).
+const showNotBillableDialog = ref(false);
+const notBillableTarget = ref(null);
+const notBillableReason = ref("");
+const notBillableSaving = ref(false);
+
+function openNotBillable(job) {
+  notBillableTarget.value = job;
+  notBillableReason.value = "";
+  showNotBillableDialog.value = true;
+}
+
+async function confirmNotBillable() {
+  const job = notBillableTarget.value;
+  const reason = notBillableReason.value.trim();
+  if (!job?.id || !reason || notBillableSaving.value) return;
+  notBillableSaving.value = true;
+  try {
+    await api.post(`/api/jobs/${job.id}/not-billable`, { reason });
+    readyJobs.value = readyJobs.value.filter((j) => j.id !== job.id);
+    showNotBillableDialog.value = false;
+    notBillableTarget.value = null;
+    toast.add({ severity: "info", summary: "Not billable", detail: `"${job.title || "Job"}" removed from Ready for Billing`, life: 4000 });
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Error", detail: e.message || "Failed to mark not billable", life: 4000 });
+  } finally {
+    notBillableSaving.value = false;
+  }
+}
+
+async function deleteRfbJob(job) {
+  if (!job?.id) return;
+  const ok = await confirmAsync({
+    header: "Delete job?",
+    message: `"${job.title || "Untitled job"}"${job.customer_name ? ` (${job.customer_name})` : ""} will be deleted everywhere — dispatch, reports, this queue. For jobs that exist by mistake. If the work was real but free, use Not billable instead.`,
+    acceptLabel: "Delete job",
+  });
+  if (!ok) return;
+  try {
+    await api.del(`/api/jobs/${job.id}`);
+    readyJobs.value = readyJobs.value.filter((j) => j.id !== job.id);
+    toast.add({ severity: "info", summary: "Job deleted", detail: `"${job.title || "Job"}" deleted`, life: 3000 });
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Error", detail: e.message || "Failed to delete job", life: 4000 });
   }
 }
 

@@ -283,6 +283,16 @@ class Job(Base):
     # derive-don't-cache model, core/job_display_state.py). Still serialized
     # for API back-compat; column drop is a later cleanup migration.
     billing_status: Mapped[str] = mapped_column(Enum("unbilled", "invoiced", "partial_paid", "paid", "overdue", "void", name="job_billing_status"), nullable=False, default="unbilled", server_default="unbilled")
+    # 2026-08-04 (055_job_not_billable): the office's dismiss verb for the
+    # Ready-for-Billing queue — "this completed job will never get an invoice"
+    # (warranty/goodwill/internal). NOT a cache: it's an operator decision,
+    # like JobPartNeeded's wont_bill. Set/cleared only by the /not-billable
+    # endpoints; every unbilled-nag surface exits via
+    # core/billing_predicates.job_billing_resolved(). A real invoice always
+    # dominates a stale mark (billed OR not-billable — either resolves).
+    not_billable_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    not_billable_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    not_billable_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[str] = mapped_column(String(50), nullable=True)

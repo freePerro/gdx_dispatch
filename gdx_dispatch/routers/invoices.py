@@ -521,13 +521,15 @@ def billing_summary(
     # PR2-billing-capture: uses the canonical predicate (voided invoices and
     # the fabricated $0 draft no longer count as billing a job) so this count
     # agrees with /api/jobs/ready-for-billing and the unbilled-work alert.
-    from gdx_dispatch.core.billing_predicates import job_billed_exists
+    # 055: not-billable-marked jobs are resolved — excluded here so the count
+    # keeps agreeing with the queue.
+    from gdx_dispatch.core.billing_predicates import job_billing_resolved
     from gdx_dispatch.models.tenant_models import Job
     ready_for_billing = int(db.scalar(
         select(func.count(Job.id.distinct())).where(
             Job.deleted_at.is_(None),
             Job.lifecycle_stage == "completed",
-            ~job_billed_exists(),
+            ~job_billing_resolved(),
         )
     ) or 0)
 
