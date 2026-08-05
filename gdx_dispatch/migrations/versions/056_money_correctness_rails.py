@@ -132,13 +132,24 @@ def upgrade() -> None:
     #
     # ANCHORED to the tenant's configured rate, and this matters. A dry run
     # against production (326 invoices, 200 in this shape) showed the naive
-    # rule -- accept any quotient in (0, 0.25] -- would have healed 111 rows
-    # correctly and written a NONSENSE rate onto 71 others: 0.39%, 2.27%,
-    # 3.84%. Those quotients are garbage because the stored tax was computed
-    # against a different base than the current taxable line sum (lines added
-    # later, taxability flags absent, partial imports). Inferring a rate
-    # backwards from inconsistent data is unsound, and a wrong rate is WORSE
-    # than the frozen tax it replaces: it silently re-prices every future edit.
+    # rule -- accept any quotient in (0, 0.25] -- would have healed 116 rows
+    # correctly and written a NONSENSE rate onto 66 others.
+    #
+    # Those 66 are provably unrecoverable, not merely suspicious. Minnesota's
+    # STATE rate alone is 6.875% (MN DOR; destination-based, local options add
+    # on top), so no taxable MN sale can imply a rate BELOW it -- yet these
+    # rows imply 0.24% to 6.42%. Spot-checking shows why: the tax was computed
+    # at the real rate against a SUBSET of the invoice (11 of the 66 match a
+    # single line's total exactly at 7.375%), but the per-line `taxable` flags
+    # no longer record which subset. The base is lost, so the rate cannot be
+    # recovered by division -- and a wrong rate is WORSE than the frozen tax
+    # it replaces: it silently re-prices every future edit.
+    #
+    # The anchor deliberately UNDER-heals: it also skips ~5 rows at the bare
+    # 6.875% state rate (a valid MN rate for a location with no local tax,
+    # just not this tenant's configured default). Those keep today's behavior,
+    # which is not a regression. Under-healing is safe; over-healing writes a
+    # wrong rate onto a real invoice.
     #
     # So: only heal a row whose derived rate agrees with the tenant's
     # configured default. Everything else keeps exactly today's behavior --
