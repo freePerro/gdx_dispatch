@@ -43,13 +43,31 @@
             @captured="load"
           />
 
-          <!-- Settings screen: per-field toggles. GET endpoint -> {fields:[{name,on_quote}]};
-               Save PUTs {fields:[names that are on]}. -->
+          <!-- Settings screen: per-field toggles, plus an optional ordered field
+               list. GET endpoint -> {fields:[{name,on_quote}],
+               ordered?:{title,hint,selected:[names],candidates:[names]}};
+               Save PUTs {fields:[names that are on], ordered?:[names in order]}. -->
           <div v-if="screen.type === 'settings'" class="plugin-screen__settings">
             <p v-if="screen.description" class="plugin-screen__hint">{{ screen.description }}</p>
             <div v-for="f in settingsFields" :key="f.name" class="plugin-screen__toggle">
               <Checkbox :inputId="`set-${f.name}`" v-model="f.on" :binary="true" />
               <label :for="`set-${f.name}`">{{ f.name }}</label>
+            </div>
+            <div v-if="orderedGroup" class="plugin-screen__ordered">
+              <h4>{{ orderedGroup.title || 'Field order' }}</h4>
+              <p v-if="orderedGroup.hint" class="plugin-screen__hint">{{ orderedGroup.hint }}</p>
+              <div v-for="(name, idx) in orderedGroup.selected" :key="name" class="plugin-screen__ordered-row">
+                <span class="plugin-screen__ordered-name">{{ idx + 1 }}. {{ name }}</span>
+                <Button icon="pi pi-arrow-up" text size="small" :disabled="idx === 0"
+                  :aria-label="`Move ${name} up`" @click="moveOrdered(idx, -1)" />
+                <Button icon="pi pi-arrow-down" text size="small"
+                  :disabled="idx === orderedGroup.selected.length - 1"
+                  :aria-label="`Move ${name} down`" @click="moveOrdered(idx, 1)" />
+                <Button icon="pi pi-times" text size="small" severity="danger"
+                  :aria-label="`Remove ${name}`" @click="removeOrdered(idx)" />
+              </div>
+              <Select v-model="orderedAdd" :options="orderedCandidates" placeholder="Add a field…"
+                size="small" class="plugin-screen__ordered-add" @change="addOrdered" />
             </div>
             <Button label="Save" size="small" :loading="savingSettings" @click="saveSettings(screen)" />
           </div>
@@ -165,6 +183,30 @@ const formState = reactive({});
 const fieldOptions = reactive({});
 const settingsFields = ref([]);   // [{ name, on }]
 const savingSettings = ref(false);
+// Optional ordered field list on the settings screen (e.g. "these fields, in
+// this order, compose a line description") — present only when the plugin's
+// settings GET returns an `ordered` group.
+const orderedGroup = ref(null);   // { title, hint, selected: [...], candidates: [...] }
+const orderedAdd = ref(null);     // Select model for appending a candidate
+const orderedCandidates = computed(() => {
+  const g = orderedGroup.value;
+  if (!g) return [];
+  const sel = new Set(g.selected);
+  return (g.candidates || []).filter((n) => !sel.has(n));
+});
+function moveOrdered(idx, delta) {
+  const sel = orderedGroup.value?.selected || [];
+  const j = idx + delta;
+  if (j < 0 || j >= sel.length) return;
+  [sel[idx], sel[j]] = [sel[j], sel[idx]];
+}
+function removeOrdered(idx) {
+  orderedGroup.value?.selected.splice(idx, 1);
+}
+function addOrdered() {
+  if (orderedAdd.value && orderedGroup.value) orderedGroup.value.selected.push(orderedAdd.value);
+  orderedAdd.value = null;
+}
 const activeTab = ref('0');       // index of the open tab (string, PrimeVue Tabs)
 
 // Folder filter for a list screen that carries a folder column (e.g. captures).
@@ -297,13 +339,18 @@ function initCreateForms() {
 async function loadSettings(screen) {
   const data = await api.get(screen.endpoint);
   settingsFields.value = (data?.fields || []).map((f) => ({ name: f.name, on: !!f.on_quote }));
+  const g = data?.ordered;
+  orderedGroup.value = g && Array.isArray(g.candidates)
+    ? { title: g.title || '', hint: g.hint || '', selected: [...(g.selected || [])], candidates: [...g.candidates] }
+    : null;
 }
 
 async function saveSettings(screen) {
   savingSettings.value = true;
   try {
-    const fields = settingsFields.value.filter((f) => f.on).map((f) => f.name);
-    await api.put(screen.endpoint, { fields }, { successMessage: 'Saved' });
+    const body = { fields: settingsFields.value.filter((f) => f.on).map((f) => f.name) };
+    if (orderedGroup.value) body.ordered = [...orderedGroup.value.selected];
+    await api.put(screen.endpoint, body, { successMessage: 'Saved' });
   } finally {
     savingSettings.value = false;
   }
@@ -327,6 +374,11 @@ onMounted(async () => {
 .plugin-screen__raw { white-space: pre-wrap; word-break: break-word; max-height: 16rem; overflow: auto; color: var(--p-text-color, #1f2937); background: rgba(128, 128, 128, 0.12); border: 1px solid rgba(128, 128, 128, 0.25); padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; }
 .plugin-screen__photo { max-width: 100%; max-height: 22rem; border: 1px solid var(--surface-border, #ccc); border-radius: 4px; }
 .plugin-screen__folderbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.plugin-screen__ordered { margin: 1rem 0 0.75rem; }
+.plugin-screen__ordered h4 { margin: 0 0 0.25rem; color: var(--p-text-color, #1f2937); }
+.plugin-screen__ordered-row { display: flex; align-items: center; gap: 0.25rem; }
+.plugin-screen__ordered-name { min-width: 12rem; color: var(--p-text-color, #1f2937); }
+.plugin-screen__ordered-add { margin-top: 0.35rem; min-width: 12rem; }
 .plugin-screen__help { max-width: 60rem; color: var(--p-text-color, #1f2937); }
 .plugin-screen__help-sec { margin-bottom: 1.25rem; }
 .plugin-screen__help-sec h4 { margin: 0 0 0.4rem; }
