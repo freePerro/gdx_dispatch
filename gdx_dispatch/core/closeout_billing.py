@@ -223,9 +223,14 @@ def release_untouched_autodraft(db: Session, *, job: Job) -> Invoice | None:
         .where(JobPartNeeded.billed_invoice_id == inv.id)
         .values(billed_invoice_id=None)
     )
-    db.execute(
-        InvoiceLine.__table__.delete().where(InvoiceLine.invoice_id == inv.id)
-    )
+    # ORM deletes, not a raw Core table-delete: invoice_lines is a money
+    # table and raw Core writes are invisible to the ledger flush guard
+    # (test_no_raw_core_writes_to_money_tables pins this).
+    for line in db.execute(
+        select(InvoiceLine).where(InvoiceLine.invoice_id == inv.id)
+    ).scalars().all():
+        db.delete(line)
+    db.flush()
     inv.subtotal = _money(0)
     inv.tax_amount = _money(0)
     inv.total = _money(0)
