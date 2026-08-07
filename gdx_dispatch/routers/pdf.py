@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -23,11 +24,14 @@ from gdx_dispatch.models.tenant_models import (
     Invoice,
     InvoiceAdjustment,
     Job,
+    JobPhoto,
     PdfTemplate,
 )
 from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.routers.auth import get_current_user
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["pdf"],
@@ -211,6 +215,97 @@ def _estimate_payload(
     }
 
 
+def _shrink_photo_for_pdf(src: Path, cache_key: str) -> Path:
+    """Downscaled JPEG copy for PDF embedding, cached in the system tmp dir.
+
+    The email send path SKIPS the whole PDF attachment above
+    MAX_INLINE_ATTACHMENT_BYTES (2.5 MB) — embedding a handful of full-size
+    photos would silently strip the invoice from its own email. 1200px q78
+    keeps a photo ~100-200 KB on the page. Falls back to the original file
+    when Pillow can't process it (WeasyPrint may still manage)."""
+    cache_dir = Path(tempfile.gettempdir()) / "gdx_invoice_pdf_photos"
+    out = cache_dir / f"{cache_key}.jpg"
+    try:
+        if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+            return out
+        from PIL import Image  # noqa: PLC0415
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as img:
+            img = img.convert("RGB")
+            img.thumbnail((1200, 1200))
+            img.save(out, format="JPEG", quality=78, optimize=True)
+        return out
+    except Exception:
+        log.exception("invoice_pdf_photo_shrink_failed src=%s", src)
+        return src
+
+
+def _invoice_photos_for_pdf(db: Session, invoice: Invoice) -> list[dict[str, Any]]:
+    """The job photos PICKED on this invoice, as file:// URIs for WeasyPrint.
+
+    invoice.attached_photo_ids is a JSON array of job_photos.id strings
+    (migration 059). Each resolves photo → documents download URL →
+    documents.filename on disk (the flat UPLOAD_DIR layout uploads.py
+    writes). Anything unresolvable — deleted photo, wrong job, missing
+    file, non-document URL (the dead legacy /mobile/uploads path) — is
+    silently skipped: the PDF must always render.
+    """
+    raw = getattr(invoice, "attached_photo_ids", None)
+    if not raw or invoice.job_id is None:
+        return []
+    try:
+        ids = [str(i) for i in json.loads(raw) if i]
+    except (ValueError, TypeError):
+        log.warning("invoice_pdf_bad_photo_ids invoice=%s", invoice.id)
+        return []
+    if not ids:
+        return []
+    # Bind UUID objects — the Uuid column refuses str binds on SQLite.
+    id_uuids = []
+    for i in ids:
+        with contextlib.suppress(ValueError, AttributeError):
+            id_uuids.append(UUID(i))
+    if not id_uuids:
+        return []
+    photos = db.execute(
+        select(JobPhoto).where(
+            JobPhoto.id.in_(id_uuids),
+            JobPhoto.job_id == invoice.job_id,
+            JobPhoto.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    by_id = {str(p.id): p for p in photos}
+    base = Path(os.getenv("UPLOAD_DIR", "/app/uploads"))
+    images: list[dict[str, Any]] = []
+    for pid in ids:  # selection order is display order
+        photo = by_id.get(pid)
+        if photo is None:
+            continue
+        url = photo.url or ""
+        # Canonical shape written by core/job_photos.link_job_photo:
+        # /api/documents/{document_id}/download
+        if not (url.startswith("/api/documents/") and url.endswith("/download")):
+            continue
+        doc_id = url.removeprefix("/api/documents/").removesuffix("/download")
+        try:
+            doc_uuid = UUID(doc_id)
+        except (ValueError, AttributeError):
+            continue
+        doc = db.execute(
+            select(Document).where(Document.id == doc_uuid, Document.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if doc is None or not doc.filename:
+            continue
+        path = base / doc.filename
+        if not path.exists():
+            continue
+        embed = _shrink_photo_for_pdf(path, cache_key=pid)
+        label = (photo.caption or "").strip() or (photo.kind or "").strip().title()
+        images.append({"src": f"file://{embed}", "name": label})
+    return images
+
+
 def _invoice_settlement(invoice: Invoice, db: Session | None) -> tuple[float, float]:
     """(paid_to_date, credits_applied) — the single source the PDF and the
     email body use so their totals agree.
@@ -315,6 +410,11 @@ def _invoice_payload(invoice: Invoice, customer: Customer | None, db: Session | 
         # "Total-only" display — hides per-line prices + Subtotal/Tax rows,
         # keeping Total + Balance Due. Snapshotted from the source estimate.
         "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),
+        # Job photos picked for this invoice (migration 059) — rendered as
+        # the "Job Photos" grid. Empty unless the office selected some. All
+        # four generate_invoice_pdf call sites come through this payload, so
+        # email/send/mobile/GET all carry the same photos.
+        "attachment_images": _invoice_photos_for_pdf(db, invoice) if db is not None else [],
     }
 
 
