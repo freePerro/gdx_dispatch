@@ -54,6 +54,31 @@ describe('BillingView Ready-for-Billing — Review button', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Closeout autodraft (2026-08-07): when the closeout already minted a draft
+// invoice, the RFB row's primary action is to REVIEW that draft — never to
+// start a second invoice from a blank form.
+// ---------------------------------------------------------------------------
+describe('BillingView Ready-for-Billing — review the autodrafted invoice', () => {
+  it('draft rows get a Review-invoice button, Create Invoice is the v-else', () => {
+    const idx = SRC.indexOf('data-testid="review-draft-invoice"');
+    expect(idx).toBeGreaterThan(-1);
+    // The draft button is gated on the row carrying a draft…
+    const before = SRC.slice(Math.max(0, idx - 400), idx);
+    expect(before).toMatch(/v-if="data\.draft_invoice_id"/);
+    // …and Create Invoice only renders when there is none.
+    const after = SRC.slice(idx, idx + 600);
+    expect(after).toMatch(/v-else[\s\S]*create-invoice-for-job/);
+  });
+
+  it('reviewDraftInvoice navigates to the draft, not /billing/new', () => {
+    const start = SRC.indexOf('function reviewDraftInvoice');
+    expect(start).toBeGreaterThan(-1);
+    const span = SRC.slice(start, start + 400);
+    expect(span).toMatch(/router\.push\(\s*`\/billing\/\$\{[^}]*draft_invoice_id[^}]*\}`/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cross-page sort — Doug 2026-05-11.
 //
 // Before this fix, the DataTable received `paginatedInvoices` (a 20-row slice

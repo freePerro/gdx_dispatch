@@ -73,25 +73,51 @@ def job_billed_exists():
     )
 
 
+def job_finalized_invoice_exists():
+    """SQLAlchemy EXISTS clause: the correlated Job has an invoice that
+    FINALIZES its billing — live, non-void, non-deposit, and PAST DRAFT.
+
+    Closeout autodraft (2026-08-07): closing out a job now machine-creates a
+    priced draft, so "a draft exists" no longer means "someone is done
+    billing this" — it means "review this draft." A NULL status reads as
+    draft here (indeterminate = not advanced), the cash-flow-safe direction:
+    the job keeps nagging until a human moves the invoice past draft.
+    """
+    return exists().where(
+        Invoice.job_id == Job.id,
+        Invoice.deleted_at.is_(None),
+        Invoice.status.is_not(None),
+        Invoice.status.notin_(["void", "draft"]),
+        or_(Invoice.billing_type.is_(None), Invoice.billing_type != "deposit"),
+    )
+
+
 def job_billing_resolved():
-    """SQLAlchemy clause: billing is SETTLED for the correlated Job — either a
-    billing-real invoice exists, or the office marked it not billable
-    (055_job_not_billable, 2026-08-04).
+    """SQLAlchemy clause: billing is SETTLED for the correlated Job — either
+    an invoice moved PAST DRAFT (sent/paid/overdue), or the office marked the
+    job not billable (055_job_not_billable, 2026-08-04).
 
     This is the exit condition for every UNBILLED-NAG surface (Ready-for-
     Billing queue, /api/invoices/summary count, billing-followup task,
     recommendations). Use ``~job_billing_resolved()`` there instead of
-    ``~job_billed_exists()``. The mobile Bill button gets the same outcome a
-    different way: `billed` stays the narrow predicate (it must not lie) and
-    the mark ships as its own `not_billable` key (routers/mobile.py).
+    ``~job_billed_exists()``.
+
+    Autodraft change (2026-08-07): this used to lean on ``job_billed_exists``,
+    whose ``total > 0 OR status != 'draft'`` arm counts a PRICED DRAFT as
+    billing the job. With closeout minting a priced draft automatically, that
+    would have emptied Ready-for-Billing at the exact moment the draft needs
+    review — so the settle condition is now ``job_finalized_invoice_exists``:
+    drafts (any total, machine- or office-made) keep the job in the queue,
+    where the UI offers "review the draft" instead of "create an invoice."
 
     Keep ``job_billed_exists()`` for the surfaces that ask the narrower
-    question "did an invoice actually go out" (closeout already-billed checks,
-    invoice-create 409 guard) — a not-billable mark must not read as "an
-    invoice exists" in those. A stale mark on a job that later got a real
-    invoice is harmless here: either arm resolves.
+    question "does a billing-real invoice exist" (closeout already-billed
+    checks, invoice-create 409 guard, the mobile Bill button) — there a
+    priced draft SHOULD block minting a second invoice. The two predicates
+    now deliberately diverge on priced drafts: billed-exists says "don't
+    create another," billing-resolved says "but billing isn't finished."
     """
-    return or_(job_billed_exists(), Job.not_billable_at.is_not(None))
+    return or_(job_finalized_invoice_exists(), Job.not_billable_at.is_not(None))
 
 
 def invoice_bills_job(
