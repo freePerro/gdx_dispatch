@@ -508,6 +508,38 @@
           <h3>Notes</h3>
           <p data-testid="invoice-notes">{{ invoice.notes }}</p>
         </div>
+
+        <!-- Job photos on the invoice PDF (2026-08-07): before/after shots
+             justify the bill. Checked photos print as a "Job Photos" grid
+             on the PDF, so they ride every delivery channel (email, print,
+             postal). Editable while draft; read-only after. -->
+        <div v-if="invoice.job_id && jobPhotos.length" class="notes-section" data-testid="invoice-job-photos">
+          <h3>Job photos on invoice</h3>
+          <p class="photo-pick-hint">
+            Checked photos print on the invoice PDF.
+            <template v-if="invoice.status !== 'draft'"> (locked — invoice is no longer a draft)</template>
+          </p>
+          <div class="photo-pick-grid">
+            <label
+              v-for="p in jobPhotos"
+              :key="p.id"
+              class="photo-pick"
+              :class="{ selected: isPhotoAttached(p.id), locked: invoice.status !== 'draft' }"
+              :data-testid="`invoice-photo-${p.id}`"
+            >
+              <input
+                type="checkbox"
+                :checked="isPhotoAttached(p.id)"
+                :disabled="invoice.status !== 'draft' || photoSaving"
+                @change="togglePhoto(p.id)"
+              />
+              <AuthedImage :src="p.url" :alt="p.caption || p.kind" class="photo-pick-thumb" />
+              <span class="photo-pick-meta">
+                {{ p.kind }}<template v-if="p.caption"> — {{ p.caption }}</template>
+              </span>
+            </label>
+          </div>
+        </div>
       </template>
 
       <!-- Email composer (Outlook-backed; mailto fallback when not connected) -->
@@ -748,6 +780,7 @@ import Toast from "primevue/toast";
 import LineItemEditor from "../components/LineItemEditor.vue";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
+import AuthedImage from "../components/AuthedImage.vue";
 
 const api = useApi();
 const route = useRoute();
@@ -760,6 +793,45 @@ const savingPayment = ref(false);
 const showPaymentDialog = ref(false);
 const qbConnected = ref(false);
 const pushingToQb = ref(false);
+
+// Job photos on the invoice PDF (2026-08-07). jobPhotos = the job's photo
+// roll; invoice.attached_photo_ids = the current pick. Toggling PATCHes the
+// whole list (draft only) — the server validates every id against the job.
+const jobPhotos = ref([]);
+const photoSaving = ref(false);
+
+function isPhotoAttached(id) {
+  return (invoice.value.attached_photo_ids || []).includes(id);
+}
+
+async function fetchJobPhotos() {
+  jobPhotos.value = [];
+  const jobId = invoice.value.job_id;
+  if (!jobId) return;
+  try {
+    const rows = await api.get(`/api/jobs/${jobId}/photos`, { suppressErrorToast: true });
+    jobPhotos.value = Array.isArray(rows) ? rows : [];
+  } catch {
+    jobPhotos.value = []; // photos are optional garnish — never block the invoice view
+  }
+}
+
+async function togglePhoto(id) {
+  if (invoice.value.status !== "draft" || photoSaving.value) return;
+  const current = invoice.value.attached_photo_ids || [];
+  const next = current.includes(id) ? current.filter((p) => p !== id) : [...current, id];
+  photoSaving.value = true;
+  const prev = current;
+  invoice.value.attached_photo_ids = next; // optimistic — checkbox answers instantly
+  try {
+    await api.patch(`/api/invoices/${invoice.value.id}`, { attached_photo_ids: next });
+  } catch (e) {
+    invoice.value.attached_photo_ids = prev;
+    toast.add({ severity: "error", summary: "Photo not saved", detail: e.message || "Try again.", life: 4000 });
+  } finally {
+    photoSaving.value = false;
+  }
+}
 
 // Email composer (mirrors EstimateView). Server preps {to,subject,body_text,
 // pdf{base64}} via /api/invoices/{id}/email-compose. User reviews + edits.
@@ -1060,6 +1132,8 @@ function normalizeInvoice(payload) {
     locked: Boolean(payload.locked),
     // Drives the edit-mode "hide line-item prices on PDF" toggle.
     hide_line_prices: Boolean(payload.hide_line_prices),
+    // Job photos picked for the PDF — drives the photo-picker checkboxes.
+    attached_photo_ids: Array.isArray(payload.attached_photo_ids) ? payload.attached_photo_ids : [],
     // Tier 10 — per-record QuickBooks push state for the sync chip. This
     // normalizer copies fields explicitly, so these must be listed or the chip
     // reads undefined and always renders "Not in QuickBooks".
@@ -1110,6 +1184,7 @@ async function fetchInvoice() {
   try {
     const result = await api.get(`/api/invoices/${route.params.id}`);
     normalizeInvoice(result?.data || result || {});
+    fetchJobPhotos(); // fire-and-forget — the picker card fills in when it lands
   } catch {
     toast.add({ severity: "warn", summary: "Offline", detail: "Using placeholder data", life: 3000 });
     normalizeInvoice({
@@ -1797,6 +1872,46 @@ onMounted(() => {
 }
 .notes-section p {
   white-space: pre-wrap;
+}
+
+/* Job-photo picker — checked photos print on the invoice PDF. */
+.photo-pick-hint {
+  color: var(--p-text-muted-color);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0.5rem;
+}
+.photo-pick-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.photo-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 140px;
+  padding: 0.4rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.photo-pick.selected {
+  border-color: var(--p-primary-color);
+}
+.photo-pick.locked {
+  cursor: default;
+  opacity: 0.75;
+}
+.photo-pick-thumb {
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.photo-pick-meta {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  word-break: break-word;
 }
 
 .form-grid-single {

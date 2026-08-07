@@ -480,6 +480,12 @@ class Invoice(Base):
     # unverified, unsent, unlocked, unpaid). NULL = human-created; those are
     # never rebuilt or auto-voided. See core/closeout_billing.py.
     origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 2026-08-07 (migration 059) — job photos picked for this invoice's PDF,
+    # stored as a JSON array of job_photos.id strings (same JSON-in-TEXT
+    # pattern as pdf_templates.blocks). NULL/empty = no photos section. The
+    # PDF renderer resolves each id → job_photos.url → documents file on
+    # disk; a photo deleted after selection just drops out of the render.
+    attached_photo_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Plan §11: the office's explicit approval of a tech-created invoice.
     # Mobile send 409s while NULL — nothing a tech types from a truck reaches
     # a customer without a second pair of eyes. Distinct from sent_at (a

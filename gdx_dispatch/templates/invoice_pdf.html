@@ -33,6 +33,11 @@
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
     .status { margin-top: 10px; color: #4b5563; }
     .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
+    /* Job photos grid — same shapes as estimate_pdf.html's attachments. */
+    .attachments-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+    .attachment-photo { width: 240px; }
+    .attachment-photo img { width: 100%; max-height: 200px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 4px; }
+    .attachment-caption { font-size: 10px; color: #6b7280; margin-top: 2px; word-break: break-word; }
   </style>
 </head>
 {# font-family goes in the style ATTRIBUTE, not the <style> block: quoted
@@ -113,6 +118,23 @@
 
     {% endif %}
   {% endfor %}
+
+  {# Job photos the office picked for this invoice (migration 059) —
+     before/after shots that justify the bill. Renders nothing when no
+     photos are selected. #}
+  {% if data.attachment_images %}
+  <div class="section">
+    <strong>Job Photos</strong>
+    <div class="attachments-grid">
+      {% for img in data.attachment_images %}
+      <div class="attachment-photo">
+        <img src="{{ img.src }}" alt="{{ img.name }}" />
+        {% if img.name %}<div class="attachment-caption">{{ img.name }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {% if tpl.signature.visible %}
   <div class="signature"{% if tpl.signature.style %} style="{{ tpl.signature.style }}"{% endif %}>Customer Signature</div>

@@ -1,4 +1,5 @@
 import datetime as _datetime
+import json as _json
 import logging
 import secrets
 import uuid as _uuid
@@ -23,6 +24,7 @@ from gdx_dispatch.models.tenant_models import (
     InvoiceLine,
     Job,
     JobPartNeeded,
+    JobPhoto,
     Payment,
 )
 from gdx_dispatch.modules.catalog_policy import block_or_warn_invoice_line, get_policy
@@ -136,6 +138,16 @@ def _amount_overpaid(invoice: Invoice) -> float:
     return float(_money(excess)) if excess > Decimal("0.005") else 0.0
 
 
+def _decode_photo_ids(invoice: Invoice) -> list[str]:
+    raw = getattr(invoice, "attached_photo_ids", None)
+    if not raw:
+        return []
+    try:
+        return [str(i) for i in _json.loads(raw) if i]
+    except (ValueError, TypeError):
+        return []
+
+
 def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_payments: bool = False) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": str(invoice.id),
@@ -168,6 +180,9 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         "notes": invoice.notes,
         # "Total-only" display — hides per-line prices on the invoice PDF.
         "hide_line_prices": bool(getattr(invoice, "hide_line_prices", False)),
+        # Job photos picked for the PDF (migration 059) — decoded to a list
+        # so the detail view can show the current selection.
+        "attached_photo_ids": _decode_photo_ids(invoice),
         # PR6 — per-invoice dunning mute state for the detail-view toggle.
         "dunning_paused": bool(getattr(invoice, "dunning_paused", False)),
         "locked": bool(invoice.locked),
@@ -482,6 +497,10 @@ class InvoicePatchIn(BaseModel):
     notes: str | None = None
     # "Total-only" display toggle for this invoice's PDF.
     hide_line_prices: bool | None = None
+    # Job photos to print on this invoice's PDF (migration 059) — list of
+    # job_photos.id strings, replaced wholesale on every PATCH. Empty list
+    # clears the selection. Capped: a 20-photo invoice PDF is already huge.
+    attached_photo_ids: list[str] | None = Field(default=None, max_length=20)
 
 
 class PaymentCreateIn(BaseModel):
@@ -1356,6 +1375,40 @@ def patch_invoice(
         invoice.notes = updates["notes"].strip() if updates["notes"] else None
     if "hide_line_prices" in updates:
         invoice.hide_line_prices = bool(updates["hide_line_prices"])
+    if "attached_photo_ids" in updates and updates["attached_photo_ids"] is not None:
+        # Photos print on the PDF, so every id must be a live photo on THIS
+        # invoice's job — a stray id would silently render someone else's
+        # photo onto a customer's bill.
+        ids = [str(i) for i in updates["attached_photo_ids"] if i]
+        if ids and invoice.job_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="invoice has no job — job photos can only be attached to job-linked invoices",
+            )
+        if ids:
+            # Bind UUID objects, not strings — the Uuid column refuses str
+            # binds on the SQLite test path (same trap as closeout/mobile).
+            try:
+                id_uuids = [_uuid.UUID(i) for i in ids]
+            except (ValueError, AttributeError):
+                raise HTTPException(status_code=422, detail="invalid photo id") from None
+            valid = {
+                str(row)
+                for row in db.execute(
+                    select(JobPhoto.id).where(
+                        JobPhoto.id.in_(id_uuids),
+                        JobPhoto.job_id == invoice.job_id,
+                        JobPhoto.deleted_at.is_(None),
+                    )
+                ).scalars()
+            }
+            bad = [i for i in ids if i not in valid]
+            if bad:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"photo ids not on this invoice's job: {', '.join(bad[:5])}",
+                )
+        invoice.attached_photo_ids = _json.dumps(ids) if ids else None
 
     _recalculate_invoice(invoice, db)
     db.commit()
