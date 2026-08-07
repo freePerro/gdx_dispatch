@@ -242,6 +242,20 @@ def test_d2_lazy_backfill_creates_row(db):
     assert row2.id == row.id
 
 
+def test_d2_lazy_backfill_refuses_non_technician_id(db):
+    """2026-08-06 incident: a users.id landed in tech_id via the mobile
+    `or user_id` fallback. The ownership gate joins tech_id ->
+    technicians.id, so such a row can never grant access — the tech's own
+    job 404s on /financial. The backfill must write nothing instead."""
+    jid = _seed_job(db)
+    row = ja.ensure_assignment_for_legacy_job(
+        db, job_id=jid, tech_id="user-a", user_id="user-a"
+    )
+    db.commit()
+    assert row is None
+    assert db.query(JobAssignment).filter_by(job_id=jid).count() == 0
+
+
 # ---------------------------------------------------------------------------
 # D4 — lead-tech-only completion gate.
 # ---------------------------------------------------------------------------

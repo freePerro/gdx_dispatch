@@ -29,7 +29,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.models.tenant_models import Job, JobAssignment
+from gdx_dispatch.models.tenant_models import Job, JobAssignment, Technician
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -345,13 +345,14 @@ def ensure_assignment_for_legacy_job(
     job_id: str,
     tech_id: str,
     user_id: str | None = None,
-) -> JobAssignment:
+) -> JobAssignment | None:
     """Lazy back-fill: when a single-tech-era job has Job.assigned_to set
     but no JobAssignment row, create one so per-tech stamps land somewhere.
 
     Called from mobile state-machine handlers as a safety net for
     pre-Phase-1.4 jobs that haven't been touched by the back-fill
-    migration yet. Idempotent. Caller commits.
+    migration yet. Idempotent. Caller commits. Returns None (writes
+    nothing) when tech_id is not a real technicians.id.
     """
     existing = db.execute(
         select(JobAssignment).where(
@@ -362,6 +363,19 @@ def ensure_assignment_for_legacy_job(
     ).scalar_one_or_none()
     if existing is not None:
         return existing
+    # tech_id must resolve to a real technician row: the ownership gate
+    # (job_belongs_to_user) joins ja.tech_id -> technicians.id, so a row
+    # holding anything else (e.g. a users.id) is unreachable garbage that
+    # 404s the tech's own job. 5 such rows reached prod before 2026-08-07.
+    tech_exists = db.execute(
+        select(Technician.id).where(Technician.id == tech_id)
+    ).scalar_one_or_none()
+    if tech_exists is None:
+        log.warning(
+            "ensure_assignment_for_legacy_job: refusing non-technician "
+            "tech_id=%s job_id=%s", tech_id, job_id,
+        )
+        return None
     row = JobAssignment(
         id=str(uuid4()),
         job_id=job_id,

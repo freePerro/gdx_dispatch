@@ -2298,7 +2298,12 @@ def mobile_job_en_route(
     # Phase 1.4 D2 — stamp per-tech en_route_at on JobAssignment so multi-
     # tech jobs preserve who hit "On my way" and when. Lazy back-fill an
     # assignment row if a single-tech-era job has none yet.
-    _technician_id = _get_technician_id(db, tenant_id, user_id) or user_id
+    # No `or user_id` fallback here: job_assignments.tech_id must hold a
+    # technicians.id. On 2026-08-06 the fallback stuffed a users.id in,
+    # which the ownership gate (job_belongs_to_user) can never match — the
+    # job then 404s on /financial and mobile invoicing. Skipping the stamp
+    # entirely is strictly better than writing a poisoned row.
+    _technician_id = _get_technician_id(db, tenant_id, user_id)
     if _technician_id:
         from gdx_dispatch.routers.job_assignments import (
             ensure_assignment_for_legacy_job,
@@ -2423,8 +2428,10 @@ def mobile_job_arrived(
                 # The tech's coordinates land in the audit details below.
                 pass
 
-    # Phase 1.4 D2 — per-tech arrived_at on JobAssignment.
-    _technician_id_arr = _get_technician_id(db, tenant_id, user_id) or user_id
+    # Phase 1.4 D2 — per-tech arrived_at on JobAssignment. No user-id
+    # fallback: tech_id must be a technicians.id or the ownership gate
+    # can never match the row (2026-08-06 poisoned-assignment incident).
+    _technician_id_arr = _get_technician_id(db, tenant_id, user_id)
     if _technician_id_arr:
         from gdx_dispatch.routers.job_assignments import (
             ensure_assignment_for_legacy_job,
@@ -2678,8 +2685,10 @@ def mobile_job_complete(
             _job_obj.completed_at = now
 
     # Phase 1.4 D2 — per-tech completed_at on JobAssignment so multi-tech
-    # jobs preserve who finished (vs. who started or visited).
-    _technician_id_done = _get_technician_id(db, tenant_id, user_id) or user_id
+    # jobs preserve who finished (vs. who started or visited). No user-id
+    # fallback: tech_id must be a technicians.id or the ownership gate
+    # can never match the row (2026-08-06 poisoned-assignment incident).
+    _technician_id_done = _get_technician_id(db, tenant_id, user_id)
     if _technician_id_done:
         from gdx_dispatch.routers.job_assignments import (
             ensure_assignment_for_legacy_job,
