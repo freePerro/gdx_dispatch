@@ -2586,6 +2586,101 @@ def ready_for_billing(
         return []
 
 
+@router.get(
+    "/{job_id}/closeout-billing-suggestion",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.read_all"))],
+)
+def closeout_billing_suggestion(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """What the closeout says this job's bill should start from.
+
+    The office create-invoice screen (/billing/new) prefilled from the
+    ESTIMATE and offered parts — but a service job with neither showed a
+    blank form: the tech's attested hours and field notes never reached
+    the person typing the bill (Doug 2026-08-07: "click invoice — it does
+    not show hours or notes from the job"). This read-only endpoint hands
+    the UI a priced labor line (same core/billing_lanes math the autodraft
+    and mobile paths use) plus the closeout context to display. Nothing is
+    written or claimed — the operator still confirms every line.
+    """
+    try:
+        jid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+    job = db.execute(
+        select(Job).where(Job.id == jid, Job.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    from gdx_dispatch.core.billing_lanes import (
+        install_labor_line,
+        lane_for_job,
+        service_labor_line,
+    )
+    from gdx_dispatch.core.closeouts import get_current_closeout
+    from gdx_dispatch.modules.proposals.models import Estimate
+
+    estimate_exists = db.execute(
+        select(Estimate.id).where(
+            Estimate.job_id == job.id,
+            Estimate.status == "accepted",
+            Estimate.deleted_at.is_(None),
+        ).limit(1)
+    ).first() is not None
+
+    closeout = get_current_closeout(db, jid)
+    if closeout is None:
+        return jsonable_response({
+            "has_closeout": False,
+            "estimate_exists": estimate_exists,
+            "closeout": None,
+            "labor_line": None,
+        })
+
+    labor: dict[str, Any] | None = None
+    lane = lane_for_job(job.job_type)
+    if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
+        _install = install_labor_line(db, closeout.labor_matrix_item_id)
+        if _install is not None:
+            labor = {
+                "description": _install.description,
+                "quantity": _install.quantity,
+                "unit_price": float(_install.unit_price),
+                "line_total": float(_install.line_total),
+            }
+    if lane == "service" and float(closeout.hours_worked or 0) > 0:
+        _svc = service_labor_line(
+            db,
+            hours_worked=float(closeout.hours_worked or 0),
+            techs_on_site=int(getattr(closeout, "techs_on_site", 1) or 1),
+        )
+        labor = {
+            "description": _svc.description,
+            "quantity": _svc.quantity,
+            "unit_price": float(_svc.unit_price),
+            "line_total": float(_svc.line_total),
+        }
+
+    return jsonable_response({
+        "has_closeout": True,
+        "estimate_exists": estimate_exists,
+        "closeout": {
+            "hours_worked": float(closeout.hours_worked or 0),
+            "techs_on_site": int(getattr(closeout, "techs_on_site", 1) or 1),
+            "notes": closeout.notes,
+            "no_parts_used": bool(closeout.no_parts_used),
+            "closed_at": closeout.closed_at.isoformat() if closeout.closed_at else None,
+        },
+        "labor_line": labor,
+    })
+
+
 class NotBillablePayload(BaseModel):
     # Mandatory, like every staff decline path (Doug 2026-07-30): a job
     # leaving the billing queue with no invoice needs a why on the record.

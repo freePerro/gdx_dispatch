@@ -119,6 +119,36 @@
             <small class="muted">Auto-filled for the selected customer; override per-invoice. 0% = no tax.</small>
           </div>
 
+          <!-- The tech's attested closeout — what the office bills from
+               (Doug 2026-08-07: "click invoice — it does not show hours or
+               notes from the job"). Display-only context; the labor line
+               below is prefilled from the same numbers when nothing else
+               (an estimate) already claimed the editor. -->
+          <div v-if="closeoutSuggestion?.has_closeout" class="form-field full-width closeout-context" data-testid="closeout-context">
+            <div class="closeout-context-head">
+              <strong>From the job closeout</strong>
+              <span v-if="closeoutSuggestion.closeout.closed_at" class="muted">
+                closed {{ closeoutSuggestion.closeout.closed_at.slice(0, 10) }}
+              </span>
+            </div>
+            <div class="closeout-context-row">
+              <span data-testid="closeout-context-hours">
+                {{ closeoutSuggestion.closeout.hours_worked }} h on site ×
+                {{ closeoutSuggestion.closeout.techs_on_site }} tech{{ closeoutSuggestion.closeout.techs_on_site === 1 ? '' : 's' }}
+              </span>
+              <span v-if="closeoutSuggestion.closeout.no_parts_used" class="muted">· no parts used</span>
+            </div>
+            <p v-if="closeoutSuggestion.closeout.notes" class="closeout-context-notes" data-testid="closeout-context-notes">
+              “{{ closeoutSuggestion.closeout.notes }}”
+            </p>
+            <Button
+              v-if="closeoutSuggestion.closeout.notes && !form.notes"
+              size="small" text label="Use as invoice notes"
+              data-testid="use-closeout-notes"
+              @click="form.notes = closeoutSuggestion.closeout.notes"
+            />
+          </div>
+
           <div class="form-field full-width">
             <label>Line Items</label>
             <LineItemEditor
@@ -435,7 +465,49 @@ function onJobChange() {
   // PR3 — same for change orders; reload the job's unbilled CO checklist.
   form.value.from_change_order_ids = [];
   loadJobChangeOrders(form.value.job_id);
-  prefillFromJobEstimate(form.value.job_id);
+  // Sequence matters: estimate first (it wins the editor), closeout second
+  // (fills only if the editor is still the empty starter row).
+  prefillFromJobEstimate(form.value.job_id).then(() =>
+    prefillFromJobCloseout(form.value.job_id),
+  );
+}
+
+// Closeout prefill (2026-08-07): the attested hours become a priced labor
+// line (same billing_lanes math the autodraft and truck paths use) and the
+// closeout context renders above the editor. Runs AFTER the estimate
+// prefill and only fills a still-empty editor — an estimate outranks the
+// lanes (§15.1), and hand-typed lines are never clobbered.
+const closeoutSuggestion = ref(null);
+
+async function prefillFromJobCloseout(jobId) {
+  closeoutSuggestion.value = null;
+  if (!jobId) return;
+  try {
+    const s = await api.get(
+      `/api/jobs/${jobId}/closeout-billing-suggestion`,
+      { suppressErrorToast: true },
+    );
+    if (!s?.has_closeout) return;
+    closeoutSuggestion.value = s;
+    const starterOnly =
+      form.value.line_items.length === 1 &&
+      !form.value.line_items[0].description &&
+      !toNum(form.value.line_items[0].unit_price);
+    if (s.labor_line && starterOnly) {
+      form.value.line_items = [{
+        description: s.labor_line.description,
+        quantity: Number(s.labor_line.quantity || 1) || 1,
+        unit_price: Number(s.labor_line.unit_price || 0),
+        // Labor is non-taxable — same rule the estimate prefill applies.
+        taxable: false,
+        category: 'Labor',
+        cost: null,
+        margin_pct_override: null,
+      }];
+    }
+  } catch (e) {
+    // closeout prefill is best-effort — a blank editor is the old behavior
+  }
 }
 
 async function prefillFromJobEstimate(jobId) {
@@ -598,6 +670,7 @@ onMounted(async () => {
       if (j) form.value.customer_id = j.customer_id;
     }
     await prefillFromJobEstimate(qJobId);
+    await prefillFromJobCloseout(qJobId);
   }
   // §12 supplemental: BillingView's "Create supplemental" deep-link passes the
   // original invoice id (and number, for the banner). We record it as
@@ -618,6 +691,26 @@ watch(() => form.value.customer_id, () => onCustomerChange());
 <style scoped>
 .invoice-create-view {
   padding: 1rem;
+}
+/* The tech's closeout context above the line editor. */
+.closeout-context {
+  border: 1px solid var(--p-content-border-color, var(--border));
+  border-left: 3px solid var(--p-primary-color);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+}
+.closeout-context-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.closeout-context-row {
+  margin-top: 0.25rem;
+}
+.closeout-context-notes {
+  margin: 0.35rem 0 0;
+  color: var(--p-text-muted-color);
+  white-space: pre-line;
 }
 .page-header {
   display: flex;

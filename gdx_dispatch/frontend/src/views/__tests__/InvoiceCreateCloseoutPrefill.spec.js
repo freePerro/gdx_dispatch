@@ -1,0 +1,45 @@
+/**
+ * InvoiceCreateView — closeout prefill (2026-08-07).
+ *
+ * "Click invoice — it does not show hours or notes from the job": the
+ * create screen prefilled from the estimate only, so a service job with a
+ * closeout and no estimate opened blank. Pinned:
+ *  1. prefillFromJobCloseout hits the suggestion endpoint and fills the
+ *     labor line ONLY into a still-empty starter editor (estimate wins).
+ *  2. It runs AFTER the estimate prefill in both entry paths (job change
+ *     and ?job_id= mount).
+ *  3. The closeout context card renders hours and the tech's notes, with a
+ *     one-tap "Use as invoice notes".
+ */
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const SRC = readFileSync(join(__dirname, '..', 'InvoiceCreateView.vue'), 'utf8');
+
+describe('InvoiceCreateView — closeout prefill', () => {
+  it('fetches the suggestion and fills only an empty starter editor', () => {
+    const start = SRC.indexOf('async function prefillFromJobCloseout');
+    expect(start).toBeGreaterThan(-1);
+    const span = SRC.slice(start, start + 1600);
+    expect(span).toMatch(/closeout-billing-suggestion/);
+    expect(span).toMatch(/starterOnly/);
+    expect(span).toMatch(/taxable:\s*false/);
+    expect(span).toMatch(/category:\s*'Labor'/);
+  });
+
+  it('runs after the estimate prefill on both entry paths', () => {
+    expect(SRC).toMatch(/prefillFromJobEstimate\(form\.value\.job_id\)\.then\(\(\) =>\s*\n?\s*prefillFromJobCloseout\(form\.value\.job_id\)/);
+    const mountIdx = SRC.indexOf('await prefillFromJobEstimate(qJobId);');
+    expect(mountIdx).toBeGreaterThan(-1);
+    expect(SRC.slice(mountIdx, mountIdx + 200)).toMatch(/await prefillFromJobCloseout\(qJobId\);/);
+  });
+
+  it('renders the closeout context card with hours, notes, and the notes shortcut', () => {
+    const card = SRC.slice(SRC.indexOf('data-testid="closeout-context"'), SRC.indexOf('data-testid="closeout-context"') + 2000);
+    expect(card).toMatch(/closeout-context-hours/);
+    expect(card).toMatch(/closeout-context-notes/);
+    expect(card).toMatch(/data-testid="use-closeout-notes"/);
+    expect(card).toMatch(/form\.notes = closeoutSuggestion\.closeout\.notes/);
+  });
+});

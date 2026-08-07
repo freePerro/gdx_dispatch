@@ -402,6 +402,53 @@ def test_not_billable_voids_untouched_autodraft(db) -> None:
     ).first() is not None
 
 
+def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
+    """The office create-invoice screen prefills from this endpoint (Doug
+    2026-08-07: 'click invoice — it does not show hours or notes from the
+    job'). Service closeout → priced labor line + the attested context;
+    read-only (no invoice rows created, nothing claimed)."""
+    from gdx_dispatch.routers.jobs import closeout_billing_suggestion
+
+    job = _seed_job(db)
+    _closeout(db, job, hours=4.0, notes="Add snirtstopper bottom seal 12ft")
+    # The autodraft minted a draft — delete it so this mirrors a pre-autodraft
+    # job (the bake house case): suggestion must work with NO invoice at all.
+    for inv in _invoices(db, job):
+        db.delete(inv)
+    db.commit()
+
+    resp = closeout_billing_suggestion(
+        job_id=str(job.id),
+        request=_request(),
+        current_user={"user_id": USER, "role": "owner"},
+        db=db,
+    )
+    body = json.loads(resp.body)
+    assert body["has_closeout"] is True
+    assert body["estimate_exists"] is False
+    assert body["closeout"]["hours_worked"] == 4.0
+    assert body["closeout"]["notes"] == "Add snirtstopper bottom seal 12ft"
+    # 4.0 h × 1 tech, service lane → $100 first hour + 3 × $100 = $400.
+    assert body["labor_line"] is not None
+    assert body["labor_line"]["line_total"] == 400.0
+    assert _invoices(db, job) == [], "suggestion must be read-only"
+
+
+def test_closeout_billing_suggestion_without_closeout(db) -> None:
+    from gdx_dispatch.routers.jobs import closeout_billing_suggestion
+
+    job = _seed_job(db)
+    resp = closeout_billing_suggestion(
+        job_id=str(job.id),
+        request=_request(),
+        current_user={"user_id": USER, "role": "owner"},
+        db=db,
+    )
+    body = json.loads(resp.body)
+    assert body["has_closeout"] is False
+    assert body["labor_line"] is None
+
+
 def test_not_billable_still_409s_on_finalized_invoice(db) -> None:
     job = _seed_job(db)
     db.add(Invoice(
