@@ -101,16 +101,12 @@ def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: st
 
 
 def _next_invoice_number(db: Session) -> str:
-    row = db.execute(
-        _text("SELECT invoice_number FROM invoices ORDER BY created_at DESC LIMIT 1")
-    ).first()
-    if row and row[0] and row[0].startswith("INV-"):
-        try:
-            n = int(row[0].split("-", 1)[1]) + 1
-            return f"INV-{n:06d}"
-        except (ValueError, AttributeError):
-            pass
-    return f"INV-{datetime.now(UTC):%y%m}{secrets.token_hex(2).upper()}"
+    # Moved to core/closeout_billing (2026-08-07) so the closeout autodraft
+    # shares the sequence without importing from a router. Thin wrapper kept:
+    # callers here and the ownership test's source-slicing both key on it.
+    from gdx_dispatch.core.closeout_billing import next_invoice_number
+
+    return next_invoice_number(db)
 
 
 def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session | None = None) -> dict[str, Any]:
@@ -591,104 +587,24 @@ def mobile_create_invoice(
 
     if estimate is None:
         # Plan §8 — invoice FROM THE CLOSEOUT. No accepted estimate, so the
-        # lanes decide (core/billing_lanes): service → hourly labor line;
-        # install (until the matrix picker ships) and everything else →
-        # labor stays UNPRICED and the §11 verification gate is the flag —
-        # the invoice cannot reach a customer until the office reviewed it,
-        # so nothing is ever silently $0-lined onto a PDF.
-        from gdx_dispatch.core.billing_lanes import (
-            install_labor_line,
-            lane_for_job,
-            service_labor_line,
-        )
+        # lanes decide. The line construction lives in
+        # core/closeout_billing.build_closeout_lines — the ONE builder this
+        # path shares with the closeout autodraft (2026-08-07); pricing
+        # policy and the unpriced-parts rule are documented there.
+        from gdx_dispatch.core.closeout_billing import build_closeout_lines
         from gdx_dispatch.core.closeouts import get_current_closeout
 
         closeout = get_current_closeout(db, _UUID(job_id))
-        _sort = 1
         _new_lines_total = Decimal("0")
         if closeout is not None:
-            lane = lane_for_job(job_job_type)
-            _install = None
-            if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
-                # Install lane: flat price from the picked matrix row. If the
-                # row is gone/inactive/$0, _install is None → labor stays
-                # unpriced (office lane), never guessed.
-                _install = install_labor_line(db, closeout.labor_matrix_item_id)
-                if _install is not None:
-                    db.add(InvoiceLine(
-                        id=uuid4(),
-                        invoice_id=invoice.id,
-                        description=_install.description,
-                        quantity=_install.quantity,
-                        unit_price=_install.unit_price,
-                        line_total=_install.line_total,
-                        sort_order=_sort,
-                        company_id=str(tenant_id),
-                    ))
-                    _new_lines_total += _install.line_total
-                    _sort += 1
-            if lane == "service" and float(closeout.hours_worked or 0) > 0:
-                labor = service_labor_line(
-                    db,
-                    hours_worked=float(closeout.hours_worked or 0),
-                    techs_on_site=int(getattr(closeout, "techs_on_site", 1) or 1),
-                )
-                db.add(InvoiceLine(
-                    id=uuid4(),
-                    invoice_id=invoice.id,
-                    description=labor.description,
-                    quantity=labor.quantity,
-                    unit_price=labor.unit_price,
-                    line_total=labor.line_total,
-                    sort_order=_sort,
-                    company_id=str(tenant_id),
-                ))
-                _new_lines_total += labor.line_total
-                _sort += 1
-
-            # Parts: the closeout's attested, still-unbilled checklist rows.
-            # PRICED rows become lines and are claimed with the same
-            # stamp-first rule as the office path (a row the stamp cannot
-            # claim was billed by a concurrent invoice — skip it, never
-            # double-bill). UNPRICED rows are deliberately left unstamped:
-            # they stay on the office checklist, and the verification gate
-            # holds the invoice until someone prices them.
-            candidate_rows = db.execute(
-                select(JobPartNeeded).where(
-                    JobPartNeeded.job_id == str(job_id),
-                    JobPartNeeded.source == "closeout",
-                    JobPartNeeded.billed_invoice_id.is_(None),
-                    JobPartNeeded.unit_price.is_not(None),
-                    JobPartNeeded.unit_price > 0,
-                )
-            ).scalars().all()
-            for part_row in candidate_rows:
-                from sqlalchemy import update as _update
-
-                claimed = db.execute(
-                    _update(JobPartNeeded)
-                    .where(
-                        JobPartNeeded.id == part_row.id,
-                        JobPartNeeded.billed_invoice_id.is_(None),
-                    )
-                    .values(billed_invoice_id=invoice.id)
-                ).rowcount
-                if not claimed:
-                    continue
-                qty = int(part_row.quantity or 1)
-                unit = _money(part_row.unit_price or 0)
-                db.add(InvoiceLine(
-                    id=uuid4(),
-                    invoice_id=invoice.id,
-                    description=(part_row.part_name or part_row.sku or "Part")[:500],
-                    quantity=qty,
-                    unit_price=unit,
-                    line_total=_money(float(unit) * qty),
-                    sort_order=_sort,
-                    company_id=str(tenant_id),
-                ))
-                _new_lines_total += _money(float(unit) * qty)
-                _sort += 1
+            _lines_added, _new_lines_total = build_closeout_lines(
+                db,
+                tenant_id=str(tenant_id),
+                invoice=invoice,
+                closeout=closeout,
+                job_type=job_job_type,
+                job_id=str(job_id),
+            )
 
         if _new_lines_total > 0:
             invoice.subtotal = _money(_new_lines_total)

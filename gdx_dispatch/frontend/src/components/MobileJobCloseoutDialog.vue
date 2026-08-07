@@ -115,6 +115,28 @@ function pickSuggestion(row, s) {
   row.suggestions = []
 }
 
+// ─── Parts already requested on this job ─────────────────────────────
+// Read-only context (2026-08-06 incident): a part requested minutes
+// earlier via the job's Parts card was invisible here, so the tech
+// re-typed it into the closeout NOTES — where nothing orders or bills
+// it. Showing the open request rows ends the double-entry. Best-effort:
+// a failed read never blocks a closeout.
+const existingRequests = ref([])
+async function _loadExistingRequests() {
+  if (!props.jobId) return
+  try {
+    const rows = await api.get(
+      `/api/jobs/${props.jobId}/parts-needed?unbilled=true`,
+      { suppressErrorToast: true },
+    )
+    existingRequests.value = (Array.isArray(rows) ? rows : []).filter(
+      (r) => r.source === 'request' && r.status !== 'cancelled',
+    )
+  } catch {
+    existingRequests.value = []
+  }
+}
+
 // ─── Return visit + parts to order (Doug 2026-08-04) ─────────────────
 // "Does this need a return visit and why?" asked at the moment the tech
 // knows the answer. The why is required — dispatch schedules from it.
@@ -318,8 +340,12 @@ async function submit() {
       toast.add({
         severity: 'success',
         summary: 'Job closed out',
-        detail: 'Moved to Ready for Billing — review and invoice it from /billing.',
-        life: 5000,
+        // Autodraft (2026-08-07): when the closeout minted a draft
+        // invoice, say so by number — "look at that invoice" starts here.
+        detail: created?.autodraft_invoice_number
+          ? `Invoice ${created.autodraft_invoice_number} drafted from your parts + hours — the office reviews it on the Billing screen.`
+          : 'Moved to Ready for Billing — review and invoice it from /billing.',
+        life: 6000,
       })
       if (created?.return_visit_job_id) {
         toast.add({
@@ -403,6 +429,8 @@ function _resetForm() {
 watch(open, async (v) => {
   if (v) {
     _resetForm()
+    existingRequests.value = []
+    _loadExistingRequests()
     await nextTick()
     clearCanvas()
   }
@@ -516,6 +544,17 @@ watch(open, async (v) => {
             @click="addOrderRow"
           />
         </header>
+        <!-- Open requests already on this job (Parts card or an earlier
+             closeout) — read-only so nothing gets re-typed or re-ordered. -->
+        <ul v-if="existingRequests.length" class="parts-list" data-testid="mjco-existing-requests">
+          <li v-for="r in existingRequests" :key="r.id" class="part-row existing-request">
+            <span class="muted">
+              <i class="pi pi-check-circle" style="font-size: 0.8rem" />
+              {{ r.part_name }} ×{{ r.quantity }} — already requested
+            </span>
+            <span class="qty-pill">{{ r.status }}</span>
+          </li>
+        </ul>
         <ul v-if="orderParts.length" class="parts-list" data-testid="mjco-order-list">
           <li v-for="(p, idx) in orderParts" :key="idx" class="part-row">
             <div class="part-row-main">

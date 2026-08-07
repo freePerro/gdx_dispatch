@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as _text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -1892,6 +1892,20 @@ def closeout_job(
         return jsonable_response({"detail": "inventory module unavailable"}, 500)
 
     try:
+        # 0) Autodraft reset (2026-08-07) — MUST run before the closeout-
+        #    parts replace step below: un-claiming the untouched draft's
+        #    part stamps turns those rows back into unbilled closeout rows,
+        #    so the replace step deletes them (reversing stock) and this
+        #    restatement lands cleanly. The emptied draft is rebuilt in
+        #    step 7 with the same invoice number. A draft a human touched
+        #    (verified/sent/locked/paid) is left alone — the §12
+        #    discrepancy flow owns that story.
+        from gdx_dispatch.core.closeout_billing import (
+            autodraft_invoice_for_closeout,
+            release_untouched_autodraft,
+        )
+        reused_autodraft = release_untouched_autodraft(db, job=job)
+
         # 1) Insert one JobPart row per closeout part WHEN the part is in
         #    inventory (has a real parts.id). Free-text closeout lines
         #    (tech wrote "Torsion spring 200x2.0" without picking from
@@ -2328,6 +2342,44 @@ def closeout_job(
                     request=request,
                 )
 
+        # 7) Autodraft (Doug 2026-08-07): the closeout mints (or rebuilds)
+        #    a DRAFT invoice priced from this attestation — labor lanes +
+        #    priced closeout parts — so Ready-for-Billing offers "review
+        #    the draft" instead of a blank form. Savepoint-guarded: a
+        #    pricing failure must never cost the tech their closeout; the
+        #    job then just lands in RFB on the classic Create Invoice path.
+        #    The flush puts everything written so far inside the OUTER
+        #    transaction, so a savepoint rollback can only undo the draft.
+        db.flush()
+        autodraft_invoice = None
+        try:
+            with db.begin_nested():
+                autodraft_invoice = autodraft_invoice_for_closeout(
+                    db, tenant_id=tenant_id, job=job, closeout=closeout,
+                    reuse_invoice=reused_autodraft,
+                )
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "closeout_autodraft_failed",
+                extra={"tenant_id": tenant_id, "job_id": job_id},
+            )
+            autodraft_invoice = None
+        if autodraft_invoice is not None:
+            log_audit_event_sync(
+                db=db, tenant_id=tenant_id, user_id=user_id,
+                action="invoice_autodrafted",
+                entity_type="invoice",
+                entity_id=str(autodraft_invoice.id),
+                details={
+                    "job_id": str(job.id),
+                    "invoice_number": autodraft_invoice.invoice_number,
+                    "total": float(autodraft_invoice.total or 0),
+                    "rebuilt": reused_autodraft is not None,
+                },
+                ip_address=request.client.host if request.client else None,
+                request=request,
+            )
+
         # Audit events join the SAME transaction as the closeout (adversarial
         # audit, round 2). The old shape committed the closeout first and the
         # events in a second commit — so a failed audit write 500'd a closeout
@@ -2405,6 +2457,15 @@ def closeout_job(
             # Rows actually INSERTED — a replay/restatement that deduped to
             # zero reports zero, not the size of the re-sent list.
             "parts_to_order_count": parts_to_order_new,
+            # The machine-drafted invoice, when one was minted/rebuilt —
+            # None when the job has an estimate, a live invoice, no
+            # customer, or nothing priceable landed.
+            "autodraft_invoice_id": (
+                str(autodraft_invoice.id) if autodraft_invoice is not None else None
+            ),
+            "autodraft_invoice_number": (
+                autodraft_invoice.invoice_number if autodraft_invoice is not None else None
+            ),
         }, 201)
     except IntegrityError as exc:
         # Two people closing out the same job within the same moment: B's
@@ -2476,6 +2537,28 @@ def ready_for_billing(
             .order_by(Job.created_at.desc())
             .limit(100)
         ).all()
+        # Autodraft (2026-08-07): drafts no longer settle the queue — a job
+        # with a live draft stays HERE, and the row carries the draft so the
+        # UI offers "Review invoice" instead of "Create Invoice". Latest
+        # live non-deposit draft per job (created_at asc + dict overwrite =
+        # last one wins).
+        drafts_by_job: dict[str, dict[str, Any]] = {}
+        job_ids = [job.id for job, _ in results]
+        if job_ids:
+            for inv in db.execute(
+                select(Invoice).where(
+                    Invoice.job_id.in_(job_ids),
+                    Invoice.deleted_at.is_(None),
+                    Invoice.status == "draft",
+                    or_(Invoice.billing_type.is_(None), Invoice.billing_type != "deposit"),
+                ).order_by(Invoice.created_at.asc())
+            ).scalars():
+                drafts_by_job[str(inv.job_id)] = {
+                    "draft_invoice_id": str(inv.id),
+                    "draft_invoice_number": inv.invoice_number,
+                    "draft_total": float(inv.total or 0),
+                    "draft_origin": inv.origin,
+                }
         return [
             {
                 "id": str(job.id),
@@ -2484,6 +2567,15 @@ def ready_for_billing(
                 "customer_id": str(job.customer_id) if job.customer_id else None,
                 "status": job.status,
                 "created_at": str(job.created_at) if job.created_at else None,
+                **drafts_by_job.get(
+                    str(job.id),
+                    {
+                        "draft_invoice_id": None,
+                        "draft_invoice_number": None,
+                        "draft_total": None,
+                        "draft_origin": None,
+                    },
+                ),
             }
             for job, customer in results
         ]
@@ -2549,14 +2641,36 @@ def mark_job_not_billable(
             )
         # A billed job isn't in the queue and "not billable" would be a lie
         # on the record — void the invoice first if that's really the intent.
-        from gdx_dispatch.core.billing_predicates import job_billed_exists
-        if db.execute(
-            select(Job.id).where(Job.id == job.id, job_billed_exists()).limit(1)
-        ).first():
-            return jsonable_response(
-                {"detail": "job is already billed — void its invoice instead of marking it not billable"},
-                409,
+        # EXCEPT the machine's own untouched autodraft (2026-08-07): the
+        # closeout minted it without a human deciding anything, so "not
+        # billable" voids it in the same stroke — otherwise every autodrafted
+        # job would 409 here and the dismiss verb would be dead. A draft that
+        # was verified/sent/locked/paid, or that a human created, still 409s.
+        from gdx_dispatch.core.billing_predicates import invoice_bills_job
+        from gdx_dispatch.core.closeout_billing import (
+            is_untouched_autodraft,
+            void_untouched_autodraft,
+        )
+        live_invoices = db.execute(
+            select(Invoice).where(
+                Invoice.job_id == job.id,
+                Invoice.deleted_at.is_(None),
+                Invoice.status != "void",
             )
+        ).scalars().all()
+        voided_autodrafts: list[str] = []
+        for inv in live_invoices:
+            if is_untouched_autodraft(inv):
+                continue
+            if invoice_bills_job(inv.status, float(inv.total or 0), inv.deleted_at, inv.billing_type):
+                return jsonable_response(
+                    {"detail": "job is already billed — void its invoice instead of marking it not billable"},
+                    409,
+                )
+        for inv in live_invoices:
+            if is_untouched_autodraft(inv):
+                void_untouched_autodraft(db, inv)
+                voided_autodrafts.append(inv.invoice_number)
         now = datetime.now(UTC)
         job.not_billable_at = now
         job.not_billable_reason = reason
@@ -2570,7 +2684,11 @@ def mark_job_not_billable(
             action="job_marked_not_billable",
             entity_type="job",
             entity_id=str(job.id),
-            details={"title": job.title, "reason": reason},
+            details={
+                "title": job.title,
+                "reason": reason,
+                "voided_autodrafts": voided_autodrafts or None,
+            },
             ip_address=request.client.host if request.client else None,
             request=request,
         )

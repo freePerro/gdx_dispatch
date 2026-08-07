@@ -891,16 +891,17 @@ def test_billing_summary_ready_for_billing_uses_lifecycle_stage(tenant_db_sessio
     )
 
 
-def test_billing_summary_ready_for_billing_excludes_billed_jobs(tenant_db_session):
-    """A completed job with a REAL invoice (lines, total > 0) must not count
-    as ready_for_billing.
+def test_billing_summary_ready_for_billing_counts_until_invoice_leaves_draft(tenant_db_session):
+    """A completed job stays ready_for_billing until an invoice moves PAST
+    draft (sent/paid) or the job is marked not billable.
 
-    PR2-billing-capture semantic change: this test previously asserted a
-    LINELESS invoice — a $0 draft — also excluded the job ("regardless of
-    invoice status"). Under the canonical billed predicate a $0 draft is the
-    fabricated placeholder create_invoice_from_job emits and does NOT bill
-    the job (treating it as billed hid the job from every alert). Both
-    directions pinned here; full matrix in test_billing_predicates_pr2.py.
+    Closeout-autodraft semantic change (2026-08-07): this test previously
+    asserted a priced DRAFT excluded the job. With closeout minting a priced
+    draft automatically, that would have emptied the queue at the exact
+    moment the draft needs review — so drafts (any total) now keep the job
+    in the queue, whose rows carry the draft for a Review action. SENDING
+    the invoice is what settles it. Full matrix in
+    test_billing_predicates_pr2.py.
     """
     bs = _import_billing_summary()
     job = Job(
@@ -920,12 +921,19 @@ def test_billing_summary_ready_for_billing_excludes_billed_jobs(tenant_db_sessio
         ),
         _=_current_user(), db=tenant_db_session,
     )
+    # A priced draft: billing STARTED, not finished — still in the queue.
+    res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
+    assert res["ready_for_billing"] == 1
+
+    # Sending it settles the job.
+    inv = tenant_db_session.get(Invoice, UUID(created["id"]))
+    inv.status = "sent"
+    tenant_db_session.commit()
     res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
     assert res["ready_for_billing"] == 0
 
     # And the $0-draft placeholder direction: void the real invoice, attach
     # a lineless $0 draft — the job must come BACK as ready for billing.
-    inv = tenant_db_session.get(Invoice, UUID(created["id"]))
     inv.status = "void"
     tenant_db_session.commit()
     create_invoice(

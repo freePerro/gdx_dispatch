@@ -183,19 +183,47 @@ def test_python_twin_matches_sql(tenant_db_session):
         assert py_billed == (str(job.id) in billed_ids), label
 
 
+# Closeout autodraft (2026-08-07): the RFB queue's exit condition is now
+# job_finalized_invoice_exists — an invoice PAST DRAFT. A priced draft keeps
+# the job in the queue (the row carries the draft for the Review button),
+# and a NULL status reads as draft (indeterminate = keep nagging). This is
+# the deliberate divergence from job_billed_exists documented in
+# core/billing_predicates.py — so this test carries its own expectation
+# column instead of reusing the billed matrix.
+FINALIZED = {
+    "no_invoice": False,
+    "sent_500": True,
+    "draft_500": False,        # was billed=True: drafts no longer settle RFB
+    "void_only": False,
+    "zero_draft": False,
+    "zero_sent": True,
+    "deleted_sent": False,
+    "deposit_sent": False,
+    "null_billing_type_sent": True,
+    "null_status_500": False,  # was billed=True: NULL status reads as draft
+    "null_status_zero": False,
+}
+
+
 def test_rfb_endpoint_and_summary_count_agree(tenant_db_session):
     db = tenant_db_session
     jobs = _seed_matrix(db)
-    expected_unbilled = {
-        str(jobs[label].id) for label, _cfg, billed in MATRIX if not billed
+    expected_unresolved = {
+        str(jobs[label].id) for label, _cfg, _billed in MATRIX if not FINALIZED[label]
     }
 
     rfb_rows = ready_for_billing(request=None, current_user=_current_user(), db=db)
     rfb_ids = {r["id"] for r in rfb_rows}
-    assert rfb_ids == expected_unbilled
+    assert rfb_ids == expected_unresolved
+
+    # The draft-bearing row carries its draft so the UI can offer Review.
+    draft_row = next(r for r in rfb_rows if r["id"] == str(jobs["draft_500"].id))
+    assert draft_row["draft_invoice_id"] is not None
+    no_draft_row = next(r for r in rfb_rows if r["id"] == str(jobs["no_invoice"].id))
+    assert no_draft_row["draft_invoice_id"] is None
 
     summary = billing_summary(request=None, _=_current_user(), db=db)
-    assert summary["ready_for_billing"] == len(expected_unbilled)
+    assert summary["ready_for_billing"] == len(expected_unresolved)
 
 
 def test_invoice_now_no_longer_fires_for_billed_jobs(tenant_db_session):

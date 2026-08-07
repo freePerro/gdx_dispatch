@@ -51,7 +51,14 @@
                        to job detail where parts/labor/notes can be confirmed. -->
                   <Button label="Review" icon="pi pi-search" size="small" severity="secondary"
                     @click="reviewJob(data)" data-testid="review-job-before-billing" />
-                  <Button label="Create Invoice" icon="pi pi-dollar" size="small" severity="success"
+                  <!-- Closeout autodraft (2026-08-07): when the closeout already
+                       minted a draft, the action is to REVIEW that invoice — not
+                       to start a second one from a blank form. -->
+                  <Button v-if="data.draft_invoice_id"
+                    :label="`Review ${data.draft_invoice_number || 'invoice'}`"
+                    icon="pi pi-file-edit" size="small" severity="success"
+                    @click="reviewDraftInvoice(data)" data-testid="review-draft-invoice" />
+                  <Button v-else label="Create Invoice" icon="pi pi-dollar" size="small" severity="success"
                     @click="createInvoiceForJob(data)" data-testid="create-invoice-for-job" />
                   <!-- The queue's exits for work that will never be invoiced
                        (2026-08-04, same rationale as the leaked-parts card's
@@ -1392,6 +1399,13 @@ function createInvoiceForJob(job) {
     path: '/billing/new',
     query: { job_id: job.id, customer_id: job.customer_id || '' },
   });
+}
+
+function reviewDraftInvoice(job) {
+  // The closeout already drafted this job's invoice — open it for review
+  // instead of minting a second one.
+  if (!job?.draft_invoice_id) return;
+  router.push(`/billing/${job.draft_invoice_id}`);
 }
 
 function reviewJob(job) {

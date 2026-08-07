@@ -474,6 +474,12 @@ class Invoice(Base):
     # sent_at, which stays the sole delivery fact; NULL on rows delivered
     # before the column existed.
     sent_via: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 2026-08-07 (migration 058) — machine provenance. 'closeout_autodraft'
+    # marks a draft the closeout hook generated; re-closeouts may rebuild it
+    # and Not-billable may void it, but ONLY while it is untouched (draft,
+    # unverified, unsent, unlocked, unpaid). NULL = human-created; those are
+    # never rebuilt or auto-voided. See core/closeout_billing.py.
+    origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Plan §11: the office's explicit approval of a tech-created invoice.
     # Mobile send 409s while NULL — nothing a tech types from a truck reaches
     # a customer without a second pair of eyes. Distinct from sent_at (a
