@@ -344,10 +344,19 @@ def test_unbilled_consumed_report_groups_by_completed_job(tenant_db_session):
     assert entry["parts"][0]["source"] == "closeout"
 
 
-def test_one_click_invoice_pulls_attested_closeout_parts(tenant_db_session):
-    """One-click create-invoice pulls the tech's attested (closeout-sourced)
-    parts as priced lines and stamps them billed — the leak, closed
-    end-to-end. Request/mobile/van rows stay on the operator checklist."""
+def test_closeout_autodraft_pulls_attested_closeout_parts(tenant_db_session):
+    """The attested-parts leak, closed even EARLIER than PR4's one-click:
+    since the closeout autodraft (2026-08-07), submitting the closeout mints
+    the draft invoice itself — priced closeout parts become lines and are
+    stamped billed in the same transaction. One-click create-invoice on such
+    a job now 409s (a live invoice exists; the RFB row offers Review instead).
+    Request/mobile/van rows stay on the operator checklist, exactly as before.
+
+    (This test previously drove create_invoice_from_job directly; the
+    autodraft made that path unreachable for freshly-closed-out jobs, so the
+    same guarantees are now pinned against the autodraft.)"""
+    import json as _json
+
     from starlette.requests import Request as _Req
 
     from gdx_dispatch.routers.jobs import create_invoice_from_job
@@ -355,10 +364,13 @@ def test_one_click_invoice_pulls_attested_closeout_parts(tenant_db_session):
     db = tenant_db_session
     job = _seed_job(db, stage="completed")
     part = _seed_part(db)
-    _closeout(db, job, [
+    resp = _closeout(db, job, [
         {"part_id": str(part.id), "sku": part.sku, "name": part.name, "qty": 2, "unit_cost": 40.0},
     ])
-    # A request-sourced row must NOT be auto-pulled by one-click.
+    body = _json.loads(resp.body)
+    draft_id = body["autodraft_invoice_id"]
+    assert draft_id, "closeout must autodraft the invoice for a priced part"
+    # A request-sourced row must NOT be auto-pulled.
     db.add(JobPartNeeded(
         id=str(uuid4()),
         company_id=TENANT,
@@ -371,26 +383,30 @@ def test_one_click_invoice_pulls_attested_closeout_parts(tenant_db_session):
     ))
     db.commit()
 
+    # $100 service labor (1.0h, lane defaults to service for a bare
+    # job_type) + 2 × $89.50 closeout part = 279.00. No $0 fallback line —
+    # the autodraft only lines what it can price.
+    draft = db.get(Invoice, UUID(draft_id))
+    assert float(draft.total) == 279.0
+    rows = _checklist(db, job, source="closeout")
+    assert rows and all(str(r.billed_invoice_id) == draft_id for r in rows)
+    req_rows = _checklist(db, job, source="request")
+    assert all(r.billed_invoice_id is None for r in req_rows)
+    lines = db.execute(
+        select(InvoiceLine).where(InvoiceLine.invoice_id == UUID(draft_id))
+    ).scalars().all()
+    assert len(lines) == 2
+    part_lines = [ln for ln in lines if float(ln.line_total) == 179.0]
+    assert len(part_lines) == 1
+
+    # And the old one-click path refuses: an invoice already exists.
     request = _Req({"type": "http", "method": "POST", "path": "/", "headers": []})
     request.state.tenant = {"id": TENANT}
     out = create_invoice_from_job(
         job_id=str(job.id), request=request,
         current_user={"sub": "user-1", "tenant_id": TENANT}, db=db,
     )
-
-    # $0 fallback line + 2 × $89.50 closeout part = 179.00 (no TaxConfig
-    # seeded → rate 0).
-    assert out["total"] == 179.0
-    rows = _checklist(db, job, source="closeout")
-    assert all(str(r.billed_invoice_id) == out["invoice_id"] for r in rows)
-    req_rows = _checklist(db, job, source="request")
-    assert all(r.billed_invoice_id is None for r in req_rows)
-    lines = db.execute(
-        select(InvoiceLine).where(InvoiceLine.invoice_id == UUID(out["invoice_id"]))
-    ).scalars().all()
-    part_lines = [ln for ln in lines if ln.part_id is not None]
-    assert len(part_lines) == 1
-    assert float(part_lines[0].line_total) == 179.0
+    assert getattr(out, "status_code", 200) == 409
 
 
 # ---------------------------------------------------------------------------
