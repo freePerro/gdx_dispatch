@@ -109,6 +109,32 @@
       </Tabs>
 
       <div v-if="activeTab === 'details'" class="tab-panel">
+        <!-- Live invoices, front and center (Doug 2026-08-07): the closeout
+             autodraft means every closed-out job already HAS an invoice,
+             but the Invoices table hides two clicks deep in the Costing
+             tab. One row per live invoice; drafts get the Review verb and
+             land on the editable invoice page. -->
+        <div v-if="liveInvoices.length" class="card invoice-strip" data-testid="job-invoice-strip">
+          <div v-for="inv in liveInvoices" :key="inv.id" class="invoice-strip-row">
+            <span class="invoice-strip-id">
+              <strong>{{ inv.invoice_number }}</strong>
+              <Tag v-if="inv.billing_type === 'deposit'" value="deposit" severity="info" />
+              <Tag :value="inv.status" :severity="invoiceStatusSeverity(inv.status)" />
+            </span>
+            <span class="invoice-strip-money">
+              {{ formatCurrency(inv.total) }}
+              <small v-if="Number(inv.balance_due) > 0" class="muted">· {{ formatCurrency(inv.balance_due) }} due</small>
+            </span>
+            <Button
+              :label="inv.status === 'draft' ? 'Review invoice' : 'Open invoice'"
+              :icon="inv.status === 'draft' ? 'pi pi-file-edit' : 'pi pi-external-link'"
+              :severity="inv.status === 'draft' ? 'success' : 'secondary'"
+              size="small"
+              data-testid="job-invoice-strip-open"
+              @click="openInvoice(inv.id)"
+            />
+          </div>
+        </div>
         <div class="details-grid">
           <div class="card">
             <div class="card-header">
@@ -1151,6 +1177,11 @@ const error = ref("");
 const activeTab = ref("details");
 const relatedEstimates = ref([]);
 const relatedInvoices = ref([]);
+// Details-tab invoice strip: live invoices only — void is dead money and
+// has no place in the "what's billed on this job" headline.
+const liveInvoices = computed(() =>
+  (relatedInvoices.value || []).filter((i) => i.status !== "void")
+);
 const financials = ref(null);
 const appointments = ref([]);
 const appointmentsLoading = ref(false);
@@ -2300,6 +2331,12 @@ onMounted(async () => {
 .tab-panel { margin-top: 1rem; }
 .details-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
 .card { background: var(--surface-card); border-radius: 8px; padding: 1rem; border: 1px solid var(--border); }
+/* Details-tab invoice strip — one row per live invoice, Review verb on drafts. */
+.invoice-strip { margin-bottom: 1rem; padding: 0.6rem 1rem; }
+.invoice-strip-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.25rem 0; }
+.invoice-strip-row + .invoice-strip-row { border-top: 1px solid var(--border); }
+.invoice-strip-id { display: inline-flex; align-items: center; gap: 0.4rem; }
+.invoice-strip-money { margin-left: auto; display: inline-flex; align-items: baseline; gap: 0.35rem; }
 .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; gap: 0.5rem; flex-wrap: wrap; }
 .parts-to-order-block { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
 .parts-subhead { margin: 0 0 0.5rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--p-text-muted-color, #94a3b8); }
