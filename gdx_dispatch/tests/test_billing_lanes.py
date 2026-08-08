@@ -130,3 +130,38 @@ def test_install_labor_line_flat_prices_from_matrix(db) -> None:
     assert install_labor_line(db, str(item.id)) is None
     assert install_labor_line(db, str(uuid4())) is None
     assert install_labor_line(db, "not-a-uuid") is None
+
+
+# ---------------------------------------------------------------------------
+# Editable description template (Doug 2026-08-07, migration 060): "the labor
+# description is editable there but what it automatically fills in is not."
+# ---------------------------------------------------------------------------
+
+
+def test_custom_description_template_is_used(db) -> None:
+    db.add(PricingSettings(
+        service_labor_description_template=(
+            "Labor: {hours:.1f} hrs on site ({techs} tech) — ${hourly_rate}/hr after the first"
+        ),
+    ))
+    db.commit()
+    line = service_labor_line(db, hours_worked=3.0, techs_on_site=1)
+    assert line.description == "Labor: 3.0 hrs on site (1 tech) — $100.00/hr after the first"
+    assert float(line.line_total) == 300.0, "template changes TEXT, never the math"
+
+
+def test_blank_template_means_builtin_default(db) -> None:
+    db.add(PricingSettings(service_labor_description_template="   "))
+    db.commit()
+    line = service_labor_line(db, hours_worked=3.0, techs_on_site=1)
+    assert line.description.startswith("Service labor — 3.00 man-hours")
+
+
+def test_broken_template_falls_back_never_raises(db) -> None:
+    # {nope} is not a placeholder; a settings typo must never 500 a closeout,
+    # an autodraft, or an invoice.
+    db.add(PricingSettings(service_labor_description_template="Labor {nope} {hours"))
+    db.commit()
+    line = service_labor_line(db, hours_worked=2.0, techs_on_site=1)
+    assert line.description.startswith("Service labor — 2.00 man-hours")
+    assert float(line.line_total) == 200.0

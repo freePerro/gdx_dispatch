@@ -82,6 +82,51 @@
 
       <Divider />
 
+      <h3>Service Call Labor</h3>
+      <p class="lede">
+        What a service-call bill charges for labor and how the line reads.
+        The rates drive every labor price — the closeout autodraft, the
+        truck's invoice, and the create-invoice prefill. The description is
+        the text those invoices auto-fill (still editable per invoice);
+        placeholders:
+        <code>{man_hours}</code> <code>{hours}</code> <code>{techs}</code>
+        <code>{first_hour_price}</code> <code>{hourly_rate}</code>.
+        Leave the description blank to use the built-in default.
+      </p>
+      <div class="labor-cost-controls">
+        <span>First hour $</span>
+        <InputNumber
+          v-model="serviceFirstHour"
+          :min="0" :max="100000"
+          :min-fraction-digits="2" :max-fraction-digits="2"
+          mode="decimal"
+          data-testid="service-first-hour-input"
+          input-style="width: 8rem"
+        />
+        <span>then $</span>
+        <InputNumber
+          v-model="serviceHourly"
+          :min="0" :max="100000"
+          :min-fraction-digits="2" :max-fraction-digits="2"
+          mode="decimal"
+          data-testid="service-hourly-input"
+          input-style="width: 8rem"
+        />
+        <span>/hr</span>
+      </div>
+      <Textarea
+        v-model="serviceLaborTemplate"
+        rows="2" auto-resize class="service-template-input"
+        :placeholder="serviceLaborTemplateDefault"
+        data-testid="service-labor-template-input"
+      />
+      <div class="labor-cost-controls">
+        <Button label="Save Service Labor" size="small" :loading="savingServiceLabor"
+          data-testid="save-service-labor" @click="saveServiceLabor" />
+      </div>
+
+      <Divider />
+
       <h3>Customer Loyalty Discount</h3>
       <p class="lede">
         Rewards customers based on their trailing 365-day paid invoice volume.
@@ -141,6 +186,7 @@ import VolumeTierEditor from './VolumeTierEditor.vue';
 import Button from 'primevue/button';
 import Divider from 'primevue/divider';
 import InputNumber from 'primevue/inputnumber';
+import Textarea from 'primevue/textarea';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tab from 'primevue/tab';
 import TabList from 'primevue/tablist';
@@ -162,6 +208,13 @@ const volumeEnabled = ref(false);
 const volumeTiers = ref([]);
 const classEnabled = ref({ retail: true, contractor: true, wholesale: true });
 const loadedLaborRate = ref(0);
+// Service-call SELL pricing + the auto-filled labor description (Doug
+// 2026-08-07: "what it automatically fills in is not [editable]").
+const serviceFirstHour = ref(100);
+const serviceHourly = ref(100);
+const serviceLaborTemplate = ref('');
+const serviceLaborTemplateDefault = ref('');
+const savingServiceLabor = ref(false);
 const loading = ref(true);
 const activeCategory = ref('doors');
 const activeClass = ref('retail');
@@ -191,6 +244,10 @@ async function loadAll() {
     volumeEnabled.value = !!settingsObj.volume_discount_enabled;
     volumeTiers.value = settingsObj.volume_tiers || [];
     loadedLaborRate.value = Number(settingsObj.loaded_labor_cost_per_hour) || 0;
+    serviceFirstHour.value = Number(settingsObj.service_call_first_hour_price) || 100;
+    serviceHourly.value = Number(settingsObj.service_call_hourly_rate) || 100;
+    serviceLaborTemplate.value = settingsObj.service_labor_description_template || '';
+    serviceLaborTemplateDefault.value = settingsObj.service_labor_description_default || '';
     const map = { retail: true, contractor: true, wholesale: true };
     for (const c of (settingsObj.class_settings || [])) {
       map[c.pricing_class] = !!c.rolling_volume_discount_enabled;
@@ -223,6 +280,20 @@ async function saveLoadedLaborRate() {
       { successMessage: `Loaded labor cost saved ($${(Number(loadedLaborRate.value) || 0).toFixed(2)}/hr)` });
   } finally {
     savingLaborRate.value = false;
+  }
+}
+
+async function saveServiceLabor() {
+  savingServiceLabor.value = true;
+  try {
+    await api.patch('/api/pricing-engine/settings', {
+      service_call_first_hour_price: Number(serviceFirstHour.value) || 0,
+      service_call_hourly_rate: Number(serviceHourly.value) || 0,
+      // "" clears back to the built-in default (server stores NULL).
+      service_labor_description_template: serviceLaborTemplate.value || '',
+    }, { successMessage: 'Service labor pricing saved' });
+  } finally {
+    savingServiceLabor.value = false;
   }
 }
 
@@ -279,6 +350,7 @@ onMounted(loadAll);
 .spinner-wrap { display: flex; justify-content: center; padding: 32px; }
 .vol-controls { display: flex; gap: 12px; align-items: center; padding: 8px 0 16px; }
 .labor-cost-controls { display: flex; gap: 8px; align-items: center; padding: 8px 0 16px; }
+.service-template-input { width: 100%; max-width: 720px; font-family: monospace; font-size: 0.9em; }
 .muted { color: var(--p-text-muted-color); }
 .muted.small { font-size: 0.9em; }
 .subhead { margin: 20px 0 6px; font-size: 1em; }

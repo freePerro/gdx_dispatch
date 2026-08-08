@@ -25,6 +25,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -136,6 +137,14 @@ class PricingSettings(TenantBase):
     )
     service_call_hourly_rate: Mapped[Decimal] = mapped_column(
         Numeric(8, 2), nullable=False, default=Decimal("100"), server_default="100"
+    )
+    # 2026-08-07 (migration 060) — the auto-filled service-labor line text,
+    # editable per tenant (Doug: "what it automatically fills in is not
+    # [editable]"). NULL = the built-in default in core/billing_lanes.
+    # Placeholders: {man_hours} {hours} {techs} {first_hour_price}
+    # {hourly_rate}; a broken template falls back to the default at render.
+    service_labor_description_template: Mapped[str | None] = mapped_column(
+        Text, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
