@@ -46,6 +46,7 @@ from gdx_dispatch.models.tenant_models import (
     InvoiceLine,
     Job,
     JobCloseout,
+    JobNote,
     JobPartNeeded,
     Payment,
     Technician,
@@ -82,6 +83,7 @@ def db():
         Payment.__table__,
         JobPartNeeded.__table__,
         JobCloseout.__table__,
+        JobNote.__table__,
         Part.__table__,
         JobPart.__table__,
         Technician.__table__,
@@ -411,6 +413,17 @@ def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
 
     job = _seed_job(db)
     _closeout(db, job, hours=4.0, notes="Add snirtstopper bottom seal 12ft")
+    # The tech's real work summary usually lives in job_notes (the mobile
+    # Add-note flow), NOT the closeout note — round 2 of the complaint was
+    # exactly this note being invisible on the create screen.
+    db.add(JobNote(
+        job_id=str(job.id),
+        company_id=TENANT,
+        author_id=USER,
+        author_name="doug",
+        body="Bottom panel was mechanically adjusted out of shape.",
+        visibility="internal",
+    ))
     # The autodraft minted a draft — delete it so this mirrors a pre-autodraft
     # job (the bake house case): suggestion must work with NO invoice at all.
     for inv in _invoices(db, job):
@@ -431,6 +444,11 @@ def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:
     # 4.0 h × 1 tech, service lane → $100 first hour + 3 × $100 = $400.
     assert body["labor_line"] is not None
     assert body["labor_line"]["line_total"] == 400.0
+    # Job notes ride along, visibility included (the UI badges internal
+    # notes before the operator copies one to a customer-facing field).
+    assert len(body["job_notes"]) == 1
+    assert body["job_notes"][0]["body"].startswith("Bottom panel was mechanically")
+    assert body["job_notes"][0]["visibility"] == "internal"
     assert _invoices(db, job) == [], "suggestion must be read-only"
 
 

@@ -2667,6 +2667,31 @@ def closeout_billing_suggestion(
             "line_total": float(_svc.line_total),
         }
 
+    # The tech's JOB notes too (Doug 2026-08-07 round 2: "it is missing the
+    # notes the tech put on it") — the real work summary usually lives in
+    # job_notes (the mobile Add-note flow), NOT the closeout's own notes
+    # field. Newest last, capped: the card is context, not an archive.
+    # visibility rides along so the UI can badge internal notes before the
+    # operator copies one onto a customer-facing invoice.
+    from gdx_dispatch.models.tenant_models import JobNote
+    job_notes = [
+        {
+            "body": (n.body or "")[:2000],
+            "author_name": n.author_name,
+            "visibility": n.visibility,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in db.execute(
+            # job_notes.job_id is TEXT (Flask-era schema) — bind the dashed
+            # string, never a UUID object (PG: operator does not exist
+            # text = uuid; the model's own header warns about this).
+            select(JobNote)
+            .where(JobNote.job_id == str(jid), JobNote.deleted_at.is_(None))
+            .order_by(JobNote.created_at.asc())
+            .limit(5)
+        ).scalars()
+    ]
+
     return jsonable_response({
         "has_closeout": True,
         "estimate_exists": estimate_exists,
@@ -2677,6 +2702,7 @@ def closeout_billing_suggestion(
             "no_parts_used": bool(closeout.no_parts_used),
             "closed_at": closeout.closed_at.isoformat() if closeout.closed_at else None,
         },
+        "job_notes": job_notes,
         "labor_line": labor,
     })
 

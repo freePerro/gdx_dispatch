@@ -42,4 +42,28 @@ describe('InvoiceCreateView — closeout prefill', () => {
     expect(card).toMatch(/data-testid="use-closeout-notes"/);
     expect(card).toMatch(/form\.notes = closeoutSuggestion\.closeout\.notes/);
   });
+
+  // Round 2 (2026-08-07): "it is missing the notes the tech put on it" —
+  // the work summary lives in job_notes, not the closeout note.
+  it('closeout notes auto-fill the invoice notes when empty', () => {
+    const start = SRC.indexOf('async function prefillFromJobCloseout');
+    const span = SRC.slice(start, start + 2000);
+    expect(span).toMatch(/s\.closeout\?\.notes && !form\.value\.notes/);
+    expect(span).toMatch(/form\.value\.notes = s\.closeout\.notes/);
+  });
+
+  it('tech job notes render with internal badge and per-note actions', () => {
+    const card = SRC.slice(SRC.indexOf('data-testid="closeout-tech-notes"'), SRC.indexOf('data-testid="closeout-tech-notes"') + 1800);
+    expect(card).toMatch(/n\.visibility === 'internal'/);
+    expect(card).toMatch(/note-to-invoice-notes/);
+    expect(card).toMatch(/note-to-labor-desc/);
+  });
+
+  it('use-as-labor-description targets the Labor line and stays editable text', () => {
+    const start = SRC.indexOf('function useNoteAsLaborDescription');
+    expect(start).toBeGreaterThan(-1);
+    const span = SRC.slice(start, start + 700);
+    expect(span).toMatch(/'labor'/);
+    expect(span).toMatch(/target\.description = body\.slice\(0, 500\)/);
+  });
 });

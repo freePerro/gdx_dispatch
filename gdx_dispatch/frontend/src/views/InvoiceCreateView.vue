@@ -147,6 +147,29 @@
               data-testid="use-closeout-notes"
               @click="form.notes = closeoutSuggestion.closeout.notes"
             />
+            <!-- The tech's JOB notes (mobile Add-note) — usually the real
+                 work summary (round 2: "missing the notes the tech put on
+                 it"). Internal notes are badged; nothing copies onto the
+                 customer-facing invoice without an explicit tap. -->
+            <div v-if="closeoutSuggestion.job_notes?.length" class="closeout-tech-notes" data-testid="closeout-tech-notes">
+              <div class="closeout-context-head" style="margin-top: 0.5rem">
+                <strong>Tech notes on the job</strong>
+              </div>
+              <div v-for="(n, idx) in closeoutSuggestion.job_notes" :key="idx" class="tech-note-row">
+                <p class="closeout-context-notes">
+                  “{{ n.body }}”
+                  <span class="muted">— {{ n.author_name || 'tech' }}<template v-if="n.visibility === 'internal'"> · internal</template></span>
+                </p>
+                <span class="tech-note-actions">
+                  <Button size="small" text label="Add to invoice notes"
+                    :data-testid="`note-to-invoice-notes-${idx}`"
+                    @click="appendNoteToInvoiceNotes(n)" />
+                  <Button size="small" text label="Use as labor description"
+                    :data-testid="`note-to-labor-desc-${idx}`"
+                    @click="useNoteAsLaborDescription(n)" />
+                </span>
+              </div>
+            </div>
           </div>
 
           <div class="form-field full-width">
@@ -479,6 +502,24 @@ function onJobChange() {
 // lanes (§15.1), and hand-typed lines are never clobbered.
 const closeoutSuggestion = ref(null);
 
+function appendNoteToInvoiceNotes(note) {
+  const body = (note?.body || '').trim();
+  if (!body) return;
+  form.value.notes = form.value.notes ? `${form.value.notes}\n${body}` : body;
+}
+
+function useNoteAsLaborDescription(note) {
+  // The tech's work summary usually beats the man-hours boilerplate on a
+  // customer bill. Targets the first Labor line (else the first line);
+  // the field stays a plain editable input either way.
+  const body = (note?.body || '').trim();
+  if (!body || !form.value.line_items.length) return;
+  const target =
+    form.value.line_items.find((l) => (l.category || '').toLowerCase() === 'labor') ||
+    form.value.line_items[0];
+  target.description = body.slice(0, 500);
+}
+
 async function prefillFromJobCloseout(jobId) {
   closeoutSuggestion.value = null;
   if (!jobId) return;
@@ -489,6 +530,13 @@ async function prefillFromJobCloseout(jobId) {
     );
     if (!s?.has_closeout) return;
     closeoutSuggestion.value = s;
+    // Round 2 (Doug 2026-08-07): the closeout's own note now moves onto the
+    // invoice automatically — it was attested at billing time and the
+    // operator can edit or clear it before saving. Job notes stay opt-in
+    // (they're often internal).
+    if (s.closeout?.notes && !form.value.notes) {
+      form.value.notes = s.closeout.notes;
+    }
     const starterOnly =
       form.value.line_items.length === 1 &&
       !form.value.line_items[0].description &&
@@ -711,6 +759,16 @@ watch(() => form.value.customer_id, () => onCustomerChange());
   margin: 0.35rem 0 0;
   color: var(--p-text-muted-color);
   white-space: pre-line;
+}
+.tech-note-row {
+  padding: 0.25rem 0;
+}
+.tech-note-row + .tech-note-row {
+  border-top: 1px dashed var(--p-content-border-color, var(--border));
+}
+.tech-note-actions {
+  display: inline-flex;
+  gap: 0.25rem;
 }
 .page-header {
   display: flex;
