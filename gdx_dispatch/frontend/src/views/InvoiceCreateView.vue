@@ -387,7 +387,10 @@ const total = computed(() => subtotal.value + taxAmount.value);
 
 const canCreate = computed(() => {
   // Customer is the AR target — always required. Job is optional so
-  // counter-sale (parts/over-the-counter) invoices can exist.
+  // counter-sale (parts/over-the-counter) invoices can exist. At least one
+  // PRICED line still required to enable Create — an all-$0 invoice is a
+  // deliberate act the operator confirms by pricing at least something —
+  // but described $0 companions are no longer silently dropped at submit.
   if (!form.value.customer_id) return false;
   return form.value.line_items.some((l) => l.description && toNum(l.unit_price) > 0);
 });
@@ -599,8 +602,13 @@ async function prefillFromJobEstimate(jobId) {
 async function createInvoice() {
   creating.value = true;
   try {
+    // 2026-08-08 audit: this filter silently DROPPED operator-typed $0
+    // lines (warranty/no-charge items) while machine-generated $0 lines
+    // sent fine elsewhere. Keep every described line; the tenant's
+    // zero-price catalog policy (block/warn) is the arbiter server-side,
+    // and a block surfaces as a visible 422 instead of a silent vanish.
     const lineItems = form.value.line_items
-      .filter((l) => l.description && toNum(l.unit_price) > 0)
+      .filter((l) => l.description && toNum(l.unit_price) >= 0)
       .map((l) => {
         const out = {
           description: l.description,

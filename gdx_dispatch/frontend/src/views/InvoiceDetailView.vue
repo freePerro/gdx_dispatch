@@ -475,6 +475,21 @@
           Record any further payment on the final invoice, not here.
         </div>
 
+        <!-- Overpayment banner (M11 money-audit detector, surfaced
+             2026-08-08): balance_due floors at 0, so money collected ABOVE
+             the total was invisible on every screen — the usual cause is a
+             duplicate payment. -->
+        <div
+          v-if="invoice.amount_overpaid > 0"
+          class="superseded-banner overpaid-banner"
+          data-testid="overpaid-banner"
+        >
+          <i class="pi pi-exclamation-triangle" />
+          Collected {{ currency(invoice.amount_overpaid) }} <strong>above the invoice total</strong> —
+          usually a duplicate payment. Review Payment History below; refund or
+          credit the excess.
+        </div>
+
         <!-- Payment History -->
         <h3>Payment History</h3>
         <DataTable
@@ -1172,6 +1187,10 @@ function normalizeInvoice(payload) {
     attached_photo_ids: Array.isArray(payload.attached_photo_ids) ? payload.attached_photo_ids : [],
     // Machine provenance — drives the "auto-drafted from closeout" tag.
     origin: payload.origin || null,
+    // M11 money-audit detector (2026-08-08: computed + serialized since
+    // v1.41.1 but rendered NOWHERE — money collected above the total was
+    // invisible on every surface). Drives the overpayment banner.
+    amount_overpaid: Number(payload.amount_overpaid) || 0,
     // Tier 10 — per-record QuickBooks push state for the sync chip. This
     // normalizer copies fields explicitly, so these must be listed or the chip
     // reads undefined and always renders "Not in QuickBooks".
@@ -1836,6 +1855,10 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.overpaid-banner {
+  border-color: var(--p-amber-400, #fbbf24);
+  background: color-mix(in srgb, var(--p-amber-400, #fbbf24) 12%, transparent);
+}
 .superseded-banner {
   display: flex;
   align-items: center;

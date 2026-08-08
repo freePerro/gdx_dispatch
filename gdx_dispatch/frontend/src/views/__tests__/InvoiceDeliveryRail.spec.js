@@ -30,6 +30,23 @@ describe('§11 delivery rail — InvoiceDetailView', () => {
   });
 });
 
+describe('overpayment visibility — InvoiceDetailView (M11)', () => {
+  it('renders the overpaid banner off amount_overpaid', () => {
+    expect(DETAIL).toMatch(/invoice\.amount_overpaid > 0/);
+    expect(DETAIL).toMatch(/data-testid="overpaid-banner"/);
+    expect(DETAIL).toMatch(/amount_overpaid: Number\(payload\.amount_overpaid\) \|\| 0/);
+  });
+});
+
+describe('typed $0 lines survive create — InvoiceCreateView', () => {
+  it('the submit filter keeps described $0 lines (server policy decides)', () => {
+    const CREATE = readFileSync(join(__dirname, '..', 'InvoiceCreateView.vue'), 'utf8');
+    const idx = CREATE.indexOf('const lineItems = form.value.line_items');
+    const span = CREATE.slice(idx, idx + 200);
+    expect(span).toMatch(/toNum\(l\.unit_price\) >= 0/);
+  });
+});
+
 describe('machine provenance — InvoiceDetailView', () => {
   it('autodraft invoices carry the auto-drafted tag', () => {
     expect(DETAIL).toMatch(/invoice\.origin === 'closeout_autodraft'/);
