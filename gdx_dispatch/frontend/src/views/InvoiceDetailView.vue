@@ -785,7 +785,7 @@ import AuthedImage from "../components/AuthedImage.vue";
 const api = useApi();
 const route = useRoute();
 const router = useRouter();
-const { confirmDestructive } = useDestructiveConfirm();
+const { confirmDestructive, confirmAsync } = useDestructiveConfirm();
 const toast = useToast();
 
 const loading = ref(true);
@@ -915,7 +915,33 @@ async function verifyInvoice() {
 // channel 'mail' stamps sent_at (the delivery fact) + sent_via, flipping
 // Draft → Sent and clearing the row from Billing's Unsent tab.
 const markingMailed = ref(false);
+// §11 rail (2026-08-08): delivery endpoints refuse unverified drafts. The
+// office clicking Send/Mail IS the review moment, so offer verify-and-
+// continue in one motion instead of bouncing them to a separate button.
+async function ensureVerifiedForDelivery() {
+  if (String(invoice.value.status || "").toLowerCase() !== "draft" || invoice.value.verified_at) {
+    return true;
+  }
+  const ok = await confirmAsync({
+    message:
+      "This draft hasn't been verified. Verify it now (recording you as the reviewer) and continue?",
+    header: "Verify and continue",
+    acceptLabel: "Verify and continue",
+    acceptClass: "p-button-success",
+  });
+  if (!ok) return false;
+  try {
+    await api.post(`/api/invoices/${invoice.value.id}/verify`, {});
+    await fetchInvoice();
+    return true;
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Verify failed", detail: e?.message || "Try again.", life: 4000 });
+    return false;
+  }
+}
+
 async function markAsMailed() {
+  if (!(await ensureVerifiedForDelivery())) return;
   markingMailed.value = true;
   try {
     await api.post(`/api/invoices/${route.params.id}/mark-sent`, { channel: "mail" });
@@ -1210,6 +1236,7 @@ async function sendInvoice() {
   // use: open dialog with PDF preview → user reviews → send via Outlook (or
   // mailto fallback). 2026-05-12 accidental-send guardrail is now built into
   // the dialog itself: nothing leaves the browser until the user clicks Send.
+  if (!(await ensureVerifiedForDelivery())) return;
   composerLoading.value = true;
   showComposer.value = true;
   composer.value = { to: "", subject: "", body_text: "", pdf: null, extras: [] };

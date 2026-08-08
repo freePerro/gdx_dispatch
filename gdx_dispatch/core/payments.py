@@ -247,6 +247,12 @@ def _resolve_public_invoice(
     # when the final invoice superseded it. Don't move money nothing is owed on.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    # §11 rail (2026-08-08 audit): a DRAFT was payable here — including a
+    # machine-priced closeout autodraft nobody reviewed, whose token is
+    # minted at creation. An un-issued invoice must not take money; 404 (not
+    # 409) so a leaked pre-issue token reveals nothing.
+    if str(invoice.status or "").lower() == "draft":
+        raise HTTPException(status_code=404, detail="Invoice not found")
     # `require_balance=False` for RECORDING operations (confirm). The signed
     # webhook usually beats the browser's confirm call, so by the time confirm
     # runs the balance is legitimately zero — rejecting it there would 409 the
@@ -629,6 +635,13 @@ def pay_invoice(
         .first()
     )
     if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found or expired")
+    # §11 rail (2026-08-08 audit): the form rendered for DRAFTS — an
+    # unreviewed autodraft presented a full Stripe payment page, and the
+    # render also logged invoice_viewed_by_customer as if it were a
+    # delivered invoice. Un-issued = not found (never reveal pre-issue
+    # invoices to a leaked token).
+    if str(invoice.status or "").lower() == "draft":
         raise HTTPException(status_code=404, detail="Invoice not found or expired")
 
     # The customer clicked the link we emailed them. Never blocks the page.

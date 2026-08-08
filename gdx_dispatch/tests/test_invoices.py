@@ -123,6 +123,16 @@ def _mock_request():
     return SimpleNamespace(state=SimpleNamespace(tenant={"id": "tenant-1"}))
 
 
+def _verify(db, inv: dict) -> None:
+    """§11 rail (2026-08-08): delivery endpoints refuse unverified drafts.
+    Tests exercising send/compose/mark-sent mechanics stamp the verification
+    the office would click; the rail itself is pinned in its own tests."""
+    from datetime import UTC, datetime
+    row = db.get(Invoice, UUID(inv["id"]))
+    row.verified_at = datetime.now(UTC)
+    db.commit()
+
+
 def test_routes_require_auth_dependency():
     import inspect
 
@@ -363,6 +373,7 @@ def test_patch_invoice_updates_draft_fields(tenant_db_session):
 def test_patch_invoice_rejects_non_draft(tenant_db_session):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
+    _verify(tenant_db_session, inv)
     send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
     with pytest.raises(HTTPException) as exc:
@@ -378,6 +389,8 @@ def test_patch_invoice_rejects_non_draft(tenant_db_session):
 def test_send_invoice_marks_sent_and_sets_public_token(tenant_db_session):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id), _=_current_user(), db=tenant_db_session)
+
+    _verify(tenant_db_session, inv)
 
     sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
@@ -431,6 +444,8 @@ def test_send_invoice_skips_oversized_pdf_but_still_delivers(tenant_db_session, 
         _=_current_user(), db=tenant_db_session,
     )
 
+    _verify(tenant_db_session, inv)
+
     sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
     assert sent["email_sent"] is True
@@ -468,7 +483,10 @@ def test_send_invoice_twice_is_a_valid_resend(tenant_db_session, monkeypatch):
     job = _seed_job(tenant_db_session)
     inv = create_invoice(payload=InvoiceCreateIn(job_id=job.id, customer_id=cust.id), _=_current_user(), db=tenant_db_session)
 
+    _verify(tenant_db_session, inv)
+
     first = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+    _verify(tenant_db_session, inv)
     second = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
     assert first["status"] == "sent"
@@ -514,6 +532,8 @@ def test_send_invoice_attaches_the_invoice_pdf(tenant_db_session, monkeypatch):
         ),
         _=_current_user(), db=tenant_db_session,
     )
+
+    _verify(tenant_db_session, inv)
 
     sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
@@ -571,6 +591,7 @@ def test_invoice_email_compose_returns_pdf_and_template(tenant_db_session):
         _=_current_user(), db=tenant_db_session,
     )
 
+    _verify(tenant_db_session, inv)
     payload = invoice_email_compose(
         invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session,
     )
@@ -619,6 +640,7 @@ def test_invoice_email_compose_counter_sale_no_job(tenant_db_session):
         _=_current_user(), db=tenant_db_session,
     )
 
+    _verify(tenant_db_session, inv)
     payload = invoice_email_compose(
         invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session,
     )
@@ -641,6 +663,7 @@ def test_mark_invoice_sent_flips_status_without_email(tenant_db_session):
         _=_current_user(), db=tenant_db_session,
     )
 
+    _verify(tenant_db_session, inv)
     out = mark_invoice_sent(
         invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session,
     )
@@ -668,6 +691,7 @@ def test_mark_invoice_sent_mail_channel_records_paper_delivery(tenant_db_session
         _=_current_user(), db=tenant_db_session,
     )
 
+    _verify(tenant_db_session, inv)
     out = mark_invoice_sent(
         invoice_id=UUID(inv["id"]), payload=MarkSentIn(channel="mail"),
         _=_current_user(), db=tenant_db_session,
@@ -859,6 +883,7 @@ def test_billing_summary_excludes_drafts_from_outstanding(tenant_db_session):
         payload=InvoiceLineCreateIn(description="Service", quantity=1, unit_price=500.0),
         current_user=_current_user(), db=tenant_db_session,
     )
+    _verify(tenant_db_session, sent)
     send_invoice(invoice_id=UUID(sent["id"]), _=_current_user(), db=tenant_db_session)
 
     res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
@@ -957,6 +982,7 @@ def test_billing_summary_overdue_uses_due_date_and_balance(tenant_db_session):
         payload=InvoiceLineCreateIn(description="Late", quantity=1, unit_price=750.0),
         current_user=_current_user(), db=tenant_db_session,
     )
+    _verify(tenant_db_session, overdue_inv)
     send_invoice(invoice_id=UUID(overdue_inv["id"]), _=_current_user(), db=tenant_db_session)
 
     res = bs(request=_mock_request(), _=_current_user(), db=tenant_db_session)
@@ -977,6 +1003,7 @@ def test_list_invoices_filters_overdue(tenant_db_session):
         current_user=_current_user(),
         db=tenant_db_session,
     )
+    _verify(tenant_db_session, inv)
     send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
 
     all_items = list_invoices(request=_mock_request(), status=None, customer_id=None, _=_current_user(), db=tenant_db_session)

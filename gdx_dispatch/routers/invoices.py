@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import (
@@ -1524,6 +1525,15 @@ def invoice_email_compose(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    # 2026-08-08 audit: this was the widest hole in the delivery surface —
+    # no guard of ANY kind. It composed voided invoices (minting a pay
+    # token + embedding a live pay URL into the body) and unverified
+    # drafts alike. Guards must run before the token-minting side effects
+    # below.
+    _guard_inv = _get_invoice_or_404(invoice_id, db)
+    if _guard_inv.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void — it cannot be emailed")
+    require_deliverable(_guard_inv)
     """Return a prebuilt compose payload for the in-app composer:
     {to, subject, body_text, pdf, extra_attachments}.
 
@@ -1662,6 +1672,10 @@ def mark_invoice_sent(
     invoice = _get_invoice_or_404(invoice_id, db)
     if invoice.status in {"paid", "void"}:
         raise HTTPException(status_code=409, detail="invoice is finalized")
+    # §11 rail (2026-08-08): Mark-as-Mailed on an unverified draft both
+    # skipped review AND fed the draft into the auto-dunning population
+    # (dunning filters on status='sent').
+    require_deliverable(invoice)
     transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5: P1 posts here when the flag is on
     invoice.sent_at = datetime.now(UTC)
     invoice.sent_via = channel
@@ -1703,6 +1717,9 @@ def get_invoice_pay_link(
         raise HTTPException(status_code=409, detail="invoice is void")
     if _to_float(invoice.balance_due) <= 0:
         raise HTTPException(status_code=409, detail="invoice has no balance due")
+    # §11 rail (2026-08-08): no pay link for an unverified draft — the /pay
+    # page refuses drafts too, so the link would be a dead end anyway.
+    require_deliverable(invoice)
     if not invoice.public_token:
         invoice.public_token = secrets.token_urlsafe(48)[:64]
         db.commit()
@@ -1725,6 +1742,9 @@ def send_invoice(
     # back to life and re-entered AR. Mirror mark-sent's finalized guard.
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="invoice is void — un-void or recreate it before sending")
+    # §11 rail (2026-08-08): an unverified DRAFT may not reach a customer —
+    # the mobile path enforced this from day one; the desktop path did not.
+    require_deliverable(invoice)
     if invoice.status != "paid":
         transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5
     if not invoice.public_token:
@@ -2512,7 +2532,10 @@ def batch_create_invoices(
 @router.post(
     "/{invoice_id}/verify",
     response_model=None,
-    dependencies=[Depends(require_permission("invoices.read_all"))],
+    # invoices.write, not read_all (2026-08-08 audit): verification APPROVES
+    # money — the read-only viewer tier must not be able to sign off a draft
+    # for delivery now that the delivery gate keys on the stamp.
+    dependencies=[Depends(require_permission("invoices.write"))],
 )
 def verify_invoice(
     invoice_id: str,
@@ -2855,6 +2878,9 @@ def send_payment_receipt(
     """Send a payment receipt email to the customer."""
     _validate_uuid(invoice_id, "Invoice")
     invoice = _get_invoice_or_404(invoice_id, db)
+    # §11 rail (2026-08-08): mirror the mobile receipt gate — a receipt on
+    # an unverified draft means money moved on unreviewed numbers.
+    require_deliverable(invoice)
 
     # Resolve recipient. Prefer invoice.customer_id (NOT NULL since 2026-05-11);
     # the legacy job→customer hop only matters for older rows where the column

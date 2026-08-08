@@ -290,6 +290,19 @@ def send_reminder(
         ).scalar_one_or_none()
         if invoice is None:
             raise HTTPException(status_code=404, detail="Invoice not found")
+        # 2026-08-08 audit: this endpoint had NO status filter at all — it
+        # could dun a draft, an unverified autodraft, or a $0 invoice.
+        # Mirror the automated qualifier (compute_due_sends): an emailed
+        # reminder only makes sense for an ISSUED invoice with money owed.
+        from gdx_dispatch.core.invoice_delivery import require_deliverable
+        require_deliverable(invoice)
+        if str(invoice.status or "").lower() not in {"sent", "overdue"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"reminders are for issued unpaid invoices — this one is '{invoice.status}'",
+            )
+        if float(invoice.balance_due or 0) <= 0:
+            raise HTTPException(status_code=409, detail="invoice has no balance due")
         settings = _get_or_create_settings(db, tenant_id)
         sent, skip_reason = send_reminder_email_for_invoice(
             db, tenant_id, invoice, settings, user_id=_user_id(user)
