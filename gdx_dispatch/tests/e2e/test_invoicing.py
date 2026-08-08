@@ -445,19 +445,8 @@ class TestSendReceipt:
 class TestBatchInvoicing:
     """INV-15 — POST /batch creates multiple invoices, all valid."""
 
-    def test_inv15_batch_create(self, api: APIClient, seed_data: dict):
-        # Create additional jobs
-        job2 = _create_job(api, seed_data["customer"]["id"])
-        job3 = _create_job(api, seed_data["customer"]["id"])
-
-        resp = api.post("/api/invoices/batch", json_data={
-            "job_ids": [seed_data["job"]["id"], job2["id"], job3["id"]],
-        })
-        assert_api_success(resp)
-        data = resp.json()
-        assert data["created"] >= 1
-        assert "invoice_ids" in data
-        assert isinstance(data["invoice_ids"], list)
+    # test_inv15_batch_create RETIRED 2026-08-08: POST /api/invoices/batch
+    # was deleted (zero UI callers, lineless $0 shells, rogue numbering).
 
     def test_inv15_batch_invalid_job(self, api: APIClient):
         resp = api.post("/api/invoices/batch", json_data={

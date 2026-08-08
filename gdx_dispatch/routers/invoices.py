@@ -2475,80 +2475,10 @@ def finalize_invoice(
     return _serialize_invoice(invoice)
 
 
-# ---------------------------------------------------------------------------
-# Batch Invoicing (#218)
-# ---------------------------------------------------------------------------
-
-class BatchInvoiceIn(BaseModel):
-    job_ids: list[str] = Field(min_length=1)
-
-
-@router.post("/batch", response_model=None)
-def batch_create_invoices(
-    payload: BatchInvoiceIn,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-) -> dict[str, object]:
-    """Create invoices for multiple jobs at once."""
-    created = []
-    errors = []
-    for job_id in payload.job_ids:
-        try:
-            job = db.get(Job, UUID(job_id))
-            if not job:
-                errors.append({"job_id": job_id, "error": "Job not found"})
-                continue
-            if not job.customer_id:
-                errors.append({"job_id": job_id, "error": "Job has no customer — assign one before billing"})
-                continue
-            invoice = Invoice(
-                job_id=job.id,
-                customer_id=job.customer_id,
-                invoice_number=f"INV-{secrets.token_hex(4).upper()}",
-                status="draft",
-                total=Decimal("0.00"),
-                amount_paid=Decimal("0.00"),
-                public_token=secrets.token_urlsafe(48)[:64],
-                invoice_date=date.today(),
-                company_id=job.company_id,
-            )
-            db.add(invoice)
-            db.flush()
-            created.append(str(invoice.id))
-        except Exception:
-            log.exception("batch_invoice_create_failed")
-            # Generic error; full exception is logged above. (CodeQL stack-trace-exposure)
-            errors.append({"job_id": job_id, "error": "Invoice creation failed"})
-    if created:
-        db.commit()
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="batch_create_invoices",
-                entity_type="invoice",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            log.exception('batch_create_invoices_audit_failed')
-    return {"created": len(created), "invoice_ids": created, "errors": errors}
-
-
-# ---------------------------------------------------------------------------
-# Credit Memos (#219)
-# ---------------------------------------------------------------------------
+# POST /api/invoices/batch was DELETED here (2026-08-08 audit): it minted
+# lineless $0 invoice shells with a THIRD numbering scheme (INV-{hex8},
+# unparseable by the canonical generator) and a public pay token on every
+# shell — and had zero frontend callers.
 
 @router.post(
     "/{invoice_id}/verify",
