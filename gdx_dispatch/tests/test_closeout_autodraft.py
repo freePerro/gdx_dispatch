@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from uuid import uuid4
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -54,6 +55,7 @@ from gdx_dispatch.models.tenant_models import (
 )
 from gdx_dispatch.modules.inventory.models import JobPart, Part
 from gdx_dispatch.modules.proposals.models import Estimate
+from gdx_dispatch.modules.tax.models import TaxConfig
 from gdx_dispatch.routers.jobs import (
     CloseoutPart,
     CloseoutPayload,
@@ -90,6 +92,7 @@ def db():
         TimeEntry.__table__,
         Estimate.__table__,
         PricingSettings.__table__,
+        TaxConfig.__table__,
     ]:
         tbl.create(bind=engine, checkfirst=True)
     TenantBase.metadata.create_all(bind=engine, checkfirst=True)
@@ -402,6 +405,40 @@ def test_not_billable_voids_untouched_autodraft(db) -> None:
     assert db.execute(
         select(Job.id).where(Job.id == job.id, job_billing_resolved())
     ).first() is not None
+
+
+def test_autodraft_taxes_parts_not_labor_with_resolved_rate(db) -> None:
+    """2026-08-08 audit: the autodraft was the only creation path with
+    tax_rate NULL (the legacy flat-tax branch) — its parts were structurally
+    untaxable through every later office edit. Now it resolves the same
+    customer-aware rate the office create path uses; parts taxed, labor not
+    (tenant tax-labor flag off by default), and the rate persists so office
+    line edits recalc correctly."""
+    db.add(TaxConfig(default_rate=Decimal("0.07375")))
+    db.commit()
+
+    job = _seed_job(db)
+    part = _seed_part(db, sell=100.00)
+    resp = _closeout(
+        db, job,
+        hours=1.0,  # service lane → $100 labor
+        no_parts_used=False,
+        parts=[CloseoutPart(part_id=str(part.id), sku=part.sku, name=part.name, qty=1, unit_cost=50.0)],
+    )
+    body = _body(resp)
+    inv = db.get(Invoice, UUID(body["autodraft_invoice_id"]))
+    assert float(inv.tax_rate) == pytest.approx(0.07375)
+    # Tax on the $100 part only, never the $100 labor.
+    assert float(inv.tax_amount) == pytest.approx(7.38, abs=0.01)
+    assert float(inv.total) == pytest.approx(207.38, abs=0.01)
+    lines = _lines(db, inv)
+    by_cat = {ln.category: ln for ln in lines}
+    assert by_cat["Labor"].taxable is False
+    assert by_cat["Parts"].taxable is True
+
+    # Provenance now serialized — the office sees WHAT it is reviewing.
+    from gdx_dispatch.routers.invoices import _serialize_invoice
+    assert _serialize_invoice(inv)["origin"] == "closeout_autodraft"
 
 
 def test_closeout_billing_suggestion_prices_labor_and_carries_notes(db) -> None:

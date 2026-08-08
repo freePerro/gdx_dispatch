@@ -30,6 +30,14 @@ describe('§11 delivery rail — InvoiceDetailView', () => {
   });
 });
 
+describe('machine provenance — InvoiceDetailView', () => {
+  it('autodraft invoices carry the auto-drafted tag', () => {
+    expect(DETAIL).toMatch(/invoice\.origin === 'closeout_autodraft'/);
+    expect(DETAIL).toMatch(/data-testid="invoice-autodraft-tag"/);
+    expect(DETAIL).toMatch(/origin: payload\.origin \|\| null/);
+  });
+});
+
 describe('§11 delivery rail — BillingView', () => {
   it('bulk send partitions out unverified drafts before confirming', () => {
     const fn = BILLING.indexOf('async function bulkSend');

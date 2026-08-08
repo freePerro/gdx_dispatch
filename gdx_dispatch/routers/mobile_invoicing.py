@@ -597,7 +597,7 @@ def mobile_create_invoice(
         closeout = get_current_closeout(db, _UUID(job_id))
         _new_lines_total = Decimal("0")
         if closeout is not None:
-            _lines_added, _new_lines_total = build_closeout_lines(
+            _lines_added, _new_lines_total, _taxable_total = build_closeout_lines(
                 db,
                 tenant_id=str(tenant_id),
                 invoice=invoice,

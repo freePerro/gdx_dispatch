@@ -59,6 +59,14 @@ describe('InvoiceCreateView — closeout prefill', () => {
     expect(card).toMatch(/note-to-labor-desc/);
   });
 
+  // 2026-08-08 audit: the estimate prefill took the LATEST estimate
+  // regardless of status — draft/declined prices prefilled the invoice.
+  it('estimate prefill filters to ACCEPTED estimates only (§15.1)', () => {
+    const start = SRC.indexOf('async function prefillFromJobEstimate');
+    const span = SRC.slice(start, start + 1200);
+    expect(span).toMatch(/=== 'accepted'/);
+  });
+
   it('use-as-labor-description targets the Labor line and stays editable text', () => {
     const start = SRC.indexOf('function useNoteAsLaborDescription');
     expect(start).toBeGreaterThan(-1);
