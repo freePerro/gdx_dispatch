@@ -13,7 +13,8 @@ here:
    shown on the CO detail equals the invoice total for the same lines, both
    using the same rate resolver.
 3. Delete-invoice releases the CO back to the unbilled checklist.
-4. One-click create_invoice_from_job pulls approved unbilled COs (with tax on
+4. (RETIRED 2026-08-08) one-click auto-pull died with its endpoint; explicit
+   from_change_order_ids claiming on POST /api/invoices is the one path (with tax on
    top of the estimate-derived totals).
 5. `GET /api/change-orders?unbilled=true` filter.
 6. The S122 parts path retrofit: an already-billed part now 409s instead of
@@ -273,31 +274,8 @@ def test_unbilled_filter_excludes_billed_and_unapproved(tenant_db_session):
     assert str(draft_co.id) not in ids
 
 
-def test_one_click_invoice_pulls_approved_cos_with_tax(tenant_db_session, monkeypatch):
-    db = tenant_db_session
-    job = _seed_job(db)
-    co = _seed_co(db, job)
-
-    from starlette.requests import Request
-
-    from gdx_dispatch.routers.jobs import create_invoice_from_job
-    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-    request.state.tenant = {"id": "tenant-1"}
-    out = create_invoice_from_job(
-        job_id=str(job.id), request=request,
-        current_user={"sub": "user-1", "tenant_id": "tenant-1"}, db=db,
-    )
-    # No estimate on the job → $0 fallback line + CO lines w/ tax on top:
-    # subtotal 500, tax 24 (taxable 300 × 8%), total 524.
-    assert out["total"] == 524.0
-    db.refresh(co)
-    assert str(co.billed_invoice_id) == out["invoice_id"]
-    lines = db.execute(
-        select(InvoiceLine).where(InvoiceLine.invoice_id == UUID(out["invoice_id"]))
-    ).scalars().all()
-    co_lines = [ln for ln in lines if ln.description.startswith(co.co_number)]
-    assert len(co_lines) == 2
-
+# test_one_click_invoice_pulls_approved_cos_with_tax was RETIRED with the dead one-click endpoint (2026-08-08 audit):
+# CO claiming with tax is pinned on the live path by test_amount_only_co_bills_its_signed_amount and test_stamp_gates_copy_and_second_invoice_409s (POST /api/invoices + from_change_order_ids).
 
 def test_already_billed_part_409s_instead_of_silent_double_bill(tenant_db_session):
     """S122 retrofit: the old UPDATE…WHERE IS NULL silently skipped a part
@@ -420,31 +398,8 @@ def test_zero_value_lineless_co_409s_not_written_off(tenant_db_session):
     assert co.billed_invoice_id is None, "zero-value CO must NOT be claimed"
 
 
-def test_one_click_bills_amount_only_and_skips_zero_value(tenant_db_session):
-    from starlette.requests import Request
-
-    from gdx_dispatch.routers.jobs import create_invoice_from_job
-    db = tenant_db_session
-    job = _seed_job(db)
-    amount_co = _seed_amount_only_co(db, job, amount=250.0)
-    zero_co = _seed_amount_only_co(db, job, amount=0.0)
-
-    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-    request.state.tenant = {"id": "tenant-1"}
-    out = create_invoice_from_job(
-        job_id=str(job.id), request=request,
-        current_user={"sub": "user-1", "tenant_id": "tenant-1"}, db=db,
-    )
-    # $0 fallback line + synthesized $250 CO line, 8% tax on 250 → 270.
-    assert out["total"] == 270.0
-    db.refresh(amount_co)
-    db.refresh(zero_co)
-    assert str(amount_co.billed_invoice_id) == out["invoice_id"]
-    assert zero_co.billed_invoice_id is None, (
-        "a CO with nothing to bill must stay on the checklist, not be "
-        "stamped billed at $0"
-    )
-
+# test_one_click_bills_amount_only_and_skips_zero_value was RETIRED with the dead one-click endpoint (2026-08-08 audit):
+# amount-only CO billing is pinned by test_amount_only_co_bills_its_signed_amount; zero-value refusal by test_zero_value_lineless_co_409s_not_written_off.
 
 def test_customer_mismatch_co_409s(tenant_db_session):
     """Audit round 2 blind spot: a CO signed by a DIFFERENT customer must not

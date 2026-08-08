@@ -357,10 +357,6 @@ def test_closeout_autodraft_pulls_attested_closeout_parts(tenant_db_session):
     same guarantees are now pinned against the autodraft.)"""
     import json as _json
 
-    from starlette.requests import Request as _Req
-
-    from gdx_dispatch.routers.jobs import create_invoice_from_job
-
     db = tenant_db_session
     job = _seed_job(db, stage="completed")
     part = _seed_part(db)
@@ -398,15 +394,6 @@ def test_closeout_autodraft_pulls_attested_closeout_parts(tenant_db_session):
     assert len(lines) == 2
     part_lines = [ln for ln in lines if float(ln.line_total) == 179.0]
     assert len(part_lines) == 1
-
-    # And the old one-click path refuses: an invoice already exists.
-    request = _Req({"type": "http", "method": "POST", "path": "/", "headers": []})
-    request.state.tenant = {"id": TENANT}
-    out = create_invoice_from_job(
-        job_id=str(job.id), request=request,
-        current_user={"sub": "user-1", "tenant_id": TENANT}, db=db,
-    )
-    assert getattr(out, "status_code", 200) == 409
 
 
 # ---------------------------------------------------------------------------
@@ -476,58 +463,11 @@ def test_recloseout_does_not_resurrect_billed_parts(tenant_db_session):
     assert [(r.part_name, r.quantity) for r in unbilled] == [("Strut", 2)]
 
 
-def test_one_click_skips_parts_pull_when_estimate_priced_the_job(tenant_db_session):
-    """Audit repro: estimate lines + auto-pulled closeout parts billed a
-    $179 job at $358 with no human in the loop. With an estimate, closeout
-    parts stay on the operator checklist."""
-    from starlette.requests import Request as _Req
-
-    from gdx_dispatch.routers.jobs import create_invoice_from_job
-
-    db = tenant_db_session
-    job = _seed_job(db, stage="completed")
-    part = _seed_part(db)
-    est = Estimate(
-        job_id=job.id,
-        customer_id=job.customer_id,
-        estimate_number=f"EST-{uuid4().hex[:8]}",
-        label="Quoted",
-        proposal_mode=False,
-        total=Decimal("179.00"),
-        status="accepted",
-        public_token=uuid4().hex,
-        company_id=TENANT,
-    )
-    db.add(est)
-    db.commit()
-    db.refresh(est)
-    db.add(EstimateLine(
-        estimate_id=est.id,
-        description=f"2x {part.name}",
-        quantity=2,
-        unit_price=Decimal("89.50"),
-        line_total=Decimal("179.00"),
-        sort_order=1,
-        company_id=TENANT,
-    ))
-    db.commit()
-    _closeout(db, job, [
-        {"part_id": str(part.id), "sku": part.sku, "name": part.name, "qty": 2, "unit_cost": 40.0},
-    ])
-
-    request = _Req({"type": "http", "method": "POST", "path": "/", "headers": []})
-    request.state.tenant = {"id": TENANT}
-    out = create_invoice_from_job(
-        job_id=str(job.id), request=request,
-        current_user={"sub": "user-1", "tenant_id": TENANT}, db=db,
-    )
-
-    assert out["total"] == 179.0, "estimate total only — no additive parts pull"
-    rows = _checklist(db, job, source="closeout")
-    assert all(r.billed_invoice_id is None for r in rows), (
-        "closeout parts stay on the operator checklist when an estimate exists"
-    )
-
+# test_one_click_skips_parts_pull_when_estimate_priced_the_job was RETIRED
+# with the dead endpoint (2026-08-08): its rule — an estimate-priced job
+# never auto-pulls closeout parts — is pinned on the live paths by
+# test_no_autodraft_with_accepted_estimate (autodraft skips entirely) and
+# the mobile builder's estimate-precedence branch.
 
 def test_van_usage_invalid_job_id_fails_loudly(tenant_db_session):
     """Audit blind spot: a typo'd job_id minted a checklist row no query
