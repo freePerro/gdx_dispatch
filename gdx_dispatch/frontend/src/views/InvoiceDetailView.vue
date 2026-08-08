@@ -46,6 +46,16 @@
               style="margin-left: 0.35rem"
               data-testid="invoice-deposit-tag"
             />
+            <!-- Machine provenance (2026-08-08): the office must KNOW it is
+                 reviewing machine-priced numbers, not a colleague's. -->
+            <Tag
+              v-if="invoice.origin === 'closeout_autodraft'"
+              value="auto-drafted from closeout"
+              severity="warn"
+              style="margin-left: 0.35rem"
+              v-tooltip.bottom="'Priced by the system from the tech\'s closeout (hours + parts). Review every line before verifying.'"
+              data-testid="invoice-autodraft-tag"
+            />
             <p>Due: <strong>{{ formatDate(invoice.due_date) }}</strong></p>
             <p>Created: {{ formatDate(invoice.created_at) }}</p>
             <!-- formatStampDateTime: QB-backfilled stamps are UTC midnight
@@ -1160,6 +1170,8 @@ function normalizeInvoice(payload) {
     hide_line_prices: Boolean(payload.hide_line_prices),
     // Job photos picked for the PDF — drives the photo-picker checkboxes.
     attached_photo_ids: Array.isArray(payload.attached_photo_ids) ? payload.attached_photo_ids : [],
+    // Machine provenance — drives the "auto-drafted from closeout" tag.
+    origin: payload.origin || null,
     // Tier 10 — per-record QuickBooks push state for the sync chip. This
     // normalizer copies fields explicitly, so these must be listed or the chip
     // reads undefined and always renders "Not in QuickBooks".

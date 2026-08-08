@@ -565,7 +565,13 @@ async function prefillFromJobEstimate(jobId) {
       `/api/estimates?job_id=${encodeURIComponent(jobId)}`,
       { suppressErrorToast: true },
     );
-    const estimates = Array.isArray(list) ? list : Array.isArray(list?.data) ? list.data : [];
+    const all = Array.isArray(list) ? list : Array.isArray(list?.data) ? list.data : [];
+    // §15.1 (2026-08-08 audit): only an ACCEPTED estimate outranks the
+    // closeout lanes — this used to take the LATEST estimate regardless of
+    // status, prefilling prices from a draft or even a DECLINED estimate
+    // the customer never agreed to (and blocking the closeout labor
+    // prefill, which only fills an empty editor).
+    const estimates = all.filter((e) => String(e.status || '').toLowerCase() === 'accepted');
     if (!estimates.length) return;
     const latest = estimates[0];
     const detail = await api.get(`/api/estimates/${latest.id}`, { suppressErrorToast: true });

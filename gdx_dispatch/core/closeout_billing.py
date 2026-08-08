@@ -94,9 +94,16 @@ def build_closeout_lines(
     closeout: JobCloseout,
     job_type: str | None,
     job_id: str,
-) -> tuple[int, Decimal]:
+) -> tuple[int, Decimal, Decimal]:
     """Add invoice lines priced from the closeout. Returns (lines_added,
-    lines_total). Extracted verbatim from the mobile truck path (plan §8).
+    lines_total, taxable_total). Extracted from the mobile truck path (§8).
+
+    Taxable flags (2026-08-08 audit): labor lines carry the tenant's
+    tax-labor flag (same M24 rule the estimate→invoice copy applies — the
+    old default-True meant a later office line-edit recalc would suddenly
+    tax labor); parts stay taxable. taxable_total feeds the caller's tax
+    computation so an autodraft with a resolved rate taxes parts exactly
+    like an office-created invoice would.
 
     Lanes decide (core/billing_lanes): service → hourly labor line; install
     with a picked matrix row → flat price; everything else → labor stays
@@ -119,9 +126,16 @@ def build_closeout_lines(
     # must see them even with autoflush off.
     db.flush()
 
+    try:
+        from gdx_dispatch.modules.proposals.totals import _load_tax_labor_flag  # noqa: PLC0415
+        labor_taxable = bool(_load_tax_labor_flag(db))
+    except Exception:  # noqa: BLE001 — flag read must never block billing
+        labor_taxable = False
+
     sort = 1
     lines_added = 0
     lines_total = Decimal("0")
+    taxable_total = Decimal("0")
     lane = lane_for_job(job_type)
     if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
         # Install lane: flat price from the picked matrix row. If the row is
@@ -136,10 +150,14 @@ def build_closeout_lines(
                 quantity=_install.quantity,
                 unit_price=_install.unit_price,
                 line_total=_install.line_total,
+                taxable=labor_taxable,
+                category="Labor",
                 sort_order=sort,
                 company_id=str(tenant_id),
             ))
             lines_total += _install.line_total
+            if labor_taxable:
+                taxable_total += _install.line_total
             lines_added += 1
             sort += 1
     if lane == "service" and float(closeout.hours_worked or 0) > 0:
@@ -155,10 +173,14 @@ def build_closeout_lines(
             quantity=labor.quantity,
             unit_price=labor.unit_price,
             line_total=labor.line_total,
+            taxable=labor_taxable,
+            category="Labor",
             sort_order=sort,
             company_id=str(tenant_id),
         ))
         lines_total += labor.line_total
+        if labor_taxable:
+            taxable_total += labor.line_total
         lines_added += 1
         sort += 1
 
@@ -191,13 +213,16 @@ def build_closeout_lines(
             quantity=qty,
             unit_price=unit,
             line_total=_money(float(unit) * qty),
+            taxable=True,
+            category="Parts",
             sort_order=sort,
             company_id=str(tenant_id),
         ))
         lines_total += _money(float(unit) * qty)
+        taxable_total += _money(float(unit) * qty)
         lines_added += 1
         sort += 1
-    return lines_added, lines_total
+    return lines_added, lines_total, taxable_total
 
 
 def is_untouched_autodraft(inv: Invoice) -> bool:
@@ -355,7 +380,7 @@ def autodraft_invoice_for_closeout(
         db.add(inv)
         db.flush()
 
-    lines_added, lines_total = build_closeout_lines(
+    lines_added, lines_total, taxable_total = build_closeout_lines(
         db,
         tenant_id=str(tenant_id),
         invoice=inv,
@@ -366,8 +391,28 @@ def autodraft_invoice_for_closeout(
     if lines_added == 0 and reuse_invoice is None:
         db.delete(inv)
         return None
+
+    # Tax (2026-08-08 audit): the autodraft was the ONLY creation path with
+    # tax_rate NULL — the legacy flat-tax branch — so its parts were
+    # structurally untaxable through every later office edit. Resolve the
+    # same customer-aware rate the office create path uses; labor stays
+    # untaxed via the line flags unless the tenant taxes labor.
+    rate: Decimal | None = None
+    try:
+        from gdx_dispatch.modules.tax.service import resolve_rate  # noqa: PLC0415
+
+        candidate = resolve_rate(db, inv.customer_id)
+        if candidate is not None and candidate > 0:
+            rate = Decimal(str(candidate))
+    except Exception:  # noqa: BLE001 — tax resolution must never block a closeout
+        log.exception("autodraft_tax_resolve_failed job=%s", job.id)
+        rate = None
+    inv.tax_rate = rate
+
     if lines_total > 0:
+        tax = _money(taxable_total * rate) if rate else _money(0)
         inv.subtotal = _money(lines_total)
-        inv.total = _money(lines_total)
-        inv.balance_due = _money(lines_total)
+        inv.tax_amount = tax
+        inv.total = _money(lines_total + tax)
+        inv.balance_due = inv.total
     return inv

@@ -174,7 +174,9 @@ describe('InvoiceCreateView — query prefill', () => {
       if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
       if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
       if (url.startsWith('/api/estimates?job_id=job-1')) {
-        return Promise.resolve([{ id: 'est-1', notes: 'Original quote' }]);
+        // §15.1 (2026-08-08): the prefill now filters to ACCEPTED estimates —
+        // a draft/declined estimate's prices must never prefill an invoice.
+        return Promise.resolve([{ id: 'est-1', status: 'accepted', notes: 'Original quote' }]);
       }
       if (url === '/api/estimates/est-1') {
         return Promise.resolve({

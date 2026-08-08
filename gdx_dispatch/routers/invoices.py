@@ -184,6 +184,10 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         # Job photos picked for the PDF (migration 059) — decoded to a list
         # so the detail view can show the current selection.
         "attached_photo_ids": _decode_photo_ids(invoice),
+        # Machine provenance (2026-08-08 audit): 'closeout_autodraft' was
+        # stored but never serialized — the office reviewed machine-priced
+        # invoices with no indication they were machine-priced.
+        "origin": getattr(invoice, "origin", None),
         # PR6 — per-invoice dunning mute state for the detail-view toggle.
         "dunning_paused": bool(getattr(invoice, "dunning_paused", False)),
         "locked": bool(invoice.locked),
