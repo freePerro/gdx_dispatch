@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -102,6 +102,12 @@ def _seed_invoice(db, total: float = 250.0) -> dict:
         current_user=_current_user(),
         db=db,
     )
+    # §11 rail (2026-08-08): pay-link/compose/send refuse unverified drafts.
+    # These tests exercise the office delivery mechanics, so the fixture
+    # ships verified; the rail itself is pinned in test_invoice_delivery_rail.
+    row = db.get(Invoice, UUID(inv["id"]))
+    row.verified_at = datetime.now(UTC)
+    db.commit()
     return inv
 
 
@@ -249,6 +255,10 @@ def test_send_invoice_email_includes_pay_link_when_configured(tenant_db_session,
         payload=InvoiceCreateIn(job_id=job.id, customer_id=cust.id),
         _=_current_user(), db=tenant_db_session,
     )
+    # §11 rail: compose/send refuse unverified drafts — stamp the review.
+    _row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    _row.verified_at = datetime.now(UTC)
+    tenant_db_session.commit()
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Opener install", quantity=1, unit_price=500.0),
@@ -279,6 +289,10 @@ def test_send_invoice_email_omits_pay_link_when_unconfigured(tenant_db_session, 
         payload=InvoiceCreateIn(job_id=job.id, customer_id=cust.id),
         _=_current_user(), db=tenant_db_session,
     )
+    # §11 rail: compose/send refuse unverified drafts — stamp the review.
+    _row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    _row.verified_at = datetime.now(UTC)
+    tenant_db_session.commit()
     add_invoice_line(
         invoice_id=UUID(inv["id"]),
         payload=InvoiceLineCreateIn(description="Opener install", quantity=1, unit_price=500.0),
@@ -305,6 +319,10 @@ def test_pay_page_renders_on_current_starlette(tenant_db_session, monkeypatch):
     monkeypatch.setenv("STRIPE_PUBLISHABLE_KEY", "pk_test_page")
     inv = _seed_invoice(tenant_db_session)
     row = _fresh(tenant_db_session, inv["id"])
+    # §11 rail: /pay refuses drafts with 404 — this test is about the
+    # TemplateResponse signature, so render an ISSUED invoice.
+    row.status = "sent"
+    tenant_db_session.commit()
 
     req = StarletteRequest(
         {"type": "http", "method": "GET", "path": f"/pay/{row.public_token}", "headers": [], "query_string": b""}
@@ -368,6 +386,10 @@ def test_email_compose_zero_balance_is_a_pure_read(tenant_db_session, monkeypatc
         _=_current_user(),
         db=tenant_db_session,
     )
+    # §11 rail: compose/send refuse unverified drafts — stamp the review.
+    _row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    _row.verified_at = datetime.now(UTC)
+    tenant_db_session.commit()
     # Blank the creation-minted token so the mint branch is actually
     # reachable — otherwise this test passes even against mint-outside-gate
     # code (audit catch 2026-07-21: the assertion was non-discriminating).

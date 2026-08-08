@@ -381,8 +381,10 @@
                 v-tooltip="'Send'" :data-testid="`send-invoice-${data.id}`" @click.stop="sendInvoice(data)" />
               <Button icon="pi pi-file-pdf" aria-label="Download PDF" severity="secondary" text size="small"
                 v-tooltip="'Download PDF'" :data-testid="`pdf-invoice-${data.id}`" @click.stop="downloadPdf(data)" />
+              <!-- §11 rail: no pay link for an unverified draft — the /pay
+                   page refuses drafts, so the copied link would be dead. -->
               <Button
-                v-if="data.status !== 'Paid'"
+                v-if="data.status !== 'Paid' && !(String(data.status || '').toLowerCase() === 'draft' && !data.verified_at)"
                 icon="pi pi-link"
                 aria-label="Copy pay link"
                 severity="primary"
@@ -749,12 +751,29 @@ const bulkProgress = ref({ active: false, label: '', completed: 0, total: 0 });
 // don't claim "all done" when some 500'd silently. The previous code
 // swallowed every failure and toasted blanket success regardless.
 async function bulkSend() {
-  const total = selectedInvoices.value.length;
+  // §11 rail (2026-08-08): the server refuses unverified drafts with 409.
+  // Partition up front so a bulk sweep over the Draft filter can't even
+  // ATTEMPT to mass-mail unreviewed (machine-priced) drafts — each one
+  // needs a human's Verify first, deliberately not bulk-able.
+  const skipped = selectedInvoices.value.filter(
+    (inv) => String(inv.status || '').toLowerCase() === 'draft' && !inv.verified_at,
+  );
+  const sendable = selectedInvoices.value.filter((inv) => !skipped.includes(inv));
+  if (skipped.length) {
+    toast.add({
+      severity: 'warn',
+      summary: `${skipped.length} unverified draft(s) skipped`,
+      detail: 'Open each draft and Verify it before it can be sent.',
+      life: 6000,
+    });
+  }
+  if (!sendable.length) return;
+  const total = sendable.length;
   if (!(await confirmAsync({ header: 'Confirm', message: `Send ${total} invoice(s) to customers?` }))) return;
   let ok = 0;
   const failed = [];
   bulkProgress.value = { active: true, label: 'Send', completed: 0, total };
-  for (const inv of selectedInvoices.value) {
+  for (const inv of sendable) {
     try {
       // 2026-07-20 (audit catch): the old catch-block "fallback" PATCHed the
       // status to Sent and counted it a success even when NO email went out —

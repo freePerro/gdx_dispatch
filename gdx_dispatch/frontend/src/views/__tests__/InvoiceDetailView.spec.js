@@ -120,6 +120,11 @@ function buildInvoicePayload(overrides = {}) {
     customer_address: '123 Main St',
     status: 'draft',
     effective_status: 'draft',
+    // §11 rail (2026-08-08): Send/Mark-mailed on an UNVERIFIED draft now
+    // detours through the verify-and-continue confirm. These composer tests
+    // exercise the send mechanics, so the fixture ships verified; the rail
+    // itself is pinned in InvoiceDeliveryRail.spec.js.
+    verified_at: '2026-05-21T12:30:00Z',
     subtotal: 75,
     tax_rate: 0.07,
     tax_amount: 5.25,
