@@ -48,17 +48,41 @@ def _money(v: Decimal | float | str) -> Decimal:
 
 
 def next_invoice_number(db: Session) -> str:
-    """INV-000123-style sequence off the latest row (moved here from
-    mobile_invoicing so the autodraft doesn't import from a router)."""
+    """The ONE invoice-number generator (2026-08-08 audit: there were FOUR —
+    this max-based one, a count-based one in routers/invoices that re-issued
+    taken numbers whenever count and max diverged, and two hex schemes on
+    dead endpoints). All live creation paths delegate here now.
+
+    Highest sequential number + 1, then bump past any takers — so a
+    hex-format historical row, a deleted row, or a same-instant sibling
+    can't produce a duplicate. The unique constraint on invoice_number
+    remains the final referee; callers on hot paths retry once on
+    IntegrityError for the residual race.
+    """
+    # Fixed-width zero-padded numbers sort lexicographically, so MAX() over
+    # the LIKE-shaped set finds the true high-water mark even when hex-form
+    # or imported numbers exist alongside (the old latest-by-created_at read
+    # fell to the hex fallback the moment the newest row wasn't sequential).
     row = db.execute(
-        _text("SELECT invoice_number FROM invoices ORDER BY created_at DESC LIMIT 1")
+        _text(
+            "SELECT MAX(invoice_number) FROM invoices "
+            "WHERE invoice_number LIKE 'INV-______'"
+        )
     ).first()
-    if row and row[0] and row[0].startswith("INV-"):
+    n = 0
+    if row and row[0]:
         try:
-            n = int(row[0].split("-", 1)[1]) + 1
-            return f"INV-{n:06d}"
+            n = int(str(row[0]).split("-", 1)[1])
         except (ValueError, AttributeError):
-            pass
+            n = 0
+    for candidate_n in range(n + 1, n + 51):
+        candidate = f"INV-{candidate_n:06d}"
+        taken = db.execute(
+            _text("SELECT 1 FROM invoices WHERE invoice_number = :c LIMIT 1"),
+            {"c": candidate},
+        ).first()
+        if taken is None:
+            return candidate
     return f"INV-{datetime.now(UTC):%y%m}{secrets.token_hex(2).upper()}"
 
 
