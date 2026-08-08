@@ -93,6 +93,24 @@ def billed_man_hours(hours_worked: float, techs_on_site: int) -> float:
     return max(1.0, man)
 
 
+# The auto-filled line text (Doug 2026-08-07: the FIELD was editable but
+# what it fills in was not). Tenants override it via
+# pricing_settings.service_labor_description_template (migration 060);
+# these are the supported placeholders. A broken template falls back here —
+# a settings typo must never 500 a closeout, an autodraft, or an invoice.
+DEFAULT_SERVICE_LABOR_TEMPLATE = (
+    "Service labor — {man_hours:.2f} man-hours"
+    " ({hours:.2f} h on site × {techs} tech{tech_plural};"
+    " first hour ${first_hour_price}, then ${hourly_rate}/hr)"
+)
+
+
+def service_labor_description_template(db: Session) -> str:
+    settings = db.execute(select(PricingSettings).limit(1)).scalar_one_or_none()
+    tpl = getattr(settings, "service_labor_description_template", None) if settings else None
+    return tpl.strip() if tpl and tpl.strip() else DEFAULT_SERVICE_LABOR_TEMPLATE
+
+
 def service_labor_line(
     db: Session, *, hours_worked: float, techs_on_site: int
 ) -> ServiceLaborLine:
@@ -100,11 +118,24 @@ def service_labor_line(
     man = billed_man_hours(hours_worked, techs_on_site)
     amount = _money(first + hourly * Decimal(str(man - 1.0)))
     crew = max(1, int(techs_on_site or 1))
-    desc = (
-        f"Service labor — {man:.2f} man-hours"
-        f" ({float(hours_worked):.2f} h on site × {crew} tech{'s' if crew != 1 else ''};"
-        f" first hour ${first}, then ${hourly}/hr)"
-    )
+    _vars = {
+        "man_hours": man,
+        "hours": float(hours_worked),
+        "techs": crew,
+        "tech_plural": "s" if crew != 1 else "",
+        "first_hour_price": first,
+        "hourly_rate": hourly,
+    }
+    tpl = service_labor_description_template(db)
+    try:
+        desc = tpl.format(**_vars)
+    except Exception:  # noqa: BLE001 — any format error → safe default
+        import logging  # noqa: PLC0415
+
+        logging.getLogger(__name__).warning(
+            "service_labor_template_invalid, falling back to default: %r", tpl
+        )
+        desc = DEFAULT_SERVICE_LABOR_TEMPLATE.format(**_vars)
     return ServiceLaborLine(
         description=desc[:500],
         quantity=1,

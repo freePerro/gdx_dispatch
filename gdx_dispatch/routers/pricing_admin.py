@@ -90,6 +90,11 @@ class SettingsPatchIn(BaseModel):
     # 2026-05-05 — loaded technician cost per hour (wage + burden) used to
     # derive cost_snapshot on labor-matrix lines. 0 = labor not in margin calc.
     loaded_labor_cost_per_hour: float | None = Field(default=None, ge=0, le=999)
+    # §8 service-call SELL rates + the auto-filled line text (Doug
+    # 2026-08-07). Template "" clears back to the built-in default.
+    service_call_first_hour_price: float | None = Field(default=None, ge=0, le=100000)
+    service_call_hourly_rate: float | None = Field(default=None, ge=0, le=100000)
+    service_labor_description_template: str | None = Field(default=None, max_length=500)
 
 
 class VolumeTierIn(BaseModel):
@@ -304,10 +309,17 @@ def get_settings(
 ) -> dict:
     s = _get_or_seed_settings(db)
     class_rows = db.execute(select(PricingClassSettings)).scalars().all()
+    from gdx_dispatch.core.billing_lanes import DEFAULT_SERVICE_LABOR_TEMPLATE
     return {
         "id": str(s.id),
         "volume_discount_enabled": bool(s.volume_discount_enabled),
         "loaded_labor_cost_per_hour": float(s.loaded_labor_cost_per_hour or 0),
+        # §8 service-call SELL pricing + the auto-filled line text. The
+        # default template ships so the UI can show what NULL means.
+        "service_call_first_hour_price": float(s.service_call_first_hour_price or 100),
+        "service_call_hourly_rate": float(s.service_call_hourly_rate or 100),
+        "service_labor_description_template": getattr(s, "service_labor_description_template", None),
+        "service_labor_description_default": DEFAULT_SERVICE_LABOR_TEMPLATE,
         "volume_tiers": [_serialize_volume_tier(v) for v in sorted(s.volume_tiers, key=lambda x: x.sort_order)],
         "class_settings": [_serialize_class_setting(c) for c in class_rows],
     }
@@ -322,6 +334,11 @@ def patch_settings(
 ) -> dict:
     s = _get_or_seed_settings(db)
     updates = payload.model_dump(exclude_unset=True)
+    # An emptied template means "back to the built-in default" — store NULL,
+    # not "" (billing_lanes treats blank as default anyway; keep the DB clean).
+    if "service_labor_description_template" in updates:
+        _tpl = (updates["service_labor_description_template"] or "").strip()
+        updates["service_labor_description_template"] = _tpl or None
     for k, v in updates.items():
         setattr(s, k, v)
     db.commit()
