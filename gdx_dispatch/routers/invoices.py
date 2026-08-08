@@ -225,8 +225,13 @@ def _validate_uuid(value: str, entity: str = "Invoice") -> None:
 
 
 def _next_invoice_number(db: Session) -> str:
-    count = db.execute(select(func.count(Invoice.id))).scalar_one() or 0
-    return f"INV-{count + 1:06d}"
+    # 2026-08-08 audit: this was count-based (`count(*) + 1`, no deleted_at
+    # filter, no fallback) — it re-issued an already-taken number whenever
+    # the row count and the number high-water mark diverged (deleted rows,
+    # hex-format historical numbers). Delegate to the ONE generator.
+    from gdx_dispatch.core.closeout_billing import next_invoice_number
+
+    return next_invoice_number(db)
 
 
 def _get_invoice_or_404(invoice_id: UUID, db: Session, include_relations: bool = False) -> Invoice:
@@ -936,7 +941,19 @@ def create_invoice(
         company_id=_["tenant_id"],
     )
     db.add(invoice)
-    db.flush()
+    # 2026-08-08 audit: two concurrent creates could compute the same number
+    # and the second flush raised an uncaught IntegrityError → raw 500. The
+    # unique constraint is the referee; one regenerate-and-retry absorbs the
+    # residual race the bump-past-takers generator can't see.
+    try:
+        db.flush()
+    except IntegrityError as _num_exc:
+        if "invoice_number" not in str(_num_exc):
+            raise
+        db.rollback()
+        db.add(invoice)
+        invoice.invoice_number = _next_invoice_number(db)
+        db.flush()
 
     if estimate:
         lines = db.execute(
