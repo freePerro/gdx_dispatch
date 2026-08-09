@@ -9,7 +9,8 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: { job_id: 'j-77', job_label: 'JOB-2026-014', to: 'alice@example.com', subject: 'JOB-2026-014 — update' } }),
+  useRoute: () => ({ path: '/inbox', query: { job_id: 'j-77', job_label: 'JOB-2026-014', to: 'alice@example.com', subject: 'JOB-2026-014 — update' } }),
+  useRouter: () => ({ replace: () => {} }),
 }));
 
 import InboxView from '../InboxView.vue';

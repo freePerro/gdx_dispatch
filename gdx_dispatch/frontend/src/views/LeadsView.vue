@@ -76,9 +76,43 @@
         <Column field="created_at" header="Created" style="width:140px" sortable>
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
         </Column>
-        <Column header="Actions" style="width:280px">
+        <Column header="Actions" style="width:340px">
           <template #body="{ data }">
             <div class="row-actions">
+              <Button
+                v-if="canWrite && data.email"
+                text
+                size="small"
+                icon="pi pi-envelope"
+                aria-label="Reply by email"
+                v-tooltip.top="'Reply by email'"
+                data-testid="lead-email"
+                @click.stop="emailLead(data)"
+              />
+              <Button
+                v-if="canWrite"
+                text
+                size="small"
+                icon="pi pi-wrench"
+                aria-label="Create service call"
+                v-tooltip.top="'Create service call'"
+                data-testid="lead-service-call"
+                :loading="serviceCallLeadId === data.id"
+                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id"
+                @click.stop="createServiceCall(data)"
+              />
+              <Button
+                v-if="canWrite"
+                text
+                size="small"
+                icon="pi pi-file-edit"
+                aria-label="Create estimate"
+                v-tooltip.top="'Create estimate'"
+                data-testid="lead-estimate"
+                :loading="estimateLeadId === data.id"
+                :disabled="serviceCallLeadId === data.id || estimateLeadId === data.id"
+                @click.stop="createEstimateFromLead(data)"
+              />
               <Button
                 v-if="canWrite"
                 text
@@ -151,7 +185,7 @@
             <template #body="{ data }">
               <Tag
                 :value="data.status || 'new'"
-                :severity="data.status === 'contacted' ? 'info' : data.status === 'discarded' ? 'secondary' : 'warn'"
+                :severity="data.status === 'contacted' ? 'info' : data.status === 'promoted' ? 'success' : data.status === 'discarded' ? 'secondary' : 'warn'"
                 data-testid="landing-status-tag"
               />
             </template>
@@ -269,6 +303,39 @@
         :style="{ width: '560px' }"
       >
         <div v-if="selectedLanding" class="landing-detail">
+          <!-- What the submission actually asked for: reply, book the repair,
+               or start a quote — the three exits that used to not exist. -->
+          <div v-if="canWrite" class="ld-actions">
+            <Button
+              v-if="selectedLanding.email"
+              label="Reply by email"
+              icon="pi pi-envelope"
+              size="small"
+              outlined
+              data-testid="landing-email"
+              @click="emailLanding(selectedLanding)"
+            />
+            <Button
+              label="Service call"
+              icon="pi pi-wrench"
+              size="small"
+              outlined
+              data-testid="landing-service-call"
+              :loading="landingActionId === selectedLanding.id"
+              :disabled="landingActionId === selectedLanding.id"
+              @click="landingServiceCall(selectedLanding)"
+            />
+            <Button
+              label="Estimate"
+              icon="pi pi-file-edit"
+              size="small"
+              outlined
+              data-testid="landing-estimate"
+              :loading="landingActionId === selectedLanding.id"
+              :disabled="landingActionId === selectedLanding.id"
+              @click="landingEstimate(selectedLanding)"
+            />
+          </div>
           <div class="ld-row"><span class="ld-label">Name</span><span>{{ selectedLanding.name || '—' }}</span></div>
           <div class="ld-row">
             <span class="ld-label">Email</span>
@@ -331,7 +398,9 @@
 <script setup>
 import { leadStageSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
+import { useToast } from 'primevue/usetoast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { useListPrefs } from '../composables/useListPrefs';
 import { useTableExport } from '../composables/useTableExport';
@@ -356,8 +425,10 @@ import EmptyState from '../components/EmptyState.vue';
 import PhoneInput from '../components/PhoneInput.vue';
 
 const api = useApiWithToast();
+const toast = useToast();
 const { confirmDestructive } = useDestructiveConfirm();
 const auth = useAuthStore();
+const router = useRouter();
 
 // Mirror the backend require_permission gates on leads.py so we don't
 // render controls a role will only get a 403 from. Hide (not disable):
@@ -383,6 +454,9 @@ const landingDeletingId = ref(null);
 const deletingLeadId = ref(null);
 const showLandingDialog = ref(false);
 const selectedLanding = ref(null);
+const serviceCallLeadId = ref(null);
+const estimateLeadId = ref(null);
+const landingActionId = ref(null);
 
 const stageOptions = [
   { value: 'New', label: 'New' },
@@ -611,6 +685,123 @@ async function convertLandingLead(landingLead) {
   }
 }
 
+// ── Lead → the actual work (2026-08-08) ──────────────────────────────
+// A web form is usually a service call or an estimate request, and often
+// needs an email reply. These are the three exits.
+
+// Opens the real inbox composer (NOT mailto:) so the reply lives in the
+// customer's communication history. lead_id/landing_lead_id ride along so
+// the inbox can record the contact after a SUCCESSFUL send — a delivery
+// fact, never a button-click assertion. Safe to always pass: the server's
+// record-contact only ever moves new → contacted.
+function emailLead(lead) {
+  router.push({
+    path: '/inbox',
+    query: {
+      to: lead.email,
+      subject: 'Your service request',
+      lead_id: lead.id,
+    },
+  });
+}
+
+function emailLanding(ll) {
+  showLandingDialog.value = false;
+  router.push({
+    path: '/inbox',
+    query: {
+      to: ll.email,
+      subject: 'Your website inquiry',
+      landing_lead_id: ll.id,
+    },
+  });
+}
+
+// Idempotent on the backend: reuses the lead's converted customer or an
+// existing customer matched by email/phone before creating one. stage says
+// what the conversion is for (service call = won, estimate = quoted).
+// The linked-vs-created distinction is SAID out loud: a dedupe match is a
+// merge decision, and the operator must know it happened.
+async function ensureCustomer(lead, stage) {
+  const conv = await api.post(`/api/leads/${lead.id}/convert-to-customer`, { stage });
+  if (!conv?.converted || !conv?.customer_id) {
+    toast.add({
+      severity: 'error',
+      summary: 'Customer conversion failed',
+      detail: conv?.reason || 'Could not create a customer for this lead',
+      life: 6000,
+    });
+    throw new Error(conv?.reason || 'convert failed');
+  }
+  if (conv.existing) {
+    toast.add({
+      severity: 'info',
+      summary: 'Linked to existing customer',
+      detail: `Using the existing record for ${conv.customer_name || lead.name} — no duplicate created.`,
+      life: 5000,
+    });
+  }
+  return conv.customer_id;
+}
+
+async function createServiceCall(lead) {
+  serviceCallLeadId.value = lead.id;
+  try {
+    const customerId = await ensureCustomer(lead, 'won');
+    // No scheduled_at: the job derives "Service Call" status and lands in
+    // Ready to Schedule, so a dispatcher reviews it like any call-in.
+    const job = await api.post(
+      '/api/jobs',
+      {
+        title: `Service call — ${lead.name}`,
+        description: lead.notes || '',
+        customer_id: customerId,
+      },
+      { successMessage: 'Service call created — ready to schedule' },
+    );
+    if (job?.id) router.push(`/jobs/${job.id}`);
+  } finally {
+    serviceCallLeadId.value = null;
+  }
+}
+
+async function createEstimateFromLead(lead) {
+  estimateLeadId.value = lead.id;
+  try {
+    const customerId = await ensureCustomer(lead, 'quoted');
+    // Route through /estimates/new (customer pre-selected) instead of
+    // POSTing a bare estimate: line items go in through the real create
+    // path, so no zero-line $0.00 estimate rows (the EST-000014 trap).
+    router.push({ path: '/estimates/new', query: { customer_id: customerId } });
+  } finally {
+    estimateLeadId.value = null;
+  }
+}
+
+// Landing-lead versions chain the promotion first, so the pipeline record
+// exists and the audit trail reads submission → lead → customer → work.
+async function landingServiceCall(ll) {
+  landingActionId.value = ll.id;
+  try {
+    const lead = await api.post(`/api/landing-leads/${ll.id}/convert-to-lead`);
+    showLandingDialog.value = false;
+    await createServiceCall({ ...lead, stage: capitalize(lead.stage) });
+  } finally {
+    landingActionId.value = null;
+  }
+}
+
+async function landingEstimate(ll) {
+  landingActionId.value = ll.id;
+  try {
+    const lead = await api.post(`/api/landing-leads/${ll.id}/convert-to-lead`);
+    showLandingDialog.value = false;
+    await createEstimateFromLead({ ...lead, stage: capitalize(lead.stage) });
+  } finally {
+    landingActionId.value = null;
+  }
+}
+
 // "I called them, they're not (yet) a pipeline lead" — the exit that used to
 // not exist. Before this, the only ways out of status='new' were convert or
 // delete, so a called-but-declined submission nagged the dashboard forever
@@ -792,6 +983,14 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+.ld-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--p-content-border-color);
 }
 
 .ld-row {
