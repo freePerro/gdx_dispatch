@@ -351,6 +351,16 @@ def test_convert_landing_lead_to_lead(client: TestClient):
     assert lead["stage"] == "new"
     assert lead["company_id"] == "tenant-test"
 
+    # Promotion is a pipeline fact, NOT a contact fact: the landing lead
+    # must read "promoted" and contacted_at must stay NULL — nothing was
+    # sent and nobody called (2026-08-08 fix for the fabricated stamp).
+    landing = next(
+        row for row in client.get("/api/landing-leads").json()
+        if row["id"] == created["id"]
+    )
+    assert landing["status"] == "promoted"
+    assert landing["contacted_at"] is None
+
 
 # ---------------------------------------------------------------------------
 # Leads
@@ -466,3 +476,193 @@ def test_convert_to_customer_graceful_when_customers_table_missing():
     finally:
         tc.app.dependency_overrides.clear()
         tc._engine.dispose()  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Convert-to-customer: idempotency, dedupe, stage semantics (2026-08-08)
+# ---------------------------------------------------------------------------
+
+
+def _customers(client: TestClient):
+    from gdx_dispatch.models.tenant_models import Customer
+
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        return db.execute(select(Customer)).scalars().all()
+    finally:
+        db.close()
+
+
+def _seed_customer(client: TestClient, **cols):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from gdx_dispatch.models.tenant_models import Customer
+
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        row = Customer(
+            id=uuid4(),
+            company_id="tenant-test",
+            created_at=datetime.now(timezone.utc),
+            **cols,
+        )
+        db.add(row)
+        db.commit()
+        return str(row.id)
+    finally:
+        db.close()
+
+
+def test_convert_to_customer_idempotent(client: TestClient):
+    created = client.post("/api/leads", json=_lead_payload()).json()
+    first = client.post(f"/api/leads/{created['id']}/convert-to-customer").json()
+    assert first["converted"] is True
+    assert first["existing"] is False
+
+    second = client.post(f"/api/leads/{created['id']}/convert-to-customer").json()
+    assert second["converted"] is True
+    assert second["existing"] is True
+    assert second["customer_id"] == first["customer_id"]
+    assert len(_customers(client)) == 1
+
+
+def test_convert_to_customer_matches_existing_by_email(client: TestClient):
+    seeded = _seed_customer(
+        client, name="Existing Acme", email="CONTACT@ACME.test", phone=None
+    )
+    created = client.post("/api/leads", json=_lead_payload()).json()
+    r = client.post(f"/api/leads/{created['id']}/convert-to-customer").json()
+    assert r["converted"] is True
+    assert r["existing"] is True
+    assert r["customer_id"] == seeded
+    assert len(_customers(client)) == 1
+
+
+def test_convert_to_customer_matches_existing_by_phone(client: TestClient):
+    # Stored formatted, lead typed bare — the separator-stripped suffix
+    # match is what links them (customers.py search idiom).
+    seeded = _seed_customer(
+        client, name="Existing Phone", email=None, phone="(555) 555-0300"
+    )
+    created = client.post(
+        "/api/leads", json=_lead_payload(email=None, phone="555.555.0300")
+    ).json()
+    r = client.post(f"/api/leads/{created['id']}/convert-to-customer").json()
+    assert r["converted"] is True
+    assert r["existing"] is True
+    assert r["customer_id"] == seeded
+    assert r["customer_name"] == "Existing Phone"
+    assert len(_customers(client)) == 1
+
+
+def test_convert_to_customer_short_phone_never_links(client: TestClient):
+    # A 7-digit number (no area code) is too ambiguous to silently LINK
+    # records on — search may suggest with 7, dedupe requires 10.
+    _seed_customer(client, name="Ambiguous", email=None, phone="(612) 555-0300")
+    created = client.post(
+        "/api/leads", json=_lead_payload(email=None, phone="5550300")
+    ).json()
+    r = client.post(f"/api/leads/{created['id']}/convert-to-customer").json()
+    assert r["converted"] is True
+    assert r["existing"] is False
+    assert len(_customers(client)) == 2
+
+
+def test_convert_to_customer_stage_semantics(client: TestClient):
+    created = client.post("/api/leads", json=_lead_payload()).json()
+
+    # Estimate path: conversion for a quote marks the lead quoted, not won.
+    r = client.post(
+        f"/api/leads/{created['id']}/convert-to-customer", json={"stage": "quoted"}
+    )
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/leads/{created['id']}").json()["stage"] == "quoted"
+
+    # Booking work is definitive: won sticks...
+    client.post(
+        f"/api/leads/{created['id']}/convert-to-customer", json={"stage": "won"}
+    )
+    assert client.get(f"/api/leads/{created['id']}").json()["stage"] == "won"
+
+    # ...and a later quote request must NOT downgrade a won lead.
+    client.post(
+        f"/api/leads/{created['id']}/convert-to-customer", json={"stage": "quoted"}
+    )
+    assert client.get(f"/api/leads/{created['id']}").json()["stage"] == "won"
+
+    # Off-menu stages stay on the explicit advance-stage endpoint.
+    bad = client.post(
+        f"/api/leads/{created['id']}/convert-to-customer", json={"stage": "lost"}
+    )
+    assert bad.status_code == 422
+
+
+def test_stage_accepts_capitalized_input(client: TestClient):
+    # LeadsView renders capitalized stages and echoes them back on
+    # create/edit/advance — the API must normalize, not 422.
+    created = client.post("/api/leads", json=_lead_payload(stage="Qualified")).json()
+    assert created["stage"] == "qualified"
+
+    r = client.post(
+        f"/api/leads/{created['id']}/advance-stage", json={"stage": "Contacted"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["stage"] == "contacted"
+
+    r2 = client.patch(f"/api/leads/{created['id']}", json={"stage": "Won"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["stage"] == "won"
+
+
+# ---------------------------------------------------------------------------
+# record-contact: the outreach-event stamp (inbox send) — new→contacted only
+# ---------------------------------------------------------------------------
+
+
+def test_record_lead_contact_new_becomes_contacted(client: TestClient):
+    created = client.post("/api/leads", json=_lead_payload()).json()
+    assert created["last_contact_at"] is None
+    r = client.post(f"/api/leads/{created['id']}/record-contact")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["stage"] == "contacted"
+    assert data["last_contact_at"] is not None
+
+
+def test_record_lead_contact_never_downgrades(client: TestClient):
+    # A stale browser tab replaying the stamp after the lead won must not
+    # move it backwards — but the contact evidence still refreshes.
+    created = client.post("/api/leads", json=_lead_payload(stage="won")).json()
+    r = client.post(f"/api/leads/{created['id']}/record-contact")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["stage"] == "won"
+    assert data["last_contact_at"] is not None
+
+
+def test_record_landing_contact_new_becomes_contacted(client: TestClient):
+    created = client.post(
+        "/api/landing-leads", json={"name": "Web Form", "source": "website"}
+    ).json()
+    r = client.post(f"/api/landing-leads/{created['id']}/record-contact")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "contacted"
+    assert data["contacted_at"] is not None
+
+
+def test_record_landing_contact_keeps_promoted_status(client: TestClient):
+    # Promoted is FURTHER along than contacted — the stamp records the
+    # contact fact (contacted_at) without dragging the status backwards.
+    created = client.post(
+        "/api/landing-leads", json={"name": "Promoted Web Form", "source": "website"}
+    ).json()
+    client.post(f"/api/landing-leads/{created['id']}/convert-to-lead")
+    r = client.post(f"/api/landing-leads/{created['id']}/record-contact")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "promoted"
+    assert data["contacted_at"] is not None

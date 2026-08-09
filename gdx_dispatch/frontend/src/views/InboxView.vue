@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime as fmtDate } from '../composables/useFormatters'
@@ -19,6 +19,7 @@ const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 // ── state ────────────────────────────────────────────────────────────
@@ -68,6 +69,16 @@ const composeSending = ref(false)
 // message being replied to, or from ?job_id= when composing from a job page.
 const composeJobId = ref(null)
 const composeJobLabel = ref('')
+// "Reply by email" from the Leads page (?lead_id= / ?landing_lead_id=).
+// The SEND is the contact event — on success we call record-contact on the
+// lead, never at button-click time (a click is not an outreach fact). The
+// armed address is kept so a composer the user re-purposed for someone
+// else entirely doesn't stamp the lead. The server side is the real guard:
+// record-contact only ever moves new → contacted, so a stale replay can't
+// downgrade anything.
+const composeLeadId = ref(null)
+const composeLandingLeadId = ref(null)
+const composeLeadEmail = ref('')
 
 // Folder operations state
 const ctxMenu = ref(null)        // PrimeVue ContextMenu (right-click)
@@ -365,6 +376,9 @@ function startNewCompose() {
   composeStatus.value = null
   composeJobId.value = null
   composeJobLabel.value = ''
+  composeLeadId.value = null
+  composeLandingLeadId.value = null
+  composeLeadEmail.value = ''
   draftSavedFingerprint.value = null
   draftWebLink.value = null
   composeForm.value = { to: '', cc: '', subject: '', body: '' }
@@ -386,6 +400,9 @@ function startReply() {
   composeStatus.value = null
   composeJobId.value = detail.value.linked_job_id || null
   composeJobLabel.value = detail.value.linked_job_label || ''
+  composeLeadId.value = null
+  composeLandingLeadId.value = null
+  composeLeadEmail.value = ''
   composeForm.value = {
     to: detail.value.from_address || '',
     cc: '',
@@ -416,6 +433,9 @@ function startReplyAll() {
   composeStatus.value = null
   composeJobId.value = d.linked_job_id || null
   composeJobLabel.value = d.linked_job_label || ''
+  composeLeadId.value = null
+  composeLandingLeadId.value = null
+  composeLeadEmail.value = ''
   composeForm.value = {
     to: d.from_address || '',
     cc: cc.join(', '),
@@ -565,6 +585,23 @@ async function sendCompose() {
     const r = await api.post('/api/outlook/send', payload)
     composeStatus.value = { ok: !!r.ok, message: r.ok ? 'Sent.' : (r.detail || 'Send failed') }
     if (r.ok) {
+      // Lead-originated compose: the successful send IS the contact event.
+      // Only if the lead's address is still among the recipients — a
+      // composer re-purposed for someone else stamps nothing. Fire-and-
+      // forget: a failed stamp must not un-send the email or block the
+      // composer from closing. record-contact is new→contacted only, so a
+      // late or duplicate call can never downgrade a lead.
+      const sentTo = splitAddrs(form.to).map((a) => a.toLowerCase())
+      const stillToLead = composeLeadEmail.value && sentTo.includes(composeLeadEmail.value)
+      if (composeLeadId.value && stillToLead) {
+        api.post(`/api/leads/${composeLeadId.value}/record-contact`, null, { suppressErrorToast: true }).catch(() => {})
+      }
+      if (composeLandingLeadId.value && stillToLead) {
+        api.post(`/api/landing-leads/${composeLandingLeadId.value}/record-contact`, null, { suppressErrorToast: true }).catch(() => {})
+      }
+      composeLeadId.value = null
+      composeLandingLeadId.value = null
+      composeLeadEmail.value = ''
       composeForm.value = { to: '', cc: '', subject: '', body: '' }
       composeMode.value = null
       await fetchMessages()
@@ -969,12 +1006,22 @@ onMounted(async () => {
   // tests, storybook) where there is no router — a missing route must not
   // take the whole inbox down before it renders a single message.
   const q = route?.query || {}
-  if (q.job_id) {
+  // ?to= alone (Reply-by-email from Leads) opens the composer too — a lead
+  // has no job yet, so the old job_id-only gate dead-ended that path.
+  if (q.job_id || q.to) {
     startNewCompose()
-    composeJobId.value = String(q.job_id)
-    composeJobLabel.value = q.job_label ? String(q.job_label) : ''
+    if (q.job_id) {
+      composeJobId.value = String(q.job_id)
+      composeJobLabel.value = q.job_label ? String(q.job_label) : ''
+    }
     composeForm.value.to = q.to ? String(q.to) : ''
     composeForm.value.subject = q.subject ? String(q.subject) : ''
+    composeLeadId.value = q.lead_id ? String(q.lead_id) : null
+    composeLandingLeadId.value = q.landing_lead_id ? String(q.landing_lead_id) : null
+    composeLeadEmail.value = q.to ? String(q.to).toLowerCase() : ''
+    // Strip the query once armed: a session-restore / back-button revisit
+    // of the bare URL days later must not re-open a lead-armed composer.
+    router?.replace?.({ path: route.path })
   }
 })
 </script>

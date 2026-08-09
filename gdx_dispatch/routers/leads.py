@@ -20,8 +20,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
@@ -38,7 +38,12 @@ router = APIRouter(
 )
 
 
-LANDING_STATUSES = ("new", "contacted", "discarded")
+# "promoted" (2026-08-08): the honest exit for a submission that entered the
+# pipeline. Conversion used to stamp status="contacted" + contacted_at even
+# though nothing was sent and nobody called — a fabricated contact fact
+# (same sin as inventing labor hours). contacted_at is only ever written by
+# an actual outreach event: the manual Contacted button or an inbox send.
+LANDING_STATUSES = ("new", "contacted", "promoted", "discarded")
 LEAD_STAGES = ("new", "contacted", "qualified", "quoted", "won", "lost")
 
 
@@ -70,6 +75,14 @@ class LandingLeadStatusIn(BaseModel):
     status: str = Field(pattern=r"^(new|contacted|discarded)$")
 
 
+# LeadsView renders capitalized stages ("Contacted") and echoes them back on
+# create/edit/advance; the lowercase-only patterns were silently 422-ing
+# those paths. Normalize case before validation instead of trusting every
+# client to know the canonical casing.
+def _lower_stage(v: Any) -> Any:
+    return v.strip().lower() if isinstance(v, str) else v
+
+
 class LeadIn(BaseModel):
     landing_lead_id: str | None = Field(default=None, max_length=64)
     name: str = Field(min_length=1, max_length=200)
@@ -83,6 +96,8 @@ class LeadIn(BaseModel):
     source: str | None = Field(default=None, max_length=100)
     assigned_to: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=10000)
+
+    _norm_stage = field_validator("stage", mode="before")(_lower_stage)
 
 
 class LeadPatch(BaseModel):
@@ -98,9 +113,26 @@ class LeadPatch(BaseModel):
     # silently dropped it, so only the separate advance-stage button worked.
     stage: str | None = Field(default=None, pattern=r"^(new|contacted|qualified|quoted|won|lost)$")
 
+    _norm_stage = field_validator("stage", mode="before")(_lower_stage)
+
 
 class StageIn(BaseModel):
     stage: str = Field(pattern=r"^(new|contacted|qualified|quoted|won|lost)$")
+
+    _norm_stage = field_validator("stage", mode="before")(_lower_stage)
+
+
+class ConvertToCustomerIn(BaseModel):
+    """Optional body for convert-to-customer.
+
+    stage says what the conversion is FOR: "won" (they booked work — the
+    service-call path) or "quoted" (we're drafting an estimate). Anything
+    else stays on the explicit advance-stage endpoint.
+    """
+
+    stage: str = Field(default="won", pattern=r"^(won|quoted)$")
+
+    _norm_stage = field_validator("stage", mode="before")(_lower_stage)
 
 
 # ---------------------------------------------------------------------------
@@ -438,11 +470,11 @@ def convert_landing_lead_to_lead(
         created_by=_user_id(user),
     )
     db.add(lead)
-    # Mark landing lead as contacted once promoted.
-    if ll.status == "new":
-        ll.status = "contacted"
-        if ll.contacted_at is None:
-            ll.contacted_at = datetime.now(timezone.utc)
+    # Promotion is a pipeline fact, not a contact fact. contacted_at is
+    # deliberately NOT stamped here — it stays NULL until a real outreach
+    # event (the Contacted button, or an inbox send) records one. A prior
+    # contacted_at, if any, survives as evidence of that earlier contact.
+    ll.status = "promoted"
     db.commit()
     db.refresh(lead)
     _audit(
@@ -657,6 +689,129 @@ def advance_stage(
     return _serialize_lead(lead)
 
 
+# ── record-contact: the outreach-event stamp (2026-08-08) ─────────────────
+# Called by the inbox after a SUCCESSFUL send to a lead. Semantics are
+# deliberately narrower than advance-stage / the status PATCH:
+#   - it can only ever move new → contacted, never sideways or backwards
+#     (a stale browser tab re-sending must not downgrade a won lead), and
+#   - it always refreshes the "last contact" evidence, because a real send
+#     to a quoted/won lead is still a contact fact worth recording.
+# Idempotent by construction — safe to fire without reading current state.
+
+
+@router.post(
+    "/api/leads/{lead_id}/record-contact",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.write"))],
+)
+def record_lead_contact(
+    lead_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id = _tenant_id(request)
+    lead = _get_lead_scoped(db, lead_id, tenant_id)
+    old_stage = lead.stage
+    lead.last_contact_at = datetime.now(timezone.utc)
+    if lead.stage == "new":
+        lead.stage = "contacted"
+    db.commit()
+    db.refresh(lead)
+    _audit(
+        db,
+        tenant_id=tenant_id,
+        user=user,
+        action="lead_contact_recorded",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        details={"from": old_stage, "to": lead.stage},
+        request=request,
+    )
+    return _serialize_lead(lead)
+
+
+@router.post(
+    "/api/landing-leads/{ll_id}/record-contact",
+    response_model=None,
+    dependencies=[Depends(require_permission("leads.write"))],
+)
+def record_landing_contact(
+    ll_id: UUID,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id = _tenant_id(request)
+    r = _get_landing_scoped(db, ll_id, tenant_id)
+    old_status = r.status
+    if r.contacted_at is None:
+        r.contacted_at = datetime.now(timezone.utc)
+    if r.status == "new":
+        r.status = "contacted"
+    db.commit()
+    db.refresh(r)
+    _audit(
+        db,
+        tenant_id=tenant_id,
+        user=user,
+        action="landing_lead_contact_recorded",
+        entity_type="landing_lead",
+        entity_id=str(r.id),
+        details={"from": old_status, "to": r.status},
+        request=request,
+    )
+    return _serialize_landing(r)
+
+
+def _find_matching_customer(db: Session, *, email: str | None, phone: str | None):
+    """Existing-customer match for lead conversion.
+
+    Exact email (case-insensitive) first, then separator-stripped phone
+    suffix — the customers.py search idiom (chained replace(), portable to
+    sqlite tests + Postgres prod). Prevents a repeat web form from the same
+    person minting a duplicate customer row. Oldest match wins so repeat
+    conversions land on the same record.
+    """
+    from gdx_dispatch.models.tenant_models import Customer
+
+    not_deleted = (
+        Customer.deleted_at.is_(None),
+        # Same legacy-data filter as list_customers: old rows carry a
+        # "(deleted)" name marker instead of deleted_at.
+        ~func.lower(func.coalesce(Customer.name, "")).like("%(deleted)%"),
+    )
+    email_n = (email or "").strip().lower()
+    if email_n:
+        row = db.execute(
+            select(Customer)
+            .where(*not_deleted, func.lower(func.coalesce(Customer.email, "")) == email_n)
+            .order_by(Customer.created_at.asc())
+            .limit(1)
+        ).scalars().first()
+        if row:
+            return row
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    # ≥10 digits required (unlike the search endpoints' 7): search shows a
+    # human a candidate list, this silently LINKS records. A 7-digit number
+    # without an area code would match any customer sharing the local part.
+    if len(digits) >= 10:
+        stripped = Customer.phone
+        for sep in (" ", "-", "(", ")", ".", "+"):
+            stripped = func.replace(stripped, sep, "")
+        # Compare on the last 10 digits so "+1 612 555 0200" matches
+        # "(612) 555-0200" regardless of which side carries the country code.
+        row = db.execute(
+            select(Customer)
+            .where(*not_deleted, stripped.like(f"%{digits[-10:]}"))
+            .order_by(Customer.created_at.asc())
+            .limit(1)
+        ).scalars().first()
+        if row:
+            return row
+    return None
+
+
 @router.post(
     "/api/leads/{lead_id}/convert-to-customer",
     response_model=None,
@@ -665,17 +820,88 @@ def advance_stage(
 def convert_to_customer(
     lead_id: UUID,
     request: Request,
+    payload: ConvertToCustomerIn | None = None,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     lead = _get_lead_scoped(db, lead_id, tenant_id)
-
-    new_customer_id = uuid4()
+    target_stage = payload.stage if payload else "won"
     now = datetime.now(timezone.utc)
 
+    from gdx_dispatch.models.tenant_models import Customer
+
+    def _apply_stage() -> None:
+        # "won" is definitive (they booked work) and always sticks; "quoted"
+        # must never downgrade a lead that already won.
+        if target_stage == "won" or lead.stage != "won":
+            lead.stage = target_stage
+
+    def _finish(customer_id: UUID, *, existing: bool, matched: bool = False, customer_name: str | None = None) -> dict[str, Any]:
+        lead.converted_customer_id = customer_id
+        if lead.converted_at is None:
+            lead.converted_at = now
+        _apply_stage()
+        db.commit()
+        db.refresh(lead)
+        _audit(
+            db,
+            tenant_id=tenant_id,
+            user=user,
+            action="lead_converted_to_customer",
+            entity_type="lead",
+            entity_id=str(lead.id),
+            details={
+                "customer_id": str(customer_id),
+                "existing": existing,
+                "matched": matched,
+                "stage": lead.stage,
+            },
+            request=request,
+        )
+        return {
+            "lead_id": str(lead.id),
+            "customer_id": str(customer_id),
+            "converted": True,
+            "existing": existing,
+            # Surfaced so the UI can SAY it linked to an existing record —
+            # a dedupe match is a merge decision; it must not be invisible.
+            "customer_name": customer_name,
+        }
+
+    # Idempotent: an already-converted lead reuses its customer instead of
+    # minting a duplicate (the old handler created a new row every call).
+    if lead.converted_customer_id:
+        try:
+            prior = db.execute(
+                select(Customer).where(
+                    Customer.id == lead.converted_customer_id,
+                    Customer.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+        except (OperationalError, ProgrammingError):
+            db.rollback()
+            prior = None
+        if prior is not None:
+            return _finish(prior.id, existing=True, customer_name=prior.name)
+
+    # Dedupe: a repeat web form from a known customer links to their
+    # existing record instead of creating "John Smith (2)".
     try:
-        from gdx_dispatch.models.tenant_models import Customer
+        match = _find_matching_customer(db, email=lead.email, phone=lead.phone)
+    except (OperationalError, ProgrammingError):
+        # Minimal/legacy schemas may lack the match columns — creating a
+        # fresh customer still works, so fall through rather than fail.
+        # Logged loudly: if this fires on a full schema, every conversion
+        # is silently minting duplicates again — the bug dedupe exists for.
+        log.exception("convert_dedupe_probe_failed lead_id=%s", lead_id)
+        db.rollback()
+        match = None
+    if match is not None:
+        return _finish(match.id, existing=True, matched=True, customer_name=match.name)
+
+    new_customer_id = uuid4()
+    try:
         customer = Customer(
             id=new_customer_id,
             company_id=tenant_id,
@@ -683,6 +909,8 @@ def convert_to_customer(
             email=lead.email,
             phone=lead.phone,
             address=lead.address,
+            # Customer.source is String(50); Lead.source allows 100.
+            source=(lead.source or None) and lead.source[:50],
             created_at=now,
         )
         db.add(customer)
@@ -706,26 +934,7 @@ def convert_to_customer(
             "reason": "unexpected error",
         }
 
-    lead.converted_customer_id = new_customer_id
-    lead.converted_at = now
-    lead.stage = "won"
-    db.commit()
-    db.refresh(lead)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="lead_converted_to_customer",
-        entity_type="lead",
-        entity_id=str(lead.id),
-        details={"customer_id": str(new_customer_id)},
-        request=request,
-    )
-    return {
-        "lead_id": str(lead.id),
-        "customer_id": str(new_customer_id),
-        "converted": True,
-    }
+    return _finish(new_customer_id, existing=False, customer_name=customer.name)
 
 
 @router.delete(
