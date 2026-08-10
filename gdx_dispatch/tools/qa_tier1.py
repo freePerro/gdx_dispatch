@@ -27,7 +27,7 @@ ENDPOINTS = [
     "/api/customers", "/api/estimates", "/api/invoices", "/api/jobs",
     "/api/leads", "/api/payments", "/api/technicians", "/api/users",
     "/api/timeclock/entries", "/api/fleet/vehicles", "/api/equipment",
-    "/api/inventory/parts", "/api/proposals", "/api/campaigns",
+    "/api/inventory/parts", "/api/campaigns",
     "/api/documents", "/api/tags", "/api/vendors", "/api/purchase-orders",
     "/api/scheduling", "/api/communications/threads",
     "/api/reviews", "/api/photos/recent", "/api/commissions/summary",

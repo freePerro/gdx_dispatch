@@ -57,7 +57,7 @@ const SECTION_BY_KEY = {
   automations: 'Customers & Comms', winback: 'Customers & Comms',
   loyalty: 'Customers & Comms', tags: 'Customers & Comms',
   // Money
-  estimates: 'Money', proposals: 'Money',
+  estimates: 'Money',
   change_orders: 'Money', service_agreements: 'Money',
   signatures: 'Money', billing: 'Money', payments: 'Money',
   expenses: 'Money', collections: 'Money',

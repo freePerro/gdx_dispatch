@@ -285,12 +285,6 @@ except Exception:
     tasks_router = APIRouter(tags=["tasks"])
 
 try:
-    from gdx_dispatch.routers import proposals as proposals_router
-except Exception:
-    logging.getLogger("gdx_dispatch.app").exception("proposals_router_load_failed")
-    proposals_router = APIRouter(tags=["proposals"])
-
-try:
     from gdx_dispatch.routers import appointments as appointments_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("appointments_router_load_failed")
@@ -1540,7 +1534,6 @@ def create_app() -> FastAPI:
     app.include_router(collections_router.router if hasattr(collections_router, "router") else collections_router)
     app.include_router(invoice_reminders_router.router if hasattr(invoice_reminders_router, "router") else invoice_reminders_router)
     app.include_router(tasks_router.router if hasattr(tasks_router, "router") else tasks_router)
-    app.include_router(proposals_router.router if hasattr(proposals_router, "router") else proposals_router)
     app.include_router(appointments_router.router if hasattr(appointments_router, "router") else appointments_router)
     app.include_router(gps_router.router if hasattr(gps_router, "router") else gps_router)
     app.include_router(leads_router.router if hasattr(leads_router, "router") else leads_router)
@@ -1639,7 +1632,7 @@ def create_app() -> FastAPI:
     app.include_router(
         recurring_jobs_router.router if hasattr(recurring_jobs_router, "router") else recurring_jobs_router
     )
-    # Sub-resource endpoints (customer recurring-jobs, job line-items, proposals,
+    # Sub-resource endpoints (customer recurring-jobs, job line-items,
     # billing, AI quality) — real DB-backed implementations replacing shims.
     app.include_router(sub_resources_router.router if hasattr(sub_resources_router, "router") else sub_resources_router)
     # UI compat shim — thin handlers for Vue view endpoints that don't yet

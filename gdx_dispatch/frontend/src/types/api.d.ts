@@ -346,6 +346,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/closeout-billing-suggestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Closeout Billing Suggestion
+         * @description What the closeout says this job's bill should start from.
+         *
+         *     The office create-invoice screen (/billing/new) prefilled from the
+         *     ESTIMATE and offered parts — but a service job with neither showed a
+         *     blank form: the tech's attested hours and field notes never reached
+         *     the person typing the bill (Doug 2026-08-07: "click invoice — it does
+         *     not show hours or notes from the job"). This read-only endpoint hands
+         *     the UI a priced labor line (same core/billing_lanes math the autodraft
+         *     and mobile paths use) plus the closeout context to display. Nothing is
+         *     written or claimed — the operator still confirms every line.
+         */
+        get: operations["closeout_billing_suggestion_api_jobs__job_id__closeout_billing_suggestion_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/not-billable": {
         parameters: {
             query?: never;
@@ -419,32 +448,6 @@ export interface paths {
         get: operations["return_visits_unscheduled_api_jobs_return_visits_unscheduled_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/jobs/{job_id}/create-invoice": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create Invoice From Job
-         * @description One-click invoice creation from a job.
-         *
-         *     Historically the frontend only offered this for COMPLETED jobs; that
-         *     gate was the de-facto double-billing guard. Now that invoicing is
-         *     allowed mid-job (deposit/progress billing, 2026-07-23), the guard is
-         *     explicit: a job that already has a billing-real non-deposit invoice
-         *     409s unless ``force=true`` (the operator confirmed a second invoice).
-         */
-        post: operations["create_invoice_from_job_api_jobs__job_id__create_invoice_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2634,17 +2637,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Invoice Email Compose
-         * @description Return a prebuilt compose payload for the in-app composer:
-         *     {to, subject, body_text, pdf, extra_attachments}.
-         *
-         *     Mirrors the estimate compose flow so InvoiceDetailView's send button can
-         *     open the same review-then-send dialog rather than firing a server-side
-         *     email blind. PDF is generated once here and shipped as base64 so the
-         *     composer can attach it to the eventual Outlook send (or download it for
-         *     the mailto fallback) without a second roundtrip.
-         */
+        /** Invoice Email Compose */
         get: operations["invoice_email_compose_api_invoices__invoice_id__email_compose_get"];
         put?: never;
         post?: never;
@@ -2832,26 +2825,6 @@ export interface paths {
         put?: never;
         /** Finalize Invoice */
         post: operations["finalize_invoice_api_invoices__invoice_id__finalize_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/invoices/batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Batch Create Invoices
-         * @description Create invoices for multiple jobs at once.
-         */
-        post: operations["batch_create_invoices_api_invoices_batch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6341,94 +6314,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/proposals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Proposals */
-        get: operations["list_proposals_api_proposals_get"];
-        put?: never;
-        /** Create Proposal */
-        post: operations["create_proposal_api_proposals_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Proposal */
-        get: operations["get_proposal_api_proposals__proposal_id__get"];
-        put?: never;
-        post?: never;
-        /** Delete Proposal */
-        delete: operations["delete_proposal_api_proposals__proposal_id__delete"];
-        options?: never;
-        head?: never;
-        /** Update Proposal */
-        patch: operations["update_proposal_api_proposals__proposal_id__patch"];
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}/send": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Send Proposal */
-        post: operations["send_proposal_api_proposals__proposal_id__send_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}/accept": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Accept Proposal */
-        post: operations["accept_proposal_api_proposals__proposal_id__accept_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}/decline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Decline Proposal */
-        post: operations["decline_proposal_api_proposals__proposal_id__decline_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/appointments": {
         parameters: {
             query?: never;
@@ -6830,6 +6715,40 @@ export interface paths {
         put?: never;
         /** Advance Stage */
         post: operations["advance_stage_api_leads__lead_id__advance_stage_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/leads/{lead_id}/record-contact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Lead Contact */
+        post: operations["record_lead_contact_api_leads__lead_id__record_contact_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/landing-leads/{ll_id}/record-contact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Landing Contact */
+        post: operations["record_landing_contact_api_landing_leads__ll_id__record_contact_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10896,40 +10815,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/proposals/{proposal_id}/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Approve Proposal */
-        post: operations["approve_proposal_api_proposals__proposal_id__approve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}/convert-to-job": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Convert Proposal To Job */
-        post: operations["convert_proposal_to_job_api_proposals__proposal_id__convert_to_job_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/billing/subscription": {
         parameters: {
             query?: never;
@@ -11630,24 +11515,6 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
-        trace?: never;
-    };
-    "/api/proposals/{proposal_id}/line-items": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Proposal Line Items */
-        get: operations["list_proposal_line_items_api_proposals__proposal_id__line_items_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Update Proposal Line Items */
-        patch: operations["update_proposal_line_items_api_proposals__proposal_id__line_items_patch"];
         trace?: never;
     };
     "/api/estimate/calculate": {
@@ -14168,6 +14035,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/estimates/{estimate_id}/proposal-tiers/{tier_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Del Proposal Tier */
+        delete: operations["del_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__delete"];
+        options?: never;
+        head?: never;
+        /** Patch Proposal Tier */
+        patch: operations["patch_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__patch"];
+        trace?: never;
+    };
     "/api/estimates/{estimate_id}/proposal/accept": {
         parameters: {
             query?: never;
@@ -15338,17 +15223,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins__path__delete"];
+        get: operations["proxy_to_plugin_host_api_plugins__path__put"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins__path__delete"];
+        put: operations["proxy_to_plugin_host_api_plugins__path__put"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins__path__delete"];
+        post: operations["proxy_to_plugin_host_api_plugins__path__put"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins__path__delete"];
+        delete: operations["proxy_to_plugin_host_api_plugins__path__put"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins__path__delete"];
+        patch: operations["proxy_to_plugin_host_api_plugins__path__put"];
         trace?: never;
     };
     "/api/plugins": {
@@ -15359,17 +15244,17 @@ export interface paths {
             cookie?: never;
         };
         /** Proxy To Plugin Host */
-        get: operations["proxy_to_plugin_host_api_plugins_delete"];
+        get: operations["proxy_to_plugin_host_api_plugins_put"];
         /** Proxy To Plugin Host */
-        put: operations["proxy_to_plugin_host_api_plugins_delete"];
+        put: operations["proxy_to_plugin_host_api_plugins_put"];
         /** Proxy To Plugin Host */
-        post: operations["proxy_to_plugin_host_api_plugins_delete"];
+        post: operations["proxy_to_plugin_host_api_plugins_put"];
         /** Proxy To Plugin Host */
-        delete: operations["proxy_to_plugin_host_api_plugins_delete"];
+        delete: operations["proxy_to_plugin_host_api_plugins_put"];
         options?: never;
         head?: never;
         /** Proxy To Plugin Host */
-        patch: operations["proxy_to_plugin_host_api_plugins_delete"];
+        patch: operations["proxy_to_plugin_host_api_plugins_put"];
         trace?: never;
     };
     "/api/admin/plugins": {
@@ -21595,11 +21480,6 @@ export interface components {
              */
             collect_deposit: boolean;
         };
-        /** AcceptTierIn */
-        AcceptTierIn: {
-            /** Tier */
-            tier: string;
-        };
         /** AccountChangeOut */
         AccountChangeOut: {
             /** Previous Statement Date */
@@ -21919,11 +21799,6 @@ export interface components {
             date: string;
             /** Slots */
             slots: string[];
-        };
-        /** BatchInvoiceIn */
-        BatchInvoiceIn: {
-            /** Job Ids */
-            job_ids: string[];
         };
         /** BlockConfig */
         BlockConfig: {
@@ -23160,6 +23035,21 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * ConvertToCustomerIn
+         * @description Optional body for convert-to-customer.
+         *
+         *     stage says what the conversion is FOR: "won" (they booked work — the
+         *     service-call path) or "quoted" (we're drafting an estimate). Anything
+         *     else stays on the explicit advance-stage endpoint.
+         */
+        ConvertToCustomerIn: {
+            /**
+             * Stage
+             * @default won
+             */
+            stage: string;
+        };
         /** CpaReviewIn */
         CpaReviewIn: {
             /** Keys */
@@ -24044,6 +23934,11 @@ export interface components {
             customer_id?: string | null;
             /** Hide Line Prices */
             hide_line_prices?: boolean | null;
+            /**
+             * Proposal Mode
+             * @default false
+             */
+            proposal_mode: boolean;
         };
         /** ExpenseCreate */
         ExpenseCreate: {
@@ -24591,7 +24486,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 7cef3ce793cee786f8e79e25e6da37303253557f5fe260e8375eef2d43825f19
+             * @default 4f59ba3909029b0334402181029facedd647cb6a1a4f53ae967bb28e2764d423
              */
             secret: string;
         };
@@ -24872,6 +24767,8 @@ export interface components {
             notes?: string | null;
             /** Hide Line Prices */
             hide_line_prices?: boolean | null;
+            /** Attached Photo Ids */
+            attached_photo_ids?: string[] | null;
         };
         /** InvoiceSummaryOut */
         InvoiceSummaryOut: {
@@ -26921,61 +26818,6 @@ export interface components {
              */
             category: string;
         };
-        /** ProposalIn */
-        ProposalIn: {
-            /** Customer Id */
-            customer_id?: string | null;
-            /** Customer Name */
-            customer_name?: string | null;
-            /** Title */
-            title: string;
-            /** Description */
-            description?: string | null;
-            /**
-             * Good Price
-             * @default 0
-             */
-            good_price: number;
-            /**
-             * Better Price
-             * @default 0
-             */
-            better_price: number;
-            /**
-             * Best Price
-             * @default 0
-             */
-            best_price: number;
-            /** Good Description */
-            good_description?: string | null;
-            /** Better Description */
-            better_description?: string | null;
-            /** Best Description */
-            best_description?: string | null;
-        };
-        /** ProposalPatch */
-        ProposalPatch: {
-            /** Customer Id */
-            customer_id?: string | null;
-            /** Customer Name */
-            customer_name?: string | null;
-            /** Title */
-            title?: string | null;
-            /** Description */
-            description?: string | null;
-            /** Good Price */
-            good_price?: number | null;
-            /** Better Price */
-            better_price?: number | null;
-            /** Best Price */
-            best_price?: number | null;
-            /** Good Description */
-            good_description?: string | null;
-            /** Better Description */
-            better_description?: string | null;
-            /** Best Description */
-            best_description?: string | null;
-        };
         /** ProviderIn */
         ProviderIn: {
             /** Provider */
@@ -28690,15 +28532,6 @@ export interface components {
             /** Discount Pct */
             discount_pct: number | string;
         };
-        /** TierPatch */
-        TierPatch: {
-            /** Name */
-            name?: string | null;
-            /** Min Spend */
-            min_spend?: number | string | null;
-            /** Discount Pct */
-            discount_pct?: number | string | null;
-        };
         /** TierSetReplaceIn */
         TierSetReplaceIn: {
             /** Tiers */
@@ -29769,8 +29602,11 @@ export interface components {
         };
         /** TierIn */
         gdx_dispatch__modules__proposals__router__TierIn: {
-            /** Tier Name */
-            tier_name: string;
+            /**
+             * Tier Name
+             * @enum {string}
+             */
+            tier_name: "good" | "better" | "best";
             /** Description */
             description?: string | null;
             /**
@@ -29783,6 +29619,19 @@ export interface components {
              * @default 0
              */
             warranty_months: number;
+        };
+        /** TierPatch */
+        gdx_dispatch__modules__proposals__router__TierPatch: {
+            /** Tier Name */
+            tier_name?: ("good" | "better" | "best") | null;
+            /** Description */
+            description?: string | null;
+            /** Total Price */
+            total_price?: number | null;
+            /** Warranty Months */
+            warranty_months?: number | null;
+            /** Includes Parts */
+            includes_parts?: boolean | null;
         };
         /** EmailConfigIn */
         gdx_dispatch__routers__admin_settings__EmailConfigIn: {
@@ -29952,6 +29801,15 @@ export interface components {
             /** Location Id */
             location_id?: string | null;
         };
+        /** TierPatch */
+        gdx_dispatch__routers__loyalty__TierPatch: {
+            /** Name */
+            name?: string | null;
+            /** Min Spend */
+            min_spend?: number | string | null;
+            /** Discount Pct */
+            discount_pct?: number | string | null;
+        };
         /** PlanIn */
         gdx_dispatch__routers__maintenance__PlanIn: {
             /** Name */
@@ -30120,6 +29978,12 @@ export interface components {
             volume_discount_enabled?: boolean | null;
             /** Loaded Labor Cost Per Hour */
             loaded_labor_cost_per_hour?: number | null;
+            /** Service Call First Hour Price */
+            service_call_first_hour_price?: number | null;
+            /** Service Call Hourly Rate */
+            service_call_hourly_rate?: number | null;
+            /** Service Labor Description Template */
+            service_labor_description_template?: string | null;
         };
         /** TierIn */
         gdx_dispatch__routers__pricing_admin__TierIn: {
@@ -30859,6 +30723,39 @@ export interface operations {
             };
         };
     };
+    closeout_billing_suggestion_api_jobs__job_id__closeout_billing_suggestion_get: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     mark_job_not_billable_api_jobs__job_id__not_billable_post: {
         parameters: {
             query?: {
@@ -30936,40 +30833,6 @@ export interface operations {
             };
             header?: never;
             path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_invoice_from_job_api_jobs__job_id__create_invoice_post: {
-        parameters: {
-            query?: {
-                force?: boolean;
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                job_id: string;
-            };
             cookie?: never;
         };
         requestBody?: never;
@@ -36176,41 +36039,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    batch_create_invoices_api_invoices_batch_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchInvoiceIn"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -43888,280 +43716,6 @@ export interface operations {
             };
         };
     };
-    list_proposals_api_proposals_get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-                customer_id?: string | null;
-                limit?: number;
-                offset?: number;
-                request?: unknown;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_proposal_api_proposals_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProposalIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_proposal_api_proposals__proposal_id__get: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_proposal_api_proposals__proposal_id__delete: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_proposal_api_proposals__proposal_id__patch: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProposalPatch"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    send_proposal_api_proposals__proposal_id__send_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    accept_proposal_api_proposals__proposal_id__accept_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AcceptTierIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    decline_proposal_api_proposals__proposal_id__decline_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_appointments_api_appointments_get: {
         parameters: {
             query?: {
@@ -45155,7 +44709,7 @@ export interface operations {
             };
         };
     };
-    convert_to_customer_api_leads__lead_id__convert_to_customer_post: {
+    record_lead_contact_api_leads__lead_id__record_contact_post: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -45167,6 +44721,76 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_landing_contact_api_landing_leads__ll_id__record_contact_post: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                ll_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    convert_to_customer_api_leads__lead_id__convert_to_customer_post: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                lead_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ConvertToCustomerIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -51697,7 +51321,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TierPatch"];
+                "application/json": components["schemas"]["gdx_dispatch__routers__loyalty__TierPatch"];
             };
         };
         responses: {
@@ -55101,72 +54725,6 @@ export interface operations {
             };
         };
     };
-    approve_proposal_api_proposals__proposal_id__approve_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    convert_proposal_to_job_api_proposals__proposal_id__convert_to_job_post: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_billing_subscription_api_billing_subscription_get: {
         parameters: {
             query?: {
@@ -56742,76 +56300,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_proposal_line_items_api_proposals__proposal_id__line_items_get: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_proposal_line_items_api_proposals__proposal_id__line_items_patch: {
-        parameters: {
-            query?: {
-                request?: unknown;
-            };
-            header?: never;
-            path: {
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["_GenericPayload"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -62454,6 +61942,76 @@ export interface operations {
             };
         };
     };
+    del_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__delete: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                estimate_id: string;
+                tier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__patch: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path: {
+                estimate_id: string;
+                tier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["gdx_dispatch__modules__proposals__router__TierPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_accept_tier_api_estimates__estimate_id__proposal_accept_post: {
         parameters: {
             query?: {
@@ -64848,7 +64406,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__delete: {
+    proxy_to_plugin_host_api_plugins__path__put: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64881,7 +64439,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__delete: {
+    proxy_to_plugin_host_api_plugins__path__put: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64914,7 +64472,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__delete: {
+    proxy_to_plugin_host_api_plugins__path__put: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64947,7 +64505,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__delete: {
+    proxy_to_plugin_host_api_plugins__path__put: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -64980,7 +64538,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins__path__delete: {
+    proxy_to_plugin_host_api_plugins__path__put: {
         parameters: {
             query?: {
                 request?: unknown;
@@ -65013,7 +64571,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_delete: {
+    proxy_to_plugin_host_api_plugins_put: {
         parameters: {
             query?: {
                 path?: string;
@@ -65045,7 +64603,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_delete: {
+    proxy_to_plugin_host_api_plugins_put: {
         parameters: {
             query?: {
                 path?: string;
@@ -65077,7 +64635,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_delete: {
+    proxy_to_plugin_host_api_plugins_put: {
         parameters: {
             query?: {
                 path?: string;
@@ -65109,7 +64667,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_delete: {
+    proxy_to_plugin_host_api_plugins_put: {
         parameters: {
             query?: {
                 path?: string;
@@ -65141,7 +64699,7 @@ export interface operations {
             };
         };
     };
-    proxy_to_plugin_host_api_plugins_delete: {
+    proxy_to_plugin_host_api_plugins_put: {
         parameters: {
             query?: {
                 path?: string;

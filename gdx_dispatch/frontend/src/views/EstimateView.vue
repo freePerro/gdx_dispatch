@@ -449,6 +449,75 @@
             </div>
           </template>
 
+          <!-- Good / better / best tiers (existing estimates only — needs an id).
+               Replaces the retired standalone Proposals page: tiers now hang off
+               the estimate, so they inherit its number, tax, customer token and
+               job conversion instead of living in a parallel table. -->
+          <template v-if="isExisting">
+            <Divider />
+            <div class="form-field full-width">
+              <div class="tier-header">
+                <label for="est-proposal-mode">Good / better / best</label>
+                <ToggleSwitch
+                  id="est-proposal-mode"
+                  v-model="proposalMode"
+                  :disabled="tiersLocked"
+                  data-testid="estimate-proposal-mode"
+                  @update:modelValue="onProposalModeToggle"
+                />
+              </div>
+              <small class="muted">
+                Presents this estimate as three priced options instead of one total. The
+                customer picks a tier; the one they accept becomes the basis for the
+                invoice. Turning this off keeps the tiers on file — it only changes what
+                the customer sees.
+              </small>
+
+              <div v-if="proposalMode" class="tier-grid" data-testid="estimate-tier-grid">
+                <div v-for="t in TIER_NAMES" :key="t" class="tier-card"
+                     :class="{ 'tier-accepted': acceptedTierName === t }"
+                     :data-testid="`estimate-tier-${t}`">
+                  <div class="tier-card-head">
+                    <span class="tier-name">{{ tierLabel(t) }}</span>
+                    <Tag v-if="acceptedTierName === t" value="Accepted" severity="success" />
+                  </div>
+                  <div class="form-field">
+                    <label :for="`tier-price-${t}`">Price</label>
+                    <InputNumber :id="`tier-price-${t}`" v-model="tierForm[t].total_price"
+                      mode="currency" currency="USD" locale="en-US" :min="0"
+                      :disabled="tiersLocked" class="w-full"
+                      :data-testid="`estimate-tier-price-${t}`" />
+                  </div>
+                  <div class="form-field">
+                    <label :for="`tier-warranty-${t}`">Warranty (months)</label>
+                    <InputNumber :id="`tier-warranty-${t}`" v-model="tierForm[t].warranty_months"
+                      :min="0" :max="600" :disabled="tiersLocked" class="w-full"
+                      :data-testid="`estimate-tier-warranty-${t}`" />
+                  </div>
+                  <div class="form-field">
+                    <label :for="`tier-desc-${t}`">What's included</label>
+                    <Textarea :id="`tier-desc-${t}`" v-model="tierForm[t].description" rows="3"
+                      :disabled="tiersLocked" class="w-full"
+                      :data-testid="`estimate-tier-desc-${t}`" />
+                  </div>
+                  <div class="tier-card-actions">
+                    <Button label="Save" icon="pi pi-check" size="small" outlined
+                      :loading="tierSaving === t" :disabled="tiersLocked"
+                      :data-testid="`estimate-tier-save-${t}`" @click="saveTier(t)" />
+                    <Button v-if="tierForm[t].id" v-tooltip="'Remove this tier'"
+                      aria-label="Remove tier" icon="pi pi-trash" severity="danger" text size="small"
+                      :disabled="tiersLocked || acceptedTierName === t"
+                      :data-testid="`estimate-tier-delete-${t}`" @click="removeTier(t)" />
+                  </div>
+                </div>
+              </div>
+              <small v-if="proposalMode && tiersLocked" class="muted">
+                This estimate is {{ String(estimate?.status || '').toLowerCase() }} — tiers are
+                locked so the accepted offer can't be re-priced after the fact.
+              </small>
+            </div>
+          </template>
+
           <!-- Summary -->
           <Divider />
           <div class="totals-and-profit">
@@ -1622,11 +1691,119 @@ async function fetchEstimate() {
           }))
         : [defaultLineItem()],
     };
+    proposalMode.value = Boolean(data.proposal_mode);
+    acceptedTierId.value = data.accepted_tier_id ?? null;
     await loadAttachments();
+    if (proposalMode.value) await loadTiers();
   } catch {
     toast.add({ severity: "warn", summary: "Load failed", detail: "Could not load estimate", life: 4000 });
   } finally {
     loading.value = false;
+  }
+}
+
+// --- Good / better / best tiers -----------------------------------------
+// Tiers live on the estimate (proposal_mode + the proposal_tiers table), which
+// is what replaced the standalone Proposals page retired in migration 061.
+// There are exactly three tier names and the customer picker renders one card
+// per name, so this editor is keyed by name rather than being a growable list —
+// a second "better" would render two better cards on the customer's PDF.
+const TIER_NAMES = ["good", "better", "best"];
+const proposalMode = ref(false);
+const acceptedTierId = ref(null);
+const tierSaving = ref(null);
+
+function blankTier() {
+  return { id: null, total_price: 0, warranty_months: 0, description: "" };
+}
+const tierForm = ref({ good: blankTier(), better: blankTier(), best: blankTier() });
+
+function tierLabel(t) {
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+// Mirrors the server's _editable_estimate guard (409 on accepted/declined).
+// Disabling the inputs is the courtesy; the server is the enforcement.
+const tiersLocked = computed(() => {
+  const s = String(estimate.value?.status || "").toLowerCase();
+  return s === "accepted" || s === "declined";
+});
+
+const acceptedTierName = computed(() => {
+  if (!acceptedTierId.value) return null;
+  const hit = TIER_NAMES.find((t) => tierForm.value[t].id === acceptedTierId.value);
+  return hit || null;
+});
+
+async function loadTiers() {
+  if (!route.params.id) return;
+  try {
+    const res = await apiRaw.get(`/api/estimates/${route.params.id}/proposal`);
+    const rows = Array.isArray(res) ? res : (res?.data || []);
+    const next = { good: blankTier(), better: blankTier(), best: blankTier() };
+    for (const row of rows) {
+      const name = String(row.tier_name || "").toLowerCase();
+      if (!next[name]) continue;
+      next[name] = {
+        id: row.id ?? null,
+        total_price: toNum(row.total_price ?? 0),
+        warranty_months: Number(row.warranty_months ?? 0),
+        description: row.description || "",
+      };
+    }
+    tierForm.value = next;
+  } catch {
+    // A tenant without the proposals module gets a 403 here. That's not an
+    // error worth a toast — the toggle simply has nothing to show.
+  }
+}
+
+async function onProposalModeToggle(value) {
+  if (!route.params.id) return;
+  try {
+    await api.patch(`/api/estimates/${route.params.id}`, { proposal_mode: Boolean(value) });
+    if (value) await loadTiers();
+  } catch {
+    proposalMode.value = !value;  // server refused — put the switch back
+    toast.add({ severity: "error", summary: "Could not change proposal mode", life: 4000 });
+  }
+}
+
+async function saveTier(name) {
+  if (!route.params.id) return;
+  const t = tierForm.value[name];
+  tierSaving.value = name;
+  try {
+    const body = {
+      total_price: toNum(t.total_price ?? 0),
+      warranty_months: Number(t.warranty_months ?? 0),
+      description: t.description || null,
+    };
+    // PATCH once the tier exists so a save only touches this card's fields;
+    // POST mints it the first time (the server upserts on tier_name either way).
+    const saved = t.id
+      ? await api.patch(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}`, body)
+      : await api.post(`/api/estimates/${route.params.id}/proposal-tiers`, { ...body, tier_name: name });
+    const row = saved?.data || saved || {};
+    if (row.id) tierForm.value[name].id = row.id;
+    toast.add({ severity: "success", summary: `${tierLabel(name)} tier saved`, life: 2500 });
+  } catch {
+    toast.add({ severity: "error", summary: "Save failed", detail: `Could not save the ${name} tier`, life: 4000 });
+  } finally {
+    tierSaving.value = null;
+  }
+}
+
+async function removeTier(name) {
+  if (!route.params.id) return;
+  const t = tierForm.value[name];
+  if (!t.id) return;
+  if (!(await confirmAsync({ header: 'Confirm', message: `Remove the ${name} tier?` }))) return;
+  try {
+    await api.del(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}`);
+    tierForm.value[name] = blankTier();
+  } catch {
+    toast.add({ severity: "error", summary: "Delete failed", life: 4000 });
   }
 }
 
@@ -2847,4 +3024,27 @@ onUnmounted(() => {
 .attachment-meta { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .attachment-name { font-weight: 600; color: var(--p-primary-color, #0057a8); text-decoration: none; word-break: break-word; }
 .attachment-name:hover { text-decoration: underline; }
+
+/* Good / better / best tier editor. Theme tokens only (no literal light-mode
+   colors) so the cards read correctly in dark mode too. */
+.tier-header { display: flex; align-items: center; gap: 0.75rem; }
+.tier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.tier-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--p-content-border-color, #e5e7eb);
+  border-radius: 6px;
+  background: var(--surface-elevated, var(--p-content-background, transparent));
+}
+.tier-card.tier-accepted { border-color: var(--p-green-500, #22c55e); }
+.tier-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.tier-name { font-weight: 600; color: var(--text-primary, inherit); }
+.tier-card-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: auto; }
 </style>

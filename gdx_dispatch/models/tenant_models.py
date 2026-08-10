@@ -1740,28 +1740,13 @@ class PlanEnrollment(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class Proposal(Base):
-    __tablename__ = "proposals"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    company_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    customer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
-    customer_name: Mapped[str] = mapped_column(String(200), nullable=True)
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=True)
-    good_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    better_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    best_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
-    good_description: Mapped[str] = mapped_column(Text, nullable=True)
-    better_description: Mapped[str] = mapped_column(Text, nullable=True)
-    best_description: Mapped[str] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
-    chosen_tier: Mapped[str] = mapped_column(String(10), nullable=True)
-    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[str] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
-    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+# The standalone `Proposal` model (table `proposals`) was retired in migration
+# 061. It was a parallel, flat re-implementation of good/better/best — six tier
+# columns, no line items, no estimate number, no tax, no expiry. The surviving
+# model is Estimate.proposal_mode + the proposal_tiers table
+# (gdx_dispatch/modules/proposals/models.py): tiers hang off a real estimate, so
+# they inherit numbering, tax, lines, the public token and job conversion.
+# Nothing was migrated — the table held 0 rows in production.
 
 
 class InboundSMS(Base):
