@@ -193,14 +193,20 @@
 
       <!-- Day View -->
       <div v-if="viewMode === 'day'" style="display: flex; flex-direction: column;">
-        <!-- Unassigned Jobs -->
-        <!-- Needs scheduling sits ABOVE the tech grid (2026-08-10). It used to
-             render at order:2, below every tech column and the holding areas —
-             on a board with more than a couple of techs a freshly created job
-             landed below the fold, which reads as "my new job never showed up
-             on dispatch". This is the queue the dispatcher works from; it goes
-             first. -->
-        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 1;"
+        <!-- Unassigned Jobs — SECOND, directly under the tech grid.
+             History, because this has now been wrong in both directions
+             (Doug, 2026-08-10): it originally sat at order:2 below the techs
+             AND the holding areas, so a freshly created job landed below the
+             fold — "my new job never showed up on dispatch". The fix for that
+             moved it to order:1, which pushed the tech columns to the bottom
+             and took the assign-to-tech drop targets below the fold instead —
+             you cannot scroll mid-drag, so assigning by drag became
+             impossible. Both lanes have to be reachable without scrolling, so
+             the two the dispatcher actually works between are adjacent: techs
+             first (they are the point of the board), this queue immediately
+             under it, and the genuine parking lots last. Don't reorder these
+             without dragging a job from this queue onto a tech first. -->
+        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 2;"
           :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
           @dragover.prevent="onDragOver('unassigned-queue')"
           @dragleave="dragOverTechId = null"
@@ -308,8 +314,12 @@
           />
         </div>
 
-        <!-- Technician Columns -->
-        <div class="tech-columns-grid" style="order: 3;">
+        <!-- Technician Columns — FIRST in the day view, so they sit directly
+             under the "Timeclock needs a look" card and are visible without
+             scrolling. These carry the assign-to-tech drop targets (the
+             TechTimelineColumn body/tray), which is the board's primary
+             action; anything above them pushes those targets off screen. -->
+        <div class="tech-columns-grid" style="order: 1;">
           <Card
             v-for="tech in technicianColumns"
             :key="tech.id"
@@ -372,8 +382,11 @@
           </Card>
         </div>
 
-        <!-- Holding Areas -->
-        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 2;">
+        <!-- Holding Areas — LAST. These are parking lots (Needs Parts, Waiting
+             on doors); the dispatcher visits them occasionally, unlike the tech
+             grid and the scheduling queue above, which they work between all
+             day. Keeping them here is what makes those two adjacent. -->
+        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 3;">
           <div class="holding-areas-header">
             <h3>Holding Areas</h3>
             <Button icon="pi pi-plus" label="Add Area" size="small" severity="secondary"
@@ -460,7 +473,12 @@
             </Card>
           </div>
         </div>
-        <div v-else style="order: 1;">
+        <!-- order must track the holding-areas section above (3), not drift
+             from it — this is the same block in its empty state. It was left
+             at order:1 when that section moved, which put a "Set Up Holding
+             Areas" button up next to the tech grid on any board with no
+             holding areas configured. -->
+        <div v-else style="order: 3;">
           <Button label="Set Up Holding Areas" icon="pi pi-plus" severity="secondary" size="small"
             @click="seedHoldingAreas" data-testid="seed-holding-areas" class="mb-3" />
         </div>
