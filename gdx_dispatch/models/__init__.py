@@ -91,7 +91,6 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     PORequestLine,
     PortalBookingRequest,
     PortalMessage,
-    Proposal,
     RecurringJobSchedule,
     ReminderSettings,
     Resource,

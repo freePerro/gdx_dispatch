@@ -1,6 +1,19 @@
-"""Tests for the Good/Better/Best proposals router."""
+"""Good/better/best tiers — the surviving proposal system.
+
+This file used to test /api/proposals, a standalone CRUD router over a flat
+`proposals` table (six tier columns, no line items, no estimate number, no tax)
+whose line-items endpoint was a stub that persisted nothing. Migration 061
+retired it. Tiers now hang off a real Estimate — `proposal_mode` plus rows in
+`proposal_tiers` — so they inherit numbering, tax, lines, the customer token and
+job conversion.
+
+Mounts the estimates router AND the proposals module router on one app: the
+editor drives both (PATCH the estimate to flip proposal_mode, then POST/PATCH/
+DELETE tiers), so the interesting failures are at the seam between them.
+"""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,59 +25,45 @@ from sqlalchemy.pool import StaticPool
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.models.tenant_models import Customer
+from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
+from gdx_dispatch.modules.proposals.router import router as proposals_router
 from gdx_dispatch.routers.auth import get_current_user
-from gdx_dispatch.routers.proposals import Proposal, router
+from gdx_dispatch.routers.estimates import router as estimates_router
+
+TENANT = "tenant-test"
 
 
-def _make_client(tenant_id: str = "tenant-test") -> TestClient:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+@pytest.fixture()
+def client():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     TenantBase.metadata.create_all(engine, checkfirst=True)
-
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
     setup = Session()
-    setup.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS tenant_module_grants (
-                id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
-                granted_at TEXT, created_at TEXT, expires_at TEXT
-            )
-            """
+    setup.execute(text("""
+        CREATE TABLE IF NOT EXISTS tenant_module_grants (
+            id TEXT PRIMARY KEY, tenant_id TEXT, module_key TEXT,
+            granted_at TEXT, created_at TEXT, expires_at TEXT
         )
-    )
-    setup.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS company_module_grants (
-                id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
-                granted_at TEXT, created_at TEXT, expires_at TEXT,
-                UNIQUE(company_id, module_key)
-            )
-            """
+    """))
+    setup.execute(text("""
+        CREATE TABLE IF NOT EXISTS company_module_grants (
+            id TEXT PRIMARY KEY, company_id TEXT, module_key TEXT,
+            granted_at TEXT, created_at TEXT, expires_at TEXT,
+            UNIQUE(company_id, module_key)
         )
-    )
-    setup.execute(
-        text(
-            """
-            INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
-            VALUES (:id, :tid, 'estimates', datetime('now'), datetime('now'))
-            """
-        ),
-        {"id": f"g1-{tenant_id}", "tid": tenant_id},
-    )
-    setup.execute(
-        text(
-            """
-            INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
-            VALUES (:id, :tid, 'estimates', datetime('now'), datetime('now'))
-            """
-        ),
-        {"id": f"g2-{tenant_id}", "tid": tenant_id},
-    )
+    """))
+    # require_module("proposals") normalizes to the "estimates" grant via
+    # LEGACY_MODULE_ALIASES — granting "estimates" is what unlocks the tiers.
+    setup.execute(text("""
+        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
+        VALUES ('g1', 'tenant-test', 'estimates', datetime('now'), datetime('now'))
+    """))
+    setup.execute(text("""
+        INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
+        VALUES ('g2', 'tenant-test', 'estimates', datetime('now'), datetime('now'))
+    """))
     setup.commit()
     setup.close()
 
@@ -79,193 +78,370 @@ def _make_client(tenant_id: str = "tenant-test") -> TestClient:
 
     @app.middleware("http")
     async def inject_tenant(request, call_next):
-        request.state.tenant = {"id": tenant_id}
+        request.state.tenant = {"id": TENANT}
         return await call_next(request)
 
-    app.include_router(router)
+    app.include_router(estimates_router)
+    app.include_router(proposals_router)
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_user] = lambda: {
-        "user_id": "user-1",
-        "sub": "user-1",
-        "role": "admin",
-        "tenant_id": tenant_id,
+        "user_id": "user-1", "sub": "user-1", "role": "admin", "tenant_id": TENANT,
     }
 
     tc = TestClient(app, raise_server_exceptions=True)
-    tc._engine = engine  # type: ignore[attr-defined]
-    return tc
-
-
-@pytest.fixture()
-def client():
-    tc = _make_client()
     yield tc
-    tc.app.dependency_overrides.clear()
-    tc._engine.dispose()  # type: ignore[attr-defined]
+    app.dependency_overrides.clear()
+    engine.dispose()
 
 
-def _payload(**overrides) -> dict:
-    base = {
-        "title": "Garage Door Replacement",
-        "description": "Full install with haul-away",
-        "good_price": 1200.00,
-        "better_price": 1800.00,
-        "best_price": 2500.00,
-        "good_description": "16x7 steel, no insulation",
-        "better_description": "16x7 insulated, two windows",
-        "best_description": "16x7 full insulated, smart opener, warranty",
-        "customer_name": "Jane Homeowner",
-    }
-    base.update(overrides)
-    return base
-
-
-def test_create_proposal(client: TestClient):
-    r = client.post("/api/proposals", json=_payload())
-    assert r.status_code == 201, r.text
-    data = r.json()
-    assert data["id"]
-    assert data["title"] == "Garage Door Replacement"
-    assert data["status"] == "draft"
-    assert data["good_price"] == 1200.0
-    assert data["better_price"] == 1800.0
-    assert data["best_price"] == 2500.0
-    assert data["chosen_tier"] is None
-    assert data["sent_at"] is None
-    assert data["company_id"] == "tenant-test"
-
-
-def test_list_tenant_scoped():
-    c1 = _make_client(tenant_id="tenant-a")
-    c2 = _make_client(tenant_id="tenant-b")
+def _create_customer(client: TestClient, name: str = "Acme Customer") -> str:
+    db = next(client.app.dependency_overrides[get_db]())
     try:
-        r1 = c1.post("/api/proposals", json=_payload(title="A-only"))
-        assert r1.status_code == 201
-        r2 = c2.post("/api/proposals", json=_payload(title="B-only"))
-        assert r2.status_code == 201
-
-        list1 = c1.get("/api/proposals").json()
-        list2 = c2.get("/api/proposals").json()
-        assert len(list1) == 1
-        assert len(list2) == 1
-        assert list1[0]["title"] == "A-only"
-        assert list2[0]["title"] == "B-only"
-
-        # tenant A cannot fetch tenant B's proposal by ID
-        cross = c1.get(f"/api/proposals/{list2[0]['id']}")
-        assert cross.status_code == 404
-    finally:
-        c1.app.dependency_overrides.clear()
-        c2.app.dependency_overrides.clear()
-        c1._engine.dispose()  # type: ignore[attr-defined]
-        c2._engine.dispose()  # type: ignore[attr-defined]
-
-
-def test_send_updates_status_and_timestamp(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    r = client.post(f"/api/proposals/{created['id']}/send")
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["status"] == "sent"
-    assert data["sent_at"] is not None
-
-
-def test_accept_requires_valid_tier(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    r = client.post(
-        f"/api/proposals/{created['id']}/accept",
-        json={"tier": "platinum"},
-    )
-    assert r.status_code == 422
-
-
-def test_accept_sets_chosen_tier(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    client.post(f"/api/proposals/{created['id']}/send")
-    r = client.post(
-        f"/api/proposals/{created['id']}/accept",
-        json={"tier": "better"},
-    )
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["status"] == "accepted"
-    assert data["chosen_tier"] == "better"
-    assert data["accepted_at"] is not None
-
-
-def test_cannot_edit_after_sent(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    send_r = client.post(f"/api/proposals/{created['id']}/send")
-    assert send_r.status_code == 200
-    r = client.patch(
-        f"/api/proposals/{created['id']}",
-        json={"title": "New title attempt"},
-    )
-    assert r.status_code == 400
-    assert "draft" in r.json()["detail"].lower()
-
-
-def test_soft_delete(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    r = client.delete(f"/api/proposals/{created['id']}")
-    assert r.status_code == 204
-
-    # Excluded from list
-    listed = client.get("/api/proposals").json()
-    assert all(p["id"] != created["id"] for p in listed)
-
-    # GET returns 404
-    gone = client.get(f"/api/proposals/{created['id']}")
-    assert gone.status_code == 404
-
-    # Row still exists with deleted_at set
-    dep = client.app.dependency_overrides[get_db]
-    db = next(dep())
-    try:
-        row = db.execute(
-            select(Proposal).where(Proposal.id == UUID(created["id"]))
-        ).scalar_one()
-        assert row.deleted_at is not None
+        row = Customer(name=name, email="customer@example.com", company_id=TENANT)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return str(row.id)
     finally:
         db.close()
 
 
-def test_pydantic_bounds_reject_oversized_title(client: TestClient):
-    huge_title = "x" * 301
-    r = client.post("/api/proposals", json=_payload(title=huge_title))
-    assert r.status_code == 422
+def _create_estimate(client: TestClient, **overrides) -> dict:
+    # The create route requires job_id or customer_id.
+    payload = {"label": "Tiered install", "customer_id": _create_customer(client)}
+    payload.update(overrides)
+    r = client.post("/api/estimates", json=payload)
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
-def test_decline_proposal_sets_status(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    r = client.post(f"/api/proposals/{created['id']}/decline")
-    assert r.status_code == 200
-    assert r.json()["status"] == "declined"
+def _db(client: TestClient):
+    return next(client.app.dependency_overrides[get_db]())
 
 
-def test_list_filters_by_status(client: TestClient):
-    p1 = client.post("/api/proposals", json=_payload(title="Draft one")).json()
-    p2 = client.post("/api/proposals", json=_payload(title="Sent one")).json()
-    client.post(f"/api/proposals/{p2['id']}/send")
-
-    drafts = client.get("/api/proposals", params={"status": "draft"}).json()
-    sents = client.get("/api/proposals", params={"status": "sent"}).json()
-    assert len(drafts) == 1 and drafts[0]["id"] == p1["id"]
-    assert len(sents) == 1 and sents[0]["id"] == p2["id"]
-
-
-def test_patch_updates_draft_fields(client: TestClient):
-    created = client.post("/api/proposals", json=_payload()).json()
-    r = client.patch(
-        f"/api/proposals/{created['id']}",
-        json={"title": "Updated title", "good_price": 1500.0},
-    )
+def _add_tier(client: TestClient, est_id: str, name: str, **overrides) -> dict:
+    body = {"tier_name": name, "total_price": 2500.0, "warranty_months": 12, "description": f"{name} package"}
+    body.update(overrides)
+    r = client.post(f"/api/estimates/{est_id}/proposal-tiers", json=body)
     assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["title"] == "Updated title"
-    assert data["good_price"] == 1500.0
+    return r.json()
 
 
-def test_get_404_for_missing(client: TestClient):
-    r = client.get(f"/api/proposals/{uuid4()}")
-    assert r.status_code == 404
+# ── the estimate carries the flag ────────────────────────────────────────────
+
+def test_serializer_exposes_proposal_mode_and_accepted_tier(client: TestClient):
+    """Both were unserialized, so the office UI could not see (let alone edit) a
+    tiered estimate that mobile had created."""
+    est = _create_estimate(client)
+    assert est["proposal_mode"] is False
+    assert est["accepted_tier_id"] is None
+
+
+def test_patch_toggles_proposal_mode(client: TestClient):
+    est = _create_estimate(client)
+    r = client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["proposal_mode"] is True
+
+    r = client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": False})
+    assert r.json()["proposal_mode"] is False
+
+
+def test_patch_rejects_null_proposal_mode(client: TestClient):
+    """proposal_mode is NOT NULL. Typed `bool | None` (like the tri-state
+    hide_line_prices beside it) an explicit null would sail through the generic
+    setattr loop and write NULL into the column."""
+    est = _create_estimate(client)
+    r = client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": None})
+    assert r.status_code == 422, r.text
+
+
+def test_patch_without_proposal_mode_leaves_it_alone(client: TestClient):
+    """exclude_unset, not the field default, is what makes omission a no-op —
+    the default is False, so a bug here would silently untier an estimate on any
+    unrelated edit."""
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    r = client.patch(f"/api/estimates/{est['id']}", json={"label": "renamed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["proposal_mode"] is True
+
+
+# ── tier CRUD ────────────────────────────────────────────────────────────────
+
+def test_create_list_and_order_tiers(client: TestClient):
+    est = _create_estimate(client)
+    _add_tier(client, est["id"], "best", total_price=5200.0)
+    _add_tier(client, est["id"], "good", total_price=2500.0)
+    _add_tier(client, est["id"], "better", total_price=3800.0)
+
+    rows = client.get(f"/api/estimates/{est['id']}/proposal").json()
+    # display_order is derived from the name, so the customer always sees
+    # good → better → best regardless of the order they were entered.
+    assert [t["tier_name"] for t in rows] == ["good", "better", "best"]
+
+
+def test_second_post_for_a_name_updates_rather_than_duplicates(client: TestClient):
+    """One card per tier name. A blind insert let a second POST stack a duplicate
+    that the customer PDF then rendered twice."""
+    est = _create_estimate(client)
+    first = _add_tier(client, est["id"], "better", total_price=3800.0)
+    second = _add_tier(client, est["id"], "better", total_price=3950.0, description="revised")
+
+    assert second["id"] == first["id"]
+    rows = client.get(f"/api/estimates/{est['id']}/proposal").json()
+    assert len(rows) == 1
+    assert float(rows[0]["total_price"]) == 3950.0
+    assert rows[0]["description"] == "revised"
+
+
+def test_patch_tier_updates_only_sent_fields(client: TestClient):
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "good", total_price=2500.0, warranty_months=12, description="steel")
+
+    r = client.patch(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}", json={"total_price": 2650.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert float(body["total_price"]) == 2650.0
+    assert body["warranty_months"] == 12       # untouched
+    assert body["description"] == "steel"      # untouched
+
+
+def test_patch_cannot_rename_a_tier_onto_an_existing_name(client: TestClient):
+    """The POST path upserts so it can't duplicate a name — but PATCH accepts
+    tier_name too, and there is no DB unique on (estimate_id, tier_name), so a
+    rename was the back door to the same two-cards-on-the-PDF bug."""
+    est = _create_estimate(client)
+    _add_tier(client, est["id"], "good", total_price=2500.0)
+    better = _add_tier(client, est["id"], "better", total_price=3800.0)
+
+    r = client.patch(f"/api/estimates/{est['id']}/proposal-tiers/{better['id']}", json={"tier_name": "good"})
+    assert r.status_code == 409, r.text
+
+    rows = client.get(f"/api/estimates/{est['id']}/proposal").json()
+    assert sorted(t["tier_name"] for t in rows) == ["better", "good"]
+
+
+def test_patch_can_rename_a_tier_to_a_free_name(client: TestClient):
+    """The clash guard must not block a legitimate rename — display_order has to
+    follow the new name so the customer still sees good → better → best."""
+    est = _create_estimate(client)
+    good = _add_tier(client, est["id"], "good", total_price=2500.0)
+
+    r = client.patch(f"/api/estimates/{est['id']}/proposal-tiers/{good['id']}", json={"tier_name": "best"})
+    assert r.status_code == 200, r.text
+    assert r.json()["tier_name"] == "best"
+    assert r.json()["display_order"] == 2
+
+
+def test_delete_tier(client: TestClient):
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "good")
+    r = client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}")
+    assert r.status_code == 204, r.text
+    assert client.get(f"/api/estimates/{est['id']}/proposal").json() == []
+
+
+def test_bad_tier_name_is_422_not_500(client: TestClient):
+    """tier_name is a DB enum. Typed as a bare `str` it reached the driver and
+    came back as a 500 instead of a validation error."""
+    est = _create_estimate(client)
+    r = client.post(f"/api/estimates/{est['id']}/proposal-tiers", json={"tier_name": "platinum", "total_price": 1.0})
+    assert r.status_code == 422, r.text
+
+
+def test_tier_on_missing_estimate_is_404(client: TestClient):
+    r = client.post(f"/api/estimates/{uuid4()}/proposal-tiers", json={"tier_name": "good", "total_price": 1.0})
+    assert r.status_code == 404, r.text
+
+
+# ── the money guards ─────────────────────────────────────────────────────────
+
+def test_tiers_are_locked_once_the_estimate_is_accepted(client: TestClient):
+    """Re-pricing a tier after acceptance rewrites what the customer agreed to
+    (and what the invoice was drafted from). Same rule as _ensure_editable."""
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "good", total_price=2500.0)
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.status = "accepted"
+        db.commit()
+    finally:
+        db.close()
+
+    assert client.post(f"/api/estimates/{est['id']}/proposal-tiers",
+                       json={"tier_name": "better", "total_price": 1.0}).status_code == 409
+    assert client.patch(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}",
+                        json={"total_price": 9999.0}).status_code == 409
+    assert client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}").status_code == 409
+
+
+def test_cannot_delete_the_accepted_tier(client: TestClient):
+    """accepted_tier_id is an FK and the invoice is drafted from the accepted
+    tier's price. Belt-and-braces for an estimate reopened to draft with a stale
+    accepted_tier_id still on it."""
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "good", total_price=2500.0)
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.accepted_tier_id = UUID(tier["id"])
+        row.status = "draft"          # reopened, but the pointer survived
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}")
+    assert r.status_code == 409, r.text
+    assert client.get(f"/api/estimates/{est['id']}/proposal").json()  # still there
+
+
+def test_accept_records_the_chosen_tier(client: TestClient):
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "better", total_price=3800.0)
+
+    r = client.post(f"/api/estimates/{est['id']}/proposal/accept", json={"tier_id": tier["id"]})
+    assert r.status_code == 200, r.text
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        assert row.status == "accepted"
+        assert str(row.accepted_tier_id) == tier["id"]
+    finally:
+        db.close()
+
+
+# ── the public customer link ─────────────────────────────────────────────────
+
+def test_public_proposal_never_leaks_internal_fields(client: TestClient):
+    """This endpoint is public and unauthenticated. It was shadowed by the old
+    /api/proposals/{proposal_id} handler and never actually served; retiring
+    that router made it live, and it returned the ORM row whole — including the
+    office's internal `notes`, company_id, and a copy of the token itself."""
+    est = _create_estimate(client, notes="Customer haggles — do not go below 3200. Ask for cash.")
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    _add_tier(client, est["id"], "good", total_price=2500.0)
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.sent_at = datetime.now(UTC)   # the route only serves sent estimates
+        db.commit()
+        token = row.public_token
+    finally:
+        db.close()
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["estimate"]["estimate_number"] == est["estimate_number"]
+    assert [t["tier_name"] for t in body["tiers"]] == ["good"]
+
+    leaked = {"notes", "company_id", "public_token", "id", "customer_id", "job_id"}
+    assert leaked.isdisjoint(body["estimate"].keys()), f"leaked: {leaked & body['estimate'].keys()}"
+    assert "haggles" not in str(body)
+
+
+def test_public_proposal_rejects_an_unknown_token(client: TestClient):
+    assert client.get("/api/proposals/not-a-real-token").status_code == 404
+
+
+def test_public_proposal_hides_unsent_and_soft_deleted_estimates(client: TestClient):
+    """public_token is minted at CREATE, not at send. Without deleted_at +
+    sent_at in the lookup, every draft and every soft-deleted estimate is a live
+    public URL the moment this route stops being shadowed. Both must 404, and
+    with the same shape as a bad token so the response can't be used to probe."""
+    est = _create_estimate(client)
+
+    db = _db(client)
+    try:
+        token = db.get(Estimate, UUID(est["id"])).public_token
+    finally:
+        db.close()
+
+    # Never sent → not public, even with a valid token.
+    assert client.get(f"/api/proposals/{token}").status_code == 404
+
+    # Sent → now readable.
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.sent_at = datetime.now(UTC)
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(f"/api/proposals/{token}").status_code == 200
+
+    # Soft-deleted → gone again, despite still being "sent".
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.deleted_at = datetime.now(UTC)
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(f"/api/proposals/{token}").status_code == 404
+
+
+def test_tier_writes_land_in_the_audit_trail(client: TestClient):
+    """Tier writes change the priced offer. accept_tier always logged; create/
+    update/delete did not, so a tier could be re-priced with no record of who."""
+    from gdx_dispatch.core.audit import AuditLog
+
+    est = _create_estimate(client)
+    tier = _add_tier(client, est["id"], "good", total_price=2500.0)
+    client.patch(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}", json={"total_price": 9100.0})
+    client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}")
+
+    db = _db(client)
+    try:
+        actions = [
+            r.action for r in db.execute(
+                select(AuditLog).where(AuditLog.entity_id == est["id"])
+            ).scalars().all()
+        ]
+    finally:
+        db.close()
+    for expected in ("proposal_tier_created", "proposal_tier_updated", "proposal_tier_deleted"):
+        assert expected in actions, f"{expected} missing from audit trail: {actions}"
+
+
+def test_standalone_proposals_router_is_gone(client: TestClient):
+    """Migration 061 retired the parallel `proposals` table and its CRUD router.
+    Guard against someone reviving it: /api/proposals is now owned solely by the
+    public token lookup, which is what {token} matches here."""
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("gdx_dispatch.routers.proposals")
+
+    from gdx_dispatch import models as models_pkg
+    assert not hasattr(models_pkg, "Proposal")
+
+    # POST/PATCH/DELETE on the collection no longer exist (only GET {token}).
+    assert client.post("/api/proposals", json={"title": "x"}).status_code in (404, 405)
+
+
+def test_tiers_survive_an_estimate_soft_delete(client: TestClient):
+    """Tiers are NOT cascade-deleted with the estimate (unlike estimate_lines,
+    which declare delete-orphan). Because estimates are soft-deleted, that is
+    correct today — the row is still there to restore. It becomes an orphan bug
+    the moment anything hard-deletes an estimate, so this pins the coupling and
+    the name says what it asserts.
+
+    Note this runs on SQLite, where FK enforcement is off by default; it is
+    asserting ORM/cascade behavior, not a database-level constraint."""
+    est = _create_estimate(client)
+    _add_tier(client, est["id"], "good")
+
+    r = client.delete(f"/api/estimates/{est['id']}")
+    assert r.status_code in (200, 204), r.text
+
+    db = _db(client)
+    try:
+        rows = db.execute(select(ProposalTier).where(ProposalTier.estimate_id == UUID(est["id"]))).scalars().all()
+        assert len(rows) == 1  # soft delete leaves the tier attached
+    finally:
+        db.close()

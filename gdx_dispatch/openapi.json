@@ -681,7 +681,7 @@
           "jobs"
         ],
         "summary": "Delete Job",
-        "description": "Soft delete \u2014 sets deleted_at. Tenant-scoped; audit logged.",
+        "description": "Soft delete \u2014 sets deleted_at. Tenant-scoped; audit logged.\n\njobs.write gate (2026-08-04 audit catch): this endpoint carried NO\npermission at all \u2014 any authenticated role with the jobs module could\ndelete any job. jobs.write is the same key the create/update paths\nimply, so every UI that legitimately offers Delete (JobsView, the RFB\nqueue) keeps working.",
         "operationId": "delete_job_api_jobs__job_id__delete",
         "security": [
           {
@@ -1059,20 +1059,29 @@
         }
       }
     },
-    "/api/jobs/return-visits-unscheduled": {
+    "/api/jobs/{job_id}/closeout-billing-suggestion": {
       "get": {
         "tags": [
           "jobs"
         ],
-        "summary": "Return Visits Unscheduled",
-        "description": "Return-visit child jobs no one has dealt with in ANY way.\n\nThe closeout's needs_return_visit path creates the child unscheduled,\nunassigned, and unparked \u2014 if nothing surfaces it, \"I need to come back\"\nis exactly the silent-disappearing-job leak the closeout sheet exists to\nclose. Every clause below is an \"already dealt with\" exit, so the count\ncan't nag about work that's on a board somewhere:\n\n* scheduled_at set \u2192 it's on the dispatch board for that day.\n* assigned_to set (spawn-return-visit can pre-assign without a date) \u2192\n  it's on that tech's column.\n* holding_area_id set \u2192 deliberately parked (e.g. Waiting on Parts \u2014\n  the DESIGNED state for a return visit whose part is on order, since\n  parts-to-order is this feature's sibling); the holding-area board is\n  its surface. Counting parked jobs here would nag forever and teach\n  everyone to ignore the entry.\n* completed/cancelled excluded (stage predicate matching the closeout's\n  open-child check; every writer of is_return_visit sets a non-NULL\n  lifecycle_stage, so notin_'s NULL blindness can't bite).\n\njobs.read_all gate: office tiers only, same silent-403 contract as\nready-for-billing \u2014 the dashboard drops the entry for ungranted roles.",
-        "operationId": "return_visits_unscheduled_api_jobs_return_visits_unscheduled_get",
+        "summary": "Closeout Billing Suggestion",
+        "description": "What the closeout says this job's bill should start from.\n\nThe office create-invoice screen (/billing/new) prefilled from the\nESTIMATE and offered parts \u2014 but a service job with neither showed a\nblank form: the tech's attested hours and field notes never reached\nthe person typing the bill (Doug 2026-08-07: \"click invoice \u2014 it does\nnot show hours or notes from the job\"). This read-only endpoint hands\nthe UI a priced labor line (same core/billing_lanes math the autodraft\nand mobile paths use) plus the closeout context to display. Nothing is\nwritten or claimed \u2014 the operator still confirms every line.",
+        "operationId": "closeout_billing_suggestion_api_jobs__job_id__closeout_billing_suggestion_get",
         "security": [
           {
             "OAuth2PasswordBearer": []
           }
         ],
         "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
           {
             "name": "request",
             "in": "query",
@@ -1104,14 +1113,14 @@
         }
       }
     },
-    "/api/jobs/{job_id}/create-invoice": {
+    "/api/jobs/{job_id}/not-billable": {
       "post": {
         "tags": [
           "jobs"
         ],
-        "summary": "Create Invoice From Job",
-        "description": "One-click invoice creation from a job.\n\nHistorically the frontend only offered this for COMPLETED jobs; that\ngate was the de-facto double-billing guard. Now that invoicing is\nallowed mid-job (deposit/progress billing, 2026-07-23), the guard is\nexplicit: a job that already has a billing-real non-deposit invoice\n409s unless ``force=true`` (the operator confirmed a second invoice).",
-        "operationId": "create_invoice_from_job_api_jobs__job_id__create_invoice_post",
+        "summary": "Mark Job Not Billable",
+        "description": "The Ready-for-Billing dismiss verb: this job will never get an invoice.\n\nWarranty/goodwill/internal work lands in RFB with no exit other than\nCreate Invoice \u2014 the queue floods and becomes wallpaper (same failure\nPR4 fixed for leaked parts with ``wont_bill``). The mark keeps the job\nand its audit trail but leaves every unbilled-nag surface via\n``core/billing_predicates.job_billing_resolved()``. Reversible with the\nDELETE twin below.\n\n``invoices.write`` gate (owner/admin/accounting): suppressing revenue is\nan invoicing decision \u2014 NOT invoices.read_all, which the read-only\nviewer role also holds.",
+        "operationId": "mark_job_not_billable_api_jobs__job_id__not_billable_post",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -1128,15 +1137,112 @@
             }
           },
           {
-            "name": "force",
+            "name": "request",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Force"
+              "title": "Request"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotBillablePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
             }
           },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Unmark Job Not Billable",
+        "description": "Undo for the mark above \u2014 the job re-enters Ready-for-Billing.\n\nIdempotent: clearing an unmarked job is a 200 no-op (the state the\ncaller asked for already holds; a retry must not 4xx).",
+        "operationId": "unmark_job_not_billable_api_jobs__job_id__not_billable_delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/return-visits-unscheduled": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Return Visits Unscheduled",
+        "description": "Return-visit child jobs no one has dealt with in ANY way.\n\nThe closeout's needs_return_visit path creates the child unscheduled,\nunassigned, and unparked \u2014 if nothing surfaces it, \"I need to come back\"\nis exactly the silent-disappearing-job leak the closeout sheet exists to\nclose. Every clause below is an \"already dealt with\" exit, so the count\ncan't nag about work that's on a board somewhere:\n\n* scheduled_at set \u2192 it's on the dispatch board for that day.\n* assigned_to set (spawn-return-visit can pre-assign without a date) \u2192\n  it's on that tech's column.\n* holding_area_id set \u2192 deliberately parked (e.g. Waiting on Parts \u2014\n  the DESIGNED state for a return visit whose part is on order, since\n  parts-to-order is this feature's sibling); the holding-area board is\n  its surface. Counting parked jobs here would nag forever and teach\n  everyone to ignore the entry.\n* completed/cancelled excluded (stage predicate matching the closeout's\n  open-child check; every writer of is_return_visit sets a non-NULL\n  lifecycle_stage, so notin_'s NULL blindness can't bite).\n\njobs.read_all gate: office tiers only, same silent-403 contract as\nready-for-billing \u2014 the dashboard drops the entry for ungranted roles.",
+        "operationId": "return_visits_unscheduled_api_jobs_return_visits_unscheduled_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "request",
             "in": "query",
@@ -9292,7 +9398,6 @@
           "invoices"
         ],
         "summary": "Invoice Email Compose",
-        "description": "Return a prebuilt compose payload for the in-app composer:\n{to, subject, body_text, pdf, extra_attachments}.\n\nMirrors the estimate compose flow so InvoiceDetailView's send button can\nopen the same review-then-send dialog rather than firing a server-side\nemail blind. PDF is generated once here and shipped as base64 so the\ncomposer can attach it to the eventual Outlook send (or download it for\nthe mailto fallback) without a second roundtrip.",
         "operationId": "invoice_email_compose_api_invoices__invoice_id__email_compose_get",
         "security": [
           {
@@ -9347,7 +9452,7 @@
           "invoices"
         ],
         "summary": "Mark Invoice Sent",
-        "description": "Flip status to 'sent' without firing a server-side email.\n\nUsed after the composer hands off to Outlook (or the mailto fallback) \u2014\nthe operator's mail client owns delivery, so the server just stamps\nsent_at + mints the public_token. Mirrors mark_estimate_sent.",
+        "description": "Flip status to 'sent' without firing a server-side email.\n\nUsed after the composer hands off to Outlook (or the mailto fallback) \u2014\nthe operator's mail client owns delivery, so the server just stamps\nsent_at + mints the public_token. Mirrors mark_estimate_sent. `channel`\nrecords HOW it went out \u2014 'mail' is the paper-invoice path (\"Mark as\nMailed\"), the office's only honest exit from the Unsent bucket.",
         "operationId": "mark_invoice_sent_api_invoices__invoice_id__mark_sent_post",
         "security": [
           {
@@ -9374,6 +9479,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MarkSentIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -9973,61 +10095,6 @@
             }
           }
         ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/invoices/batch": {
-      "post": {
-        "tags": [
-          "invoices"
-        ],
-        "summary": "Batch Create Invoices",
-        "description": "Create invoices for multiple jobs at once.",
-        "operationId": "batch_create_invoices_api_invoices_batch_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BatchInvoiceIn"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -23335,489 +23402,6 @@
         }
       }
     },
-    "/api/proposals": {
-      "get": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "List Proposals",
-        "operationId": "list_proposals_api_proposals_get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          },
-          {
-            "name": "customer_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Customer Id"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 100,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "title": "Offset"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Create Proposal",
-        "operationId": "create_proposal_api_proposals_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProposalIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}": {
-      "get": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Get Proposal",
-        "operationId": "get_proposal_api_proposals__proposal_id__get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Update Proposal",
-        "operationId": "update_proposal_api_proposals__proposal_id__patch",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProposalPatch"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Delete Proposal",
-        "operationId": "delete_proposal_api_proposals__proposal_id__delete",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}/send": {
-      "post": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Send Proposal",
-        "operationId": "send_proposal_api_proposals__proposal_id__send_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}/accept": {
-      "post": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Accept Proposal",
-        "operationId": "accept_proposal_api_proposals__proposal_id__accept_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AcceptTierIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}/decline": {
-      "post": {
-        "tags": [
-          "proposals"
-        ],
-        "summary": "Decline Proposal",
-        "operationId": "decline_proposal_api_proposals__proposal_id__decline_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/appointments": {
       "get": {
         "tags": [
@@ -25603,6 +25187,114 @@
         }
       }
     },
+    "/api/leads/{lead_id}/record-contact": {
+      "post": {
+        "tags": [
+          "leads"
+        ],
+        "summary": "Record Lead Contact",
+        "operationId": "record_lead_contact_api_leads__lead_id__record_contact_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lead_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Lead Id"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/landing-leads/{ll_id}/record-contact": {
+      "post": {
+        "tags": [
+          "leads"
+        ],
+        "summary": "Record Landing Contact",
+        "operationId": "record_landing_contact_api_landing_leads__ll_id__record_contact_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "ll_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Ll Id"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/leads/{lead_id}/convert-to-customer": {
       "post": {
         "tags": [
@@ -25635,6 +25327,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ConvertToCustomerIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -36754,7 +36463,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TierPatch"
+                "$ref": "#/components/schemas/gdx_dispatch__routers__loyalty__TierPatch"
               }
             }
           }
@@ -42295,112 +42004,6 @@
         }
       }
     },
-    "/api/proposals/{proposal_id}/approve": {
-      "post": {
-        "tags": [
-          "ui-compat"
-        ],
-        "summary": "Approve Proposal",
-        "operationId": "approve_proposal_api_proposals__proposal_id__approve_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}/convert-to-job": {
-      "post": {
-        "tags": [
-          "ui-compat"
-        ],
-        "summary": "Convert Proposal To Job",
-        "operationId": "convert_proposal_to_job_api_proposals__proposal_id__convert_to_job_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/billing/subscription": {
       "get": {
         "tags": [
@@ -44826,120 +44429,6 @@
             }
           }
         ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/proposals/{proposal_id}/line-items": {
-      "get": {
-        "tags": [
-          "ui-compat"
-        ],
-        "summary": "List Proposal Line Items",
-        "operationId": "list_proposal_line_items_api_proposals__proposal_id__line_items_get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "ui-compat"
-        ],
-        "summary": "Update Proposal Line Items",
-        "operationId": "update_proposal_line_items_api_proposals__proposal_id__line_items_patch",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "proposal_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Proposal Id"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/_GenericPayload"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -54543,6 +54032,137 @@
         }
       }
     },
+    "/api/estimates/{estimate_id}/proposal-tiers/{tier_id}": {
+      "patch": {
+        "tags": [
+          "proposals"
+        ],
+        "summary": "Patch Proposal Tier",
+        "operationId": "patch_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__patch",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "estimate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Estimate Id"
+            }
+          },
+          {
+            "name": "tier_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tier Id"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/gdx_dispatch__modules__proposals__router__TierPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "proposals"
+        ],
+        "summary": "Del Proposal Tier",
+        "operationId": "del_proposal_tier_api_estimates__estimate_id__proposal_tiers__tier_id__delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "estimate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Estimate Id"
+            }
+          },
+          {
+            "name": "tier_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tier Id"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/estimates/{estimate_id}/proposal/accept": {
       "post": {
         "tags": [
@@ -58322,12 +57942,63 @@
       }
     },
     "/api/plugins/{path}": {
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58378,7 +58049,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58429,58 +58100,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58531,7 +58151,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__post",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58579,12 +58199,64 @@
       }
     },
     "/api/plugins": {
+      "put": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58636,7 +58308,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58688,59 +58360,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -58792,7 +58412,7 @@
           "plugins"
         ],
         "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_post",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -79888,20 +79508,6 @@
         ],
         "title": "AcceptQuoteIn"
       },
-      "AcceptTierIn": {
-        "properties": {
-          "tier": {
-            "type": "string",
-            "pattern": "^(good|better|best)$",
-            "title": "Tier"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tier"
-        ],
-        "title": "AcceptTierIn"
-      },
       "AccountChangeOut": {
         "properties": {
           "previous_statement_date": {
@@ -80994,23 +80600,6 @@
           "slots"
         ],
         "title": "AvailableSlotsResponse"
-      },
-      "BatchInvoiceIn": {
-        "properties": {
-          "job_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "minItems": 1,
-            "title": "Job Ids"
-          }
-        },
-        "type": "object",
-        "required": [
-          "job_ids"
-        ],
-        "title": "BatchInvoiceIn"
       },
       "BlockConfig": {
         "properties": {
@@ -84706,6 +84295,19 @@
         ],
         "title": "ConnectRequest"
       },
+      "ConvertToCustomerIn": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "pattern": "^(won|quoted)$",
+            "title": "Stage",
+            "default": "won"
+          }
+        },
+        "type": "object",
+        "title": "ConvertToCustomerIn",
+        "description": "Optional body for convert-to-customer.\n\nstage says what the conversion is FOR: \"won\" (they booked work \u2014 the\nservice-call path) or \"quoted\" (we're drafting an estimate). Anything\nelse stays on the explicit advance-stage endpoint."
+      },
       "CpaReviewIn": {
         "properties": {
           "keys": {
@@ -87784,6 +87386,11 @@
               }
             ],
             "title": "Hide Line Prices"
+          },
+          "proposal_mode": {
+            "type": "boolean",
+            "title": "Proposal Mode",
+            "default": false
           }
         },
         "type": "object",
@@ -89491,7 +89098,7 @@
           "secret": {
             "type": "string",
             "title": "Secret",
-            "default": "d125df4318f806579c220d0b881e5cb939df2facb5c102f34cf6f76e753b9b65"
+            "default": "4f59ba3909029b0334402181029facedd647cb6a1a4f53ae967bb28e2764d423"
           }
         },
         "type": "object",
@@ -90479,6 +90086,21 @@
               }
             ],
             "title": "Hide Line Prices"
+          },
+          "attached_photo_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attached Photo Ids"
           }
         },
         "additionalProperties": false,
@@ -93079,6 +92701,22 @@
         ],
         "title": "ManualMatchIn"
       },
+      "MarkSentIn": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "mail",
+              "manual"
+            ],
+            "title": "Channel",
+            "default": "manual"
+          }
+        },
+        "type": "object",
+        "title": "MarkSentIn"
+      },
       "MarkupBatchIn": {
         "properties": {
           "items": {
@@ -93916,6 +93554,21 @@
           "items"
         ],
         "title": "MyTicketsResponse"
+      },
+      "NotBillablePayload": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "NotBillablePayload"
       },
       "NoteBody": {
         "properties": {
@@ -97324,244 +96977,6 @@
           "job_receipt_id"
         ],
         "title": "PromoteReceiptIn"
-      },
-      "ProposalIn": {
-        "properties": {
-          "customer_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 64
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Id"
-          },
-          "customer_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Name"
-          },
-          "title": {
-            "type": "string",
-            "maxLength": 300,
-            "minLength": 1,
-            "title": "Title"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 10000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
-          },
-          "good_price": {
-            "type": "number",
-            "maximum": 10000000.0,
-            "minimum": 0.0,
-            "title": "Good Price",
-            "default": 0
-          },
-          "better_price": {
-            "type": "number",
-            "maximum": 10000000.0,
-            "minimum": 0.0,
-            "title": "Better Price",
-            "default": 0
-          },
-          "best_price": {
-            "type": "number",
-            "maximum": 10000000.0,
-            "minimum": 0.0,
-            "title": "Best Price",
-            "default": 0
-          },
-          "good_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Good Description"
-          },
-          "better_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Better Description"
-          },
-          "best_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Best Description"
-          }
-        },
-        "type": "object",
-        "required": [
-          "title"
-        ],
-        "title": "ProposalIn"
-      },
-      "ProposalPatch": {
-        "properties": {
-          "customer_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 64
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Id"
-          },
-          "customer_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Name"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 300,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 10000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
-          },
-          "good_price": {
-            "anyOf": [
-              {
-                "type": "number",
-                "maximum": 10000000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Good Price"
-          },
-          "better_price": {
-            "anyOf": [
-              {
-                "type": "number",
-                "maximum": 10000000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Better Price"
-          },
-          "best_price": {
-            "anyOf": [
-              {
-                "type": "number",
-                "maximum": 10000000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Best Price"
-          },
-          "good_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Good Description"
-          },
-          "better_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Better Description"
-          },
-          "best_description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 5000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Best Description"
-          }
-        },
-        "type": "object",
-        "title": "ProposalPatch"
       },
       "ProviderIn": {
         "properties": {
@@ -103112,59 +102527,6 @@
         ],
         "title": "TierCreate"
       },
-      "TierPatch": {
-        "properties": {
-          "name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100,
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
-          },
-          "min_spend": {
-            "anyOf": [
-              {
-                "type": "number",
-                "minimum": 0.0
-              },
-              {
-                "type": "string",
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Spend"
-          },
-          "discount_pct": {
-            "anyOf": [
-              {
-                "type": "number",
-                "maximum": 100.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "string",
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discount Pct"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "TierPatch"
-      },
       "TierSetReplaceIn": {
         "properties": {
           "tiers": {
@@ -106481,12 +105843,18 @@
         "properties": {
           "tier_name": {
             "type": "string",
+            "enum": [
+              "good",
+              "better",
+              "best"
+            ],
             "title": "Tier Name"
           },
           "description": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 5000
               },
               {
                 "type": "null"
@@ -106496,11 +105864,15 @@
           },
           "total_price": {
             "type": "number",
+            "maximum": 10000000.0,
+            "minimum": 0.0,
             "title": "Total Price",
             "default": 0
           },
           "warranty_months": {
             "type": "integer",
+            "maximum": 600.0,
+            "minimum": 0.0,
             "title": "Warranty Months",
             "default": 0
           }
@@ -106510,6 +105882,77 @@
           "tier_name"
         ],
         "title": "TierIn"
+      },
+      "gdx_dispatch__modules__proposals__router__TierPatch": {
+        "properties": {
+          "tier_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "good",
+                  "better",
+                  "best"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 5000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "total_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 10000000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Price"
+          },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "includes_parts": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Includes Parts"
+          }
+        },
+        "type": "object",
+        "title": "TierPatch"
       },
       "gdx_dispatch__routers__admin_settings__EmailConfigIn": {
         "properties": {
@@ -107194,6 +106637,59 @@
         "type": "object",
         "title": "JobUpdate"
       },
+      "gdx_dispatch__routers__loyalty__TierPatch": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "min_spend": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Spend"
+          },
+          "discount_pct": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discount Pct"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TierPatch"
+      },
       "gdx_dispatch__routers__maintenance__PlanIn": {
         "properties": {
           "name": {
@@ -107684,6 +107180,44 @@
               }
             ],
             "title": "Loaded Labor Cost Per Hour"
+          },
+          "service_call_first_hour_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Call First Hour Price"
+          },
+          "service_call_hourly_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Call Hourly Rate"
+          },
+          "service_labor_description_template": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Labor Description Template"
           }
         },
         "type": "object",

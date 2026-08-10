@@ -367,12 +367,26 @@ def build_quote(
         if not match:
             return _jr({"detail": f"unknown service: {payload.service}"}, 400)
         wanted = set(payload.preset_tier_ids) if payload.preset_tier_ids else None
+        # The custom-tiers branch above gets tier_name validated by TierIn's
+        # ^(good|better|best)$ pattern. The PRESET branch had no such check: the
+        # id comes from the tenant-editable service catalog, so a typo'd id went
+        # straight into the proposal_tiers enum as a 500, and two presets that
+        # both omitted `id` silently defaulted to "good" — two "good" cards on
+        # the customer's quote. Validate here so a bad catalog is a clear 400
+        # naming the offending preset instead of either failure.
+        seen_tier_names: set[str] = set()
         for tier in match.get("tiers", []):
             if wanted and tier.get("id") not in wanted:
                 continue
+            tier_name = tier.get("id")
+            if tier_name not in ("good", "better", "best"):
+                return _jr({"detail": f"service '{payload.service}' has a tier with an invalid id: {tier_name!r} (expected good/better/best)"}, 400)
+            if tier_name in seen_tier_names:
+                return _jr({"detail": f"service '{payload.service}' defines the '{tier_name}' tier more than once"}, 400)
+            seen_tier_names.add(tier_name)
             tiers_to_create.append(
                 {
-                    "tier_name": tier.get("id", "good"),
+                    "tier_name": tier_name,
                     "label": tier.get("label", ""),
                     "description": tier.get("description", ""),
                     "line_items": tier.get("line_items", []),

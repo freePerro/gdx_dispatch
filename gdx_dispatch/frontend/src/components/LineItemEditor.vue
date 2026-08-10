@@ -1,5 +1,5 @@
 <!--
-  LineItemEditor — shared line-items editor for invoice / estimate / proposal / future
+  LineItemEditor — shared line-items editor for invoice / estimate / future
   surfaces. Extracted from EstimateView/BillingView lineage S122.
 
   Contract:
@@ -353,9 +353,10 @@ function removeLineAt(idx) {
 }
 
 // D-S122-line-editor-proposals auditor catch: preserve the per-line Copy
-// affordance that ProposalsView had before migration. Multi-door installs
-// (common GDX workflow) duplicate a line then edit qty/spec — keeping this
-// is a real productivity feature, not polish.
+// affordance the old ProposalsView had (that page was retired in migration
+// 061, but this stayed). Multi-door installs (common GDX workflow) duplicate
+// a line then edit qty/spec — keeping this is a real productivity feature,
+// not polish.
 function duplicateLineAt(idx) {
   const src = localLines.value[idx];
   if (!src || isLocked(src)) return;

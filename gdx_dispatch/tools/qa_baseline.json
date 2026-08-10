@@ -50,10 +50,6 @@
       "status": 200,
       "last_checked": "2026-04-08"
     },
-    "/api/proposals": {
-      "status": 200,
-      "last_checked": "2026-04-08"
-    },
     "/api/campaigns": {
       "status": 200,
       "last_checked": "2026-04-08"

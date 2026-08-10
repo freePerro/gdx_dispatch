@@ -720,32 +720,6 @@ def list_labor_time_entries(
     return {"items": items, "total": len(items)}
 
 
-# ── Proposals: line items, approve, convert ───────────────────────────────
-
-@router.get("/api/proposals/{proposal_id}/line-items", response_model=None)
-def list_proposal_line_items(proposal_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.patch("/api/proposals/{proposal_id}/line-items", response_model=None)
-def update_proposal_line_items(
-    proposal_id: str,
-    payload: _GenericPayload,
-    _: dict = Depends(get_current_user),
-) -> dict:
-    return _ok()
-
-
-@router.post("/api/proposals/{proposal_id}/approve", response_model=None)
-def approve_proposal(proposal_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "status": "approved"}
-
-
-@router.post("/api/proposals/{proposal_id}/convert-to-job", response_model=None)
-def convert_proposal_to_job(proposal_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "job_id": str(uuid4())}
-
-
 # ── Estimate builder (customer-facing portal estimate) ───────────────────
 
 @router.post("/api/estimate/calculate", response_model=None)

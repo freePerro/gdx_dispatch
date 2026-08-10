@@ -91,7 +91,6 @@ export const MODULE_CATEGORIES = [
     modules: [
       { key: 'leads', label: 'Leads', icon: 'pi pi-user-plus', to: '/leads', type: 'Customers', permission: 'nav.office' },
       { key: 'estimates', label: 'Estimates', icon: 'pi pi-file-edit', to: '/estimates', type: 'Jobs', permission: 'nav.office' },
-      { key: 'proposals', label: 'Proposals', icon: 'pi pi-file-edit', to: '/proposals', type: 'Jobs', permission: 'nav.office' },
       { key: 'change_orders', label: 'Change Orders', icon: 'pi pi-refresh', to: '/change-orders', type: 'Jobs', permission: 'nav.office' },
       { key: 'service_agreements', label: 'Service Agreements', icon: 'pi pi-shield', to: '/service-agreements', type: 'Customers', permission: 'settings.write' },
       { key: 'signatures', label: 'Signatures', icon: 'pi pi-pencil', to: '/signatures', type: 'Jobs', permission: 'nav.office' },

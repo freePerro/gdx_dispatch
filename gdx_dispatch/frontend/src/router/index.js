@@ -91,7 +91,6 @@ const MaintenanceView = () => import('../views/MaintenanceView.vue');
 const AppointmentsView = () => import('../views/AppointmentsView.vue');
 const BookingView = () => import('../views/BookingView.vue');
 const LeadsView = () => import('../views/LeadsView.vue');
-const ProposalsView = () => import('../views/ProposalsView.vue');
 const SignaturesView = () => import('../views/SignaturesView.vue');
 const TechniciansView = () => import('../views/TechniciansView.vue');
 const JobCostingView = () => import('../views/JobCostingView.vue');
@@ -333,7 +332,14 @@ export const routes = [
   { path: '/appointments', name: 'appointments', component: AppointmentsView },
   { path: '/booking', name: 'booking', component: BookingView },
   { path: '/leads', name: 'leads', component: LeadsView, meta: { requiresPermission: 'leads.read' } },
-  { path: '/proposals', name: 'proposals', component: ProposalsView },
+  // /proposals → /estimates. The standalone Proposals page ran on its own
+  // `proposals` table — a flat good/better/best re-implementation with no line
+  // items, no estimate number and no tax, whose line-items endpoint was a stub
+  // that saved nothing. Good/better/best now lives where it belongs: on the
+  // estimate itself (proposal_mode + tiers, edited on the estimate detail
+  // page). Bookmark redirect; exact path only, so a future public
+  // /proposals/:token customer page is still free to claim its own route.
+  { path: '/proposals', redirect: '/estimates' },
   { path: '/signatures', name: 'signatures', component: SignaturesView },
   { path: '/technicians', name: 'technicians', component: TechniciansView },
   { path: '/job-costing', name: 'job-costing', component: JobCostingView },

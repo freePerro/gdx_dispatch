@@ -164,7 +164,16 @@ def test_model_default_and_omitting_writers() -> None:
     """Audit round 2: the 042 backfill was a mop under a running leak — the
     MODEL default was still 'Service' and four constructors omitted job_type,
     minting the dead spelling on a schedule (template materializer, service
-    triggers, proposal conversion, raw lead INSERTs). Pin all five closures."""
+    triggers, proposal conversion, raw lead INSERTs). Pin the closures.
+
+    Proposal conversion dropped out in migration 061: the standalone `proposals`
+    table and its /api/proposals/{id}/convert-to-job endpoint (the only Job
+    constructor in sub_resources.py) were retired, so there is no longer a
+    conversion path there to pin. Good/better/best moved onto the estimate,
+    which makes estimates.py's convert path the ONLY sold-work → job closure
+    left — and it was never pinned, so the assertion moves there rather than
+    disappearing with the endpoint it used to guard.
+    """
     from gdx_dispatch.models.tenant_models import Job
 
     assert Job.__table__.c.job_type.default.arg == SERVICE_CALL, (
@@ -180,9 +189,19 @@ def test_model_default_and_omitting_writers() -> None:
     assert "job_type=MAINTENANCE" in st, (
         "maintenance-agreement auto-jobs lost their job_type"
     )
+    # Sold work = Installation. This is the estimate→job convert path, which
+    # inherited the rule when proposal conversion was retired (061). It writes
+    # the literal rather than the INSTALLATION constant; assert on the value so
+    # the guard pins the BEHAVIOR, and accept either spelling so switching to
+    # the constant is not a false failure.
+    est = (REPO / "routers/estimates.py").read_text(encoding="utf-8")
+    assert ('job_type="Installation"' in est) or ("job_type=INSTALLATION" in est), (
+        "estimate conversion lost its job_type (sold work = Installation)"
+    )
     sr = (REPO / "routers/sub_resources.py").read_text(encoding="utf-8")
-    assert "job_type=INSTALLATION" in sr, (
-        "proposal conversion lost its job_type (sold work = Installation)"
+    assert "Job(" not in sr, (
+        "sub_resources.py constructs a Job again — any new Job writer must set "
+        "job_type explicitly or it mints the model default (Service Call)"
     )
     for path in ("api/public_router.py",):
         src = (REPO / path).read_text(encoding="utf-8")

@@ -38,7 +38,11 @@ const ROUTES = [
   ['/ai-assistant', 'ai-assistant', null],
   ['/quickbooks', 'quickbooks', null],
   ['/billing', 'billing', '.p-datatable'],
-  ['/proposals', 'proposals', null],
+  // was ['/proposals', ...] — that page was retired in migration 061 and the
+  // route now redirects here, so the walk was screenshotting /estimates under
+  // the label "proposals". Repointed rather than dropped: /estimates was not
+  // otherwise covered by this walk.
+  ['/estimates', 'estimates', '.p-datatable'],
   ['/reports', 'reports', null],
   ['/catalog', 'catalog', null],
   ['/documents', 'documents', null],

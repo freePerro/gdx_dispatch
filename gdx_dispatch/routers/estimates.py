@@ -202,6 +202,14 @@ def _serialize_estimate(estimate: Estimate, include_lines: bool = False) -> dict
         # is also handed lightweight non-ORM stubs in tests — matches the getattr
         # style _serialize_line already uses for optional fields.
         "hide_line_prices": getattr(estimate, "hide_line_prices", None),
+        # Good/better/best. proposal_mode flips the customer-facing document
+        # from one itemized total to a tier picker; accepted_tier_id records
+        # which tier they chose. Both were unserialized, so the office UI had
+        # no way to see (let alone edit) tiers that mobile could create.
+        "proposal_mode": bool(getattr(estimate, "proposal_mode", False)),
+        "accepted_tier_id": (
+            str(estimate.accepted_tier_id) if getattr(estimate, "accepted_tier_id", None) else None
+        ),
         "status": estimate.status,
         "total": _to_float(estimate.total),
         # valid_until is the expiry date (set on send from the tenant's
@@ -457,6 +465,16 @@ class EstimatePatchIn(BaseModel):
     # Tri-state via exclude_unset: field omitted = untouched; explicit null =
     # revert to inherit tenant default; true/false = force hide/show.
     hide_line_prices: bool | None = None
+    # Turn the good/better/best tier picker on or off for this estimate.
+    # Deliberately NOT `bool | None` like hide_line_prices above: that one is a
+    # tri-state override where null means "inherit the tenant default", but
+    # proposal_mode is a NOT NULL column with no inherit case. Typed as a plain
+    # bool, an explicit null 422s instead of reaching the setattr loop below and
+    # writing NULL into a NOT NULL column. Omitting the field still leaves it
+    # untouched — that comes from exclude_unset, not from the default.
+    # Turning it off leaves any proposal_tiers rows in place so the toggle is
+    # reversible without retyping the tiers; only the presentation changes.
+    proposal_mode: bool = False
 
 
 class EstimateLineCreateIn(BaseModel):
