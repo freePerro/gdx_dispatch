@@ -87,8 +87,8 @@
           :data-testid="`job-detail-stage-${stage.toLowerCase().replace(/\s+/g, '-')}`"
           @click="applyStage(stage)" />
         <span class="stage-divider"></span>
-        <Button label="Schedule/Reschedule" icon="pi pi-calendar" severity="info"
-          @click="openSchedule(job.id)" data-testid="job-detail-schedule" />
+        <Button :label="job.scheduled_at ? 'Reschedule' : 'Schedule'" icon="pi pi-calendar" severity="info"
+          @click="openSchedule()" data-testid="job-detail-schedule" />
       </div>
 
       <Tabs v-model:value="activeTab" class="job-tabs">
@@ -467,7 +467,12 @@
         <div class="card">
           <div class="card-header">
             <h3>Appointments</h3>
-            <Button label="Schedule / Reschedule" icon="pi pi-calendar" severity="info" @click="openSchedule(job.id)" />
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+              <Button label="Open calendar" icon="pi pi-external-link" severity="secondary" outlined
+                @click="openAppointmentsPage" data-testid="job-detail-open-appointments" />
+              <Button :label="job.scheduled_at ? 'Reschedule' : 'Schedule'" icon="pi pi-calendar" severity="info"
+                @click="openSchedule()" data-testid="job-detail-schedule-tab" />
+            </div>
           </div>
           <div v-if="appointmentsLoading" class="spinner-wrap small"><ProgressSpinner /></div>
           <DataTable v-else :value="appointments" striped-rows responsive-layout="scroll" emptyMessage="No appointments found">
@@ -1001,6 +1006,76 @@
       </div>
     </section>
 
+    <!-- Schedule / Reschedule. Writes the JOB (scheduled_at + crew); the
+         backend mirrors that into the appointments calendar. -->
+    <Dialog v-model:visible="scheduleDialog" :header="job.scheduled_at ? 'Reschedule Job' : 'Schedule Job'"
+      modal :style="{ width: '480px' }" data-testid="job-schedule-dialog">
+      <div class="schedule-form">
+      <div class="form-field">
+        <label for="schedule-date">Date &amp; time</label>
+        <DatePicker
+          id="schedule-date"
+          v-model="scheduleForm.scheduled_at"
+          showTime
+          hourFormat="12"
+          dateFormat="mm/dd/yy"
+          showIcon
+          showButtonBar
+          class="w-full"
+          data-testid="job-schedule-date"
+        />
+        <small class="muted">Clearing the date returns the job to Service Call and takes it off the calendar.</small>
+      </div>
+      <div class="form-field">
+        <label for="schedule-techs">Technician(s)</label>
+        <MultiSelect
+          id="schedule-techs"
+          v-model="scheduleForm.tech_ids"
+          :options="techOptions"
+          optionLabel="label"
+          optionValue="value"
+          placeholder="Assign a tech"
+          display="chip"
+          filter
+          class="w-full"
+          data-testid="job-schedule-techs"
+        />
+        <!-- Two different outcomes, so two different warnings: with the tenant
+             hard gate on the server returns 422 and refuses the save outright;
+             without it the job saves and waits in the dispatch lane. -->
+        <small v-if="scheduleForm.scheduled_at && !scheduleForm.tech_ids.length" class="schedule-warn"
+          data-testid="job-schedule-no-tech-warning">
+          <template v-if="dispatchSettings.dispatch_block_save_no_tech">
+            A technician is required for scheduled jobs on this account — pick one to save.
+          </template>
+          <template v-else>
+            No tech assigned — this job will wait in the dispatch queue until someone is picked.
+          </template>
+        </small>
+      </div>
+      <div class="form-field">
+        <label for="schedule-duration">Estimated time (hours)</label>
+        <InputText
+          id="schedule-duration"
+          v-model="scheduleForm.duration_hours"
+          type="number"
+          step="0.25"
+          min="0"
+          placeholder="e.g. 1.5"
+          class="w-full"
+          data-testid="job-schedule-duration"
+        />
+        <small class="muted">Drives the dispatch capacity bars. Leave blank to size it from the labor matrix.</small>
+      </div>
+      <p v-if="scheduleError" class="schedule-error" data-testid="job-schedule-error">{{ scheduleError }}</p>
+      <div class="dialog-actions">
+        <Button label="Cancel" severity="secondary" text @click="scheduleDialog = false" />
+        <Button label="Save" icon="pi pi-check" severity="success" :loading="savingSchedule"
+          @click="saveSchedule" data-testid="job-schedule-save" />
+      </div>
+      </div>
+    </Dialog>
+
     <Dialog v-model:visible="addPartDialog" header="Add Part" modal :style="{ width: '420px' }">
       <div class="form-field">
         <label>Part</label>
@@ -1150,6 +1225,8 @@ import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";
 import Tab from "primevue/tab";
 import Select from "primevue/select";
+import MultiSelect from "primevue/multiselect";
+import DatePicker from "primevue/datepicker";
 import InputText from "primevue/inputtext";
 import Textarea from "primevue/textarea";
 import DataTable from "primevue/datatable";
@@ -1248,6 +1325,16 @@ const partsNeeded = ref([]);
 const catalogPickerVisible = ref(false);
 const addingCatalogParts = ref(false);
 const addingPart = ref(false);
+// Schedule/Reschedule dialog — see openSchedule() for why this writes the
+// job row rather than creating an appointment.
+const scheduleDialog = ref(false);
+const savingSchedule = ref(false);
+const scheduleError = ref("");
+const scheduleForm = ref({ scheduled_at: null, tech_ids: [], duration_hours: "" });
+// Tenant dispatch policy — decides whether "scheduled with no tech" is a
+// warning or a hard 422. Defaults to the permissive shape so a failed read
+// never blocks the dialog.
+const dispatchSettings = ref({ dispatch_block_save_no_tech: false });
 const signatureDialog = ref(false);
 const signatureCanvas = ref(null);
 const isDrawing = ref(false);
@@ -2035,8 +2122,98 @@ async function downloadDocument(id) {
   window.open(url, "_blank", "noopener");
 }
 
-function openSchedule(jobId) {
-  router.push(`/appointments?job_id=${encodeURIComponent(jobId || route.params.id)}`);
+// Scheduling happens HERE, against the job row — not on the Appointments
+// page. Two reasons this is the only correct path:
+//   1. `Job.scheduled_at` is canonical. routers/jobs._sync_job_appointment
+//      mirrors it into `appointments` (one row per assigned tech) on every
+//      job write, and the same function SOFT-DELETES a job's appointments
+//      whenever the job has no date. So an appointment created standalone
+//      against a dateless job is deleted by the next unrelated job edit.
+//   2. PATCHing scheduled_at also advances lifecycle_stage → scheduled and
+//      clears the "Awaiting Schedule" pill. Creating an appointment does
+//      neither, leaving the job looking unscheduled on every other surface.
+// This used to router.push('/appointments?job_id=…'); that view never read
+// the query param, so the button landed on an unfiltered appointment list
+// with no job context — a dead end.
+async function loadDispatchSettings() {
+  try {
+    const f = await api.get("/api/dispatch-settings");
+    if (f) dispatchSettings.value = { ...dispatchSettings.value, ...f };
+  } catch { /* defaults stay permissive */ }
+}
+
+function openSchedule() {
+  loadDispatchSettings();
+  const existing = job.value.scheduled_at ? new Date(job.value.scheduled_at) : null;
+  scheduleForm.value = {
+    scheduled_at: existing && !Number.isNaN(existing.getTime()) ? existing : null,
+    tech_ids: assignments.value.length
+      ? assignments.value.map((a) => a.tech_id).filter(Boolean)
+      : (job.value.assigned_to ? [job.value.assigned_to] : []),
+    duration_hours:
+      job.value.scheduled_duration_hours != null ? String(job.value.scheduled_duration_hours) : "",
+  };
+  scheduleError.value = "";
+  scheduleDialog.value = true;
+}
+
+// Save = PATCH the job. `assigned_tech_ids` is the post-S109 crew shape the
+// jobs router resolves through _set_job_assignments, so the crew edited here
+// and the crew on the Details tab stay the same list.
+async function saveSchedule() {
+  if (!job.value.id) return;
+  const picked = scheduleForm.value.scheduled_at;
+  if (picked && Number.isNaN(new Date(picked).getTime())) {
+    scheduleError.value = "That date isn't valid.";
+    return;
+  }
+  savingSchedule.value = true;
+  scheduleError.value = "";
+  try {
+    const payload = {
+      scheduled_at: picked ? new Date(picked).toISOString() : null,
+      assigned_tech_ids: scheduleForm.value.tech_ids || [],
+    };
+    // Scheduling a job means it is no longer waiting to be scheduled. Without
+    // this it keeps the "Ready to Schedule" holding-area stamp create_job gave
+    // it forever — stale data that puts a booked job back in the dispatch
+    // intake queue the moment anything reads holding_area_id.
+    if (picked && job.value.holding_area_id) {
+      payload.holding_area_id = null;
+    }
+    const rawHours = String(scheduleForm.value.duration_hours ?? "").trim();
+    if (rawHours) {
+      const hours = Number(rawHours);
+      if (!Number.isFinite(hours) || hours < 0) {
+        scheduleError.value = "Estimated time must be a positive number of hours.";
+        return;
+      }
+      payload.scheduled_duration_hours = hours;
+    } else {
+      payload.scheduled_duration_hours = null;
+    }
+    await api.patch(`/api/jobs/${job.value.id}`, payload, {
+      successMessage: picked ? "Job scheduled." : "Schedule cleared.",
+    });
+    scheduleDialog.value = false;
+    // The job write mirrors into appointments server-side; re-read all three
+    // so the header pill, the crew list and the Schedule tab agree.
+    await Promise.all([fetchJob(), fetchAssignments(), fetchAppointments()]);
+  } catch (e) {
+    // The tenant hard gate ("A technician is required for scheduled jobs")
+    // comes back as a 422 — surface it in the dialog instead of only as a
+    // toast behind the modal, so the operator sees why the save didn't take.
+    scheduleError.value = e?.message || "Couldn't save the schedule.";
+  } finally {
+    savingSchedule.value = false;
+  }
+}
+
+// Plain /appointments, NOT ?job_id= — that param now redirects back here and
+// reopens the schedule dialog, so passing it would bounce the user straight
+// back to the page they clicked from.
+function openAppointmentsPage() {
+  router.push("/appointments");
 }
 
 // P2.5 — open the Inbox composer already attached to this job. The server
@@ -2308,6 +2485,13 @@ watch(() => activeTab.value, (tab) => {
 
 onMounted(async () => {
   await fetchJob();
+  // `?schedule=1` deep-link — the Dispatch board's "Schedule" verb and the
+  // legacy /appointments?job_id=… redirect both land here wanting the dialog
+  // open, not just the job page.
+  if (route.query.schedule === "1" && job.value?.id) {
+    await fetchAssignments();
+    openSchedule();
+  }
   nextTick(resizeCanvas);
 });
 </script>
@@ -2391,6 +2575,20 @@ onMounted(async () => {
 .activity-meta { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--p-text-muted-color); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
 .muted { color: var(--p-text-muted-color); }
+
+/* Schedule dialog. `.w-full` is used all over this app but never defined
+   anywhere, so the controls need real width rules to fill the dialog. */
+.schedule-form { display: flex; flex-direction: column; gap: 1rem; }
+.schedule-form .form-field { display: flex; flex-direction: column; gap: 0.35rem; }
+.schedule-form .form-field > label { font-weight: 600; font-size: 0.9rem; }
+.schedule-form .form-field small { font-size: 0.78rem; line-height: 1.35; }
+.schedule-form :deep(.p-datepicker),
+.schedule-form :deep(.p-multiselect),
+.schedule-form :deep(.p-inputtext) { width: 100%; }
+/* Both themes: severity colors come from the PrimeVue tokens, which already
+   flip with the light/dark surface. */
+.schedule-warn { color: var(--p-orange-500, #f59e0b); }
+.schedule-error { color: var(--p-red-500, #ef4444); margin: 0; font-size: 0.85rem; }
 .spinner-wrap.small { display: flex; justify-content: center; padding: 1rem; }
 /* S97 slice 6 — multi-tech assignment chips */
 .assignments-block { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }

@@ -194,7 +194,17 @@
       <!-- Day View -->
       <div v-if="viewMode === 'day'" style="display: flex; flex-direction: column;">
         <!-- Unassigned Jobs -->
-        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 2;">
+        <!-- Needs scheduling sits ABOVE the tech grid (2026-08-10). It used to
+             render at order:2, below every tech column and the holding areas —
+             on a board with more than a couple of techs a freshly created job
+             landed below the fold, which reads as "my new job never showed up
+             on dispatch". This is the queue the dispatcher works from; it goes
+             first. -->
+        <Card class="board-section unassigned-section-card" data-testid="unassigned-section" style="order: 1;"
+          :class="{ 'drag-over': dragOverTechId === 'unassigned-queue' }"
+          @dragover.prevent="onDragOver('unassigned-queue')"
+          @dragleave="dragOverTechId = null"
+          @drop.prevent="moveToScheduleQueue($event)">
           <template #title>
             <div class="section-header">
               <span class="section-icon pi pi-exclamation-triangle"></span>
@@ -228,7 +238,14 @@
                 </div>
                 <div class="job-card-body">
                   <p class="job-line"><i class="pi pi-briefcase"></i> {{ job.job_type || 'Service' }}</p>
-                  <p class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
+                  <!-- This section now also carries dated-but-untechhed jobs
+                       (see unassignedJobs), so the card has to say which it
+                       is — "needs a date" and "needs a tech" are different
+                       jobs for the dispatcher. -->
+                  <p v-if="job.scheduled_at" class="job-line job-line-dated" :data-testid="`unassigned-date-${job.id}`">
+                    <i class="pi pi-calendar"></i> {{ formatScheduled(job.scheduled_at) }} · needs a tech
+                  </p>
+                  <p v-else class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
                   <p v-if="job.address" class="job-line"><i class="pi pi-map-marker"></i> {{ job.address }}</p>
                 </div>
                 <div class="job-card-actions" @click.stop>
@@ -241,10 +258,25 @@
                     :data-testid="`assign-dropdown-${job.id}`"
                     @change="assignJob(job.id, $event.value)"
                   />
+                  <!-- Assigning a tech dates the job to the selected day
+                       (_doAssignJobInner case c). When the dispatcher needs a
+                       specific date/time instead, send them to the job's
+                       schedule dialog — the one place that writes
+                       Job.scheduled_at properly. -->
+                  <Button
+                    icon="pi pi-calendar-plus"
+                    severity="secondary"
+                    outlined
+                    size="small"
+                    v-tooltip="'Pick a date and time'"
+                    aria-label="Pick a date and time"
+                    :data-testid="`schedule-job-${job.id}`"
+                    @click="openScheduleDialog(job.id)"
+                  />
                 </div>
               </div>
-              <p v-if="!unassignedJobs.length" class="empty-message">
-                <i class="pi pi-check-circle"></i> All jobs assigned for this date.
+              <p v-if="!unassignedJobs.length" class="empty-message drop-hint">
+                <i class="pi pi-check-circle"></i> Nothing waiting to be scheduled — drop a job here to queue it.
               </p>
             </div>
           </template>
@@ -277,7 +309,7 @@
         </div>
 
         <!-- Technician Columns -->
-        <div class="tech-columns-grid" style="order: 1;">
+        <div class="tech-columns-grid" style="order: 3;">
           <Card
             v-for="tech in technicianColumns"
             :key="tech.id"
@@ -341,7 +373,7 @@
         </div>
 
         <!-- Holding Areas -->
-        <div v-if="holdingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 1;">
+        <div v-if="parkingHoldingAreas.length || dispatchSettings.dispatch_show_unassigned_lane" class="holding-areas-section" style="order: 2;">
           <div class="holding-areas-header">
             <h3>Holding Areas</h3>
             <Button icon="pi pi-plus" label="Add Area" size="small" severity="secondary"
@@ -366,6 +398,7 @@
               <template #content>
                 <div v-for="job in sortedScheduledUnassigned" :key="job.id"
                   class="job-card holding-job-card scheduled-unassigned-card"
+                  :data-testid="`scheduled-unassigned-job-${job.id}`"
                   :class="{ 'scheduled-overdue': isOverdue(job) }"
                   :style="{ borderLeft: '3px solid ' + (isOverdue(job) ? '#7f1d1d' : '#dc2626'), cursor: 'grab' }"
                   draggable="true"
@@ -385,7 +418,7 @@
                 </p>
               </template>
             </Card>
-            <Card v-for="area in holdingAreas" :key="area.id" class="holding-area-col"
+            <Card v-for="area in parkingHoldingAreas" :key="area.id" class="holding-area-col"
               :style="{ borderTop: '3px solid ' + area.color }"
               @dragover.prevent="onDragOver(area.id)"
               @dragleave="dragOverTechId = null"
@@ -1033,13 +1066,64 @@ const dayJobs = computed(() => rangeFilteredJobs.value.filter((j) => matchesDate
 // holding area — true leads waiting to be slotted. Scheduled-but-no-tech
 // jobs live in the red "Scheduled — Not Assigned" lane regardless of date,
 // so a salesperson penciling in an asap job can't slip past the dispatcher.
+// "Ready to Schedule" is not a parking lot — it is the INTAKE QUEUE. Every
+// job created without a date is auto-routed into it server-side
+// (routers/jobs.create_job: derived_holding_area → _holding_area_id_by_name
+// "Ready to Schedule"). Because this filter excluded anything with a
+// holding_area_id, that meant EVERY newly created job was excluded from the
+// section called "New Jobs to Schedule" — which then rendered "All jobs
+// assigned for this date" while hundreds of unscheduled jobs sat in a
+// side column. That is the "I made a job and it never showed up on dispatch"
+// report (2026-08-10). Jobs in this one area belong in the queue; the other
+// areas (Needs Parts, Waiting on doors, …) are genuine parking and stay out.
+const READY_TO_SCHEDULE = 'ready to schedule';
+const readyToScheduleAreaId = computed(() => {
+  const area = (holdingAreas.value || []).find(
+    (a) => String(a.name || '').trim().toLowerCase() === READY_TO_SCHEDULE,
+  );
+  return area ? String(area.id) : null;
+});
+
+// 2026-08-10: the "regardless of date" promise above only held when the red
+// lane was actually rendered, and dispatch_show_unassigned_lane defaults to
+// FALSE. With it off, a job that had a date but no tech appeared in NO
+// section: excluded here for having a date, excluded from the tech columns
+// (those key off assigned_tech_ids), and its lane not drawn. So when the lane
+// is off we fold those jobs in here instead — nothing that needs a dispatcher
+// is allowed to be invisible on the dispatch board.
+// Areas the board can actually draw a column for. A job stamped with an area
+// that isn't in this set (renamed, soft-deleted — note jobs._holding_area_id_by_name
+// has no deleted_at filter, so create_job can still route into a dead area)
+// has no column to appear in. Those jobs belong in the queue rather than
+// nowhere; "invisible" is the failure mode this whole change exists to kill.
+const knownHoldingAreaIds = computed(
+  () => new Set((holdingAreas.value || []).map((a) => String(a.id))),
+);
+
 const unassignedJobs = computed(() =>
-  jobs.value.filter((j) =>
-    !j.scheduled_at &&
-    !j.technician_id &&
-    !j.holding_area_id &&
-    !isCompletedStatus(j.status)
-  )
+  jobs.value.filter((j) => {
+    if (isCompletedStatus(j.status)) return false;
+    if (j.technician_id) return false;
+    if (j.holding_area_id) {
+      const areaId = String(j.holding_area_id);
+      const parked = areaId !== readyToScheduleAreaId.value && knownHoldingAreaIds.value.has(areaId);
+      if (parked) return false;
+    }
+    if (!j.scheduled_at) return true;
+    // A dated job only belongs in THIS day's queue — unlike undated intake,
+    // which is dateless by definition, dated rows come back for the whole
+    // fetched range (±1 day, or the week/custom range) and would otherwise
+    // pile next month's work into today's column.
+    if (!matchesDate(j, selectedDateStr.value)) return false;
+    return !dispatchSettings.value.dispatch_show_unassigned_lane;
+  })
+);
+
+// The intake queue renders at the top of the board, so its column in the
+// holding-areas row would show the same cards twice. Park the other areas
+// only.
+const parkingHoldingAreas = computed(() =>
+  (holdingAreas.value || []).filter((a) => String(a.id) !== readyToScheduleAreaId.value),
 );
 
 // Drop-target list for the "Assign to tech" dropdowns. Inactive techs
@@ -1347,6 +1431,13 @@ async function confirmDurationPrompt(skip = false) {
   });
 }
 
+// Hand off to the job page's schedule dialog (the only surface that writes
+// Job.scheduled_at + crew together, which is what the appointments mirror and
+// the lifecycle stage both key off).
+function openScheduleDialog(jobId) {
+  router.push(`/jobs/${encodeURIComponent(jobId)}?schedule=1`);
+}
+
 async function assignJob(jobId, techId, scheduledAt = null) {
   // Sprint dispatch-capacity — gate every assignment path through one
   // duration check. Unassign (techId=null) is exempt; the prompt only
@@ -1630,6 +1721,28 @@ async function moveToHoldingArea(event, areaId) {
   draggingJobId.value = null;
   await withBoardWrite(async () => {
     jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null };
+    try {
+      await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
+    } catch { await refreshBoard(); }
+  });
+}
+
+// Drop onto the "New Jobs to Schedule" queue. The old way to do this was to
+// drag onto the "Ready to Schedule" holding-area column; that column no longer
+// renders separately (its jobs ARE this queue), so the queue takes the drop.
+// Routes the job back to the intake area and clears the tech, mirroring
+// moveToHoldingArea.
+async function moveToScheduleQueue(event) {
+  dragOverTechId.value = null;
+  const transferId = event?.dataTransfer?.getData("text/plain");
+  const jobId = transferId || draggingJobId.value;
+  if (!jobId) return;
+  const idx = jobs.value.findIndex((j) => String(j.id) === String(jobId));
+  if (idx === -1) return;
+  draggingJobId.value = null;
+  const areaId = readyToScheduleAreaId.value || null;
+  await withBoardWrite(async () => {
+    jobs.value[idx] = { ...jobs.value[idx], holding_area_id: areaId, technician_id: null, assigned_tech_ids: [] };
     try {
       await api.patch(`/api/jobs/${jobId}`, { assigned_to: null, holding_area_id: areaId });
     } catch { await refreshBoard(); }
@@ -2118,10 +2231,22 @@ defineExpose({
 
 .job-card-actions {
   margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .assign-dropdown {
-  width: 100%;
+  /* flex-1 rather than 100% now that the schedule button shares the row */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A dated job in this section is waiting on a TECH, not on a date — call
+   that out rather than letting it read like the undated cards. */
+.job-line-dated {
+  color: var(--p-orange-500, #f59e0b);
+  font-weight: 600;
 }
 
 .empty-message {

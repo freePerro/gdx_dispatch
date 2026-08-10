@@ -218,6 +218,7 @@
 <script setup>
 import { appointmentStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDateTime as fmtDateTime } from '../composables/useFormatters';
 import Badge from 'primevue/badge';
@@ -236,6 +237,8 @@ import Textarea from 'primevue/textarea';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const route = useRoute();
+const router = useRouter();
 
 const appointments = ref([]);
 const loading = ref(false);
@@ -550,6 +553,18 @@ watch([statusFilter, rangeKey], () => {
 }, { immediate: true });
 
 onMounted(() => {
+  // `?job_id=` means "schedule THIS job". This view can't do that correctly:
+  // POST /api/appointments writes an appointment but never sets
+  // Job.scheduled_at, and routers/jobs._sync_job_appointment soft-deletes a
+  // job's appointments whenever the job has no date — so the row created here
+  // would vanish on the next job edit. Scheduling is a JOB write, so hand off
+  // to the job page's schedule dialog. Previously this param was ignored
+  // entirely and the Schedule button on a job dead-ended on this list.
+  const jobId = route.query.job_id ? String(route.query.job_id) : '';
+  if (jobId) {
+    router.replace(`/jobs/${encodeURIComponent(jobId)}?schedule=1`);
+    return;
+  }
   fetchSupportingData();
   fetchUnconfirmed();
 });
