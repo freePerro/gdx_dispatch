@@ -19,7 +19,11 @@ const FIXTURES_PATH = path.resolve('e2e/.state/fixtures.json');
 
 async function login(ctx) {
   const res = await ctx.post('/auth/login', {
-    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT },
+    // `x-e2e-test` opts into the auth rate-limit bypass, which only exists on
+    // servers started with GDX_E2E_BYPASS=1 (never prod). Without it, running
+    // the suite twice in quick succession fails global setup with a 429 before
+    // a single test executes.
+    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
     data: { email: EMAIL, password: PASSWORD },
   });
   if (!res.ok()) throw new Error(`login failed (${res.status()}): ${await res.text()}`);
