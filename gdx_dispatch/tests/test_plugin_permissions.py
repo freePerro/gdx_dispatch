@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from gdx_dispatch.core.permissions import AVAILABLE_PERMISSIONS, BUILTIN_ROLES, WILDCARD
 from gdx_dispatch.core import plugin_permissions
+from gdx_dispatch.core.permissions import AVAILABLE_PERMISSIONS, BUILTIN_ROLES, WILDCARD
 from gdx_dispatch.core.plugin_permissions import (
     action_for_method,
     catalog_entries,

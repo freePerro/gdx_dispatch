@@ -56,11 +56,9 @@ from gdx_dispatch.core.plugin_permissions import (  # noqa: E402
     may_grant_plugin_permission,
 )
 
-
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
-
 from gdx_dispatch.models.tenant_models import TenantRole as Role  # noqa: E402
 from gdx_dispatch.models.tenant_models import UserRoleAssignment
 

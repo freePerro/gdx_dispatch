@@ -27,32 +27,47 @@ down_revision = "061_retire_standalone_proposals"
 branch_labels = None
 depends_on = None
 
-_KEYS = ("plugins.read", "plugins.write")
-
-
 def upgrade() -> None:
     bind = op.get_bind()
-    for key in _KEYS:
-        bind.exec_driver_sql(
-            f"""
-            UPDATE tenant_roles
-            SET permissions = (permissions::jsonb || '["{key}"]'::jsonb)::text,
-                updated_at = now()
-            WHERE name IN ('admin', 'owner')
-              AND deleted_at IS NULL
-              AND NOT (permissions::jsonb ? '{key}');
-            """
-        )
+    # Literal statements rather than a loop over the key names: the keys are
+    # fixed, and interpolating them would read as string-built SQL.
+    bind.exec_driver_sql(
+        """
+        UPDATE tenant_roles
+        SET permissions = (permissions::jsonb || '["plugins.read"]'::jsonb)::text,
+            updated_at = now()
+        WHERE name IN ('admin', 'owner')
+          AND deleted_at IS NULL
+          AND NOT (permissions::jsonb ? 'plugins.read');
+        """
+    )
+    bind.exec_driver_sql(
+        """
+        UPDATE tenant_roles
+        SET permissions = (permissions::jsonb || '["plugins.write"]'::jsonb)::text,
+            updated_at = now()
+        WHERE name IN ('admin', 'owner')
+          AND deleted_at IS NULL
+          AND NOT (permissions::jsonb ? 'plugins.write');
+        """
+    )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    for key in _KEYS:
-        bind.exec_driver_sql(
-            f"""
-            UPDATE tenant_roles
-            SET permissions = (permissions::jsonb - '{key}')::text,
-                updated_at = now()
-            WHERE name IN ('admin', 'owner') AND deleted_at IS NULL;
-            """
-        )
+    bind.exec_driver_sql(
+        """
+        UPDATE tenant_roles
+        SET permissions = (permissions::jsonb - 'plugins.read')::text,
+            updated_at = now()
+        WHERE name IN ('admin', 'owner') AND deleted_at IS NULL;
+        """
+    )
+    bind.exec_driver_sql(
+        """
+        UPDATE tenant_roles
+        SET permissions = (permissions::jsonb - 'plugins.write')::text,
+            updated_at = now()
+        WHERE name IN ('admin', 'owner') AND deleted_at IS NULL;
+        """
+    )
