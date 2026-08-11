@@ -308,7 +308,14 @@ const moreModules = computed(() => {
         // mobile_friendly: true → render normally. false → render dimmed
         // with a "Desktop" pill so the tech knows the destination is
         // not phone-shaped.
-        mobile_friendly: MOBILE_FRIENDLY_PATHS.has(resolvedTo),
+        //
+        // An entry may decide this for itself — plugin entries do, from their
+        // UI manifest (useTenantModules `pluginMobileFriendly`), because their
+        // `/plugins/<key>` path is only known at runtime and could never match
+        // the literal-path set below. Everything else falls back to the set.
+        // Note this is a `??`, not a truthiness check: `false` is a real answer
+        // and must not fall through to the lookup.
+        mobile_friendly: module.mobile_friendly ?? MOBILE_FRIENDLY_PATHS.has(resolvedTo),
       };
     });
   return isTech ? [...base, { ...PROFILE_DRAWER_ENTRY, mobile_friendly: true }] : base;

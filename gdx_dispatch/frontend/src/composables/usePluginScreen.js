@@ -9,6 +9,23 @@ import { ref, computed } from 'vue';
  * @param {string} pluginKey
  * @param {{get: Function, post: Function}} api  e.g. useApiWithToast()
  */
+/**
+ * Value of a manifest-declared column for one row.
+ *
+ * PluginScreen takes over `<Column>`'s #body slot (to render the per-cell label
+ * the phone card layout needs), which means resolving the field itself instead
+ * of letting PrimeVue do it. PrimeVue's resolveFieldData supports dotted paths,
+ * so this has to as well — otherwise a manifest declaring `field: "door.width"`
+ * would silently render blank cells the day someone writes one.
+ *
+ * Exported for the unit spec.
+ */
+export function cellValue(row, field) {
+  if (!row || typeof field !== 'string' || !field) return '';
+  if (!field.includes('.')) return row[field];
+  return field.split('.').reduce((acc, part) => (acc == null ? acc : acc[part]), row);
+}
+
 export function usePluginScreen(pluginKey, api) {
   const screens = ref([]);
   // Rows PER list screen, keyed by the screen's endpoint — a plugin may declare

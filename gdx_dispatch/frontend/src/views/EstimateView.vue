@@ -304,22 +304,33 @@
                       @click="removeLineAt(idx)"
                       data-testid="est-line-delete" />
                   </span>
+                  <!-- Field labels for the phone layout. The column header row
+                       above is hidden below 768px, so each control needs its own
+                       label there. `display: none` on desktop removes them from
+                       the grid entirely (a display:none element is not a grid
+                       item), so the 9-track desktop row is byte-identical. -->
+                  <span class="line-label">Category</span>
                   <Select v-model="item.category" :options="lineCategories" placeholder="Category"
                     class="col-cat" :data-testid="`est-line-cat-${idx}`"
                     @change="recomputeSell(item)" />
+                  <span class="line-label">Description</span>
                   <InputText v-model="item.description" placeholder="Description"
                     class="col-desc" :data-testid="`est-line-desc-${idx}`" />
+                  <span class="line-label">Qty</span>
                   <InputNumber v-model="item.quantity" :min="1" :useGrouping="false"
                     class="col-qty" :data-testid="`est-line-qty-${idx}`"
                     @input="onQtyInput(item, $event)" />
+                  <span class="line-label">Cost</span>
                   <InputNumber v-model="item.cost" mode="currency" currency="USD" locale="en-US"
                     :min="0" class="col-cost" :data-testid="`est-line-cost-${idx}`"
                     @update:modelValue="recomputeSell(item)"
                     @input="onCostInput(item, $event)" />
+                  <span class="line-label">Unit Price</span>
                   <InputNumber v-model="item.unit_price" mode="currency" currency="USD" locale="en-US"
                     :min="0" class="col-price" :data-testid="`est-line-price-${idx}`"
                     @update:modelValue="markPriceOverride(item)"
                     @input="onPriceInput(item, $event)" />
+                  <span class="line-label">Margin</span>
                   <InputNumber
                     v-if="estimateFeatures.estimates_allow_line_margin_override"
                     v-model="item.margin_pct_override"
@@ -329,6 +340,7 @@
                     @update:modelValue="onMarginOverrideChange(item)"
                     @input="onMarginInput(item, $event)" />
                   <span v-else class="col-margin line-margin-display">{{ marginDisplay(item) }}</span>
+                  <span class="line-label">Total</span>
                   <span class="col-total line-total-display">{{ currency(toNum(item.quantity) * toNum(item.unit_price)) }}</span>
                   <Button v-tooltip="'Save this line to the catalog'" icon="pi pi-bookmark" aria-label="Save to catalog" text size="small" class="col-action"
                     :data-testid="`save-to-catalog-${idx}`"
@@ -2974,11 +2986,58 @@ onUnmounted(() => {
 .save-catalog-form .form-row-stack label { font-size: 0.85em; font-weight: 600; color: var(--text-primary, inherit); }
 .save-catalog-form .muted { color: var(--text-muted, var(--p-text-muted-color)); font-size: 0.8em; }
 
+/* The per-field labels exist only for the phone layout; on desktop the column
+   header row labels them. display:none also takes them OUT of the grid, so the
+   9-track desktop row is unaffected by their presence. */
+.line-label { display: none; }
+
 @media (max-width: 768px) {
   .form-grid { grid-template-columns: 1fr; }
   .line-item-header { display: none; }
   .totals-and-profit { flex-direction: column; }
   .totals-and-profit > * { width: 100%; }
+
+  /* The header was already hidden here, but the ROW kept its nine fixed
+     columns (~840px), so an estimate on a phone scrolled sideways and the
+     Total column sat off-screen — you could not see what you were quoting.
+     Restack each line as a label/value card. Same view, same pricing engine,
+     same margin and override handling; only the layout changes. */
+  .line-item-row {
+    grid-template-columns: minmax(5.5rem, auto) 1fr;
+    align-items: center;
+    gap: 0.35rem 0.6rem;
+    padding: 0.7rem 0.75rem;
+    margin-bottom: 0.6rem;
+    border: 1px solid var(--p-content-border-color, #e5e7eb);
+    border-radius: 0.55rem;
+  }
+  .line-label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary, var(--p-text-muted-color, #6b7280));
+  }
+  /* Controls fill the value column; the fixed col-* widths are desktop-only. */
+  .line-item-row > .col-cat,
+  .line-item-row > .col-desc,
+  .line-item-row > .col-qty,
+  .line-item-row > .col-cost,
+  .line-item-row > .col-price,
+  .line-item-row > .col-margin,
+  .line-item-row > .col-total { width: 100%; min-width: 0; }
+  /* Both action cells span the full card width instead of sitting in the
+     invisible 64px/36px edge columns: reorder+delete keep their place at the
+     top of the card (they are emitted first, as on desktop) and save-to-catalog
+     lands at the bottom. */
+  .line-item-row > .col-action {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .line-total-display { font-weight: 600; }
+  .line-item-buttons { flex-wrap: wrap; }
 }
 
 .hidden-file-input { display: none; }

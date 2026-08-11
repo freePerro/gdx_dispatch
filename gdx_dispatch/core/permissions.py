@@ -143,6 +143,20 @@ PERMISSIONS: Final[list[tuple[str, str, str]]] = [
     ("mobile.dispatch_view", "Use the mobile dispatch surface (/mobile/dispatch)", "mobile"),
     ("mobile.chat", "Send/receive per-job chat messages", "mobile"),
 
+    # Third-party plugins (ADR-013). These two are the BLANKET grants — "any
+    # installed plugin". The fine-grained, per-plugin keys (plugin.<key>.read /
+    # plugin.<key>.write) are generated from the installed catalog at runtime and
+    # are NOT listed here, because which plugins exist is a deployment fact.
+    #
+    # Both layers exist on purpose. BUILTIN_ROLES["admin"] is _all_except(...)
+    # over this static list, so a purely dynamic scheme would leave admins with
+    # no plugin key at all and lock them out of their own tenant's plugins —
+    # the one thing this module says must never happen. The blanket keys land in
+    # the admin contract for free; per-plugin keys are what a tenant hands to
+    # everyone else. See core/plugin_permissions.py for the OR-resolution.
+    ("plugins.read", "Use any installed plugin (read)", "plugins"),
+    ("plugins.write", "Change data in any installed plugin", "plugins"),
+
     # Navigation tiers — nav-visibility ONLY (no API route enforces these).
     # They replace the old hardcoded FIELD_TECH_MODULES / OFFICE_MODULES Sets in
     # the frontend: a module with no fine-grained permission is gated by its nav

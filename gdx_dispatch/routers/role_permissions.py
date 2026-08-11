@@ -47,12 +47,18 @@ from gdx_dispatch.core.permissions import (  # noqa: E402
     PLATFORM_LOCKED_ROLES,
     WILDCARD,
 )
-
+from gdx_dispatch.core.plugin_permissions import (  # noqa: E402
+    catalog_entries as plugin_catalog_entries,
+)
+from gdx_dispatch.core.plugin_permissions import (  # noqa: E402
+    installed_plugin_keys,
+    is_plugin_permission,
+    may_grant_plugin_permission,
+)
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
-
 from gdx_dispatch.models.tenant_models import TenantRole as Role  # noqa: E402
 from gdx_dispatch.models.tenant_models import UserRoleAssignment
 
@@ -68,7 +74,10 @@ class RoleIn(BaseModel):
     @field_validator("permissions")
     @classmethod
     def _must_be_known(cls, v):
-        unknown = [p for p in v if p not in AVAILABLE_PERMISSIONS]
+        unknown = [
+            p for p in v
+            if p not in AVAILABLE_PERMISSIONS and not is_plugin_permission(p)
+        ]
         if unknown:
             raise ValueError(f"unknown permissions: {unknown}")
         return list(dict.fromkeys(v))
@@ -84,7 +93,10 @@ class RolePatch(BaseModel):
     def _must_be_known(cls, v):
         if v is None:
             return v
-        unknown = [p for p in v if p not in AVAILABLE_PERMISSIONS]
+        unknown = [
+            p for p in v
+            if p not in AVAILABLE_PERMISSIONS and not is_plugin_permission(p)
+        ]
         if unknown:
             raise ValueError(f"unknown permissions: {unknown}")
         return list(dict.fromkeys(v))
@@ -251,7 +263,17 @@ def _enforce_delegation_cap(
     grantor_perms: set[str] = getattr(request.state, "user_permissions", set()) or set()
     if WILDCARD in grantor_perms:
         return
-    overreach = sorted(set(requested_perms) - grantor_perms)
+    # Per-plugin keys are conferred by the BLANKET grant for that action, not by
+    # holding the identical key. An admin's contract is `plugins.write` and can
+    # never contain `plugin.chipricing.write` (per-plugin keys aren't in the
+    # static catalog), so an exact-match cap would show admins every per-plugin
+    # checkbox and let them tick none — leaving the owner as the only person who
+    # could ever delegate a plugin. This is still a cap, not a hole: a grantor
+    # without the blanket key for that action grants nothing.
+    overreach = sorted(
+        p for p in set(requested_perms) - grantor_perms
+        if not may_grant_plugin_permission(grantor_perms, p)
+    )
     if overreach:
         raise HTTPException(
             status_code=403,
@@ -296,13 +318,27 @@ def _audit(
 
 @router.get("/api/role-permissions/permissions", response_model=None)
 def list_permissions(_: dict = Depends(get_current_user)) -> list[str]:
-    return list(AVAILABLE_PERMISSIONS)
+    return [*AVAILABLE_PERMISSIONS, *(e["key"] for e in _plugin_permission_rows())]
+
+
+def _plugin_permission_rows() -> list[dict[str, str]]:
+    """Per-plugin permission rows for the installed plugins, or [] if the
+    plugin-host can't be reached. Never raises — a plugin-host outage must
+    degrade the catalog to the blanket keys, not break the Roles screen."""
+    return plugin_catalog_entries(installed_plugin_keys())
 
 
 @router.get("/api/role-permissions/permissions/catalog", response_model=None)
 def list_permissions_catalog(_: dict = Depends(get_current_user)) -> list[dict[str, str]]:
-    """Rich catalog: {key, label, category}. Frontend uses category for grid grouping."""
-    return [{"key": k, "label": label, "category": category} for (k, label, category) in PERMISSIONS]
+    """Rich catalog: {key, label, category}. Frontend uses category for grid grouping.
+
+    Static keys plus one read/write pair per installed plugin (ADR-013). The
+    frontend needs no change for these: RolePermissionsView buckets whatever
+    categories the catalog returns, so the plugin pairs render as their own
+    "Plugins" group.
+    """
+    static = [{"key": k, "label": label, "category": category} for (k, label, category) in PERMISSIONS]
+    return [*static, *_plugin_permission_rows()]
 
 
 # Sprint 1.5 banner — was backed by a per-tenant ``TenantFeatureFlag`` raised by

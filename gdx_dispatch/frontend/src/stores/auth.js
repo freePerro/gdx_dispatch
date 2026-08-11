@@ -277,6 +277,21 @@ export const useAuthStore = defineStore('auth', () => {
     return permissions.value.has(key);
   }
 
+  /**
+   * May the user use this plugin? (ADR-013 per-plugin authorization.)
+   *
+   * Mirrors the backend's OR across the two layers — the blanket
+   * `plugins.<action>` grant OR the specific `plugin.<key>.<action>` grant.
+   * `hasPermission` alone is an exact Set lookup, and the builtin admin
+   * contract holds the BLANKET key and can never hold a per-plugin one (those
+   * aren't in the static catalog). Gating nav on the specific key alone would
+   * therefore hide every plugin from admins while the API happily served them.
+   */
+  function hasPluginPermission(pluginKey, action = 'read') {
+    if (!pluginKey) return false;
+    return hasPermission(`plugins.${action}`) || hasPermission(`plugin.${pluginKey}.${action}`);
+  }
+
   // Single-flight refresh: concurrent 401s share one /auth/refresh POST.
   // Without this, parallel API calls each fire their own refresh and the
   // server's replay detector logs refresh_replay_detected and force-logs-out.
@@ -329,6 +344,7 @@ export const useAuthStore = defineStore('auth', () => {
     refreshAccessToken,
     loadPermissions,
     hasPermission,
+    hasPluginPermission,
     hydrateUser,
   };
 });

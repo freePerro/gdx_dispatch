@@ -223,6 +223,12 @@ def restart_plugin_host(_: dict = Depends(_require_owner)) -> dict:
         httpx.post(f"{url}/internal/restart", timeout=5.0)
     except Exception:
         logging.getLogger(__name__).warning("plugin-host restart trigger failed (may be cycling)")
+    # The permission catalog caches the installed-plugin list; a restart is
+    # exactly when that list changes, so drop it rather than making the owner
+    # wait out the TTL to see the new plugin's permission checkboxes.
+    from gdx_dispatch.core.plugin_permissions import reset_catalog_cache
+
+    reset_catalog_cache()
     return {"status": "restart requested"}
 
 

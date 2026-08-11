@@ -25,16 +25,25 @@
             :rowHover="!!screen.detail_endpoint"
             @row-click="screen.detail_endpoint && onRowClick(screen, $event)"
           >
-            <Column v-for="c in screen.columns" :key="c.field" :field="c.field" :header="c.label" />
+            <Column v-for="c in screen.columns" :key="c.field" :field="c.field" :header="c.label">
+              <template #body="{ data }">
+                <!-- Below the mobile breakpoint the header row is hidden and each
+                     row becomes a card, so every cell has to carry its own label
+                     (the plugin declares it — this renderer can't hardcode
+                     nth-child labels the way a fixed table can). Hidden on
+                     desktop, where the real <thead> is doing that job. -->
+                <span class="plugin-screen__cell-label">{{ c.label }}</span>{{ cellValue(data, c.field) }}
+              </template>
+            </Column>
             <template v-if="screen.detail_endpoint" #footer>
-              <small>Click a row to see everything captured.</small>
+              <small>{{ isMobileViewport ? 'Tap' : 'Click' }} a row to see everything captured.</small>
             </template>
           </DataTable>
 
           <!-- Phase 2 (ADR-014): streamed headless browser, gated by the "browser"
                permission + owner consent on the backend. -->
           <BrowserStream
-            v-if="screen.type === 'browser'"
+            v-if="screen.type === 'browser' && !isMobileViewport"
             :plugin-key="pluginKey"
             :url="screen.url"
             :capture-endpoint="screen.capture_endpoint || ''"
@@ -42,6 +51,24 @@
             :folders-endpoint="screen.folders_endpoint || ''"
             @captured="load"
           />
+          <!-- Same screen on a phone. The stream is a full-size remote page
+               (1280x800) driven by hand — scaled into a phone viewport the text
+               is unreadable, and it opens a WebSocket + a server-side browser to
+               get there. Say what's happening instead of connecting: the other
+               tabs of this plugin still work here. -->
+          <div
+            v-else-if="screen.type === 'browser'"
+            class="plugin-screen__desktop-only"
+            data-testid="plugin-screen-desktop-only"
+          >
+            <i class="pi pi-desktop plugin-screen__desktop-only-icon" aria-hidden="true" />
+            <p class="plugin-screen__desktop-only-title">This screen needs a computer</p>
+            <p class="plugin-screen__hint">
+              {{ screen.title || 'It' }} streams a full-size web page that you drive by hand.
+              At phone width it's too small to read or click accurately, so it isn't
+              opened here. The other tabs on this plugin work fine on a phone.
+            </p>
+          </div>
 
           <!-- Settings screen: per-field toggles, plus an optional ordered field
                list. GET endpoint -> {fields:[{name,on_quote}],
@@ -131,7 +158,13 @@
 
     <!-- Row detail: everything the capture saved, grouped into the sections the
          plugin's detail endpoint returns (e.g. Quote / Installer / Receiving). -->
-    <Dialog v-model:visible="detailVisible" :header="detailTitle" modal :style="{ width: '46rem' }">
+    <Dialog
+      v-model:visible="detailVisible"
+      :header="detailTitle"
+      modal
+      :style="{ width: '46rem' }"
+      :breakpoints="{ '768px': '95vw' }"
+    >
       <p v-if="detailLoading">Loading…</p>
       <div v-for="sec in detailSections" :key="sec.title" class="plugin-screen__detail-sec">
         <h4>{{ sec.title }}</h4>
@@ -172,9 +205,17 @@ import InputNumber from 'primevue/inputnumber';
 import BrowserStream from './BrowserStream.vue';
 import MeasurementDiagram from './MeasurementDiagram.vue';
 import { useApiWithToast } from '../composables/useApiWithToast';
-import { usePluginScreen } from '../composables/usePluginScreen';
+import { cellValue, usePluginScreen } from '../composables/usePluginScreen';
+import { useViewMode } from '../composables/useViewMode';
 
 const props = defineProps({ pluginKey: { type: String, required: true } });
+
+// Phone viewport — the shared 768px media query from useViewMode (viewport
+// only; the stored desktop/mobile preference does NOT feed this flag). Layout
+// is CSS below; this drives the two decisions CSS can't make: don't open a
+// browser-stream socket that can't be used at this width, and label the row-tap
+// affordance correctly.
+const { isMobileViewport } = useViewMode();
 
 const api = useApiWithToast();
 const { screens, rows, rowsFor, loading, error, load, create, fetchOptions } = usePluginScreen(props.pluginKey, api);
@@ -385,4 +426,65 @@ onMounted(async () => {
 .plugin-screen__help-p { margin: 0 0 0.4rem; line-height: 1.5; }
 .plugin-screen__help-bullet { margin: 0 0 0.25rem; padding-left: 1.1rem; position: relative; line-height: 1.5; }
 .plugin-screen__help-bullet::before { content: "•"; position: absolute; left: 0.2rem; color: var(--p-text-color-secondary, #6b7280); }
+
+/* The per-cell label only exists for the mobile card layout; the real <thead>
+   labels the columns everywhere else. */
+.plugin-screen__cell-label { display: none; }
+
+.plugin-screen__desktop-only {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 0.4rem; padding: 2rem 1rem; max-width: 34rem; margin: 0 auto;
+  border: 1px dashed var(--p-content-border-color, #e5e7eb); border-radius: 0.6rem;
+}
+.plugin-screen__desktop-only-icon { font-size: 1.6rem; color: var(--p-text-color-secondary, #6b7280); }
+.plugin-screen__desktop-only-title { margin: 0; font-weight: 600; color: var(--p-text-color, #1f2937); }
+.plugin-screen__desktop-only .plugin-screen__hint { margin: 0; }
+
+/* ── phone layout ────────────────────────────────────────────────────────────
+   A plugin declares its columns/fields; this renderer can't know how many or
+   how wide, so on a phone the generic table + fixed-width form rows overflow
+   (audit P1 #3, the systemic wide-table finding). Same treatment the hand-built
+   mobile companions use — hide the header, stack each row into a card, and let
+   every fixed width go fluid. Scoped to the breakpoint so the desktop layout
+   these plugins are used on every day is untouched. */
+@media (max-width: 768px) {
+  /* Tab strip: 4 tabs (Workspace / Captured / Settings / Help) don't fit at
+     390px — scroll them instead of squeezing or clipping. */
+  .plugin-screen :deep(.p-tablist-tab-list) { overflow-x: auto; }
+  .plugin-screen :deep(.p-tab) { white-space: nowrap; }
+  .plugin-screen__screen { padding-inline: 0; }
+
+  /* List → card stack. */
+  .plugin-screen :deep(.p-datatable-thead) { display: none; }
+  .plugin-screen :deep(.p-datatable-tbody > tr) {
+    display: flex; flex-direction: column; gap: 0.2rem;
+    border: 1px solid var(--p-content-border-color, #e5e7eb);
+    border-radius: 0.55rem; margin-bottom: 0.45rem; padding: 0.6rem 0.75rem;
+  }
+  .plugin-screen :deep(.p-datatable-tbody > tr > td) {
+    border: 0; padding: 0.1rem 0; width: 100% !important; text-align: left;
+  }
+  .plugin-screen__cell-label {
+    display: inline; margin-right: 0.4rem; font-weight: 600;
+    color: var(--p-text-color-secondary, #6b7280);
+  }
+
+  /* Folder filter + create form: one full-width control per row. */
+  .plugin-screen__folderbar { flex-wrap: wrap; }
+  .plugin-screen__folderbar :deep(.p-select) { flex: 1 1 100%; }
+  .plugin-screen__create { display: flex; flex-direction: column; gap: 0.75rem; }
+  .plugin-screen__create .p-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .plugin-screen__create :deep(.p-select),
+  .plugin-screen__create :deep(.p-inputnumber),
+  .plugin-screen__create :deep(input) { width: 100%; }
+
+  /* Ordered-field rows: a 12rem name + three buttons is ~18rem of fixed width. */
+  .plugin-screen__ordered-row { flex-wrap: wrap; }
+  .plugin-screen__ordered-name { min-width: 0; flex: 1 1 100%; }
+  .plugin-screen__ordered-add { width: 100%; }
+
+  /* Detail dialog contents (the Dialog itself goes to 95vw via :breakpoints). */
+  .plugin-screen__kv th, .plugin-screen__kv td { display: block; width: 100%; }
+  .plugin-screen__kv th { white-space: normal; padding: 0.35rem 0 0; }
+}
 </style>

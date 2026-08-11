@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { usePluginScreen } from '../usePluginScreen';
+import { cellValue, usePluginScreen } from '../usePluginScreen';
 
 const MANIFEST = {
   screens: [
@@ -99,5 +99,42 @@ describe('usePluginScreen', () => {
     const stale = await p1;        // older request resolves later
     expect(fresh).toEqual([{ value: 'fresh' }]);
     expect(stale).toBeNull();      // superseded → dropped
+  });
+});
+
+/**
+ * cellValue — PluginScreen took over `<Column>`'s #body slot so each cell can
+ * carry its own label in the phone card layout (the header row is hidden
+ * there). Taking the slot means resolving the field by hand, so this has to
+ * keep the dotted-path support PrimeVue's resolveFieldData gave us for free —
+ * otherwise a manifest declaring `field: "door.width"` renders blank cells.
+ */
+describe('cellValue', () => {
+  const row = { id: 7, name: 'Spring Kit', price: 0, blank: null, door: { width: 96 } };
+
+  it('reads a flat field', () => {
+    expect(cellValue(row, 'name')).toBe('Spring Kit');
+  });
+
+  it('reads a dotted path', () => {
+    expect(cellValue(row, 'door.width')).toBe(96);
+  });
+
+  it('preserves falsy values instead of blanking them', () => {
+    // A $0 price and an empty cell are different facts on a quote.
+    expect(cellValue(row, 'price')).toBe(0);
+    expect(cellValue(row, 'blank')).toBeNull();
+  });
+
+  it('returns undefined for a missing field rather than throwing', () => {
+    expect(cellValue(row, 'nope')).toBeUndefined();
+    expect(cellValue(row, 'door.depth')).toBeUndefined();
+    expect(cellValue(row, 'nope.deeper.still')).toBeUndefined();
+  });
+
+  it('survives a missing row or a malformed field', () => {
+    expect(cellValue(null, 'name')).toBe('');
+    expect(cellValue(row, '')).toBe('');
+    expect(cellValue(row, undefined)).toBe('');
   });
 });

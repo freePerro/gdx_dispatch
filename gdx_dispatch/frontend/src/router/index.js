@@ -400,7 +400,11 @@ export const routes = [
   // Third-party plugin screens (ADR-013): one dynamic route renders any
   // installed plugin's server-declared UI manifest via the generic host
   // renderer. The :key param is the plugin key from the /api/plugins catalog.
-  { path: '/plugins/:key', name: 'plugin', component: () => import('../components/PluginScreen.vue'), props: (route) => ({ pluginKey: route.params.key }) },
+  // requiresPluginPermission (not requiresPermission): the key to check is
+  // `plugin.<route param>.read`, which no static string can express — and it
+  // resolves with OR against the blanket `plugins.read`, which is the only
+  // plugin grant the builtin admin contract can hold. See the guard below.
+  { path: '/plugins/:key', name: 'plugin', component: () => import('../components/PluginScreen.vue'), props: (route) => ({ pluginKey: route.params.key }), meta: { requiresPluginPermission: true } },
   // Owner-only in-app plugin install/manage UI (ADR-013 step 5). The view
   // render-guards on role and the backend enforces owner/superadmin, so no
   // route-meta permission gate (there's no owner-only permission key).
@@ -526,6 +530,27 @@ export function createAppRouter() {
         return {
           path: '/access-denied',
           query: { path: to.fullPath, permission: to.meta.requiresPermission },
+        };
+      }
+    }
+
+    // ADR-013 per-plugin gate. Same shape as the block above, but the key is
+    // built from the route param and resolved with OR against the blanket
+    // grant, so an admin (whose contract holds `plugins.read` and never a
+    // per-plugin key) is not bounced off their own tenant's plugins.
+    if (auth.isAuthenticated && to.meta.requiresPluginPermission) {
+      const pluginKey = String(to.params.key || '');
+      if (!auth.permissionsLoaded) {
+        try {
+          await auth.loadPermissions();
+        } catch { /* network reject — handled by the flag check below */ }
+        // Same fail-open-on-load-failure rule as above: the proxy still 403s.
+        if (!auth.permissionsLoaded) return true;
+      }
+      if (!auth.hasPluginPermission(pluginKey, 'read')) {
+        return {
+          path: '/access-denied',
+          query: { path: to.fullPath, permission: `plugin.${pluginKey}.read` },
         };
       }
     }
