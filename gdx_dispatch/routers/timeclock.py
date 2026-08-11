@@ -28,6 +28,12 @@ log = logging.getLogger(__name__)
 WARNING_AFTER_HOURS = 8.0
 MAX_SHIFT_HOURS = 16.0
 
+# Row ceiling for the crew-wide timesheet read (/entries?all_technicians=true).
+# Sized so no real query reaches it — a whole shop clocking 4 punches a day for
+# a month is ~1,200 rows — precisely so that hitting it means something is
+# wrong, and the log line below is a signal rather than routine noise.
+_TIMESHEET_ROW_CAP = 5000
+
 router = APIRouter(
     prefix="/api/timeclock",
     tags=["timeclock-router"],
@@ -58,9 +64,17 @@ class TimeEntryResponse(BaseModel):
     technician_id: str
     clock_in_at: str
     clock_out_at: str | None
+    # GROSS elapsed clock-in→clock-out. Breaks are NOT subtracted here: they
+    # live in their own table (timeclock_breaks_router) and clock-out writes
+    # `_minutes_between(clock_in, now)` flat. Anything presenting `minutes` as
+    # worked time must net `break_minutes` off it, or it overstates the day by
+    # every lunch taken.
     minutes: int | None
     notes: str | None
     entry_type: str
+    # Sum of this entry's ended breaks. Optional and absent by default so the
+    # existing self-service callers are unaffected; populated on request.
+    break_minutes: int | None = None
 
 
 class TimeClockStatusResponse(BaseModel):
@@ -105,9 +119,22 @@ def _resolve_tech_id(current_user: Any, payload_tech_id: str | None) -> str:
     return requested or own
 
 
+def _as_aware(value: str) -> datetime:
+    """Parse an ISO stamp to a UTC-aware datetime.
+
+    Stored clock stamps are tz-aware (clock-in writes `datetime.now(UTC)`), but
+    a client may PATCH a naive one. Comparing naive to aware raises TypeError,
+    which surfaced as a 500 rather than a 422 — so every stamp is normalized to
+    UTC here before any comparison or arithmetic. A naive stamp is read as UTC,
+    matching how the rest of this router stores time.
+    """
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
 def _minutes_between(start_iso: str, end_iso: str) -> int:
-    start = datetime.fromisoformat(start_iso)
-    end = datetime.fromisoformat(end_iso)
+    start = _as_aware(start_iso)
+    end = _as_aware(end_iso)
     return max(0, int((end - start).total_seconds() // 60))
 
 
@@ -198,6 +225,102 @@ def _auto_close_stale_shift(
         extra={"tenant_id": tenant_id, "entry_id": str(entry.id), "reason": reason},
     )
     return None
+
+
+def _break_minutes_by_entry(
+    db: Session, tenant_id: str, entries: list[TimeclockEntry]
+) -> dict[str, int]:
+    """{entry_id: total ended-break minutes} for the given entries.
+
+    `TimeclockEntry.minutes` is gross elapsed — clock-out writes
+    `_minutes_between(clock_in, now)` and never subtracts breaks, which live in
+    their own table. Any surface reporting worked hours has to do this or it
+    pays out every lunch.
+
+    Matched by user + time window, NOT by `timeclock_breaks_router.time_entry_id`.
+    That column exists and `POST /break/start` will store it, but it is optional
+    and BOTH clients (TimeclockView, MobileTimeclockView) post `{}` — so it is
+    NULL on 10 of 10 real rows and a join on it returns nothing. It is still
+    honored first, so the link sharpens for free if a client ever starts
+    sending it.
+
+    Open breaks (ended_at NULL → duration_minutes NULL) contribute 0. An
+    unfinished break has no defensible length, and inventing one would fabricate
+    hours — the same rule that makes an auto-closed shift report "unknown"
+    rather than its elapsed time.
+    """
+    if not entries:
+        return {}
+    tech_ids = {str(e.technician_id) for e in entries if e.technician_id}
+    if not tech_ids:
+        return {}
+    # Bound to the window the entries actually span. Without this the query
+    # pulls every break the whole crew has ever taken on every page load, to
+    # then discard all but the overlapping ones.
+    span_lo = min((str(e.clock_in_at) for e in entries if e.clock_in_at), default=None)
+    span_hi = max(
+        (str(e.clock_out_at or e.clock_in_at) for e in entries if e.clock_in_at),
+        default=None,
+    )
+    try:
+        clauses = [
+            TimeclockBreak.tenant_id == tenant_id,
+            TimeclockBreak.user_id.in_(tech_ids),
+            TimeclockBreak.duration_minutes.isnot(None),
+        ]
+        if span_lo and span_hi:
+            # Date-level bound only — the exact overlap is decided per row below
+            # against each shift's real window, so this just stops the query
+            # scanning years of breaks to discard them.
+            clauses.append(func.date(TimeclockBreak.started_at) >= span_lo[:10])
+            clauses.append(func.date(TimeclockBreak.started_at) <= span_hi[:10])
+        rows = db.execute(
+            select(
+                TimeclockBreak.time_entry_id,
+                TimeclockBreak.user_id,
+                TimeclockBreak.started_at,
+                TimeclockBreak.duration_minutes,
+            ).where(*clauses)
+        ).all()
+    except SQLAlchemyError:
+        # Never fail the timesheet over this — gross hours are still correct and
+        # still correctable. Logged so a silent overstatement is traceable.
+        log.exception("timeclock_break_join_failed", extra={"tenant_id": tenant_id})
+        return {}
+    if not rows:
+        return {}
+
+    # Per-tech shift windows, so a break lands on the shift it happened during.
+    windows: dict[str, list[tuple[datetime, datetime, str]]] = {}
+    by_id: set[str] = set()
+    for e in entries:
+        by_id.add(str(e.id))
+        try:
+            start = _as_aware(str(e.clock_in_at))
+            end = _as_aware(str(e.clock_out_at)) if e.clock_out_at else datetime.now(UTC)
+        except ValueError:
+            continue
+        windows.setdefault(str(e.technician_id), []).append((start, end, str(e.id)))
+
+    totals: dict[str, int] = {}
+    for entry_id, user_id, started_at, minutes in rows:
+        target = str(entry_id) if entry_id and str(entry_id) in by_id else None
+        if target is None:
+            try:
+                started = _as_aware(str(started_at))
+            except (ValueError, TypeError):
+                continue
+            for start, end, eid in windows.get(str(user_id), ()):
+                if start <= started <= end:
+                    target = eid
+                    break
+        if target is None:
+            # A break outside every returned shift — usually just a shift that
+            # fell outside the requested range. Dropping it is right: it must
+            # not be netted off some unrelated day.
+            continue
+        totals[target] = totals.get(target, 0) + int(minutes or 0)
+    return totals
 
 
 def _entry_to_response(entry: TimeclockEntry) -> TimeEntryResponse:
@@ -473,6 +596,10 @@ def list_time_entries(
     date_start: date | None = Query(default=None),
     date_end: date | None = Query(default=None),
     technician_id: str | None = Query(default=None),
+    all_technicians: bool = Query(
+        default=False,
+        description="Office timesheet view: every technician's shifts in the window. Dispatch/admin only.",
+    ),
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TimeEntryResponse]:
@@ -483,7 +610,19 @@ def list_time_entries(
     # /timeclock view doesn't contradict itself (status was filtered by
     # caller; entries returned all tenant rows; admin saw "Clocked Out"
     # alongside another tech's "In progress" row).
-    tech_id = _resolve_tech_id(current_user, technician_id)
+    #
+    # all_technicians is the explicit opt-OUT of that default, added for the
+    # office timesheet page (/timesheets). It must stay opt-in: flipping the
+    # default back to tenant-wide is exactly the bug P1-8 fixed, and every
+    # existing caller sends no params and means "me".
+    if all_technicians:
+        # Same gate as /exceptions and /payroll — this exposes other people's
+        # time. technician_id is ignored here; the caller wants the crew.
+        if not is_dispatch_manager(current_user):
+            raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+        tech_id = ""
+    else:
+        tech_id = _resolve_tech_id(current_user, technician_id)
 
     try:
         clauses = [
@@ -495,8 +634,29 @@ def list_time_entries(
         if tech_id:
             clauses.append(TimeclockEntry.technician_id == tech_id)
         stmt = select(TimeclockEntry).where(*clauses).order_by(TimeclockEntry.clock_in_at.desc())
+        if all_technicians:
+            # Cap only the crew-wide path. The self path is intentionally
+            # uncapped (TimeclockView asks for a tech's whole history with no
+            # date filter, and silently dropping the tail of someone's own
+            # timecard is worse than a slow response).
+            stmt = stmt.limit(_TIMESHEET_ROW_CAP)
         entries = db.execute(stmt).scalars().all()
-        return [_entry_to_response(e) for e in entries]
+        if all_technicians and len(entries) == _TIMESHEET_ROW_CAP:
+            # Fail loudly: a truncated timesheet reads as "that's the week" when
+            # it isn't. Same rule as labor_exceptions_cap_hit.
+            log.warning(
+                "timeclock_entries_cap_hit",
+                extra={"tenant_id": tenant_id, "cap": _TIMESHEET_ROW_CAP,
+                       "date_start": start_iso, "date_end": end_iso},
+            )
+        rows = [_entry_to_response(e) for e in entries]
+        if all_technicians and rows:
+            # Net break time onto each row. Office view only: the self-service
+            # callers render breaks their own way and don't expect the field.
+            breaks = _break_minutes_by_entry(db, tenant_id, list(entries))
+            for r in rows:
+                r.break_minutes = breaks.get(r.id)
+        return rows
     except SQLAlchemyError:
         log.exception("timeclock_entries_list_failed", extra={"tenant_id": tenant_id})
         raise HTTPException(status_code=500, detail="Failed to list entries") from None
@@ -592,7 +752,11 @@ def update_time_entry(
         clock_in_iso = updates.get("clock_in_at", entry.clock_in_at)
         clock_out_iso = updates.get("clock_out_at", entry.clock_out_at)
         if clock_in_iso and clock_out_iso:
-            if datetime.fromisoformat(clock_out_iso) <= datetime.fromisoformat(clock_in_iso):
+            try:
+                out_of_order = _as_aware(clock_out_iso) <= _as_aware(clock_in_iso)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="clock times must be ISO-8601 timestamps") from None
+            if out_of_order:
                 raise HTTPException(status_code=422, detail="clock_out_at must be after clock_in_at")
 
         minutes = _minutes_between(clock_in_iso, clock_out_iso) if (clock_in_iso and clock_out_iso) else None
@@ -1019,6 +1183,95 @@ def _tech_names(db: Session, tenant_id: str, ids: set[str]) -> dict[str, str]:
         log.exception("labor_exception_names_failed", extra={"tenant_id": tenant_id})
         return {}
     return {str(r["id"]): r["label"] for r in rows if r["label"]}
+
+
+class TimeclockRosterItem(BaseModel):
+    technician_id: str
+    name: str | None = None
+    active: bool = True
+    has_entries: bool = False
+
+
+@router.get("/roster", response_model=list[TimeclockRosterItem])
+def timeclock_roster(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TimeclockRosterItem]:
+    """Who the office can put on a timesheet, and what to call them.
+
+    Exists because /api/users is the wrong source for this, in two ways the
+    timesheet page hit immediately:
+
+    1. It excludes soft-deleted users. `_tech_names` does not — so Dispatch's
+       exception card names a departed employee that /api/users cannot, and the
+       timesheet showed "Unknown (<user-id>…)" for hours the card attributed to
+       a real person. Reviewing a former employee's hours is a big part of why
+       anyone opens a timesheet at all, so their name has to resolve.
+    2. It caps at limit=100 by default, which would silently drop people from
+       the roster of a larger shop.
+
+    Anyone who has ever clocked in is included even if their user row is gone
+    (`has_entries`), because their hours are still on the books. Active users
+    with no entries are included too, so the office can add a missed shift for
+    someone whose clock never started.
+    """
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    tenant_id = _tenant_id(request)
+
+    try:
+        clocked_ids = {
+            str(r) for r in db.execute(
+                select(TimeclockEntry.technician_id)
+                .where(
+                    TimeclockEntry.tenant_id == tenant_id,
+                    TimeclockEntry.deleted_at.is_(None),
+                )
+                .distinct()
+            ).scalars().all() if r
+        }
+    except SQLAlchemyError:
+        log.exception("timeclock_roster_failed", extra={"tenant_id": tenant_id})
+        raise HTTPException(status_code=500, detail="Roster lookup failed") from None
+
+    # Active staff, so a person with no entries yet is still pickable.
+    active: dict[str, str] = {}
+    try:
+        rows = db.execute(
+            text(
+                "SELECT id::text AS id, "
+                "COALESCE(NULLIF(full_name,''), NULLIF(name,''), NULLIF(username,''), email) AS label "
+                # COALESCE, not `active = true`: NULL means active everywhere
+                # else in this codebase (users._serialize reads NULL as True),
+                # and `= true` would silently make those people unpickable.
+                "FROM users WHERE company_id = :tenant_id AND deleted_at IS NULL "
+                "AND COALESCE(active, true) = true"
+            ),
+            {"tenant_id": tenant_id},
+        ).mappings().all()
+        active = {str(r["id"]): r["label"] for r in rows if r["label"]}
+    except SQLAlchemyError:
+        # Cosmetic-only degradation, same rule as _tech_names: ids still resolve
+        # to rows, they just carry no label.
+        log.exception("timeclock_roster_active_failed", extra={"tenant_id": tenant_id})
+
+    names = _tech_names(db, tenant_id, clocked_ids)
+    items = [
+        TimeclockRosterItem(
+            technician_id=tid,
+            name=names.get(tid) or active.get(tid),
+            active=tid in active,
+            has_entries=True,
+        )
+        for tid in sorted(clocked_ids)
+    ]
+    items.extend(
+        TimeclockRosterItem(technician_id=tid, name=label, active=True, has_entries=False)
+        for tid, label in sorted(active.items(), key=lambda kv: kv[1])
+        if tid not in clocked_ids
+    )
+    return items
 
 
 @router.get("/exceptions", response_model=list[LaborExceptionItem])

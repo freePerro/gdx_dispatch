@@ -46,6 +46,16 @@ export const MODULE_CATEGORIES = [
       { key: 'technicians', requires: 'dispatch', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
       { key: 'performance', label: 'Performance', icon: 'pi pi-chart-line', to: '/performance', type: 'Operations', permission: 'nav.office' },
       { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock', type: 'Operations' },
+      // Office companion to the (ungated, self-service) Timeclock above: review
+      // and correct anyone's shifts.
+      // scheduling.write, not dispatch.read — `viewer` holds every `.read` key
+      // but fails the backend's is_dispatch_manager gate, so a read key here
+      // shows a nav entry whose every API call 403s. scheduling.write's holders
+      // match that gate exactly. See the route in router/index.js.
+      // `requires: timeclock` — the API is behind require_module("timeclock"),
+      // so a tenant that opted out of the module must not see a page whose
+      // every call would 403 for a different reason.
+      { key: 'timesheets', requires: 'timeclock', label: 'Timesheets', icon: 'pi pi-calendar-clock', to: '/timesheets', type: 'Operations', permission: 'scheduling.write', description: "Review and correct the crew's clock entries" },
       { key: 'fleet', requires: 'equipment_tracking', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
       { key: 'gps', requires: 'jobs', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
       { key: 'maps', requires: 'google_maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },

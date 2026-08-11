@@ -784,9 +784,23 @@ async function loadLaborExceptions() {
 }
 
 function fixLaborException(row) {
-  // The timeclock view is where a shift's times get corrected; fixing it is
-  // what clears this row.
-  router.push({ path: '/timeclock', query: { entry: row.entry_id } });
+  // 2026-08-10: this used to push /timeclock?entry=<id>, which was a dead end
+  // in two ways — TimeclockView never read `query.entry`, and it is the
+  // SELF-SERVICE page (its entries fetch defaults to the caller's own tech id),
+  // so the office landed on their own read-only timecard instead of the tech's
+  // broken shift. /timesheets is the office view: it opens this exact entry's
+  // correction dialog. `on` anchors the date range on the shift's own week —
+  // an open shift can be weeks old, and this card is the only thing that knows
+  // which one is wrong. Correcting the times still IS the dismissal: the row
+  // drops out of /exceptions on the next load.
+  router.push({
+    path: '/timesheets',
+    query: {
+      entry: row.entry_id,
+      tech: row.technician_id,
+      on: String(row.started_at || '').slice(0, 10),
+    },
+  });
 }
 
 async function quickStatusChange(job) {
