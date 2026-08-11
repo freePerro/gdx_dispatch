@@ -3004,6 +3004,14 @@ onUnmounted(() => {
      same margin and override handling; only the layout changes. */
   .line-item-row {
     grid-template-columns: minmax(5.5rem, auto) 1fr;
+    /* The 840px floor is the sum of the nine desktop tracks. Overriding
+       grid-template-columns alone left it in place, so the card stayed 840px on
+       a 390px screen and .line-items-editor just scrolled sideways instead —
+       the same "you can't see the Total" bug, one container out. Caught by a
+       phone-viewport browser walk, NOT by any unit test: jsdom applies no media
+       queries, so a source assertion on the grid tracks passed while the real
+       layout was still 840px wide. */
+    min-width: 0;
     align-items: center;
     gap: 0.35rem 0.6rem;
     padding: 0.7rem 0.75rem;
@@ -3011,6 +3019,9 @@ onUnmounted(() => {
     border: 1px solid var(--p-content-border-color, #e5e7eb);
     border-radius: 0.55rem;
   }
+  .line-item-header { min-width: 0; }
+  /* Nothing left to scroll to once the rows fit. */
+  .line-items-editor { overflow-x: visible; }
   .line-label {
     display: block;
     font-size: 0.8rem;
