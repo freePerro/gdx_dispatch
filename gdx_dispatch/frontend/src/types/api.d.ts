@@ -10478,6 +10478,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/timeclock/roster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Timeclock Roster
+         * @description Who the office can put on a timesheet, and what to call them.
+         *
+         *     Exists because /api/users is the wrong source for this, in two ways the
+         *     timesheet page hit immediately:
+         *
+         *     1. It excludes soft-deleted users. `_tech_names` does not — so Dispatch's
+         *        exception card names a departed employee that /api/users cannot, and the
+         *        timesheet showed "Unknown (<user-id>…)" for hours the card attributed to
+         *        a real person. Reviewing a former employee's hours is a big part of why
+         *        anyone opens a timesheet at all, so their name has to resolve.
+         *     2. It caps at limit=100 by default, which would silently drop people from
+         *        the roster of a larger shop.
+         *
+         *     Anyone who has ever clocked in is included even if their user row is gone
+         *     (`has_entries`), because their hours are still on the books. Active users
+         *     with no entries are included too, so the office can add a missed shift for
+         *     someone whose clock never started.
+         */
+        get: operations["timeclock_roster_api_timeclock_roster_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/timeclock/exceptions": {
         parameters: {
             query?: never;
@@ -24486,7 +24522,7 @@ export interface components {
             events: string[];
             /**
              * Secret
-             * @default 4f59ba3909029b0334402181029facedd647cb6a1a4f53ae967bb28e2764d423
+             * @default da307f56067e39e7c9efda5c341fa4946340ee2dca541688891f559ed7a6d9d9
              */
             secret: string;
         };
@@ -28617,6 +28653,8 @@ export interface components {
             notes: string | null;
             /** Entry Type */
             entry_type: string;
+            /** Break Minutes */
+            break_minutes?: number | null;
         };
         /** TimeEntryUpdateRequest */
         TimeEntryUpdateRequest: {
@@ -28626,6 +28664,23 @@ export interface components {
             clock_out_at?: string | null;
             /** Notes */
             notes?: string | null;
+        };
+        /** TimeclockRosterItem */
+        TimeclockRosterItem: {
+            /** Technician Id */
+            technician_id: string;
+            /** Name */
+            name?: string | null;
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /**
+             * Has Entries
+             * @default false
+             */
+            has_entries: boolean;
         };
         /** ToolGenerateRequest */
         ToolGenerateRequest: {
@@ -53456,6 +53511,8 @@ export interface operations {
                 date_start?: string | null;
                 date_end?: string | null;
                 technician_id?: string | null;
+                /** @description Office timesheet view: every technician's shifts in the window. Dispatch/admin only. */
+                all_technicians?: boolean;
                 request?: unknown;
             };
             header?: never;
@@ -53714,6 +53771,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SubmitDayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    timeclock_roster_api_timeclock_roster_get: {
+        parameters: {
+            query?: {
+                request?: unknown;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeclockRosterItem"][];
                 };
             };
             /** @description Validation Error */

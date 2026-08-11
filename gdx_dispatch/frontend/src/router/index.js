@@ -28,6 +28,7 @@ const CustomerDetailView = () => import('../views/CustomerDetailView.vue');
 const InventoryView = () => import('../views/InventoryView.vue');
 const DoorListingsView = () => import('../views/DoorListingsView.vue');
 const TimeclockView = () => import('../views/TimeclockView.vue');
+const TimesheetsView = () => import('../views/TimesheetsView.vue');
 const DailyLoadsheetView = () => import('../views/DailyLoadsheetView.vue');
 const DeliveryLoadsheetView = () => import('../views/DeliveryLoadsheetView.vue');
 const PlannerView = () => import('../views/PlannerView.vue');
@@ -227,6 +228,16 @@ export const routes = [
   { path: '/inventory', name: 'inventory', component: InventoryView },
   { path: '/door-listings', name: 'door-listings', component: DoorListingsView },
   { path: '/timeclock', name: 'timeclock', component: TimeclockView },
+  // Office timesheets — read + correct ANY tech's shifts.
+  //
+  // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
+  // it is a READ key on a page whose entire purpose is editing, and `viewer`
+  // holds every `.read` permission by construction while failing the backend's
+  // is_dispatch_manager gate — so a viewer got a nav entry and a passing route
+  // guard, then two 403s and an empty page. scheduling.write's holders
+  // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
+  // "create / edit schedule entries" is the right verb for correcting a clock.
+  { path: '/timesheets', name: 'timesheets', component: TimesheetsView, meta: { requiresPermission: 'scheduling.write' } },
   { path: '/equipment', name: 'equipment', component: EquipmentView },
   { path: '/communications', name: 'communications', component: CommunicationsView },
   // /voice → Phone.com (deduped 2026-04-29). Bookmark redirect.

@@ -39893,6 +39893,18 @@
             }
           },
           {
+            "name": "all_technicians",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Office timesheet view: every technician's shifts in the window. Dispatch/admin only.",
+              "default": false,
+              "title": "All Technicians"
+            },
+            "description": "Office timesheet view: every technician's shifts in the window. Dispatch/admin only."
+          },
+          {
             "name": "request",
             "in": "query",
             "required": false,
@@ -40341,6 +40353,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SubmitDayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/timeclock/roster": {
+      "get": {
+        "tags": [
+          "timeclock-router"
+        ],
+        "summary": "Timeclock Roster",
+        "description": "Who the office can put on a timesheet, and what to call them.\n\nExists because /api/users is the wrong source for this, in two ways the\ntimesheet page hit immediately:\n\n1. It excludes soft-deleted users. `_tech_names` does not \u2014 so Dispatch's\n   exception card names a departed employee that /api/users cannot, and the\n   timesheet showed \"Unknown (<user-id>\u2026)\" for hours the card attributed to\n   a real person. Reviewing a former employee's hours is a big part of why\n   anyone opens a timesheet at all, so their name has to resolve.\n2. It caps at limit=100 by default, which would silently drop people from\n   the roster of a larger shop.\n\nAnyone who has ever clocked in is included even if their user row is gone\n(`has_entries`), because their hours are still on the books. Active users\nwith no entries are included too, so the office can add a missed shift for\nsomeone whose clock never started.",
+        "operationId": "timeclock_roster_api_timeclock_roster_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TimeclockRosterItem"
+                  },
+                  "title": "Response Timeclock Roster Api Timeclock Roster Get"
                 }
               }
             }
@@ -57993,58 +58056,7 @@
           }
         }
       },
-      "post": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
+      "delete": {
         "tags": [
           "plugins"
         ],
@@ -58146,7 +58158,58 @@
           }
         }
       },
-      "delete": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins__path__put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "tags": [
           "plugins"
         ],
@@ -58251,59 +58314,7 @@
           }
         }
       },
-      "post": {
-        "tags": [
-          "plugins"
-        ],
-        "summary": "Proxy To Plugin Host",
-        "operationId": "proxy_to_plugin_host_api_plugins_put",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Path"
-            }
-          },
-          {
-            "name": "request",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "title": "Request"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
+      "delete": {
         "tags": [
           "plugins"
         ],
@@ -58407,7 +58418,59 @@
           }
         }
       },
-      "delete": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Proxy To Plugin Host",
+        "operationId": "proxy_to_plugin_host_api_plugins_put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          },
+          {
+            "name": "request",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "title": "Request"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "tags": [
           "plugins"
         ],
@@ -89098,7 +89161,7 @@
           "secret": {
             "type": "string",
             "title": "Secret",
-            "default": "4f59ba3909029b0334402181029facedd647cb6a1a4f53ae967bb28e2764d423"
+            "default": "da307f56067e39e7c9efda5c341fa4946340ee2dca541688891f559ed7a6d9d9"
           }
         },
         "type": "object",
@@ -102795,6 +102858,17 @@
           "entry_type": {
             "type": "string",
             "title": "Entry Type"
+          },
+          "break_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Break Minutes"
           }
         },
         "type": "object",
@@ -102849,6 +102923,40 @@
         },
         "type": "object",
         "title": "TimeEntryUpdateRequest"
+      },
+      "TimeclockRosterItem": {
+        "properties": {
+          "technician_id": {
+            "type": "string",
+            "title": "Technician Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "default": true
+          },
+          "has_entries": {
+            "type": "boolean",
+            "title": "Has Entries",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "technician_id"
+        ],
+        "title": "TimeclockRosterItem"
       },
       "ToolGenerateRequest": {
         "properties": {

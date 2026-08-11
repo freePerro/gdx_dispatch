@@ -93,7 +93,13 @@ const PARITY_ROLES = ['owner', 'admin', 'dispatcher', 'technician', 'sales', 'ac
 // module.
 // bank_feeds (Banno sync, 2026-07-17) post-dates the migration too — new
 // surface gated bank_feeds.read, pinned explicitly below.
-const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger', 'vendor_bills', 'bank_feeds', 'audit_log']);
+// timesheets (office timeclock corrections, 2026-08-10) post-dates the
+// migration too. New surface, not a revealed legacy module: the old Sets had
+// only the self-service `timeclock` entry, because until now nothing in the
+// app could read or edit another person's shift. Its nav gate is
+// scheduling.write — see timesheets_nav_gate below, which pins the holder set
+// against the backend rather than trusting a comment.
+const POST_MIGRATION_KEYS = new Set(['phone_com_cold_leads', 'admin_payroll', 'feedback_portal', 'games', 'accounting_ledger', 'vendor_bills', 'bank_feeds', 'audit_log', 'timesheets']);
 const MODULES = flattenModules().filter((m) => !POST_MIGRATION_KEYS.has(m.key));
 
 function canonical(role) {
@@ -344,5 +350,44 @@ describe('SECTION_ORDER invariant', () => {
 
   it('MODULE_CATEGORIES is non-empty (sanity)', () => {
     expect(MODULE_CATEGORIES.length).toBeGreaterThan(0);
+  });
+});
+
+// The /timesheets nav gate, pinned against the backend's actual authorization
+// tier rather than a comment claiming they agree.
+//
+// History (2026-08-10): this shipped as `dispatch.read` with a comment in THREE
+// files asserting its holders matched the backend's is_dispatch_manager gate.
+// They did not. `viewer` is defined as every `.read` permission plus nav.office,
+// so it holds dispatch.read — but viewer is not in DISPATCH_MANAGER_ROLES, so a
+// viewer saw the nav entry, passed the route guard, and got two 403s and an
+// empty page. An adversarial audit caught it; no test did, because `timesheets`
+// sits in POST_MIGRATION_KEYS and was excluded from the parity checks above.
+describe('timesheets_nav_gate', () => {
+  // Mirrors core/roles.py DISPATCH_MANAGER_ROLES, restricted to the builtin
+  // roles that exist in BUILTIN_ROLES (manager/super_admin are not builtins).
+  const MAY_USE = ['owner', 'admin', 'dispatcher'];
+  const MAY_NOT = ['technician', 'sales', 'accounting', 'viewer'];
+
+  const timesheets = flattenModules().find((m) => m.key === 'timesheets');
+
+  it('exists in the catalog', () => {
+    expect(timesheets).toBeTruthy();
+  });
+
+  it('is visible to exactly the roles the backend will serve', () => {
+    for (const role of MAY_USE) {
+      expect(moduleVisible(timesheets, (k) => roleHas(role, k)), `${role} should see it`).toBe(true);
+    }
+  });
+
+  it('is hidden from every role whose API calls would 403', () => {
+    for (const role of MAY_NOT) {
+      expect(moduleVisible(timesheets, (k) => roleHas(role, k)), `${role} must not see it`).toBe(false);
+    }
+  });
+
+  it('is gated on a WRITE permission — the page exists to edit', () => {
+    expect(timesheets.permission).toMatch(/\.write$/);
   });
 });
