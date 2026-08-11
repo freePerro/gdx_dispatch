@@ -107,6 +107,28 @@ function mockApi(entries, roster = ROSTER, tz = 'America/Chicago') {
 // query is what sets their range and that is the behavior under test.
 const MAY = [new Date(2026, 4, 1), new Date(2026, 4, 31)];
 
+// `editing.clockIn/clockOut` hold a SHOP WALL CLOCK as a Date whose LOCAL
+// fields carry it — that is what a DatePicker binds to. So a fixture for them
+// must be built from local fields, never from an absolute instant: writing
+// `new Date('2026-05-11T21:00:00Z')` silently means 4pm on a Chicago machine
+// and 9pm on a UTC runner, which is exactly how these tests passed locally and
+// failed in CI (TZ=UTC).
+const wall = (y, m, d, hh, mm = 0) => new Date(y, m - 1, d, hh, mm, 0, 0);
+
+// Render an emitted UTC stamp back into the shop zone. Asserting on this
+// instead of a literal Z-string makes the expectation independent of whatever
+// timezone the test runner happens to sit in.
+function inShopZone(iso) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date(iso)).map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day} ${String(+p.hour % 24).padStart(2, '0')}:${p.minute}`;
+}
+
 async function mountView(range) {
   const wrapper = mount(TimesheetsView, {
     global: { stubs, directives: { tooltip: {} } },
@@ -429,15 +451,20 @@ describe('TimesheetsView — writing a correction', () => {
     apiPatch.mockResolvedValue({});
     const w = await mountView();
 
-    w.vm.editing.clockOut = new Date('2026-05-11T21:00:00Z');
+    // The office types 4:00 pm SHOP time into the picker.
+    w.vm.editing.clockOut = wall(2026, 5, 11, 16);
     await w.vm.save();
 
     expect(apiPatch).toHaveBeenCalledTimes(1);
     const [url, body] = apiPatch.mock.calls[0];
     expect(url).toBe('/api/timeclock/entries/entry-42');
-    // UTC on the wire — a local-time payload books the wrong hours.
-    expect(body.clock_in_at).toBe('2026-05-11T13:00:00.000Z');
-    expect(body.clock_out_at).toBe('2026-05-11T21:00:00.000Z');
+    // UTC on the wire, and it must still READ as shop time on the way back —
+    // a local-time payload books the wrong hours.
+    expect(body.clock_out_at.endsWith('Z')).toBe(true);
+    expect(inShopZone(body.clock_out_at)).toBe('2026-05-11 16:00');
+    // clock_in came from the fixture (13:00Z = 08:00 shop) and must survive the
+    // wall-clock round trip untouched.
+    expect(inShopZone(body.clock_in_at)).toBe('2026-05-11 08:00');
   });
 
   it('shows the dialog preview as ELAPSED, reconciled against the netted row', async () => {
@@ -465,7 +492,8 @@ describe('TimesheetsView — writing a correction', () => {
     }]);
     const w = await mountView();
 
-    w.vm.editing.clockOut = new Date('2026-05-11T09:00:00Z');
+    // Clock-in is 08:00 shop (13:00Z in the fixture); 04:00 shop precedes it.
+    w.vm.editing.clockOut = wall(2026, 5, 11, 4);
     await flushPromises();
     expect(w.vm.canSave).toBe(false);
   });
@@ -508,14 +536,16 @@ describe('TimesheetsView — writing a correction', () => {
 
     w.vm.openCreate();
     w.vm.editing.technicianId = 'u-tech-a';
-    w.vm.editing.clockIn = new Date('2026-05-11T13:00:00Z');
-    w.vm.editing.clockOut = new Date('2026-05-11T21:00:00Z');
+    // An 8am–4pm shop day, typed into the picker.
+    w.vm.editing.clockIn = wall(2026, 5, 11, 8);
+    w.vm.editing.clockOut = wall(2026, 5, 11, 16);
     await w.vm.save();
 
     expect(apiPost).toHaveBeenCalledTimes(1);
     const [url, body] = apiPost.mock.calls[0];
     expect(url).toBe('/api/timeclock/entries');
     expect(body.technician_id).toBe('u-tech-a');
-    expect(body.clock_in_at).toBe('2026-05-11T13:00:00.000Z');
+    expect(inShopZone(body.clock_in_at)).toBe('2026-05-11 08:00');
+    expect(inShopZone(body.clock_out_at)).toBe('2026-05-11 16:00');
   });
 });
