@@ -70,6 +70,16 @@
             @click="createEstimate" data-testid="job-detail-create-estimate" />
           <Button label="Install Sheet" icon="pi pi-print" severity="secondary"
             @click="openInstallSheet" data-testid="job-detail-install-sheet" />
+          <!-- Doug 2026-08-11: "there is no way of deleting a job when in the
+               job page." Delete existed only in the Jobs list row actions and
+               the Ready-for-Billing queue — from the job itself, the one verb
+               that removes the job was missing. Office-only (same `patchable`
+               gate the assignment edits use) and pushed to its own end of the
+               row so it isn't a neighbour-miss on Install Sheet. -->
+          <Button v-if="patchable"
+            label="Delete" icon="pi pi-trash" severity="danger" outlined
+            class="delete-job-btn"
+            @click="deleteJob" data-testid="job-detail-delete" />
         </div>
       </div>
 
@@ -1531,6 +1541,34 @@ async function makeBillable() {
   }
 }
 
+// Doug 2026-08-11: the job page carried every verb except the one that
+// removes the job. Same soft-delete the Jobs list trash icon calls —
+// DELETE /api/jobs/{id} stamps deleted_at and cascades to the mirrored
+// appointment, so the job leaves the list, the board and the schedule
+// together. It does NOT cascade to invoices or estimates, so when the job
+// carries live invoices the confirm says so out loud rather than letting
+// them quietly orphan in Billing.
+async function deleteJob() {
+  if (!job.value?.id) return;
+  const n = liveInvoices.value.length;
+  const invoiceWarning = n
+    ? ` ${n === 1 ? "Invoice" : "Invoices"} ${liveInvoices.value.map((i) => i.invoice_number).join(", ")} ${n === 1 ? "stays" : "stay"} in Billing — void ${n === 1 ? "it" : "them"} separately if the work isn't happening.`
+    : "";
+  const label = `Job #${job.value.job_number || String(job.value.id).slice(0, 8)}`;
+  const ok = await confirmAsync({
+    header: "Delete this job?",
+    message: `${label}${job.value.title ? ` — ${job.value.title}` : ""} will be removed from the Jobs list, the dispatch board and the schedule.${invoiceWarning}`,
+    acceptLabel: "Delete job",
+  });
+  if (!ok) return;
+  try {
+    await api.del(`/api/jobs/${job.value.id}`, { successMessage: `${label} deleted` });
+    router.push("/jobs");
+  } catch {
+    /* api helper toasts the error; stay on the page so nothing looks deleted */
+  }
+}
+
 async function refreshRelated() {
   if (!job.value?.id) return;
   await Promise.all([
@@ -2508,6 +2546,10 @@ onMounted(async () => {
 .job-subtitle { font-weight: 400; color: var(--p-text-muted-color); font-size: 0.9rem; }
 .job-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .header-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+/* Separate the one destructive verb from the six constructive ones. The
+   auto margin only bites once the row has slack, so on a narrow window it
+   simply wraps like the rest instead of stranding itself. */
+.header-actions .delete-job-btn { margin-left: auto; }
 .stage-strip { display: flex; align-items: center; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
 .stage-btn { min-width: 140px; }
 .stage-divider { flex: 1; height: 1px; background: var(--border); }
