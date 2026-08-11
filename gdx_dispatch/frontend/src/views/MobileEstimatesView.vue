@@ -106,6 +106,12 @@
           <Button v-if="detail && canAccept" label="Accept" icon="pi pi-check" :loading="actionSaving" @click="accept" data-test="me-accept" />
           <Button v-if="detail && canAccept" label="Decline" icon="pi pi-times" severity="danger" text :loading="actionSaving" @click="decline" data-test="me-decline" />
           <Button v-if="detail && canSign" label="Sign" icon="pi pi-pencil" severity="secondary" @click="openSign" data-test="me-sign-open" />
+          <!-- The estimate editor is the desktop view, which lays out as a
+               label/value card stack on a phone (2026-08-11). This screen shows
+               an estimate and closes it out; editing the lines happens there, so
+               there is one pricing path and one margin engine, not two. -->
+          <Button v-if="detail && canCreateEstimate" label="Edit" icon="pi pi-pencil" text
+            @click="editEstimate" data-test="me-edit" />
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
       </Dialog>
@@ -276,6 +282,11 @@ const canCreateEstimate = computed(() => hasPermission('estimates.write'))
 
 function createEstimate() {
   router.push('/estimates/new')
+}
+
+function editEstimate() {
+  if (!detail.value?.id) return
+  router.push(`/estimates/${detail.value.id}`)
 }
 
 const FILTERS = [

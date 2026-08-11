@@ -117,26 +117,69 @@ const _filteredCategories = computed(() => {
   }).filter((category) => category.modules.length > 0);
 });
 
+/**
+ * Is this plugin's screen set usable on a phone?
+ *
+ * The More drawer flags destinations that aren't phone-shaped, but its
+ * MOBILE_FRIENDLY_PATHS set is a list of literal paths and a plugin's path
+ * (`/plugins/<key>`) is only known at runtime — so plugin entries could never
+ * match it and every plugin was flagged "Desktop" regardless of what it
+ * actually renders. Decide from the manifest instead.
+ *
+ * Rule: a `browser` screen streams a full-size remote page the operator drives
+ * by hand — that one is desktop-only (PluginScreen says so in place of opening
+ * the socket). Every other screen type — list, settings, help, create forms —
+ * lays out fine on a phone since the responsive pass. So a plugin is
+ * phone-usable when it has at least one non-`browser` screen.
+ *
+ * Deliberately NOT "has no browser screen": that would write off CHI pricing,
+ * whose Captured Quotes / Settings / Help tabs are exactly the screens a tech
+ * wants in the field, purely because its capture tab needs a desktop.
+ *
+ * Exported for the unit spec.
+ */
+export function pluginMobileFriendly(plugin) {
+  const screens = plugin?.ui?.screens;
+  if (!Array.isArray(screens) || screens.length === 0) return false;
+  return screens.some((s) => s?.type !== 'browser');
+}
+
 // ADR-013 plugin nav entries: one per installed plugin, plus an owner-only
 // "Manage plugins" install link. Per-request enablement is enforced
 // server-side by the proxy + each plugin's require_module; this is just nav
 // visibility (every installed plugin shows).
 const _pluginModules = computed(() => {
   let _isOwner = false;
+  // Per-plugin authorization (ADR-013): only surface plugins this user may
+  // actually use. plugins_proxy is the enforcer; this is nav shaping.
+  //
+  // Before the permission set resolves, a non-admin reads as NOT permitted
+  // (the escape hatch in hasPermission covers admins only), so a permitted
+  // dispatcher's plugin appears a moment after the rest of the nav rather than
+  // with it. Same behaviour every permission-gated module entry already has —
+  // erring toward a late appearance rather than a link that 403s on tap.
+  //
+  // The fallback below is for a missing Pinia (unit tests only — in the app the
+  // store is always installed), not a production path.
+  let _mayUse = () => true;
   try {
     const auth = useAuthStore();
     // Owner/superadmin get the "Manage plugins" install link (ADR-013 step 5);
     // matches the backend gate on /api/admin/plugins.
     _isOwner = isOwner(auth.role);
+    _mayUse = (key) => auth.hasPluginPermission(key, 'read');
   } catch (_e) {
     // No Pinia in unit tests → not owner.
   }
-  const pluginModules = _plugins.value.map((p) => ({
+  const pluginModules = _plugins.value.filter((p) => _mayUse(p.key)).map((p) => ({
     key: `plugin:${p.key}`,
     label: p.name || p.key,
     icon: 'pi pi-box',
     to: `/plugins/${p.key}`,
     type: 'Plugin',
+    // Read by the More drawer's "Desktop" pill. Set here because this is the
+    // only place holding the plugin's manifest — the drawer sees nav entries.
+    mobile_friendly: pluginMobileFriendly(p),
   }));
   if (_isOwner) {
     pluginModules.push({
@@ -145,6 +188,9 @@ const _pluginModules = computed(() => {
       icon: 'pi pi-cog',
       to: '/admin/plugins',
       type: 'Plugin',
+      // Install/consent flows (permission dialogs, version pickers) are an
+      // owner-at-a-desk job — PluginsAdminView is not phone-shaped.
+      mobile_friendly: false,
     });
   }
   return pluginModules;

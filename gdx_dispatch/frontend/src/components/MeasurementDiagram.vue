@@ -83,4 +83,24 @@ const state = props.state;
 }
 .measure-diagram__spot label { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
 .measure-diagram__in :deep(input) { width: 5.5rem; text-align: center; }
+
+/* Phone: the overlaid inputs are a fixed 5.5rem plus a nowrap label, and the
+   floor-to-ceiling one is anchored at left:1% with a -50% translate — at 390px
+   that half-hangs off the screen edge, which is where a tech would actually be
+   typing these numbers (standing in the customer's garage). Below the
+   breakpoint the drawing stays a drawing and the measurements become a normal
+   stacked field list under it. */
+@media (max-width: 768px) {
+  .measure-diagram__spot {
+    position: static;
+    transform: none;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
+  }
+  .measure-diagram__spot label { font-size: 0.85rem; white-space: normal; }
+  .measure-diagram__in :deep(input) { width: 6.5rem; }
+}
 </style>
