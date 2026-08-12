@@ -26,7 +26,19 @@
   .table-container { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .table-container table { min-width: 600px; }
 
+  /* svh, not vh or dvh. `100vh` excludes mobile browser chrome, so the bottom
+     of a fullscreen dialog — where Save/Cancel live — is pushed below the fold.
+     `dvh` would fix that but re-evaluates as the chrome hides and shows, which
+     resizes the dialog WHILE the user is typing in it. `svh` is the smallest
+     stable viewport: correct and it doesn't move. Two declarations, vh first,
+     matching the house pattern in AppLayout/AppSidebar/QuickCaptureSheet.
+     NOTE: no viewport unit responds to the software keyboard — a Save button
+     under the keyboard is a separate, unfixed problem (needs visualViewport or
+     interactive-widget=resizes-content). */
   .p-dialog { width: 100vw !important; max-width: 100vw; height: 100vh; margin: 0; border-radius: 0; }
+  .p-dialog { height: 100svh; }
+
+  .p-toast .p-toast-message { width: 100%; }
 }
 
 /* Font readability */
@@ -34,3 +46,74 @@ html { font-size: 100%; }
 body { font-size: clamp(15px, 4vw, 17px); line-height: 1.6; }
 h1 { font-size: clamp(1.5rem, 6vw, 2rem); }
 h2 { font-size: clamp(1.25rem, 5vw, 1.75rem); }
+
+/* Phone toast — 2026-08-12 phone audit.
+
+   PrimeVue's toast is 25rem (400px) wide and anchored to a screen edge, so on a
+   390px phone it renders at left:-30px: every message the app shows — errors,
+   "Saved", validation — is clipped off the side. Measured on all 26 audited
+   screens, because the toast container mounts app-wide.
+
+   Two different mechanisms need overriding, and they need !important for two
+   DIFFERENT reasons — worth stating, because "responsive.css loads later
+   anyway" is wrong and would invite someone to drop the !important:
+     - `width` comes from a stylesheet rule (.p-toast { width: dt('toast.width') },
+       @primeuix/styles). PrimeVue uses no !important and the app sets no
+       cssLayer, so author-important wins regardless of source order.
+     - `top/right/bottom/left` are INLINE styles on the root element
+       (primevue/toast/style `inlineStyles.root`). Cascade order is irrelevant
+       there; only author-important beats an inline declaration.
+
+   `transform: none` covers the *-center positions, which carry
+   translateX(-50%) — with both edges pinned that would shove the toast half
+   off-screen. No position variant needs a transform once both edges are set.
+
+   Deliberately 768px, not the 767px of the block above, so this lines up with
+   the app's own mobile breakpoint (useViewMode MOBILE_BREAKPOINT); at exactly
+   768px the app considers itself mobile. Separate block so the existing 767px
+   rules keep their boundary. */
+@media (max-width: 768px) {
+  .p-toast {
+    width: auto !important;
+    max-width: calc(100vw - 1.5rem) !important;
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    transform: none !important;
+  }
+}
+
+/* Touch interaction — 2026-08-12.
+   Each of these is a field problem, not a polish item. */
+
+/* Pull-to-refresh reloads the page. In a browser that is a refresh; in a
+   data-entry app it is "the tech scrolled up in a half-filled closeout form and
+   lost it". `contain` keeps the gesture inside the app — the app has explicit
+   refresh buttons, so nothing is lost. It also stops scroll CHAINING, where
+   reaching the end of a dialog's list starts scrolling the page behind it. */
+html, body { overscroll-behavior-y: contain; }
+
+/* Keep a scrollable overlay's momentum inside the overlay. */
+/* -y only: the both-axes shorthand also blocks the horizontal swipe chain that
+   Chrome on Android uses for back/forward navigation. */
+.p-dialog-content, .p-drawer-content, .layout-content { overscroll-behavior-y: contain; }
+
+@media (max-width: 768px) {
+  /* Removes the double-tap-to-zoom wait on controls. Deliberately NOT applied
+     to everything: `manipulation` on a scroll container is fine, but the
+     signature canvases rely on `touch-action: none` and must keep it, so this
+     is scoped to actual controls. */
+  button, a, [role="button"], .p-button, .p-tab, .tab-btn, .drawer-link {
+    touch-action: manipulation;
+  }
+
+  /* The software keyboard. index.html asks Chromium/Gecko to resize the layout
+     viewport (interactive-widget=resizes-content), which handles Android. iOS
+     Safari ignores that keyword and only shrinks the VISUAL viewport, so a
+     fullscreen dialog keeps its full height and the keyboard covers the bottom
+     of it — where Save and Cancel are. lib/keyboardInset.js publishes the
+     covered height; pad the dialog by it so the buttons rise above the keyboard.
+     Falls back to 0px, so browsers without visualViewport are unaffected, and on
+     Chromium the value is ~0 because the layout viewport already shrank. */
+  .p-dialog .p-dialog-content { padding-bottom: calc(1rem + var(--keyboard-inset, 0px)); }
+  .p-dialog .p-dialog-footer { margin-bottom: var(--keyboard-inset, 0px); }
+}

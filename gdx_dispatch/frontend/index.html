@@ -2,7 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- interactive-widget=resizes-content: when the software keyboard opens,
+         resize the LAYOUT viewport too, not just the visual one. Without it the
+         keyboard simply overlays the page, so the field you are typing in (and
+         a dialog's Save button) can sit underneath it. Chromium 108+ and Gecko
+         honour this; iOS Safari ignores it, which is why lib/keyboardInset.js
+         also publishes a --keyboard-inset for that case.
+         Deliberately NOT viewport-fit=cover: the app has no top/left/right
+         safe-area handling, so opting out of the browser's letterboxing would
+         drop the bottom nav into the iOS home-indicator gesture zone. See
+         docs/design/mobile-all-platforms-plan.md. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <title>GDX Platform</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />

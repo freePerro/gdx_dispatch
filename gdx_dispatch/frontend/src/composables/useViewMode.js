@@ -75,9 +75,33 @@ export function useViewMode() {
     // gate as the desktop drawer entries.
     '/phone-com/calls': '/mobile/phone',
     '/phone-com/messages': '/mobile/sms',
-    // NOTE: '/jobs' is intentionally NOT mapped here — /mobile/jobs is
-    // tech-scoped ("My Jobs") and would hide office/admin data. See
-    // MH-5b follow-up for a non-tech-scoped /mobile/jobs-list.
+    // NOTE: '/jobs' is NOT mapped. The reason recorded here used to be
+    // "/mobile/jobs is tech-scoped and would hide office data"; that is out of
+    // date — MobileJobsView has a company-wide scope toggle
+    // (`/api/mobile/jobs?scope=company`). The live blocker is that it DEFAULTS
+    // to "My jobs", so an office user would land on a near-empty list.
+    //
+    // NOT mapped either — and this is the interesting one. The 2026-08-12 phone
+    // audit measured desktop /billing at 885px, /estimates 735px and /inventory
+    // 595px on a 390px screen, and all three HAVE mobile companions that
+    // measured clean. Adding them here looks obviously right and is a trap:
+    //
+    //   - `preference === 'desktop'` is the only escape hatch, and forceDesktop()
+    //     is called from nowhere in the UI. A redirect here is therefore
+    //     PERMANENT: a phone user could never reach the desktop view again.
+    //   - the companions are narrower, not equivalent. MobileInventoryView is
+    //     read-only (one GET) while desktop has create/edit/delete;
+    //     convert-to-job exists in no Mobile* view; MobileBillingView has no
+    //     delete-invoice, pay-link, or Ready-for-Billing dismissal verbs.
+    //   - three call sites deep-link into /billing with a query the companion
+    //     never reads (JobDetailView, JobsView, DashboardView). The guard below
+    //     forwards `to.query`, but MobileBillingView ignores it, so
+    //     `?action=create` — the Create Invoice button on a job — would land on
+    //     a plain list and silently do nothing.
+    //
+    // The width problem is real; a redirect is the wrong cure. The right fix is
+    // to card-stack those tables at phone width, which keeps every capability.
+    //
     // NOTE: '/profile' not mapped — the responsive CSS clamp in MH-5
     // makes the desktop view fit at 390px without a separate companion.
   };

@@ -113,3 +113,120 @@ describe('MH-2 — PrimeVue CTA contrast override', () => {
     matches.forEach((m) => expect(m).toContain('#2563eb'));
   });
 });
+
+/**
+ * Toast width on a phone — 2026-08-12 phone audit.
+ *
+ * PrimeVue's toast is a fixed 25rem (400px) anchored to a screen edge, so on a
+ * 390px phone it rendered at left:-30px and every message the app showed was
+ * clipped off the side. Measured on ALL 26 audited screens, because the toast
+ * container mounts app-wide — the single most widespread phone defect found.
+ *
+ * Pinned here rather than in a component spec because .p-toast is teleported to
+ * <body>: only a global stylesheet can reach it. jsdom applies no media queries,
+ * so this is a structural assertion — the real proof is a browser measurement,
+ * not this test.
+ */
+describe('responsive.css — phone toast', () => {
+  const cssPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)), '..', 'responsive.css',
+  );
+  const css = fs.readFileSync(cssPath, 'utf8');
+
+  // Extract the BODY of the @media block, brace-matched. A naive
+  // `slice(indexOf(...))` runs to end-of-file, so it would still pass if the
+  // rule were moved OUT of the media query — making toasts full-width on a
+  // 2560px desktop while the test stayed green. (Caught in review, 2026-08-12.)
+  function mediaBody(source, query) {
+    const start = source.indexOf(query);
+    if (start === -1) return '';
+    const open = source.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      else if (source[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return source.slice(open + 1, i);
+      }
+    }
+    return '';
+  }
+
+  const phoneBlock = mediaBody(css, '@media (max-width: 768px)');
+
+  it('the extractor really is brace-matched (guards the guard)', () => {
+    // If this ever returns the whole file again, every assertion below is void.
+    expect(phoneBlock).not.toBe('');
+    expect(phoneBlock).not.toMatch(/@media \(min-width/);
+    expect(phoneBlock.length).toBeLessThan(css.length);
+  });
+
+  it('constrains .p-toast to the viewport, inside the phone breakpoint', () => {
+    expect(phoneBlock).toMatch(/\.p-toast\s*\{[^}]*max-width:\s*calc\(100vw/);
+  });
+
+  it('marks width/left/right important — inline styles set the position', () => {
+    // `width` needs it to beat PrimeVue's stylesheet rule; `left`/`right` need
+    // it to beat INLINE styles on the toast root, where cascade order is
+    // irrelevant. Dropping !important breaks the position half silently.
+    expect(phoneBlock).toMatch(/\.p-toast\s*\{[^}]*width:\s*auto\s*!important/);
+    expect(phoneBlock).toMatch(/\.p-toast\s*\{[^}]*left:[^;]*!important/);
+    expect(phoneBlock).toMatch(/\.p-toast\s*\{[^}]*right:[^;]*!important/);
+  });
+
+  it('clears the transform that the *-center positions carry', () => {
+    // .p-toast-top-center / -bottom-center set translateX(-50%); with both
+    // edges pinned that would push the toast half off-screen.
+    expect(phoneBlock).toMatch(/\.p-toast\s*\{[^}]*transform:\s*none\s*!important/);
+  });
+});
+
+/**
+ * Mobile viewport-unit + input-zoom guards — 2026-08-12 cross-platform pass.
+ *
+ * Both pin decisions that an adversarial review corrected:
+ *  - svh NOT dvh for the fullscreen dialog. dvh re-evaluates as browser chrome
+ *    hides/shows, resizing the dialog while the user types in it.
+ *  - the iOS 16px input threshold applies to the five HAND-ROLLED auth forms.
+ *    PrimeVue's .p-inputtext is already 1rem, so the app's ordinary inputs were
+ *    never the problem — my first reading generalised from /login alone.
+ *    A global rule in this file could not fix them anyway: a scoped
+ *    `.field input[data-v-…]` outranks `input[type=…]` regardless of order.
+ */
+describe('mobile viewport units and input zoom', () => {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const css = fs.readFileSync(path.join(dir, '..', 'responsive.css'), 'utf8');
+
+  it('sizes the fullscreen dialog with svh, keeping vh as the fallback', () => {
+    expect(css).toMatch(/\.p-dialog\s*\{[^}]*height:\s*100vh/);
+    expect(css).toMatch(/\.p-dialog\s*\{\s*height:\s*100svh/);
+  });
+
+  it('does not use dvh for the dialog (it resizes mid-typing)', () => {
+    expect(css).not.toMatch(/\.p-dialog\s*\{[^}]*100dvh/);
+  });
+
+  it.each([
+    'LoginView.vue', 'SignupView.vue', 'ForgotPasswordView.vue', 'ResetPasswordView.vue',
+  ])('%s sizes its hand-rolled inputs at >=16px', (file) => {
+    const src = fs.readFileSync(path.join(dir, '..', '..', 'views', file), 'utf8');
+    // Only rules that actually TARGET a form control. Matching any selector
+    // containing the string "input" also catches `.input-group label`, and a
+    // label's font-size has nothing to do with zoom — the first version of this
+    // test failed on exactly that. The last simple-selector token has to be the
+    // control itself.
+    const targetsControl = (selector) => selector.split(',').some((part) => {
+      const last = part.trim().split(/\s+|>/).filter(Boolean).pop() || '';
+      return /^(input|select|textarea)(\[[^\]]*\])?$/.test(last.replace(/:[a-z-]+$/, ''));
+    });
+    const inputRules = [...src.matchAll(/([^{}]*)\{([^}]*)\}/g)]
+      .filter(([, sel]) => targetsControl(sel) && !sel.includes('::'))
+      .map(([, sel, body]) => ({ sel: sel.trim(), fs: /font-size:\s*([0-9.]+)rem/.exec(body) }))
+      .filter((r) => r.fs);
+    expect(inputRules.length).toBeGreaterThan(0);
+    for (const r of inputRules) {
+      expect(parseFloat(r.fs[1]), `${file} "${r.sel}" is ${r.fs[1]}rem — iOS will zoom`)
+        .toBeGreaterThanOrEqual(1);
+    }
+  });
+});

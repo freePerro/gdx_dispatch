@@ -76,7 +76,7 @@ h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
 .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.5rem; }
 .input-group { margin-bottom: 1rem; }
 .input-group label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; font-weight: 500; }
-input { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 0.95rem; box-sizing: border-box; }
+input { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 1rem; box-sizing: border-box; } /* >=16px: iOS zooms a focused input below 16px and never zooms back */
 input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
 .submit-btn { width: 100%; padding: 0.75rem; background: #3b82f6; color: white; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
 .submit-btn:hover { background: #2563eb; }
