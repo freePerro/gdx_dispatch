@@ -1143,25 +1143,31 @@ def _check_customer_facing_config() -> None:
 
 def _check_encryption_at_rest() -> None:
     """S122-1 (T1): refuse to boot in production when MASTER_ENCRYPTION_KEY
-    is unset. ``gdx_dispatch.core.pii._FERNET`` and ``gdx_dispatch.core.database._FERNET``
-    fall back to ``None`` when the key is missing, which makes the QB OAuth
-    token-store helpers and ``tenants.db_url_enc`` round-trip plaintext.
-    Columns named ``*_enc`` would then hold cleartext credentials. The
-    fallback is intentional for dev/test (``test_01_gdx_scaffold.py:303``
-    pins the contract); the gate fires only when GDX_ENV is
-    production-ish.
+    is unset. ``gdx_dispatch.core.pii._FERNET`` falls back to ``None`` when the
+    key is missing, which makes the QB OAuth token-store helpers round-trip
+    plaintext. Columns named ``*_enc`` would then hold cleartext
+    credentials. The fallback is intentional for dev/test
+    (``test_01_gdx_scaffold.py:303`` pins the contract); the gate fires
+    only when GDX_ENV is production-ish.
 
-    Live consumers covered by this gate (post S122-1c, every
+    Live consumer covered by this gate (post S122-1c, every
     ``EncryptedString`` model has been retyped to plain ``Text``):
       * ``qb_token_store.access_token_enc`` / ``refresh_token_enc``
         (manual ``_encrypt`` helpers, ``gdx_dispatch.modules.quickbooks.oauth``)
-      * ``tenants.db_url_enc`` (``gdx_dispatch.core.database._decrypt_db_url``)
+
+    ``tenants.db_url_enc`` used to be the second consumer. The column is not
+    in ``migrations/baseline_squashed.sql`` and
+    ``gdx_dispatch.core.database._decrypt_db_url`` is now an identity no-op, so
+    this gate has no DB-URL ciphertext left to protect. Several ``tools/``
+    scripts still SELECT the column against pre-baseline databases; they go
+    through the same no-op decrypt, so they read whatever is stored verbatim.
+    (An earlier version of this note cited "migrations 081-083" — copied from
+    ``core/database.py`` and wrong: this tree's migrations stop at 062.)
 
     NOT protected here: ``Customer.{name,email,phone,address}``,
     ``webhook_endpoints.secret``, ``integration_configs.secret``. Those
     are plain ``Text`` post-S122-1c — typing matches the actual stored
-    plaintext bytes. See ``ai-queue/plans/sprint_encryption_rollout_proper.md``
-    for the Option C path if encryption returns for any of them.
+    plaintext bytes.
     """
     from gdx_dispatch.core import pii  # noqa: PLC0415 — module-load triggers _FERNET init
     env = os.environ.get("GDX_ENV", "").lower()
@@ -1321,11 +1327,15 @@ def create_app() -> FastAPI:
         app.add_middleware(AuditMiddleware)
     if APIKeyMiddleware is not None:
         app.add_middleware(APIKeyMiddleware)
-    try:
-        from gdx_dispatch.core.service_accounts import ServiceKeyMiddleware
-        app.add_middleware(ServiceKeyMiddleware)
-    except Exception:
-        logging.getLogger("gdx_dispatch.app").exception("service_key_middleware_unavailable")
+    # ServiceKeyMiddleware (X-Service-Key / svc_live_ keys) was REMOVED
+    # 2026-08-12. It granted admin-equivalent access but shipped with no way
+    # to provision a key — no web UI, and the CLI its own docstring pointed at
+    # was never written — so the feature could only ever be used by hand-editing
+    # the DB. Nothing in the app sent the header. It was also the only producer
+    # of service-account identity, which is why the `actor_kind ==
+    # "service_account"` branch in routers/auth/core.py now fails closed.
+    # The `service_accounts` table stays in the baseline schema; D17
+    # (service_accounts -> access_tokens) is the intended replacement.
     if _TenantRateLimitMiddleware is not None:
         app.add_middleware(_TenantRateLimitMiddleware)
     try:
@@ -1338,12 +1348,18 @@ def create_app() -> FastAPI:
     # Sprint 0.9-m: SS-14..35 middleware stack.
     #
     # Starlette semantics: the LAST ``add_middleware`` call wraps OUTERMOST.
-    # Target request flow (outermost → innermost):
-    #     TenantMiddleware → SPIFFEAuthMiddleware → TenantRoleMiddleware
-    #     → APIVersioningMiddleware → ConsumerAuditMiddleware
-    #     → CrossTenantAccessMiddleware → IdempotencyMiddleware → handler
+    # Actual request flow through this block (outermost → innermost):
+    #     TenantMiddleware → SPIFFEAuthMiddleware (opt-in, SPIFFE_ENABLE)
+    #     → APIVersioningMiddleware → IdempotencyMiddleware → handler
     # Written below in reverse (innermost first) so the LAST line (Tenant)
-    # ends up outermost.
+    # ends up outermost. Middlewares registered ABOVE this block
+    # (AuditMiddleware, APIKeyMiddleware, _TenantRateLimitMiddleware,
+    # PlatformTracingMiddleware) sit inside it.
+    #
+    # The original 0.9-m design also routed through TenantRoleMiddleware,
+    # ConsumerAuditMiddleware and CrossTenantAccessMiddleware. None of the
+    # three exist any more — they went with the multi-tenant platform
+    # schema (see the SS-28 removal note below).
     #
     # AuthMiddleware: the Sprint 0.9-d composite auth dispatcher is plumbed
     # as ``Depends(get_current_principal)`` per-route, not as a Starlette

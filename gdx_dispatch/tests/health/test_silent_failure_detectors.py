@@ -751,19 +751,31 @@ def test_settings_json_declared_hooks_are_real_files():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_legacy_service_account_token_rejected_after_ss4_cutover():
-    """Legacy X-Service-Key tokens must be rejected once D17 lands.
+    """Legacy service-account authority must not exist. Live since 2026-08-12.
 
     Maps to failure #11 (service_accounts still read by middleware post-SS-4
-    data migration). Until D17 (service_accounts → access_tokens consumer
-    cutover) lands, legacy tokens still authenticate — dual-state authority.
+    data migration) — the dual-state authority this detector was written to
+    catch. Resolved by deletion rather than by the D17 cutover: the
+    `X-Service-Key` middleware was unprovisionable (no UI, no CLI) and was
+    removed, so there is no legacy reader left to cut over.
 
-    This detector is SKIP today and must FAIL on the first run after D17 ships
-    if the cutover is incomplete. Flip the skip to the real assertion when
-    D17's `verify_service_key` dual-read-with-deprecation-logging is in place.
+    Two things must stay true. If D17 later reintroduces service identity on
+    top of `access_tokens`, that is fine — but it must not resurrect the
+    unverified-trust branch this asserts against.
     """
-    pytest.skip(
-        "D17 (service_accounts → access_tokens consumer cutover) not implemented. "
-        "Detector fires once D17 Slice 1 lands (feature-flagged dual-read in "
-        "verify_service_key). Active sprint: "
-        "`ai-queue/operations/active_sprint.md` D17."
-    )
+    # 1. The middleware module is gone and nothing imports it.
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("gdx_dispatch.core.service_accounts")
+
+    # 2. A token claiming service_account actor_kind is DENIED, not trusted.
+    #    (The bypass returned before the users.active check — the
+    #    D-pat-lockout-bypass gap.)
+    from unittest.mock import MagicMock
+
+    from gdx_dispatch.routers.auth import _db_verify_user
+
+    req = MagicMock()
+    req.state.tenant = {"id": "tenant-1"}
+    assert _db_verify_user(req, "svc-sub", "service_account") is None

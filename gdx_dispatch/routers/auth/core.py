@@ -798,22 +798,36 @@ def _db_verify_user(request: Request, principal_subject: str, actor_kind: str | 
     raises 401 + revokes the family. On success, return a small dict with
     the DB-derived ``role`` so the caller can override the JWT-claim role.
 
-    PAT / service-account branch: ``actor_kind == "service_account"`` —
-    PATs validate against ``access_tokens`` (not ``users``), so a missing
-    row in ``users`` is normal. Skip the lookup, return ``{}`` so the
-    caller treats the principal as DB-verified-by-policy.
+    Service-account branch: FAILS CLOSED as of 2026-08-12. It used to skip
+    the lookup and return ``{}`` ("DB-verified by policy") because PATs
+    validated against ``access_tokens`` rather than ``users``, so a missing
+    ``users`` row was normal for them. Both producers of that identity are
+    now gone — the PAT surface was deleted, and ServiceKeyMiddleware was
+    removed as unprovisionable — so nothing can legitimately present
+    ``actor_kind == "service_account"``. A token that still claims it is
+    either a leftover or forged, and skipping verification for it was the
+    documented lockout bypass (D-pat-lockout-bypass): the branch returned
+    before the ``users.active`` check, so a deactivated user's PAT kept
+    working. Deny instead. Restore the skip only alongside a real
+    service-identity store (D17: access_tokens).
 
     Public/health routes that never set ``request.state.tenant`` — return
     ``None`` and let the caller decide. (In practice ``get_current_user``
     is never called on those routes.)
     """
     if not _db_verify_enabled():
-        # Rollback valve. Returning empty dict tells the caller "skip the
-        # lookup, trust the JWT" — same shape as the SERVICE_ACCOUNT branch.
+        # Rollback valve: skip the lookup and trust the JWT. Deliberately
+        # checked BEFORE the service-account denial so the 24h valve can
+        # still recover a bad deploy.
         return {}
 
     if str(actor_kind or "").lower() == "service_account":
-        return {}
+        log.warning(
+            "auth_denied_service_account_actor_kind sub=%s — no service-identity "
+            "store exists; treating as forged/leftover",
+            principal_subject,
+        )
+        return None
 
     tenant = getattr(request.state, "tenant", None)
     if not tenant:
