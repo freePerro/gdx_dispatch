@@ -10,25 +10,38 @@ match the real router prefixes (e.g. /api/admin-ops, /api/booking, /api/collecti
 This router exposes thin GET/POST/PATCH handlers that:
   - Return `{"items": []}` for list endpoints (UI renders empty state)
   - Return `{}` for index/config endpoints (UI renders defaults)
-  - Return `{"ok": true, "id": str(uuid4())}` for write endpoints
-  - Always tenant-scoped via request.state.tenant
-  - Always log_audit_event_sync on mutations (so the action trail is real)
+  - Raise 501 for write endpoints with no backing store (see below)
+  - Are tenant-scoped via request.state.tenant
 
-These are NOT stubs in the pejorative sense — they are real endpoints that
-return valid shapes and accept writes into new per-tenant tables where
-appropriate. They exist to unblock the UI; future work can migrate specific
-handlers to dedicated routers with richer logic.
+This file is NOT the harmless shim its name suggests. For many paths it WINS
+route arbitration over the real router, so it is the live implementation the
+browser actually reaches.
+
+2026-08-12 correction. The previous version of this docstring claimed these
+handlers "always log_audit_event_sync on mutations" and "accept writes into
+new per-tenant tables where appropriate". Neither was true: 24 write handlers
+had a body of exactly `return {"ok": True}` — no table, no write, no audit.
+The Vue read that as success and showed "Saved", so the user's edit vanished
+with a green toast. `PATCH /api/pricing/{id}` was the clearest case: Pricing
+edits reported "Entry updated" and changed nothing.
+
+Those handlers now call `_not_implemented(...)`, which logs at WARNING and
+raises 501. A write endpoint here must either do the work or fail — never
+report a success that did not happen. The running list of what is unbuilt,
+and whether each should be built or removed, is in
+docs/design/frontend-contract-gaps-2026-08-12.md.
+
+`gdx_dispatch/tools/frontend_contract_scan.py --check C6` is the regression gate.
 
 All endpoints require authentication (require_module("jobs") for safety).
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as _Session
 
@@ -72,6 +85,43 @@ def _ok_with_id() -> dict[str, Any]:
     return {"ok": True, "id": str(uuid4())}
 
 
+def _not_implemented(
+    feature: str,
+    request: Request,
+    user: dict[str, Any] | None = None,
+    *,
+    detail: str | None = None,
+) -> NoReturn:
+    """Refuse a write this shim cannot perform, loudly.
+
+    These handlers used to `return {"ok": True}` for mutations that touched
+    nothing: no model, no table, no write. The frontend read that as success,
+    popped a "Saved" toast, and the user's edit vanished — pricing edits and
+    payroll runs among them (see docs/design/frontend-contract-gaps-2026-08-12.md).
+
+    A 501 is the honest answer: the endpoint exists, the operation is not
+    implemented. It is logged at WARNING with the caller so the volume of
+    attempted use is visible — that is the evidence for deciding which of
+    these deserve building. Never downgrade this to a silent success.
+    """
+    log.warning(
+        "ui_compat_not_implemented feature=%s method=%s path=%s tenant=%s user=%s",
+        feature,
+        getattr(request, "method", "?"),
+        getattr(getattr(request, "url", None), "path", "?"),
+        _tenant_id(request),
+        _user_id(user),
+    )
+    raise HTTPException(
+        status_code=501,
+        detail=detail or (
+            f"{feature} is not implemented. This endpoint accepted the request "
+            f"and discarded it until 2026-08-12; it now fails instead of "
+            f"reporting a success that never happened."
+        ),
+    )
+
+
 class _GenericPayload(BaseModel):
     # Catch-all payload for shim POSTs. Fields are free-form.
     model_config = {"extra": "allow"}
@@ -111,8 +161,13 @@ def list_booking(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.patch("/api/booking/{slot_id}", response_model=None)
-def update_booking(slot_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_booking(
+    slot_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Editing a booking slot", request, user)
 
 
 # ── Collections ────────────────────────────────────────────────────────────
@@ -133,9 +188,10 @@ def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current
 def create_customer_recurring_job(
     customer_id: str,
     payload: _GenericPayload,
-    _: dict = Depends(get_current_user),
+    request: Request,
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    return _ok_with_id()
+    _not_implemented("Creating a recurring job from the customer page", request, user)
 
 
 @router.get("/api/customers/{customer_id}/communications", response_model=None)
@@ -147,9 +203,10 @@ def list_customer_communications(customer_id: str, _: dict = Depends(get_current
 def log_customer_communication(
     customer_id: str,
     payload: _GenericPayload,
-    _: dict = Depends(get_current_user),
+    request: Request,
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    return _ok_with_id()
+    _not_implemented("Logging a customer communication", request, user)
 
 
 @router.get("/api/customers/{customer_id}/portal-account", response_model=None)
@@ -161,9 +218,10 @@ def get_customer_portal_account(customer_id: str, _: dict = Depends(get_current_
 def create_customer_portal_account(
     customer_id: str,
     payload: _GenericPayload,
-    _: dict = Depends(get_current_user),
+    request: Request,
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    return {"ok": True, "invited": True}
+    _not_implemented("Creating a customer portal account", request, user)
 
 
 # ── Dispatch utilities (map, optimizer, geocoder) ─────────────────────────
@@ -199,13 +257,22 @@ def list_equipment_tracking(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/equipment-tracking", response_model=None, status_code=201)
-def create_equipment_tracking(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_equipment_tracking(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Creating an equipment-tracking record", request, user)
 
 
 @router.patch("/api/equipment-tracking/{equipment_id}", response_model=None)
-def update_equipment_tracking(equipment_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_equipment_tracking(
+    equipment_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Editing an equipment-tracking record", request, user)
 
 
 # ── Loyalty (list index) ──────────────────────────────────────────────────
@@ -230,8 +297,12 @@ def list_marketing(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/marketing", response_model=None, status_code=201)
-def create_marketing(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_marketing(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Creating a marketing campaign", request, user)
 
 
 # ── Onboarding state + checklist + seed actions ───────────────────────────
@@ -468,8 +539,11 @@ def list_pay_stubs(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/payroll/run-current-period", response_model=None)
-def run_payroll_current(_: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "period_id": str(uuid4()), "employees_processed": 0}
+def run_payroll_current(
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Running payroll for the current period", request, user)
 
 
 # ── Portal management ─────────────────────────────────────────────────────
@@ -485,13 +559,22 @@ def pricing_index(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/pricing", response_model=None, status_code=201)
-def create_pricing_entry(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_pricing_entry(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Creating a pricing entry", request, user)
 
 
 @router.patch("/api/pricing/{entry_id}", response_model=None)
-def update_pricing_entry(entry_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_pricing_entry(
+    entry_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Editing a pricing entry", request, user)
 
 
 # ── Quickbooks integration status ─────────────────────────────────────────
@@ -566,13 +649,22 @@ def list_scheduling(
 
 
 @router.post("/api/scheduling", response_model=None, status_code=201)
-def create_scheduling(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_scheduling(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Creating a scheduling entry", request, user)
 
 
 @router.patch("/api/scheduling/{entry_id}", response_model=None)
-def update_scheduling(entry_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_scheduling(
+    entry_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Editing a scheduling entry", request, user)
 
 
 # ── SSO config ────────────────────────────────────────────────────────────
@@ -583,13 +675,21 @@ def sso_config(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.patch("/api/sso", response_model=None)
-def update_sso_config(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_sso_config(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Saving SSO configuration", request, user)
 
 
 @router.post("/api/sso/test-connection", response_model=None)
-def test_sso_connection(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "reachable": True}
+def test_sso_connection(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Testing the SSO connection", request, user)
 
 
 # ── Uploads (list + upload) ───────────────────────────────────────────────
@@ -600,8 +700,12 @@ def list_uploads(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/uploads", response_model=None, status_code=201)
-def create_upload(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_upload(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Uploading a file through this endpoint", request, user)
 
 
 # ── Voice (list) ──────────────────────────────────────────────────────────
@@ -636,8 +740,12 @@ def bulk_tag_customers(payload: _GenericPayload, _: dict = Depends(get_current_u
 
 
 @router.post("/api/communications/bulk-sms", response_model=None)
-def bulk_send_sms(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "queued": 0}
+def bulk_send_sms(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Bulk SMS to a customer segment", request, user)
 
 
 # ── Job costing line items + parts ────────────────────────────────────────
@@ -653,13 +761,24 @@ def create_job_line_item(job_id: str, payload: _GenericPayload, _: dict = Depend
 
 
 @router.patch("/api/jobs/{job_id}/parts/{part_id}", response_model=None)
-def update_job_part(job_id: str, part_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_job_part(
+    job_id: str,
+    part_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Editing a part on a job", request, user)
 
 
 @router.post("/api/jobs/{job_id}/apply-template", response_model=None)
-def apply_job_template(job_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "applied": True}
+def apply_job_template(
+    job_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Applying a job template", request, user)
 
 
 # ── Labor time entries (via /api/labor/jobs/...) ──────────────────────────
@@ -723,31 +842,41 @@ def list_labor_time_entries(
 # ── Estimate builder (customer-facing portal estimate) ───────────────────
 
 @router.post("/api/estimate/calculate", response_model=None)
-def calculate_portal_estimate(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"price": 0, "description": "Estimate calculation pending", "doorSummaries": []}
+def calculate_portal_estimate(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Portal estimate calculation", request, user)
 
 
 @router.post("/api/estimate/save", response_model=None, status_code=201)
-def save_portal_estimate(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def save_portal_estimate(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Saving a portal estimate", request, user)
 
 
 # ── Reviews responses ─────────────────────────────────────────────────────
 
 @router.post("/api/reviews/{review_id}/responses", response_model=None, status_code=201)
-def create_review_response(review_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok_with_id()
+def create_review_response(
+    review_id: str,
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Responding to a customer review", request, user)
 
 
 # ── Service agreement templates patch ─────────────────────────────────────
-
-@router.patch("/api/service-agreements/templates/{template_id}", response_model=None)
-def update_service_agreement_template(
-    template_id: str,
-    payload: _GenericPayload,
-    _: dict = Depends(get_current_user),
-) -> dict:
-    return _ok()
+# REMOVED 2026-08-12. This shim answered PATCH
+# /api/service-agreements/templates/{id} with {"ok": true} and discarded the
+# edit, while winning route arbitration over the real router. The genuine
+# implementation now lives in routers/service_agreements.update_template,
+# alongside the GET/POST for the same resource.
 
 
 # ── Billing / Subscription (Gemma 4 generated) ───────────────────────────
@@ -768,13 +897,21 @@ def get_billing_payment_methods(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/billing/change-plan", response_model=None)
-def change_billing_plan(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def change_billing_plan(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Changing the billing plan", request, user)
 
 
 @router.post("/api/billing/cancel", response_model=None)
-def cancel_billing(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return {"ok": True, "canceled_at": datetime.now(timezone.utc).isoformat()}
+def cancel_billing(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Cancelling billing", request, user)
 
 
 @router.get("/api/billing/usage", response_model=None)
@@ -838,8 +975,12 @@ def ai_quality_feedback_list(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.post("/api/ai/quality/feedback", response_model=None)
-def ai_quality_feedback_submit(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def ai_quality_feedback_submit(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Submitting AI quality feedback", request, user)
 
 
 # ── Admin Permissions ────────────────────────────────────────────────────

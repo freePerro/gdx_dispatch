@@ -127,6 +127,84 @@ def test_create_template(client: TestClient):
     assert listed[0]["id"] == data["id"]
 
 
+# ── PATCH /templates/{id} ────────────────────────────────────────────────
+# Added 2026-08-12. This path used to be served by a `ui_compat` handler whose
+# whole body was `return {"ok": True}` — it won route arbitration over this
+# router, so the Vue showed "Template updated" and the edit was discarded.
+# See docs/design/frontend-contract-gaps-2026-08-12.md (C6).
+
+
+def _create_template(client: TestClient) -> dict:
+    r = client.post("/api/service-agreements/templates", json=_template_payload())
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_patch_template_persists_name(client: TestClient):
+    tpl = _create_template(client)
+    r = client.patch(
+        f"/api/service-agreements/templates/{tpl['id']}", json={"name": "Platinum"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Platinum"
+    # re-read: the write must survive, not just echo back
+    listed = client.get("/api/service-agreements/templates").json()
+    assert listed[0]["name"] == "Platinum"
+
+
+def test_patch_template_accepts_the_frontends_price_field(client: TestClient):
+    """ServiceAgreementsView sends `price`; the column is `default_price`."""
+    tpl = _create_template(client)
+    r = client.patch(f"/api/service-agreements/templates/{tpl['id']}", json={"price": 450.0})
+    assert r.status_code == 200, r.text
+    assert r.json()["default_price"] == 450.0
+    assert client.get("/api/service-agreements/templates").json()[0]["default_price"] == 450.0
+
+
+def test_patch_template_explicit_default_price_wins(client: TestClient):
+    tpl = _create_template(client)
+    r = client.patch(
+        f"/api/service-agreements/templates/{tpl['id']}",
+        json={"price": 1.0, "default_price": 777.0},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["default_price"] == 777.0
+
+
+def test_patch_template_leaves_unsent_fields_alone(client: TestClient):
+    tpl = _create_template(client)
+    r = client.patch(f"/api/service-agreements/templates/{tpl['id']}", json={"name": "Silver"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["description"] == "Annual preventive maintenance"
+    assert body["default_price"] == 299.0
+    assert body["default_duration_months"] == 12
+
+
+def test_patch_template_services_included_round_trips(client: TestClient):
+    tpl = _create_template(client)
+    r = client.patch(
+        f"/api/service-agreements/templates/{tpl['id']}",
+        json={"services_included": ["Tune-up", "Spring check"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["services_included"] == ["Tune-up", "Spring check"]
+
+
+def test_patch_template_empty_body_is_422_not_silent_ok(client: TestClient):
+    """The bug this replaced was 'reports success, changes nothing'."""
+    tpl = _create_template(client)
+    r = client.patch(f"/api/service-agreements/templates/{tpl['id']}", json={})
+    assert r.status_code == 422, r.text
+
+
+def test_patch_template_unknown_id_is_404(client: TestClient):
+    r = client.patch(
+        f"/api/service-agreements/templates/{uuid4()}", json={"name": "Nope"}
+    )
+    assert r.status_code == 404, r.text
+
+
 def test_create_agreement_from_template(client: TestClient):
     tpl = client.post(
         "/api/service-agreements/templates", json=_template_payload()
