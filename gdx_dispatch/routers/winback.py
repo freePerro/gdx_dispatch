@@ -5,7 +5,7 @@ Two connected features:
 1. Win-back campaigns: identify customers with no jobs in N months, enqueue SMS/email sends.
 2. Follow-ups queue: scheduled follow-up tasks on estimates / invoices / customers.
 
-Pattern mirrors gdx_dispatch/routers/proposals.py and gdx_dispatch/routers/collections.py.
+Pattern mirrors gdx_dispatch/routers/collections.py.
 """
 from __future__ import annotations
 

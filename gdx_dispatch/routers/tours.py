@@ -9,11 +9,12 @@ POST /api/me/tours/{tour_id}/step        — update last_step
 Tenant-plane: isolation is the DB connection itself. No tenant_id column on
 UserTourProgress per CLAUDE.md three-plane invariant.
 
-Graceful degradation: if the table doesn't yet exist on a tenant DB
-(rollout hasn't run `gdx_dispatch/tools/add_user_tour_progress_table.py` on this
-tenant), reads return empty progress and writes are no-ops with a warning
-log. Tours fire for everyone in that case — degraded mode is "tour shows
-every time," which is annoying but not broken.
+Graceful degradation: if the `user_tour_progress` table doesn't exist on
+the tenant DB (it is created by `TenantBase.metadata.create_all()`, so this
+means a DB that predates the model and never got the hand-DDL), reads
+return empty progress and writes are no-ops with a warning log. Tours
+fire for everyone in that case — degraded mode is "tour shows every
+time," which is annoying but not broken.
 """
 from __future__ import annotations
 

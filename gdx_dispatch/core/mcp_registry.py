@@ -6,13 +6,12 @@ capability-gated visibility.
 
 TODO
 ----------------
-* register the router from ``gdx_dispatch/routers/mcp_registry.py`` in
-  ``gdx_dispatch/main.py`` at sprint integration time. Until then the router is
-  exercised via its own FastAPI test harness.
+* the ``gdx_dispatch/routers/mcp_registry.py`` router this slice assumed was
+  never written — there is no HTTP surface for the registry today.
+  Tools reach it in-process, via ``gdx_dispatch.core.mcp_invoke.invoke_tool``.
 * at import time, ``gdx_dispatch/core/mcp_tools/__init__.py`` triggers
-  registration of the initial tool set. When integration lands, ensure
-  that import happens before request handling begins (or move the
-  import into the router module).
+  registration of the initial tool set. If an HTTP surface is ever
+  added, ensure that import happens before request handling begins.
 
 Public API
 ----------
@@ -169,9 +168,11 @@ def repopulate_from_cache() -> int:
 def _principal_caps(principal: Any) -> list[dict[str, Any]]:
     """Normalise a principal's capabilities to list[dict].
 
-    Accepts either the dataclass-style ``RouterPrincipal`` (capabilities
-    is a list of dicts) or any object with a ``.capabilities`` iterable
-    of dicts. Tolerates tuple-shaped capabilities as a last resort.
+    Accepts the dataclass-style
+    ``gdx_dispatch.core.unified_principal.Principal`` or any object with a
+    ``.capabilities`` iterable of dicts. Tolerates tuple-shaped
+    capabilities as a last resort (which is the shape ``Principal``
+    actually carries).
     """
     caps = getattr(principal, "capabilities", None)
     if caps is None:

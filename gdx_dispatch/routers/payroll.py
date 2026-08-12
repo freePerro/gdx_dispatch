@@ -4,7 +4,7 @@ Payroll router — technician hours + revenue + commissions + CSV export.
 Gated behind the "timeclock" module. Calculates weekly overtime (40h base +
 1.5x rate), commission by rate type (percent/flat/hourly), and exports CSV.
 
-Pattern mirrors gdx_dispatch/routers/proposals.py (tenant scoping, audit, pydantic bounds).
+Pattern mirrors gdx_dispatch/routers/change_orders.py (tenant scoping, audit, pydantic bounds).
 Inline model follows gdx_dispatch/routers/collections.py pattern.
 """
 from __future__ import annotations

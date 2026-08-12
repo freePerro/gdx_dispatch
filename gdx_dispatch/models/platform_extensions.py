@@ -14,7 +14,8 @@ Mirrors migrations 004a-004d. 16 tables across 4 logical groups:
 ORM definition lives here; the stub matches the schema. DeveloperAccount lives
 under 3d but is included in this file to keep all SS-3 models in one place.)
 
-Patterns mirror gdx_dispatch/models/platform.py (SS-2). Portable types only:
+Patterns mirrored the SS-2 platform models (that module is gone — it went
+with the multi-tenant platform schema). Portable types only:
 - Uuid(as_uuid=True) — works on PG + SQLite via SA's dialect translation.
 - JSON — translated to JSONB on PG, TEXT on SQLite.
 - ForeignKey strings reference table names; use_alter=True only where there's

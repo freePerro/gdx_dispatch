@@ -12,7 +12,7 @@ Effective payment-terms-days resolution order on invoice creation:
   3. tenant_settings.default_payment_terms_days  (default 30)
 
 The discount / late-fee / interest *application* is a follow-up
-sprint — the configuration columns + the service.resolve_terms()
+sprint — the configuration columns + the service.resolve_effective_terms()
 helper land today so newly-created invoices stop coming in with
 NULL due_date."""
 from gdx_dispatch.modules.billing_terms.service import (  # noqa: F401

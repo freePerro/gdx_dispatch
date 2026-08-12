@@ -1,5 +1,6 @@
 """
-gdx_dispatch/api/public_router.py — Public REST API v1 for GDX multi-tenant SaaS.
+gdx_dispatch/api/public_router.py — Public REST API v1 for GDX (single-tenant,
+self-hosted; see the SINGLE-TENANT INVARIANT note in verify_api_key below).
 
 Authentication: X-API-Key header validated against the control-plane api_keys table.
 All routes require a valid, non-revoked API key.  The key is looked up in the

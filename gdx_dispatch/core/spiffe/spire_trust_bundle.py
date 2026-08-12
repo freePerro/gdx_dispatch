@@ -12,9 +12,9 @@ Design notes
 
 * **Fail-available for a bounded time.** Rejecting every SVID because
   the SPIRE server blipped is worse than serving a bundle that's a few
-  minutes stale. We serve the cached bundle up to ``MAX_STALE_SECONDS``
+  minutes stale. We serve the cached bundle up to ``max_stale_seconds``
   (default 6h) past its TTL; after that we refuse and surface an error.
-* **Warn on extended staleness.** After ``STALE_WARN_SECONDS`` (default
+* **Warn on extended staleness.** After ``stale_warn_seconds`` (default
   10min past TTL) we log a warning once per refresh attempt so the
   operator sees that SPIRE is unreachable.
 * **No silent failures.** Every refresh failure logs at warning level

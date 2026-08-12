@@ -1,19 +1,26 @@
 """Sprint 0.9 slice 0.9-c — unified ``Principal`` type.
 
-Defines ONE ``Principal`` type that subsumes the five auth-flow-specific
-principal dataclasses Sprint 0.8 shipped:
+Defines ONE ``Principal`` type that subsumes the auth-flow-specific
+principal dataclasses Sprint 0.8 shipped. Of the original five, two
+legacy variants still exist alongside this type:
 
 * SS-7 session/JWT ``Principal`` (``gdx_dispatch.core.principal.Principal``)
-* SS-14 PAT ``PatPrincipal``     (``gdx_dispatch.core.pat_validation.PatPrincipal``)
-* SS-22 SCIM ``ScimPrincipal``   (``gdx_dispatch.core.scim_auth.ScimPrincipal``)
 * SS-32 SPIFFE ``AgentPrincipal`` (``gdx_dispatch.core.middleware.spiffe_auth_middleware.AgentPrincipal``)
-* SS-21 OAuth bearer principal   (ad-hoc dict on ``SS21_OAuthToken`` rows in
-  ``gdx_dispatch.core.oauth2_grants`` / ``gdx_dispatch.routers.auth.oauth2`` — no dedicated class today)
 
-Slice 0.9-c defines the TYPE ONLY — no router or dependency is wired to
-produce or consume it yet. Slice 0.9-d will add the composite
-``get_current_principal`` dispatcher; slice 0.9-e will sweep the SS routers
-and delete the five legacy variant classes.
+The other three are gone — the SS-14 PAT (``pat_validation``), SS-22 SCIM
+(``scim_auth``) and SS-21 OAuth bearer (``oauth2_grants``) modules were
+deleted. ``auth_kind`` still declares ``"pat"``/``"scim"``/``"oauth"`` and
+the matching id fields remain on the type, so a re-introduced flow has a
+slot to land in, but nothing produces those kinds today.
+
+Current wiring: slice 0.9-d shipped the composite dispatcher
+``get_current_principal`` in :mod:`gdx_dispatch.core.auth_dispatcher`, which
+produces this type for the session, login-JWT, SPIFFE-JWT and SPIFFE-mTLS
+flows. Consumers today are :mod:`gdx_dispatch.routers.ai`,
+:mod:`gdx_dispatch.core.mcp_protocol_adapter` and
+:mod:`gdx_dispatch.core.mcp_fastmcp_bridge`. The 0.9-e sweep of the
+remaining SS routers has NOT happened — most routers still take the SS-7
+``Principal`` or a plain user dict.
 
 Module-path deviation
 ---------------------
@@ -43,7 +50,8 @@ capabilities this type carries:
 * Resource-scoped action wildcard: ``("*", resource_type)`` → allow any
   action on that resource.
 * Superuser wildcard: ``("*", "*")`` → allow everything.
-* Empty caps → deny (matches mcp_registry.check_capability:191 short-circuit).
+* Empty caps → deny (matches the ``if not caps`` short-circuit at the top
+  of ``mcp_registry.check_capability``).
 * Restricted flag: when ``is_restricted=True`` the principal is a
   capability-restricted bearer (v3 patch P36) and wildcards are disabled —
   only exact-match caps are honoured. This is the "restricted PAT" shape
@@ -134,7 +142,9 @@ class Principal:
     """Unified auth principal across session / PAT / SCIM / SPIFFE / OAuth flows.
 
     Produced by the composite ``get_current_principal`` dependency
-    (slice 0.9-d) and consumed by every SS router (slice 0.9-e sweep).
+    (slice 0.9-d). Consumed today by ``routers.ai`` and the MCP
+    adapter/bridge — the 0.9-e sweep of the remaining SS routers is
+    still outstanding, so this is not yet the universal router type.
 
     Fields
     ------

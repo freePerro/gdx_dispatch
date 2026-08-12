@@ -7,7 +7,7 @@ scheduled time block tied to a technician, optionally linked to a job and
 customer. Supports confirmation workflow, "on my way" status transitions,
 arrived/completed/cancelled lifecycle, and per-day mapping queries.
 
-Pattern mirrors gdx_dispatch/routers/proposals.py and gdx_dispatch/routers/change_orders.py
+Pattern mirrors gdx_dispatch/routers/change_orders.py
 (inline model + CRUD + state transitions + audit). Gated behind the "jobs"
 module.
 """

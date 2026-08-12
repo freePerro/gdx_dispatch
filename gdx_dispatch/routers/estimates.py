@@ -2107,11 +2107,12 @@ def reopen_estimate(
 
 
 # ---------------------------------------------------------------------------
-# Convert estimate → job (closes EstimatesView + EstimateDetailView Vue gap)
+# Convert estimate → job (closes EstimatesView + EstimateView Vue gap)
 # ---------------------------------------------------------------------------
 # Creates a new Job linked to this estimate via estimate.job_id and returns
-# both ids. Requires the estimate to be in 'accepted' status (or 'sent' if
-# force=true) and not already linked to a job. Audit logged on both sides.
+# both ids. Requires the estimate to be in 'accepted' status, to have a
+# customer, and to not already be linked to a job — there is no force/
+# override parameter. Audit logged on both sides.
 
 
 @router.post("/{estimate_id}/convert-to-job", response_model=None)
@@ -2120,10 +2121,13 @@ def convert_estimate_to_job(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    """Manual convert. Idempotent if already linked; useful as a recovery
-    path when the auto-convert on accept skipped (no_customer) and the
-    customer is now attached, or when force-converting a pre-2026-05-13
-    accepted estimate that never had its job created.
+    """Manual convert — a recovery path when the auto-convert on accept
+    skipped (no_customer) and the customer is now attached, or for a
+    pre-2026-05-13 accepted estimate that never had its job created.
+
+    NOT idempotent: an estimate that already has a job_id gets a 409
+    rather than the existing job id back. Callers retrying a convert
+    must treat 409 as "already done", not as a failure.
     """
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=False)
     if estimate.job_id is not None:

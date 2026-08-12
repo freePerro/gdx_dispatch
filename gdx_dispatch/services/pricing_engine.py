@@ -27,9 +27,9 @@ Volume discount (Sprint 1.0.6 — customer rolling-volume basis)
 ---------------
 Two-level enable: the discount applies only when BOTH
   - `settings.volume_discount_enabled` (master), AND
-  - `customer.class_volume_discount_enabled` (per-pricing-class toggle)
+  - `settings.class_volume_enabled[<pricing_class>]` (per-class toggle)
 are True. We then look up the [volume_min_12mo, volume_max_12mo) tier
-matching the customer's `cached_rolling_volume_paid_12mo` and apply
+matching the customer's `cached_rolling_volume` and apply
 discount_pct as a straight reduction on the sell side. Customer pays
 less; profit drops by the same dollar amount.
 

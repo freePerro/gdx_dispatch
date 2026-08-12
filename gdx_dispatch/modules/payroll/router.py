@@ -2,7 +2,8 @@
 
 Admin-gated. External-first today: 'manual' entries land here from the
 Payroll admin form; 'csv_import' is planned. Integration adapters
-(Gusto / QBO Payroll) are TODOs in gdx_dispatch.modules.payroll.adapters.
+(Gusto / QBO Payroll) are unbuilt — there is no adapters module in this
+package yet, only ``service`` and this router.
 """
 from __future__ import annotations
 

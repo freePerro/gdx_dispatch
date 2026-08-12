@@ -1,5 +1,7 @@
 """
-Tenant onboarding wizard — GDX multi-tenant SaaS.
+Tenant onboarding wizard — GDX (single-tenant, self-hosted). The
+``tenant_id`` arguments below address the one tenant this deployment
+serves; they are not a cross-tenant selector.
 
 Provides:
   - OnboardingStep dataclass (in-memory / Redis-backed state)

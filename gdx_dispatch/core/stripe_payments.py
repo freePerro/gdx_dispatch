@@ -2,7 +2,7 @@
 gdx_dispatch/core/stripe_payments.py — Stripe payment processing service layer.
 
 Handles PaymentIntents, SetupIntents, saved payment methods (card + ACH),
-and webhook event processing for the GDX multi-tenant SaaS platform.
+and webhook event processing for GDX (single-tenant, self-hosted).
 """
 from __future__ import annotations
 

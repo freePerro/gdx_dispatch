@@ -20,17 +20,18 @@ Usage from a router handler:
         _tenant: str = Depends(bind_tenant_context),
         _user: dict = Depends(get_current_user),
     ):
-        settings = _per_tenant_settings()  # reads ContextVar
+        settings = _tenant_settings()  # reads ContextVar
         ...
 
 Usage from a helper:
 
     from gdx_dispatch.core.tenant_ctx import current_tenant_id
 
-    def _get_margin(customer_type: str) -> float:
+    def _tenant_settings() -> dict[str, object]:
         tid = current_tenant_id()
-        settings = _PRICING_SETTINGS_BY_TENANT.setdefault(tid, deepcopy(DEFAULTS))
-        ...
+        return _PRICING_SETTINGS_BY_TENANT.setdefault(
+            tid, deepcopy(DEFAULT_PRICING_SETTINGS)
+        )
 """
 from __future__ import annotations
 

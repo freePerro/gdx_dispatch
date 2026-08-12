@@ -2,7 +2,7 @@
 Tags router — per-tenant labelled tags assignable to customers and jobs.
 
 Inline models (TenantBase) following the pattern in gdx_dispatch/routers/collections.py.
-CRUD + audit pattern follows gdx_dispatch/routers/proposals.py and gdx_dispatch/routers/change_orders.py.
+CRUD + audit pattern follows gdx_dispatch/routers/change_orders.py.
 
 Module gate: "core" is not a registered module key in gdx_dispatch/core/modules.py, so
 this router falls back to the "jobs" module (default-on for every tier),

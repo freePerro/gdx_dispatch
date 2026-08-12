@@ -4,7 +4,7 @@ Maintenance router — recurring maintenance plans & customer enrollments.
 Customers enroll in plans (e.g., "Annual Garage Door Tune-Up, 2 visits/year").
 Enrollments track next_service_date and auto-reschedule when advanced.
 
-Pattern mirrors gdx_dispatch/routers/proposals.py (tenant-scoped CRUD + audit).
+Pattern mirrors gdx_dispatch/routers/change_orders.py (tenant-scoped CRUD + audit).
 """
 from __future__ import annotations
 
