@@ -34,6 +34,18 @@ describe('EstimateView — phone layout', () => {
     expect(MOBILE_BLOCK).not.toMatch(/\.line-item-row\s*\{[^}]*64px/);
   });
 
+  it('releases the 840px min-width floor', () => {
+    // Regression guard, earned the hard way (2026-08-11 phone walk on the demo
+    // stack): the desktop rule carries `min-width: 840px` — the sum of the nine
+    // tracks — and overriding grid-template-columns alone left it in force. The
+    // card stayed 840px wide on a 390px screen and .line-items-editor scrolled
+    // sideways instead: the same bug, one container out. The first version of
+    // THIS spec passed while that was live, because a grid-tracks assertion
+    // says nothing about min-width.
+    expect(MOBILE_BLOCK).toMatch(/\.line-item-row\s*\{[^}]*min-width:\s*0/);
+    expect(MOBILE_BLOCK).toMatch(/\.line-items-editor\s*\{[^}]*overflow-x:\s*visible/);
+  });
+
   it('labels each field, since the column header row is hidden there', () => {
     expect(MOBILE_BLOCK).toMatch(/\.line-item-header\s*\{\s*display:\s*none/);
     expect(MOBILE_BLOCK).toMatch(/\.line-label\s*\{[^}]*display:\s*block/);
