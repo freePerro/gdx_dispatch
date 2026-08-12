@@ -27,6 +27,8 @@
   .table-container table { min-width: 600px; }
 
   .p-dialog { width: 100vw !important; max-width: 100vw; height: 100vh; margin: 0; border-radius: 0; }
+
+  .p-toast .p-toast-message { width: 100%; }
 }
 
 /* Font readability */
@@ -34,3 +36,38 @@ html { font-size: 100%; }
 body { font-size: clamp(15px, 4vw, 17px); line-height: 1.6; }
 h1 { font-size: clamp(1.5rem, 6vw, 2rem); }
 h2 { font-size: clamp(1.25rem, 5vw, 1.75rem); }
+
+/* Phone toast — 2026-08-12 phone audit.
+
+   PrimeVue's toast is 25rem (400px) wide and anchored to a screen edge, so on a
+   390px phone it renders at left:-30px: every message the app shows — errors,
+   "Saved", validation — is clipped off the side. Measured on all 26 audited
+   screens, because the toast container mounts app-wide.
+
+   Two different mechanisms need overriding, and they need !important for two
+   DIFFERENT reasons — worth stating, because "responsive.css loads later
+   anyway" is wrong and would invite someone to drop the !important:
+     - `width` comes from a stylesheet rule (.p-toast { width: dt('toast.width') },
+       @primeuix/styles). PrimeVue uses no !important and the app sets no
+       cssLayer, so author-important wins regardless of source order.
+     - `top/right/bottom/left` are INLINE styles on the root element
+       (primevue/toast/style `inlineStyles.root`). Cascade order is irrelevant
+       there; only author-important beats an inline declaration.
+
+   `transform: none` covers the *-center positions, which carry
+   translateX(-50%) — with both edges pinned that would shove the toast half
+   off-screen. No position variant needs a transform once both edges are set.
+
+   Deliberately 768px, not the 767px of the block above, so this lines up with
+   the app's own mobile breakpoint (useViewMode MOBILE_BREAKPOINT); at exactly
+   768px the app considers itself mobile. Separate block so the existing 767px
+   rules keep their boundary. */
+@media (max-width: 768px) {
+  .p-toast {
+    width: auto !important;
+    max-width: calc(100vw - 1.5rem) !important;
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    transform: none !important;
+  }
+}
