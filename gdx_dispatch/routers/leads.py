@@ -8,7 +8,7 @@ Gated behind the "customers" module. Every query is tenant-scoped by
 ``company_id == request.state.tenant["id"]``. Every mutation logs an audit
 event via ``log_audit_event_sync``.
 
-Pattern follows gdx_dispatch/routers/appointments.py and gdx_dispatch/routers/proposals.py
+Pattern follows gdx_dispatch/routers/appointments.py
 (inline model + CRUD + state transitions + audit).
 """
 from __future__ import annotations

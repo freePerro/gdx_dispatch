@@ -101,7 +101,7 @@ VIRTUAL_CATALOG_IDS = {VIRTUAL_CHI_DOORS_ID, VIRTUAL_CHI_PARTS_ID}
 
 
 def _virtual_catalog_payload(virtual_id: str, count: int) -> dict[str, object]:
-    """Synthesize a CatalogGroup-shaped dict for a CHI feed table."""
+    """Synthesize a CustomCatalog-shaped dict for a CHI feed table."""
     if virtual_id == VIRTUAL_CHI_DOORS_ID:
         return {
             "id": virtual_id,

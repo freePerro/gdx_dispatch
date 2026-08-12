@@ -270,37 +270,21 @@
                   <h3>Stripe Payments</h3>
                   <p class="muted">Accept card and ACH payments from your customers.</p>
                 </div>
-                <Tag :value="integrations.stripe.connected ? 'Connected' : 'Not Connected'" :severity="integrations.stripe.connected ? 'success' : 'warn'" />
-              </div>
-              <small v-if="integrations.stripe.mode" class="muted">Mode: {{ integrations.stripe.mode }}</small>
-              <div class="integration-actions">
-                <Button
-                  :label="integrations.stripe.connected ? 'Reconnect' : 'Connect'"
-                  :severity="integrations.stripe.connected ? 'secondary' : 'primary'"
-                  data-testid="stripe-connect-btn"
-                  @click="connectIntegration('stripe')"
-                />
-                <Button v-if="integrations.stripe.connected" label="Disconnect" severity="danger" size="small" text @click="disconnectIntegration('stripe')" />
-              </div>
-            </div>
-
-            <div class="integration-shell" data-testid="integration-sms">
-              <div class="integration-shell-header">
-                <div>
-                  <h3>SMS Provider</h3>
-                  <p class="muted">Send appointment reminders and follow-ups via text message.</p>
-                </div>
-                <Tag :value="integrations.sms.connected ? 'Connected' : 'Not Connected'" :severity="integrations.sms.connected ? 'success' : 'warn'" />
-              </div>
-              <small v-if="integrations.sms.provider" class="muted">Provider: {{ integrations.sms.provider }}</small>
-              <div class="integration-actions">
-                <Button
-                  :label="integrations.sms.connected ? 'Reconnect' : 'Connect'"
-                  :severity="integrations.sms.connected ? 'secondary' : 'primary'"
-                  data-testid="sms-connect-btn"
-                  @click="connectIntegration('sms')"
+                <Tag
+                  :value="integrations.stripe.configured ? 'Configured' : 'Not Configured'"
+                  :severity="integrations.stripe.configured ? 'success' : 'warn'"
+                  data-testid="stripe-status-tag"
                 />
               </div>
+              <!-- Read-only by design: Stripe is configured with STRIPE_SECRET_KEY
+                   on the server, not through this API, so there is nothing here to
+                   connect or disconnect. This tile reports whether charging
+                   actually works. -->
+              <small class="muted">
+                {{ integrations.stripe.configured
+                  ? 'Card and ACH payments are live. The secret key is set on the server.'
+                  : 'Set STRIPE_SECRET_KEY on the server to accept payments.' }}
+              </small>
             </div>
 
             <GoogleMapsIntegrationCard />
@@ -1455,8 +1439,9 @@ async function submitInvite() {
 // ── Integrations ──
 const integrations = reactive({
   quickbooks: { connected: false, lastSync: null },
-  stripe: { connected: false, mode: null },
-  sms: { connected: false, provider: null },
+  // Stripe is env-configured on the server; `configured` is reported by
+  // GET /api/settings/integrations and is read-only here.
+  stripe: { configured: false },
   // #57 — operator toggles (bool map from /api/settings/integrations).
   boolMap: {},
   catalogSyncEnabled: false,
@@ -1468,7 +1453,6 @@ async function loadIntegrations() {
     const result = await api.get("/api/settings/integrations");
     if (result?.quickbooks) integrations.quickbooks = result.quickbooks;
     if (result?.stripe) integrations.stripe = result.stripe;
-    if (result?.sms) integrations.sms = result.sms;
     integrations.boolMap = result?.integrations || {};
     integrations.catalogSyncEnabled = Boolean(result?.integrations?.quickbooks_catalog_sync);
   } catch {
@@ -1492,28 +1476,27 @@ async function loadIntegrations() {
   }
 }
 
+// QuickBooks is the only integration with a real OAuth redirect flow. The
+// former generic fallback here `window.open`-ed a URL per provider, which
+// could never work: /api/stripe-connect/onboard and /api/settings/sms/configure
+// do not exist, and /api/settings/integrations/{provider}/connect is a POST
+// that flips a feature flag and returns JSON — not a page to open. Stripe is
+// env-configured (read-only tile above) and SMS is handled by
+// PhoneComIntegrationCard, so neither needs a connect action here.
 async function connectIntegration(provider) {
-  if (provider === "quickbooks") {
-    try {
-      const result = await api.post("/api/qb/connect");
-      if (result?.redirect_url) {
-        const popup = window.open(result.redirect_url, "_blank", "width=600,height=700");
-        if (!popup || popup.closed || typeof popup.closed === "undefined") {
-          toast.add({ severity: "warn", summary: "Popup blocked", detail: "Redirecting in this window instead...", life: 3000 });
-          window.location.href = result.redirect_url;
-        }
+  if (provider !== "quickbooks") return;
+  try {
+    const result = await api.post("/api/qb/connect");
+    if (result?.redirect_url) {
+      const popup = window.open(result.redirect_url, "_blank", "width=600,height=700");
+      if (!popup || popup.closed || typeof popup.closed === "undefined") {
+        toast.add({ severity: "warn", summary: "Popup blocked", detail: "Redirecting in this window instead...", life: 3000 });
+        window.location.href = result.redirect_url;
       }
-    } catch (err) {
-      toast.add({ severity: "error", summary: "Connection failed", detail: err.message || "Could not connect to QuickBooks", life: 4000 });
     }
-    return;
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Connection failed", detail: err.message || "Could not connect to QuickBooks", life: 4000 });
   }
-  const oauthUrls = {
-    stripe: "/api/stripe-connect/onboard",
-    sms: "/api/settings/sms/configure",
-  };
-  const url = oauthUrls[provider] || `/api/settings/integrations/${provider}/connect`;
-  window.open(url, "_blank", "width=600,height=700");
 }
 
 async function disconnectIntegration(provider) {

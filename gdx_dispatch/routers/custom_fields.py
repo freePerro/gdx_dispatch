@@ -7,8 +7,9 @@ Provides:
 
 All queries are tenant-scoped against ``request.state.tenant["id"]``.
 Schema is defined inline (matches collections.py / change_orders.py pattern).
-The legacy broken router at ``gdx_dispatch/core/custom_fields_router.py`` is
-deliberately NOT touched — this module is the canonical one going forward.
+The legacy broken router that lived at ``gdx_dispatch/core/custom_fields_router.py``
+was left alone at the time and has since been deleted — this module is
+the only custom-fields router now.
 """
 from __future__ import annotations
 

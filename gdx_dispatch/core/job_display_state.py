@@ -39,6 +39,10 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
+# Set once the empty-lifecycle_stage warning has fired. Module state rather
+# than a logging filter so the suppression is visible where the log is written.
+_warned_empty_lifecycle = False
+
 # Terminal type tags (Salesforce stage-Type pattern: ask the *type*
 # structurally, never string-match a label).
 TYPE_OPEN = "open"
@@ -190,4 +194,22 @@ def derive_job_display_state(
             lifecycle_stage, estimate_status, len(inv_list),
         )
         return DisplayState(fallback.lower(), TYPE_OPEN, fallback.title())
+    # Empty/None lifecycle_stage on a NOT NULL column with a server default
+    # means legacy or corrupt data — log it rather than quietly showing
+    # "Unknown", which is what the docstring promises.
+    #
+    # Once per process, not once per row. This runs inside the jobs-list
+    # display-state enrichment, so a batch of legacy rows would otherwise emit
+    # one WARNING per row per board load. One line is the whole actionable
+    # signal ("some job has no lifecycle_stage"); the next 500 add nothing but
+    # noise, and a log nobody reads is the same as no log.
+    global _warned_empty_lifecycle
+    if not _warned_empty_lifecycle:
+        _warned_empty_lifecycle = True
+        logger.warning(
+            "derive_job_display_state: empty lifecycle_stage=%r "
+            "(estimate_status=%r, invoices=%d) — returning Unknown. "
+            "Further occurrences this process are suppressed.",
+            lifecycle_stage, estimate_status, len(inv_list),
+        )
     return DisplayState("unknown", TYPE_OPEN, "Unknown")

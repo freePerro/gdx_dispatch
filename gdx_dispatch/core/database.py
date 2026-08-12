@@ -22,8 +22,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 #   - control_engine:    tools/ scripts (legacy alias; sla_monitor, its last
 #                        in-app consumer, was removed with the control plane).
 #   - _decrypt_db_url:   routers.bug_reports + backfill tools. DB-URL encryption
-#                        was removed (db_url_enc dropped in migrations 081-083),
-#                        so decryption is now identity.
+#                        was removed — db_url_enc is absent from
+#                        migrations/baseline_squashed.sql — so decryption is now
+#                        identity. (This line used to cite "migrations 081-083";
+#                        no such migrations exist, this tree stops at 062.)
 #   - CONTROL_DATABASE_URL: a migration tool; falls back to the app DB URL.
 app_engine = engine
 control_engine = engine

@@ -4,7 +4,7 @@ Service agreements router — warranty/maintenance agreement management.
 Reusable templates + per-customer agreements. Tracks start/end dates, price,
 included services. Provides an "expiring" query for proactive renewal alerts.
 
-Pattern mirrors gdx_dispatch/routers/proposals.py (CRUD + status transitions + audit).
+Pattern mirrors gdx_dispatch/routers/change_orders.py (CRUD + status transitions + audit).
 Gated behind the "jobs" module (service_agreements aliases to jobs in modules.py).
 """
 from __future__ import annotations
@@ -55,6 +55,25 @@ class TemplateIn(BaseModel):
     default_duration_months: int = Field(default=12, ge=1, le=600)
     default_price: float = Field(default=0, ge=0, le=1_000_000)
     services_included: list[str] = Field(default_factory=list, max_length=100)
+
+
+class TemplatePatch(BaseModel):
+    """Partial update. Every field optional — only what's sent is written.
+
+    ``price`` is accepted alongside ``default_price`` because the Vue
+    (ServiceAgreementsView) has always sent ``price``. Renaming the frontend
+    field instead would break the create path, which has the same mismatch:
+    ``TemplateIn.default_price`` defaults to 0, so a create from the UI
+    silently stores 0. Accept both here, and prefer the explicit
+    ``default_price`` when a caller sends both.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    default_duration_months: int | None = Field(default=None, ge=1, le=600)
+    default_price: float | None = Field(default=None, ge=0, le=1_000_000)
+    price: float | None = Field(default=None, ge=0, le=1_000_000)
+    services_included: list[str] | None = Field(default=None, max_length=100)
 
 
 class ServiceAgreementIn(BaseModel):
@@ -218,6 +237,74 @@ def list_templates(
     )
     rows = db.execute(stmt).scalars().all()
     return [_serialize_template(r) for r in rows]
+
+
+@router.patch("/api/service-agreements/templates/{template_id}", response_model=None)
+def update_template(
+    # UUID, not str: the id column is a Uuid type whose bind processor calls
+    # .hex — a str path param blows up inside SQLAlchemy rather than 404ing.
+    template_id: UUID,
+    payload: TemplatePatch,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Edit a service-agreement template.
+
+    Added 2026-08-12. Until then this path was served by a `ui_compat` handler
+    whose whole body was `return {"ok": True}` — the Vue showed "Template
+    updated" and the edit was discarded. See
+    docs/design/frontend-contract-gaps-2026-08-12.md (C6).
+    """
+    tenant_id = _tenant_id(request)
+    row = db.execute(
+        select(ServiceAgreementTemplate).where(
+            ServiceAgreementTemplate.id == template_id,
+            ServiceAgreementTemplate.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    changed: dict[str, Any] = {}
+
+    if "name" in data and data["name"] is not None:
+        row.name = str(data["name"]).strip()
+        changed["name"] = row.name
+    if "description" in data:
+        row.description = data["description"]
+        changed["description"] = row.description
+    if "default_duration_months" in data and data["default_duration_months"] is not None:
+        row.default_duration_months = int(data["default_duration_months"])
+        changed["default_duration_months"] = row.default_duration_months
+    # explicit default_price wins over the frontend's legacy `price`
+    new_price = data.get("default_price")
+    if new_price is None:
+        new_price = data.get("price")
+    if new_price is not None:
+        row.default_price = Decimal(str(new_price))
+        changed["default_price"] = float(row.default_price)
+    if "services_included" in data and data["services_included"] is not None:
+        row.services_included = _dumps_services(data["services_included"])
+        changed["services_included"] = data["services_included"]
+
+    if not changed:
+        raise HTTPException(status_code=422, detail="No updatable fields supplied")
+
+    db.commit()
+    db.refresh(row)
+    _audit(
+        db,
+        tenant_id=tenant_id,
+        user=user,
+        action="service_agreement_template_updated",
+        entity_type="service_agreement_template",
+        entity_id=str(row.id),
+        details={"fields": sorted(changed)},
+        request=request,
+    )
+    return _serialize_template(row)
 
 
 @router.post("/api/service-agreements/templates", response_model=None, status_code=201)

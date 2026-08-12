@@ -16,6 +16,8 @@ derives **Paid**, never "Complete" and never "Invoiced". That single
 case is the deception Doug reported.
 """
 
+import logging
+
 from gdx_dispatch.core.job_display_state import (
     TYPE_LOST,
     TYPE_OPEN,
@@ -187,6 +189,30 @@ def test_empty_lifecycle_no_invoice_is_not_Complete():
     st = _s(lifecycle_stage="", invoices=[])
     assert st.label != "Complete"
     assert (st.stage, st.label, st.type) == ("unknown", "Unknown", TYPE_OPEN)
+
+
+def test_empty_lifecycle_warns_once_then_suppresses(caplog):
+    """The docstring promises this is never silent — but not once per row.
+
+    derive_job_display_state runs inside the jobs-list display-state
+    enrichment, so a batch of legacy rows would emit one WARNING per row per
+    board load. One line carries the whole actionable signal; the rest is
+    noise, and a log nobody reads is the same as no log.
+    """
+    import gdx_dispatch.core.job_display_state as mod
+
+    mod._warned_empty_lifecycle = False
+    with caplog.at_level(logging.WARNING, logger=mod.__name__):
+        first = _s(lifecycle_stage="", invoices=[])
+        for _ in range(50):
+            _s(lifecycle_stage="", invoices=[])
+
+    warnings = [r for r in caplog.records if "empty lifecycle_stage" in r.getMessage()]
+    assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+    assert "suppressed" in warnings[0].getMessage()
+    # suppression must not change what callers actually receive
+    assert (first.stage, first.label, first.type) == ("unknown", "Unknown", TYPE_OPEN)
+    assert _s(lifecycle_stage="", invoices=[]).label == "Unknown"
 
 
 def test_unmapped_stage_titlecased_not_dropped():

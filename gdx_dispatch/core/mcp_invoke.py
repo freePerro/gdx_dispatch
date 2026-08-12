@@ -1,8 +1,11 @@
 """SS-19 slice B — MCP tool invocation orchestrator.
 
-The HTTP router (``gdx_dispatch/routers/mcp_execute.py``) + SSE router
-(``gdx_dispatch/routers/mcp_sse.py``) delegate all business logic to this
-module so the two transport surfaces share a single code path.
+Every transport surface delegates its business logic to ``invoke_tool``
+here, so they share a single code path. The dedicated
+``routers/mcp_execute.py`` + ``routers/mcp_sse.py`` transports the SS-19
+brief called for were never built; today's callers are
+``gdx_dispatch.routers.ai``, ``gdx_dispatch.core.mcp_protocol_adapter`` and
+``gdx_dispatch.core.mcp_fastmcp_bridge``.
 
 Canonical order of operations (order matters — do NOT rearrange)
 ----------------------------------------------------------------
@@ -280,7 +283,8 @@ async def invoke_tool(
         The ``input`` dict supplied by the caller (already JSON-decoded).
     principal
         Caller identity — must expose ``.capabilities`` (iterable of
-        dicts). Shape follows ``RouterPrincipal`` from SS-18.
+        dicts). ``gdx_dispatch.core.unified_principal.Principal`` is the
+        type callers actually pass.
     db
         Database session for audit logging.
     approval_ref

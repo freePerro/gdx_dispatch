@@ -1623,9 +1623,10 @@ class UserTourProgress(Base):
     a tour rewrite. Status is `started`, `completed`, or `skipped`.
 
     Index name `ix_utp_user_id` is explicit (not the default `ix_<table>_<col>`)
-    so this model matches the hand-DDL applied to existing tenants by
-    `gdx_dispatch/tools/add_user_tour_progress_table.py` — keeps schema fingerprint
-    identical across hand-applied and create_all-applied tenants.
+    so this model matches the hand-DDL that was applied to existing tenants
+    by a since-deleted rollout script — keeps the schema fingerprint
+    identical across hand-applied and create_all-applied tenants. Do not
+    "tidy" it to the default name: that would re-introduce the drift.
     """
     __tablename__ = "user_tour_progress"
     __table_args__ = (

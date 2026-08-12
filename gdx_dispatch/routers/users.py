@@ -1,5 +1,6 @@
 """
-User management router — full CRUD for multi-tenant user administration.
+User management router — full CRUD for user administration within the
+single tenant this deployment serves.
 """
 from __future__ import annotations
 
@@ -508,12 +509,13 @@ def lockout_user(user_id: str, payload: LockoutIn, request: Request, user: dict 
     and this endpoint 400s defense-in-depth. Avoids the "last owner" edge
     case entirely.
 
-    Known gap (tracked in D-pat-lockout-bypass): PAT-bearer access tokens
-    skip the `users.active` check in `_db_verify_user` (service_account
-    actor_kind shortcut), so a user-owned PAT issued before lockout keeps
-    working. PAT revocation needs to land in `gdx_dispatch/core/pat_validation.py`
-    next. Until then, lockout is fully effective for browser sessions
-    only; ops should also revoke any user-owned PATs out-of-band.
+    D-pat-lockout-bypass is CLOSED (2026-08-12). Tokens claiming
+    `actor_kind == "service_account"` used to skip the `users.active`
+    check — `_db_verify_user` returned before loading the user row — so a
+    user-owned PAT issued before lockout kept working. That branch now
+    fails closed, and both producers of service-account identity are gone
+    (the `/api/pats` surface and ServiceKeyMiddleware). Lockout is
+    effective on every authenticated path.
     """
     _require_lockout_actor(user)
     tid = _tenant_id(request)

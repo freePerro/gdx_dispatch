@@ -254,15 +254,31 @@ class TestEnforceTenantMatch:
 
 class TestGetCurrentUserDbVerify:
     """Slice 2 contract: HUMAN/THIRD_PARTY tokens MUST be DB-verified;
-    SERVICE_ACCOUNT tokens skip the lookup; the rollback flag works."""
+    SERVICE_ACCOUNT tokens are DENIED; the rollback flag works."""
 
-    def test_service_account_skips_lookup(self) -> None:
+    def test_service_account_actor_kind_is_denied(self) -> None:
+        """Was 'skips lookup'; flipped to fail-closed 2026-08-12.
+
+        The skip existed for PAT bearers that lived in ``access_tokens``
+        rather than ``users``. The PAT surface and ServiceKeyMiddleware are
+        both gone, so nothing can legitimately claim this actor_kind — and
+        the skip returned before the ``users.active`` check, which was the
+        D-pat-lockout-bypass gap. ``None`` makes the caller 401 + revoke.
+        """
         from gdx_dispatch.routers.auth import _db_verify_user
 
         req = _fake_request("tenant-1")
-        # SERVICE_ACCOUNT branch: empty dict means "trust the principal".
-        result = _db_verify_user(req, "pat-sub-123", "service_account")
-        assert result == {}
+        assert _db_verify_user(req, "pat-sub-123", "service_account") is None
+
+    def test_rollback_valve_still_wins_over_service_account_denial(
+        self, monkeypatch
+    ) -> None:
+        """The 24h valve must be able to recover a bad deploy for everyone."""
+        from gdx_dispatch.routers import auth as auth_module
+
+        monkeypatch.setenv("AUTH_DB_VERIFY_ENABLED", "0")
+        req = _fake_request("tenant-1")
+        assert auth_module._db_verify_user(req, "s", "service_account") == {}
 
     def test_no_tenant_skips(self) -> None:
         from gdx_dispatch.routers.auth import _db_verify_user

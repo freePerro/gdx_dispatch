@@ -181,9 +181,10 @@ def is_module_enabled(module_key: str, request: Request, db: Session) -> bool:
         # runs on every request that hits a require_module(...) decorator, so
         # GDX disables of any module were resurrected within milliseconds —
         # the twin of the settings.py autohealer fixed earlier in this session.
-        # Bootstrap of "GDX has all modules" now happens once via
-        # gdx_dispatch/tools/bootstrap_modules_for_tenant.py; row absence here means
-        # the admin disabled it.
+        # Bootstrap now happens once, on first read of the modules list in
+        # gdx_dispatch.routers.settings (it seeds the default-on modules only when
+        # the grants table is empty); row absence here means the admin
+        # disabled it.
         if _is_granted_in_company_table(db, tenant_id, canonical_key):
             return True
     except SQLAlchemyError:
