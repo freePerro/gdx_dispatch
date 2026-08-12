@@ -26,7 +26,17 @@
   .table-container { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .table-container table { min-width: 600px; }
 
+  /* svh, not vh or dvh. `100vh` excludes mobile browser chrome, so the bottom
+     of a fullscreen dialog — where Save/Cancel live — is pushed below the fold.
+     `dvh` would fix that but re-evaluates as the chrome hides and shows, which
+     resizes the dialog WHILE the user is typing in it. `svh` is the smallest
+     stable viewport: correct and it doesn't move. Two declarations, vh first,
+     matching the house pattern in AppLayout/AppSidebar/QuickCaptureSheet.
+     NOTE: no viewport unit responds to the software keyboard — a Save button
+     under the keyboard is a separate, unfixed problem (needs visualViewport or
+     interactive-widget=resizes-content). */
   .p-dialog { width: 100vw !important; max-width: 100vw; height: 100vh; margin: 0; border-radius: 0; }
+  .p-dialog { height: 100svh; }
 
   .p-toast .p-toast-message { width: 100%; }
 }

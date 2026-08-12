@@ -91,7 +91,7 @@ h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; }
 .header p { color: #94a3b8; font-size: 0.875rem; margin: 0; }
 .signup-form { display: flex; flex-direction: column; gap: 1rem; }
 .field label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.3rem; color: #94a3b8; }
-.field input { width: 100%; padding: 0.7rem 0.85rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 0.9rem; box-sizing: border-box; }
+.field input { width: 100%; padding: 0.7rem 0.85rem; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #f8fafc; font-size: 1rem; box-sizing: border-box; } /* >=16px: iOS zooms a focused input below 16px and never zooms back */
 .field input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
 .submit-btn { margin-top: 0.5rem; padding: 0.8rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; display: flex; justify-content: center; }
 .submit-btn:hover:not(:disabled) { background: #2563eb; }

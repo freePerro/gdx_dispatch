@@ -265,7 +265,11 @@ input {
   border-radius: 8px;
   color: var(--text, #f8fafc);
   font: inherit;
-  font-size: 0.9375rem;
+  /* >=16px on purpose. iOS Safari auto-zooms any focused input below 16px and
+     does NOT zoom back out, leaving the user on a zoomed, side-panning page —
+     on the first screen of the app. This form is hand-rolled rather than
+     PrimeVue (whose .p-inputtext is already 1rem), so it needs the literal. */
+  font-size: 1rem;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
