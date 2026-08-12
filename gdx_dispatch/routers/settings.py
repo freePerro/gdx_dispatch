@@ -21,6 +21,7 @@ from gdx_dispatch.core.modules import (
     normalize_module_key,
     require_role,
 )
+from gdx_dispatch.core.payments import stripe_configured
 from gdx_dispatch.models.tenant_models import AppSettings, CompanyModuleGrant
 
 log = logging.getLogger(__name__)
@@ -252,9 +253,10 @@ def get_modules(
 
     # D101 (2026-04-25): a per-GET autohealer for GDX used to live here, re-granting
     # every module on every read. That made admin disable a no-op — the row deleted
-    # by /modules/{key}/disable was resurrected by the next GET. Bootstrap of "GDX
-    # has all modules" now happens once via gdx_dispatch/tools/bootstrap_modules_for_tenant.py;
-    # row absence here means the admin disabled it.
+    # by /modules/{key}/disable was resurrected by the next GET. Bootstrap now
+    # happens exactly once, in the `if not existing:` block above: it seeds only
+    # the default-on modules and only when the grants table is completely empty.
+    # After that, row absence here means the admin disabled it.
 
     rows = db.query(CompanyModuleGrant.module_key).all()
     granted = {str(r[0]) for r in rows}
@@ -436,6 +438,11 @@ def list_integrations(
         # in the bulk listing — so a console.log accidentally dumping the
         # whole settings response can't leak it.
         "google_maps": {"configured": google_maps_configured},
+        # Stripe is configured by STRIPE_SECRET_KEY on the server, not through
+        # this API — there is nothing here to connect or disconnect. Report
+        # whether charging actually works so the Settings card can say so
+        # instead of guessing. Never returns the key itself.
+        "stripe": {"configured": stripe_configured()},
     }
 
 
