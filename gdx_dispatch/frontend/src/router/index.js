@@ -3,6 +3,7 @@ import { useAuthStore } from '../stores/auth';
 import { isTechnician } from '../constants/roles';
 import { getLoginRedirectLocation } from '../lib/auth-urls';
 import { useViewMode } from '../composables/useViewMode';
+import { applyScroll, installScrollRestore, sameViewComponent } from '../lib/scrollRestore';
 
 // Critical views — loaded eagerly
 import LoginView from '../views/LoginView.vue';
@@ -418,7 +419,26 @@ export function createAppRouter() {
   const router = createRouter({
     history: createWebHistory(),
     routes,
+    // Returning `savedPosition` here would do nothing: `body` is
+    // `overflow: hidden` and the element that actually scrolls is
+    // `.layout-content`, while the router scrolls the WINDOW. So this hook is
+    // used only for its `savedPosition` argument — vue-router supplies it on a
+    // popstate (and on the very first navigation, where the position map is
+    // empty and it resolves to 0 anyway) — and the scrolling itself happens on
+    // the real container. `false` tells vue-router not to touch the window.
+    scrollBehavior(to, from, savedPosition) {
+      // A URL change that leaves the same view mounted is not a screen change:
+      // EstimateView replaces /estimates/new → /estimates/:id after autosaving
+      // a draft, and several views strip query params the same way. Scrolling
+      // to the top there would yank the user out of the form they are filling.
+      if (!savedPosition && sameViewComponent(to, from)) return false;
+      applyScroll(to.fullPath, Boolean(savedPosition));
+      return false;
+    },
   });
+
+  // Records the outgoing route's scroll offset before each navigation.
+  installScrollRestore(router);
 
   router.onError((err) => {
     const msg = err && err.message ? err.message : '';

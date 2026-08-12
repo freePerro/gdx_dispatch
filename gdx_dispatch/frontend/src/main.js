@@ -9,6 +9,7 @@ import 'primeicons/primeicons.css';
 import * as Sentry from '@sentry/vue';
 import App from './App.vue';
 import { createAppRouter } from './router';
+import { startKeyboardInsetTracking } from './lib/keyboardInset';
 import { installErrorCapture } from './plugins/errorCapture';
 import './assets/base.css';
 import './assets/responsive.css';
@@ -55,6 +56,12 @@ app.use(ConfirmationService);
 app.directive('tooltip', Tooltip);
 
 import('./lib/analytics').then(({ installAnalytics }) => installAnalytics());
+
+// Publishes --keyboard-inset so a fullscreen dialog's Save button can rise
+// above the software keyboard on iOS, where the layout viewport does not shrink
+// (index.html handles Chromium/Gecko via interactive-widget). No-op without
+// visualViewport support.
+startKeyboardInsetTracking();
 
 app.mount('#app');
 

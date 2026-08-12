@@ -81,3 +81,39 @@ h2 { font-size: clamp(1.25rem, 5vw, 1.75rem); }
     transform: none !important;
   }
 }
+
+/* Touch interaction — 2026-08-12.
+   Each of these is a field problem, not a polish item. */
+
+/* Pull-to-refresh reloads the page. In a browser that is a refresh; in a
+   data-entry app it is "the tech scrolled up in a half-filled closeout form and
+   lost it". `contain` keeps the gesture inside the app — the app has explicit
+   refresh buttons, so nothing is lost. It also stops scroll CHAINING, where
+   reaching the end of a dialog's list starts scrolling the page behind it. */
+html, body { overscroll-behavior-y: contain; }
+
+/* Keep a scrollable overlay's momentum inside the overlay. */
+/* -y only: the both-axes shorthand also blocks the horizontal swipe chain that
+   Chrome on Android uses for back/forward navigation. */
+.p-dialog-content, .p-drawer-content, .layout-content { overscroll-behavior-y: contain; }
+
+@media (max-width: 768px) {
+  /* Removes the double-tap-to-zoom wait on controls. Deliberately NOT applied
+     to everything: `manipulation` on a scroll container is fine, but the
+     signature canvases rely on `touch-action: none` and must keep it, so this
+     is scoped to actual controls. */
+  button, a, [role="button"], .p-button, .p-tab, .tab-btn, .drawer-link {
+    touch-action: manipulation;
+  }
+
+  /* The software keyboard. index.html asks Chromium/Gecko to resize the layout
+     viewport (interactive-widget=resizes-content), which handles Android. iOS
+     Safari ignores that keyword and only shrinks the VISUAL viewport, so a
+     fullscreen dialog keeps its full height and the keyboard covers the bottom
+     of it — where Save and Cancel are. lib/keyboardInset.js publishes the
+     covered height; pad the dialog by it so the buttons rise above the keyboard.
+     Falls back to 0px, so browsers without visualViewport are unaffected, and on
+     Chromium the value is ~0 because the layout viewport already shrank. */
+  .p-dialog .p-dialog-content { padding-bottom: calc(1rem + var(--keyboard-inset, 0px)); }
+  .p-dialog .p-dialog-footer { margin-bottom: var(--keyboard-inset, 0px); }
+}
