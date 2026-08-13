@@ -4,7 +4,7 @@ import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -25,7 +25,6 @@ from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
     Invoice,
-    InvoiceLine,
     Job,
     JobAssignment,
     JobCloseout,

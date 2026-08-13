@@ -5,11 +5,9 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 from uuid import UUID as _UUID
@@ -25,13 +23,12 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job
-from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
+from gdx_dispatch.core.user_display import resolve_author_name
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -1255,7 +1252,8 @@ async def get_mobile_today(
     # progressed through the state machine. The lookup is a single bulk
     # query per request, not N+1.
     if cards:
-        from gdx_dispatch.models.tenant_models import JobAssignment as _JA, Technician as _Tech
+        from gdx_dispatch.models.tenant_models import JobAssignment as _JA
+        from gdx_dispatch.models.tenant_models import Technician as _Tech
 
         card_job_ids_for_assignments = [c["id"] for c in cards]
         assignment_rows = (
@@ -3276,7 +3274,8 @@ def _photo_exif_metadata(raw: bytes) -> dict[str, Any]:
     try:
         from io import BytesIO
 
-        from PIL import ExifTags, Image as _PILImage
+        from PIL import ExifTags
+        from PIL import Image as _PILImage
     except Exception:
         return {}
 

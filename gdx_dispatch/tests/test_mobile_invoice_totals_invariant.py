@@ -25,13 +25,13 @@ branch alike, and the invariant that caught it is left armed.
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.invoice_invariants import check_invoice
@@ -43,7 +43,6 @@ from gdx_dispatch.models.tenant_models import (
     Job,
     Payment,
 )
-from starlette.requests import Request
 
 
 def _request() -> Request:

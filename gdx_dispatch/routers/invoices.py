@@ -16,8 +16,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
-from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_delivery import require_deliverable
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import (
     Invoice,

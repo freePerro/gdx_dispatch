@@ -16,8 +16,8 @@ Endpoints (all under /api/mobile, gated on the "mobile" module):
 """
 from __future__ import annotations
 
-import logging
 import json as _json
+import logging
 import secrets
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal

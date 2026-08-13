@@ -23,14 +23,14 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
-from gdx_dispatch.modules.door_listings import service as _listing_service
-from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.deposits import (
     DepositError,
     create_deposit_invoice,
     deposit_summary,
     find_deposit_invoice_for_estimate,
 )
+from gdx_dispatch.modules.door_listings import service as _listing_service
+from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine

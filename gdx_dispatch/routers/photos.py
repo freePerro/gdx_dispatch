@@ -21,8 +21,8 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.job_access import assert_job_access
+from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.routers.auth import get_current_user
 
