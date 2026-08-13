@@ -732,11 +732,12 @@
         data-testid="est-plugin-workspace"
         @hide="onWorkspaceClosed">
         <p class="captured-hint workspace-hint">
-          Capture or price here, then close this window — what you captured
-          shows up in the picker, ready to add to the estimate.
+          Anything you capture here is added to the estimate automatically —
+          keep capturing, then close this window when you're done.
         </p>
         <PluginScreen v-if="workspaceVisible && workspaceSource"
-          :plugin-key="workspaceSource.pluginKey" />
+          :plugin-key="workspaceSource.pluginKey"
+          @captured="onWorkspaceCaptured" />
       </Dialog>
 
       <!-- Labor matrix picker (S97 slice 5) -->
@@ -1285,7 +1286,43 @@ const writableSources = computed(() =>
 
 function openPluginWorkspace(src) {
   workspaceSource.value = src;
+  workspaceInserted.value = 0;
   workspaceVisible.value = true;
+}
+
+// Phase 3 — capture → auto-insert. PluginScreen forwards a completed CAPTURE
+// with the capture POST's response ({id, ...}); fetch its draft and insert
+// through the same path the picker uses. Capture-only by the plan's scoping
+// rule (the event never fires for create-form submissions), and the id guard
+// keeps an odd payload from fetching a nonsense draft.
+const workspaceInserted = ref(0);
+
+async function onWorkspaceCaptured(payload) {
+  const src = workspaceSource.value;
+  const cap = payload?.data || payload;
+  if (!src || !cap?.id) return;
+  try {
+    const draft = await api.get(src.draft_endpoint.replace("{id}", cap.id));
+    const r = await insertDraft(draft, { id: cap.id, qcd: cap.qcd }, src);
+    workspaceInserted.value += 1;
+    toast.add({
+      severity: "success",
+      summary: "Added to estimate",
+      detail: r.unpriced
+        ? "Line added but needs a price before it saves — check it after closing."
+        : `Keep capturing, or close when you're done.${r.photo === "queued" ? " Photo attaches once the estimate saves." : ""}`,
+      life: 4000,
+    });
+  } catch {
+    // The capture itself succeeded and is safe in the plugin — the picker on
+    // close is the fallback path, so say that instead of failing silently.
+    toast.add({
+      severity: "warn",
+      summary: "Captured, but not added",
+      detail: "Close this window and add it from the picker.",
+      life: 5000,
+    });
+  }
 }
 
 function onWorkspaceClosed() {
@@ -1294,7 +1331,10 @@ function onWorkspaceClosed() {
   // Reuse the proven picker path (photo attach, metadata, engine pricing)
   // instead of inventing a second insertion path — both providers' list
   // endpoints return newest-first, so the just-priced item is on top.
-  if (src) openCapturedPicker(src);
+  // Skipped when Phase 3 already auto-inserted this session's captures:
+  // opening a picker for lines that are visibly in the estimate reads as
+  // "did my add not work?".
+  if (src && workspaceInserted.value === 0) openCapturedPicker(src);
 }
 
 // New-estimate photo deferral: a captured photo attaches via
@@ -1387,6 +1427,39 @@ function backToFolders() {
 
 // Add every selected item as its own line — one item = one line item. Captured
 // price → cost → margin engine; photo + full spec ride along.
+/**
+ * The ONE insertion path for a provider draft → estimate line (picker AND the
+ * Phase 3 auto-insert both come through here): captured cost through the
+ * margin engine, write-once line_metadata, photo attached now or queued for
+ * first save. Returns what happened so callers can toast honestly.
+ */
+async function insertDraft(draft, item, source) {
+  const li = defaultLineItem();
+  li.category = draft.category || "Doors";
+  li.description = draft.description || "";
+  li.cost = draft.cost ?? null;
+  li.quantity = draft.quantity || 1;
+  li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
+  recomputeSell(li);                                 // captured cost → engine markup
+  // Autosave only persists a line once it has a description AND a price
+  // (_lineHasContent) — a line missing either looks added but never saves.
+  const unpriced = !(li.description && Number(li.unit_price) > 0);
+  form.value.line_items.push(li);                    // deep watcher autosaves it
+  let photo = "none";
+  if (draft.image && isExisting.value) {
+    await _attachCapturedImage(draft.image, item, source?.pluginKey);
+    photo = "attached";
+  } else if (draft.image) {
+    // No estimate id yet — queue the photo; the isExisting watcher
+    // attaches it the moment the estimate first saves.
+    _pendingCapturedImages.push({
+      image: draft.image, item, pluginKey: source?.pluginKey,
+    });
+    photo = "queued";
+  }
+  return { unpriced, photo };
+}
+
 async function addSelectedDoors() {
   if (!selectedDoors.value.length || !activeSource.value) return;
   addingDoors.value = true;
@@ -1402,29 +1475,10 @@ async function addSelectedDoors() {
       } catch {
         continue;
       }
-      const li = defaultLineItem();
-      li.category = draft.category || "Doors";
-      li.description = draft.description || "";
-      li.cost = draft.cost ?? null;
-      li.quantity = draft.quantity || 1;
-      li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
-      recomputeSell(li);                                 // captured cost → engine markup
-      // Autosave only persists a line once it has a description AND a price
-      // (_lineHasContent) — a line missing either looks added but never saves.
-      if (!(li.description && Number(li.unit_price) > 0)) unpriced += 1;
-      form.value.line_items.push(li);                    // deep watcher autosaves it
-      if (draft.image && isExisting.value) {
-        await _attachCapturedImage(draft.image, item);
-      } else if (draft.image) {
-        // No estimate id yet — queue the photo; the isExisting watcher
-        // attaches it the moment the estimate first saves.
-        _pendingCapturedImages.push({
-          image: draft.image, item, pluginKey: activeSource.value?.pluginKey,
-        });
-        queuedPhoto += 1;
-      } else {
-        noPhoto += 1;
-      }
+      const r = await insertDraft(draft, item, activeSource.value);
+      if (r.unpriced) unpriced += 1;
+      if (r.photo === "queued") queuedPhoto += 1;
+      else if (r.photo === "none") noPhoto += 1;
       added += 1;
     }
     capturedPickerVisible.value = false;

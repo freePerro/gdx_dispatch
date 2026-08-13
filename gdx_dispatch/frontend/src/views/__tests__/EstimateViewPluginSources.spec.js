@@ -76,7 +76,7 @@ describe('EstimateView — multi-provider estimate_source wiring', () => {
   });
 
   it('warns when an added line is missing the description or price autosave requires', () => {
-    expect(SRC).toMatch(/if \(!\(li\.description && Number\(li\.unit_price\) > 0\)\) unpriced \+= 1;/);
+    expect(SRC).toMatch(/const unpriced = !\(li\.description && Number\(li\.unit_price\) > 0\);/);
     expect(SRC).toMatch(/needs a description and a Unit Price before it saves/);
   });
 
@@ -175,12 +175,44 @@ describe('EstimateView — Phase 2 in-context pricing (plan §2)', () => {
     expect(SRC).toMatch(/data-testid="est-plugin-workspace"/);
   });
 
-  it('reopens the picker on workspace close so the fresh capture is one click from a line', () => {
-    // Reuses the proven insertion path (photo attach, metadata, engine
-    // pricing) instead of inventing a second one; list endpoints are
-    // newest-first so the just-priced item is on top.
+  it('reopens the picker on workspace close as the zero-insert fallback', () => {
+    // Phase 3 auto-inserts captures, so the close-time picker only opens when
+    // NOTHING was inserted this session (empty-handed close, or the
+    // capture-succeeded-but-insert-failed warn path).
     const close = SRC.slice(SRC.indexOf('function onWorkspaceClosed'), SRC.indexOf('const _pendingCapturedImages'));
-    expect(close).toMatch(/if \(src\) openCapturedPicker\(src\);/);
+    expect(close).toMatch(/if \(src && workspaceInserted\.value === 0\) openCapturedPicker\(src\);/);
     expect(SRC).toMatch(/@hide="onWorkspaceClosed"/);
+  });
+});
+
+describe('EstimateView — Phase 3 capture → auto-insert (plan §Phase 3)', () => {
+  it('inserts a workspace capture through the SAME path the picker uses', () => {
+    // insertDraft is the one insertion path — cost through the margin engine,
+    // write-once metadata, photo attach-or-queue. A second path would drift.
+    expect(SRC).toMatch(/async function insertDraft\(draft, item, source\)/);
+    const pickerStart = SRC.indexOf('async function addSelectedDoors');
+    const picker = SRC.slice(pickerStart, SRC.indexOf('capturedPickerVisible.value = false', pickerStart));
+    expect(picker).toMatch(/await insertDraft\(draft, item, activeSource\.value\)/);
+    const ws = SRC.slice(SRC.indexOf('async function onWorkspaceCaptured'), SRC.indexOf('function onWorkspaceClosed'));
+    expect(ws).toMatch(/await insertDraft\(draft, \{ id: cap\.id, qcd: cap\.qcd \}, src\)/);
+  });
+
+  it('listens for the capture on the embedded PluginScreen and guards on an id', () => {
+    expect(SRC).toMatch(/@captured="onWorkspaceCaptured"/);
+    expect(SRC).toMatch(/if \(!src \|\| !cap\?\.id\) return;/);
+  });
+
+  it('skips the close-time picker when captures were already auto-inserted', () => {
+    // A picker full of lines that are visibly in the estimate reads as
+    // "did my add not work?" — it stays the fallback for zero-insert sessions
+    // (and for the capture-succeeded-but-insert-failed warn path).
+    expect(SRC).toMatch(/if \(src && workspaceInserted\.value === 0\) openCapturedPicker\(src\);/);
+    expect(SRC).toMatch(/workspaceInserted\.value = 0;\s*\n\s*workspaceVisible\.value = true;/);
+  });
+
+  it('tells the operator when a capture landed but the insert failed', () => {
+    // The capture is safe in the plugin either way — the fallback is the
+    // picker, and silence would read as data loss.
+    expect(SRC).toMatch(/summary: "Captured, but not added"/);
   });
 });
