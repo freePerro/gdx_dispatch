@@ -191,6 +191,60 @@ def test_update_landing_lead_status_sets_contacted_at(client: TestClient):
     assert data["contacted_at"] is not None
 
 
+def test_update_landing_lead_status_completed(client: TestClient):
+    """'completed' = handled outside the pipeline. It must NOT stamp
+    contacted_at (that's an outreach fact, not a done fact) and the row
+    must stay in the default list — completed is a visible terminal state,
+    not a soft delete."""
+    created = client.post(
+        "/api/landing-leads", json={"name": "Done Deal", "source": "website"}
+    ).json()
+    r = client.patch(
+        f"/api/landing-leads/{created['id']}/status",
+        json={"status": "completed"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "completed"
+    assert data["contacted_at"] is None
+
+    listed = client.get("/api/landing-leads").json()
+    assert any(row["id"] == created["id"] for row in listed)
+
+
+def test_update_landing_lead_status_completed_keeps_contacted_at(client: TestClient):
+    """contacted → completed must preserve the original contacted_at."""
+    created = client.post(
+        "/api/landing-leads", json={"name": "Called First", "source": "website"}
+    ).json()
+    contacted = client.patch(
+        f"/api/landing-leads/{created['id']}/status",
+        json={"status": "contacted"},
+    ).json()
+    assert contacted["contacted_at"] is not None
+
+    r = client.patch(
+        f"/api/landing-leads/{created['id']}/status",
+        json={"status": "completed"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "completed"
+    assert data["contacted_at"] == contacted["contacted_at"]
+
+
+def test_update_landing_lead_status_rejects_promoted(client: TestClient):
+    """Only the convert endpoint may set 'promoted' — the status PATCH 422s."""
+    created = client.post(
+        "/api/landing-leads", json={"name": "No Shortcut", "source": "website"}
+    ).json()
+    r = client.patch(
+        f"/api/landing-leads/{created['id']}/status",
+        json={"status": "promoted"},
+    )
+    assert r.status_code == 422, r.text
+
+
 def test_delete_landing_lead_soft_deletes_and_hides_from_list(client: TestClient):
     created = client.post(
         "/api/landing-leads",

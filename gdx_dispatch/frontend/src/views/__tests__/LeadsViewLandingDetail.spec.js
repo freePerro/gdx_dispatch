@@ -20,11 +20,12 @@ vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
 vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }));
 
 const apiGet = vi.fn();
+const apiPatch = vi.fn();
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({
     get: apiGet,
     post: vi.fn(),
-    patch: vi.fn(),
+    patch: apiPatch,
     del: vi.fn(),
   }),
 }));
@@ -100,6 +101,8 @@ describe('LeadsView — Landing Leads detail', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     apiGet.mockReset();
+    apiPatch.mockReset();
+    apiPatch.mockResolvedValue({});
     hasPermission.mockReturnValue(true);
     apiGet.mockImplementation((url) => {
       if (url === '/api/leads') return Promise.resolve([]);
@@ -147,5 +150,87 @@ describe('LeadsView — Landing Leads detail', () => {
     expect(dialogText).toContain('jane@acme.com');
     expect(dialogText).toContain('555-0101');
     expect(dialogText).toContain('example.com/contact');
+  });
+
+  it('marks a submission completed from the detail dialog and closes it', async () => {
+    const w = mountView();
+    await flushPromises();
+
+    const row = w.findAll('.dt-row').find((r) => r.text().includes('Jane Doe'));
+    await row.trigger('click');
+    await flushPromises();
+
+    const completed = w
+      .findAll('.dlg button')
+      .find((b) => b.text() === 'Completed');
+    expect(completed).toBeTruthy();
+    await completed.trigger('click');
+    await flushPromises();
+
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/api/landing-leads/ll-1/status',
+      { status: 'completed' },
+      expect.objectContaining({ successMessage: expect.stringContaining('completed') }),
+    );
+    // Terminal action — the dialog closes behind it.
+    expect(w.find('.dlg').exists()).toBe(false);
+  });
+
+  it.each(['promoted', 'completed'])(
+    'hides the Completed action once the submission is already terminal (%s)',
+    async (status) => {
+      apiGet.mockImplementation((url) => {
+        if (url === '/api/leads') return Promise.resolve([]);
+        if (url === '/api/leads/pipeline-summary') return Promise.resolve({});
+        if (url === '/api/landing-leads') {
+          return Promise.resolve([{ ...LANDING, status }]);
+        }
+        return Promise.resolve([]);
+      });
+      const w = mountView();
+      await flushPromises();
+
+      const row = w.findAll('.dt-row').find((r) => r.text().includes('Jane Doe'));
+      await row.trigger('click');
+      await flushPromises();
+
+      const completed = w
+        .findAll('.dlg button')
+        .find((b) => b.text() === 'Completed');
+      expect(completed).toBeFalsy();
+    },
+  );
+
+  it('reopens a completed submission back to its last honest state', async () => {
+    // contacted_at is set, so Reopen must restore 'contacted' — not 'new',
+    // which would put an already-called lead back in the dashboard nag.
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/leads') return Promise.resolve([]);
+      if (url === '/api/leads/pipeline-summary') return Promise.resolve({});
+      if (url === '/api/landing-leads') {
+        return Promise.resolve([
+          { ...LANDING, status: 'completed', contacted_at: '2026-08-12T10:00:00Z' },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const w = mountView();
+    await flushPromises();
+
+    const row = w.findAll('.dt-row').find((r) => r.text().includes('Jane Doe'));
+    await row.trigger('click');
+    await flushPromises();
+
+    const reopen = w.findAll('.dlg button').find((b) => b.text() === 'Reopen');
+    expect(reopen).toBeTruthy();
+    await reopen.trigger('click');
+    await flushPromises();
+
+    expect(apiPatch).toHaveBeenCalledWith(
+      '/api/landing-leads/ll-1/status',
+      { status: 'contacted' },
+      expect.objectContaining({ successMessage: expect.stringContaining('reopened') }),
+    );
+    expect(w.find('.dlg').exists()).toBe(false);
   });
 });
