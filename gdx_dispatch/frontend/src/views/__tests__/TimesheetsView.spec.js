@@ -57,6 +57,17 @@ vi.mock('../../composables/useTenantTimezone', async (importOriginal) => {
 });
 
 import TimesheetsView from '../TimesheetsView.vue';
+import TimeEntryDialog from '../../components/TimeEntryDialog.vue';
+import { shopWallClockToIso } from '../../composables/useTenantTimezone';
+
+// The correction dialog was extracted to components/TimeEntryDialog.vue
+// (2026-08-13) so the tech's own timesheet shares it. The page still owns
+// WHICH row opens; the dialog owns the form. `dlg(w)` reaches its state the
+// way `w.vm` used to.
+async function dlg(w) {
+  await flushPromises();
+  return w.findComponent(TimeEntryDialog).vm;
+}
 
 const stubs = {
   Avatar: { props: ['label'], template: '<span />' },
@@ -208,11 +219,12 @@ describe('TimesheetsView — shop time, not browser time', () => {
     mockApi([LATE_SHIFT]);
     const w = await mountView();
     w.vm.openEdit(LATE_SHIFT);
+    const d = await dlg(w);
     // The picker shows 10:02 PM shop time...
-    expect(w.vm.editing.clockIn.getHours()).toBe(22);
-    expect(w.vm.editing.clockIn.getDate()).toBe(2);
+    expect(d.editing.clockIn.getHours()).toBe(22);
+    expect(d.editing.clockIn.getDate()).toBe(2);
     // ...and saving it back yields the exact instant we started from.
-    expect(w.vm.shopWallClockToIso(w.vm.editing.clockIn))
+    expect(shopWallClockToIso(d.editing.clockIn, 'America/Chicago'))
       .toBe('2026-05-03T03:02:00.000Z');
   });
 
@@ -221,9 +233,10 @@ describe('TimesheetsView — shop time, not browser time', () => {
     apiPatch.mockResolvedValue({});
     const w = await mountView();
     w.vm.openEdit(LATE_SHIFT);
+    const d = await dlg(w);
     // Office types "5:00 pm" — that must mean 5pm in the SHOP.
-    w.vm.editing.clockOut = new Date(2026, 4, 2, 17, 0, 0, 0);
-    await w.vm.save();
+    d.editing.clockOut = new Date(2026, 4, 2, 17, 0, 0, 0);
+    await d.save();
     const [, body] = apiPatch.mock.calls[0];
     // 5:00 pm CDT (UTC-5) === 22:00Z.
     expect(body.clock_out_at).toBe('2026-05-02T22:00:00.000Z');
@@ -450,10 +463,11 @@ describe('TimesheetsView — writing a correction', () => {
     }]);
     apiPatch.mockResolvedValue({});
     const w = await mountView();
+    const d = await dlg(w);
 
     // The office types 4:00 pm SHOP time into the picker.
-    w.vm.editing.clockOut = wall(2026, 5, 11, 16);
-    await w.vm.save();
+    d.editing.clockOut = wall(2026, 5, 11, 16);
+    await d.save();
 
     expect(apiPatch).toHaveBeenCalledTimes(1);
     const [url, body] = apiPatch.mock.calls[0];
@@ -479,9 +493,10 @@ describe('TimesheetsView — writing a correction', () => {
       minutes: 480, break_minutes: 60, entry_type: 'clock', notes: null,
     }]);
     const w = await mountView();
-    expect(w.vm.editing.hours).toBeCloseTo(8, 5);        // elapsed
-    expect(w.vm.editing.breakMinutes).toBe(60);
-    expect(w.vm.editingWorkedHours).toBeCloseTo(7, 5);   // matches the row
+    const d = await dlg(w);
+    expect(d.editing.hours).toBeCloseTo(8, 5);        // elapsed
+    expect(d.editing.breakMinutes).toBe(60);
+    expect(d.editingWorkedHours).toBeCloseTo(7, 5);   // matches the row
   });
 
   it('refuses to save a clock-out that precedes the clock-in', async () => {
@@ -491,11 +506,12 @@ describe('TimesheetsView — writing a correction', () => {
       clock_out_at: null, minutes: null, entry_type: 'clock', notes: null,
     }]);
     const w = await mountView();
+    const d = await dlg(w);
 
     // Clock-in is 08:00 shop (13:00Z in the fixture); 04:00 shop precedes it.
-    w.vm.editing.clockOut = wall(2026, 5, 11, 4);
+    d.editing.clockOut = wall(2026, 5, 11, 4);
     await flushPromises();
-    expect(w.vm.canSave).toBe(false);
+    expect(d.canSave).toBe(false);
   });
 
   it('refuses to reopen a closed shift by clearing the clock-out', async () => {
@@ -510,10 +526,11 @@ describe('TimesheetsView — writing a correction', () => {
       minutes: 480, entry_type: 'clock', notes: null,
     }]);
     const w = await mountView();
-    expect(w.vm.canSave).toBe(true);
-    w.vm.editing.clockOut = null;
+    const d = await dlg(w);
+    expect(d.canSave).toBe(true);
+    d.editing.clockOut = null;
     await flushPromises();
-    expect(w.vm.canSave).toBe(false);
+    expect(d.canSave).toBe(false);
   });
 
   it('still allows saving an open shift that stays open (notes-only edit)', async () => {
@@ -524,9 +541,10 @@ describe('TimesheetsView — writing a correction', () => {
       minutes: null, entry_type: 'clock', notes: null,
     }]);
     const w = await mountView();
-    w.vm.editing.notes = 'Chasing the real end time with the tech.';
+    const d = await dlg(w);
+    d.editing.notes = 'Chasing the real end time with the tech.';
     await flushPromises();
-    expect(w.vm.canSave).toBe(true);
+    expect(d.canSave).toBe(true);
   });
 
   it('POSTs a manual entry for a shift that was never clocked', async () => {
@@ -535,11 +553,12 @@ describe('TimesheetsView — writing a correction', () => {
     const w = await mountView();
 
     w.vm.openCreate();
-    w.vm.editing.technicianId = 'u-tech-a';
+    const d = await dlg(w);
+    d.editing.technicianId = 'u-tech-a';
     // An 8am–4pm shop day, typed into the picker.
-    w.vm.editing.clockIn = wall(2026, 5, 11, 8);
-    w.vm.editing.clockOut = wall(2026, 5, 11, 16);
-    await w.vm.save();
+    d.editing.clockIn = wall(2026, 5, 11, 8);
+    d.editing.clockOut = wall(2026, 5, 11, 16);
+    await d.save();
 
     expect(apiPost).toHaveBeenCalledTimes(1);
     const [url, body] = apiPost.mock.calls[0];
