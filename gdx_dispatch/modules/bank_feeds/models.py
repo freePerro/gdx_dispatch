@@ -37,6 +37,16 @@ from sqlalchemy.types import Uuid
 
 from gdx_dispatch.core.audit import TenantBase, utcnow
 
+# ── providers ──────────────────────────────────────────────────────────
+PROVIDER_BANNO = "banno"
+PROVIDER_SIMPLEFIN = "simplefin"
+VALID_PROVIDERS = (PROVIDER_BANNO, PROVIDER_SIMPLEFIN)
+
+# Hard ceiling on scheduled+manual upstream fetches per LOCAL calendar day.
+# The SimpleFIN Bridge quota is 24/day (excess warns, then disables the
+# token) — 20 is deliberate headroom and must never creep toward 24.
+DAILY_FETCH_CAP_MAX = 20
+
 # ── auth_state values (mirrors QBTokenStore semantics) ─────────────────
 AUTH_HEALTHY = "healthy"
 AUTH_REFRESH_FAILED = "refresh_failed"          # transient — retried next run
@@ -66,6 +76,12 @@ class BannoInstitution(TenantBase):
     __tablename__ = "banno_institutions"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    # Dispatch key for _sync_one_institution. "banno" rows use the OAuth
+    # client below; "simplefin" rows have no client_id/secret at all — the
+    # credential is the claimed Access URL on the connection row.
+    provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PROVIDER_BANNO, server_default=PROVIDER_BANNO
+    )
     fi_host: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     display_label: Mapped[str] = mapped_column(String(120), nullable=False)
     client_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -108,6 +124,11 @@ class BannoConnection(TenantBase):
     banno_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     access_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     refresh_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SimpleFIN only: the credential-STRIPPED base URL of the claimed Access
+    # URL (e.g. https://beta-bridge.simplefin.org/simplefin). The basic-auth
+    # pair lives Fernet-encrypted in access_token_enc as "user:pass" — this
+    # column must NEVER contain userinfo (it reaches logs and API payloads).
+    provider_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Banno does not document the refresh-token lifetime; kept nullable.
     refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -268,6 +289,38 @@ class BankFeedDocument(TenantBase):
     )
 
 
+class BankFeedBalanceSnapshot(TenantBase):
+    """One balance observation per account per LOCAL calendar day.
+
+    SimpleFIN returns balance/available-balance/balance-date on every fetch;
+    without this table each fetch would overwrite the previous value and the
+    balance history (the cash curve) would be unrecoverable. Same-day
+    re-fetches update the day's row (last observation wins); a new local day
+    inserts a new row. Kept provider-agnostic — the Banno path may join in
+    later.
+    """
+
+    __tablename__ = "bank_feed_balance_snapshots"
+    __table_args__ = (
+        UniqueConstraint("account_id", "snapshot_date", name="uq_bank_feed_balsnap_acct_date"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    account_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_feed_accounts.id"), nullable=False, index=True
+    )
+    # Tenant-local date of balance_as_of (falls back to fetch time when the
+    # provider omits balance-date).
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    balance_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    available_balance_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    balance_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
 class BankFeedSyncSchedule(TenantBase):
     """Singleton row per tenant DB — drives the Celery beat dispatcher for
     ALL institutions (one schedule, sequential per-bank fan-out).
@@ -275,6 +328,13 @@ class BankFeedSyncSchedule(TenantBase):
     frequency=manual disables scheduled sync (Sync Now still works).
     ``backfill_days`` bounds the initial history pull; raising it after a
     backfill completes does nothing until ``full_resync_required`` is set.
+
+    Fetch controls (Doug 2026-08-13): ``fetch_window_start``/``end`` are
+    "HH:MM" strings interpreted in TENANT-LOCAL time (AppSettings.timezone)
+    at dispatch time, so DST follows the wall clock; NULL means no window.
+    A window may wrap midnight (start > end). ``daily_fetch_cap`` counts
+    scheduled AND manual upstream fetches per local calendar day and is
+    hard-limited to DAILY_FETCH_CAP_MAX server-side.
     """
 
     __tablename__ = "bank_feed_sync_schedule"
@@ -284,6 +344,13 @@ class BankFeedSyncSchedule(TenantBase):
         String(20), nullable=False, default=FREQ_MANUAL, server_default=FREQ_MANUAL
     )
     backfill_days: Mapped[int] = mapped_column(Integer, nullable=False, default=365, server_default="365")
+    fetch_window_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    fetch_window_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    daily_fetch_cap: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=DAILY_FETCH_CAP_MAX, server_default=str(DAILY_FETCH_CAP_MAX)
+    )
+    fetch_count_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    fetch_count_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_run_status: Mapped[str | None] = mapped_column(String(40), nullable=True)

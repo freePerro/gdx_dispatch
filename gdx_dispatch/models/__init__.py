@@ -268,9 +268,12 @@ except ImportError:
 try:
     # 2026-07-17 — Bank feeds (Banno Consumer API): institutions, OAuth
     # connections, accounts, transactions, statement archive, sync schedule.
-    # All tables ORM-created; no migration.
+    # All tables ORM-created; no migration. 2026-08-13: + SimpleFIN provider
+    # (balance snapshots table; new COLUMNS on existing tables ride
+    # migration 064 — create_all never ALTERs).
     from gdx_dispatch.modules.bank_feeds.models import (  # noqa: F401
         BankFeedAccount,
+        BankFeedBalanceSnapshot,
         BankFeedDocument,
         BankFeedSyncSchedule,
         BankFeedTransaction,
