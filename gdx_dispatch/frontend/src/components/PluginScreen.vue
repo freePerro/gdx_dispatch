@@ -49,7 +49,7 @@
             :capture-endpoint="screen.capture_endpoint || ''"
             :capture-label="screen.capture_label || 'Capture this page'"
             :folders-endpoint="screen.folders_endpoint || ''"
-            @captured="load"
+            @captured="onStreamCaptured"
           />
           <!-- Same screen on a phone. The stream is a full-size remote page
                (1280x800) driven by hand — scaled into a phone viewport the text
@@ -209,6 +209,18 @@ import { cellValue, usePluginScreen } from '../composables/usePluginScreen';
 import { useViewMode } from '../composables/useViewMode';
 
 const props = defineProps({ pluginKey: { type: String, required: true } });
+
+// Phase 3 (ADR-013): forward a completed CAPTURE with its payload so an
+// embedding host (the estimate screen) can auto-insert it. Capture-only by
+// the plan's scoping rule — create-form submissions do NOT emit, because a
+// configurator plugin's other create forms (e.g. settings rows) are not
+// insertable things, and auto-inserting them would be nonsense.
+const emit = defineEmits(['captured']);
+
+function onStreamCaptured(payload) {
+  load();                       // what @captured="load" always did
+  emit('captured', payload);    // NEW: the payload used to be discarded here
+}
 
 // Phone viewport — the shared 768px media query from useViewMode (viewport
 // only; the stored desktop/mobile preference does NOT feed this flag). Layout

@@ -76,12 +76,14 @@ describe('EstimateView — multi-provider estimate_source wiring', () => {
   });
 
   it('warns when an added line is missing the description or price autosave requires', () => {
-    expect(SRC).toMatch(/if \(!\(li\.description && Number\(li\.unit_price\) > 0\)\) unpriced \+= 1;/);
+    expect(SRC).toMatch(/const unpriced = !\(li\.description && Number\(li\.unit_price\) > 0\);/);
     expect(SRC).toMatch(/needs a description and a Unit Price before it saves/);
   });
 
   it('names attached photos by provider key, not a hardcoded prefix', () => {
-    expect(SRC).toMatch(/\$\{activeSource\.value\?\.pluginKey \|\| "plugin"\}-\$\{item\.qcd \|\| item\.id\}/);
+    // The explicit pluginKey arg is the deferred-photo flush path, where
+    // activeSource may have moved on by the time the estimate first saves.
+    expect(SRC).toMatch(/\$\{pluginKey \|\| activeSource\.value\?\.pluginKey \|\| "plugin"\}-\$\{item\.qcd \|\| item\.id\}/);
   });
 });
 
@@ -127,5 +129,90 @@ describe('EstimateView — finalized estimates lock the whole editor', () => {
     expect(save).toMatch(/:disabled="estimateLocked"/);
     const copy = SRC.slice(SRC.indexOf('label="Use as jobsite"'), SRC.indexOf('copy-customer-address-to-jobsite'));
     expect(copy).toMatch(/:disabled="estimateLocked"/);
+  });
+});
+
+describe('EstimateView — providers on NEW estimates (2026-08-13, Doug)', () => {
+  it('no longer gates the provider buttons on isExisting', () => {
+    // The buttons hid until the estimate saved; lines insert client-side and
+    // survive the draft-create flip, so there was nothing left to gate.
+    expect(SRC).not.toMatch(/<template v-if="isExisting">\s*<Button v-for="src in estimateSources"/);
+    expect(SRC).toMatch(/<Button v-for="src in estimateSources" :key="src\.pluginKey"/);
+  });
+
+  it('queues a captured photo when there is no estimate id yet, and flushes on first save', () => {
+    // POST /attachments needs an id; on a new estimate the photo queues and
+    // the isExisting watcher attaches it the moment the estimate exists.
+    expect(SRC).toMatch(/_pendingCapturedImages\.push\(\{/);
+    expect(SRC).toMatch(/watch\(isExisting, async \(nowExists\) => \{/);
+    expect(SRC).toMatch(/_attachCapturedImage\(p\.image, p\.item, p\.pluginKey\)/);
+    expect(SRC).toMatch(/will attach once the estimate saves/);
+  });
+
+  it('carries pre-customer-pick lines across the draft-create flip', () => {
+    // fetchEstimate() replaces the whole form from the server snapshot; the
+    // draft-create POST carries no lines, so anything added before the
+    // customer pick (free-form, catalog, plugin) silently vanished.
+    expect(SRC).toMatch(/const preFlipLines = form\.value\.line_items\.filter\(/);
+    expect(SRC).toMatch(/if \(preFlipLines\.length\) form\.value\.line_items = preFlipLines;/);
+  });
+});
+
+describe('EstimateView — Phase 2 in-context pricing (plan §2)', () => {
+  it('renders a write-gated "Price a new {label}…" button per provider', () => {
+    // Capture/create endpoints are POSTs — the proxy grades them write, so a
+    // read-only user\'s button could only 403.
+    expect(SRC).toMatch(/writableSources = computed\(\(\) =>\s*estimateSources\.value\.filter\(\(s\) => auth\.hasPluginPermission\(s\.pluginKey, "write"\)\)\)/);
+    expect(SRC).toMatch(/v-for="src in writableSources"/);
+    expect(SRC).toMatch(/\? 'est-price-with-btn' : `est-price-with-btn-\$\{src\.pluginKey\}`/);
+  });
+
+  it('embeds the host-rendered PluginScreen in the workspace dialog', () => {
+    // Our component, not third-party code (ADR-013: no plugin JS in the browser).
+    expect(SRC).toMatch(/import PluginScreen from "\.\.\/components\/PluginScreen\.vue"/);
+    expect(SRC).toMatch(/<PluginScreen v-if="workspaceVisible && workspaceSource"/);
+    expect(SRC).toMatch(/:plugin-key="workspaceSource\.pluginKey"/);
+    expect(SRC).toMatch(/data-testid="est-plugin-workspace"/);
+  });
+
+  it('reopens the picker on workspace close as the zero-insert fallback', () => {
+    // Phase 3 auto-inserts captures, so the close-time picker only opens when
+    // NOTHING was inserted this session (empty-handed close, or the
+    // capture-succeeded-but-insert-failed warn path).
+    const close = SRC.slice(SRC.indexOf('function onWorkspaceClosed'), SRC.indexOf('const _pendingCapturedImages'));
+    expect(close).toMatch(/if \(src && workspaceInserted\.value === 0\) openCapturedPicker\(src\);/);
+    expect(SRC).toMatch(/@hide="onWorkspaceClosed"/);
+  });
+});
+
+describe('EstimateView — Phase 3 capture → auto-insert (plan §Phase 3)', () => {
+  it('inserts a workspace capture through the SAME path the picker uses', () => {
+    // insertDraft is the one insertion path — cost through the margin engine,
+    // write-once metadata, photo attach-or-queue. A second path would drift.
+    expect(SRC).toMatch(/async function insertDraft\(draft, item, source\)/);
+    const pickerStart = SRC.indexOf('async function addSelectedDoors');
+    const picker = SRC.slice(pickerStart, SRC.indexOf('capturedPickerVisible.value = false', pickerStart));
+    expect(picker).toMatch(/await insertDraft\(draft, item, activeSource\.value\)/);
+    const ws = SRC.slice(SRC.indexOf('async function onWorkspaceCaptured'), SRC.indexOf('function onWorkspaceClosed'));
+    expect(ws).toMatch(/await insertDraft\(draft, \{ id: cap\.id, qcd: cap\.qcd \}, src\)/);
+  });
+
+  it('listens for the capture on the embedded PluginScreen and guards on an id', () => {
+    expect(SRC).toMatch(/@captured="onWorkspaceCaptured"/);
+    expect(SRC).toMatch(/if \(!src \|\| !cap\?\.id\) return;/);
+  });
+
+  it('skips the close-time picker when captures were already auto-inserted', () => {
+    // A picker full of lines that are visibly in the estimate reads as
+    // "did my add not work?" — it stays the fallback for zero-insert sessions
+    // (and for the capture-succeeded-but-insert-failed warn path).
+    expect(SRC).toMatch(/if \(src && workspaceInserted\.value === 0\) openCapturedPicker\(src\);/);
+    expect(SRC).toMatch(/workspaceInserted\.value = 0;\s*\n\s*workspaceVisible\.value = true;/);
+  });
+
+  it('tells the operator when a capture landed but the insert failed', () => {
+    // The capture is safe in the plugin either way — the fallback is the
+    // picker, and silence would read as data loss.
+    expect(SRC).toMatch(/summary: "Captured, but not added"/);
   });
 });

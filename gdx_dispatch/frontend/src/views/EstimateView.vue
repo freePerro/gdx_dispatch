@@ -393,15 +393,29 @@
                        button per installed plugin that declares an
                        estimate_source; invisible in stock core. The legacy
                        single-provider testid is kept when exactly one provider
-                       is installed. -->
-                  <template v-if="isExisting">
-                    <Button v-for="src in estimateSources" :key="src.pluginKey"
-                      :label="`Add ${src.label}`"
-                      icon="pi pi-images" text size="small" severity="info"
-                      :data-testid="estimateSources.length === 1
-                        ? 'est-add-captured-btn' : `est-add-captured-btn-${src.pluginKey}`"
-                      @click="openCapturedPicker(src)" />
-                  </template>
+                       is installed. NOT gated on isExisting (Doug 2026-08-13):
+                       lines insert client-side and survive the draft-create
+                       flip; a captured photo queues until the estimate first
+                       saves (_pendingCapturedImages). -->
+                  <Button v-for="src in estimateSources" :key="src.pluginKey"
+                    :label="`Add ${src.label}`"
+                    icon="pi pi-images" text size="small" severity="info"
+                    :data-testid="estimateSources.length === 1
+                      ? 'est-add-captured-btn' : `est-add-captured-btn-${src.pluginKey}`"
+                    @click="openCapturedPicker(src)" />
+                  <!-- Phase 2 (in-context pricing, ADR-013): capture/price a
+                       NEW item without leaving the estimate. Opens the
+                       plugin's own host-rendered UI (PluginScreen) in a
+                       dialog; closing it re-opens the picker so the fresh
+                       capture is one click from becoming a line. write-gated:
+                       capture/create endpoints are POSTs, which the proxy
+                       grades as write. -->
+                  <Button v-for="src in writableSources" :key="`ws-${src.pluginKey}`"
+                    :label="`Price a new ${src.label}…`"
+                    icon="pi pi-camera" text size="small" severity="help"
+                    :data-testid="writableSources.length === 1
+                      ? 'est-price-with-btn' : `est-price-with-btn-${src.pluginKey}`"
+                    @click="openPluginWorkspace(src)" />
                   <Button label="Add Labor" icon="pi pi-wrench" text size="small" severity="info"
                     data-testid="est-add-labor-btn"
                     @click="openLaborPicker" />
@@ -701,6 +715,31 @@
         </template>
       </Dialog>
 
+      <!-- Phase 2 (ADR-013): the plugin's own UI, embedded. PluginScreen is
+           host-rendered from the manifest (no plugin JS ever ships to the
+           browser), so this dialog embeds OUR component, not third-party code.
+           BrowserStream disconnects on unmount, so closing the dialog tears
+           the server-side browser down; the remote login itself survives via
+           the plugin-host's saved-session reload (state file persisted on
+           every disconnect + capture — live-verified on prod 2026-08-13).
+           The estimate stays mounted underneath; autosave keeps owning
+           persistence, so closing this can never lose estimate data. -->
+      <Dialog v-model:visible="workspaceVisible"
+        :header="workspaceSource ? `Price a new ${workspaceSource.label}` : 'Plugin workspace'"
+        modal class="plugin-workspace-dialog"
+        :style="{ width: '96vw', height: '94vh' }"
+        :contentStyle="{ height: '100%', overflow: 'auto' }"
+        data-testid="est-plugin-workspace"
+        @hide="onWorkspaceClosed">
+        <p class="captured-hint workspace-hint">
+          Anything you capture here is added to the estimate automatically —
+          keep capturing, then close this window when you're done.
+        </p>
+        <PluginScreen v-if="workspaceVisible && workspaceSource"
+          :plugin-key="workspaceSource.pluginKey"
+          @captured="onWorkspaceCaptured" />
+      </Dialog>
+
       <!-- Labor matrix picker (S97 slice 5) -->
       <Dialog v-model:visible="showLaborPicker" header="Add Labor from Matrix" modal
         :style="{ width: '760px' }" data-testid="labor-picker-dialog">
@@ -903,6 +942,7 @@ import { useToast } from "primevue/usetoast";
 import EstimateProfitPanel from "../components/EstimateProfitPanel.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
+import PluginScreen from "../components/PluginScreen.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
@@ -1235,6 +1275,79 @@ const showCatalogPicker = ref(false);
 // is currently serving.
 const { sources: estimateSources, discover: discoverEstimateSources } = useEstimateSources(api, auth);
 const activeSource = ref(null);            // { pluginKey, label, list_endpoint, draft_endpoint, columns }
+
+// Phase 2 — in-context pricing. The "Price a new {label}…" button appears per
+// provider the user may WRITE (capture/create endpoints are POSTs; the proxy
+// grades those as write, so a read-only user's button could only 403).
+const workspaceVisible = ref(false);
+const workspaceSource = ref(null);
+const writableSources = computed(() =>
+  estimateSources.value.filter((s) => auth.hasPluginPermission(s.pluginKey, "write")));
+
+function openPluginWorkspace(src) {
+  workspaceSource.value = src;
+  workspaceInserted.value = 0;
+  workspaceVisible.value = true;
+}
+
+// Phase 3 — capture → auto-insert. PluginScreen forwards a completed CAPTURE
+// with the capture POST's response ({id, ...}); fetch its draft and insert
+// through the same path the picker uses. Capture-only by the plan's scoping
+// rule (the event never fires for create-form submissions), and the id guard
+// keeps an odd payload from fetching a nonsense draft.
+const workspaceInserted = ref(0);
+
+async function onWorkspaceCaptured(payload) {
+  const src = workspaceSource.value;
+  const cap = payload?.data || payload;
+  if (!src || !cap?.id) return;
+  try {
+    const draft = await api.get(src.draft_endpoint.replace("{id}", cap.id));
+    const r = await insertDraft(draft, { id: cap.id, qcd: cap.qcd }, src);
+    workspaceInserted.value += 1;
+    toast.add({
+      severity: "success",
+      summary: "Added to estimate",
+      detail: r.unpriced
+        ? "Line added but needs a price before it saves — check it after closing."
+        : `Keep capturing, or close when you're done.${r.photo === "queued" ? " Photo attaches once the estimate saves." : ""}`,
+      life: 4000,
+    });
+  } catch {
+    // The capture itself succeeded and is safe in the plugin — the picker on
+    // close is the fallback path, so say that instead of failing silently.
+    toast.add({
+      severity: "warn",
+      summary: "Captured, but not added",
+      detail: "Close this window and add it from the picker.",
+      life: 5000,
+    });
+  }
+}
+
+function onWorkspaceClosed() {
+  const src = workspaceSource.value;
+  workspaceSource.value = null;
+  // Reuse the proven picker path (photo attach, metadata, engine pricing)
+  // instead of inventing a second insertion path — both providers' list
+  // endpoints return newest-first, so the just-priced item is on top.
+  // Skipped when Phase 3 already auto-inserted this session's captures:
+  // opening a picker for lines that are visibly in the estimate reads as
+  // "did my add not work?".
+  if (src && workspaceInserted.value === 0) openCapturedPicker(src);
+}
+
+// New-estimate photo deferral: a captured photo attaches via
+// POST /api/estimates/{id}/attachments, which needs an id. On a not-yet-saved
+// estimate the photos queue here and flush the moment the estimate first
+// exists (autosave draft-create on customer pick, or manual Create — either
+// way the route flips to /estimates/:id without unmounting this component).
+const _pendingCapturedImages = [];
+watch(isExisting, async (nowExists) => {
+  if (!nowExists || !_pendingCapturedImages.length) return;
+  const batch = _pendingCapturedImages.splice(0);
+  for (const p of batch) await _attachCapturedImage(p.image, p.item, p.pluginKey);
+});
 const capturedError = ref("");             // "" | "forbidden" | "unavailable"
 const capturedPickerVisible = ref(false);
 const capturedItems = ref([]);             // all captures (summary rows incl. folder)
@@ -1314,11 +1427,45 @@ function backToFolders() {
 
 // Add every selected item as its own line — one item = one line item. Captured
 // price → cost → margin engine; photo + full spec ride along.
+/**
+ * The ONE insertion path for a provider draft → estimate line (picker AND the
+ * Phase 3 auto-insert both come through here): captured cost through the
+ * margin engine, write-once line_metadata, photo attached now or queued for
+ * first save. Returns what happened so callers can toast honestly.
+ */
+async function insertDraft(draft, item, source) {
+  const li = defaultLineItem();
+  li.category = draft.category || "Doors";
+  li.description = draft.description || "";
+  li.cost = draft.cost ?? null;
+  li.quantity = draft.quantity || 1;
+  li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
+  recomputeSell(li);                                 // captured cost → engine markup
+  // Autosave only persists a line once it has a description AND a price
+  // (_lineHasContent) — a line missing either looks added but never saves.
+  const unpriced = !(li.description && Number(li.unit_price) > 0);
+  form.value.line_items.push(li);                    // deep watcher autosaves it
+  let photo = "none";
+  if (draft.image && isExisting.value) {
+    await _attachCapturedImage(draft.image, item, source?.pluginKey);
+    photo = "attached";
+  } else if (draft.image) {
+    // No estimate id yet — queue the photo; the isExisting watcher
+    // attaches it the moment the estimate first saves.
+    _pendingCapturedImages.push({
+      image: draft.image, item, pluginKey: source?.pluginKey,
+    });
+    photo = "queued";
+  }
+  return { unpriced, photo };
+}
+
 async function addSelectedDoors() {
   if (!selectedDoors.value.length || !activeSource.value) return;
   addingDoors.value = true;
   let added = 0;
   let noPhoto = 0;
+  let queuedPhoto = 0;
   let unpriced = 0;
   try {
     for (const item of selectedDoors.value) {
@@ -1328,29 +1475,20 @@ async function addSelectedDoors() {
       } catch {
         continue;
       }
-      const li = defaultLineItem();
-      li.category = draft.category || "Doors";
-      li.description = draft.description || "";
-      li.cost = draft.cost ?? null;
-      li.quantity = draft.quantity || 1;
-      li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
-      recomputeSell(li);                                 // captured cost → engine markup
-      // Autosave only persists a line once it has a description AND a price
-      // (_lineHasContent) — a line missing either looks added but never saves.
-      if (!(li.description && Number(li.unit_price) > 0)) unpriced += 1;
-      form.value.line_items.push(li);                    // deep watcher autosaves it
-      if (draft.image && isExisting.value) {
-        await _attachCapturedImage(draft.image, item);
-      } else if (!draft.image) {
-        noPhoto += 1;
-      }
+      const r = await insertDraft(draft, item, activeSource.value);
+      if (r.unpriced) unpriced += 1;
+      if (r.photo === "queued") queuedPhoto += 1;
+      else if (r.photo === "none") noPhoto += 1;
       added += 1;
     }
     capturedPickerVisible.value = false;
+    const photoNotes = [];
+    if (noPhoto) photoNotes.push(`${noPhoto} had no photo (re-capture to attach).`);
+    if (queuedPhoto) photoNotes.push(`Photo${queuedPhoto === 1 ? "" : "s"} will attach once the estimate saves.`);
     toast.add({
       severity: "success",
       summary: `Added ${added} item${added === 1 ? "" : "s"}`,
-      detail: noPhoto ? `${noPhoto} had no photo (re-capture to attach).` : undefined,
+      detail: photoNotes.length ? photoNotes.join(" ") : undefined,
       life: 3000,
     });
     if (unpriced) {
@@ -1366,14 +1504,15 @@ async function addSelectedDoors() {
   }
 }
 
-async function _attachCapturedImage(dataUrl, item) {
+async function _attachCapturedImage(dataUrl, item, pluginKey) {
   // Door photo → a core Document on the estimate (best-effort; the line + spec
-  // already persist via autosave regardless of the photo).
+  // already persist via autosave regardless of the photo). `pluginKey` is
+  // passed by the deferred-photo flush, where activeSource may have moved on.
   try {
     const blob = await (await fetch(dataUrl)).blob();
     const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
     const fd = new FormData();
-    fd.append("file", blob, `${activeSource.value?.pluginKey || "plugin"}-${item.qcd || item.id}.${ext}`);
+    fd.append("file", blob, `${pluginKey || activeSource.value?.pluginKey || "plugin"}-${item.qcd || item.id}.${ext}`);
     await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
     await loadAttachments();   // refresh the panel so the photo shows immediately
     toast.add({ severity: "success", summary: "Door photo attached", life: 2500 });
@@ -2058,11 +2197,21 @@ async function _createDraftFromForm() {
     const result = await apiRaw.post("/api/estimates", payload);
     const created = result?.data || result;
     if (created?.id) {
+      // Lines added BEFORE the customer pick exist only in the client form —
+      // the create POST above doesn't carry them, and fetchEstimate() below
+      // replaces the whole form from the server snapshot, which silently
+      // wiped them (free-form, catalog and plugin lines alike). Carry them
+      // across the flip; the deep watcher then persists them through the
+      // normal autosave flush.
+      const preFlipLines = form.value.line_items.filter(
+        (li) => li.description || Number(li.unit_price) > 0 || li.cost != null,
+      );
       await router.replace(`/estimates/${created.id}`);
       // Refresh form from the server snapshot so estimate.id /
       // estimate_number / created_at populate and the existing-mode
       // toolbar renders correctly.
       await fetchEstimate();
+      if (preFlipLines.length) form.value.line_items = preFlipLines;
       autosaveState.value = "saved";
       autosaveLastAt.value = Date.now();
     }

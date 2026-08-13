@@ -61,6 +61,27 @@ const stubs = {
   DataTable: true, Column: true, InputText: true, Button: true, Checkbox: true, Select: true,
 };
 
+const BROWSER_MANIFEST = {
+  screens: [
+    {
+      type: 'browser',
+      title: 'Workspace',
+      url: 'https://example.test/portal',
+      capture_endpoint: '/api/plugins/example/capture',
+    },
+    {
+      type: 'list',
+      title: 'Items',
+      endpoint: '/api/plugins/example/items',
+      columns: [{ field: 'id', label: 'ID' }],
+      create: {
+        endpoint: '/api/plugins/example/items',
+        fields: [{ name: 'name', label: 'Name', type: 'text' }],
+      },
+    },
+  ],
+};
+
 describe('PluginScreen.vue', () => {
   it('compiles, loads the manifest, and renders the screen + create form', async () => {
     apiMock.manifest = MANIFEST;
@@ -100,5 +121,41 @@ describe('PluginScreen.vue', () => {
       { fields: ['Alpha'], ordered: ['Beta', 'Gamma'] },
       expect.anything(),
     );
+  });
+
+  // Phase 3 (ADR-013): a completed CAPTURE is forwarded upward WITH its
+  // payload, so an embedding host (the estimate screen) can auto-insert it.
+  // The payload used to be discarded here (@captured="load").
+  it('re-emits a browser capture with its payload', async () => {
+    apiMock.manifest = BROWSER_MANIFEST;
+    const wrapper = mount(PluginScreen, {
+      props: { pluginKey: 'example' },
+      global: { stubs: { ...stubs, BrowserStream: { template: '<div class="bs-stub" />' } } },
+    });
+    await flushPromises();
+
+    const stream = wrapper.findComponent('.bs-stub');
+    stream.vm.$emit('captured', { id: 42, qcd: 'QCD123' });
+    await flushPromises();
+
+    const emitted = wrapper.emitted('captured');
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0][0]).toEqual({ id: 42, qcd: 'QCD123' });
+  });
+
+  // The scoping rule from the plan's audit: create-form submissions must NOT
+  // emit — a configurator plugin's other create forms (e.g. settings rows)
+  // are not insertable things.
+  it('does not emit captured for a create-form submission', async () => {
+    apiMock.manifest = BROWSER_MANIFEST;
+    const wrapper = mount(PluginScreen, {
+      props: { pluginKey: 'example' },
+      global: { stubs: { ...stubs, BrowserStream: { template: '<div class="bs-stub" />' } } },
+    });
+    await flushPromises();
+
+    await wrapper.find('form.plugin-screen__create').trigger('submit');
+    await flushPromises();
+    expect(wrapper.emitted('captured')).toBeUndefined();
   });
 });
