@@ -40,7 +40,16 @@ async function load(src) {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    objectUrl.value = URL.createObjectURL(await resp.blob())
+    const blob = await resp.blob()
+    // `resp.ok` is not enough. A url the API doesn't serve falls through to the
+    // SPA catch-all, which answers 200 with index.html — and an object URL made
+    // from HTML paints an empty frame with no error, so a photo that isn't
+    // there looks like a photo that failed to load slowly, forever. Trust the
+    // bytes' own type, not the status code.
+    if (blob.type && !blob.type.startsWith('image/')) {
+      throw new Error(`not an image: ${blob.type}`)
+    }
+    objectUrl.value = URL.createObjectURL(blob)
   } catch {
     // Show the caller's fallback rather than a broken-image icon.
     failed.value = true

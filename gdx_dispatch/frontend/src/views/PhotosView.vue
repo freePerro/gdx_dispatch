@@ -238,7 +238,11 @@ async function loadPhotos() {
     // 403 (or any load error) throw out of onMounted and white-screen the page —
     // show an access-denied empty state instead. (prod crash, 2026-07-10.)
     photos.value = [];
-    accessDenied.value = err?.status === 403;
+    // 404 counts as denied, not as empty. The per-job endpoint answers 404
+    // (not 403) when the caller may not touch the job — it refuses to confirm
+    // a job id exists — so treating only 403 as denial told an office user
+    // "No photos yet" about photos they simply weren't allowed to see.
+    accessDenied.value = err?.status === 403 || err?.status === 404;
   } finally {
     loading.value = false;
   }

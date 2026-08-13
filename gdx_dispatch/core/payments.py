@@ -25,17 +25,20 @@ Webhook entry point (dispatched from routers/stripe_webhook.py):
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -662,8 +665,89 @@ def pay_invoice(
         {
             "invoice": invoice,
             "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
+            # The photos the office attached to THIS invoice (Doug 2026-08-12:
+            # photos are customer-facing). They already ride the PDF; showing
+            # them on the page the customer actually opens is the same
+            # disclosure, one click earlier — "here is the work you're paying
+            # for". Strictly the attached set, never the job's whole roll.
+            "job_photos": _invoice_public_photos(invoice, db),
         },
     )
+
+
+# How many attached photos the pay page will inline. The picker allows up to
+# 20 per invoice; twenty full photos inlined would be megabytes on a phone,
+# and nobody scrolls past the first few above a card form. The PDF still
+# carries the complete set.
+_PAY_PAGE_MAX_PHOTOS = 6
+
+
+def _invoice_public_photos(invoice: Any, db: Session) -> list[dict[str, Any]]:
+    """The attached photos for the public pay page, as {src, label} rows.
+
+    Same selection the PDF prints (invoice.attached_photo_ids, in pick order)
+    resolved through the same helper, so the page and the attachment can never
+    show the customer different pictures.
+
+    Inlined as data: URIs rather than served from a new public route. The pay
+    page is anonymous by design, and the ungated-route baseline is a ratchet to
+    work DOWN — adding an endpoint to show a picture is the wrong trade when
+    the bytes can ride inside the page the token already unlocked.
+    """
+    import json as _json_mod
+
+    from gdx_dispatch.core.job_photos import photo_data_uri, resolve_photo_file
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    raw = getattr(invoice, "attached_photo_ids", None)
+    if not raw or getattr(invoice, "job_id", None) is None:
+        return []
+    try:
+        ids = [str(i) for i in _json_mod.loads(raw) if i]
+    except (ValueError, TypeError):
+        return []
+    if not ids:
+        return []
+    uuids = []
+    for i in ids:
+        with contextlib.suppress(ValueError, AttributeError):
+            uuids.append(_uuid.UUID(i))
+    if not uuids:
+        return []
+    rows = db.execute(
+        select(JobPhoto).where(
+            JobPhoto.id.in_(uuids),
+            JobPhoto.job_id == invoice.job_id,
+            # The same share gate the portal uses (migration 063). Attaching a
+            # photo to an invoice SETS this flag, so the normal path needs no
+            # second decision — but un-sharing a photo afterwards has to pull
+            # it off the customer's page, or "internal" would mean internal
+            # everywhere except the bill.
+            JobPhoto.customer_visible.is_(True),
+            JobPhoto.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    by_id = {str(p.id): p for p in rows}
+    out: list[dict[str, Any]] = []
+    for pid in ids:  # pick order is display order
+        if len(out) >= _PAY_PAGE_MAX_PHOTOS:
+            break
+        photo = by_id.get(pid)
+        if photo is None:
+            continue
+        resolved = resolve_photo_file(db, photo)
+        if resolved is None:
+            continue
+        src = photo_data_uri(*resolved)
+        if src is None:
+            continue
+        out.append({
+            "src": src,
+            "label": (photo.caption or "").strip() or (photo.kind or "").strip().title(),
+        })
+    return out
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -122,6 +122,12 @@ function pickSuggestion(row, s) {
 // it. Showing the open request rows ends the double-entry. Best-effort:
 // a failed read never blocks a closeout.
 const existingRequests = ref([])
+// Parts logged as used WHILE the job was worked (2026-08-12, source='mobile').
+// The closeout is no longer the first place a part can be recorded, so it must
+// show what's already on the job — otherwise the tech re-types it here and the
+// customer gets billed for it twice (live rows and closeout rows are separate
+// sources; neither replaces the other).
+const existingUsed = ref([])
 async function _loadExistingRequests() {
   if (!props.jobId) return
   try {
@@ -129,11 +135,16 @@ async function _loadExistingRequests() {
       `/api/jobs/${props.jobId}/parts-needed?unbilled=true`,
       { suppressErrorToast: true },
     )
-    existingRequests.value = (Array.isArray(rows) ? rows : []).filter(
+    const all = Array.isArray(rows) ? rows : []
+    existingRequests.value = all.filter(
       (r) => r.source === 'request' && r.status !== 'cancelled',
+    )
+    existingUsed.value = all.filter(
+      (r) => r.source === 'mobile' && r.status === 'used',
     )
   } catch {
     existingRequests.value = []
+    existingUsed.value = []
   }
 }
 
@@ -233,7 +244,12 @@ function sigEnd() {
 function clearCanvas() {
   const c = sigCanvas.value
   if (!c) return
+  // getContext returns null where 2d isn't available (jsdom, a canvas-blocked
+  // browser). Reaching through it threw an unhandled rejection out of the
+  // open-watcher — the closeout still worked, but every failure after it in
+  // that tick was invisible.
   const ctx = c.getContext('2d')
+  if (!ctx) return
   ctx.fillStyle = '#fff'
   ctx.fillRect(0, 0, c.width, c.height)
   sigDrawn.value = false
@@ -429,7 +445,10 @@ function _resetForm() {
 watch(open, async (v) => {
   if (v) {
     _resetForm()
+    // Both lists clear before the reload: the dialog is reused across jobs,
+    // and a stale row here reads as "this job already has that part".
     existingRequests.value = []
+    existingUsed.value = []
     _loadExistingRequests()
     await nextTick()
     clearCanvas()
@@ -466,6 +485,20 @@ watch(open, async (v) => {
             @click="addPartRow"
           />
         </header>
+        <!-- Already logged during the job (2026-08-12). Read-only, and NOT
+             copied into the rows below: these are billable rows already, so
+             re-attesting them here would bill the customer twice. Shown for
+             the same reason the open requests are — a tech who can't see what
+             they logged types it again. -->
+        <ul v-if="existingUsed.length" class="parts-list" data-testid="mjco-already-used">
+          <li v-for="r in existingUsed" :key="r.id" class="part-row existing-request">
+            <span class="muted">
+              <i class="pi pi-check-circle" style="font-size: 0.8rem" />
+              {{ r.part_name }} ×{{ r.quantity || 1 }} — already logged on this job
+            </span>
+            <span class="qty-pill">used</span>
+          </li>
+        </ul>
         <ul v-if="parts.length" class="parts-list" data-testid="mjco-parts-list">
           <li v-for="(p, idx) in parts" :key="idx" class="part-row">
             <div class="part-row-main">
@@ -519,10 +552,20 @@ watch(open, async (v) => {
             />
           </li>
         </ul>
+        <p v-else-if="existingUsed.length" class="muted hint">
+          Add anything you installed that isn't listed above.
+        </p>
         <p v-else class="muted hint">No parts yet — tap "Add part" for each one you installed.</p>
         <!-- PR5: deliberate attestation. With the tenant's require-parts
-             gate on, this is the only way to complete with an empty list. -->
-        <label v-if="!parts.length" class="no-parts-attest" data-testid="mjco-no-parts-used">
+             gate on, this is the only way to complete with an empty list.
+             Hidden once parts were logged during the job: "no parts were
+             used" would contradict rows that are already billable, and the
+             server's gate counts those rows, so nothing needs attesting. -->
+        <label
+          v-if="!parts.length && !existingUsed.length"
+          class="no-parts-attest"
+          data-testid="mjco-no-parts-used"
+        >
           <input type="checkbox" v-model="noPartsUsed" />
           <span>No parts were used on this job</span>
         </label>

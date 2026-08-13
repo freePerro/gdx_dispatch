@@ -21,6 +21,7 @@ import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import AuthedImage from './AuthedImage.vue'
 import { formatMoney } from '../composables/useFormatters'
 import { useTenantTimezone } from '../composables/useTenantTimezone'
 import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
@@ -44,10 +45,32 @@ const summary = ref(null)
 const loading = ref(false)
 const submitting = ref(false)
 
+// Job photos the tech can print on this invoice. Read from job_photos — the
+// same endpoint the office surfaces use, so what the tech ticks is exactly
+// what the office would see.
+const jobPhotos = ref([])
+const attachedPhotoIds = ref([])
+
 // immediate: the dialog can be mounted already-visible.
 watch(() => props.visible, (v) => {
-  if (v && props.job?.id) loadSummary()
+  if (v && props.job?.id) {
+    loadSummary()
+    loadJobPhotos()
+  }
 }, { immediate: true })
+
+async function loadJobPhotos() {
+  jobPhotos.value = []
+  attachedPhotoIds.value = []
+  try {
+    const rows = await api.get(`/api/jobs/${props.job.id}/photos`, { suppressErrorToast: true })
+    jobPhotos.value = Array.isArray(rows) ? rows : []
+  } catch {
+    // Silent: photos are an addition to the invoice, and a tech mid-signature
+    // does not need a toast about a gallery. The block simply doesn't render.
+    jobPhotos.value = []
+  }
+}
 
 async function loadSummary() {
   loading.value = true
@@ -145,6 +168,7 @@ async function generateInvoice() {
     const payload = {
       estimate_id: summary.value?.accepted_quote?.id || null,
       send_email: true,
+      attached_photo_ids: attachedPhotoIds.value,
     }
     const inv = await api.post(`/api/mobile/jobs/${props.job.id}/invoice`, payload)
     toast.add({ severity: 'success', summary: 'Invoice sent', detail: `#${inv.invoice_number} emailed`, life: 3000 })
@@ -349,6 +373,30 @@ async function sendReceipt(inv) {
           </div>
         </div>
       </div>
+
+      <!-- Job photos on the invoice PDF (2026-08-12). The tech took these
+           minutes ago and is about to email the bill; this is the only moment
+           anyone can put the finished-door shot on it before the customer
+           reads it. Hidden once a final invoice exists — the picks ride the
+           invoice being generated, not one already sent. -->
+      <div v-if="!hasFinalInvoice && jobPhotos.length" class="photo-pick-block" data-testid="mid-photos">
+        <p class="photo-pick-title">Photos to include on the invoice</p>
+        <div class="photo-pick-row">
+          <label
+            v-for="p in jobPhotos"
+            :key="p.id"
+            class="photo-pick"
+            :class="{ selected: attachedPhotoIds.includes(p.id) }"
+            :data-testid="`mid-photo-${p.id}`"
+          >
+            <input type="checkbox" :value="p.id" v-model="attachedPhotoIds" />
+            <AuthedImage :src="p.url" :alt="p.caption || p.kind || 'Job photo'">
+              <template #fallback><span class="photo-pick-failed">n/a</span></template>
+            </AuthedImage>
+            <span class="photo-pick-kind">{{ p.kind || 'photo' }}</span>
+          </label>
+        </div>
+      </div>
     </div>
 
     <template #footer>
@@ -360,6 +408,7 @@ async function sendReceipt(inv) {
         severity="success"
         :loading="submitting"
         :disabled="!summary"
+        data-testid="mid-generate"
         @click="generateInvoice"
       />
     </template>
@@ -412,4 +461,30 @@ async function sendReceipt(inv) {
 .invoice-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
 
 .muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.8rem; }
+
+/* Photo picker — thumb-sized targets, scrolling sideways rather than wrapping
+   into a wall on a 390px screen. The whole tile is the tap target (44px+). */
+.photo-pick-block { margin-top: 0.7rem; }
+.photo-pick-title { margin: 0 0 0.4rem; font-size: 0.85rem; font-weight: 600; }
+.photo-pick-row {
+  display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.2rem;
+  scrollbar-width: none;
+}
+.photo-pick-row::-webkit-scrollbar { display: none; }
+.photo-pick {
+  flex: 0 0 auto; width: 88px; min-height: 44px; padding: 0.3rem;
+  display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+  border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 0.5rem;
+}
+.photo-pick.selected { border-color: var(--p-primary-color, #3b82f6); border-width: 2px; }
+.photo-pick :deep(img) {
+  width: 100%; height: 60px; object-fit: cover; border-radius: 0.25rem; display: block;
+}
+.photo-pick-failed {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 60px; border-radius: 0.25rem;
+  background: var(--p-highlight-background, #f3f4f6);
+  color: var(--p-text-muted-color, #6b7280); font-size: 0.7rem;
+}
+.photo-pick-kind { font-size: 0.7rem; color: var(--p-text-muted-color, #6b7280); }
 </style>

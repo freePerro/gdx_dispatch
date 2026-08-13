@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy import text as _text
 from sqlalchemy.exc import SQLAlchemyError
@@ -189,8 +189,31 @@ class LocationBody(BaseModel):
 
 
 class PartUsageItem(BaseModel):
-    part_id: str = Field(min_length=1, max_length=64)
+    """One part the tech has already installed.
+
+    ``part_id`` is optional (2026-08-12): the tech's Parts card searches the
+    same catalogs the estimate builder does, and custom-catalog rows carry no
+    ``parts.id`` — an inventory-only body could not record most of what a tech
+    actually installs. Free-text lines ride on ``name`` (+ optional sku) and
+    still reach billing through the job_parts_needed spine; only an
+    inventory-resolved line gets a job_parts row and a stock decrement, because
+    job_parts.part_id is an FK to parts.id and rejects anything else.
+
+    Lengths mirror JobPartNeeded: part_name String(200), sku String(255). A
+    longer value must 422 at the door rather than be trimmed — a truncated sku
+    is a different part.
+    """
+
+    part_id: str | None = Field(default=None, max_length=64)
+    name: str | None = Field(default=None, max_length=200)
+    sku: str | None = Field(default=None, max_length=255)
     qty: int = Field(ge=0, le=1_000_000)
+
+    @model_validator(mode="after")
+    def _require_identity(self) -> "PartUsageItem":
+        if not (self.part_id or (self.name or "").strip()):
+            raise ValueError("part_id or name is required")
+        return self
 
 
 class PartsUsedBody(BaseModel):
@@ -2213,16 +2236,19 @@ def get_mobile_job_detail(
 
     # 2026-07-16: the parts the tech has REQUESTED for this job. Without these
     # they can't see what was already asked for, and re-request it.
+    # 2026-08-12: plus the parts they've logged as USED while working it —
+    # source='mobile' is this card's own live-capture write. Both are the
+    # tech's own record of this job's parts; `source` rides along so the card
+    # can label them apart (asked for vs already installed).
     #
-    # source='request' is not a nicety. job_parts_needed is the shared billable
-    # spine for four different events: 'request' (asked for), 'closeout'
-    # (attested as installed at completion), 'mobile' (used off the truck) and
-    # 'van' (van-stock usage) — the last three are parts already IN the door.
-    # Unfiltered, this card labels an installed part "Needed", and worse: a
-    # re-closeout DELETES and recreates its unbilled rows (jobs.py:1620), so
-    # the list would silently rewrite itself under the tech. The office
-    # checklist shows all four and distinguishes them with source badges; this
-    # card asks one question and must answer only it.
+    # The source filter is not a nicety. job_parts_needed is the shared
+    # billable spine for four events: 'request' (asked for), 'closeout'
+    # (attested at completion), 'mobile' (logged used on the job) and 'van'
+    # (van-stock usage). 'closeout' is deliberately excluded: a re-closeout
+    # DELETES and recreates its unbilled rows (jobs.py), so the list would
+    # silently rewrite itself under the tech. 'van' belongs to the truck's
+    # ledger, not this card. The office checklist shows all four with source
+    # badges; this card answers only what the tech on this job did.
     #
     # job_id is String(36) here, so it matches the dashed job_id directly — no
     # UUID cast, unlike job_photos.job_id, which is a Uuid column.
@@ -2230,10 +2256,10 @@ def get_mobile_job_detail(
         _text(
             """
             SELECT id, part_name, sku, quantity, urgency, status, notes, eta_at,
-                   created_at
+                   source, billed_invoice_id, created_at
             FROM job_parts_needed
             WHERE job_id = :job_id
-              AND source = 'request'
+              AND source IN ('request', 'mobile')
             ORDER BY created_at ASC
             """
         ),
@@ -3374,41 +3400,73 @@ async def upload_mobile_job_photo(
 
     exif = _photo_exif_metadata(raw)
 
-    suffix = _image_suffix(file)
-    filename = f"{uuid.uuid4()}.{suffix}"
-    upload_dir = Path(os.getenv("MOBILE_UPLOAD_DIR", "/tmp/gdx_mobile_uploads")) / "job_photos"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    (upload_dir / filename).write_bytes(raw)
-
-    now = datetime.now(UTC)
-    photo_id = str(uuid.uuid4())
-    photo_url = f"/mobile/uploads/job_photos/{filename}"
-    db.execute(
-        _text(
-            """
-            INSERT INTO job_photos (
-                id, company_id, job_id, kind, url, uploaded_at, uploaded_by,
-                filename, content_type, file_size, created_at, deleted_at
-            ) VALUES (
-                :id, :company_id, :job_id, :kind, :url, :uploaded_at, :uploaded_by,
-                :filename, :content_type, :file_size, :created_at, NULL
-            )
-            """
-        ),
-        {
-            "id": photo_id,
-            "company_id": tenant_id,
-            "job_id": job_id,
-            "kind": kind,
-            "url": photo_url,
-            "uploaded_at": now,
-            "uploaded_by": user_id or None,
-            "filename": filename,
-            "content_type": content_type,
-            "file_size": len(raw),
-            "created_at": now,
-        },
+    # 2026-08-12 — this route used to store bytes in MOBILE_UPLOAD_DIR
+    # (default /tmp/gdx_mobile_uploads, NOT a docker volume, gone on restart)
+    # and write a job_photos.url of /mobile/uploads/… that nothing serves. The
+    # SPA catch-all answers that path with 200 + HTML, so a viewer got a broken
+    # frame rather than an honest failure, and pdf.py had to special-case it as
+    # "the dead legacy path". Prod has zero rows from it — no caller remains in
+    # the app — but the route is still registered, typed in api.d.ts, and named
+    # in docs/tech_mobile.md, so it is repointed rather than deleted: anything
+    # that still calls it now produces a photo that actually works.
+    #
+    # Same trip every other upload takes: bytes to the FLAT document root the
+    # download route reads, a documents row, then link_job_photo for the record
+    # every photo surface displays.
+    from gdx_dispatch.core.job_photos import link_job_photo
+    from gdx_dispatch.routers.uploads import (
+        _flat_document_path,
+        _insert_document,
+        _sanitize_filename,
+        _write_bytes_to_storage,
     )
+
+    suffix = _image_suffix(file)
+    original_name = _sanitize_filename(file.filename) or f"photo.{suffix}"
+    filename = f"{uuid.uuid4().hex}-{original_name}"
+    _write_bytes_to_storage(_flat_document_path(filename), raw)
+
+    doc_row = _insert_document(
+        db,
+        tenant_id=tenant_id,
+        filename=filename,
+        original_name=original_name,
+        content_type=content_type,
+        size_bytes=len(raw),
+        entity_type="job_photo",
+        entity_id=str(job_id),
+        uploaded_by=user_id or "",
+    )
+    # The photo record's id, not the document's — callers treat this as the
+    # photo they just created, and job_photos.id is what every reader keys on.
+    photo_id = link_job_photo(
+        db,
+        tenant_id=tenant_id,
+        job_id=str(job_id),
+        document_id=doc_row["id"],
+        filename=filename,
+        content_type=content_type,
+        size_bytes=len(raw),
+        uploaded_by=user_id or "",
+        kind=kind,
+    )
+    if photo_id is None:
+        # link_job_photo swallows its own failure by design (a stored file must
+        # not 500 because the index row failed) — but the CALLER must not then
+        # answer 201 with a photo id of null. That is reporting success for a
+        # write that did not happen, which is exactly what commit c1b9729
+        # removed from this codebase; re-introducing it one commit later
+        # because the happy path is more convenient is how it comes back.
+        # The bytes and the document row survive, so the office can still find
+        # the file; the tech is told the photo did not attach.
+        db.commit()
+        logging.getLogger(__name__).error(
+            "mobile_job_photo_record_failed job_id=%s document_id=%s", job_id, doc_row["id"]
+        )
+        return jsonable_response(
+            {"detail": "photo stored but could not be attached to the job — tell the office"},
+            500,
+        )
     db.commit()
 
     _audit_db = locals().get('db')
@@ -3891,33 +3949,100 @@ def mobile_job_parts_used(
     if not payload.parts:
         return jsonable_response({"detail": "parts are required"}, 400)
 
+    # job_parts_needed is the billable spine for every capture path, so its
+    # job_id must be the canonical dashed form the checklist's string-equality
+    # queries match (PR4 audit round 2). Normalized once for the whole request.
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+    try:
+        _job_uuid_parts = _UUID(job_id)
+        _job_id_valid = True
+    except (ValueError, AttributeError):
+        logging.getLogger(__name__).exception("mobile_job_parts_used caught exception")
+        _job_uuid_parts = uuid.uuid4()
+        _job_id_valid = False
+
     recorded = []
     for part in payload.parts:
         if part.qty <= 0:
             return jsonable_response({"detail": "qty must be > 0"}, 400)
 
-        try:
-            _part_uuid = _UUID(part.part_id)
-        except (ValueError, AttributeError):
-            logging.getLogger(__name__).exception("mobile_job_parts_used caught exception")
-            return jsonable_response({"detail": f"invalid part_id: {part.part_id}"}, 400)
-        part_obj = db.execute(
-            select(Part).where(Part.id == _part_uuid, Part.deleted_at.is_(None))
-        ).scalar_one_or_none()
-        if not part_obj:
-            return jsonable_response({"detail": f"part not found: {part.part_id}"}, 404)
+        # Inventory resolution is best-effort by design (2026-08-12). A tech
+        # logging a part mid-job picks from the catalogs, and most catalog rows
+        # have no parts.id — those lines record as free text. Only an explicit
+        # part_id (or a sku that matches a stocked part) touches inventory.
+        part_obj = None
+        _part_uuid = None
+        if part.part_id:
+            try:
+                _part_uuid = _UUID(part.part_id)
+            except (ValueError, AttributeError):
+                logging.getLogger(__name__).exception("mobile_job_parts_used caught exception")
+                return jsonable_response({"detail": f"invalid part_id: {part.part_id}"}, 400)
+            part_obj = db.execute(
+                select(Part).where(Part.id == _part_uuid, Part.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if not part_obj:
+                return jsonable_response({"detail": f"part not found: {part.part_id}"}, 404)
+        elif part.sku:
+            # A catalog row that happens to share a sku with stocked inventory
+            # is the same physical part — decrement it. No match is normal, not
+            # an error: the line still records as free text.
+            part_obj = db.execute(
+                select(Part).where(Part.sku == part.sku, Part.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            _part_uuid = part_obj.id if part_obj is not None else None
+
+        if part_obj is None:
+            # Free-text line: no job_parts row (its part_id is an FK to
+            # parts.id), no stock math. The billable checklist row below is the
+            # whole record — same shape closeout gives a free-text part.
+            if not _job_id_valid:
+                logging.getLogger(__name__).error(
+                    "mobile_parts_used_checklist_skipped_invalid_job_id job_id=%r", job_id
+                )
+                continue
+            _line_name = (part.name or "").strip() or part.sku or "Part"
+            _fx_now = datetime.now(UTC)
+            _fx_row = JobPartNeeded(
+                id=str(uuid.uuid4()),
+                company_id=tenant_id,
+                job_id=str(_job_uuid_parts),
+                part_name=_line_name[:200],
+                sku=part.sku,
+                quantity=int(part.qty),
+                status="used",
+                source="mobile",
+                # NULL price: the office prices a free-text part at invoicing
+                # (same rule as closeout — never invent a sell price).
+                unit_price=None,
+                requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
+                created_at=_fx_now,
+                updated_at=_fx_now,
+            )
+            db.add(_fx_row)
+            recorded.append({
+                "id": _fx_row.id,
+                "part_id": None,
+                "part_name": _line_name,
+                "sku": part.sku,
+                "qty": part.qty,
+                "in_inventory": False,
+            })
+            continue
+
         qty_on_hand = int(part_obj.qty_on_hand or 0)
         if qty_on_hand < part.qty:
-            return jsonable_response({"detail": f"insufficient stock for part {part.part_id}"}, 400)
+            # Allow-negative, non-blocking — the same rule closeout follows
+            # (Doug 2026-05-10: the part is already in the door; a stock count
+            # must not block the tech). Loud in the logs so the count gets
+            # fixed; a 400 here would only push the tech back to typing parts
+            # into a note, where nothing bills them.
+            logging.getLogger(__name__).warning(
+                "mobile_parts_used_stock_went_negative part_id=%s on_hand=%s used=%s job_id=%s",
+                part_obj.id, qty_on_hand, part.qty, job_id,
+            )
 
         part_obj.qty_on_hand = qty_on_hand - part.qty
-        try:
-            _job_uuid_parts = _UUID(job_id)
-            _job_id_valid = True
-        except (ValueError, AttributeError):
-            logging.getLogger(__name__).exception("mobile_job_parts_used caught exception")
-            _job_uuid_parts = uuid.uuid4()
-            _job_id_valid = False
         job_part = JobPart(
             id=uuid.uuid4(),
             job_id=_job_uuid_parts,
@@ -3934,16 +4059,13 @@ def mobile_job_parts_used(
             logging.getLogger(__name__).error(
                 "mobile_parts_used_checklist_skipped_invalid_job_id job_id=%r", job_id
             )
-            recorded.append({"part_id": part.part_id, "qty": part.qty})
+            recorded.append({"id": None, "part_id": str(_part_uuid), "qty": part.qty})
             continue
         # PR4-billing-capture: this path recorded cost + decremented stock
         # but the part NEVER reached billing. One source-tagged billable
         # checklist row per event (events accumulate; never merged).
-        # job_id normalized to the canonical dashed form so the checklist's
-        # string-equality queries always match (audit round 2).
-        from gdx_dispatch.models.tenant_models import JobPartNeeded
         _pn_now = datetime.now(UTC)
-        db.add(JobPartNeeded(
+        _pn_row = JobPartNeeded(
             id=str(uuid.uuid4()),
             company_id=tenant_id,
             job_id=str(_job_uuid_parts),
@@ -3956,8 +4078,16 @@ def mobile_job_parts_used(
             requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
             created_at=_pn_now,
             updated_at=_pn_now,
-        ))
-        recorded.append({"part_id": part.part_id, "qty": part.qty})
+        )
+        db.add(_pn_row)
+        recorded.append({
+            "id": _pn_row.id,
+            "part_id": str(_part_uuid),
+            "part_name": _pn_row.part_name,
+            "sku": part_obj.sku,
+            "qty": part.qty,
+            "in_inventory": True,
+        })
 
     db.commit()
     _audit_db = locals().get('db')
@@ -3983,6 +4113,119 @@ def mobile_job_parts_used(
         except Exception:
             log.exception('mobile_job_parts_used_audit_failed')
     return jsonable_response({"ok": True, "job_id": job_id, "recorded": len(recorded), "parts": recorded})
+
+
+@router.delete("/jobs/{job_id}/parts-used/{row_id}", response_model=None)
+def mobile_job_parts_used_undo(
+    job_id: str,
+    row_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a part the tech logged as used on this job.
+
+    Live capture is a tap on a phone, so a mis-tap is inevitable — and without
+    this the wrong part is permanent: PATCH /parts-needed/{id} locks the tech
+    out at any status but 'needed', so a used row could only be fixed by the
+    office, after it had already been billed. Deliberately narrow:
+
+    * only source='mobile' rows (this endpoint's own writes) — a closeout
+      attestation is corrected by re-closing out, and a 'request' row is
+      dispatch's;
+    * only while unbilled — a billed row is invoice history, 409;
+    * stock is given back, matching the decrement the POST made, and the
+      job_parts cost row goes with it so job costing doesn't keep a phantom.
+    """
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+
+    tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
+    if not _get_job(db, tenant_id, job_id):
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    try:
+        _job_uuid = _UUID(job_id)
+    except (ValueError, AttributeError):
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    row = db.execute(
+        select(JobPartNeeded).where(
+            JobPartNeeded.id == str(row_id),
+            JobPartNeeded.job_id == str(_job_uuid),
+            JobPartNeeded.source == "mobile",
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return jsonable_response({"detail": "part not found"}, 404)
+    if row.billed_invoice_id is not None:
+        return jsonable_response(
+            {"detail": "This part is already on an invoice — the office has to remove it there."},
+            409,
+        )
+
+    # Read what the audit needs BEFORE the delete: attribute access on a
+    # deleted, committed instance raises, and the audit line would be the
+    # thing that breaks an otherwise-successful undo.
+    qty = int(row.quantity or 0)
+    _row_sku = row.sku
+    _row_name = row.part_name
+
+    # Reverse through the COST ROW this capture wrote, never through the sku.
+    #
+    # The sku route was wrong four ways (adversarial audit, 2026-08-13), all of
+    # them answering 200 OK:
+    #   * a free-text line never decremented anything, but if the office later
+    #     added that sku to inventory the undo CREDITED it — phantom stock;
+    #   * a closeout row for the same part+qty is NEWER, so "newest first"
+    #     deleted the closeout's job_parts row and left the mobile one;
+    #   * renaming the part's sku, or soft-deleting the part, meant no
+    #     give-back at all plus an orphaned cost row.
+    #
+    # job_parts is the record of what was actually debited: no row means no
+    # decrement happened, and the row's own part_id survives a sku edit or a
+    # soft-delete. Matched within a few seconds of the checklist row because
+    # the POST writes both in one request — that is what distinguishes THIS
+    # event from an identical capture ten minutes earlier.
+    _captured_at = row.created_at
+    jp = None
+    if _captured_at is not None:
+        _window = timedelta(seconds=30)
+        jp = db.execute(
+            select(JobPart)
+            .where(
+                JobPart.job_id == _job_uuid,
+                JobPart.qty_used == qty,
+                JobPart.created_at >= _captured_at - _window,
+                JobPart.created_at <= _captured_at + _window,
+            )
+            .order_by(JobPart.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    if jp is not None:
+        # Credit the part the cost row names — by id, so a renamed sku or a
+        # soft-deleted part still gets its stock back.
+        part_obj = db.execute(
+            select(Part).where(Part.id == jp.part_id)
+        ).scalar_one_or_none()
+        if part_obj is not None:
+            part_obj.qty_on_hand = int(part_obj.qty_on_hand or 0) + int(jp.qty_used or qty)
+        else:
+            logging.getLogger(__name__).warning(
+                "mobile_parts_used_undo_part_missing part_id=%s job_id=%s", jp.part_id, job_id
+            )
+        db.delete(jp)
+
+    db.delete(row)
+    db.commit()
+    _audit_mobile(
+        db, request, current_user,
+        action="mobile_job_parts_used_undone",
+        entity_id=str(row_id),
+        details={"job_id": job_id, "part_name": _row_name, "sku": _row_sku, "qty": qty},
+    )
+    return jsonable_response({"ok": True, "job_id": job_id, "removed": str(row_id)})
 
 
 @router.post("/location", response_model=None)

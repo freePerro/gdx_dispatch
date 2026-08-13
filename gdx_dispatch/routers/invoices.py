@@ -5,7 +5,7 @@ import secrets
 import uuid as _uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -261,6 +261,74 @@ def _taxable_subtotal(invoice: Invoice) -> Decimal:
     return total
 
 
+def _validated_attached_photo_ids(
+    db: Session, *, job_id: Any, raw_ids: Any
+) -> list[str]:
+    """The photo ids that may print on this invoice's PDF, or a 422.
+
+    ONE implementation, shared by create and PATCH. Photos print on a document
+    the customer receives, so every id must be a live photo on THIS invoice's
+    job — a stray id would render someone else's premises onto a bill. The
+    create path was added later (2026-08-12); a second, hand-rolled copy of
+    this check there is exactly how the two drift until one of them is wrong.
+    """
+    ids = [str(i) for i in (raw_ids or []) if i]
+    if not ids:
+        return []
+    if job_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="invoice has no job — job photos can only be attached to job-linked invoices",
+        )
+    # Bind UUID objects, not strings — the Uuid column refuses str binds on
+    # the SQLite test path (same trap as closeout/mobile).
+    try:
+        id_uuids = [_uuid.UUID(i) for i in ids]
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="invalid photo id") from None
+    valid = {
+        str(row)
+        for row in db.execute(
+            select(JobPhoto.id).where(
+                JobPhoto.id.in_(id_uuids),
+                JobPhoto.job_id == job_id,
+                JobPhoto.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+    bad = [i for i in ids if i not in valid]
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"photo ids not on this invoice's job: {', '.join(bad[:5])}",
+        )
+
+    # Putting a photo on the customer's bill IS deciding the customer may see
+    # it, so attaching marks it shared (migration 063's customer_visible).
+    # Without this the office would tick a photo, watch it not print, and have
+    # to find a second switch — two decisions for one intent.
+    #
+    # Two consequences, both deliberate, both noted because neither is obvious:
+    #
+    # 1. This publishes with the caller's INVOICE permission, not the job-photo
+    #    one. The photos route requires assert_job_access (dispatch manager or
+    #    the assigned tech); anyone who may edit this invoice can share a photo
+    #    through it. That is the intent — accounting bills, and billing means
+    #    choosing what the customer sees on the bill — but it does mean the
+    #    photo-share decision has two doors with different locks.
+    # 2. It is one-way ON PURPOSE. Detaching a photo (below, and on the PATCH
+    #    path) does NOT un-share it: the office may well have shared it in the
+    #    portal deliberately, and silently revoking that because an invoice line
+    #    changed would be a surprise in the more dangerous direction. Taking a
+    #    photo back is the explicit toggle on the job page.
+    db.execute(
+        update(JobPhoto)
+        .where(JobPhoto.id.in_(id_uuids), JobPhoto.customer_visible.is_(False))
+        .values(customer_visible=True)
+    )
+    return ids
+
+
 def _recalculate_invoice(invoice: Invoice, db: Session) -> None:
     # M1 (money audit 2026-08-04): a totals-locked invoice keeps its header
     # figures. QuickBooks-imported rows have a correct imported total and a
@@ -459,6 +527,12 @@ class InvoiceCreateIn(BaseModel):
             raise ValueError(
                 "line_items[].part_id requires job_id — parts are job-scoped."
             )
+        # Job photos are job-scoped too — a counter-sale invoice has no job
+        # whose photos could be attached.
+        if self.attached_photo_ids and self.job_id is None:
+            raise ValueError(
+                "attached_photo_ids requires job_id — job photos are job-scoped."
+            )
         return self
     # billing_type is enum-ish ("standard"/"recurring"/etc.), short bounded.
     billing_type: str = Field(default="standard", min_length=1, max_length=50)
@@ -494,6 +568,14 @@ class InvoiceCreateIn(BaseModel):
     # billing-real non-deposit invoice 409s unless the operator confirms
     # (the create page re-submits with force=true after a confirm dialog).
     force: bool = False
+    # 2026-08-12 — job photos to print on this invoice's PDF, pickable at
+    # CREATE time. The picker only existed on the invoice detail page, and
+    # only once the invoice was already a draft, so the office building an
+    # invoice on /billing/new had no way to attach the photos the tech took —
+    # prod says the feature had never been used once. Same ids, same cap and
+    # the same ownership validation as the PATCH: every id must be a live
+    # photo on THIS invoice's job.
+    attached_photo_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class InvoicePatchIn(BaseModel):
@@ -919,8 +1001,18 @@ def create_invoice(
         except Exception:
             log.exception("invoice_create_hide_line_prices_resolve_failed")
             invoice_hide_line_prices = False
+    # Validated BEFORE the invoice row exists: a 422 here must not leave a
+    # half-built invoice (and a burned invoice number) behind. Same helper the
+    # PATCH uses — never a second copy of the rule.
+    attached_photo_ids = _validated_attached_photo_ids(
+        db, job_id=payload.job_id, raw_ids=payload.attached_photo_ids
+    )
+
     invoice = Invoice(
         job_id=payload.job_id,
+        # Job photos picked on the create screen (2026-08-12) — printed on the
+        # PDF by pdf.py::_invoice_photos_for_pdf.
+        attached_photo_ids=_json.dumps(attached_photo_ids) if attached_photo_ids else None,
         # Provenance thread for deposit netting + "deposit taken" surfaces:
         # which estimate this invoice was born from (2026-07-23).
         estimate_id=payload.estimate_id,
@@ -1398,38 +1490,9 @@ def patch_invoice(
     if "hide_line_prices" in updates:
         invoice.hide_line_prices = bool(updates["hide_line_prices"])
     if "attached_photo_ids" in updates and updates["attached_photo_ids"] is not None:
-        # Photos print on the PDF, so every id must be a live photo on THIS
-        # invoice's job — a stray id would silently render someone else's
-        # photo onto a customer's bill.
-        ids = [str(i) for i in updates["attached_photo_ids"] if i]
-        if ids and invoice.job_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="invoice has no job — job photos can only be attached to job-linked invoices",
-            )
-        if ids:
-            # Bind UUID objects, not strings — the Uuid column refuses str
-            # binds on the SQLite test path (same trap as closeout/mobile).
-            try:
-                id_uuids = [_uuid.UUID(i) for i in ids]
-            except (ValueError, AttributeError):
-                raise HTTPException(status_code=422, detail="invalid photo id") from None
-            valid = {
-                str(row)
-                for row in db.execute(
-                    select(JobPhoto.id).where(
-                        JobPhoto.id.in_(id_uuids),
-                        JobPhoto.job_id == invoice.job_id,
-                        JobPhoto.deleted_at.is_(None),
-                    )
-                ).scalars()
-            }
-            bad = [i for i in ids if i not in valid]
-            if bad:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"photo ids not on this invoice's job: {', '.join(bad[:5])}",
-                )
+        ids = _validated_attached_photo_ids(
+            db, job_id=invoice.job_id, raw_ids=updates["attached_photo_ids"]
+        )
         invoice.attached_photo_ids = _json.dumps(ids) if ids else None
 
     _recalculate_invoice(invoice, db)

@@ -268,6 +268,52 @@ describe('MobileJobCloseoutDialog', () => {
     });
   });
 
+  // ── Parts logged during the job (Doug 2026-08-12) ──────────────────
+  // Parts can now be recorded while the job is worked, so the closeout is no
+  // longer the first place a part appears. It must SHOW those rows without
+  // pulling them into its own list: they are billable already, and attesting
+  // them again bills the customer twice.
+
+  it('shows parts already logged on the job, and does not re-submit them', async () => {
+    apiGet.mockResolvedValue([
+      { id: 'p1', part_name: 'Torsion spring', quantity: 2, sku: 'SPR-200', status: 'used', source: 'mobile' },
+      { id: 'p2', part_name: 'Cable', quantity: 1, status: 'needed', source: 'request' },
+    ]);
+
+    // Opened, not mounted-open: the existing-parts read rides the visible
+    // watcher, which is how the app uses the dialog.
+    const wrapper = mountDialog({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+
+    const already = wrapper.find('[data-testid="mjco-already-used"]');
+    expect(already.exists()).toBe(true);
+    expect(already.text()).toContain('Torsion spring');
+    // The request row belongs to the order section, not to "parts used".
+    expect(already.text()).not.toContain('Cable');
+
+    // Nothing was copied into the editable rows, so a closeout with no new
+    // parts submits an EMPTY list — the server's gate counts the live rows.
+    apiPost.mockResolvedValue({ ok: true, closeout_id: 'co-6' });
+    await setInput(wrapper, 'mjco-notes', 'Done.');
+    await confirmedSubmit(wrapper);
+    expect(apiPost.mock.calls[0][1].parts).toEqual([]);
+  });
+
+  it('hides the "no parts were used" attestation once parts are logged', async () => {
+    apiGet.mockResolvedValue([
+      { id: 'p1', part_name: 'Torsion spring', quantity: 2, status: 'used', source: 'mobile' },
+    ]);
+
+    const wrapper = mountDialog({ visible: false });
+    await wrapper.setProps({ visible: true });
+    await flushPromises();
+
+    // Attesting "no parts" while billable parts sit on the job is a lie the
+    // form should not be able to tell.
+    expect(wrapper.find('[data-testid="mjco-no-parts-used"]').exists()).toBe(false);
+  });
+
   // ── Return visit + parts to order (Doug 2026-08-04) ────────────────
 
   it('return-visit toggle blocks submit until the why is filled', async () => {

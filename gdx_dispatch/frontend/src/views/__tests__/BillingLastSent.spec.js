@@ -123,7 +123,12 @@ describe('InvoiceDetailView — last-sent stamp', () => {
   it('normalizeInvoice maps payload.sent_at', () => {
     const start = DETAIL.indexOf('invoice.value = {');
     expect(start).toBeGreaterThan(-1);
-    const span = DETAIL.slice(start, start + 1600);
+    // Bound the span on the END of the object literal, not a byte count. The
+    // fixed 1600-char window broke the moment a field was added above this one
+    // (job_id, 2026-08-12) — the normalizer grew, the assertion didn't move,
+    // and a green test turned red for a change it wasn't about.
+    const end = DETAIL.indexOf('\n  };', start);
+    const span = DETAIL.slice(start, end > start ? end : start + 4000);
     expect(span).toMatch(/sent_at:\s*payload\.sent_at/);
   });
 });

@@ -334,3 +334,84 @@ describe('InvoiceCreateView — bulk-fetch query contract', () => {
     expect(calledById).toBe(true);
   });
 });
+
+/**
+ * Job photos on the invoice, picked where the invoice is actually built
+ * (2026-08-12). The picker existed only on the invoice DETAIL page, and only
+ * after the draft was created — production had never recorded a single invoice
+ * with a photo on it. /billing/new is the office's real path, especially the
+ * ?job_id= deep link from Ready-for-Billing.
+ */
+describe('InvoiceCreateView — job photos', () => {
+  const PHOTOS = [
+    { id: 'ph-1', url: '/api/documents/d1/download', kind: 'before' },
+    { id: 'ph-2', url: '/api/documents/d2/download', kind: 'after' },
+  ];
+
+  function withPhotos(photos = PHOTOS, err = null) {
+    const base = apiGet.getMockImplementation();
+    apiGet.mockImplementation((url, ...rest) => {
+      if (String(url).match(/^\/api\/jobs\/[^/]+\/photos$/)) {
+        return err ? Promise.reject(err) : Promise.resolve(photos);
+      }
+      return base(url, ...rest);
+    });
+  }
+
+  it('loads the job photos on the ?job_id= deep link', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    withPhotos();
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    expect(apiGet.mock.calls.map(([u]) => u)).toContain('/api/jobs/job-1/photos');
+    expect(wrapper.find('[data-testid="invoice-create-photos"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="invoice-create-photo-ph-1"]').exists()).toBe(true);
+  });
+
+  it('sends the ticked photos on create', async () => {
+    routeQuery.value = { job_id: 'job-1', customer_id: 'cust-1' };
+    withPhotos();
+    apiPost.mockResolvedValue({ id: 'inv-1' });
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    const box = wrapper.find('[data-testid="invoice-create-photo-ph-2"] input');
+    await box.setValue(true);
+    await flushPromises();
+
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost.mock.calls[0][1].attached_photo_ids).toEqual(['ph-2']);
+  });
+
+  it('says the job has no photos rather than hiding the section', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    withPhotos([]);
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="invoice-create-photos-empty"]').exists()).toBe(true);
+  });
+
+  it('reports a denied photo read instead of showing an empty picker', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    withPhotos(null, Object.assign(new Error('nope'), { status: 404 }));
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    const err = wrapper.find('[data-testid="invoice-create-photos-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain('access');
+  });
+
+  it('offers no picker on a counter sale (no job)', async () => {
+    withPhotos();
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="invoice-create-photos"]').exists()).toBe(false);
+  });
+});

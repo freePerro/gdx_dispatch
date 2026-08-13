@@ -359,3 +359,71 @@ describe('InvoiceDetailView — composer body escapes then linkifies URLs (2026-
     expect(body).toContain('https?:\\/\\/'); // the URL-matching regex is present
   });
 });
+
+/**
+ * The job link on the normalized invoice (2026-08-12).
+ *
+ * Found by driving a real browser, not by a test: `normalizeInvoice` copies
+ * fields explicitly and `job_id` was never among them, so `invoice.job_id` was
+ * permanently undefined. Every consequence followed from that one omission —
+ * the job-photo picker's `v-if` could not be true, and `fetchJobPhotos()`
+ * returned early without ever calling the server. The feature shipped in
+ * v1.44.0 and had rendered for nobody since; production has zero invoices
+ * carrying a photo, which is the same fact seen from the database end.
+ */
+describe('InvoiceDetailView — the invoice keeps its job link', () => {
+  it('normalizes job_id, so job-scoped features can render', async () => {
+    mockApi({
+      id: 'inv-1',
+      invoice_number: 'INV-0001',
+      job_id: 'job-42',
+      customer_id: 'cust-1',
+      status: 'draft',
+      total: 100,
+      lines: [],
+      attached_photo_ids: [],
+    });
+    const w = mountView();
+    await flushPromises();
+
+    // The photo picker is the visible consequence; it renders for any
+    // job-linked invoice now, with an honest empty state when the job has no
+    // photos.
+    expect(w.find('[data-testid="invoice-job-photos"]').exists()).toBe(true);
+    expect(w.find('[data-testid="invoice-photos-empty"]').exists()).toBe(true);
+  });
+
+  it('fetches the job photos once the invoice is loaded', async () => {
+    mockApi({
+      id: 'inv-1',
+      invoice_number: 'INV-0001',
+      job_id: 'job-42',
+      customer_id: 'cust-1',
+      status: 'draft',
+      total: 100,
+      lines: [],
+      attached_photo_ids: [],
+    });
+    mountView();
+    await flushPromises();
+
+    // Before the fix this call never happened: job_id was undefined and
+    // fetchJobPhotos() bailed on its own guard.
+    expect(apiGet.mock.calls.map(([u]) => u)).toContain('/api/jobs/job-42/photos');
+  });
+
+  it('offers no photo card on a counter-sale invoice (no job)', async () => {
+    mockApi({
+      id: 'inv-1',
+      invoice_number: 'INV-0001',
+      job_id: null,
+      customer_id: 'cust-1',
+      status: 'draft',
+      total: 100,
+      lines: [],
+    });
+    const w = mountView();
+    await flushPromises();
+    expect(w.find('[data-testid="invoice-job-photos"]').exists()).toBe(false);
+  });
+});

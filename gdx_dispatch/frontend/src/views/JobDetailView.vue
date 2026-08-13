@@ -724,14 +724,55 @@
               data-testid="job-detail-photo-upload"
             />
           </div>
-          <div v-if="photoDocs.length === 0" class="empty-state"><p>No photos yet.</p></div>
-          <div v-else class="photo-grid">
-            <div v-for="doc in photoDocs" :key="doc.id" class="photo-card">
-              <div class="photo-preview">📷</div>
+          <!-- Three distinct states, because they need three different
+               actions from the person reading them. This tab said "No photos
+               yet" for every photo from every source since it shipped (it
+               filtered documents on `entity_type`, which the API does not
+               send), so an empty box here has to be trustworthy now. -->
+          <div v-if="photosLoading" class="empty-state"><p>Loading photos…</p></div>
+          <div v-else-if="photosError" class="empty-state" data-testid="job-photos-error">
+            <p>{{ photosError }}</p>
+            <Button label="Retry" icon="pi pi-refresh" text @click="fetchJobPhotos" />
+          </div>
+          <div v-else-if="jobPhotos.length === 0" class="empty-state" data-testid="job-photos-empty">
+            <p>No photos on this job yet.</p>
+          </div>
+          <div v-else class="photo-grid" data-testid="job-photos-grid">
+            <div v-for="photo in jobPhotos" :key="photo.id" class="photo-card">
+              <!-- The photo itself, not an emoji. AuthedImage fetches the
+                   bytes with the Bearer token a bare <img src> cannot send. -->
+              <button type="button" class="photo-thumb-btn" @click="openPhoto(photo)">
+                <AuthedImage :src="photo.url" :alt="photo.caption || photo.kind || 'Job photo'" class="photo-thumb">
+                  <template #fallback>
+                    <span class="photo-thumb-failed" data-testid="job-photo-failed">
+                      <i class="pi pi-exclamation-triangle" /> Image unavailable
+                    </span>
+                  </template>
+                </AuthedImage>
+              </button>
               <div class="photo-meta">
-                <p class="photo-name">{{ doc.original_name }}</p>
-                <p class="photo-date">{{ formatDateTime(doc.created_at) }}</p>
-                <Button v-tooltip="'Download document'" icon="pi pi-download" aria-label="Download document" text @click="downloadDocument(doc.id)" />
+                <Tag v-if="photo.kind" :value="photo.kind" severity="info" />
+                <p v-if="photo.caption" class="photo-name">{{ photo.caption }}</p>
+                <p class="photo-date">{{ formatDateTime(photo.uploaded_at) }}</p>
+                <p v-if="photo.uploaded_by" class="photo-date">{{ photo.uploaded_by }}</p>
+                <!-- Share with the customer, per photo, default OFF (Doug
+                     2026-08-12). A tech photographs damage found on arrival,
+                     hazards and other people's messes too; none of that should
+                     reach the customer because someone pressed the shutter.
+                     Sharing here shows the photo in their portal; attaching it
+                     to an invoice shares it as well (same flag, one decision). -->
+                <label class="photo-share" :data-testid="`job-photo-share-${photo.id}`">
+                  <input
+                    type="checkbox"
+                    :checked="photo.customer_visible"
+                    :disabled="photoSharing === photo.id"
+                    @change="togglePhotoShare(photo)"
+                  />
+                  <span :class="{ 'photo-share-on': photo.customer_visible }">
+                    {{ photo.customer_visible ? 'Customer can see this' : 'Internal only' }}
+                  </span>
+                </label>
+                <Button v-tooltip="'Download photo'" icon="pi pi-download" aria-label="Download photo" text @click="downloadPhoto(photo)" />
               </div>
             </div>
           </div>
@@ -787,13 +828,36 @@
             </Column>
           </DataTable>
 
+          <!-- Parts recorded as USED on the job — the billing checklist, which
+               is a different plane from the cost table above: it carries
+               free-text parts that were never inventory rows, and it's what
+               the invoice is built from. Split out 2026-08-12: every one of
+               these rows used to render under "To order" below, so a part the
+               tech had already installed read as an outstanding order. -->
+          <div v-if="partsUsedChecklist.length" class="parts-to-order-block" data-testid="job-detail-parts-used-checklist">
+            <h4 class="parts-subhead">Recorded as used ({{ partsUsedChecklist.length }})</h4>
+            <DataTable :value="partsUsedChecklist" striped-rows responsive-layout="scroll" class="table-small">
+              <Column field="part_name" header="Part" />
+              <Column field="sku" header="SKU" />
+              <Column field="quantity" header="Qty" style="width: 70px" />
+              <Column header="Sell price" style="width: 110px">
+                <template #body="{ data }">{{ data.unit_price != null ? formatCurrency(data.unit_price) : '—' }}</template>
+              </Column>
+              <Column header="Recorded" style="width: 130px">
+                <template #body="{ data }">
+                  <Tag :value="partSourceLabel(data.source)" :severity="data.billed_invoice_id ? 'success' : 'info'" />
+                </template>
+              </Column>
+            </DataTable>
+          </div>
+
           <!-- Parts queued to order (the "+ Order Part" / "Add from Catalog"
                flow). Distinct from Parts Used above (consumption); these carry
                a suggested sell price that flows into the invoice checklist. -->
           <div class="parts-to-order-block" data-testid="job-detail-parts-to-order">
-            <h4 class="parts-subhead">To order ({{ partsNeeded.length }})</h4>
-            <div v-if="!partsNeeded.length" class="muted">Nothing queued to order.</div>
-            <DataTable v-else :value="partsNeeded" striped-rows responsive-layout="scroll" class="table-small">
+            <h4 class="parts-subhead">To order ({{ partsToOrder.length }})</h4>
+            <div v-if="!partsToOrder.length" class="muted">Nothing queued to order.</div>
+            <DataTable v-else :value="partsToOrder" striped-rows responsive-layout="scroll" class="table-small">
               <Column field="part_name" header="Part" />
               <Column field="sku" header="SKU" />
               <Column field="quantity" header="Qty" style="width: 70px" />
@@ -1086,9 +1150,14 @@
       </div>
     </Dialog>
 
-    <Dialog v-model:visible="addPartDialog" header="Add Part" modal :style="{ width: '420px' }">
+    <!-- Records a part as USED on this job, now — not at closeout. Inventory
+         rows decrement stock; anything not stocked records by name, the same
+         way a free-text closeout line does. Before 2026-08-12 the name path
+         didn't exist, so a part that wasn't in inventory could not be recorded
+         here at all. -->
+    <Dialog v-model:visible="addPartDialog" header="Record Part Used" modal :style="{ width: '420px' }">
       <div class="form-field">
-        <label>Part</label>
+        <label>Part from inventory</label>
         <Select
           v-model="addPartForm.part_id"
           :options="inventoryOptions"
@@ -1097,7 +1166,20 @@
           placeholder="Select a part"
           filter
           show-clear
+          data-testid="add-part-select"
         />
+      </div>
+      <div v-if="!addPartForm.part_id" class="form-field">
+        <label>Or type the part *</label>
+        <InputText
+          v-model="addPartForm.name"
+          placeholder="e.g. Torsion spring 2in 27c"
+          data-testid="add-part-name"
+        />
+      </div>
+      <div v-if="!addPartForm.part_id" class="form-field">
+        <label>SKU (optional)</label>
+        <InputText v-model="addPartForm.sku" placeholder="if known" data-testid="add-part-sku" />
       </div>
       <div class="form-field">
         <label>Quantity</label>
@@ -1105,7 +1187,14 @@
       </div>
       <div class="dialog-actions">
         <Button label="Cancel" severity="secondary" text @click="addPartDialog = false" />
-        <Button label="Add" severity="success" @click="savePart" :loading="addingPart" />
+        <Button
+          label="Record"
+          severity="success"
+          :disabled="!addPartForm.part_id && !addPartForm.name.trim()"
+          @click="savePart"
+          :loading="addingPart"
+          data-testid="add-part-submit"
+        />
       </div>
     </Dialog>
 
@@ -1246,6 +1335,7 @@ import Dialog from "primevue/dialog";
 import ProgressSpinner from "primevue/progressspinner";
 import Tag from "primevue/tag";
 import JobStateChip from "../components/JobStateChip.vue";
+import AuthedImage from "../components/AuthedImage.vue";
 import CatalogPickerDialog from "../components/CatalogPickerDialog.vue";
 import DoorSpecList from "../components/DoorSpecList.vue";
 import PhoneInput from "../components/PhoneInput.vue";
@@ -1332,6 +1422,28 @@ const orderPartForm = ref({
 // the job — previously these rows only surfaced in Parts-to-Order + the
 // invoice checklist.
 const partsNeeded = ref([]);
+// job_parts_needed carries two different facts under one endpoint: parts still
+// owed to the job (needed/ordered/received) and parts already consumed
+// (used). Rendering them in one "To order" table labelled every installed part
+// as an outstanding order — wrong on the screen the office bills from.
+const partsToOrder = computed(() =>
+  partsNeeded.value.filter((p) => p.status !== "used" && p.status !== "wont_bill"),
+);
+const partsUsedChecklist = computed(() =>
+  partsNeeded.value.filter((p) => p.status === "used"),
+);
+// Where the used row came from, in the office's words rather than the
+// database's. 'van' = pulled off a truck's stock, 'mobile' = the tech logged it
+// on the job, 'closeout' = attested at completion.
+const PART_SOURCE_LABELS = {
+  mobile: "on the job",
+  closeout: "at closeout",
+  van: "van stock",
+  request: "requested",
+};
+function partSourceLabel(source) {
+  return PART_SOURCE_LABELS[source] || source || "recorded";
+}
 const catalogPickerVisible = ref(false);
 const addingCatalogParts = ref(false);
 const addingPart = ref(false);
@@ -1442,7 +1554,49 @@ const pickedLocationLabel = computed(() => pickedLocation.value?.label || null);
 const pickedLocationAddressMissing = computed(
   () => Boolean(pickedLocation.value) && !pickedLocation.value.address,
 );
-const photoDocs = computed(() => documents.value.filter((doc) => doc.entity_type === "job_photo"));
+// Job photos come from job_photos — the record every other photo surface
+// already reads (the Photos page, the invoice picker, the mobile job screen).
+// See core/job_photos.py: "Documents hold the bytes; job_photos is the photo."
+//
+// This tab used to filter `documents` on `doc.entity_type === "job_photo"`, a
+// field DocumentOut has never serialized, so the filter was never true and the
+// tab was empty for every photo ever taken. Worse, it was structurally
+// unreachable: the only writer that sets entity_type='job_photo' does not set
+// documents.job_id, and this page queries documents BY job_id — so no row could
+// satisfy both conditions at once. Reading the photo record ends the whole
+// class of bug rather than patching the filter.
+const jobPhotos = ref([]);
+const photosLoading = ref(false);
+const photosError = ref("");
+// id of the photo whose share state is mid-flight, so its checkbox can't be
+// double-fired while the PATCH is in the air.
+const photoSharing = ref(null);
+
+/**
+ * Share a photo with the customer, or take it back.
+ *
+ * Optimistic on purpose — a checkbox that waits on the network reads as
+ * broken — but it ROLLS BACK on failure. Silently keeping the new state after
+ * a failed PATCH would tell the office a customer can see a photo they can't,
+ * or worse, that an internal photo is withheld when it is still shared.
+ */
+async function togglePhotoShare(photo) {
+  if (photoSharing.value) return;
+  const next = !photo.customer_visible;
+  photoSharing.value = photo.id;
+  photo.customer_visible = next;
+  try {
+    await api.patch(
+      `/api/jobs/${route.params.id}/photos/${photo.id}`,
+      { customer_visible: next },
+      { successMessage: next ? "Shared with the customer" : "Hidden from the customer" },
+    );
+  } catch {
+    photo.customer_visible = !next;
+  } finally {
+    photoSharing.value = null;
+  }
+}
 // Everything filed on this job that isn't a photo or the signature — which is
 // where an email attachment saved with "Save to job" lands.
 const jobFiles = computed(() =>
@@ -1576,6 +1730,7 @@ async function refreshRelated() {
     fetchRelatedInvoices(),
     fetchTimeEntries(),
     fetchDocuments(),
+    fetchJobPhotos(),
     fetchActivity(),
     fetchNotes(),
     fetchCosting(),
@@ -1664,6 +1819,31 @@ async function fetchDocuments() {
     documents.value = Array.isArray(data) ? data : data?.items || [];
   } catch {
     documents.value = [];
+  }
+}
+
+/**
+ * The job's photos, from the photo record.
+ *
+ * Failure is surfaced, never swallowed into an empty list: "no photos" and
+ * "couldn't load photos" ask the reader for different things, and this tab
+ * spent its whole life telling everyone the first one.
+ */
+async function fetchJobPhotos() {
+  photosLoading.value = true;
+  photosError.value = "";
+  try {
+    const data = await api.get(`/api/jobs/${route.params.id}/photos`, { suppressErrorToast: true });
+    jobPhotos.value = Array.isArray(data) ? data : [];
+  } catch (err) {
+    jobPhotos.value = [];
+    // 403/404 here is the access gate, not an empty job — say so rather than
+    // reporting "no photos" to someone who simply isn't allowed to see them.
+    photosError.value = (err?.status === 403 || err?.status === 404)
+      ? "You don't have access to this job's photos."
+      : "Couldn't load photos.";
+  } finally {
+    photosLoading.value = false;
   }
 }
 
@@ -2147,12 +2327,38 @@ async function handlePhotoUpload(event) {
   try {
     await api.request(`/api/jobs/${route.params.id}/photos`, { method: "POST", body: formData });
     toast.add({ severity: "success", summary: "Photo uploaded", life: 2500 });
-    await fetchDocuments();
+    // Refetch PHOTOS, not documents. Refetching documents was the old bug's
+    // second half: the upload route doesn't set documents.job_id, so the row
+    // never came back and the office watched its own upload disappear.
+    await fetchJobPhotos();
   } catch {
   } finally {
     event.options?.clear?.();
     event.clear?.();
   }
+}
+
+async function downloadPhoto(photo) {
+  // photo.url is already the authed download route for the underlying
+  // document; opening it in a tab lets the browser's own auth-less GET 401.
+  // Fetch with the token and hand the browser a blob instead — same trick
+  // AuthedImage uses for the thumbnail.
+  try {
+    let token = null;
+    try { token = sessionStorage.getItem("gdx_access_token") || null; } catch { /* private mode */ }
+    const resp = await fetch(photo.url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blobUrl = URL.createObjectURL(await resp.blob());
+    window.open(blobUrl, "_blank", "noopener");
+    // Revoke on the next tick — the new tab has already claimed the blob.
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  } catch {
+    toast.add({ severity: "error", summary: "Could not open photo", life: 3000 });
+  }
+}
+
+function openPhoto(photo) {
+  downloadPhoto(photo);
 }
 
 async function downloadDocument(id) {
@@ -2277,12 +2483,15 @@ function openInvoice(id) {
 async function openAddPart() {
   if (!inventoryItems.value.length) {
     try {
-      inventoryItems.value = Array.isArray(await api.get("/api/inventory/items")) ? await api.get("/api/inventory/items") : [];
+      // One request, not two: the previous form called the endpoint inside the
+      // ternary AND again in the branch, throwing the first response away.
+      const rows = await api.get("/api/inventory/items");
+      inventoryItems.value = Array.isArray(rows) ? rows : [];
     } catch {
       inventoryItems.value = [];
     }
   }
-  addPartForm.value = { part_id: null, quantity: 1 };
+  addPartForm.value = { part_id: null, name: "", sku: "", quantity: 1 };
   addPartDialog.value = true;
 }
 
@@ -2377,17 +2586,25 @@ async function openApplyTemplate() {
 }
 
 async function savePart() {
-  if (!addPartForm.value.part_id || addPartForm.value.quantity <= 0) {
-    toast.add({ severity: "warn", summary: "Select part and quantity" });
+  const name = (addPartForm.value.name || "").trim();
+  if ((!addPartForm.value.part_id && !name) || addPartForm.value.quantity <= 0) {
+    toast.add({ severity: "warn", summary: "Pick a part (or type one) and a quantity" });
     return;
   }
   addingPart.value = true;
   try {
     await api.post(`/api/mobile/jobs/${route.params.id}/parts-used`, {
-      parts: [{ part_id: addPartForm.value.part_id, qty: Number(addPartForm.value.quantity) }],
+      parts: [{
+        part_id: addPartForm.value.part_id || null,
+        name: addPartForm.value.part_id ? null : name,
+        sku: addPartForm.value.part_id ? null : ((addPartForm.value.sku || "").trim() || null),
+        qty: Number(addPartForm.value.quantity),
+      }],
     }, { successMessage: "Part recorded" });
     addPartDialog.value = false;
-    await fetchCosting();
+    // Both views move: job_parts drives costing, job_parts_needed drives the
+    // parts checklist the office bills from.
+    await Promise.all([fetchCosting(), fetchPartsNeeded()]);
   } catch {
   } finally {
     addingPart.value = false;
@@ -2588,9 +2805,30 @@ onMounted(async () => {
 .note-meta { font-size: 0.8rem; color: var(--p-text-muted-color); }
 .note-body { margin: 0.4rem 0 0; }
 .photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
-.photo-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; display: flex; gap: 0.75rem; }
-.photo-preview { font-size: 2rem; }
+.photo-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .photo-meta { display: flex; flex-direction: column; gap: 0.25rem; }
+/* The thumbnail is the control — clicking the photo opens it full size, which
+   is what everyone tries first. Both tokens are theme variables so the frame
+   holds in dark mode. */
+.photo-thumb-btn {
+  display: block; width: 100%; padding: 0; cursor: pointer;
+  border: 0; background: none;
+}
+.photo-thumb-btn :deep(img) {
+  width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block;
+  border-radius: 6px; background: var(--surface-subtle);
+}
+/* The share control reads as a state, not just a checkbox: "Internal only" is
+   the default and has to be legible at a glance on a wall of thumbnails. */
+.photo-share { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; cursor: pointer; }
+.photo-share input { cursor: pointer; }
+.photo-share-on { color: var(--p-green-600, #16a34a); font-weight: 600; }
+.photo-thumb-failed {
+  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+  width: 100%; aspect-ratio: 4 / 3; border-radius: 6px;
+  background: var(--surface-subtle); color: var(--p-text-muted-color);
+  font-size: 0.8rem;
+}
 .signature-card .signature-preview { display: flex; justify-content: space-between; align-items: center; }
 .signature-canvas-wrap { width: 100%; min-height: 240px; border: 1px dashed var(--border); border-radius: 8px; padding: 0.5rem; background: var(--surface-subtle); }
 .signature-canvas { width: 100%; height: 220px; display: block; }

@@ -1045,6 +1045,16 @@ class JobPhoto(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=True)
     caption: Mapped[str] = mapped_column(String(500), nullable=True)
     uploaded_by: Mapped[str] = mapped_column(String(200), nullable=True)
+    # May the CUSTOMER see this photo? (migration 063, Doug 2026-08-12:
+    # "per photo default off"). Gates every customer-facing surface — the
+    # portal gallery, the /pay page strip and the invoice PDF — from one
+    # column, so those three can never disagree about a photo the office
+    # meant to keep internal. Default False: a tech also shoots damage found
+    # on arrival, hazards, and other people's messes, and none of that
+    # reaches the customer because someone pressed the shutter.
+    customer_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

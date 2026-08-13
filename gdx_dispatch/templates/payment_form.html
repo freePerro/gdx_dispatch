@@ -55,6 +55,41 @@
       margin-bottom: 1.5rem;
     }
 
+    /* Job photos the office attached to this invoice. Inlined as data: URIs by
+       the handler — no public image route exists, and none should: the pay
+       page is anonymous by design, so every extra open endpoint is another
+       surface to scope correctly. */
+    .job-photos { margin: -0.75rem 0 1.5rem; }
+    .job-photos h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 0 0 0.5rem;
+    }
+    .job-photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 0.6rem;
+    }
+    .job-photo figure { margin: 0; }
+    .job-photo img {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+      background: #f1f5f9;
+      display: block;
+    }
+    .job-photo figcaption {
+      font-size: 0.7rem;
+      color: #64748b;
+      margin-top: 0.25rem;
+      word-break: break-word;
+    }
+
     .invoice-summary h2 {
       font-size: 0.75rem;
       font-weight: 600;
@@ -251,6 +286,27 @@
     <div class="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
     {% endif %}
   </div>
+
+  <!-- The work being paid for (2026-08-12). These are the photos the office
+       attached to this invoice — the same set the PDF prints — shown on the
+       page the customer actually opens. Rendered above the payment form on
+       purpose: "here is what we did" belongs before "here is the card
+       field". -->
+  {% if job_photos %}
+  <div class="job-photos" data-testid="pay-job-photos">
+    <h2>Photos from this job</h2>
+    <div class="job-photo-grid">
+      {% for photo in job_photos %}
+      <div class="job-photo">
+        <figure>
+          <img src="{{ photo.src }}" alt="{{ photo.label or 'Job photo' }}" loading="lazy" />
+          {% if photo.label %}<figcaption>{{ photo.label }}</figcaption>{% endif %}
+        </figure>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {% if invoice.status == "paid" %}
   <div class="alert success visible">This invoice has already been paid. Thank you!</div>

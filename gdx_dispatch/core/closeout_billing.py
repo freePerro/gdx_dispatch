@@ -184,10 +184,19 @@ def build_closeout_lines(
         lines_added += 1
         sort += 1
 
+    # Every UNBILLED priced part on the job, not just the closeout-attested
+    # ones (2026-08-13). Parts can now be logged as they are installed
+    # (source='mobile'/'van'), and the closeout's require-parts gate accepts
+    # those rows as evidence the job used parts — so a tech who logs three
+    # springs as they go and then closes out was getting an invoice with the
+    # labor and NONE of the parts, silently: they are not source='closeout',
+    # so this builder skipped them and the unpriced-parts warning counted zero.
+    # If a row is good enough to satisfy the completion gate it is good enough
+    # to bill, and the claim-then-copy below is still the double-bill guard.
     candidate_rows = db.execute(
         select(JobPartNeeded).where(
             JobPartNeeded.job_id == str(job_id),
-            JobPartNeeded.source == "closeout",
+            JobPartNeeded.source.in_(("closeout", "mobile", "van")),
             JobPartNeeded.billed_invoice_id.is_(None),
             JobPartNeeded.unit_price.is_not(None),
             JobPartNeeded.unit_price > 0,

@@ -16,11 +16,26 @@ import { join } from 'node:path';
 const SRC = readFileSync(join(__dirname, '..', 'InvoiceDetailView.vue'), 'utf8');
 
 describe('InvoiceDetailView — job photo picker', () => {
-  it('renders the picker card for job-linked invoices with photos', () => {
+  it('renders the picker card for every job-linked invoice, photos or not', () => {
+    // 2026-08-12: this used to require `&& jobPhotos.length`, so the card
+    // vanished whenever the list came back empty — and it came back empty both
+    // for a job with no photos AND for a read that failed or was denied. "There
+    // is no way to add photos to an invoice" was the only available reading.
     const idx = SRC.indexOf('data-testid="invoice-job-photos"');
     expect(idx).toBeGreaterThan(-1);
     const before = SRC.slice(Math.max(0, idx - 300), idx);
-    expect(before).toMatch(/v-if="invoice\.job_id && jobPhotos\.length"/);
+    expect(before).toMatch(/v-if="invoice\.job_id"/);
+    expect(before).not.toMatch(/jobPhotos\.length"/);
+  });
+
+  it('names which of the three empty states it is in', () => {
+    const card = SRC.slice(SRC.indexOf('data-testid="invoice-job-photos"'));
+    const cardBody = card.slice(0, 2500);
+    // "no photos on this job" and "you can't see this job's photos" are
+    // different answers; the picker used to render neither.
+    expect(cardBody).toMatch(/data-testid="invoice-photos-empty"/);
+    expect(cardBody).toMatch(/data-testid="invoice-photos-error"/);
+    expect(SRC).toMatch(/jobPhotosError\.value = \(err\?\.status === 403 \|\| err\?\.status === 404\)/);
   });
 
   it('uses AuthedImage for thumbnails (Bearer-gated downloads)', () => {

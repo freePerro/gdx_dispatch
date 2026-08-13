@@ -265,26 +265,75 @@
 
       <div class="detail-card">
         <h2>Parts</h2>
-        <ul v-if="parts.length" class="part-list" data-testid="mjd-part-list">
-          <li v-for="p in parts" :key="p.id">
-            <div class="part-main">
-              <span class="part-name">{{ p.part_name }}</span>
-              <span class="part-qty">×{{ p.quantity || 1 }}</span>
-            </div>
-            <div class="part-meta">
-              <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
-              <span v-if="p.urgency === 'urgent'" class="part-urgent">urgent</span>
-              <span v-if="p._failed" class="failed-flag">
-                <i class="pi pi-exclamation-triangle" /> didn't send
-              </span>
-              <span v-else-if="p._pending" class="pending-flag">
-                <i class="pi pi-cloud-upload" /> waiting for signal
-              </span>
-              <span v-else class="part-status">{{ p.status || 'needed' }}</span>
-            </div>
-          </li>
-        </ul>
-        <div v-else class="detail-meta detail-meta-muted">No parts requested yet.</div>
+
+        <!-- Installed on this job, logged as the work happens (2026-08-12).
+             Listed FIRST and apart from requests: "I put this in" and "please
+             order me this" are different facts, and the old card could only
+             say the second one — parts used had to wait for the closeout
+             form, so a tech either held them in their head all afternoon or
+             typed them into a note, where nothing bills them. -->
+        <div v-if="usedParts.length" class="part-group" data-testid="mjd-used-list">
+          <h3 class="part-group-title">Installed on this job</h3>
+          <ul class="part-list">
+            <li v-for="p in usedParts" :key="p.id">
+              <div class="part-main">
+                <span class="part-name">{{ p.part_name }}</span>
+                <span class="part-qty">×{{ p.quantity || 1 }}</span>
+              </div>
+              <div class="part-meta">
+                <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
+                <span v-if="p._failed" class="failed-flag">
+                  <i class="pi pi-exclamation-triangle" /> didn't send
+                </span>
+                <span v-else-if="p._pending" class="pending-flag">
+                  <i class="pi pi-cloud-upload" /> waiting for signal
+                </span>
+                <span v-else-if="p.billed_invoice_id" class="part-status">billed</span>
+                <span v-else class="part-status part-status-used">used</span>
+                <!-- Undo, while the office hasn't billed it. A tap on a phone
+                     mis-taps; without this the wrong part rides all the way to
+                     the customer's invoice. -->
+                <button
+                  v-if="!readOnly && !p._pending && !p._failed && !p.billed_invoice_id"
+                  type="button"
+                  class="part-undo"
+                  :disabled="partUndoBusy === p.id"
+                  data-testid="mjd-part-undo"
+                  @click="undoUsedPart(p)"
+                >
+                  <i class="pi pi-times" /> Remove
+                </button>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="requestedParts.length" class="part-group" data-testid="mjd-part-list">
+          <h3 v-if="usedParts.length" class="part-group-title">Requested</h3>
+          <ul class="part-list">
+            <li v-for="p in requestedParts" :key="p.id">
+              <div class="part-main">
+                <span class="part-name">{{ p.part_name }}</span>
+                <span class="part-qty">×{{ p.quantity || 1 }}</span>
+              </div>
+              <div class="part-meta">
+                <span v-if="p.sku" class="part-sku">{{ p.sku }}</span>
+                <span v-if="p.urgency === 'urgent'" class="part-urgent">urgent</span>
+                <span v-if="p._failed" class="failed-flag">
+                  <i class="pi pi-exclamation-triangle" /> didn't send
+                </span>
+                <span v-else-if="p._pending" class="pending-flag">
+                  <i class="pi pi-cloud-upload" /> waiting for signal
+                </span>
+                <span v-else class="part-status">{{ p.status || 'needed' }}</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="!parts.length" class="detail-meta detail-meta-muted">
+          No parts logged or requested yet.
+        </div>
 
         <div v-if="!readOnly" class="part-add">
           <!-- Catalog chips, straight from /api/catalogs — never a hardcoded
@@ -364,18 +413,41 @@
               <template #incrementbuttonicon><i class="pi pi-plus" /></template>
               <template #decrementbuttonicon><i class="pi pi-minus" /></template>
             </InputNumber>
+            <!-- Urgency belongs to an ORDER, not to a part already in the
+                 door: Request sends it, "Used it" ignores it. The composer
+                 serves both verbs, so the control stays put and the label
+                 says which one it's for rather than appearing and vanishing
+                 under the tech's thumb. -->
             <div class="urgent-toggle">
               <Checkbox v-model="partUrgent" input-id="mjd-part-urgent" binary />
-              <label for="mjd-part-urgent">Urgent</label>
+              <label for="mjd-part-urgent">Urgent (request)</label>
             </div>
-            <Button
-              label="Request"
-              icon="pi pi-plus"
-              size="small"
-              :loading="partBusy"
-              data-testid="mjd-part-add"
-              @click="addPart"
-            />
+            <!-- Two verbs, because the tech is answering two different
+                 questions. "Used" is the one that was missing: it records the
+                 part against the job now, and it's already billable — no
+                 waiting for the closeout form. -->
+            <div class="part-verbs">
+              <Button
+                label="Used it"
+                icon="pi pi-check"
+                size="small"
+                :loading="partUsedBusy"
+                :disabled="partBusy"
+                data-testid="mjd-part-used"
+                @click="addPartUsed"
+              />
+              <Button
+                label="Request"
+                icon="pi pi-plus"
+                size="small"
+                severity="secondary"
+                outlined
+                :loading="partBusy"
+                :disabled="partUsedBusy"
+                data-testid="mjd-part-add"
+                @click="addPart"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -651,11 +723,25 @@ async function saveContactForm() {
 
 const partQuery = ref('')
 const partSku = ref(null)
+// Only an inventory-sourced suggestion carries a real parts.id. Catalog rows
+// (custom catalogs, CHI feeds) have none — those record as free text, exactly
+// like a free-text closeout line. Sending a catalog id here would violate
+// job_parts.part_id's FK to parts.id.
+const partPartId = ref(null)
 const partQty = ref(1)
 const partUrgent = ref(false)
 const partBusy = ref(false)
+const partUsedBusy = ref(false)
+const partUndoBusy = ref(null)
 const partSearching = ref(false)
 const partSuggestions = ref([])
+
+// The card's two answers, split by which write made the row. 'mobile' is this
+// screen's live-capture write; 'request' is the order queue. The server sends
+// only those two sources (mobile.py) — a closeout's own rows are deliberately
+// not here, because a re-closeout rewrites them under the tech.
+const usedParts = computed(() => parts.value.filter((p) => p.source === 'mobile'))
+const requestedParts = computed(() => parts.value.filter((p) => p.source !== 'mobile'))
 // One screenful and a bit. The list scrolls inside itself; a tech narrows with
 // the search box rather than thumbing a whole catalog.
 const BROWSE_PAGE_SIZE = 25
@@ -981,7 +1067,19 @@ function pickCatalog(id) {
 function pickPart(s) {
   partQuery.value = s.name || s.sku || ''
   partSku.value = s.sku || null
+  // See partPartId: inventory rows only. A catalog row's id is not a parts.id.
+  partPartId.value = s.source === 'parts' ? (s.part_id || null) : null
   partSuggestions.value = []
+}
+
+function clearPartComposer() {
+  partQuery.value = ''
+  partSku.value = null
+  partPartId.value = null
+  partQty.value = 1
+  partUrgent.value = false
+  partSuggestions.value = []
+  partCatalogId.value = null
 }
 
 async function addPart() {
@@ -1020,16 +1118,86 @@ async function addPart() {
       await refresh()
       toast.add({ severity: 'success', summary: 'Part requested', life: 2500 })
     }
-    partQuery.value = ''
-    partSku.value = null
-    partQty.value = 1
-    partUrgent.value = false
-    partSuggestions.value = []
-    partCatalogId.value = null
+    clearPartComposer()
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Could not request part', detail: err?.message || '', life: 4000 })
   } finally {
     partBusy.value = false
+  }
+}
+
+/**
+ * Log a part the tech has ALREADY installed, mid-job.
+ *
+ * The write that was missing (Doug 2026-08-12): parts used could only be
+ * entered in the closeout form, so everything installed before the last five
+ * minutes of the job had to be remembered — or typed into a note, where
+ * nothing orders, counts, or bills it.
+ *
+ * Same billable spine as the closeout (job_parts_needed, status='used'), but
+ * tagged source='mobile' so the two can't collide: a re-closeout replaces only
+ * its OWN unbilled rows, and the closeout's require-parts gate counts these,
+ * so nothing here has to be re-typed at completion.
+ *
+ * Queued like every other write on this screen — techs work in dead zones.
+ */
+async function addPartUsed() {
+  const name = partQuery.value.trim()
+  if (!name || partUsedBusy.value) return
+  partUsedBusy.value = true
+  // Same clamp rationale as addPart: `:max` only clamps on blur, so the bound
+  // belongs on the path that sends the value.
+  const qty = Math.min(99, Math.max(1, Math.trunc(Number(partQty.value) || 1)))
+  try {
+    const r = await api.postQueued(
+      `/api/mobile/jobs/${job.value.id}/parts-used`,
+      { parts: [{ part_id: partPartId.value, name, sku: partSku.value, qty }] },
+      { actionType: 'job.part_used', resourceId: String(job.value.id) },
+    )
+    if (r?.queued) {
+      parts.value = [
+        ...parts.value,
+        {
+          id: `pending-${r.idempotency_key}`,
+          part_name: name,
+          sku: partSku.value,
+          quantity: qty,
+          status: 'used',
+          source: 'mobile',
+          _pending: true,
+          _key: r.idempotency_key,
+        },
+      ]
+      toast.add({ severity: 'info', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
+    } else {
+      await refresh()
+      toast.add({ severity: 'success', summary: 'Part logged', detail: `${name} ×${qty}`, life: 2500 })
+    }
+    clearPartComposer()
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not log part', detail: err?.message || '', life: 4000 })
+  } finally {
+    partUsedBusy.value = false
+  }
+}
+
+/**
+ * Take back a part logged by mistake. Not queued: this is a correction the
+ * tech is watching, and a queued delete of a row the server may not have yet
+ * is a race with no honest UI. Offline it fails loudly and stays on the list.
+ */
+async function undoUsedPart(p) {
+  if (!p?.id || partUndoBusy.value) return
+  partUndoBusy.value = p.id
+  try {
+    await api.del(`/api/mobile/jobs/${job.value.id}/parts-used/${p.id}`)
+    parts.value = parts.value.filter((row) => row.id !== p.id)
+    toast.add({ severity: 'success', summary: 'Removed', detail: p.part_name || '', life: 2500 })
+    await refresh()
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not remove part', detail: err?.message || '', life: 4000 })
+  } finally {
+    partUndoBusy.value = null
   }
 }
 
@@ -1241,6 +1409,24 @@ onMounted(() => {
   letter-spacing: 0.02em;
 }
 .part-status { text-transform: capitalize; }
+/* Installed reads as settled, not as another thing waiting on the office.
+   Both tokens are theme variables, so this holds in dark mode too. */
+.part-status-used { color: var(--p-green-600, #16a34a); font-weight: 600; }
+
+.part-group + .part-group { margin-top: 0.9rem; }
+.part-group-title {
+  margin: 0 0 0.4rem; font-size: 0.78rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--p-text-muted-color, #9ca3af);
+}
+/* 44px tap floor like every other control on this screen — this one undoes a
+   billable row, so a near-miss is expensive. */
+.part-undo {
+  margin-left: auto; min-height: 44px; padding: 0 0.5rem; cursor: pointer;
+  border: 0; background: none; font: inherit; font-size: 0.75rem;
+  color: var(--p-red-500, #ef4444);
+}
+.part-undo:disabled { opacity: 0.5; }
 
 .part-add { display: flex; flex-direction: column; gap: 0.5rem; }
 /* Chips scroll sideways rather than wrapping into a wall: the count is tenant
@@ -1290,6 +1476,10 @@ onMounted(() => {
 .urgent-toggle { display: flex; align-items: center; gap: 0.4rem; min-height: 44px; }
 .urgent-toggle label { font-size: 0.9rem; }
 .part-controls :deep(.p-button) { min-height: 44px; }
+/* Both verbs stay on one row and never shrink below the tap floor; on a narrow
+   phone they wrap together rather than splitting across the controls row. */
+.part-verbs { display: flex; gap: 0.5rem; flex: 1 1 auto; }
+.part-verbs :deep(.p-button) { flex: 1 1 auto; justify-content: center; }
 
 .deposit-banner {
   display: flex; align-items: center; gap: 0.5rem;
