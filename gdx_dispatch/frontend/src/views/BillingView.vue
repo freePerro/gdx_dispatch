@@ -1452,7 +1452,15 @@ function createSupplemental(item) {
 
 function openPaymentDialog(inv) {
   paymentTarget.value = inv;
-  newPayment.value = { amount: 0, method: "Cash", reference: "", date: todayKey() };
+  // Prefill the balance instead of 0 — this dialog literally renders
+  // "Balance Due: $X" directly above the field it made the operator retype.
+  const balance = Number(inv?.balance_due ?? inv?.total ?? 0);
+  newPayment.value = {
+    amount: balance > 0 ? balance : 0,
+    method: "Cash",
+    reference: "",
+    date: todayKey(),
+  };
   showPaymentDialog.value = true;
 }
 

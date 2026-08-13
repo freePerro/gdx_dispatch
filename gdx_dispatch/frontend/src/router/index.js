@@ -380,7 +380,24 @@ export const routes = [
   { path: '/mobile/timeclock', name: 'mobile-timeclock', component: MobileTimeclockView, meta: { noSidebar: true } },
   { path: '/mobile/inbox', name: 'mobile-inbox', component: MobileInboxView, meta: { noSidebar: true } },
   { path: '/mobile/estimates', name: 'mobile-estimates', component: MobileEstimatesView, meta: { noSidebar: true } },
-  { path: '/mobile/billing', name: 'mobile-billing', component: MobileBillingView, meta: { noSidebar: true, requiresPermission: 'invoices.read_all' } },
+  // No invoices.read_all gate: technicians have NO invoices permission at all,
+  // so this screen was unreachable for the field tier that needs it at a
+  // customer's door.
+  //
+  // What actually protects the data, precisely: the LIST endpoints are gated
+  // (`GET /api/invoices` and `/api/invoices/summary` both 403 a technician),
+  // and techs instead read /api/mobile/invoices/open, which scopes rows to
+  // their own jobs server-side. The single-invoice endpoints
+  // (`GET /api/invoices/{id}`, `/send`, `/payments`) carry NO permission
+  // dependency — a known pre-existing gap, not closed here. Scoping therefore
+  // rests on the list never handing a tech someone else's invoice id.
+  //
+  // Consequence to keep in mind when editing the view: dropping the meta also
+  // dropped the router guard's `await loadPermissions()`, so on a cold load
+  // permissions are NOT resolved at mount. MobileBillingView awaits them
+  // itself before choosing which list to read — without that, an office user
+  // is briefly indistinguishable from a tech and gets served an empty list.
+  { path: '/mobile/billing', name: 'mobile-billing', component: MobileBillingView, meta: { noSidebar: true } },
   { path: '/mobile/inventory', name: 'mobile-inventory', component: MobileInventoryView, meta: { noSidebar: true } },
   { path: '/mobile/door-listings', name: 'mobile-door-listings', component: MobileDoorListingsView, meta: { noSidebar: true } },
   { path: '/mobile/parts-to-order', name: 'mobile-parts-to-order', component: MobilePartsToOrderView, meta: { noSidebar: true } },

@@ -20,6 +20,7 @@ import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import PaymentCaptureForm from './PaymentCaptureForm.vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -60,9 +61,68 @@ const declineNotes = ref('')
 // back and let the office collect later.
 const collectDeposit = ref(false)
 const depositDue = ref(null)
+// Tech-side capture, shown only after the customer's half is done.
+const payOpen = ref(false)
+const payBusy = ref(false)
+const depositOwes = computed(() => {
+  const d = depositDue.value
+  if (!d) return false
+  return Number(d.balance_due ?? d.amount ?? 0) > 0
+})
+
+/**
+ * Record cash/check the tech took at the door, against the deposit invoice the
+ * accept just minted. postQueued so a dead-signal driveway cannot lose it;
+ * conflictIsError so a business 409 reaches the tech instead of being filed as
+ * synced.
+ */
+async function recordDepositPayment(payload) {
+  const d = depositDue.value
+  if (!d?.invoice_id || payBusy.value) return
+  payBusy.value = true
+  try {
+    const r = await api.postQueued(`/api/invoices/${d.invoice_id}/payments`, payload, {
+      actionType: 'invoice.payment',
+      resourceId: String(d.invoice_id),
+      conflictIsError: true,
+    })
+    if (r?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Payment saved offline',
+        detail: 'No signal — it will post when you reconnect.',
+        life: 5000,
+      })
+    } else {
+      toast.add({ severity: 'success', summary: 'Payment recorded', life: 2500 })
+    }
+    depositDue.value = { ...d, balance_due: 0, status: 'paid' }
+    payOpen.value = false
+  } catch (err) {
+    // A duplicate 409 means the money IS on the invoice — the opposite of every
+    // other 409 here. Rendering it as "Payment failed" is what makes a tech
+    // holding a customer's check record it a second time once the dedupe
+    // window closes, which is the exact double-charge the window exists to
+    // prevent. Treat it as done.
+    if (err?.code === 'duplicate_payment') {
+      toast.add({
+        severity: 'info',
+        summary: 'Already recorded',
+        detail: 'This payment is already on the deposit — nothing was added.',
+        life: 5000,
+      })
+      depositDue.value = { ...d, balance_due: 0, status: 'paid' }
+      payOpen.value = false
+    } else {
+      toast.add({ severity: 'error', summary: 'Payment failed', detail: err.message, life: 6000 })
+    }
+  } finally {
+    payBusy.value = false
+  }
+}
 
 watch(() => props.visible, (v) => {
-  if (v) { depositDue.value = null; collectDeposit.value = false }
+  if (v) { depositDue.value = null; collectDeposit.value = false; payOpen.value = false }
   if (v && props.quote?.tiers?.length) {
     // Default to "better" (middle tier) — sales-data common default.
     const better = props.quote.tiers.find(t => t.tier_name === 'better')
@@ -224,6 +284,37 @@ async function submitDecline() {
       <p v-if="!depositDue.pay_url" class="muted" style="margin-top:.5rem;">
         Card payment isn't set up — the office will collect the deposit.
       </p>
+
+      <!-- TECH step. The customer has signed and handed the device back; a
+           customer must never be able to attest their own cash payment, so
+           this half is labelled as the tech's and sits below the customer's
+           card/pay-later choice. -->
+      <div v-if="depositOwes" class="tech-pay-step" data-testid="mobile-deposit-tech-pay">
+        <p class="tech-pay-label">Tech — did they pay you cash or a check?</p>
+        <Button
+          v-if="!payOpen"
+          label="Record cash / check"
+          icon="pi pi-dollar"
+          severity="success"
+          text
+          data-testid="mobile-deposit-pay-open"
+          @click="payOpen = true"
+        />
+        <PaymentCaptureForm
+          v-else
+          :balance-due="Number(depositDue.balance_due ?? depositDue.amount) || 0"
+          :methods="['Cash', 'Check']"
+          variant="mobile"
+          standalone
+          :busy="payBusy"
+          submit-label="Record payment"
+          data-testid="mobile-deposit-pay-form"
+          @submit="recordDepositPayment"
+        />
+      </div>
+      <p v-else class="muted" data-testid="mobile-deposit-paid" style="margin-top:.5rem;">
+        Deposit recorded as paid — nothing further to collect.
+      </p>
     </div>
 
     <div v-else-if="!declining" class="cust-quote">
@@ -313,8 +404,10 @@ async function submitDecline() {
     <template #footer>
       <template v-if="depositDue">
         <Button label="Pay later" text severity="secondary" data-testid="mobile-deposit-later" @click="open = false" />
+        <!-- Once the deposit is settled, offering a card link for money already
+             collected is wrong-state UI — swap it for Done. -->
         <Button
-          v-if="depositDue.pay_url"
+          v-if="depositDue.pay_url && depositOwes"
           label="Pay deposit by card"
           icon="pi pi-credit-card"
           severity="success"
@@ -412,4 +505,20 @@ async function submitDecline() {
   color: var(--p-text-muted-color, #6b7280);
 }
 .deposit-toggle input { width: 18px; height: 18px; }
+
+/* Visually separated from the customer's half — the divider is the point:
+   everything below it is the tech's action, not the customer's. */
+.tech-pay-step {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--p-content-border-color, #d1d5db);
+}
+.tech-pay-label {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--p-text-muted-color, #6b7280);
+}
 </style>

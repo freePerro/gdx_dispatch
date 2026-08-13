@@ -79,6 +79,43 @@ def job_belongs_to_user(db: Session, tenant_id: str, job_id: str, user_id: str |
     return bool(via_assignment)
 
 
+def user_job_ids(db: Session, tenant_id: str, user_id: str | None) -> list[str]:
+    """Every job id the user owns — the SET form of job_belongs_to_user.
+
+    Same four ownership paths (a-d above), asked once instead of per-job, for
+    callers that need to scope a LIST rather than gate a single row. It lives
+    here, beside the single-row gate, precisely so the two can never disagree:
+    the A1 audit finding (2026-07-29) was a forked ownership query that
+    silently matched nothing, and field billing 404'd on ~90% of jobs for a
+    year because of it. If you change the paths, change them in both.
+
+    Returns ids as TEXT — jobs.id is uuid on Postgres and varchar on SQLite,
+    and callers compare against invoices.job_id across the same split.
+    """
+    if not tenant_id or not user_id:
+        return []
+    rows = db.execute(
+        text(
+            "SELECT CAST(j.id AS TEXT) AS jid FROM jobs j "
+            "LEFT JOIN technicians t ON t.id = j.assigned_to "
+            "WHERE j.company_id = :t AND j.deleted_at IS NULL "
+            "AND (j.assigned_to = :u OR t.user_id = :u) "
+            "UNION "
+            "SELECT CAST(a.job_id AS TEXT) FROM appointments a "
+            "JOIN technicians te ON te.id = a.tech_id "
+            "WHERE a.company_id = :t AND a.deleted_at IS NULL AND te.user_id = :u "
+            "UNION "
+            "SELECT CAST(ja.job_id AS TEXT) FROM job_assignments ja "
+            "JOIN technicians te ON te.id = ja.tech_id "
+            "JOIN jobs j2 ON CAST(j2.id AS TEXT) = CAST(ja.job_id AS TEXT) "
+            "WHERE ja.deleted_at IS NULL AND j2.company_id = :t "
+            "AND j2.deleted_at IS NULL AND te.user_id = :u"
+        ),
+        {"t": tenant_id, "u": str(user_id)},
+    ).scalars().all()
+    return [r for r in rows if r]
+
+
 def assert_job_access(db: Session, tenant_id: str, current_user: Any, job_id: str) -> None:
     """Raise 404 unless the caller may access this job (dispatch/admin = any;
     technician = own jobs only)."""

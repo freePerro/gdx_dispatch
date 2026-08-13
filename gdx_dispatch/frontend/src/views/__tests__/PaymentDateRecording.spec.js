@@ -34,7 +34,11 @@ describe('BillingView — Record Payment dialog', () => {
     );
     expect(tag).toMatch(/type="date"/);
     expect(tag).toMatch(/:max="todayKey\(\)"/);
-    expect(BILLING).toMatch(/newPayment\.value = \{ amount: 0, method: "Cash", reference: "", date: todayKey\(\) \}/);
+    // The date default is what this test guards; the amount default moved
+    // from a hard 0 to the invoice's balance_due (2026-08-13) because making
+    // the operator retype a known number is how a deposit gets under-recorded.
+    expect(BILLING).toMatch(/date: todayKey\(\),/);
+    expect(BILLING).toMatch(/amount: balance > 0 \? balance : 0,/);
   });
 
   it('sends the picked date and requires it', () => {
@@ -60,7 +64,8 @@ describe('InvoiceDetailView — Record Payment dialog', () => {
   it('has a date input capped at today, defaulted via openPaymentDialog', () => {
     expect(DETAIL).toMatch(/data-testid="payment-date"/);
     expect(DETAIL).toMatch(/@click="openPaymentDialog"/);
-    expect(DETAIL).toMatch(/newPayment\.value = \{ amount: 0, method: "Cash", reference: "", date: todayKey\(\) \}/);
+    expect(DETAIL).toMatch(/date: todayKey\(\),/);
+    expect(DETAIL).toMatch(/amount: balance > 0 \? balance : 0,/);
   });
 
   it('sends the picked date and requires it', () => {

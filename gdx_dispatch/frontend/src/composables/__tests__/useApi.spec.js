@@ -76,6 +76,43 @@ describe('useApi client-error reporting', () => {
     expect(body.detail).toContain('"code"');
   });
 
+  it('renders a {code, message} detail as its message, and exposes err.code', async () => {
+    // The contract behind the duplicate-payment 409 (2026-08-13). That refusal
+    // is the ONE 409 from record_payment meaning "the money IS recorded", so
+    // callers must be able to branch on it — while the toast still shows prose
+    // rather than `{"code":"…","message":"…"}` at the operator.
+    fetchMock
+      .mockResolvedValueOnce(mkResponse(
+        { detail: { code: 'duplicate_payment', message: 'an identical cash payment was recorded moments ago' } },
+        { ok: false, status: 409 },
+      ))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+
+    const api = createApiClient();
+    let caught;
+    await api.post('/api/invoices/x/payments', {}).catch((e) => { caught = e; });
+
+    expect(caught.message).toBe('an identical cash payment was recorded moments ago');
+    expect(caught.message).not.toContain('{');
+    expect(caught.code).toBe('duplicate_payment');
+    expect(caught.status).toBe(409);
+  });
+
+  it('leaves err.code undefined for an ordinary string detail', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mkResponse({ detail: 'invoice is void' }, { ok: false, status: 409 }))
+      .mockResolvedValueOnce(mkResponse({}, { ok: true, status: 200 }));
+
+    const api = createApiClient();
+    let caught;
+    await api.post('/api/invoices/x/payments', {}).catch((e) => { caught = e; });
+
+    // A void-invoice 409 must NOT be mistaken for a duplicate — that would
+    // report a refused payment as already recorded.
+    expect(caught.message).toBe('invoice is void');
+    expect(caught.code).toBeUndefined();
+  });
+
   it('attaches the parsed error body as err.body so callers can read structured fields', async () => {
     // Doug 2026-05-10: the dispatch "Cannot complete: missing parts" toast
     // needs to read `missing[]` off the 422 body. Pre-fix, useApi only

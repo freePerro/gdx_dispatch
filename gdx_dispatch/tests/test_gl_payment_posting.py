@@ -74,10 +74,22 @@ def _invoice(db, total="1000.00", status="draft"):
     return inv
 
 
-def _pay(db, inv, amount, method="cash", allow_overpayment=False):
+def _pay(db, inv, amount, method="cash", allow_overpayment=False, reference=None):
+    """Record a payment through the real endpoint.
+
+    `reference` matters for same-amount repeats: record_payment refuses two
+    identical reference-less payments on one invoice inside a short window
+    (that is how a replayed cash payment is caught, since cash has no natural
+    dedupe key). These GL tests deliberately post two equal partials to
+    exercise the AR/2300 split, so they pass a reference — which is exactly
+    what the 409 tells a real operator to do.
+    """
     return record_payment(
         inv.id,
-        PaymentCreateIn(amount=amount, method=method, allow_overpayment=allow_overpayment),
+        PaymentCreateIn(
+            amount=amount, method=method,
+            allow_overpayment=allow_overpayment, reference=reference,
+        ),
         _=USER,
         db=db,
     )
@@ -181,8 +193,8 @@ def test_two_partials_split_ar_correctly(db):
     inv = _invoice(db, total="100.00")
     transition_invoice_status(db, inv, "sent")
     db.commit()
-    _pay(db, inv, 60.0)
-    _pay(db, inv, 60.0, allow_overpayment=True)  # 20 over
+    _pay(db, inv, 60.0, reference="partial-1")
+    _pay(db, inv, 60.0, allow_overpayment=True, reference="partial-2")  # 20 over
     p3s = [e for e in _entries(db) if e.idempotency_key.startswith("payment:")]
     second = _lines_by_code(db, p3s[1])
     assert second["1200"] == -4_000
@@ -298,8 +310,8 @@ def test_void_resettles_later_payment_splits(db):
     inv = _invoice(db, total="100.00")
     transition_invoice_status(db, inv, "sent")
     db.commit()
-    _pay(db, inv, 60.0)                                # A
-    _pay(db, inv, 60.0, allow_overpayment=True)        # B: 40 AR + 20 credit
+    _pay(db, inv, 60.0, reference="A")                                # A
+    _pay(db, inv, 60.0, allow_overpayment=True, reference="B")        # B: 40 AR + 20 credit
     payment_a = db.scalars(
         select(Payment).where(Payment.invoice_id == inv.id).order_by(Payment.created_at)
     ).first()

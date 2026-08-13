@@ -231,19 +231,48 @@
         @update:visible="(v) => { if (!v) depositResult = null }"
       >
         <div v-if="depositResult" class="form-stack" data-test="me-deposit-result">
-          <p>
+          <p v-if="depositOwes">
             Deposit invoice <strong>#{{ depositResult.invoice_number }}</strong> for
             <strong>${{ fmtMoney(depositResult.balance_due ?? depositResult.amount) }}</strong> is due now.
           </p>
-          <p v-if="!depositResult.pay_url" class="muted">
-            Card payment isn't set up — collect cash/check, or the office can
-            record the payment.
+          <p v-else data-test="me-deposit-paid">
+            Deposit invoice <strong>#{{ depositResult.invoice_number }}</strong> is
+            <strong>paid</strong>.
           </p>
+          <p v-if="depositOwes && !depositResult.pay_url" class="muted">
+            Card payment isn't set up — take cash or a check below.
+          </p>
+
+          <!-- Took the money at the door? Record it here. Without this the
+               deposit stays unpaid, and building the final invoice later voids
+               an unpaid deposit outright — billing the customer the full total
+               after they already handed over a check. -->
+          <div v-if="depositOwes && !payOpen" class="deposit-pay-cta">
+            <Button
+              label="Record cash / check"
+              icon="pi pi-dollar"
+              severity="success"
+              text
+              data-test="me-deposit-pay-open"
+              @click="payOpen = true"
+            />
+          </div>
+          <PaymentCaptureForm
+            v-if="depositOwes && payOpen"
+            :balance-due="Number(depositResult.balance_due ?? depositResult.amount) || 0"
+            :methods="['Cash', 'Check']"
+            variant="mobile"
+            standalone
+            :busy="payBusy"
+            submit-label="Record payment"
+            data-test="me-deposit-pay-form"
+            @submit="recordDepositPayment"
+          />
         </div>
         <template #footer>
           <Button label="Done" severity="secondary" text @click="depositResult = null" />
           <Button
-            v-if="depositResult && depositResult.pay_url"
+            v-if="depositResult && depositResult.pay_url && depositOwes"
             label="Copy pay link"
             icon="pi pi-copy"
             data-test="me-deposit-copy"
@@ -271,6 +300,7 @@ import Tag from 'primevue/tag'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { usePermission } from '../composables/usePermission'
+import PaymentCaptureForm from '../components/PaymentCaptureForm.vue'
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi()
@@ -404,6 +434,14 @@ const depositDefault = ref(null)
 const collectDeposit = ref(false)
 const depositAmount = ref(null)
 const depositResult = ref(null)
+// Field payment capture on the deposit the tech just created.
+const payOpen = ref(false)
+const payBusy = ref(false)
+const depositOwes = computed(() => {
+  const r = depositResult.value
+  if (!r) return false
+  return Number(r.balance_due ?? r.amount ?? 0) > 0
+})
 
 async function accept() {
   if (!detail.value) return
@@ -441,6 +479,64 @@ async function doAccept(depositAmt) {
     toast.add({ severity: 'error', summary: 'Accept failed', detail: err.message, life: 4000 })
   } finally {
     actionSaving.value = false
+  }
+}
+
+/**
+ * Record a deposit payment taken at the customer's door.
+ *
+ * postQueued, not post: a driveway with no signal must not lose a check the
+ * tech is physically holding. conflictIsError because a payments 409 is a
+ * business refusal (void invoice, closed-out deposit) that the tech needs to
+ * see, never a dedup verdict to swallow.
+ */
+async function recordDepositPayment(payload) {
+  const inv = depositResult.value
+  if (!inv?.invoice_id || payBusy.value) return
+  payBusy.value = true
+  try {
+    const r = await api.postQueued(`/api/invoices/${inv.invoice_id}/payments`, payload, {
+      actionType: 'invoice.payment',
+      resourceId: String(inv.invoice_id),
+      conflictIsError: true,
+    })
+    if (r?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Payment saved offline',
+        detail: 'No signal — it will post to the deposit when you reconnect.',
+        life: 5000,
+      })
+    } else {
+      toast.add({ severity: 'success', summary: 'Payment recorded', life: 2500 })
+    }
+    // The tech is done with this money either way — recorded now, or queued
+    // and guaranteed to post. Reflect that locally so the dialog stops asking
+    // and stops offering a pay link. This is an OPTIMISTIC local update, not a
+    // server read: on the queued path the invoice is still unpaid server-side
+    // until the queue drains.
+    depositResult.value = { ...inv, balance_due: 0, status: 'paid' }
+    payOpen.value = false
+  } catch (err) {
+    // A duplicate 409 means the money IS on the invoice — the opposite of every
+    // other 409 here. Rendering it as "Payment failed" is what makes a tech
+    // holding a customer's check record it a second time once the dedupe
+    // window closes, which is the exact double-charge the window exists to
+    // prevent. Treat it as done.
+    if (err?.code === 'duplicate_payment') {
+      toast.add({
+        severity: 'info',
+        summary: 'Already recorded',
+        detail: 'This payment is already on the deposit — nothing was added.',
+        life: 5000,
+      })
+      depositResult.value = { ...inv, balance_due: 0, status: 'paid' }
+      payOpen.value = false
+    } else {
+      toast.add({ severity: 'error', summary: 'Payment failed', detail: err.message, life: 6000 })
+    }
+  } finally {
+    payBusy.value = false
   }
 }
 

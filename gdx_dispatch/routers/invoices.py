@@ -51,6 +51,25 @@ from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
 
+# How long two identical reference-less payments on one invoice are treated as
+# the same payment.
+#
+# What this DOES cover: a double-tap, and a fast manual retry — the cases where
+# a human fires the same payment twice in quick succession.
+#
+# What it does NOT cover, stated plainly so nobody reads it as solved: the
+# offline queue's replay-after-lost-response. That queue has no drain timer
+# (it fires on `online`, `visibilitychange`, and mount) and the client sets no
+# fetch timeout, so a lost response typically rejects long after this window
+# has closed. Closing that hole properly means persisting the
+# `Idempotency-Key` the queue already sends on every replay — a new column and
+# a partial unique index, deliberately left to its own change.
+_CASHLIKE_DEDUPE_SECONDS = 120
+
+# Marks the one 409 from record_payment that means "the money IS recorded".
+# Every other 409 here means nothing was written.
+DUPLICATE_PAYMENT_CODE = "duplicate_payment"
+
 router = APIRouter(prefix="/api/invoices", tags=["invoices"], dependencies=[Depends(require_module("invoices"))])
 
 
@@ -2289,6 +2308,60 @@ def record_payment(
                     f"on this invoice ({_to_float(prior.amount):.2f} on "
                     f"{prior.payment_date.isoformat()}) — void it first to replace it"
                 ),
+            )
+
+    # Reference-less dedupe window (2026-08-13). The guard above only fires
+    # when there IS a reference, and migration 056's index is likewise partial
+    # on `reference IS NOT NULL` — so CASH, which carries no reference, had no
+    # protection at all.
+    #
+    # That became load-bearing when the field surfaces moved to the offline
+    # queue: on a network error after the server already committed (the normal
+    # dead-signal driveway failure) the queue leaves the row PENDING and
+    # replays it. The Idempotency-Key middleware that would otherwise catch a
+    # replay never runs in production — it returns early unless
+    # request.state.principal is set, and nothing outside tests sets it — so a
+    # replayed $500 cash deposit would post twice and drive the balance
+    # negative.
+    #
+    # A short window keyed on (invoice, amount, method) is the honest fix: two
+    # identical reference-less payments seconds apart are a replay or a
+    # double-tap, never two real handfuls of cash. Legitimate repeats stay
+    # possible — wait out the window, or give the payment a reference.
+    if reference_value is None:
+        window_start = datetime.now(UTC) - timedelta(seconds=_CASHLIKE_DEDUPE_SECONDS)
+        recent = db.execute(
+            select(Payment).where(
+                Payment.invoice_id == invoice.id,
+                Payment.reference.is_(None),
+                Payment.voided_at.is_(None),
+                Payment.amount == _money(payload.amount),
+                func.lower(Payment.method) == payload.method.strip().lower(),
+                Payment.created_at >= window_start,
+            )
+        ).scalars().first()
+        if recent is not None:
+            # Structured, not a bare string: this 409 means "the money IS on
+            # the invoice", which is the opposite of every other 409 this
+            # endpoint raises (void invoice, superseded deposit, locked
+            # period — all of those mean "nothing was recorded"). A client
+            # that renders them identically tells a tech holding a customer's
+            # check that the payment FAILED, and the tech records it again
+            # once the window closes — turning a duplicate the server
+            # successfully blocked into one the operator types in by hand.
+            # Callers branch on `code`; see DUPLICATE_PAYMENT_CODE users.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": DUPLICATE_PAYMENT_CODE,
+                    "message": (
+                        f"an identical {payload.method.strip().lower()} payment of "
+                        f"{_to_float(recent.amount):.2f} was recorded moments ago — "
+                        "this one was not added. Add a reference if it is a "
+                        "second, separate payment."
+                    ),
+                    "payment_id": str(recent.id),
+                },
             )
 
     payment = Payment(
