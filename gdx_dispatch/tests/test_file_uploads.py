@@ -19,27 +19,18 @@ from gdx_dispatch.routers import uploads as uploads_router
 
 
 def _create_schema(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE documents (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                content_type TEXT NOT NULL,
-                size_bytes INTEGER NOT NULL,
-                file_size INTEGER,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT NOT NULL,
-                uploaded_by TEXT,
-                created_at TEXT NOT NULL,
-                uploaded_at TEXT,
-                deleted_at TEXT
-            )
-            """
-        )
-    )
+    """Build `documents` from the ORM model, not a hand-written DDL.
+
+    The hand-written version named thirteen columns and omitted the rest —
+    including `job_id`, the column every job-scoped document query filters on.
+    That is the same drift that made an office-uploaded job photo invisible to
+    the page that uploaded it (2026-08-12): a partial column list that nothing
+    could tell was partial. A fixture that builds its own narrower table
+    cannot catch it, and this one didn't.
+    """
+    from gdx_dispatch.models.tenant_models import Document
+
+    Document.__table__.create(bind=db.get_bind(), checkfirst=True)
     db.commit()
 
 
@@ -95,7 +86,13 @@ def test_upload_photo_success(tenant_db_session):
     assert out.size_bytes == len(b"jpeg-bytes")
     assert out.original_name == "kitchen.jpg"
 
-    row = tenant_db_session.execute(text("SELECT * FROM documents WHERE id = :id"), {"id": out.id}).mappings().first()
+    # Bind the id the way the Uuid column stores it — native uuid on
+    # Postgres, 32-char hex on SQLite. A dashed string matches on one
+    # dialect and silently misses on the other.
+    row = tenant_db_session.execute(
+        text("SELECT * FROM documents WHERE id = :id"),
+        {"id": uuid.UUID(str(out.id)).hex},
+    ).mappings().first()
     assert row is not None
     assert row["entity_type"] == "job_photo"
     assert row["deleted_at"] is None
@@ -268,7 +265,13 @@ def test_signature_upload_success(tenant_db_session):
     )
     assert out.content_type == "image/png"
 
-    row = tenant_db_session.execute(text("SELECT * FROM documents WHERE id = :id"), {"id": out.id}).mappings().first()
+    # Bind the id the way the Uuid column stores it — native uuid on
+    # Postgres, 32-char hex on SQLite. A dashed string matches on one
+    # dialect and silently misses on the other.
+    row = tenant_db_session.execute(
+        text("SELECT * FROM documents WHERE id = :id"),
+        {"id": uuid.UUID(str(out.id)).hex},
+    ).mappings().first()
     assert row is not None
     assert row["entity_type"] == "job_signature"
 

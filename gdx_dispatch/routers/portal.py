@@ -23,14 +23,14 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
-from gdx_dispatch.modules.door_listings import service as _listing_service
-from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.deposits import (
     DepositError,
     create_deposit_invoice,
     deposit_summary,
     find_deposit_invoice_for_estimate,
 )
+from gdx_dispatch.modules.door_listings import service as _listing_service
+from gdx_dispatch.modules.door_listings.models import DoorListing
 from gdx_dispatch.modules.equipment.models import CustomerEquipment
 from gdx_dispatch.modules.estimates_features import effective_hide_line_prices, get_features
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -447,11 +447,34 @@ def portal_jobs(
     principal: PortalPrincipal = Depends(get_current_portal_customer),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    rows = db.execute(
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    rows = list(db.execute(
         select(Job)
         .where(Job.customer_id == principal.customer_id, Job.deleted_at.is_(None))
         .order_by(Job.created_at.desc())
-    ).scalars()
+    ).scalars())
+
+    # One grouped count for the whole list, not a query per row — the customer
+    # with 40 jobs shouldn't pay 40 round trips for a badge. Counts SHARED
+    # photos only (customer_visible, migration 063): a badge that counted
+    # internal photos would tell the customer they exist, which is most of what
+    # keeping them internal is for. Still an upper bound — the resolver may
+    # skip a shared photo whose bytes are gone — so the UI treats it as "worth
+    # opening" and the photos endpoint is the authority on what renders.
+    photo_counts: dict[str, int] = {}
+    if rows:
+        counted = db.execute(
+            select(JobPhoto.job_id, func.count(JobPhoto.id))
+            .where(
+                JobPhoto.job_id.in_([r.id for r in rows]),
+                JobPhoto.customer_visible.is_(True),
+                JobPhoto.deleted_at.is_(None),
+            )
+            .group_by(JobPhoto.job_id)
+        ).all()
+        photo_counts = {str(jid): int(n) for jid, n in counted}
+
     return [
         {
             "id": str(row.id),
@@ -461,9 +484,111 @@ def portal_jobs(
             "scheduled_at": row.scheduled_at.isoformat() if row.scheduled_at else None,
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
+            "photo_count": photo_counts.get(str(row.id), 0),
         }
         for row in rows
     ]
+
+
+def _get_customer_job_or_404(job_id: UUID, principal: PortalPrincipal, db: Session) -> Job:
+    """The customer's OWN job, or a 404 that doesn't confirm the id exists."""
+    job = db.execute(
+        select(Job).where(
+            Job.id == job_id,
+            Job.customer_id == principal.customer_id,
+            Job.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@router.get("/jobs/{job_id}/photos", response_model=None)
+def portal_job_photos(
+    job_id: UUID,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """The photos the office SHARED from the customer's own job (Doug
+    2026-08-12).
+
+    Two gates, and both matter:
+      * ownership — scoped to the authenticated customer's job, because a job
+        id alone is never a key to anyone else's pictures;
+      * ``customer_visible`` — off by default (migration 063), because a tech
+        also photographs damage found on arrival, hazards and other people's
+        messes. A photo reaches the customer when someone decides it should,
+        not because it exists.
+
+    Only photos whose bytes actually resolve are listed, so the portal can't
+    advertise a thumbnail that 404s (the resolver skips deleted documents,
+    missing files, and the dead legacy /mobile/uploads urls).
+    """
+    from gdx_dispatch.core.job_photos import resolve_photo_file
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    job = _get_customer_job_or_404(job_id, principal, db)
+    rows = db.execute(
+        select(JobPhoto)
+        .where(
+            JobPhoto.job_id == job.id,
+            JobPhoto.customer_visible.is_(True),
+            JobPhoto.deleted_at.is_(None),
+        )
+        .order_by(JobPhoto.uploaded_at.asc())
+    ).scalars().all()
+    out: list[dict[str, Any]] = []
+    for photo in rows:
+        if resolve_photo_file(db, photo) is None:
+            continue
+        out.append({
+            "id": str(photo.id),
+            "kind": photo.kind,
+            "caption": photo.caption,
+            "uploaded_at": photo.uploaded_at.isoformat() if photo.uploaded_at else None,
+            # Portal-scoped byte route — the staff /api/documents download
+            # needs a staff Bearer token a customer will never have.
+            "url": f"/portal/jobs/{job.id}/photos/{photo.id}",
+        })
+    return out
+
+
+@router.get("/jobs/{job_id}/photos/{photo_id}", response_model=None)
+def portal_job_photo_file(
+    job_id: UUID,
+    photo_id: UUID,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Serve one photo from the customer's own job.
+
+    Mirrors portal_estimate_attachment: ownership first, images only, and the
+    path fenced inside the upload root — a customer link must never become a
+    generic file-serving oracle.
+    """
+    from gdx_dispatch.core.job_photos import resolve_photo_file
+    from gdx_dispatch.models.tenant_models import JobPhoto
+
+    job = _get_customer_job_or_404(job_id, principal, db)
+    photo = db.execute(
+        select(JobPhoto).where(
+            JobPhoto.id == photo_id,
+            JobPhoto.job_id == job.id,
+            # The share gate belongs on the BYTE route too, not just the list.
+            # A photo the office un-shared must stop serving, including to a
+            # customer who still has the old url in a tab.
+            JobPhoto.customer_visible.is_(True),
+            JobPhoto.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if photo is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    resolved = resolve_photo_file(db, photo)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    path, content_type = resolved
+    return FileResponse(path=path, media_type=content_type)
 
 
 @router.get("/invoices", response_model=None)

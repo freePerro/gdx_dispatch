@@ -110,7 +110,11 @@ describe('MobileInvoiceDialog — field payment capture', () => {
     // the queue must surface them instead of filing them as synced.
     expect(opts.conflictIsError).toBe(true);
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success' }));
-    expect(apiGet).toHaveBeenCalledTimes(2); // initial + reload after payment
+    // Count the SUMMARY reads, not every GET: the dialog also loads the job's
+    // photos for the invoice picker (2026-08-12), and a bare call count turns
+    // any future read into a failure of this assertion.
+    const summaryCalls = apiGet.mock.calls.filter(([u]) => String(u).includes('/financial'));
+    expect(summaryCalls).toHaveLength(2); // initial + reload after payment
   });
 
   it('refused payment (409 business refusal) shows an error toast, not success', async () => {
@@ -144,5 +148,60 @@ describe('MobileInvoiceDialog — field payment capture', () => {
     expect(toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ severity: 'warn', summary: 'Payment saved offline' })
     );
+  });
+});
+
+/**
+ * Job photos on the invoice, picked from the truck (2026-08-12).
+ *
+ * The tech shot the photos minutes ago and is about to email the bill — on a
+ * send_email invoice this dialog is the last moment anyone can put the
+ * finished-door shot on it before the customer reads it. Before this there was
+ * no photo affordance on mobile at all.
+ */
+describe('MobileInvoiceDialog — job photos', () => {
+  const PHOTOS = [
+    { id: 'ph-1', url: '/api/documents/d1/download', kind: 'before' },
+    { id: 'ph-2', url: '/api/documents/d2/download', kind: 'after' },
+  ];
+
+  it('sends the ticked photos with the generated invoice', async () => {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('/photos')) return Promise.resolve(PHOTOS);
+      return Promise.resolve({ ...SUMMARY, invoices: [] });
+    });
+    apiPost.mockResolvedValue({ invoice_number: 'INV-1' });
+
+    const w = mountDialog();
+    await flushPromises();
+
+    await w.get('[data-testid="mid-photo-ph-2"] input').setValue(true);
+    await flushPromises();
+    await w.get('[data-testid="mid-generate"]').trigger('click');
+    await flushPromises();
+
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.attached_photo_ids).toEqual(['ph-2']);
+  });
+
+  it('shows no picker when the job has no photos', async () => {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('/photos')) return Promise.resolve([]);
+      return Promise.resolve({ ...SUMMARY, invoices: [] });
+    });
+    const w = mountDialog();
+    await flushPromises();
+    expect(w.find('[data-testid="mid-photos"]').exists()).toBe(false);
+  });
+
+  it('a failed photo read never blocks invoicing from the truck', async () => {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('/photos')) return Promise.reject(new Error('offline'));
+      return Promise.resolve({ ...SUMMARY, invoices: [] });
+    });
+    const w = mountDialog();
+    await flushPromises();
+    expect(w.find('[data-testid="mid-photos"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mid-generate"]').exists()).toBe(true);
   });
 });

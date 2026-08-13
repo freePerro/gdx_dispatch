@@ -211,6 +211,42 @@
             </small>
           </div>
 
+          <!-- Job photos on the invoice PDF (2026-08-12). The picker used to
+               exist only on the invoice DETAIL page, after the draft was
+               already created — so the office building an invoice here, from
+               the job the tech just photographed, had no way to attach them.
+               Production says the feature had never been used once. -->
+          <div class="form-field full-width" v-if="form.job_id" data-testid="invoice-create-photos">
+            <label>Job photos on this invoice</label>
+            <div v-if="jobPhotosLoading" class="muted">Loading photos…</div>
+            <div v-else-if="jobPhotosError" class="muted" data-testid="invoice-create-photos-error">
+              {{ jobPhotosError }}
+            </div>
+            <div v-else-if="!jobPhotos.length" class="muted" data-testid="invoice-create-photos-empty">
+              No photos on this job yet.
+            </div>
+            <div v-else class="photo-pick-grid">
+              <label
+                v-for="p in jobPhotos"
+                :key="p.id"
+                class="photo-pick"
+                :class="{ selected: form.attached_photo_ids.includes(p.id) }"
+                :data-testid="`invoice-create-photo-${p.id}`"
+              >
+                <input type="checkbox" :value="p.id" v-model="form.attached_photo_ids" />
+                <AuthedImage :src="p.url" :alt="p.caption || p.kind || 'Job photo'" class="photo-pick-thumb">
+                  <template #fallback>
+                    <span class="photo-pick-failed">Image unavailable</span>
+                  </template>
+                </AuthedImage>
+                <span class="photo-pick-meta">{{ p.kind || 'photo' }}</span>
+              </label>
+            </div>
+            <small class="muted" v-if="form.attached_photo_ids.length">
+              {{ form.attached_photo_ids.length }} photo(s) will print on the invoice PDF.
+            </small>
+          </div>
+
           <div class="form-field full-width">
             <label for="inv-notes">Notes</label>
             <Textarea
@@ -277,6 +313,7 @@ import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
 import { formatMoney as currency } from '../composables/useFormatters';
 import LineItemEditor from '../components/LineItemEditor.vue';
+import AuthedImage from '../components/AuthedImage.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -319,7 +356,38 @@ const form = ref({
   }],
   from_part_ids: [],
   from_change_order_ids: [],
+  // job_photos.id values to print on the PDF (validated server-side against
+  // this invoice's job, exactly like the PATCH path).
+  attached_photo_ids: [],
 });
+
+// The job's photos, for the picker above. Read from job_photos — the same
+// endpoint the job page and the invoice detail picker use.
+const jobPhotos = ref([]);
+const jobPhotosLoading = ref(false);
+const jobPhotosError = ref('');
+
+async function loadJobPhotos(jobId) {
+  jobPhotos.value = [];
+  jobPhotosError.value = '';
+  // Picks belong to the job they were made on: switching jobs must not carry
+  // a photo id across, or create 422s on an id the new job doesn't own.
+  form.value.attached_photo_ids = [];
+  if (!jobId) return;
+  jobPhotosLoading.value = true;
+  try {
+    const rows = await api.get(`/api/jobs/${jobId}/photos`, { suppressErrorToast: true });
+    jobPhotos.value = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    // Never silently empty: "no photos" and "you can't see the photos" are
+    // different answers and the office needs to know which it got.
+    jobPhotosError.value = (err?.status === 403 || err?.status === 404)
+      ? "You don't have access to this job's photos."
+      : 'Could not load this job\'s photos.';
+  } finally {
+    jobPhotosLoading.value = false;
+  }
+}
 
 const customers = ref([]);
 const jobs = ref([]);
@@ -491,6 +559,9 @@ function onJobChange() {
   // PR3 — same for change orders; reload the job's unbilled CO checklist.
   form.value.from_change_order_ids = [];
   loadJobChangeOrders(form.value.job_id);
+  // Same reasoning for photos: they are job-scoped, and the loader clears the
+  // previous job's picks.
+  loadJobPhotos(form.value.job_id);
   // Sequence matters: estimate first (it wins the editor), closeout second
   // (fills only if the editor is still the empty starter row).
   prefillFromJobEstimate(form.value.job_id).then(() =>
@@ -649,6 +720,9 @@ async function createInvoice() {
       tax_rate: Number.isFinite(taxRateDecimal) ? taxRateDecimal : 0,
       from_part_ids: form.value.from_part_ids || [],
       from_change_order_ids: form.value.from_change_order_ids || [],
+      // Only on job-linked invoices — the contract rejects photo ids without a
+      // job, and a counter sale has no job whose photos could print.
+      attached_photo_ids: form.value.job_id ? (form.value.attached_photo_ids || []) : [],
     };
     if (adjustsInvoiceId.value) payload.adjusts_invoice_id = adjustsInvoiceId.value;
 
@@ -733,6 +807,10 @@ onMounted(async () => {
     }
     await prefillFromJobEstimate(qJobId);
     await prefillFromJobCloseout(qJobId);
+    // The deep-linked path (BillingView's "Create invoice" on a job row)
+    // never runs onJobChange, so the picker has to be filled here too — this
+    // is THE path the office takes from Ready-for-Billing.
+    await loadJobPhotos(qJobId);
   }
   // §12 supplemental: BillingView's "Create supplemental" deep-link passes the
   // original invoice id (and number, for the banner). We record it as
@@ -754,6 +832,26 @@ watch(() => form.value.customer_id, () => onCustomerChange());
 .invoice-create-view {
   padding: 1rem;
 }
+/* Job-photo picker — same shape as the invoice detail page's picker, so the
+   two surfaces read as one feature rather than two. Theme variables only:
+   this has to hold in dark mode. */
+.photo-pick-grid { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.photo-pick {
+  display: flex; flex-direction: column; gap: 0.35rem; width: 140px;
+  padding: 0.4rem; cursor: pointer;
+  border: 1px solid var(--p-content-border-color); border-radius: 6px;
+}
+.photo-pick.selected { border-color: var(--p-primary-color); }
+.photo-pick :deep(img), .photo-pick-thumb {
+  width: 100%; height: 96px; object-fit: cover; border-radius: 4px; display: block;
+}
+.photo-pick-failed {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 96px; border-radius: 4px;
+  background: var(--p-content-background); color: var(--p-text-muted-color);
+  font-size: 0.7rem; text-align: center;
+}
+.photo-pick-meta { font-size: 0.75rem; color: var(--p-text-muted-color); word-break: break-word; }
 /* The tech's closeout context above the line editor. */
 .closeout-context {
   border: 1px solid var(--p-content-border-color, var(--border));

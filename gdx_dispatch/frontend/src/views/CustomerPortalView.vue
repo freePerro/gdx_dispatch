@@ -110,7 +110,31 @@
           <TabPanel value="jobs">
             <DataTable :value="jobs" responsiveLayout="stack" breakpoint="640px" data-testid="jobs-table">
               <template #empty>No jobs found.</template>
-              <Column field="title" header="Job" />
+              <!-- Photos of the customer's own door (2026-08-12). The tech
+                   shoots before/after on every job; until now the customer
+                   never saw them.
+                   The button lives INSIDE the first column, not in a trailing
+                   one: this table does not stack on narrow screens (PrimeVue 4
+                   dropped responsiveLayout="stack"), so a rightmost column is
+                   off-screen on a phone — which is the device most customers
+                   read this on. Caught on a real Pixel, 2026-08-12. -->
+              <Column field="title" header="Job">
+                <template #body="{ data }">
+                  <div class="job-cell">
+                    <span>{{ data.title }}</span>
+                    <Button
+                      v-if="data.photo_count"
+                      :label="`${data.photo_count} photo${data.photo_count === 1 ? '' : 's'}`"
+                      icon="pi pi-images"
+                      size="small"
+                      text
+                      class="job-photos-btn"
+                      :data-testid="`job-photos-${data.id}`"
+                      @click="openJobPhotos(data)"
+                    />
+                  </div>
+                </template>
+              </Column>
               <Column field="lifecycle_stage" header="Status"><template #body="{ data }"><Tag :value="jobStatusLabel(data)" :severity="statusSeverity(data.lifecycle_stage)" /></template></Column>
               <Column field="scheduled_at" header="Scheduled"><template #body="{ data }">{{ formatDate(data.scheduled_at) }}</template></Column>
               <Column field="completed_at" header="Completed"><template #body="{ data }">{{ formatDate(data.completed_at) }}</template></Column>
@@ -184,6 +208,30 @@
             </div>
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
           </div>
+        </Dialog>
+
+        <!-- Job photos (2026-08-12). Same blob-loading shape as the estimate
+             images: an <img src> can't carry the portal Bearer token, so each
+             photo is fetched authenticated and handed to the dialog as an
+             object URL. -->
+        <Dialog
+          v-model:visible="jobPhotosVisible"
+          :header="jobPhotosTitle"
+          :modal="true"
+          :style="{ width: 'min(720px, 94vw)' }"
+          data-testid="job-photos-dialog"
+        >
+          <div v-if="jobPhotosLoading" class="loading-wrap"><ProgressSpinner /></div>
+          <div v-else-if="jobPhotoImages.length" class="detail-images" data-testid="job-photo-images">
+            <figure v-for="img in jobPhotoImages" :key="img.id" class="job-photo-figure">
+              <Image :src="img.src" :alt="img.label" preview
+                     image-style="height: 140px; border-radius: 6px; object-fit: cover" />
+              <figcaption v-if="img.label" class="meta">{{ img.label }}</figcaption>
+            </figure>
+          </div>
+          <p v-else class="meta" data-testid="job-photos-empty">
+            No photos are available for this job.
+          </p>
         </Dialog>
 
         <Dialog
@@ -510,6 +558,52 @@ function clearDetailImages() {
   detailImages.value = [];
 }
 
+// ─── Job photos (2026-08-12) ─────────────────────────────────────────
+// The tech photographs every job; the customer had never been shown a single
+// one. These are pictures of their own door — "here is what we found, here is
+// what we fixed" — and they load through the portal's own token-scoped route,
+// never the staff document download.
+const jobPhotosVisible = ref(false);
+const jobPhotosLoading = ref(false);
+const jobPhotosTitle = ref("Job photos");
+const jobPhotoImages = ref([]);
+
+function clearJobPhotoImages() {
+  jobPhotoImages.value.forEach((img) => URL.revokeObjectURL(img.src));
+  jobPhotoImages.value = [];
+}
+
+async function openJobPhotos(job) {
+  jobPhotosVisible.value = true;
+  jobPhotosLoading.value = true;
+  jobPhotosTitle.value = job?.title ? `Photos — ${job.title}` : "Job photos";
+  clearJobPhotoImages();
+  try {
+    const rows = await authedFetch(`/portal/jobs/${job.id}/photos`);
+    const loaded = await Promise.all(
+      (rows || []).map(async (p) => {
+        try {
+          const res = await fetch(p.url, { headers: { Authorization: `Bearer ${jwt.value}` } });
+          if (!res.ok) return null;
+          return {
+            id: p.id,
+            label: (p.caption || "").trim() || (p.kind || "").trim(),
+            src: URL.createObjectURL(await res.blob()),
+          };
+        } catch { return null; }
+      })
+    );
+    jobPhotoImages.value = loaded.filter(Boolean);
+  } catch {
+    jobPhotoImages.value = [];
+  } finally {
+    jobPhotosLoading.value = false;
+  }
+}
+
+// Free the blobs when the dialog closes — same discipline as the estimate one.
+watch(jobPhotosVisible, (open) => { if (!open) clearJobPhotoImages(); });
+
 async function loadDetailImages(images) {
   // <img src> can't carry the Bearer header — pull each image as an
   // authenticated blob and hand the dialog object URLs instead.
@@ -576,6 +670,14 @@ onMounted(init);
 .view-hint { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
 .detail-body { display: flex; flex-direction: column; gap: 0.75rem; }
 .detail-images { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+/* Job-photo tiles carry a caption under the thumbnail (the tech's slot or
+   note), so each one is a figure rather than a bare image. */
+.job-photo-figure { margin: 0; display: flex; flex-direction: column; gap: 0.2rem; max-width: 200px; }
+/* The photos link sits under the job name so it stays on screen on a phone,
+   where this table scrolls sideways rather than stacking. */
+.job-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+.job-photos-btn { padding: 0.15rem 0; min-height: 32px; }
+.job-photo-figure figcaption { text-transform: capitalize; }
 .detail-status-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 .totals-block { margin-left: auto; min-width: 240px; display: flex; flex-direction: column; gap: 0.35rem; }
 .totals-row { display: flex; justify-content: space-between; font-size: 0.95rem; }

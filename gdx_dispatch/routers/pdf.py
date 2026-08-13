@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.job_photos import resolve_photo_file
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pdf_generator import generate_estimate_pdf, generate_invoice_pdf
 from gdx_dispatch.models.tenant_models import (
@@ -272,34 +273,29 @@ def _invoice_photos_for_pdf(db: Session, invoice: Invoice) -> list[dict[str, Any
         select(JobPhoto).where(
             JobPhoto.id.in_(id_uuids),
             JobPhoto.job_id == invoice.job_id,
+            # Share gate (migration 063) — the PDF is a customer-facing
+            # surface like the portal and the pay page, and all three read the
+            # same flag. Attaching sets it, so the ordinary path is unchanged;
+            # un-sharing a photo afterwards keeps it off the next render.
+            JobPhoto.customer_visible.is_(True),
             JobPhoto.deleted_at.is_(None),
         )
     ).scalars().all()
     by_id = {str(p.id): p for p in photos}
-    base = Path(os.getenv("UPLOAD_DIR", "/app/uploads"))
     images: list[dict[str, Any]] = []
     for pid in ids:  # selection order is display order
         photo = by_id.get(pid)
         if photo is None:
             continue
-        url = photo.url or ""
-        # Canonical shape written by core/job_photos.link_job_photo:
-        # /api/documents/{document_id}/download
-        if not (url.startswith("/api/documents/") and url.endswith("/download")):
+        # ONE resolver, shared with the customer portal and the pay page
+        # (core/job_photos.resolve_photo_file) — it walks photo → document →
+        # the flat UPLOAD_DIR, skips the dead legacy /mobile/uploads urls, and
+        # applies the same renderable-image allowlist. Three surfaces showing
+        # the customer different photos is the failure this prevents.
+        resolved = resolve_photo_file(db, photo)
+        if resolved is None:
             continue
-        doc_id = url.removeprefix("/api/documents/").removesuffix("/download")
-        try:
-            doc_uuid = UUID(doc_id)
-        except (ValueError, AttributeError):
-            continue
-        doc = db.execute(
-            select(Document).where(Document.id == doc_uuid, Document.deleted_at.is_(None))
-        ).scalar_one_or_none()
-        if doc is None or not doc.filename:
-            continue
-        path = base / doc.filename
-        if not path.exists():
-            continue
+        path = Path(resolved[0])
         embed = _shrink_photo_for_pdf(path, cache_key=pid)
         label = (photo.caption or "").strip() or (photo.kind or "").strip().title()
         images.append({"src": f"file://{embed}", "name": label})

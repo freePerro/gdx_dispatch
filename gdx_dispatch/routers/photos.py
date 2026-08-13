@@ -21,8 +21,8 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
-from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.job_access import assert_job_access
+from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -62,6 +62,10 @@ class PhotoIn(BaseModel):
 class PhotoPatchIn(BaseModel):
     kind: str | None = Field(default=None, pattern=_KIND_PATTERN)
     caption: str | None = Field(default=None, max_length=500)
+    # Share this photo with the customer, or take it back (migration 063).
+    # False is the default state of every photo; this is the office saying
+    # otherwise, per photo.
+    customer_visible: bool | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +105,9 @@ def _serialize(p: JobPhoto) -> dict[str, Any]:
         "size_bytes": int(p.size_bytes) if p.size_bytes is not None else None,
         "caption": p.caption,
         "uploaded_by": p.uploaded_by,
+        # Whether the CUSTOMER can see this photo (migration 063). Default
+        # False — the office shares deliberately, per photo.
+        "customer_visible": bool(getattr(p, "customer_visible", False)),
         "uploaded_at": p.uploaded_at.isoformat() if p.uploaded_at else None,
     }
 
@@ -132,6 +139,79 @@ def _audit(
         db.rollback()
 
 
+# Reading a job's photos is an OFFICE-TIER read, not a dispatch-manager one.
+#
+# `assert_job_access` admits only DISPATCH_MANAGER_ROLES (owner, admin,
+# dispatcher, manager, super_admin) or the technician the job is assigned to.
+# But `nav.office` — the key that puts the Photos page and the office nav on
+# screen — is granted to accounting, sales and viewer, none of which are
+# dispatch managers. Those roles got a 404 here, and PhotosView renders a 404
+# as "No photos yet": the app showed office staff an empty gallery and called
+# it empty rather than forbidden. Accounting is also the role that bills, and
+# the invoice photo picker reads this exact endpoint — so the person putting
+# photos on an invoice could never see one.
+#
+# The rule: anyone who can read every job (dispatcher/sales/viewer) or every
+# invoice (accounting — photos print on the invoices they send) may read a
+# job's photos. Technicians stay narrowed to their own jobs, which is what
+# keeps customer-premises photos off other techs' phones. Writes and deletes
+# are untouched.
+_PHOTO_READ_KEYS = ("jobs.read_all", "invoices.read_all")
+
+
+def _assert_photo_read_access(
+    db: Session, request: Request, tenant_id: str, user: Any, job_id: str
+) -> None:
+    if _has_office_photo_read(db, request, user):
+        return
+    assert_job_access(db, tenant_id, user, job_id)
+
+
+def _assert_photo_edit_access(
+    db: Session, request: Request, tenant_id: str, user: Any, job_id: str
+) -> None:
+    """Who may edit a photo's slot, caption, or customer-visibility.
+
+    Same tier as the read (2026-08-13). Widening the read without the write
+    shipped a control that could not work: accounting/sales/viewer could open
+    the job page, see the photos for the first time, click "Internal only" —
+    and the PATCH 404'd, so the checkbox flipped back. Worse, accounting could
+    already share the same photo through the other door (attaching it to an
+    invoice sets customer_visible with only the invoice permission), so the
+    job-page gate was withholding a decision the same user could make one
+    screen away.
+
+    Technicians remain narrowed to their own jobs, which is what keeps another
+    customer's premises off a tech's phone. Deleting a photo is NOT this —
+    delete keeps the dispatch-manager gate.
+    """
+    _assert_photo_read_access(db, request, tenant_id, user, job_id)
+
+
+def _has_office_photo_read(db: Session, request: Request, user: Any) -> bool:
+    """True for dispatch managers and for the office roles above.
+
+    Resolution goes through the same loader `require_permission` uses (role
+    snapshot → builtin), so a tenant that edits its roles gets the answer its
+    own configuration implies, not a hardcoded role list.
+    """
+    if is_dispatch_manager(user):
+        return True
+    try:
+        from gdx_dispatch.core.modules import _load_user_permissions
+        from gdx_dispatch.core.permissions import WILDCARD
+
+        cached = getattr(request.state, "user_permissions", None)
+        if cached is None:
+            cached = _load_user_permissions(db, request, user)
+            request.state.user_permissions = cached
+        return WILDCARD in cached or any(k in cached for k in _PHOTO_READ_KEYS)
+    except Exception:
+        # A permission lookup that breaks must not silently widen access.
+        log.exception("photo_read_permission_check_failed")
+        return False
+
+
 def _get_photo_scoped(
     db: Session, photo_id: UUID, job_id: UUID, tenant_id: str
 ) -> JobPhoto:
@@ -160,11 +240,20 @@ def list_job_photos(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    assert_job_access(db, _tenant_id(request), user, str(job_id))
+    tenant_id = _tenant_id(request)
+    _assert_photo_read_access(db, request, tenant_id, user, str(job_id))
     stmt = (
         select(JobPhoto)
         .where(
             JobPhoto.job_id == job_id,
+            # Deliberately NOT filtered on company_id, though the sibling
+            # _get_photo_scoped is. Two writers populate that column from two
+            # different resolutions — uploads.py prefers the JWT's tenant claim
+            # (_tenant_id_from), documents.py reads request.state.tenant — so a
+            # filter here fails CLOSED the moment they disagree, and failing
+            # closed on this query means an empty Photos tab: precisely the bug
+            # this change exists to fix. One tenant per database, and isolation
+            # is the connection; job ownership is enforced above.
             JobPhoto.deleted_at.is_(None),
         )
         .order_by(JobPhoto.uploaded_at.desc())
@@ -232,13 +321,15 @@ def update_job_photo(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
-    assert_job_access(db, tenant_id, user, str(job_id))
+    _assert_photo_edit_access(db, request, tenant_id, user, str(job_id))
     photo = _get_photo_scoped(db, photo_id, job_id, tenant_id)
     data = payload.model_dump(exclude_unset=True)
     if "kind" in data and data["kind"] is not None:
         photo.kind = data["kind"]
     if "caption" in data and data["caption"] is not None:
         photo.caption = data["caption"]
+    if "customer_visible" in data and data["customer_visible"] is not None:
+        photo.customer_visible = bool(data["customer_visible"])
     db.commit()
     db.refresh(photo)
     _audit(
@@ -247,7 +338,17 @@ def update_job_photo(
         user=user,
         action="photo_updated",
         entity_id=str(photo.id),
-        details={"fields": list(data.keys())},
+        # Who shared a customer's photo, and when, is the part of this record
+        # worth being able to answer later — so log the VALUE, not just the
+        # field name.
+        details={
+            "fields": list(data.keys()),
+            **(
+                {"customer_visible": bool(data["customer_visible"])}
+                if data.get("customer_visible") is not None
+                else {}
+            ),
+        },
         request=request,
     )
     return _serialize(photo)
@@ -287,10 +388,12 @@ def recent_photos(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=200),
 ) -> list[dict[str, Any]]:
-    # Tenant-wide photo feed across all jobs — dispatch/admin only; a technician
+    # Tenant-wide photo feed across all jobs — office tier only; a technician
     # would otherwise see customer-premises photos from jobs that aren't theirs.
-    if not is_dispatch_manager(user):
-        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    # Same rule as the per-job read above (see _has_office_photo_read): the
+    # office roles that hold nav.office are the ones this page is FOR.
+    if not _has_office_photo_read(db, request, user):
+        raise HTTPException(status_code=403, detail="office or dispatch role required")
     stmt = (
         select(JobPhoto)
         .where(

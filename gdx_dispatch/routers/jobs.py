@@ -4,7 +4,7 @@ import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -25,7 +25,6 @@ from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
     Invoice,
-    InvoiceLine,
     Job,
     JobAssignment,
     JobCloseout,
@@ -1862,7 +1861,27 @@ def closeout_job(
         )
     missing: list[str] = []
     if flags["require_parts_on_complete"] and not payload.parts and not payload.no_parts_used:
-        missing.append("parts")
+        # Parts logged live while the job was worked already answer this gate
+        # (2026-08-12). Without this, the tech who recorded three springs as
+        # they installed them is blocked here unless they type all three AGAIN
+        # — and each retype mints a SECOND billable row (live capture is
+        # source='mobile', the closeout writes source='closeout'; the replace
+        # step below only touches its own source, by design). So the gate as
+        # written manufactured exactly the double-billing it looks like it
+        # prevents. Unbilled rows only: a part already on an invoice is
+        # history, not evidence about this closeout.
+        _live_used = db.execute(
+            select(func.count())
+            .select_from(JobPartNeeded)
+            .where(
+                JobPartNeeded.job_id == str(job.id),
+                JobPartNeeded.source.in_(("mobile", "van")),
+                JobPartNeeded.status == "used",
+                JobPartNeeded.billed_invoice_id.is_(None),
+            )
+        ).scalar() or 0
+        if not _live_used:
+            missing.append("parts")
     if flags["require_hours_on_complete"] and (payload.hours or 0) <= 0:
         missing.append("hours")
     if flags["require_signature_on_complete"]:

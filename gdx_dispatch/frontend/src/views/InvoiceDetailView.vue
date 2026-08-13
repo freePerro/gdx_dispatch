@@ -538,13 +538,24 @@
              justify the bill. Checked photos print as a "Job Photos" grid
              on the PDF, so they ride every delivery channel (email, print,
              postal). Editable while draft; read-only after. -->
-        <div v-if="invoice.job_id && jobPhotos.length" class="notes-section" data-testid="invoice-job-photos">
+        <!-- Rendered whenever the invoice has a job (2026-08-12), not only
+             when photos happen to load. It used to vanish on `!jobPhotos.length`
+             — and jobPhotos is [] both when the job has no photos AND when the
+             read failed or was denied, so "there is no way to do this" was the
+             only reading available to the user. Say which it is. -->
+        <div v-if="invoice.job_id" class="notes-section" data-testid="invoice-job-photos">
           <h3>Job photos on invoice</h3>
           <p class="photo-pick-hint">
             Checked photos print on the invoice PDF.
             <template v-if="invoice.status !== 'draft'"> (locked — invoice is no longer a draft)</template>
           </p>
-          <div class="photo-pick-grid">
+          <p v-if="jobPhotosError" class="photo-pick-hint" data-testid="invoice-photos-error">
+            {{ jobPhotosError }}
+          </p>
+          <p v-else-if="!jobPhotos.length" class="photo-pick-hint" data-testid="invoice-photos-empty">
+            This job has no photos yet.
+          </p>
+          <div v-else class="photo-pick-grid">
             <label
               v-for="p in jobPhotos"
               :key="p.id"
@@ -823,6 +834,7 @@ const pushingToQb = ref(false);
 // roll; invoice.attached_photo_ids = the current pick. Toggling PATCHes the
 // whole list (draft only) — the server validates every id against the job.
 const jobPhotos = ref([]);
+const jobPhotosError = ref("");
 const photoSaving = ref(false);
 
 function isPhotoAttached(id) {
@@ -831,13 +843,21 @@ function isPhotoAttached(id) {
 
 async function fetchJobPhotos() {
   jobPhotos.value = [];
+  jobPhotosError.value = "";
   const jobId = invoice.value.job_id;
   if (!jobId) return;
   try {
     const rows = await api.get(`/api/jobs/${jobId}/photos`, { suppressErrorToast: true });
     jobPhotos.value = Array.isArray(rows) ? rows : [];
-  } catch {
-    jobPhotos.value = []; // photos are optional garnish — never block the invoice view
+  } catch (err) {
+    // Still never blocks the invoice view — but the failure is now VISIBLE.
+    // Swallowing it into [] made a denied read look identical to a job with no
+    // photos, which is how "there's no way to add photos" became the truth on
+    // screen for anyone the job-access gate turned away.
+    jobPhotos.value = [];
+    jobPhotosError.value = (err?.status === 403 || err?.status === 404)
+      ? "You don't have access to this job's photos."
+      : "Couldn't load this job's photos.";
   }
 }
 
@@ -1151,6 +1171,14 @@ function normalizeInvoice(payload) {
     id: payload.id,
     invoice_number: payload.invoice_number || payload.invoiceNumber || `INV-${String(payload.id).substring(0, 8)}`,
     customer_id: payload.customer_id || null,
+    // 2026-08-12 browser walk: THIS is why the job-photo picker never worked.
+    // This normalizer copies fields explicitly, job_id was never listed, so
+    // `invoice.job_id` was permanently undefined — the picker's v-if could not
+    // be true and fetchJobPhotos() returned early without ever asking the
+    // server. The card shipped in v1.44.0 and had rendered for nobody since;
+    // production has zero invoices carrying a photo, which is the same fact
+    // seen from the database end.
+    job_id: payload.job_id || null,
     customer_name: payload.customer_name || payload.customer || (typeof payload.customer === "object" ? payload.customer?.name : "") || "Unknown",
     customer_email: payload.customer_email || "",
     customer_phone: payload.customer_phone || "",

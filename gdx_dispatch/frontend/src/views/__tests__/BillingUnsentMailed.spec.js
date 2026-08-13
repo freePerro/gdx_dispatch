@@ -106,7 +106,11 @@ describe('InvoiceDetailView — Mark as Mailed', () => {
   it('normalizeInvoice maps payload.sent_via', () => {
     const start = DETAIL.indexOf('invoice.value = {');
     expect(start).toBeGreaterThan(-1);
-    const span = DETAIL.slice(start, start + 1700);
+    // Bound on the END of the object literal, not a byte count — a fixed
+    // window fails whenever a field is added above the one being asserted
+    // (job_id, 2026-08-12), which is a red test about the wrong thing.
+    const end = DETAIL.indexOf('\n  };', start);
+    const span = DETAIL.slice(start, end > start ? end : start + 4000);
     expect(span).toMatch(/sent_via:\s*payload\.sent_via/);
   });
 

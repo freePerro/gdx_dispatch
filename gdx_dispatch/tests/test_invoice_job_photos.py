@@ -26,7 +26,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -114,6 +114,12 @@ def _seed_photo(db, job, *, doc_id=None, kind: str = "after", caption: str = "")
         url=f"/api/documents/{doc_id or uuid4()}/download",
         filename="p.jpg",
         mime_type="image/jpeg",
+        # Shared with the customer (migration 063, 2026-08-12). Photos are
+        # internal by default now; in the real flow ATTACHING one to an invoice
+        # sets this, so a PDF fixture that seeds the row directly has to say so
+        # itself. That the PDF skips an unshared photo is pinned in
+        # test_customer_facing_job_photos.py.
+        customer_visible=True,
         uploaded_at=datetime.now(UTC),
     )
     db.add(photo)

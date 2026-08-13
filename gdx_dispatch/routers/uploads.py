@@ -9,11 +9,11 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID as _UUID
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event
@@ -208,8 +208,63 @@ def _insert_document(
     entity_id: str,
     uploaded_by: str,
 ) -> dict[str, Any]:
-    row = {
-        "id": str(uuid4()),
+    # job_id is written ALONGSIDE entity_type/entity_id (2026-08-12), not
+    # instead of it. Those two columns are marked DEPRECATED in the ORM
+    # (tenant_models.py — "Phase B3 removed them from app code"), while every
+    # reader that matters filters on documents.job_id: GET /api/documents
+    # ?job_id= is the only job-scoped document query in the app. Writing only
+    # the deprecated pair is why a photo uploaded from the office job page was
+    # invisible to the very page that uploaded it — the row existed and no
+    # query could reach it. Both are written until a migration retires the
+    # pair, because something unaudited may still read them.
+    #
+    # entity_id is the job id for both callers (job_photo, job_signature). A
+    # non-UUID value must not take the upload down: bind NULL and let the row
+    # keep its legacy linkage rather than 500 on a file the user already sent.
+    job_uuid: str | None = None
+    if entity_type in ("job_photo", "job_signature") and entity_id:
+        try:
+            job_uuid = str(_UUID(str(entity_id)))
+        except (ValueError, AttributeError):
+            log.warning(
+                "document_job_link_skipped_bad_entity_id entity_type=%s entity_id=%r",
+                entity_type, entity_id,
+            )
+
+    # Written through the ORM, not a hand-written INSERT column list.
+    #
+    # The hand-written list is what caused this bug: it named entity_type and
+    # entity_id and simply never mentioned job_id, and nothing could tell it
+    # was missing a column the readers depend on. The model is the one place
+    # that knows every column — and it also knows their TYPES, which the raw
+    # INSERT did not: documents.job_id is a Uuid, stored as native uuid on
+    # Postgres but as 32-char hex on SQLite, so a bound dashed string matched
+    # on one dialect and silently missed on the other.
+    from gdx_dispatch.models.tenant_models import Document
+
+    doc_id = uuid4()
+    created_at = datetime.now(timezone.utc)
+    db.add(Document(
+        id=doc_id,
+        tenant_id=tenant_id,
+        filename=filename,
+        original_name=original_name,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        file_size=size_bytes,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        job_id=_UUID(job_uuid) if job_uuid else None,
+        uploaded_by=uploaded_by,
+        created_at=created_at,
+        uploaded_at=created_at,
+    ))
+    db.flush()
+
+    # The dict shape callers (and uploads' own DocumentOut) expect, unchanged
+    # apart from job_id being reported now that it is written.
+    return {
+        "id": str(doc_id),
         "tenant_id": tenant_id,
         "filename": filename,
         "original_name": original_name,
@@ -217,24 +272,10 @@ def _insert_document(
         "size_bytes": size_bytes,
         "entity_type": entity_type,
         "entity_id": entity_id,
+        "job_id": job_uuid,
         "uploaded_by": uploaded_by,
-        "created_at": _utcnow_iso(),
+        "created_at": created_at.isoformat(),
     }
-    db.execute(
-        text(
-            """
-            INSERT INTO documents (
-                id, tenant_id, filename, original_name, content_type, size_bytes,
-                file_size, entity_type, entity_id, uploaded_by, created_at, uploaded_at, deleted_at
-            ) VALUES (
-                :id, :tenant_id, :filename, :original_name, :content_type, :size_bytes,
-                :size_bytes, :entity_type, :entity_id, :uploaded_by, :created_at, :created_at, NULL
-            )
-            """
-        ),
-        row,
-    )
-    return row
 
 
 

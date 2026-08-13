@@ -16,6 +16,7 @@ Endpoints (all under /api/mobile, gated on the "mobile" module):
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import secrets
 from datetime import UTC, date, datetime, timedelta
@@ -100,6 +101,32 @@ def _job_belongs_to_tech(db: Session, request: Request, job_id: str, user_id: st
     return job_belongs_to_user(db, _tenant_id(request), job_id, user_id)
 
 
+def restate_invoice_header(invoice: Any, line_sum: Any) -> None:
+    """Point the header at the lines that were just written, tax included.
+
+    Both estimate branches below rebuild the invoice's lines and then have to
+    restate the header. They used to assign ``total = line_sum`` while
+    ``tax_amount`` kept the value computed from the estimate, so the
+    money-correctness invariant (migration 056) refused the commit and EVERY
+    field invoice 500'd.
+
+    The tax is deliberately NOT recomputed here. compute_estimate_totals taxes
+    (subtotal − labor − discount) and this business does not tax labor; a naive
+    ``line_sum × rate`` would bill sales tax on labor and disagree with the
+    estimate the customer already accepted. All the header owes the invariant
+    is total == Σlines + tax.
+
+    A named function because both branches need the identical restatement and
+    the previous version was two hand-written copies — one of which is how the
+    bug got in twice.
+    """
+    subtotal = Decimal(str(line_sum or 0))
+    tax = Decimal(str(invoice.tax_amount or 0))
+    invoice.subtotal = _money(subtotal)
+    invoice.total = _money(subtotal + tax)
+    invoice.balance_due = invoice.total
+
+
 def _next_invoice_number(db: Session) -> str:
     # Moved to core/closeout_billing (2026-08-07) so the closeout autodraft
     # shares the sequence without importing from a router. Thin wrapper kept:
@@ -176,6 +203,11 @@ class CreateInvoiceIn(BaseModel):
     estimate_id: str | None = Field(default=None)
     notes: str | None = Field(default=None, max_length=5000)
     send_email: bool = Field(default=True)
+    # 2026-08-12 — job photos to print on the PDF. The tech shot them; on a
+    # send_email=true invoice this dialog is the ONLY moment anyone can pick
+    # them before the customer gets the bill. Validated server-side against
+    # this job, same rule and same helper as the office paths.
+    attached_photo_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
 class SendReceiptIn(BaseModel):
@@ -457,9 +489,19 @@ def mobile_create_invoice(
             log.exception("mobile_invoice_hide_line_prices_resolve_failed")
             hide_line_prices_value = False
 
+    # One implementation of "may this photo print on this invoice", shared
+    # with the office create/PATCH paths — a hand-rolled copy here is how the
+    # truck ends up able to attach a photo the office could not.
+    from gdx_dispatch.routers.invoices import _validated_attached_photo_ids
+
+    attached_photo_ids = _validated_attached_photo_ids(
+        db, job_id=_UUID(job_id), raw_ids=payload.attached_photo_ids
+    )
+
     invoice = Invoice(
         id=uuid4(),
         job_id=_UUID(job_id),
+        attached_photo_ids=(_json.dumps(attached_photo_ids) if attached_photo_ids else None),
         # Provenance for deposit netting (2026-07-23).
         estimate_id=(estimate.id if estimate is not None else None),
         invoice_number=_next_invoice_number(db),
@@ -536,9 +578,18 @@ def mobile_create_invoice(
                         company_id=str(tenant_id),
                     )
                 )
-                invoice.subtotal = price
-                invoice.total = price
-                invoice.balance_due = price
+                # Restate the header from the ONE line this branch wrote —
+                # including tax. Assigning `total = price` dropped the tax
+                # that was computed from the estimate a few lines above, so
+                # the money-correctness invariant (migration 056) refused the
+                # commit: "total 2090.00 != Σlines 2090.00 + tax 154.24". Every
+                # tiered-proposal invoice generated from the truck 500'd on
+                # that, which is why mobile_invoice_created has never written
+                # an audit row in production. Found by driving a real phone,
+                # 2026-08-12 — the tap fired, the server refused, and the
+                # dialog just sat there.
+                # One line was written; the header follows it, tax included.
+                restate_invoice_header(invoice, price)
         else:
             # Plain estimate — copy all lines.
             line_rows = db.execute(
@@ -576,14 +627,44 @@ def mobile_create_invoice(
                         company_id=str(tenant_id),
                     )
                 )
+            # M7, on the truck's path this time (2026-08-13): materialize the
+            # estimate's discount as a real negative line BEFORE the header is
+            # restated. The copied lines are the estimate's PRE-discount
+            # amounts while compute_estimate_totals took the discount off the
+            # taxed base, so a header of "Σlines + tax" over-bills by exactly
+            # the discount — a $1,000 estimate with $100 off invoices at
+            # $1,066.38 instead of $966.38, and the totals invariant is
+            # satisfied the whole time because the numbers are internally
+            # consistent and simply wrong. The office path has carried this
+            # line since the 2026-08-04 money audit; this one didn't, because
+            # before the header fix it 500'd before it could be wrong.
+            #
+            # Taxable ON PURPOSE, same as invoices.py: the discount reduces the
+            # taxable base upstream, so the line must reduce it here too.
+            _est_discount = Decimal(str(getattr(estimate, "discount", None) or 0))
+            if _est_discount > 0:
+                db.add(
+                    InvoiceLine(
+                        id=uuid4(),
+                        invoice_id=invoice.id,
+                        description="Discount",
+                        quantity=1,
+                        unit_price=_money(-_est_discount),
+                        line_total=_money(-_est_discount),
+                        taxable=True,
+                        category="discount",
+                        sort_order=(max((int(ln[4]) for ln in line_rows), default=0) + 1),
+                        company_id=str(tenant_id),
+                    )
+                )
             db.flush()
             new_subtotal = float(db.execute(
                 _text("SELECT COALESCE(SUM(line_total), 0) FROM invoice_lines WHERE invoice_id = :iid"),
                 {"iid": str(invoice.id)},
             ).scalar() or 0)
-            invoice.subtotal = _money(new_subtotal)
-            invoice.total = _money(new_subtotal)
-            invoice.balance_due = _money(new_subtotal)
+            # Same restatement as the tier branch — one implementation, so the
+            # two cannot drift into disagreeing about tax again.
+            restate_invoice_header(invoice, new_subtotal)
 
     if estimate is None:
         # Plan §8 — invoice FROM THE CLOSEOUT. No accepted estimate, so the
@@ -660,13 +741,15 @@ def mobile_create_invoice(
     if _dep_result:
         resp_payload["deposit_netting"] = _dep_result
     resp_payload["awaiting_verification"] = awaiting_verification
-    # Unpriced closeout parts left on the office checklist (audit: a partial
-    # invoice must not look complete) — the office prices them before the
-    # invoice is verified/sent.
+    # Unpriced parts left on the office checklist (audit: a partial invoice
+    # must not look complete) — the office prices them before the invoice is
+    # verified/sent. Counts EVERY capture source, not just 'closeout': a part
+    # logged live during the job is exactly as unbilled, and a warning that
+    # reports zero while money sits on the checklist is worse than no warning.
     _unpriced = db.execute(
         select(func.count()).select_from(JobPartNeeded).where(
             JobPartNeeded.job_id == str(job_id),
-            JobPartNeeded.source == "closeout",
+            JobPartNeeded.source.in_(("closeout", "mobile", "van")),
             JobPartNeeded.billed_invoice_id.is_(None),
             or_(JobPartNeeded.unit_price.is_(None), JobPartNeeded.unit_price <= 0),
         )

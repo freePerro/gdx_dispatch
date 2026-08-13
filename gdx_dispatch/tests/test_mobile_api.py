@@ -16,6 +16,21 @@ from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.models import tenant_models  # noqa: F401  (register models on TenantBase.metadata)
 from gdx_dispatch.routers import mobile as mobile_router
 
+
+@pytest.fixture(autouse=True)
+def _photo_upload_dir(tmp_path, monkeypatch):
+    """Point UPLOAD_DIR somewhere writable for every test in this module.
+
+    The mobile photo route used to write to MOBILE_UPLOAD_DIR (default
+    /tmp/gdx_mobile_uploads) and mint a url nothing served. It now stores bytes
+    in the SAME flat document root the download route reads, whose default is
+    /app/uploads — writable in the dev container, not on a CI runner, where
+    these tests failed with PermissionError: '/app'. Tests that write files
+    must say where; relying on a default that happens to be writable is how
+    this went unnoticed.
+    """
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+
 _TEST_USER = {"user_id": "user-1", "role": "technician", "tenant_id": "tenant-a"}
 
 
@@ -512,10 +527,70 @@ def test_photo_upload_saves_photo(session_factory):
             db.close()
 
     r = asyncio.run(_call_upload())
-    assert r.status_code == 201
+    # This bundle seeds job_id="job-1", which is not a UUID, so the photo
+    # RECORD cannot be written (job_photos.job_id is a Uuid column). The route
+    # used to answer 201 with photo_id=null for a photo that existed nowhere —
+    # reporting success for a write that never happened, the exact thing commit
+    # c1b9729 removed elsewhere. It now fails loudly and says why (2026-08-13).
+    assert r.status_code == 500
+    assert "could not be attached" in _as_json(r)["detail"]
+
+
+def test_photo_upload_saves_photo_for_a_real_job(session_factory, monkeypatch):
+    """The happy path, with a job id the photo record can actually key on."""
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import text as _sql
+
+    job_uuid = _uuid4()
+    db = session_factory()
+    try:
+        db.execute(
+            _sql(
+                "INSERT INTO jobs (id, company_id, title, dispatch_status, "
+                "billing_status, lifecycle_stage, created_at) "
+                "VALUES (:i, :c, :t, :d, :b, :l, :ts)"
+            ),
+            {"i": job_uuid.hex, "c": "tenant-1", "t": "Photo job",
+             "d": "on_site", "b": "unbilled", "l": "in_progress",
+             "ts": datetime.now(UTC)},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    # Ownership is exercised by its own tests; this one is about whether a
+    # valid job id produces a real photo RECORD.
+    monkeypatch.setattr(mobile_router, "_assert_job_access", lambda *a, **k: None)
+    monkeypatch.setattr(mobile_router, "_get_job", lambda *a, **k: {"id": job_uuid.hex})
+
+    class _DummyUpload:
+        filename = "site.jpg"
+        content_type = "image/jpeg"
+
+        async def read(self) -> bytes:
+            return b"\xff\xd8\xff\xdb\x00C"
+
+    async def _call_upload():
+        db = session_factory()
+        try:
+            return await mobile_router.upload_mobile_job_photo(
+                job_id=job_uuid.hex,
+                request=_request(),
+                file=_DummyUpload(),  # type: ignore[arg-type]
+                current_user=_TEST_USER,
+                db=db,
+            )
+        finally:
+            db.close()
+
+    r = asyncio.run(_call_upload())
+    assert r.status_code == 201, _as_json(r)
     body = _as_json(r)
     assert body["filename"].endswith(".jpg")
     assert body["file_size"] > 0
+    # A real photo id — the record exists, which is what 201 is claiming.
+    assert body["photo_id"]
 
 
 def test_signature_capture_persists_signature(session_factory):
