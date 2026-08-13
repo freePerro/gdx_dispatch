@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -57,7 +57,7 @@ def _derive_margin_pct(cost: Decimal | float | None, unit_price: Decimal | float
     cost — e.g. a fat-fingered $5 on a $1000 cost derives -199.0, which would raise
     DataError on Postgres; SQLite CI ignores Numeric precision, so guard here).
     Otherwise returns (unit_price - cost) / unit_price as a Decimal. Used at line creation
-    when the client sent a cost (e.g. CHI / typed-catalog door) without going through the
+    when the client sent a cost (e.g. a plugin-captured / typed-catalog door) without going through the
     engine path, and at PATCH time to heal pre-existing lines that were born with cost
     but NULL margin.
     """
@@ -425,7 +425,7 @@ class EstimateLineCreateNested(BaseModel):
     labor_price_item_id: UUID | None = None
     estimated_man_hours: float | None = Field(default=None, ge=0, le=999.99)
     # PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Full captured source
-    # spec a plugin (e.g. CHI pricing) attaches to this line; persisted on the
+    # spec a pricing plugin attaches to this line; persisted on the
     # line so it survives estimate→Job and is readable downstream. See
     # EstimateLine.line_metadata.
     line_metadata: dict | None = None
@@ -458,6 +458,9 @@ class EstimatePatchIn(BaseModel):
     jobsite_address: str | None = None
     description: str | None = None
     notes: str | None = None
+    # Absent for years: the editor's Valid Until field was create-only, so
+    # editing it on an existing estimate silently never persisted.
+    valid_until: date | None = None
     tax_rate: float | None = Field(default=None, ge=0, le=1)
     discount: float | None = Field(default=None, ge=0, le=999999.99)
     job_id: UUID | None = None
@@ -493,7 +496,7 @@ class EstimateLineCreateIn(BaseModel):
     labor_price_item_id: UUID | None = None
     estimated_man_hours: float | None = Field(default=None, ge=0, le=999.99)
     # PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Full captured source
-    # spec a plugin (e.g. CHI pricing) attaches to this line; persisted on the
+    # spec a pricing plugin attaches to this line; persisted on the
     # line so it survives estimate→Job and is readable downstream. See
     # EstimateLine.line_metadata.
     line_metadata: dict | None = None
@@ -804,7 +807,7 @@ def create_estimate(
                 margin_pct_snapshot = None
                 pricing_source = None
                 # Derive margin_pct_snapshot whenever cost + unit_price are both present
-                # (CHI / typed-catalog doors etc. that don't go through the engine path).
+                # (plugin-captured / typed-catalog doors etc. that don't go through the engine path).
                 # Without this, the line is born with NULL margin and the PATCH lock-out
                 # rule classifies it "manually-priced" forever (prod incident 2026-05-07).
                 if cost_snapshot is not None:
@@ -828,7 +831,7 @@ def create_estimate(
             estimated_man_hours=estimated_man_hours_val,
             company_id=tenant_id,
             # Plugin integration (ADR-013) — captured source spec, if the line came
-            # from a plugin (e.g. CHI pricing). See EstimateLine.line_metadata.
+            # from a pricing plugin. See EstimateLine.line_metadata.
             line_metadata=item.line_metadata,
         ))
         running_total += line_total
@@ -1008,7 +1011,7 @@ def add_line(
     else:
         unit_price = _money(payload.unit_price)
         payload_hours_override = None
-        # Cost without a pricing_category (typed-catalog / CHI fallback path).
+        # Cost without a pricing_category (typed-catalog / plugin-capture fallback path).
         # Snapshot the cost and derive margin so future PATCHes can edit it
         # via the engine instead of getting locked out as "manually-priced".
         if payload.cost is not None:
@@ -1126,7 +1129,7 @@ def patch_line(
     wants_engine_fields = new_cost is not None or new_override is not None or clear_override
     if wants_engine_fields and not is_engine_line:
         # Heal pre-existing lines born with cost_snapshot but NULL margin
-        # (typed-catalog / CHI doors created before 2026-05-07). Back-derive
+        # (typed-catalog / plugin-captured doors created before 2026-05-07). Back-derive
         # margin from current cost + unit_price and proceed. Genuine free-form
         # lines (no cost snapshot, no usable unit_price) still 409 — unless
         # the caller sent an explicit price, in which case there is nothing
