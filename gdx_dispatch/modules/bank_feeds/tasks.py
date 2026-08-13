@@ -97,9 +97,17 @@ def _sync_one_institution(
     from gdx_dispatch.modules.bank_feeds.models import (
         AUTH_DISCONNECTED,
         AUTH_HEALTHY,
+        PROVIDER_SIMPLEFIN,
         BankFeedAccount,
         BannoConnection,
     )
+
+    # Provider dispatch — the one seam. SimpleFIN rows have no OAuth client;
+    # the whole path (windows, ledger, watermarks) lives in simplefin_service.
+    if (getattr(institution, "provider", None) or "banno") == PROVIDER_SIMPLEFIN:
+        from gdx_dispatch.modules.bank_feeds import simplefin_service  # noqa: PLC0415
+
+        return simplefin_service.sync_institution(db, institution)
 
     result: dict = {"institution_id": str(institution.id), "accounts": {}, "errors": []}
     connections = db.execute(
@@ -282,6 +290,18 @@ def bank_feeds_schedule_dispatcher() -> dict:
                     skipped += 1
                     continue
                 if next_run_at > datetime.now(timezone.utc):
+                    skipped += 1
+                    continue
+                # Fetch-hours window (Doug 2026-08-13): evaluated per tick in
+                # TENANT-LOCAL wall-clock time. Skipping WITHOUT advancing
+                # next_run_at means the first tick inside the window fires the
+                # overdue run instead of losing it. Window and daily cap are
+                # schedule-global by design (Banno rows are dormant; a manual
+                # Sync Now bypasses the window but never the cap).
+                from gdx_dispatch.modules.bank_feeds import simplefin_service  # noqa: PLC0415
+
+                now_local = datetime.now(timezone.utc).astimezone(service.tenant_zoneinfo(db))
+                if not simplefin_service.within_fetch_window(schedule, now_local.time()):
                     skipped += 1
                     continue
                 schedule.next_run_at = service.compute_next_run_at(schedule.frequency)

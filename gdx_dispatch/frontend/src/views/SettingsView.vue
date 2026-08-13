@@ -295,6 +295,8 @@
 
             <OutlookIntegrationCard />
 
+            <SimpleFINCard />
+
             <div class="integration-shell" data-testid="integration-email">
               <div class="integration-shell-header">
                 <div>
@@ -1114,6 +1116,7 @@ import AIAssistantIntegrationCard from "../components/AIAssistantIntegrationCard
 import GoogleMapsIntegrationCard from "../components/GoogleMapsIntegrationCard.vue";
 import PhoneComIntegrationCard from "../components/PhoneComIntegrationCard.vue";
 import OutlookIntegrationCard from "../components/OutlookIntegrationCard.vue";
+import SimpleFINCard from "../components/SimpleFINCard.vue";
 import OutlookConnectButton from "../components/OutlookConnectButton.vue";
 import MarginTiersPanel from "../components/MarginTiersPanel.vue";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";

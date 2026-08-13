@@ -1447,3 +1447,9 @@ def match_candidates(
     if line is None or line.bank_account_id != account.id:
         raise HTTPException(status_code=404, detail="Statement line not found")
     return statement_matching.manual_candidates(db, line)
+
+
+# ── SimpleFIN provider (Settings → Integrations card) ──────────────────
+from gdx_dispatch.modules.bank_feeds.simplefin_router import sfin_router  # noqa: E402
+
+router.include_router(sfin_router, prefix="/simplefin")
