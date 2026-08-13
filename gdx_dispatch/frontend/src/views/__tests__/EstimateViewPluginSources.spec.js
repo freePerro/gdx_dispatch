@@ -81,7 +81,9 @@ describe('EstimateView — multi-provider estimate_source wiring', () => {
   });
 
   it('names attached photos by provider key, not a hardcoded prefix', () => {
-    expect(SRC).toMatch(/\$\{activeSource\.value\?\.pluginKey \|\| "plugin"\}-\$\{item\.qcd \|\| item\.id\}/);
+    // The explicit pluginKey arg is the deferred-photo flush path, where
+    // activeSource may have moved on by the time the estimate first saves.
+    expect(SRC).toMatch(/\$\{pluginKey \|\| activeSource\.value\?\.pluginKey \|\| "plugin"\}-\$\{item\.qcd \|\| item\.id\}/);
   });
 });
 
@@ -127,5 +129,58 @@ describe('EstimateView — finalized estimates lock the whole editor', () => {
     expect(save).toMatch(/:disabled="estimateLocked"/);
     const copy = SRC.slice(SRC.indexOf('label="Use as jobsite"'), SRC.indexOf('copy-customer-address-to-jobsite'));
     expect(copy).toMatch(/:disabled="estimateLocked"/);
+  });
+});
+
+describe('EstimateView — providers on NEW estimates (2026-08-13, Doug)', () => {
+  it('no longer gates the provider buttons on isExisting', () => {
+    // The buttons hid until the estimate saved; lines insert client-side and
+    // survive the draft-create flip, so there was nothing left to gate.
+    expect(SRC).not.toMatch(/<template v-if="isExisting">\s*<Button v-for="src in estimateSources"/);
+    expect(SRC).toMatch(/<Button v-for="src in estimateSources" :key="src\.pluginKey"/);
+  });
+
+  it('queues a captured photo when there is no estimate id yet, and flushes on first save', () => {
+    // POST /attachments needs an id; on a new estimate the photo queues and
+    // the isExisting watcher attaches it the moment the estimate exists.
+    expect(SRC).toMatch(/_pendingCapturedImages\.push\(\{/);
+    expect(SRC).toMatch(/watch\(isExisting, async \(nowExists\) => \{/);
+    expect(SRC).toMatch(/_attachCapturedImage\(p\.image, p\.item, p\.pluginKey\)/);
+    expect(SRC).toMatch(/will attach once the estimate saves/);
+  });
+
+  it('carries pre-customer-pick lines across the draft-create flip', () => {
+    // fetchEstimate() replaces the whole form from the server snapshot; the
+    // draft-create POST carries no lines, so anything added before the
+    // customer pick (free-form, catalog, plugin) silently vanished.
+    expect(SRC).toMatch(/const preFlipLines = form\.value\.line_items\.filter\(/);
+    expect(SRC).toMatch(/if \(preFlipLines\.length\) form\.value\.line_items = preFlipLines;/);
+  });
+});
+
+describe('EstimateView — Phase 2 in-context pricing (plan §2)', () => {
+  it('renders a write-gated "Price a new {label}…" button per provider', () => {
+    // Capture/create endpoints are POSTs — the proxy grades them write, so a
+    // read-only user\'s button could only 403.
+    expect(SRC).toMatch(/writableSources = computed\(\(\) =>\s*estimateSources\.value\.filter\(\(s\) => auth\.hasPluginPermission\(s\.pluginKey, "write"\)\)\)/);
+    expect(SRC).toMatch(/v-for="src in writableSources"/);
+    expect(SRC).toMatch(/\? 'est-price-with-btn' : `est-price-with-btn-\$\{src\.pluginKey\}`/);
+  });
+
+  it('embeds the host-rendered PluginScreen in the workspace dialog', () => {
+    // Our component, not third-party code (ADR-013: no plugin JS in the browser).
+    expect(SRC).toMatch(/import PluginScreen from "\.\.\/components\/PluginScreen\.vue"/);
+    expect(SRC).toMatch(/<PluginScreen v-if="workspaceVisible && workspaceSource"/);
+    expect(SRC).toMatch(/:plugin-key="workspaceSource\.pluginKey"/);
+    expect(SRC).toMatch(/data-testid="est-plugin-workspace"/);
+  });
+
+  it('reopens the picker on workspace close so the fresh capture is one click from a line', () => {
+    // Reuses the proven insertion path (photo attach, metadata, engine
+    // pricing) instead of inventing a second one; list endpoints are
+    // newest-first so the just-priced item is on top.
+    const close = SRC.slice(SRC.indexOf('function onWorkspaceClosed'), SRC.indexOf('const _pendingCapturedImages'));
+    expect(close).toMatch(/if \(src\) openCapturedPicker\(src\);/);
+    expect(SRC).toMatch(/@hide="onWorkspaceClosed"/);
   });
 });
