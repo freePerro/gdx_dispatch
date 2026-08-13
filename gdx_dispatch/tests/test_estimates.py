@@ -441,7 +441,19 @@ def test_delete_line_removes_and_recalculates_total(client: TestClient):
     assert est["total"] == pytest.approx(50.0)
 
 
-def test_send_estimate_marks_sent(client: TestClient):
+def _mock_email_success(monkeypatch):
+    """POST /send flips status only when a provider ACCEPTS the message
+    (2026-08-13) — in this harness no provider exists, so send-behavior
+    tests stub the unified helper to a successful delivery."""
+    import gdx_dispatch.core.transactional_email as te
+    monkeypatch.setattr(
+        te, "send_transactional_email",
+        lambda **kw: (True, "outlook_graph", None),
+    )
+
+
+def test_send_estimate_marks_sent(client: TestClient, monkeypatch):
+    _mock_email_success(monkeypatch)
     estimate = _create_estimate(client)
 
     r = client.post(f"/api/estimates/{estimate['id']}/send")
@@ -449,12 +461,29 @@ def test_send_estimate_marks_sent(client: TestClient):
     data = r.json()
     assert data["status"] == "sent"
     assert data["sent_at"] is not None
+    assert data["email_sent"] is True
+
+
+def test_send_without_delivery_does_not_claim_sent(client: TestClient):
+    """No provider accepted the message → the estimate must NOT say sent.
+    This endpoint used to stamp sent/sent_at before even attempting the
+    email; /mark-sent is the honest path for out-of-band delivery."""
+    estimate = _create_estimate(client)
+
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["email_sent"] is False
+    assert data["status"] == "draft"
+    assert data["sent_at"] is None
+    assert data["email_skip_reason"]
 
 
 def test_send_populates_valid_until_from_expiry_days(client: TestClient, monkeypatch):
     """On send, valid_until = sent_at + the tenant's estimate_expiry_days
     (plan §15). Without this, valid_until stayed NULL and estimates never
     expired. get_features is monkeypatched so the window is deterministic."""
+    _mock_email_success(monkeypatch)
     from datetime import datetime
 
     from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
@@ -491,6 +520,7 @@ def _set_valid_until(client: TestClient, estimate_id: str, iso_dt: str) -> None:
 
 def test_send_does_not_overwrite_existing_valid_until(client: TestClient, monkeypatch):
     """A hand-picked valid_until (or a re-send) must not be pushed out."""
+    _mock_email_success(monkeypatch)
     from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
     monkeypatch.setattr(
         "gdx_dispatch.routers.estimates.get_features",
@@ -506,6 +536,7 @@ def test_send_does_not_overwrite_existing_valid_until(client: TestClient, monkey
 def test_resend_refreshes_a_past_valid_until(client: TestClient, monkeypatch):
     """Re-sending an estimate whose window has lapsed gives it a FRESH window,
     instead of leaving the stale past date the nightly task would re-expire."""
+    _mock_email_success(monkeypatch)
     from datetime import datetime, timezone
 
     from gdx_dispatch.modules.estimates_features.service import EstimatesFeatures
@@ -534,7 +565,7 @@ def test_expire_stale_marks_past_due_sent_expired(client: TestClient, monkeypatc
         lambda _tid: EstimatesFeatures(estimate_expiry_days=30),
     )
     estimate = _create_estimate(client)
-    client.post(f"/api/estimates/{estimate['id']}/send")
+    client.post(f"/api/estimates/{estimate['id']}/mark-sent")
     # Force the window into the past, then sweep.
     _set_valid_until(client, estimate["id"], "2000-01-01T00:00:00+00:00")
 
@@ -548,7 +579,7 @@ def test_expire_stale_marks_past_due_sent_expired(client: TestClient, monkeypatc
 
 def test_accept_estimate_marks_accepted(client: TestClient):
     estimate = _create_estimate(client)
-    client.post(f"/api/estimates/{estimate['id']}/send")
+    client.post(f"/api/estimates/{estimate['id']}/mark-sent")
 
     r = client.post(f"/api/estimates/{estimate['id']}/accept")
     assert r.status_code == 200, r.text
@@ -584,7 +615,7 @@ def test_accept_estimate_auto_creates_job(client: TestClient):
         db.close()
 
     estimate = _create_estimate(client)
-    client.post(f"/api/estimates/{estimate['id']}/send")
+    client.post(f"/api/estimates/{estimate['id']}/mark-sent")
 
     r = client.post(f"/api/estimates/{estimate['id']}/accept")
     assert r.status_code == 200, r.text
@@ -709,7 +740,7 @@ def test_cannot_reopen_an_active_or_accepted_estimate(client: TestClient):
     # draft
     assert client.post(f"/api/estimates/{estimate['id']}/reopen").status_code == 409
     # sent
-    client.post(f"/api/estimates/{estimate['id']}/send")
+    client.post(f"/api/estimates/{estimate['id']}/mark-sent")
     assert client.post(f"/api/estimates/{estimate['id']}/reopen").status_code == 409
     # accepted
     client.post(f"/api/estimates/{estimate['id']}/accept")

@@ -111,10 +111,17 @@ def test_declined_estimate_is_Declined():
     assert st.is_finished is True
 
 
-def test_rejected_and_expired_estimate_also_Declined():
-    for es in ("rejected", "expired"):
-        st = _s(lifecycle_stage="estimate", estimate_status=es, invoices=[])
-        assert st.stage == "declined" and st.type == TYPE_LOST
+def test_expired_estimate_also_Declined():
+    st = _s(lifecycle_stage="estimate", estimate_status="expired", invoices=[])
+    assert st.stage == "declined" and st.type == TYPE_LOST
+
+
+def test_rejected_estimate_is_still_an_open_estimate_not_lost():
+    """'rejected' = the estimate EMAIL bounced (bounce detector,
+    2026-08-13) — the customer never saw the quote. The job is an open
+    estimate awaiting a re-send, not a lost one."""
+    st = _s(lifecycle_stage="estimate", estimate_status="rejected", invoices=[])
+    assert (st.stage, st.type, st.label) == ("estimate", TYPE_OPEN, "Estimate")
 
 
 def test_declined_estimate_does_not_override_real_work_with_invoice():

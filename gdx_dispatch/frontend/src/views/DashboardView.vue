@@ -649,6 +649,20 @@ async function loadVendorBills() {
 // handled states.
 const newLeadCount = ref(0);
 
+// Estimates whose EMAIL bounced (the outlook sync's bounce detector flips
+// them sent→rejected). The customer never received the estimate — without
+// this row the only signal is an NDR buried in the inbox.
+const rejectedEstimateCount = ref(0);
+
+async function loadRejectedEstimates() {
+  try {
+    const rows = await api.get('/api/estimates?status=rejected', { suppressErrorToast: true });
+    rejectedEstimateCount.value = Array.isArray(rows) ? rows.length : 0;
+  } catch {
+    rejectedEstimateCount.value = 0;
+  }
+}
+
 async function loadWebsiteLeads() {
   try {
     await auth.loadPermissions();
@@ -753,6 +767,16 @@ const attentionItems = computed(() => {
       severity: 'info',
       text: `${smsN} unread text message${smsN === 1 ? '' : 's'}`,
       link: '/phone-com/messages',
+    });
+  }
+  const rejN = toNumber(rejectedEstimateCount.value);
+  if (rejN > 0) {
+    items.push({
+      id: 'rejected-estimates',
+      type: 'Bounced',
+      severity: 'danger',
+      text: `${rejN} estimate email${rejN === 1 ? '' : 's'} bounced — the customer never received ${rejN === 1 ? 'it' : 'them'}`,
+      link: '/estimates?status=rejected',
     });
   }
   const leadsN = toNumber(newLeadCount.value);
@@ -1164,6 +1188,7 @@ async function loadDashboard() {
     loadPartsToOrder(),
     loadVendorBills(),
     loadWebsiteLeads(),
+    loadRejectedEstimates(),
     loadNextActions(),
     // One refresh each so the dashboard is correct before the sidebar's 60s
     // poll ticks. Both fetchCounts swallow their own errors and dedupe

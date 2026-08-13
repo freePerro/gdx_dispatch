@@ -1182,7 +1182,11 @@ def portal_estimate_accept(
     estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
     if estimate.status == "accepted":
         raise HTTPException(status_code=409, detail="already accepted")
-    if estimate.status != "sent":
+    # "rejected" (email bounced) stays acceptable: an accept is the
+    # strongest possible proof the customer DID receive the estimate, so
+    # it self-heals a bounce-detector false positive instead of stranding
+    # a real customer on a 409.
+    if estimate.status not in ("sent", "rejected"):
         raise HTTPException(status_code=409, detail="estimate is not open for acceptance")
 
     estimate.status = "accepted"
