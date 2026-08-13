@@ -246,6 +246,23 @@
             to get your job on the schedule (invoice {{ depositPrompt?.invoice_number }}).
           </p>
           <p class="meta">You can pay securely online by card — or pay later from the Invoices tab.</p>
+          <!-- Card was the only payment method this dialog acknowledged, which
+               read as "card or nothing". A customer cannot record their own
+               cash, and must not be able to — so this states the check option
+               honestly and records NOTHING. The money becomes real when the
+               office has it in hand. -->
+          <details class="pay-by-check" data-testid="deposit-pay-by-check">
+            <summary>Paying by check?</summary>
+            <p class="meta">
+              Make it out to <b>{{ company.name }}</b> and write invoice
+              <b>{{ depositPrompt?.invoice_number }}</b> on the memo line.
+              <template v-if="company.address"> Mail to {{ company.address }}.</template>
+              <template v-else> Use the remit-to address on your invoice.</template>
+            </p>
+            <p class="meta">
+              We'll mark it paid when it arrives — no need to do anything else here.
+            </p>
+          </details>
           <template #footer>
             <Button label="Pay later" text @click="depositPrompt = null" data-testid="deposit-pay-later" />
             <Button label="Pay deposit now" icon="pi pi-credit-card" severity="success"

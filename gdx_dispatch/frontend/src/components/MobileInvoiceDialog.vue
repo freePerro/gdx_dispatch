@@ -155,7 +155,23 @@ async function recordPayment(inv) {
     closePayForm()
     await loadSummary()
   } catch (e) {
-    toast.add({ severity: 'error', summary: 'Could not record payment', detail: e.message, life: 5000 })
+    // A duplicate 409 means the money IS on the invoice — the opposite of
+    // every other 409 here. Reporting it as a failure is what makes a tech
+    // holding a customer's check record it a second time once the server's
+    // dedupe window closes, which is the exact double-charge that window
+    // exists to prevent.
+    if (e?.code === 'duplicate_payment') {
+      toast.add({
+        severity: 'info',
+        summary: 'Already recorded',
+        detail: 'This payment is already on the invoice — nothing was added.',
+        life: 5000,
+      })
+      closePayForm()
+      await loadSummary()
+    } else {
+      toast.add({ severity: 'error', summary: 'Could not record payment', detail: e.message, life: 5000 })
+    }
   } finally {
     recordingPayment.value = false
   }

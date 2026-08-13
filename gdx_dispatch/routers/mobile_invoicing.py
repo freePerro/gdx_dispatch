@@ -1,18 +1,28 @@
 """Sprint tech_mobile Phase 2.2 — On-Site Invoicing.
 
 Mobile-scoped wrappers around invoices so techs can generate and email
-an invoice from the truck immediately after job completion. No payment
-capture (deferred to a future sprint per the sprint plan); office still
-reconciles the money side.
+an invoice from the truck immediately after job completion.
+
+Payment capture is NOT deferred any more (the old note here said it was, long
+after the truck started taking cash and checks): the field posts money through
+the shared ``POST /api/invoices/{id}/payments``, which carries no permission
+dependency. LIST reads are the asymmetry — a technician has no invoices
+permission at all, so `GET /api/invoices` and `/api/invoices/summary` 403 them
+— which is why /invoices/open below exists. Note the single-invoice endpoints
+(`GET /api/invoices/{id}`, `/send`, `/payments`) carry no permission
+dependency either; that pre-existing gap is not closed here, so scoping rests
+on this list never handing over an id the caller does not own.
 
 Endpoints (all under /api/mobile, gated on the "mobile" module):
 
     POST /api/mobile/jobs/{job_id}/invoice         — create invoice from
                                                       completed job + accepted quote
     GET  /api/mobile/jobs/{job_id}/financial       — financial summary at close-out
+    GET  /api/mobile/invoices/open                 — unpaid invoices scoped to
+                                                      the tech's own jobs
     POST /api/mobile/invoices/{invoice_id}/send    — email invoice to customer
-    POST /api/mobile/invoices/{invoice_id}/send-receipt — send receipt for an
-                                                          office-recorded payment
+    POST /api/mobile/invoices/{invoice_id}/send-receipt — send receipt for a
+                                                          recorded payment
 """
 from __future__ import annotations
 
@@ -65,6 +75,18 @@ router = APIRouter(
 
 def _jr(content: Any, status_code: int = 200) -> JSONResponse:
     return JSONResponse(content=content, status_code=status_code)
+
+
+# Most rows the tech-scoped open-invoice list will return. When it bites, the
+# response carries `truncated: true` and the server logs it — a capped list
+# that looks complete is how "I never saw that invoice" starts.
+_OPEN_INVOICE_CAP = 200
+
+# Job ids per IN-list. A module constant rather than a literal so a test can
+# shrink it and actually exercise the multi-chunk path — with the real value
+# inline, any realistic fixture fits in one chunk and the cross-chunk sort
+# below is never proven.
+_JOB_ID_CHUNK = 200
 
 
 def _money(v: Decimal | float | str) -> Decimal:
@@ -991,6 +1013,116 @@ def mobile_send_invoice(
     resend_payload = _serialize_invoice(invoice)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/mobile/invoices/open
+# ---------------------------------------------------------------------------
+
+
+@router.get("/invoices/open", response_model=None)
+def mobile_open_invoices(
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Issued, unpaid invoices the calling tech legitimately touches.
+
+    "Issued" is load-bearing: drafts are excluded (see the WHERE clause) so a
+    tech cannot collect against a bill the office has not reviewed.
+
+    Why this exists: a technician has NO invoices permission at all
+    (core/permissions.py — no invoices.read_all, no invoices.write), so
+    ``GET /api/invoices`` 403s for the field tier and the mobile billing screen
+    was unreachable for its only intended user. Granting invoices.read_all
+    would hand every tech the entire receivables book; this returns only what
+    their own work produced.
+
+    Scope — a job the tech owns, via core/job_access.user_job_ids (the set form
+    of the single-row ownership gate, so the two can never drift), plus deposit
+    invoices whose ESTIMATE points at one of those jobs. That second clause is
+    the one that matters here: a deposit minted at estimate acceptance carries
+    job_id NULL until the estimate becomes a job, so a job_id-only filter would
+    hide exactly the invoice the tech is trying to settle.
+
+    Deliberately NOT covered: a deposit whose estimate has no job either. There
+    is no ownership signal on such a row — including it would leak other
+    people's money — so the answer for those is to record the payment at accept
+    time (the capture form in the accept dialog), or let the office handle it.
+    """
+    tenant_id = _tenant_id(request)
+    user_id = _user_id(current_user or {})
+    if not user_id:
+        return _jr({"detail": "unauthorized"}, 401)
+
+    from gdx_dispatch.core.job_access import user_job_ids
+
+    job_ids = user_job_ids(db, tenant_id, user_id)
+    if not job_ids:
+        return _jr({"invoices": []})
+
+    # Chunked IN-lists: a tech with hundreds of jobs would otherwise build a
+    # bind-parameter list long enough to trip SQLite's limit.
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for start in range(0, len(job_ids), _JOB_ID_CHUNK):
+        chunk = job_ids[start:start + _JOB_ID_CHUNK]
+        binds = {f"j{i}": v for i, v in enumerate(chunk)}
+        placeholders = ", ".join(f":{k}" for k in binds)
+        rows = db.execute(
+            _text(
+                "SELECT CAST(i.id AS TEXT) AS id, i.invoice_number, i.total, "
+                "       i.balance_due, i.status, i.billing_type, i.due_date "
+                "FROM invoices i "
+                "LEFT JOIN estimates e ON CAST(e.id AS TEXT) = CAST(i.estimate_id AS TEXT) "
+                f"WHERE i.company_id = :t AND i.deleted_at IS NULL "
+                # DRAFTS ARE EXCLUDED ON PURPOSE. Since the closeout autodraft
+                # (#286) every finished job mints a draft invoice on the tech's
+                # own job. Listing those here would let a tech collect against
+                # a bill the office has not reviewed — and recording a payment
+                # drives balance_due to zero, which flips the draft straight to
+                # "paid" and routes around the Ready-for-Billing verify gate
+                # entirely. Only issued bills are collectable.
+                "AND i.status NOT IN ('void', 'paid', 'draft') AND i.balance_due > 0 "
+                f"AND (CAST(i.job_id AS TEXT) IN ({placeholders}) "
+                f"     OR CAST(e.job_id AS TEXT) IN ({placeholders})) "
+                "ORDER BY i.due_date ASC, i.invoice_number ASC"
+            ),
+            {"t": tenant_id, **binds},
+        ).fetchall()
+        for r in rows:
+            if r[0] in seen:
+                continue
+            seen.add(r[0])
+            out.append({
+                "id": r[0],
+                "invoice_number": r[1],
+                "total": float(r[2] or 0),
+                "balance_due": float(r[3] or 0),
+                "status": r[4],
+                "billing_type": r[5] or "standard",
+                # Raw SQL hands back a date on Postgres and a plain string on
+                # SQLite, so isoformat() alone crashes under test.
+                "due_date": (
+                    r[6].isoformat() if hasattr(r[6], "isoformat") else (str(r[6]) if r[6] else None)
+                ),
+            })
+    # Sort and cap ACROSS chunks, not inside the loop. A per-chunk LIMIT would
+    # both truncate silently and hand back an order that is only sorted within
+    # each chunk — the soonest-due invoice could land below a later one purely
+    # because of how the job ids happened to be batched.
+    out.sort(key=lambda i: (i["due_date"] or "9999-12-31", i["invoice_number"] or ""))
+    truncated = len(out) > _OPEN_INVOICE_CAP
+    if truncated:
+        log.info(
+            "mobile_open_invoices_truncated user=%s total=%d cap=%d",
+            user_id, len(out), _OPEN_INVOICE_CAP,
+        )
+        out = out[:_OPEN_INVOICE_CAP]
+    # `truncated` is in the BODY, not just the log: a capped list that looks
+    # complete is how "I never saw that invoice" starts, and a server-side log
+    # line is invisible to the person holding the phone.
+    return _jr({"invoices": out, "truncated": truncated})
 
 
 # ---------------------------------------------------------------------------

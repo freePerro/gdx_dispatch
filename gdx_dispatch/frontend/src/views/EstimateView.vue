@@ -62,6 +62,24 @@
               default {{ depositDefault.pct }}% of {{ formatMoney(depositDefault.estimate_total) }}
             </span>
           </div>
+          <!-- The customer hands over a check in the field; the office hits
+               Accept later. Before this, that money had nowhere to go — accept
+               only ever produced an invoice and a pay link. Asking here, beside
+               the amount, is the one moment the operator is holding it. -->
+          <template v-if="collectDeposit && (depositAmount || 0) > 0">
+            <div style="display:flex; align-items:center; gap:.5rem;" class="mb-3">
+              <ToggleSwitch v-model="depositAlreadyPaid" inputId="deposit-already-paid"
+                data-testid="deposit-already-paid-toggle" />
+              <label for="deposit-already-paid">Already paid — record it now</label>
+            </div>
+            <PaymentCaptureForm
+              v-if="depositAlreadyPaid"
+              ref="acceptPayForm"
+              :balance-due="Number(depositAmount) || 0"
+              variant="desktop"
+              data-testid="accept-payment-capture"
+            />
+          </template>
         </template>
         <template #footer>
           <Button label="Cancel" text @click="acceptDialogOpen = false" />
@@ -144,6 +162,23 @@
             default {{ depositDefault.pct }}% of {{ formatMoney(depositDefault.estimate_total) }}
           </span>
         </div>
+        <!-- The retroactive path is squarely the money-already-received case:
+             it exists for estimates accepted before deposits were a feature,
+             which is exactly when a check is already sitting in the drawer. -->
+        <template v-if="(depositAmount || 0) > 0">
+          <div style="display:flex; align-items:center; gap:.5rem;" class="mb-3">
+            <ToggleSwitch v-model="depositAlreadyPaid" inputId="request-deposit-already-paid"
+              data-testid="request-deposit-already-paid-toggle" />
+            <label for="request-deposit-already-paid">Already paid — record it now</label>
+          </div>
+          <PaymentCaptureForm
+            v-if="depositAlreadyPaid"
+            ref="requestPayForm"
+            :balance-due="Number(depositAmount) || 0"
+            variant="desktop"
+            data-testid="request-payment-capture"
+          />
+        </template>
         <template #footer>
           <Button label="Cancel" text @click="requestDepositOpen = false" />
           <Button label="Create Deposit Invoice" icon="pi pi-wallet" severity="success" :loading="requestDepositBusy"
@@ -158,11 +193,11 @@
           <template v-if="(depositResult?.balance_due ?? depositResult?.amount) > 0"> is due now.</template>
           <template v-else> is paid.</template>
         </p>
-        <p v-if="depositResult?.pay_url" class="text-sm mb-3" style="opacity:.7;">
+        <p v-if="depositResult?.pay_url && depositResultOwes" class="text-sm mb-3" style="opacity:.7;">
           Send the customer the payment link, or record a check/cash payment on the invoice.
         </p>
         <template #footer>
-          <Button v-if="depositResult?.pay_url" label="Copy Pay Link" icon="pi pi-link"
+          <Button v-if="depositResult?.pay_url && depositResultOwes" label="Copy Pay Link" icon="pi pi-link"
             data-testid="copy-deposit-link" @click="copyDepositPayLink" />
           <Button label="Open Invoice" icon="pi pi-file" severity="secondary"
             data-testid="open-deposit-invoice" @click="$router.push(`/billing/${depositResult?.invoice_id}`)" />
@@ -828,6 +863,7 @@ import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
+import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
 import Button from "primevue/button";
 import Card from "primevue/card";
 import Column from "primevue/column";
@@ -2477,7 +2513,18 @@ const acceptBusy = ref(false);
 const depositDefault = ref({ pct: 0, amount: 0, estimate_total: 0, existing: null });
 const collectDeposit = ref(false);
 const depositAmount = ref(0);
+// "The customer already handed me a check" — the case accept had no answer for.
+const depositAlreadyPaid = ref(false);
+const acceptPayForm = ref(null);
 const depositResult = ref(null);
+// A deposit with nothing left owing must not be offered a payment link. The
+// operator is standing there holding the money; "send them a link to pay" is
+// the wrong-state UI that produced this report in the first place.
+const depositResultOwes = computed(() => {
+  const r = depositResult.value;
+  if (!r) return false;
+  return Number(r.balance_due ?? r.amount ?? 0) > 0;
+});
 const depositResultOpen = computed({
   get: () => !!depositResult.value,
   set: (v) => { if (!v) depositResult.value = null; },
@@ -2485,6 +2532,10 @@ const depositResultOpen = computed({
 
 async function acceptEstimate() {
   depositResult.value = null;
+  // Off by default every time. Both dialogs share this ref, and a toggle left
+  // on from a previous open would silently re-arm a payment form for a
+  // different estimate.
+  depositAlreadyPaid.value = false;
   try {
     const d = await api.get(`/api/estimates/${route.params.id}/deposit-default`);
     depositDefault.value = d || { pct: 0, amount: 0, estimate_total: 0, existing: null };
@@ -2500,6 +2551,14 @@ async function acceptEstimate() {
 }
 
 async function doAcceptEstimate() {
+  // Collect (and cash-confirm) BEFORE accepting: if the operator backs out of
+  // the confirmation, nothing should have happened yet. Doing it after the
+  // accept would leave an accepted estimate behind a cancelled dialog.
+  let paymentPayload = null;
+  if (collectDeposit.value && depositAlreadyPaid.value && acceptPayForm.value) {
+    paymentPayload = await acceptPayForm.value.collect();
+    if (!paymentPayload) return; // cancelled at the confirm, or incomplete
+  }
   acceptBusy.value = true;
   try {
     const body = { deposit_amount: collectDeposit.value ? (depositAmount.value || 0) : 0 };
@@ -2516,6 +2575,29 @@ async function doAcceptEstimate() {
       toast.add({ severity: "warn", summary: "Deposit not created", detail: result.deposit_skipped, life: 6000 });
     }
     toast.add({ severity: "success", summary: "Accepted", detail: "Estimate accepted", life: 3000 });
+    // Second, independent call — deliberately NOT folded into the accept
+    // transaction. A payment problem (overpayment 422, duplicate 409) must
+    // never cost us the acceptance, which is the same rule the server-side
+    // deposit flow follows with its deposit_skipped escape hatch.
+    if (paymentPayload) {
+      if (result?.deposit?.invoice_id) {
+        await recordDepositPayment(result.deposit.invoice_id, paymentPayload);
+      } else {
+        // The operator confirmed a payment and no deposit invoice came back
+        // (deposit_skipped: no customer, bad amount). Silently dropping money
+        // the operator just attested to is the worst possible outcome — they
+        // would believe it was recorded.
+        toast.add({
+          severity: "error",
+          summary: "Payment NOT recorded",
+          detail:
+            "No deposit invoice was created, so there was nothing to record the "
+            + `${formatMoney(paymentPayload.amount)} against. Create a deposit `
+            + "invoice, then record the payment on it.",
+          life: 12000,
+        });
+      }
+    }
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to accept", life: 3000 });
   } finally {
@@ -2523,11 +2605,71 @@ async function doAcceptEstimate() {
   }
 }
 
+/**
+ * Record an already-received deposit payment against the just-minted deposit
+ * invoice, then re-read it so the result dialog reflects reality.
+ *
+ * Failure here never unwinds the acceptance — the estimate is accepted and the
+ * invoice exists. Surface the server's own text (payments answers business
+ * refusals with a 409 carrying operator-useful detail) and leave the result
+ * dialog showing the pay link so there is still a way to collect.
+ */
+async function recordDepositPayment(invoiceId, payload) {
+  // The form capped the amount at what the operator TYPED, but the invoice we
+  // actually got back may owe something different — create_deposit_invoice is
+  // idempotent, so an accept that races another surface (or a retroactive
+  // request) returns a PRE-EXISTING deposit that may be partly or fully paid.
+  // Posting the typed amount at that invoice would overpay it. The overpayment
+  // gate is behind the ledger flag, so today nothing downstream would object.
+  const owed = Number(depositResult.value?.balance_due ?? NaN);
+  if (Number.isFinite(owed) && payload.amount > owed + 0.005) {
+    toast.add({
+      severity: "warn",
+      summary: "Payment NOT recorded",
+      detail:
+        `This deposit only owes ${formatMoney(owed)}, but ${formatMoney(payload.amount)} `
+        + "was entered. Open the invoice and record the correct amount.",
+      life: 12000,
+    });
+    return;
+  }
+  try {
+    await api.post(`/api/invoices/${invoiceId}/payments`, payload);
+    try {
+      const fresh = await api.get(`/api/invoices/${invoiceId}`);
+      depositResult.value = {
+        ...depositResult.value,
+        status: fresh?.status ?? depositResult.value?.status,
+        balance_due: Number(fresh?.balance_due ?? 0),
+      };
+    } catch {
+      // The money landed; a failed re-read is cosmetic. Reflect it locally
+      // rather than leaving the dialog claiming the deposit is still due.
+      depositResult.value = { ...depositResult.value, balance_due: 0, status: "paid" };
+    }
+    toast.add({
+      severity: "success",
+      summary: "Payment recorded",
+      detail: `${formatMoney(payload.amount)} ${payload.method.toLowerCase()} recorded on the deposit`,
+      life: 4000,
+    });
+  } catch (err) {
+    toast.add({
+      severity: "error",
+      summary: "Deposit created — payment NOT recorded",
+      detail: `${err.message || "Payment failed"}. Open the invoice to record it.`,
+      life: 9000,
+    });
+  }
+}
+
 // Retroactive deposit request for an already-accepted estimate.
 const requestDepositOpen = ref(false);
 const requestDepositBusy = ref(false);
+const requestPayForm = ref(null);
 
 async function openRequestDeposit() {
+  depositAlreadyPaid.value = false;
   try {
     const d = await api.get(`/api/estimates/${route.params.id}/deposit-default`);
     depositDefault.value = d || { pct: 0, amount: 0, estimate_total: 0, existing: null };
@@ -2545,6 +2687,13 @@ async function openRequestDeposit() {
 }
 
 async function doRequestDeposit() {
+  // Same ordering rule as accept: confirm before anything is created, so
+  // backing out of the cash prompt leaves no invoice behind.
+  let paymentPayload = null;
+  if (depositAlreadyPaid.value && requestPayForm.value) {
+    paymentPayload = await requestPayForm.value.collect();
+    if (!paymentPayload) return;
+  }
   requestDepositBusy.value = true;
   try {
     const resp = await api.post(`/api/estimates/${route.params.id}/deposit-invoice`, {
@@ -2552,6 +2701,9 @@ async function doRequestDeposit() {
     });
     requestDepositOpen.value = false;
     depositResult.value = resp;
+    if (paymentPayload && resp?.invoice_id) {
+      await recordDepositPayment(resp.invoice_id, paymentPayload);
+    }
   } catch (err) {
     toast.add({ severity: "error", summary: "Error", detail: err.message || "Failed to create deposit invoice", life: 5000 });
   } finally {

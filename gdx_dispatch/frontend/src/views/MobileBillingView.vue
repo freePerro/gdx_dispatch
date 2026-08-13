@@ -112,14 +112,26 @@
             <div class="total-row total-grand"><span>Balance</span><span>${{ fmtMoney(detail.balance_due ?? (Number(detail.total || 0) - Number(detail.amount_paid || 0))) }}</span></div>
           </div>
 
-          <div v-if="canMarkPaid" class="pay-method-row">
-            <span class="muted">Payment method</span>
-            <SelectButton v-model="payMethod" :options="['Cash', 'Check', 'Card']" :allow-empty="false" data-test="mb-pay-method" />
+          <!-- Was a "Mark paid" button that could only ever pay the FULL
+               balance, with no check #, no offline queue, and a UTC date that
+               booked evening payments on tomorrow. The shared form fixes all
+               four at once. -->
+          <div v-if="canMarkPaid" class="pay-form-row">
+            <PaymentCaptureForm
+              ref="payForm"
+              :balance-due="detailBalance"
+              :methods="['Cash', 'Check', 'Card']"
+              variant="mobile"
+              standalone
+              :busy="actionSaving"
+              submit-label="Record payment"
+              data-test="mb-pay-form"
+              @submit="recordPayment"
+            />
           </div>
         </div>
         <template #footer>
           <Button v-if="detail && canSend" label="Send" icon="pi pi-send" :loading="actionSaving" @click="sendInvoice" data-test="mb-send" />
-          <Button v-if="detail && canMarkPaid" label="Mark paid" icon="pi pi-check" severity="success" :loading="actionSaving" @click="markPaid" data-test="mb-mark-paid" />
           <Button label="Close" severity="secondary" @click="closeDetail" />
         </template>
       </Dialog>
@@ -135,12 +147,25 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
-import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import { invoiceStatusSeverity as statusSeverity } from '../utils/statusSeverity'
-const { confirmAsync } = useDestructiveConfirm();
+import { usePermission } from '../composables/usePermission'
+import { useAuthStore } from '../stores/auth'
+import PaymentCaptureForm from '../components/PaymentCaptureForm.vue'
 
 const api = useApi()
 const toast = useToast()
+const { hasPermission, permissionsLoaded } = usePermission()
+const auth = useAuthStore()
+
+// Office tiers (admin/owner/accounting/sales) read the whole receivables book;
+// technicians read only their own jobs' invoices via the mobile endpoint.
+const officeTier = computed(() => hasPermission('invoices.read_all'))
+
+/** Resolve permissions before the first fetch — see the note in onMounted. */
+async function ensurePermissions() {
+  if (permissionsLoaded.value) return
+  await auth.loadPermissions()
+}
 
 const FILTERS = [
   { label: 'Open', value: 'open' },
@@ -156,7 +181,6 @@ const detailOpen = ref(false)
 const detail = ref(null)
 const detailLoading = ref(false)
 const actionSaving = ref(false)
-const payMethod = ref('Check')
 
 const visibleInvoices = computed(() => {
   if (filter.value === 'all') return invoices.value
@@ -183,6 +207,12 @@ const emptyTitle = computed(() => {
 const billingSummary = ref(null)
 
 async function loadBillingSummary() {
+  // Company-wide KPIs are office data and the endpoint is invoices.read_all —
+  // asking as a technician is a guaranteed 403. Don't ask.
+  if (!officeTier.value) {
+    billingSummary.value = null
+    return
+  }
   try {
     billingSummary.value = await api.get('/api/invoices/summary')
   } catch (_) {
@@ -233,7 +263,18 @@ const canSend = computed(() => {
 
 const canMarkPaid = computed(() => {
   const s = String(detail.value?.status || '').toLowerCase()
-  return !['paid', 'void', 'canceled'].includes(s)
+  if (['paid', 'void', 'canceled'].includes(s)) return false
+  return detailBalance.value > 0
+})
+
+// What is actually left owing — the capture form prefills from this, so the
+// operator never retypes a number the app already knows.
+const detailBalance = computed(() => {
+  const d = detail.value
+  if (!d) return 0
+  const explicit = Number(d.balance_due)
+  if (Number.isFinite(explicit) && d.balance_due != null) return explicit
+  return Number(d.total || 0) - Number(d.amount_paid || 0)
 })
 
 function fmtMoney(n) {
@@ -262,11 +303,25 @@ function isOverdue(inv) {
   return new Date(inv.due_date) < new Date()
 }
 
+/**
+ * Office tiers read the whole book; the field tier reads only its own work.
+ *
+ * A technician has NO invoices permission at all, so `GET /api/invoices` 403s
+ * for them — this screen was unreachable for the very user who needs it at a
+ * customer's door. Rather than grant techs invoices.read_all (which hands over
+ * the entire receivables list), they get the mobile-scoped endpoint: unpaid
+ * invoices on their own jobs, plus deposits whose estimate points at one.
+ */
 async function fetchInvoices() {
   loading.value = true
   try {
-    const r = await api.get('/api/invoices')
-    invoices.value = Array.isArray(r) ? r : r?.items || r?.data || []
+    if (officeTier.value) {
+      const r = await api.get('/api/invoices')
+      invoices.value = Array.isArray(r) ? r : r?.items || r?.data || []
+    } else {
+      const r = await api.get('/api/mobile/invoices/open')
+      invoices.value = Array.isArray(r?.invoices) ? r.invoices : []
+    }
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Load failed', detail: err.message, life: 4000 })
   } finally {
@@ -315,41 +370,79 @@ async function sendInvoice() {
   }
 }
 
-async function markPaid() {
-  // Records a real payment for the remaining balance — the old PATCH
-  // {status: 'Paid'} 422'd every time (the patch schema forbids status),
-  // and status must stay derived from balance_due anyway.
-  if (!detail.value) return
-  const balance = Number(
-    detail.value.balance_due ?? (Number(detail.value.total || 0) - Number(detail.value.amount_paid || 0)),
-  )
-  if (!(balance > 0)) {
-    toast.add({ severity: 'info', summary: 'No balance due', detail: 'This invoice has nothing left to pay.', life: 3000 })
-    return
-  }
-  const method = payMethod.value || 'Check'
-  if (!(await confirmAsync({
-    header: 'Confirm',
-    message: `Record a ${method.toLowerCase()} payment of $${balance.toFixed(2)} and mark this invoice paid?`,
-  }))) return
+/**
+ * Record a payment from the shared capture form.
+ *
+ * The form owns the amount (partial allowed), the check #, the interactive
+ * cash confirmation and — critically — the tenant-zone date. The confirmation
+ * covers a human double-tap only; a queue replay is caught server-side by the
+ * reference-less dedupe window in record_payment. The previous
+ * implementation sent `new Date().toISOString().slice(0,10)`, the UTC day:
+ * Central is behind UTC, so anything taken after ~7 PM was booked on tomorrow,
+ * and at month-end into the wrong month.
+ *
+ * postQueued, not post: this screen is used in the field.
+ */
+async function recordPayment(payload) {
+  if (!detail.value || actionSaving.value) return
   actionSaving.value = true
   try {
-    await api.post(`/api/invoices/${detail.value.id}/payments`, {
-      amount: balance,
-      method,
-      date: new Date().toISOString().slice(0, 10),
+    const r = await api.postQueued(`/api/invoices/${detail.value.id}/payments`, payload, {
+      actionType: 'invoice.payment',
+      resourceId: String(detail.value.id),
+      conflictIsError: true,
     })
-    toast.add({ severity: 'success', summary: 'Payment recorded', life: 2500 })
-    detail.value = await api.get(`/api/invoices/${detail.value.id}`)
+    if (r?.queued) {
+      toast.add({
+        severity: 'warn',
+        summary: 'Payment saved offline',
+        detail: 'No signal — it will post when you reconnect.',
+        life: 5000,
+      })
+      closeDetail()
+    } else {
+      toast.add({ severity: 'success', summary: 'Payment recorded', life: 2500 })
+      detail.value = await api.get(`/api/invoices/${detail.value.id}`).catch(() => detail.value)
+    }
     await fetchInvoices()
   } catch (err) {
-    toast.add({ severity: 'error', summary: 'Payment failed', detail: err.message, life: 4000 })
+    // A duplicate 409 means the money IS on the invoice — the opposite of every
+    // other 409 here. Rendering it as "Payment failed" is what makes an
+    // operator record the same money a second time once the dedupe window
+    // closes, which is the exact double-charge the window exists to prevent.
+    if (err?.code === 'duplicate_payment') {
+      toast.add({
+        severity: 'info',
+        summary: 'Already recorded',
+        detail: 'This payment is already on the invoice — nothing was added.',
+        life: 5000,
+      })
+      detail.value = await api.get(`/api/invoices/${detail.value.id}`).catch(() => detail.value)
+      await fetchInvoices()
+    } else {
+      toast.add({ severity: 'error', summary: 'Payment failed', detail: err.message, life: 6000 })
+    }
   } finally {
     actionSaving.value = false
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // Wait for permissions before deciding which list to read.
+  //
+  // The route used to carry requiresPermission, and the router's guard awaited
+  // loadPermissions() for exactly that reason. Dropping the meta (so techs can
+  // reach this page at all) also dropped that await — so on a cold load
+  // hasPermission() answers false for EVERYONE for a moment. An office user
+  // would be served the technician list, get an empty array (no technician
+  // record), and sit looking at "No open invoices" and $0.00 with nothing
+  // scheduled to re-fetch.
+  try {
+    await ensurePermissions()
+  } catch {
+    // Fail open to the office path: the backend 403s anything this user
+    // genuinely may not read, and a blank screen is worse than a caught error.
+  }
   loadBillingSummary()
   fetchInvoices()
 })
@@ -579,12 +672,10 @@ onMounted(() => {
   font-size: 0.9rem;
 }
 
-.pay-method-row {
+.pay-form-row {
   margin-top: 0.75rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--p-content-border-color, #e5e7eb);
 }
 
 .total-grand {

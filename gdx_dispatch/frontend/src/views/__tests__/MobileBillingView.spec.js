@@ -16,13 +16,36 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
   useRoute: () => ({ path: '/mobile/billing', fullPath: '/mobile/billing' }),
 }));
-vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }));
+const toastAddMock = vi.fn();
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: toastAddMock }) }));
 
 const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const apiPatchMock = vi.fn();
+const apiPostQueuedMock = vi.fn();
 vi.mock('../../composables/useApi', () => ({
-  useApi: () => ({ get: apiGetMock, post: apiPostMock, patch: apiPatchMock }),
+  useApi: () => ({
+    get: apiGetMock, post: apiPostMock, patch: apiPatchMock,
+    postQueued: apiPostQueuedMock,
+  }),
+}));
+// The view now splits by permission: office tiers read the whole receivables
+// book, technicians read only their own jobs. Default these specs to the OFFICE
+// tier so the KPI contract below keeps testing what it always tested; the
+// technician path has its own test at the bottom.
+const hasPermissionMock = vi.fn(() => true);
+const permissionsLoadedRef = { value: true };
+const loadPermissionsMock = vi.fn(async () => {});
+vi.mock('../../composables/usePermission', () => ({
+  usePermission: () => ({
+    hasPermission: hasPermissionMock,
+    permissions: { value: [] },
+    permissionsLoaded: permissionsLoadedRef,
+    reloadPermissions: vi.fn(),
+  }),
+}));
+vi.mock('../../stores/auth', () => ({
+  useAuthStore: () => ({ loadPermissions: loadPermissionsMock }),
 }));
 vi.mock('../../composables/useDestructiveConfirm', () => ({
   useDestructiveConfirm: () => ({ confirmAsync: () => Promise.resolve(true) }),
@@ -46,6 +69,14 @@ describe('MobileBillingView KPI strip', () => {
     apiGetMock.mockReset();
     apiPostMock.mockReset();
     apiPatchMock.mockReset();
+    apiPostQueuedMock.mockReset();
+    apiPostQueuedMock.mockResolvedValue({});
+    hasPermissionMock.mockReset();
+    hasPermissionMock.mockReturnValue(true);
+    permissionsLoadedRef.value = true;
+    loadPermissionsMock.mockReset();
+    loadPermissionsMock.mockImplementation(async () => {});
+    toastAddMock.mockReset();
   });
 
   afterEach(() => {
@@ -135,18 +166,106 @@ describe('MobileBillingView KPI strip', () => {
 });
 
 describe('MobileBillingView — Mark paid records a real payment (2026-07-21)', () => {
-  it('markPaid POSTs a payment for the remaining balance, never a status PATCH', async () => {
-    // Source-scan pin (same style as BillingViewSendComposer): the old
-    // implementation PATCHed {status: 'Paid'}, which 422s (schema forbids
-    // status) — the button could never work.
+  // This block has no beforeEach of its own, so the KPI block's mock state
+  // leaks in — including a resolved apiGetMock and whatever hasPermission was
+  // last set to. Reset explicitly rather than inheriting someone else's setup.
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    apiGetMock.mockReset();
+    apiPostMock.mockReset();
+    apiPatchMock.mockReset();
+    apiPostQueuedMock.mockReset();
+    apiPostQueuedMock.mockResolvedValue({});
+    hasPermissionMock.mockReset();
+    hasPermissionMock.mockReturnValue(true);
+    permissionsLoadedRef.value = true;
+    loadPermissionsMock.mockReset();
+    loadPermissionsMock.mockImplementation(async () => {});
+    toastAddMock.mockReset();
+  });
+
+  it('records a payment through the shared capture form, never a status PATCH', async () => {
+    // The old implementation PATCHed {status:'Paid'} (422 — the schema forbids
+    // status), then became a full-balance-only POST that stamped the UTC day.
+    // It is now the shared PaymentCaptureForm: partial amounts, check #, cash
+    // confirmation, tenant-zone date, and queued so no-signal cannot lose it.
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const src = readFileSync(join(__dirname, '..', 'MobileBillingView.vue'), 'utf8');
-    const start = src.indexOf('async function markPaid');
+
+    expect(src).not.toMatch(/async function markPaid/);
+    const start = src.indexOf('async function recordPayment');
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf('\nonMounted', start));
     expect(body).not.toMatch(/api\.patch/);
-    expect(body).toMatch(/api\.post\(`\/api\/invoices\/\$\{detail\.value\.id\}\/payments`/);
-    expect(body).toMatch(/balance/);
+    expect(body).toMatch(/api\.postQueued\(`\/api\/invoices\/\$\{detail\.value\.id\}\/payments`/);
+    // The form owns the date now — the view must not re-derive one.
+    expect(body).not.toMatch(/toISOString/);
+  });
+
+  it('waits for permissions before choosing a list (cold-load race)', async () => {
+    // The audit finding this guards: dropping requiresPermission from the route
+    // also dropped the router guard's `await loadPermissions()`. With
+    // permissions unresolved at mount, hasPermission() answers false for
+    // EVERYONE — so an admin would be served the technician list, get [], and
+    // sit looking at "No open invoices" with nothing scheduled to re-fetch.
+    hasPermissionMock.mockReturnValue(false);          // not resolved yet
+    permissionsLoadedRef.value = false;
+    loadPermissionsMock.mockImplementation(async () => {
+      permissionsLoadedRef.value = true;
+      hasPermissionMock.mockReturnValue(true);          // resolves to an office user
+    });
+    apiGetMock.mockResolvedValue([]);
+
+    mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+
+    expect(loadPermissionsMock).toHaveBeenCalled();
+    const urls = apiGetMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/api/invoices');
+    expect(urls).not.toContain('/api/mobile/invoices/open');
+  });
+
+  it('reports a duplicate 409 as already-recorded, never as a failure', async () => {
+    // The money defect: a duplicate 409 means the payment IS on the invoice.
+    // Rendering it as "Payment failed" is what makes an operator re-enter money
+    // the server just protected, once the dedupe window closes.
+    apiGetMock.mockResolvedValue([]);
+    const dup = new Error('an identical cash payment of 100.00 was recorded moments ago');
+    dup.status = 409;
+    dup.code = 'duplicate_payment';
+    apiPostQueuedMock.mockRejectedValue(dup);
+
+    const w = mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+    w.vm.detail = { id: 'inv-1', status: 'sent', balance_due: 100, total: 100 };
+    await flushPromises();
+    await w.vm.recordPayment({ amount: 100, method: 'Cash', date: '2026-08-13', reference: null });
+    await flushPromises();
+
+    const sev = toastAddMock.mock.calls.map((c) => c[0].severity);
+    expect(sev).toContain('info');
+    expect(sev).not.toContain('error');
+  });
+
+  it('a technician reads the tech-scoped list and never the office KPI endpoint', async () => {
+    // A technician has NO invoices permission, so /api/invoices and
+    // /api/invoices/summary both 403. Asking anyway is a guaranteed error toast
+    // on a screen that should just work.
+    hasPermissionMock.mockReturnValue(false);
+    apiGetMock.mockImplementation((url) => {
+      if (url === '/api/mobile/invoices/open') {
+        return Promise.resolve({ invoices: [{ id: 'i1', invoice_number: 'INV-1', total: 100, balance_due: 100, status: 'sent' }] });
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+
+    mount(MobileBillingView, { global: { stubs } });
+    await flushPromises();
+
+    const urls = apiGetMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/api/mobile/invoices/open');
+    expect(urls).not.toContain('/api/invoices');
+    expect(urls).not.toContain('/api/invoices/summary');
   });
 });

@@ -893,7 +893,20 @@ const { zonedDateKey } = useTenantTimezone();
 const todayKey = () => zonedDateKey(new Date());
 
 function openPaymentDialog() {
-  newPayment.value = { amount: 0, method: "Cash", reference: "", date: todayKey() };
+  // Prefill the balance instead of 0. The app knows the number and used to make
+  // the operator retype it from memory — and a mistyped LOW amount is silent
+  // damage: a partly-paid deposit is credit-memo'd as "superseded" at
+  // final-invoice time rather than voided, so the shortfall is written off and
+  // the customer is over-billed while every screen reads "paid".
+  const balance = Number(
+    invoice.value?.balance_due ?? invoice.value?.total ?? 0,
+  );
+  newPayment.value = {
+    amount: balance > 0 ? balance : 0,
+    method: "Cash",
+    reference: "",
+    date: todayKey(),
+  };
   showPaymentDialog.value = true;
 }
 // Tier-2 UI doors — credit lifecycle + finalize

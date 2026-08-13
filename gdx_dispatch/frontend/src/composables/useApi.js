@@ -68,10 +68,21 @@ export function createApiClient() {
         errBody = await response.json();
         const rawDetail = errBody.detail ?? errBody.error ?? errBody.message;
         if (typeof rawDetail === 'string') detail = rawDetail;
+        // A structured detail — `{code, message}` — is how an endpoint says
+        // "this refusal has a machine-readable kind". Render its `message`
+        // rather than JSON.stringify'ing the whole object at the user, which
+        // is what used to happen and produced `{"code":"…","message":"…"}` in
+        // a toast. The code rides along on err.code for callers that branch.
+        else if (rawDetail && typeof rawDetail === 'object' && typeof rawDetail.message === 'string') {
+          detail = rawDetail.message;
+        }
         else if (rawDetail !== undefined && rawDetail !== null) detail = JSON.stringify(rawDetail);
       } catch {}
       const err = new Error(detail);
       err.status = response.status;
+      err.code = (errBody && typeof errBody.detail === 'object' && errBody.detail)
+        ? errBody.detail.code
+        : undefined;
       // Attach the parsed JSON body so callers can read structured error
       // fields (e.g. `missing[]` from /api/jobs/{id}/complete on 422).
       // The pre-2026-05-10 behavior dropped everything except `detail`,
