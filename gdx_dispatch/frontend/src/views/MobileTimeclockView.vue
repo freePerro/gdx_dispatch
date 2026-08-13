@@ -157,6 +157,111 @@
         </ol>
         <div v-else class="state-msg muted">No entries yet today.</div>
       </section>
+
+      <!-- This Week — the tech's own timesheet, navigable, with self-service
+           corrections (forgot to clock in/out). Week/bucketing/totalling
+           logic is useWeeklyTimesheet, shared with the desktop card, so the
+           two surfaces can't drift. Card-list, not DataTable, per this
+           file's rule. -->
+      <section class="entries-section" data-test="mt-week-section">
+        <div class="week-head">
+          <h2 class="section-title">This Week</h2>
+          <div class="week-nav">
+            <Button
+              icon="pi pi-chevron-left"
+              text
+              rounded
+              severity="secondary"
+              aria-label="Previous week"
+              data-test="mt-week-prev"
+              @click="prevWeek"
+            />
+            <span class="week-label" data-test="mt-week-label">{{ weekLabel }}</span>
+            <Button
+              icon="pi pi-chevron-right"
+              text
+              rounded
+              severity="secondary"
+              aria-label="Next week"
+              :disabled="!canGoNext"
+              data-test="mt-week-next"
+              @click="nextWeek"
+            />
+          </div>
+        </div>
+
+        <div v-if="weekLoading" class="state-msg"><i class="pi pi-spin pi-spinner" /></div>
+        <template v-else>
+          <div
+            v-for="day in days"
+            :key="day.key"
+            class="week-day"
+            :class="{ 'week-day-today': day.isToday }"
+            :data-test="`mt-day-${day.key}`"
+          >
+            <div class="week-day-head">
+              <strong>{{ day.dayName }}</strong>
+              <span class="muted">{{ day.dateLabel }}</span>
+              <span v-if="day.entries.length" class="day-hours">
+                {{ (day.workedMinutes / 60).toFixed(2) }}h
+              </span>
+              <span v-else class="muted day-none">—</span>
+            </div>
+            <!-- The whole row is the tap target (48dp), disabled outside the
+                 self-edit window — the server would 422 those anyway. -->
+            <button
+              v-for="e in day.entries"
+              :key="e.id"
+              type="button"
+              class="week-entry"
+              :disabled="!canSelfEdit(e)"
+              data-test="mt-week-entry"
+              @click="openEntryEdit(e)"
+            >
+              <span class="week-entry-times">
+                {{ formatShopClock(e.clock_in_at) }} →
+                <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
+                <template v-else>now</template>
+              </span>
+              <Tag v-if="e.entry_type === 'manual'" value="manual" severity="warn" />
+              <span class="week-entry-worked">
+                <template v-if="e.minutes != null">{{ ((workedMinutes(e) || 0) / 60).toFixed(2) }}h</template>
+                <Tag v-else-if="!e.clock_out_at" value="In progress" severity="info" />
+                <Tag v-else value="Unknown" severity="danger" />
+              </span>
+              <i v-if="canSelfEdit(e)" class="pi pi-pencil week-entry-edit" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div class="week-foot">
+            <Button
+              label="Add missed shift"
+              icon="pi pi-plus"
+              size="small"
+              severity="secondary"
+              outlined
+              data-test="mt-add-entry"
+              @click="openEntryCreate"
+            />
+            <div class="week-total" data-test="mt-week-total">
+              Week total <strong>{{ weekWorkedHours.toFixed(2) }}h</strong>
+              <span v-if="weekBreakHours > 0" class="muted"> · {{ weekBreakHours.toFixed(2) }}h breaks</span>
+            </div>
+          </div>
+          <p class="muted week-scope-note">
+            Clock record — corrections are audit-logged with your name. Payroll is kept separately.
+          </p>
+        </template>
+      </section>
+
+      <!-- Self-service correction dialog (shared with /timesheets). -->
+      <TimeEntryDialog
+        v-model:visible="showEntryDialog"
+        :entry="dialogEntry"
+        self-mode
+        :anchor-date="selfAnchorDate"
+        @saved="onEntrySaved"
+      />
     </section>
 </template>
 
@@ -169,9 +274,46 @@ import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
+import TimeEntryDialog from '../components/TimeEntryDialog.vue'
+import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet'
 
 const api = useApi()
 const toast = useToast()
+
+// --- This Week (self-service timesheet) ---
+// Shared with the desktop card; Monday-based shop-time weeks, break-netted
+// totals. See useWeeklyTimesheet for the rules.
+const {
+  days, weekLabel, weekLoading, weekWorkedHours, weekBreakHours, canGoNext,
+  init: initWeek, reload: reloadWeek, prevWeek, nextWeek,
+  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday,
+} = useWeeklyTimesheet()
+
+const showEntryDialog = ref(false)
+const dialogEntry = ref(null)
+
+// "Forgot to clock in" almost always means YESTERDAY — and a default of
+// today 8am–4pm would trip the server's no-future-hours rule any time
+// before 4pm, handing the tech a rejection they didn't cause.
+const selfAnchorDate = computed(() => {
+  const d = shopToday()
+  d.setDate(d.getDate() - 1)
+  return d
+})
+
+function openEntryEdit(entry) {
+  dialogEntry.value = entry
+  showEntryDialog.value = true
+}
+
+function openEntryCreate() {
+  dialogEntry.value = null
+  showEntryDialog.value = true
+}
+
+async function onEntrySaved() {
+  await Promise.all([reloadWeek(), fetchStatus(), fetchEntries()])
+}
 
 const clockedIn = ref(false)
 const onBreak = ref(false)
@@ -441,7 +583,7 @@ async function endBreak() {
 
 onMounted(() => {
   initGps()
-  Promise.all([fetchStatus(), fetchEntries(), fetchJobs()])
+  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), initWeek()])
 })
 
 onUnmounted(() => {
@@ -450,6 +592,98 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* This Week (self-service timesheet) */
+.week-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.week-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+.week-label {
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+.week-day {
+  padding: 0.45rem 0.1rem;
+  border-bottom: 1px solid var(--p-content-border-color, #e5e7eb);
+}
+.week-day:last-of-type {
+  border-bottom: none;
+}
+.week-day-today {
+  background: color-mix(in srgb, var(--p-primary-color, #3b82f6) 6%, transparent);
+  border-radius: 0.4rem;
+}
+.week-day-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.day-hours {
+  margin-left: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--p-primary-color, #3b82f6);
+}
+.day-none {
+  margin-left: auto;
+}
+/* Whole-row tap target — HIG/Material 48dp minimum. */
+.week-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.35rem 0.25rem 0.35rem 0.75rem;
+  background: none;
+  border: none;
+  border-radius: 0.4rem;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.week-entry:not(:disabled):active {
+  background: var(--p-content-hover-background, #f3f4f6);
+}
+.week-entry:disabled {
+  cursor: default;
+}
+.week-entry-times {
+  font-variant-numeric: tabular-nums;
+}
+.week-entry-worked {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.week-entry-edit {
+  color: var(--p-text-muted-color, #6b7280);
+  font-size: 0.8rem;
+}
+.week-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+.week-total {
+  font-variant-numeric: tabular-nums;
+}
+.week-scope-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+}
+
 .mobile-timeclock {
   padding: 0.75rem 0.75rem calc(5rem + env(safe-area-inset-bottom));
   max-width: 800px;

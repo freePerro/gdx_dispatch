@@ -156,7 +156,12 @@
           <div v-if="todayEntries.length && !todaySubmitted" class="eod-review">
             <p class="muted">Review your hours and confirm before submitting to payroll.</p>
             <div class="eod-summary">
-              <div><span>Today total</span><strong>{{ todayTotalHours.toFixed(2) }}h</strong></div>
+              <!-- todayTotalHours is null until /status resolves, and this block
+                   gates on todayEntries (a DIFFERENT fetch) — so entries landing
+                   first crashed the whole page render. Caught in the browser
+                   walk 2026-08-13 the moment a parallel week fetch changed the
+                   interleaving. -->
+              <div><span>Today total</span><strong>{{ (todayTotalHours ?? 0).toFixed(2) }}h</strong></div>
               <div><span>Entries</span><strong>{{ todayEntries.length }}</strong></div>
             </div>
             <Button
@@ -176,63 +181,138 @@
         </template>
       </Card>
 
-      <!-- Weekly Timecard -->
-      <Card class="timecard-card" data-testid="weekly-timecard">
+      <!-- My Timesheet — the tech's own week, navigable, with self-service
+           corrections. Replaces the old "Weekly Summary" card, which was
+           Sunday-based, bucketed days browser-local, and whose Break column
+           filtered an entry_type that never exists (always 0.00). All the
+           week/bucketing/totalling logic is useWeeklyTimesheet, shared with
+           the mobile page so the two can't drift. -->
+      <Card class="timecard-card" data-testid="my-timesheet">
         <template #title>
-          <div class="section-header">
+          <div class="section-header timesheet-header">
             <i class="pi pi-calendar"></i>
-            Weekly Summary
+            My Timesheet
+            <span class="week-label" data-testid="week-label">{{ weekLabel }}</span>
+            <span class="week-nav">
+              <Button
+                icon="pi pi-chevron-left"
+                text
+                rounded
+                severity="secondary"
+                aria-label="Previous week"
+                data-testid="week-prev"
+                @click="prevWeek"
+              />
+              <Button
+                v-if="!isCurrentWeek"
+                label="This week"
+                size="small"
+                text
+                data-testid="week-this"
+                @click="thisWeek"
+              />
+              <Button
+                icon="pi pi-chevron-right"
+                text
+                rounded
+                severity="secondary"
+                aria-label="Next week"
+                :disabled="!canGoNext"
+                data-testid="week-next"
+                @click="nextWeek"
+              />
+            </span>
           </div>
         </template>
         <template #content>
-          <DataTable
-            :value="weekSummary"
-            stripedRows
-            responsiveLayout="scroll"
-            data-testid="timecard-table"
-            class="weekly-table"
-          >
-            <Column field="dayLabel" header="Day" />
-            <Column field="date" header="Date" />
-            <Column header="Work Hours">
-              <template #body="{ data }">
-                <span :class="{ 'hours-highlight': data.workHours > 0 }">
-                  {{ data.workHours.toFixed(2) }}
+          <div v-if="weekLoading" class="spinner-wrap"><ProgressSpinner /></div>
+          <template v-else>
+            <div
+              v-for="day in days"
+              :key="day.key"
+              class="ts-day"
+              :class="{ 'ts-today': day.isToday }"
+              :data-testid="`ts-day-${day.key}`"
+            >
+              <div class="ts-day-head">
+                <strong>{{ day.dayName }}</strong>
+                <span class="ts-muted">{{ day.dateLabel }}</span>
+                <span v-if="day.entries.length" class="ts-day-hours">
+                  {{ (day.workedMinutes / 60).toFixed(2) }}h
                 </span>
-              </template>
-            </Column>
-            <Column header="Break Hours">
-              <template #body="{ data }">
-                <span class="break-hours">
-                  {{ data.breakHours.toFixed(2) }}
+                <span v-else class="ts-muted ts-day-none">No hours recorded</span>
+              </div>
+              <div v-for="e in day.entries" :key="e.id" class="ts-entry" data-testid="ts-entry">
+                <span class="ts-times">
+                  {{ formatShopClock(e.clock_in_at) }} →
+                  <template v-if="e.clock_out_at">{{ formatShopClock(e.clock_out_at) }}</template>
+                  <template v-else>now</template>
                 </span>
-              </template>
-            </Column>
-            <Column header="Entries">
-              <template #body="{ data }">
-                <Badge :value="data.entryCount" :severity="data.entryCount > 0 ? 'info' : 'secondary'" />
-              </template>
-            </Column>
-          </DataTable>
+                <Tag v-if="e.entry_type === 'manual'" value="manual" severity="warn" />
+                <span v-if="e.break_minutes" class="ts-muted ts-break">−{{ e.break_minutes }}m break</span>
+                <span class="ts-worked">
+                  <template v-if="e.minutes != null">{{ ((workedMinutes(e) || 0) / 60).toFixed(2) }}h</template>
+                  <Tag v-else-if="!e.clock_out_at" value="In progress" severity="info" />
+                  <Tag
+                    v-else
+                    value="Unknown"
+                    severity="danger"
+                    v-tooltip="'Auto-closed after a missed clock-out — set the real end time.'"
+                  />
+                </span>
+                <Button
+                  v-if="canSelfEdit(e)"
+                  icon="pi pi-pencil"
+                  text
+                  rounded
+                  severity="secondary"
+                  v-tooltip="'Fix this entry'"
+                  aria-label="Fix this entry"
+                  :data-testid="`ts-edit-${e.id}`"
+                  @click="openEntryEdit(e)"
+                />
+              </div>
+            </div>
 
-          <Divider />
+            <Divider />
 
-          <div class="week-totals">
-            <div class="week-total">
-              <strong>Total Work:</strong>
-              <span class="total-hours">{{ weekTotalWorkHours.toFixed(2) }}h</span>
+            <div class="week-totals">
+              <Button
+                label="Add missed shift"
+                icon="pi pi-plus"
+                size="small"
+                severity="secondary"
+                outlined
+                data-testid="ts-add-entry"
+                @click="openEntryCreate"
+              />
+              <span class="week-totals-spacer"></span>
+              <div class="week-total">
+                <strong>Week total:</strong>
+                <span class="total-hours" data-testid="week-total">{{ weekWorkedHours.toFixed(2) }}h</span>
+              </div>
+              <div v-if="weekBreakHours > 0" class="week-total">
+                <span class="ts-muted">breaks</span>
+                <span class="total-break">{{ weekBreakHours.toFixed(2) }}h</span>
+              </div>
             </div>
-            <div class="week-total">
-              <strong>Total Break:</strong>
-              <span class="total-break">{{ weekTotalBreakHours.toFixed(2) }}h</span>
-            </div>
-            <div class="week-total">
-              <strong>Net Hours:</strong>
-              <span class="total-hours">{{ (weekTotalWorkHours - weekTotalBreakHours).toFixed(2) }}h</span>
-            </div>
-          </div>
+            <!-- Same honesty note as /timesheets: the clock record and payroll
+                 are different tables, and nobody should learn that on payday. -->
+            <p class="ts-scope-note" data-testid="ts-scope-note">
+              Clock record — corrections are audit-logged with your name. Payroll figures are kept separately.
+            </p>
+          </template>
         </template>
       </Card>
+
+      <!-- Self-service correction dialog (shared with /timesheets). -->
+      <TimeEntryDialog
+        v-model:visible="showEntryDialog"
+        :entry="dialogEntry"
+        self-mode
+        :anchor-date="selfAnchorDate"
+        @saved="onEntrySaved"
+      />
 
       <!-- GPS Location Dialog -->
       <Dialog
@@ -359,7 +439,6 @@ import { timeclockEntrySeverity, timeclockStatusSeverity } from '../utils/status
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast as useApi } from '../composables/useApiWithToast';
-import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
 import Column from 'primevue/column';
@@ -373,7 +452,9 @@ import Textarea from 'primevue/textarea';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 import Toast from 'primevue/toast';
+import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet';
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApi();
@@ -610,52 +691,47 @@ const todayEntries = computed(() => {
     }));
 });
 
-// --- Weekly summary ---
+// --- My Timesheet (weekly) ---
+// All week logic lives in useWeeklyTimesheet — Monday-based shop-time weeks,
+// shop-day bucketing, break-netted totals — shared with MobileTimeclockView.
+// The computeds this replaces bucketed by browser/UTC day, started weeks on
+// Sunday against the office's Monday, and totalled a break entry_type the
+// backend never writes (the Break column was ALWAYS 0.00).
 
-const weekSummary = computed(() => {
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const start = new Date(today);
-  start.setDate(today.getDate() - dayOfWeek);
+const {
+  days, weekLabel, weekLoading, weekWorkedHours, weekBreakHours,
+  isCurrentWeek, canGoNext,
+  init: initWeek, reload: reloadWeek, prevWeek, nextWeek, thisWeek,
+  canSelfEdit, workedMinutes, formatClock: formatShopClock, shopToday,
+} = useWeeklyTimesheet();
 
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const days = [];
+const showEntryDialog = ref(false);
+const dialogEntry = ref(null);
 
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-    const ds = toDateStr(d);
-    const dayEntries = entries.value.filter((e) => {
-      const dateStr = e.date || (e.clock_in ? e.clock_in.split('T')[0] : '');
-      return dateStr === ds;
-    });
-    const workEntries = dayEntries.filter((e) => (e.entry_type || 'work') !== 'break');
-    const breakEntries = dayEntries.filter((e) => e.entry_type === 'break');
-    const workHours = workEntries.reduce((sum, e) => sum + (e.hours || 0), 0);
-    const breakHours = breakEntries.reduce((sum, e) => sum + (e.hours || 0), 0);
-    // 2026-04-29: don't render future days. Was showing Thu/Fri/Sat as
-    // 0.00 hours when today is Wed, which read as if those days had
-    // already happened.
-    const todayStr = toDateStr(today);
-    if (ds > todayStr) continue;
-    days.push({
-      dayLabel: dayNames[i],
-      date: ds,
-      workHours,
-      breakHours,
-      entryCount: dayEntries.length,
-    });
-  }
-
-  return days;
+// "Forgot to clock in" almost always means YESTERDAY — and a default of
+// today 8am–4pm would trip the server's no-future-hours rule any time before
+// 4pm, handing the tech a rejection they didn't cause.
+const selfAnchorDate = computed(() => {
+  const d = shopToday();
+  d.setDate(d.getDate() - 1);
+  return d;
 });
 
-const weekTotalWorkHours = computed(() =>
-  weekSummary.value.reduce((sum, d) => sum + d.workHours, 0),
-);
-const weekTotalBreakHours = computed(() =>
-  weekSummary.value.reduce((sum, d) => sum + d.breakHours, 0),
-);
+function openEntryEdit(entry) {
+  dialogEntry.value = entry;
+  showEntryDialog.value = true;
+}
+
+function openEntryCreate() {
+  dialogEntry.value = null;
+  showEntryDialog.value = true;
+}
+
+async function onEntrySaved() {
+  // A correction can move hours across today's list, the status card and the
+  // week — refresh all three rather than guessing which one changed.
+  await Promise.all([reloadWeek(), fetchStatus(), fetchEntries()]);
+}
 
 // --- API calls ---
 
@@ -803,7 +879,7 @@ async function endBreak() {
 
 onMounted(() => {
   initGps();
-  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings()]);
+  Promise.all([fetchStatus(), fetchEntries(), fetchJobs(), loadRecentInspections(), loadFeatureSettings(), initWeek()]);
 });
 
 onUnmounted(() => {
@@ -836,14 +912,79 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 
-@media (max-width: 480px) {
-  /* Drop the Entries count column on phones — the row's "Day Date Hours"
-   * is the legible summary. Keeping it visible burns ~75px on a 375px
-   * viewport that's already tight. */
-  .timeclock-view :deep(.weekly-table th:nth-child(5)),
-  .timeclock-view :deep(.weekly-table td:nth-child(5)) {
-    display: none;
-  }
+/* My Timesheet day blocks */
+.timesheet-header {
+  flex-wrap: wrap;
+}
+.week-label {
+  color: var(--p-text-muted-color);
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+.week-nav {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+.ts-day {
+  padding: 0.5rem 0.25rem;
+  border-bottom: 1px solid var(--p-content-border-color);
+}
+.ts-day:last-of-type {
+  border-bottom: none;
+}
+.ts-today {
+  background: color-mix(in srgb, var(--p-primary-color) 5%, transparent);
+  border-radius: var(--p-border-radius, 6px);
+}
+.ts-day-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.ts-day-hours {
+  margin-left: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--p-primary-color);
+}
+.ts-day-none {
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+.ts-muted {
+  color: var(--p-text-muted-color);
+}
+.ts-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.2rem 0 0.2rem 0.75rem;
+  font-size: 0.92rem;
+}
+.ts-times {
+  font-variant-numeric: tabular-nums;
+}
+.ts-break {
+  font-size: 0.8rem;
+}
+.ts-worked {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.ts-entry .p-button {
+  padding: 0.15rem;
+  width: 1.8rem;
+  height: 1.8rem;
+}
+.week-totals-spacer {
+  flex: 1;
+}
+.ts-scope-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: var(--p-text-muted-color);
 }
 
 .page-title {
