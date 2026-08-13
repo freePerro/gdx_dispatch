@@ -382,6 +382,52 @@ def test_estimates_show_only_customer_visible_statuses(tenant_db_session):
     assert rows[0]["status"] == "sent"
 
 
+def test_rejected_estimate_stays_visible_and_reads_as_sent(tenant_db_session):
+    """'rejected' = the estimate EMAIL bounced (bounce detector,
+    2026-08-13). The customer's portal must keep showing the estimate —
+    a detector false positive must not vanish it mid-decision — and the
+    internal bookkeeping word must not leak (it reads as "we rejected
+    YOU"), so the serializer presents it as plain 'sent'."""
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="rejected")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    rows = portal_router.portal_estimates(principal=principal, db=tenant_db_session)
+    assert [row["id"] for row in rows] == [str(est.id)]
+    assert rows[0]["status"] == "sent"
+
+
+def test_rejected_estimate_accept_self_heals(tenant_db_session):
+    """An accept from 'rejected' is the strongest proof the customer DID
+    receive the estimate — it must succeed, not 409/404."""
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="rejected")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_accept(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert body["status"] == "accepted"
+
+    tenant_db_session.refresh(est)
+    assert est.status == "accepted"
+
+
+def test_rejected_estimate_decline_works(tenant_db_session):
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="rejected")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    body = portal_router.portal_estimate_decline(
+        estimate_id=est.id,
+        request=_mock_request(),
+        payload=portal_router.DeclineEstimateIn(reason="Went another way"),
+        principal=principal,
+        db=tenant_db_session,
+    )
+    assert body["status"] == "declined"
+
+
 def test_estimate_accept_marks_accepted(tenant_db_session):
     seeded = _seed_customer_data(tenant_db_session)
     est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")

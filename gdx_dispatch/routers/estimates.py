@@ -2376,7 +2376,9 @@ def expire_stale_estimates(
     stale = (
         db.query(Estimate)
         .filter(
-            Estimate.status.in_(("sent", "draft")),
+            # "rejected" (email bounced) ages out like sent — see the
+            # nightly task's filter for why.
+            Estimate.status.in_(("sent", "draft", "rejected")),
             Estimate.valid_until.isnot(None),
             Estimate.valid_until < now,
             Estimate.deleted_at.is_(None),

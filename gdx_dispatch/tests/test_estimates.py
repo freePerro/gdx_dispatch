@@ -577,6 +577,32 @@ def test_expire_stale_marks_past_due_sent_expired(client: TestClient, monkeypatc
     assert got["status"] == "expired"
 
 
+def test_expire_stale_also_expires_rejected(client: TestClient, monkeypatch):
+    """A bounce-'rejected' estimate must age out like a sent one: the
+    portal presents it as an open estimate and accept has no valid_until
+    check of its own, so skipping it here left it acceptable forever at
+    frozen pricing."""
+    import uuid as _uuid
+
+    from gdx_dispatch.modules.proposals.models import Estimate
+    estimate = _create_estimate(client)
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        est = db.query(Estimate).filter(Estimate.id == _uuid.UUID(estimate["id"])).one()
+        est.status = "rejected"
+        db.commit()
+    finally:
+        db.close()
+    _set_valid_until(client, estimate["id"], "2000-01-01T00:00:00+00:00")
+
+    swept = client.post("/api/estimates/expire-stale")
+    assert swept.status_code == 200, swept.text
+    assert estimate["id"] in swept.json()["estimate_ids"]
+
+    got = client.get(f"/api/estimates/{estimate['id']}").json()
+    assert got["status"] == "expired"
+
+
 def test_accept_estimate_marks_accepted(client: TestClient):
     estimate = _create_estimate(client)
     client.post(f"/api/estimates/{estimate['id']}/mark-sent")

@@ -42,7 +42,12 @@ REMEMBER_ME_TTL_SECONDS = 60 * 60 * 24 * 30  # "Remember me" — 30-day session
 MAGIC_LINK_TTL_MINUTES = 15
 INVITE_LINK_TTL_DAYS = 7
 # Statuses a customer may see. Drafts stay internal until staff hits Send.
-CUSTOMER_VISIBLE_ESTIMATE_STATUSES = ("sent", "accepted", "declined", "expired")
+# "rejected" (2026-08-13) = the estimate EMAIL bounced — internal delivery
+# bookkeeping. The customer's own portal must still show the estimate (a
+# detector false positive would otherwise VANISH it mid-decision), so it is
+# visible here but presented as "sent" by the serializer: to the customer
+# it IS an open estimate awaiting their answer.
+CUSTOMER_VISIBLE_ESTIMATE_STATUSES = ("sent", "rejected", "accepted", "declined", "expired")
 # Browser-renderable image types only. Staff uploads also allow HEIC/HEIF
 # (tech iPhone photos) but Chrome/Firefox can't decode those — advertising
 # them to the portal would show broken thumbnails.
@@ -1012,7 +1017,10 @@ def _serialize_portal_estimate(
         "estimate_number": estimate.estimate_number,
         "label": estimate.label,
         "description": estimate.description,
-        "status": estimate.status,
+        # "rejected" is internal (email bounced); to the customer the
+        # estimate is simply open — and the word would read as "we
+        # rejected YOU". Accept/decline both work from it server-side.
+        "status": "sent" if estimate.status == "rejected" else estimate.status,
         "total": grand_total,
         "valid_until": estimate.valid_until.isoformat() if estimate.valid_until else None,
         "sent_at": estimate.sent_at.isoformat() if estimate.sent_at else None,
@@ -1278,7 +1286,9 @@ def portal_estimate_decline(
     estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
     if estimate.status == "declined":
         raise HTTPException(status_code=409, detail="already declined")
-    if estimate.status != "sent":
+    # "rejected" (email bounced) stays declinable for the same reason it
+    # stays acceptable: the portal presents it as an open estimate.
+    if estimate.status not in ("sent", "rejected"):
         raise HTTPException(status_code=409, detail="estimate is not open for decline")
 
     reason = payload.reason.strip() if payload and payload.reason else None
