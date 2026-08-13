@@ -206,7 +206,7 @@
       </Dialog>
 
       <Dialog v-model:visible="showAiDialog" header="AI Quick Estimate" :style="{ width: '520px' }" modal>
-        <p class="text-sm mb-3">Describe the job and AI will auto-fill line items from the CHI catalog.</p>
+        <p class="text-sm mb-3">Describe the job and AI will auto-fill line items from your catalog.</p>
         <Textarea v-model="aiDescription" rows="4" class="w-full"
           placeholder="e.g., 16x7 insulated steel door replacement with torsion springs and new opener"
           data-testid="ai-description-input" />
@@ -249,7 +249,7 @@
                   <i class="pi pi-map-marker" />
                   <span style="white-space: pre-line">{{ selectedCustomer.address }}</span>
                   <Button label="Use as jobsite" text size="small"
-                    style="margin-left: auto"
+                    style="margin-left: auto" :disabled="estimateLocked"
                     data-testid="copy-customer-address-to-jobsite"
                     @click="form.jobsite_address = selectedCustomer.address" />
                 </div>
@@ -287,19 +287,19 @@
             </div>
             <div class="form-field">
               <label for="est-label">Job Name</label>
-              <InputText id="est-label" v-model="form.label" class="w-full"
+              <InputText id="est-label" v-model="form.label" class="w-full" :disabled="estimateLocked"
                 placeholder="e.g. Front garage door replacement" data-testid="estimate-label-input" />
             </div>
             <div class="form-field">
               <label for="est-valid-until">Valid Until</label>
               <DatePicker id="est-valid-until" v-model="form.valid_until" dateFormat="yy-mm-dd"
-                :showIcon="true" class="w-full" data-testid="estimate-valid-until" />
+                :showIcon="true" class="w-full" :disabled="estimateLocked" data-testid="estimate-valid-until" />
             </div>
             <div class="form-field">
               <label for="est-jobsite">Jobsite Address</label>
               <Textarea id="est-jobsite" v-model="form.jobsite_address" rows="2" class="w-full"
                 placeholder="Address where the work will be performed (if different from billing address)"
-                data-testid="estimate-jobsite-address" />
+                :disabled="estimateLocked" data-testid="estimate-jobsite-address" />
             </div>
 
             <!-- Work Description -->
@@ -307,7 +307,7 @@
               <label for="est-description">Description of Work</label>
               <Textarea id="est-description" v-model="form.description" rows="3" class="w-full"
                 placeholder="Describe the work to be done..."
-                data-testid="estimate-description" />
+                :disabled="estimateLocked" data-testid="estimate-description" />
             </div>
 
             <!-- Line Items -->
@@ -329,14 +329,14 @@
                   <span class="col-action line-controls">
                     <span class="line-reorder">
                       <Button v-tooltip="'Move line up'" icon="pi pi-chevron-up" aria-label="Move line up" text size="small"
-                        :disabled="idx === 0" @click="moveLine(idx, -1)"
+                        :disabled="estimateLocked || idx === 0" @click="moveLine(idx, -1)"
                         :data-testid="`est-line-up-${idx}`" />
                       <Button v-tooltip="'Move line down'" icon="pi pi-chevron-down" aria-label="Move line down" text size="small"
-                        :disabled="idx === form.line_items.length - 1" @click="moveLine(idx, 1)"
+                        :disabled="estimateLocked || idx === form.line_items.length - 1" @click="moveLine(idx, 1)"
                         :data-testid="`est-line-down-${idx}`" />
                     </span>
                     <Button v-tooltip="'Delete line'" icon="pi pi-trash" aria-label="Delete line" severity="danger" text size="small"
-                      @click="removeLineAt(idx)"
+                      :disabled="estimateLocked" @click="removeLineAt(idx)"
                       data-testid="est-line-delete" />
                   </span>
                   <!-- Field labels for the phone layout. The column header row
@@ -346,28 +346,29 @@
                        item), so the 9-track desktop row is byte-identical. -->
                   <span class="line-label">Category</span>
                   <Select v-model="item.category" :options="lineCategories" placeholder="Category"
-                    class="col-cat" :data-testid="`est-line-cat-${idx}`"
+                    class="col-cat" :data-testid="`est-line-cat-${idx}`" :disabled="estimateLocked"
                     @change="recomputeSell(item)" />
                   <span class="line-label">Description</span>
                   <InputText v-model="item.description" placeholder="Description"
-                    class="col-desc" :data-testid="`est-line-desc-${idx}`" />
+                    class="col-desc" :data-testid="`est-line-desc-${idx}`" :disabled="estimateLocked" />
                   <span class="line-label">Qty</span>
                   <InputNumber v-model="item.quantity" :min="1" :useGrouping="false"
-                    class="col-qty" :data-testid="`est-line-qty-${idx}`"
+                    class="col-qty" :data-testid="`est-line-qty-${idx}`" :disabled="estimateLocked"
                     @input="onQtyInput(item, $event)" />
                   <span class="line-label">Cost</span>
                   <InputNumber v-model="item.cost" mode="currency" currency="USD" locale="en-US"
-                    :min="0" class="col-cost" :data-testid="`est-line-cost-${idx}`"
+                    :min="0" class="col-cost" :data-testid="`est-line-cost-${idx}`" :disabled="estimateLocked"
                     @update:modelValue="recomputeSell(item)"
                     @input="onCostInput(item, $event)" />
                   <span class="line-label">Unit Price</span>
                   <InputNumber v-model="item.unit_price" mode="currency" currency="USD" locale="en-US"
-                    :min="0" class="col-price" :data-testid="`est-line-price-${idx}`"
+                    :min="0" class="col-price" :data-testid="`est-line-price-${idx}`" :disabled="estimateLocked"
                     @update:modelValue="markPriceOverride(item)"
                     @input="onPriceInput(item, $event)" />
                   <span class="line-label">Margin</span>
                   <InputNumber
                     v-if="estimateFeatures.estimates_allow_line_margin_override"
+                    :disabled="estimateLocked"
                     v-model="item.margin_pct_override"
                     suffix="%" :min="0" :max="99" :maxFractionDigits="2"
                     placeholder="tier"
@@ -381,20 +382,26 @@
                     :data-testid="`save-to-catalog-${idx}`"
                     @click="openSaveToCatalog(item)" />
                 </div>
-                <div class="line-item-buttons">
+                <div v-if="!estimateLocked" class="line-item-buttons">
                   <Button label="Add Line" icon="pi pi-plus" text size="small"
                     data-testid="est-add-line-btn"
                     @click="form.line_items.push(defaultLineItem())" />
                   <Button label="Add from Catalog" icon="pi pi-book" text size="small" severity="info"
                     data-testid="est-add-catalog-btn"
                     @click="showCatalogPicker = true" />
-                  <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Shown
-                       ONLY when an installed plugin declares an estimate_source
-                       (e.g. the CHI pricing plugin); invisible in stock core. -->
-                  <Button v-if="estimateSource && isExisting" :label="`Add ${estimateSource.label}`"
-                    icon="pi pi-images" text size="small" severity="info"
-                    data-testid="est-add-captured-btn"
-                    @click="openCapturedPicker" />
+                  <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. One
+                       button per installed plugin that declares an
+                       estimate_source; invisible in stock core. The legacy
+                       single-provider testid is kept when exactly one provider
+                       is installed. -->
+                  <template v-if="isExisting">
+                    <Button v-for="src in estimateSources" :key="src.pluginKey"
+                      :label="`Add ${src.label}`"
+                      icon="pi pi-images" text size="small" severity="info"
+                      :data-testid="estimateSources.length === 1
+                        ? 'est-add-captured-btn' : `est-add-captured-btn-${src.pluginKey}`"
+                      @click="openCapturedPicker(src)" />
+                  </template>
                   <Button label="Add Labor" icon="pi pi-wrench" text size="small" severity="info"
                     data-testid="est-add-labor-btn"
                     @click="openLaborPicker" />
@@ -402,6 +409,15 @@
                     data-testid="est-ai-suggest-btn"
                     :loading="aiSuggesting"
                     @click="aiSuggestLines" />
+                </div>
+                <!-- Finalized estimates: autosave refuses to run for them (by
+                     design), so an editable form here silently ate every
+                     change — it rendered, never persisted, and vanished on
+                     reload. Lock the editor and say so instead. -->
+                <div v-else class="line-item-buttons lines-locked-note" data-testid="est-lines-locked">
+                  <i class="pi pi-lock" aria-hidden="true" />
+                  <span>This estimate is {{ estimate.status === 'Accepted' ? 'accepted' : 'declined' }}
+                    and can no longer be edited{{ estimate.status === 'Declined' ? ' — Reopen it to make changes' : '' }}.</span>
                 </div>
               </div>
             </div>
@@ -411,19 +427,19 @@
               <label for="est-tax-rate">Tax Rate</label>
               <InputNumber id="est-tax-rate" v-model="form.tax_rate" suffix="%" :min="0" :max="100"
                 :minFractionDigits="0" :maxFractionDigits="2" class="w-full"
-                data-testid="estimate-tax-rate" />
+                :disabled="estimateLocked" data-testid="estimate-tax-rate" />
             </div>
             <div class="form-field">
               <label for="est-discount">Discount</label>
               <InputNumber id="est-discount" v-model="form.discount" mode="currency" currency="USD"
-                locale="en-US" :min="0" class="w-full" data-testid="estimate-discount" />
+                locale="en-US" :min="0" class="w-full" :disabled="estimateLocked" data-testid="estimate-discount" />
             </div>
 
             <!-- Notes -->
             <div class="form-field full-width">
               <label for="est-notes">Notes</label>
               <Textarea id="est-notes" v-model="form.notes" rows="3" class="w-full"
-                data-testid="estimate-notes" />
+                :disabled="estimateLocked" data-testid="estimate-notes" />
             </div>
 
             <!-- Customer price display (total-only option) -->
@@ -431,7 +447,7 @@
               <label for="est-hide-line-prices">Customer price display</label>
               <Select id="est-hide-line-prices" v-model="hideLinePricesChoice"
                 :options="hideLinePricesOptions" optionLabel="label" optionValue="value"
-                class="w-full" data-testid="estimate-hide-line-prices" />
+                class="w-full" :disabled="estimateLocked" data-testid="estimate-hide-line-prices" />
               <small class="muted">
                 Hides the per-line Unit Price / Line Total on the customer PDF, email, and
                 install sheet (the subtotal, tax and total still show). The editor always
@@ -607,19 +623,38 @@
       <CatalogPickerDialog v-model:visible="showCatalogPicker" @add="addFromCatalog" />
 
       <!-- PLUGIN INTEGRATION POINT (ADR-013) — DO NOT REMOVE. Captured-item picker
-           for an installed estimate_source plugin (e.g. CHI pricing). Inert unless
-           estimateSource is set. A folder explorer: pick a folder, multi-select
-           doors, add each as a line (captured price → cost → margin engine) with
+           for an installed estimate_source plugin. Inert unless
+           a provider is active. A folder explorer: pick a folder, multi-select
+           items, add each as a line (captured price → cost → margin engine) with
            its photo + full spec. -->
       <Dialog v-model:visible="capturedPickerVisible"
-        :header="estimateSource ? `Add ${estimateSource.label}` : 'Add captured item'"
+        :header="activeSource ? `Add ${activeSource.label}` : 'Add captured item'"
         modal :style="{ width: '700px' }" data-testid="captured-picker-dialog">
         <p v-if="capturedLoading">Loading…</p>
+        <!-- A failed list fetch used to collapse into "no captures", which reads
+             as an empty plugin. Say what actually happened instead. -->
+        <div v-else-if="capturedError" class="captured-error" data-testid="captured-picker-error">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+          <span v-if="capturedError === 'forbidden'">
+            You don't have access to this plugin. An owner can grant it under
+            Settings → Roles &amp; Permissions.
+          </span>
+          <span v-else>
+            The plugin isn't responding right now. An owner can restart it from
+            Manage plugins, then try again.
+          </span>
+        </div>
         <template v-else>
           <!-- Folder list -->
           <div v-if="capturedFolder === null">
-            <p class="captured-hint">Pick a folder:</p>
-            <ul class="captured-folders">
+            <!-- capturedFolderList always seeds an "All items" row, so gate the
+                 empty state on the items themselves. -->
+            <p v-if="!capturedItems.length" class="captured-hint" data-testid="captured-picker-empty">
+              Nothing to add yet — price or capture items in the plugin first;
+              they'll show up here.
+            </p>
+            <p v-else class="captured-hint">Pick a folder:</p>
+            <ul v-if="capturedItems.length" class="captured-folders">
               <li v-for="f in capturedFolderList" :key="f.key"
                 class="captured-folder" :data-testid="`captured-folder-${f.key}`"
                 @click="openFolder(f.key)">
@@ -640,19 +675,27 @@
               :paginator="doorsInFolder.length > 10" :rows="10"
               style="margin-top: 0.5rem" data-testid="captured-doors-table">
               <Column selectionMode="multiple" style="width: 3rem" />
-              <Column field="qcd" header="Quote #" />
-              <Column field="cart_name" header="Cart" />
-              <Column header="Price" style="width: 110px">
-                <template #body="{ data }">{{ currency(data.price) }}</template>
+              <!-- Columns come from the provider (estimate_source.columns in its
+                   manifest) with the historical captured-door shape as fallback,
+                   so a configurator plugin's rows (model/size/unit_cost/…) don't
+                   render as blank cells. -->
+              <Column v-for="c in activeSource?.columns || []" :key="c.field"
+                :field="c.field" :header="c.label">
+                <template #body="{ data }">
+                  <!-- A missing money field renders empty — currency(undefined)
+                       printed "$0.00" for rows whose provider doesn't have the
+                       column, which reads as a real (wrong) price. -->
+                  {{ c.money ? (data[c.field] == null ? "" : currency(data[c.field])) : (data[c.field] ?? "") }}
+                </template>
               </Column>
-              <template #empty><span>No doors in this folder.</span></template>
+              <template #empty><span>No items in this folder.</span></template>
             </DataTable>
           </div>
         </template>
         <template #footer>
           <Button label="Close" severity="secondary" @click="capturedPickerVisible = false" />
           <Button v-if="capturedFolder !== null"
-            :label="`Add ${selectedDoors.length} door${selectedDoors.length === 1 ? '' : 's'}`"
+            :label="`Add ${selectedDoors.length} item${selectedDoors.length === 1 ? '' : 's'}`"
             icon="pi pi-plus" :disabled="!selectedDoors.length || addingDoors" :loading="addingDoors"
             data-testid="captured-add-btn" @click="addSelectedDoors" />
         </template>
@@ -793,8 +836,10 @@
             <i v-else-if="autosaveState === 'error'" class="pi pi-exclamation-triangle" />
             <span>{{ autosaveLabel }}</span>
           </span>
+          <!-- Disabled when finalized: forceFlush refuses to run then, so the
+               "Saved" toast this button fires would be a lie. -->
           <Button label="Save Changes" icon="pi pi-save" severity="primary"
-            :loading="saving" data-testid="estimate-save"
+            :loading="saving" :disabled="estimateLocked" data-testid="estimate-save"
             @click="saveExistingEstimate" />
         </template>
       </div>
@@ -861,6 +906,8 @@ import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 import PhoneInput from "../components/PhoneInput.vue";
 import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { classifyPickerError, useEstimateSources } from "../composables/useEstimateSources";
+import { useAuthStore } from "../stores/auth";
 import { formatDate, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
@@ -885,6 +932,7 @@ const router = useRouter();
 const route = useRoute();
 const api = useApiWithToast();
 const apiRaw = useApi();
+const auth = useAuthStore();
 const toast = useToast();
 
 const loading = ref(true);
@@ -1178,12 +1226,16 @@ async function loadPricingTiers() {
 // --- Catalog picker ---
 const showCatalogPicker = ref(false);
 
-// --- Plugin estimate source (ADR-013) — DO NOT REMOVE (this is a plugin hook). ---
-// An installed plugin (e.g. the CHI pricing plugin) can declare an estimate_source
-// in its manifest; we then offer "Add <label>" to pull its captured items in as
-// estimate lines. estimateSource stays null when no such plugin is installed, so
-// every binding below is inert in stock core.
-const estimateSource = ref(null);          // { label, list_endpoint, draft_endpoint }
+// --- Plugin estimate sources (ADR-013) — DO NOT REMOVE (this is a plugin hook). ---
+// Every installed plugin declaring an estimate_source in its manifest gets its
+// own "Add <label>" button to pull its priced items in as estimate lines
+// (historically only the FIRST was discovered, making any second provider
+// unreachable). estimateSources stays [] when none are installed, so every
+// binding below is inert in stock core. activeSource = the provider the picker
+// is currently serving.
+const { sources: estimateSources, discover: discoverEstimateSources } = useEstimateSources(api, auth);
+const activeSource = ref(null);            // { pluginKey, label, list_endpoint, draft_endpoint, columns }
+const capturedError = ref("");             // "" | "forbidden" | "unavailable"
 const capturedPickerVisible = ref(false);
 const capturedItems = ref([]);             // all captures (summary rows incl. folder)
 const capturedLoading = ref(false);
@@ -1202,13 +1254,13 @@ const capturedFolderList = computed(() => {
     if (it.folder) counts[it.folder] = (counts[it.folder] || 0) + 1;
     else none += 1;
   }
-  const list = [{ key: CAPTURED_ALL, label: "All doors", count: items.length }];
+  const list = [{ key: CAPTURED_ALL, label: "All items", count: items.length }];
   Object.keys(counts).sort().forEach((f) => list.push({ key: f, label: f, count: counts[f] }));
   if (none) list.push({ key: CAPTURED_NONE, label: "(No folder)", count: none });
   return list;
 });
 const capturedFolderLabel = computed(() => {
-  if (capturedFolder.value === CAPTURED_ALL) return "All doors";
+  if (capturedFolder.value === CAPTURED_ALL) return "All items";
   if (capturedFolder.value === CAPTURED_NONE) return "(No folder)";
   return capturedFolder.value;
 });
@@ -1219,26 +1271,33 @@ const doorsInFolder = computed(() => {
   return items.filter((it) => it.folder === capturedFolder.value);
 });
 
-async function _discoverEstimateSource() {
-  try {
-    const plugins = await api.get("/api/plugins");
-    const p = (Array.isArray(plugins) ? plugins : []).find((x) => x?.ui?.estimate_source);
-    if (p) estimateSource.value = p.ui.estimate_source;
-  } catch {
-    /* no plugin-host / no plugins → feature stays hidden */
-  }
-}
-
-async function openCapturedPicker() {
-  if (!estimateSource.value) return;
+async function openCapturedPicker(source) {
+  activeSource.value = source || estimateSources.value[0] || null;
+  if (!activeSource.value) return;
   capturedPickerVisible.value = true;
   capturedFolder.value = null;
   selectedDoors.value = [];
+  capturedError.value = "";
   capturedLoading.value = true;
   try {
-    capturedItems.value = (await api.get(estimateSource.value.list_endpoint)) || [];
-  } catch {
+    const rows = (await api.get(activeSource.value.list_endpoint, { suppressErrorToast: true })) || [];
+    // `id` is load-bearing (row selection dataKey + the draft URL's {id});
+    // a row without one can't become a line, so don't offer it.
+    capturedItems.value = (Array.isArray(rows) ? rows : []).filter((r) => r && r.id != null);
+  } catch (e) {
+    if (e?.status === 401) {
+      // suppressErrorToast also suppressed the global session-expiry handler —
+      // don't dress a dead session up as a plugin failure.
+      capturedPickerVisible.value = false;
+      toast.add({ severity: "warn", summary: "Session expired", detail: "Please log in again", life: 3000 });
+      auth.logout();
+      router.push("/login");
+      return;
+    }
+    // 403 (no grant) and 503 (plugin-host down / stale plugin) used to render
+    // as an empty folder list; show the real reason inline instead.
     capturedItems.value = [];
+    capturedError.value = classifyPickerError(e);
   } finally {
     capturedLoading.value = false;
   }
@@ -1253,18 +1312,19 @@ function backToFolders() {
   selectedDoors.value = [];
 }
 
-// Add every selected door as its own line — one door = one line item. Captured
+// Add every selected item as its own line — one item = one line item. Captured
 // price → cost → margin engine; photo + full spec ride along.
 async function addSelectedDoors() {
-  if (!selectedDoors.value.length || !estimateSource.value) return;
+  if (!selectedDoors.value.length || !activeSource.value) return;
   addingDoors.value = true;
   let added = 0;
   let noPhoto = 0;
+  let unpriced = 0;
   try {
     for (const item of selectedDoors.value) {
       let draft;
       try {
-        draft = await api.get(estimateSource.value.draft_endpoint.replace("{id}", item.id));
+        draft = await api.get(activeSource.value.draft_endpoint.replace("{id}", item.id));
       } catch {
         continue;
       }
@@ -1275,6 +1335,9 @@ async function addSelectedDoors() {
       li.quantity = draft.quantity || 1;
       li._capturedMeta = draft.line_metadata || null;   // → line_metadata on POST
       recomputeSell(li);                                 // captured cost → engine markup
+      // Autosave only persists a line once it has a description AND a price
+      // (_lineHasContent) — a line missing either looks added but never saves.
+      if (!(li.description && Number(li.unit_price) > 0)) unpriced += 1;
       form.value.line_items.push(li);                    // deep watcher autosaves it
       if (draft.image && isExisting.value) {
         await _attachCapturedImage(draft.image, item);
@@ -1286,10 +1349,18 @@ async function addSelectedDoors() {
     capturedPickerVisible.value = false;
     toast.add({
       severity: "success",
-      summary: `Added ${added} door${added === 1 ? "" : "s"}`,
+      summary: `Added ${added} item${added === 1 ? "" : "s"}`,
       detail: noPhoto ? `${noPhoto} had no photo (re-capture to attach).` : undefined,
       life: 3000,
     });
+    if (unpriced) {
+      toast.add({
+        severity: "warn",
+        summary: `${unpriced} line${unpriced === 1 ? " isn't" : "s aren't"} saved yet`,
+        detail: "A line needs a description and a Unit Price before it saves — fill in what's missing.",
+        life: 6000,
+      });
+    }
   } finally {
     addingDoors.value = false;
   }
@@ -1302,7 +1373,7 @@ async function _attachCapturedImage(dataUrl, item) {
     const blob = await (await fetch(dataUrl)).blob();
     const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
     const fd = new FormData();
-    fd.append("file", blob, `chi-${item.qcd || item.id}.${ext}`);
+    fd.append("file", blob, `${activeSource.value?.pluginKey || "plugin"}-${item.qcd || item.id}.${ext}`);
     await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
     await loadAttachments();   // refresh the panel so the photo shows immediately
     toast.add({ severity: "success", summary: "Door photo attached", life: 2500 });
@@ -1445,6 +1516,16 @@ function defaultValidUntil() {
   const d = new Date();
   d.setDate(d.getDate() + 30);
   return d;
+}
+
+// The API returns valid_until as UTC midnight ("2026-10-31T00:00:00+00:00").
+// `new Date(that)` lands the evening BEFORE in US timezones, so the picker and
+// the Expires header showed one day early after every reload (the DB value was
+// right; only the display shifted). Parse the date part only, at local midnight.
+function _parseDateOnly(v) {
+  if (!v) return null;
+  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
 }
 
 const form = ref({
@@ -1682,7 +1763,7 @@ async function fetchEstimate() {
       customer_name: data.customer_name || data.customer || (typeof data.customer === 'object' ? data.customer?.name : '') || '',
       status: normalizedStatus,
       created_at: data.created_at || data.createdAt || data.created || "",
-      expires_at: data.expires_at || data.expiresAt || data.expiry_date || data.valid_until || "",
+      expires_at: _parseDateOnly(data.expires_at || data.expiresAt || data.expiry_date || data.valid_until) || "",
       job_id: data.job_id || null,
     };
     loadLinkedJob();
@@ -1706,7 +1787,7 @@ async function fetchEstimate() {
       label: data.label || "",
       description: data.description || "",
       jobsite_address: data.jobsite_address || "",
-      valid_until: data.valid_until || data.expires_at || defaultValidUntil(),
+      valid_until: _parseDateOnly(data.valid_until || data.expires_at) || defaultValidUntil(),
       notes: data.notes || "",
       tax_rate: taxPct,
       discount: toNum(data.discount ?? 0),
@@ -2026,6 +2107,12 @@ let _autosaveInFlight = false;
 let _autosaveInFlightPromise = null;
 let _autosaveQueued = false;
 const FINALIZED = new Set(["accepted", "declined", "Accepted", "Declined"]);
+
+// Autosave refuses to run for finalized estimates (below), so every line-item
+// control must lock with it — an editable editor whose saves are silently
+// dropped is worse than a locked one (lines "added" here rendered, never
+// persisted, and vanished on reload).
+const estimateLocked = computed(() => isExisting.value && FINALIZED.has(estimate.value.status));
 // Exposed to the template for the Slice 3 status pill — Vue's <template>
 // can't reach a const declared in <script setup> unless we re-declare it.
 const FINALIZED_STATUSES = FINALIZED;
@@ -2167,9 +2254,15 @@ async function _flushNow() {
     // 1. Header.
     const formPct = Number(form.value.tax_rate) || 0;
     const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
+    // Same Date→ISO conversion createEstimate does — the DatePicker model is a
+    // Date object; the API wants yy-mm-dd.
+    const validUntil = form.value.valid_until instanceof Date
+      ? form.value.valid_until.toISOString().slice(0, 10)
+      : form.value.valid_until;
     await apiRaw.patch(`/api/estimates/${id}`, {
       label: form.value.label || null,
       jobsite_address: form.value.jobsite_address || null,
+      valid_until: validUntil || null,
       description: form.value.description || null,
       notes: form.value.notes || null,
       tax_rate: persistTax ? formPct / 100 : null,
@@ -2877,7 +2970,7 @@ onMounted(async () => {
   loadPricingSettings();
   loadPricingCategories();
   loadEstimateFeatures();
-  _discoverEstimateSource();   // plugin hook (ADR-013) — no-op when none installed
+  discoverEstimateSources();   // plugin hook (ADR-013) — no-op when none installed
   await loadTenantTaxDefault();
   if (isExisting.value) {
     await fetchEstimate();
@@ -2916,6 +3009,9 @@ onUnmounted(() => {
 
 /* Captured-door folder explorer (plugin picker) */
 .captured-hint { margin: 0 0 0.5rem; color: var(--p-text-color-secondary, #6b7280); }
+.captured-error { display: flex; align-items: center; gap: 0.5rem; color: var(--p-text-color, #1f2937); }
+.captured-error .pi { color: var(--color-warning-500, #d97706); }
+.lines-locked-note { display: flex; align-items: center; gap: 0.5rem; color: var(--p-text-color-secondary, #6b7280); font-size: 0.9rem; }
 .captured-folders { list-style: none; margin: 0; padding: 0; }
 .captured-folder {
   display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.5rem;

@@ -225,6 +225,24 @@ def test_patch_estimate_updates_fields(client: TestClient):
     assert data["notes"] == "Updated note"
 
 
+def test_patch_estimate_updates_valid_until(client: TestClient):
+    # valid_until was create-only for years — the editor's Valid Until field
+    # PATCHed nothing, so edits silently reverted on reload.
+    estimate = _create_estimate(client, label="Expiry test")
+
+    r = client.patch(
+        f"/api/estimates/{estimate['id']}",
+        json={"valid_until": "2027-03-15"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["valid_until"].startswith("2027-03-15")
+
+    g = client.get(f"/api/estimates/{estimate['id']}")
+    assert g.status_code == 200
+    assert g.json()["valid_until"].startswith("2027-03-15")
+
+
 def test_create_estimate_persists_description(client: TestClient):
     estimate = _create_estimate(client, description="Replace 16x7 steel door, paint white")
     r = client.get(f"/api/estimates/{estimate['id']}")
@@ -903,8 +921,8 @@ def test_accept_copies_estimate_lines_onto_job(client: TestClient):
     ).raise_for_status()
     client.post(
         f"/api/estimates/{estimate['id']}/lines",
-        json={"description": "CHI Door 16x7", "quantity": 1, "unit_price": 1850.0,
-              "line_metadata": {"sku": "CHI-2216", "vendor": "CHI", "color": "white"}},
+        json={"description": "Steel Door 16x7", "quantity": 1, "unit_price": 1850.0,
+              "line_metadata": {"sku": "DR-2216", "vendor": "DoorCo", "color": "white"}},
     ).raise_for_status()
 
     r = client.post(f"/api/estimates/{estimate['id']}/accept")
@@ -914,11 +932,11 @@ def test_accept_copies_estimate_lines_onto_job(client: TestClient):
 
     parts = _job_parts(client, job_id)
     by_name = {p.part_name: p for p in parts}
-    assert set(by_name) == {"Torsion Spring", "CHI Door 16x7"}
+    assert set(by_name) == {"Torsion Spring", "Steel Door 16x7"}
     assert by_name["Torsion Spring"].quantity == 2
-    door = by_name["CHI Door 16x7"]
-    assert door.sku == "CHI-2216"
-    assert door.supplier == "CHI"
+    door = by_name["Steel Door 16x7"]
+    assert door.sku == "DR-2216"
+    assert door.supplier == "DoorCo"
     # line_metadata scalars survive into the readable notes summary
     assert "color=white" in (door.notes or "")
 
