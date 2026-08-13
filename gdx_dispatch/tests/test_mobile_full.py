@@ -18,6 +18,21 @@ from gdx_dispatch.modules.inventory import models as _inventory_models  # noqa: 
 from gdx_dispatch.routers import gps as _gps  # noqa: F401  (registers TechnicianLocation)
 from gdx_dispatch.routers import mobile as mobile_router
 
+
+@pytest.fixture(autouse=True)
+def _photo_upload_dir(tmp_path, monkeypatch):
+    """Point UPLOAD_DIR somewhere writable for every test in this module.
+
+    The mobile photo route used to write to MOBILE_UPLOAD_DIR (default
+    /tmp/gdx_mobile_uploads) and mint a url nothing served. It now stores bytes
+    in the SAME flat document root the download route reads, whose default is
+    /app/uploads — writable in the dev container, not on a CI runner, where
+    these tests failed with PermissionError: '/app'. Tests that write files
+    must say where; relying on a default that happens to be writable is how
+    this went unnoticed.
+    """
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+
 _TEST_USER = {"user_id": "user-1", "role": "technician", "tenant_id": "tenant-a"}
 
 
