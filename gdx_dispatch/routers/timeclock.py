@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +28,12 @@ log = logging.getLogger(__name__)
 WARNING_AFTER_HOURS = 8.0
 MAX_SHIFT_HOURS = 16.0
 
+# D2 (tech weekly timesheet, 2026-08-13): how far back a tech may correct or
+# add their OWN shifts. Dispatch/admin are exempt — the office corrects
+# anything, any age. Older weeks are paid weeks; a self-service rewrite of one
+# is a payroll-integrity hole, so those corrections go through the office.
+SELF_SERVICE_EDIT_WINDOW_DAYS = 14
+
 # Row ceiling for the crew-wide timesheet read (/entries?all_technicians=true).
 # Sized so no real query reaches it — a whole shop clocking 4 punches a day for
 # a month is ~1,200 rows — precisely so that hitting it means something is
@@ -47,7 +53,10 @@ class ClockActionRequest(BaseModel):
 
 
 class TimeEntryCreateRequest(BaseModel):
-    technician_id: str = Field(min_length=1)
+    # Optional since the tech self-service timesheet (2026-08-13): omitted means
+    # "me", resolved by _resolve_tech_id — the same contract as clock-in/out.
+    # The office picker still sends it explicitly.
+    technician_id: str | None = None
     clock_in_at: datetime
     clock_out_at: datetime
     notes: str | None = None
@@ -147,6 +156,85 @@ def _elapsed_hours_since(iso: str | datetime) -> float:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return (datetime.now(UTC) - parsed).total_seconds() / 3600.0
+
+
+# Tolerated clock skew on the "no future stamps" rule below: a tech manually
+# adding "…until now" from a phone whose clock runs a few minutes hot must not
+# get a rejection they can't understand.
+_SELF_SERVICE_FUTURE_SKEW = timedelta(minutes=15)
+
+
+def _enforce_self_service_limits(
+    current_user: Any, *, notes: str | None, stamps: list[Any]
+) -> None:
+    """Guardrails for a tech acting on their OWN clock record (D2, 2026-08-13).
+
+    Dispatch/admin pass untouched. A tech must say WHY — the note rides the row
+    (until a later edit rewrites it; the audit log keeps every version) — and
+    every stamp involved must land inside a two-sided window:
+
+    - not older than SELF_SERVICE_EDIT_WINDOW_DAYS: paid weeks are corrected by
+      the office, and a recent row can't be back-dated into one (`stamps`
+      carries the row's CURRENT clock-in and any new stamps being written);
+    - not in the future (beyond small skew): hours that haven't happened can't
+      be attested — the audit's one-sided-window finding, where a fat-fingered
+      year in the hand-typed DatePicker would otherwise book a shift in 2027.
+    """
+    if is_dispatch_manager(current_user):
+        return
+    if not (notes or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="a note explaining the change is required",
+        )
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=SELF_SERVICE_EDIT_WINDOW_DAYS)
+    for stamp in stamps:
+        if stamp is None:
+            continue
+        try:
+            if isinstance(stamp, str):
+                value = _as_aware(stamp)
+            else:
+                value = stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+        except ValueError:
+            # An unreadable stored stamp can't be windowed — only the office
+            # should be rewriting a corrupt row.
+            raise HTTPException(
+                status_code=422,
+                detail="this entry's clock-in can't be read — ask the office to correct it",
+            ) from None
+        if value < cutoff:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"shifts older than {SELF_SERVICE_EDIT_WINDOW_DAYS} days "
+                    "are corrected by the office"
+                ),
+            )
+        if value > now + _SELF_SERVICE_FUTURE_SKEW:
+            raise HTTPException(
+                status_code=422,
+                detail="clock times can't be in the future — check the date",
+            )
+
+
+def _enforce_self_service_duration(current_user: Any, minutes: int | None) -> None:
+    """A tech's own write may not book a shift longer than the system's declared
+    longest possible day (MAX_SHIFT_HOURS — the same constant the clock-in guard
+    and the sweep auto-close at). Almost always a wrong date, not a real day;
+    the office stays exempt because correcting weird rows is their job, and
+    their card flags anything implausible anyway."""
+    if minutes is None or is_dispatch_manager(current_user):
+        return
+    if minutes > int(MAX_SHIFT_HOURS * 60):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"that's longer than {MAX_SHIFT_HOURS:.0f} hours — check the "
+                "dates, or ask the office to enter it"
+            ),
+        )
 
 
 AUTO_CLOSE_NOTE = "Auto-closed — end time unknown, needs office review"
@@ -600,6 +688,10 @@ def list_time_entries(
         default=False,
         description="Office timesheet view: every technician's shifts in the window. Dispatch/admin only.",
     ),
+    include_breaks: bool = Query(
+        default=False,
+        description="Populate break_minutes on each row (self path). Opt-in so existing callers are unchanged.",
+    ),
     current_user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TimeEntryResponse]:
@@ -650,9 +742,12 @@ def list_time_entries(
                        "date_start": start_iso, "date_end": end_iso},
             )
         rows = [_entry_to_response(e) for e in entries]
-        if all_technicians and rows:
-            # Net break time onto each row. Office view only: the self-service
-            # callers render breaks their own way and don't expect the field.
+        if (all_technicians or include_breaks) and rows:
+            # Net break time onto each row. Office view always; the self path
+            # opts in via include_breaks (the tech weekly timesheet needs it or
+            # its week total pays out every lunch and disagrees with the office
+            # page for the same week). Legacy self callers send neither flag
+            # and stay byte-identical.
             breaks = _break_minutes_by_entry(db, tenant_id, list(entries))
             for r in rows:
                 r.break_minutes = breaks.get(r.id)
@@ -674,10 +769,16 @@ def create_manual_entry(
 
     tenant_id = _tenant_id(request)
     tech_id = _resolve_tech_id(current_user, payload.technician_id)
+    if not tech_id:
+        raise HTTPException(status_code=422, detail="technician_id is required")
     row_id = str(uuid4())
     clock_in_iso = payload.clock_in_at.astimezone(UTC).isoformat() if payload.clock_in_at.tzinfo else payload.clock_in_at.replace(tzinfo=UTC).isoformat()
     clock_out_iso = payload.clock_out_at.astimezone(UTC).isoformat() if payload.clock_out_at.tzinfo else payload.clock_out_at.replace(tzinfo=UTC).isoformat()
+    _enforce_self_service_limits(
+        current_user, notes=payload.notes, stamps=[clock_in_iso, clock_out_iso]
+    )
     minutes = _minutes_between(clock_in_iso, clock_out_iso)
+    _enforce_self_service_duration(current_user, minutes)
     now = datetime.now(UTC).isoformat()
     try:
         entry = TimeclockEntry(
@@ -749,6 +850,19 @@ def update_time_entry(
             raise HTTPException(status_code=403, detail="cannot edit another technician's entry")
 
         updates = payload.model_dump(exclude_unset=True, mode="json")
+        # Self-service guardrails: the row's current clock-in and every new
+        # stamp must sit inside the two-sided window — a recent shift can't be
+        # back-dated into a paid week, and no stamp may land in the future.
+        # Office/dispatch pass untouched.
+        _enforce_self_service_limits(
+            current_user,
+            notes=updates.get("notes"),
+            stamps=[
+                str(entry.clock_in_at),
+                updates.get("clock_in_at"),
+                updates.get("clock_out_at"),
+            ],
+        )
         clock_in_iso = updates.get("clock_in_at", entry.clock_in_at)
         clock_out_iso = updates.get("clock_out_at", entry.clock_out_at)
         if clock_in_iso and clock_out_iso:
@@ -760,6 +874,7 @@ def update_time_entry(
                 raise HTTPException(status_code=422, detail="clock_out_at must be after clock_in_at")
 
         minutes = _minutes_between(clock_in_iso, clock_out_iso) if (clock_in_iso and clock_out_iso) else None
+        _enforce_self_service_duration(current_user, minutes)
         notes = updates.get("notes", entry.notes)
         updated_at = datetime.now(UTC).isoformat()
 

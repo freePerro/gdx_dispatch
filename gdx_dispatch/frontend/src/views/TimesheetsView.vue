@@ -224,107 +224,23 @@
       </div>
     </template>
 
-    <!-- Correction dialog. This is the ONLY writer to
-         PATCH /api/timeclock/entries/{id} in the app. -->
-    <Dialog
+    <!-- Correction dialog — shared with the tech's own weekly timesheet
+         (TimeEntryDialog is the app's ONLY writer to PATCH/POST
+         /api/timeclock/entries). Office mode: roster picker, note advised. -->
+    <TimeEntryDialog
       v-model:visible="showEdit"
-      :header="editing.isNew ? 'Add a time entry' : 'Correct this shift'"
-      modal
-      class="entry-dialog"
-      style="width: 30rem"
-      data-testid="entry-dialog"
-    >
-      <div class="form-grid">
-        <div class="form-field">
-          <label for="entry-tech">Technician</label>
-          <Select
-            v-if="editing.isNew"
-            id="entry-tech"
-            v-model="editing.technicianId"
-            :options="rosterOptions"
-            optionLabel="label"
-            optionValue="value"
-            filter
-            placeholder="Pick a person"
-            data-testid="entry-tech-select"
-          />
-          <InputText v-else id="entry-tech" :value="editing.techName" readonly data-testid="entry-tech-readonly" />
-        </div>
-        <!-- showOnFocus=false is deliberate, and was found in the browser: with
-             the default (panel opens on focus), a showTime picker's panel stays
-             open after you pick a date so you can set the time — and inside a
-             dialog it covers the Notes field AND the Save button beneath it.
-             Escape dismisses the whole dialog rather than just the panel, so the
-             correction you just typed is gone. Opening the panel only from the
-             calendar icon keeps both paths: type the time, or click to pick. -->
-        <div class="form-field">
-          <label for="entry-in">Clocked in</label>
-          <DatePicker
-            id="entry-in"
-            v-model="editing.clockIn"
-            showTime
-            showIcon
-            :showOnFocus="false"
-            hourFormat="12"
-            dateFormat="yy-mm-dd"
-            data-testid="entry-clock-in"
-          />
-        </div>
-        <div class="form-field">
-          <label for="entry-out">Clocked out</label>
-          <DatePicker
-            id="entry-out"
-            v-model="editing.clockOut"
-            showTime
-            showIcon
-            :showOnFocus="false"
-            hourFormat="12"
-            dateFormat="yy-mm-dd"
-            data-testid="entry-clock-out"
-          />
-          <small v-if="editing.wasOpen" class="field-hint">
-            This shift was never clocked out. Setting a real end time here is what clears it from Dispatch.
-          </small>
-        </div>
-        <div class="form-field">
-          <label for="entry-notes">Notes</label>
-          <Textarea id="entry-notes" v-model="editing.notes" rows="2" data-testid="entry-notes" />
-          <small class="field-hint">
-            Every correction is written to the audit log with your name on it. Say why.
-          </small>
-        </div>
-        <!-- ELAPSED, not worked. This dialog edits clock times only; it cannot
-             edit breaks. Labelling this "total" made the dialog contradict the
-             row it was opened from — a shift with an hour's lunch read 7.00 in
-             the table and "8.00h" here. Say which number this is, and show the
-             worked figure alongside it whenever a break applies. -->
-        <div v-if="editing.hours != null" class="form-preview" data-testid="entry-hours-preview">
-          Elapsed: <strong>{{ editing.hours.toFixed(2) }}h</strong>
-          <span v-if="editing.breakMinutes" class="preview-sub" data-testid="entry-worked-preview">
-            − {{ editing.breakMinutes }}m break = <strong>{{ editingWorkedHours.toFixed(2) }}h</strong> worked
-          </span>
-        </div>
-        <Message v-if="editError" severity="error" :closable="false" data-testid="entry-error">
-          {{ editError }}
-        </Message>
-      </div>
-      <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="showEdit = false" />
-        <Button
-          label="Save"
-          icon="pi pi-check"
-          :loading="saving"
-          :disabled="!canSave"
-          data-testid="entry-save"
-          @click="save"
-        />
-      </template>
-    </Dialog>
+      :entry="dialogEntry"
+      :tech-name="dialogTechName"
+      :roster-options="rosterOptions"
+      :default-technician-id="techFilter !== 'all' ? techFilter : ''"
+      :anchor-date="startDate"
+      @saved="load"
+    />
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Avatar from 'primevue/avatar';
 import Button from 'primevue/button';
@@ -332,14 +248,12 @@ import Card from 'primevue/card';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
-import Dialog from 'primevue/dialog';
-import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Tag from 'primevue/tag';
-import Textarea from 'primevue/textarea';
 import Toolbar from 'primevue/toolbar';
+import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import { useApi } from '../composables/useApi';
 import { formatDate, formatTime, localDateString } from '../composables/useFormatters';
 import { dateKeyInZone, useTenantTimezone } from '../composables/useTenantTimezone';
@@ -369,61 +283,10 @@ const router = useRouter();
 //    May 2 is May 3 UTC), so a UTC-day bucket files them under the wrong day.
 const { tenantTimezone, ensureLoaded: ensureTimezone } = useTenantTimezone();
 
-/** Offset of `tz` from UTC, in ms, at the instant `date`. */
-function zoneOffsetMs(date, tz) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hour12: false,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(date);
-  const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
-  // hour12:false renders midnight as "24" in some engines — normalize.
-  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
-  return asUtc - date.getTime();
-}
-
-/**
- * Stored instant → a Date whose BROWSER-LOCAL fields read as the shop wall
- * clock. That is what the DatePicker renders, so the office sees shop time.
- */
-function toShopWallClock(iso) {
-  if (!iso) return null;
-  const d = new Date(String(iso).replace(' ', 'T'));
-  if (Number.isNaN(d.getTime())) return null;
-  const tz = tenantTimezone.value;
-  if (!tz) return d;
-  try {
-    const shifted = new Date(d.getTime() + zoneOffsetMs(d, tz));
-    return new Date(
-      shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(),
-      shifted.getUTCHours(), shifted.getUTCMinutes(), 0, 0,
-    );
-  } catch {
-    return d;  // unknown IANA name — degrade to browser-local, never throw
-  }
-}
-
-/**
- * Inverse: the picker's local fields are a shop wall clock → the real instant,
- * as a UTC ISO string for the wire. The offset is resolved twice because the
- * correct offset depends on the instant we are still solving for (DST).
- */
-function shopWallClockToIso(dateObj) {
-  if (!dateObj) return null;
-  const tz = tenantTimezone.value;
-  if (!tz) return dateObj.toISOString();
-  const wallAsUtc = Date.UTC(
-    dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(),
-    dateObj.getHours(), dateObj.getMinutes(), 0, 0,
-  );
-  try {
-    let instant = new Date(wallAsUtc - zoneOffsetMs(new Date(wallAsUtc), tz));
-    instant = new Date(wallAsUtc - zoneOffsetMs(instant, tz));
-    return instant.toISOString();
-  } catch {
-    return dateObj.toISOString();
-  }
-}
+// The wall-clock conversions (toShopWallClock / shopWallClockToIso) moved to
+// useTenantTimezone 2026-08-13 — the tech's own timesheet books hours through
+// the same TimeEntryDialog, and two copies of "which wall clock is this" is
+// how two pages end up recording different instants for the same shift.
 
 /** 'YYYY-MM-DD' shop-time day a stamp belongs to. */
 function shopDayKey(iso) {
@@ -431,29 +294,21 @@ function shopDayKey(iso) {
 }
 
 const loading = ref(false);
-const saving = ref(false);
 const entries = ref([]);
 const roster = ref([]);
 const startDate = ref(null);
 const endDate = ref(null);
 const techFilter = ref('all');
 const showEdit = ref(false);
-const editError = ref('');
+// null = the dialog creates a new entry; a row = it corrects that row.
+const dialogEntry = ref(null);
 const deepLinkMiss = ref(false);
 // Consumed once on the first load after a Dispatch "Fix" click, then cleared so
 // a later refresh doesn't reopen the dialog under the user.
 const pendingEntryId = ref('');
 
-const editing = reactive({
-  id: '', isNew: false, technicianId: '', techName: '',
-  clockIn: null, clockOut: null, notes: '', wasOpen: false,
-  hours: null, breakMinutes: 0,
-});
-
-// Worked = elapsed less this entry's break time. The dialog cannot edit breaks,
-// so this is shown for reconciliation against the row, not as an input.
-const editingWorkedHours = computed(() =>
-  Math.max(0, (editing.hours || 0) - (editing.breakMinutes || 0) / 60),
+const dialogTechName = computed(() =>
+  dialogEntry.value ? techName(dialogEntry.value.technician_id) : '',
 );
 
 // --- roster -----------------------------------------------------------------
@@ -699,7 +554,7 @@ async function load() {
     entries.value = Array.isArray(data) ? data : data?.items || [];
   } catch (e) {
     entries.value = [];
-    editError.value = e?.message || '';
+    // The page shows its empty state; the API helper already toasts the error.
   } finally {
     loading.value = false;
   }
@@ -730,107 +585,17 @@ function consumeDeepLink() {
 }
 
 // --- edit / create ----------------------------------------------------------
+// The dialog itself (snapshotting, canSave, the PATCH/POST) lives in
+// TimeEntryDialog — shared with the tech's own timesheet. This page only
+// decides WHICH row it opens on.
 function openEdit(entry) {
-  editError.value = '';
-  Object.assign(editing, {
-    id: String(entry.id),
-    isNew: false,
-    technicianId: String(entry.technician_id),
-    techName: techName(entry.technician_id),
-    // Shop wall clock, so the picker shows the same time the table does.
-    clockIn: toShopWallClock(entry.clock_in_at),
-    clockOut: toShopWallClock(entry.clock_out_at),
-    notes: entry.notes || '',
-    wasOpen: !entry.clock_out_at,
-    breakMinutes: entry.break_minutes || 0,
-  });
+  dialogEntry.value = entry;
   showEdit.value = true;
 }
 
 function openCreate() {
-  editError.value = '';
-  const anchor = startDate.value ? new Date(startDate.value) : new Date();
-  anchor.setHours(8, 0, 0, 0);
-  const out = new Date(anchor);
-  out.setHours(16, 0, 0, 0);
-  Object.assign(editing, {
-    id: '', isNew: true,
-    technicianId: techFilter.value !== 'all' ? techFilter.value : '',
-    techName: '',
-    clockIn: anchor, clockOut: out, notes: '', wasOpen: false,
-    breakMinutes: 0,
-  });
+  dialogEntry.value = null;
   showEdit.value = true;
-}
-
-// Live preview of what the correction will record, so nobody saves a 14-hour
-// typo and finds out on payday.
-watch(
-  () => [editing.clockIn, editing.clockOut],
-  () => {
-    if (editing.clockIn && editing.clockOut) {
-      const mins = (editing.clockOut.getTime() - editing.clockIn.getTime()) / 60000;
-      editing.hours = mins > 0 ? mins / 60 : null;
-    } else {
-      editing.hours = null;
-    }
-  },
-  { immediate: true },
-);
-
-const canSave = computed(() => {
-  if (saving.value) return false;
-  if (editing.isNew) {
-    return !!editing.technicianId && !!editing.clockIn && !!editing.clockOut
-      && editing.clockOut > editing.clockIn;
-  }
-  if (!editing.clockIn) return false;
-  if (editing.clockOut && editing.clockOut <= editing.clockIn) return false;
-  // Never let a CLOSED shift be saved back to open. PATCH accepts an explicit
-  // null and nulls both clock_out_at and minutes, and the audit row records
-  // only the new values — so the original clock-out would be unrecoverable
-  // from inside the app, and the shift would reappear on Dispatch's card.
-  // Reopening a shift is not a correction anyone needs from this page.
-  if (!editing.wasOpen && !editing.clockOut) return false;
-  return true;
-});
-
-async function save() {
-  saving.value = true;
-  editError.value = '';
-  try {
-    // The picker's fields are a SHOP wall clock; the wire is UTC. Sending
-    // .toISOString() directly would book the office laptop's zone instead —
-    // "5:00 pm" typed in Denver would land as 4:00 pm shop time.
-    if (editing.isNew) {
-      await api.post(
-        '/api/timeclock/entries',
-        {
-          technician_id: editing.technicianId,
-          clock_in_at: shopWallClockToIso(editing.clockIn),
-          clock_out_at: shopWallClockToIso(editing.clockOut),
-          notes: editing.notes || null,
-        },
-        { successMessage: 'Time entry added' },
-      );
-    } else {
-      await api.patch(
-        `/api/timeclock/entries/${editing.id}`,
-        {
-          clock_in_at: shopWallClockToIso(editing.clockIn),
-          clock_out_at: editing.clockOut ? shopWallClockToIso(editing.clockOut) : null,
-          notes: editing.notes || null,
-        },
-        { successMessage: 'Shift corrected' },
-      );
-    }
-    showEdit.value = false;
-    await load();
-  } catch (e) {
-    editError.value = e?.message || 'Save failed';
-  } finally {
-    saving.value = false;
-  }
 }
 
 onMounted(async () => {
@@ -995,23 +760,5 @@ onMounted(async () => {
   font-size: 2rem;
   display: block;
   margin-bottom: 0.5rem;
-}
-
-.form-grid {
-  display: grid;
-  gap: 0.75rem;
-}
-.form-field {
-  display: grid;
-  gap: 0.25rem;
-}
-.field-hint {
-  color: var(--p-text-muted-color);
-  font-size: 0.78rem;
-}
-.form-preview {
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--p-border-radius, 6px);
-  background: var(--p-content-hover-background);
 }
 </style>
