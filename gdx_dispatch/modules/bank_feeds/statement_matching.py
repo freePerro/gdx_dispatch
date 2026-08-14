@@ -105,6 +105,46 @@ _PROCESSOR_METHODS = {"card", "credit", "credit_card", "debit_card", "stripe", "
 _R3_EXCLUDED_METHODS = _PROCESSOR_METHODS | {"quickbooks"}
 
 
+class MatchError(ValueError):
+    """Match operation refused. Carries a ``code`` so router responses use
+    the constant-table lookup below (the repo's CodeQL-clean pattern: dict
+    lookup by code breaks the exception→response taint, so a future wrapper
+    can never leak foreign exception text through these endpoints). The
+    service-level message may be richer (built from our own literals) for
+    logs and tests; responses always come from the table."""
+
+    def __init__(self, code: str, detail: str | None = None):
+        self.code = code
+        super().__init__(detail or MATCH_REFUSAL_MESSAGES.get(code, code))
+
+
+MATCH_REFUSAL_MESSAGES: dict[str, str] = {
+    "invalid_status": "invalid match status",
+    "dead_external_confirm": (
+        "cannot confirm: a linked books record was voided or deleted — "
+        "re-run suggestions to refresh this match"
+    ),
+    "no_lines": "at least one statement line is required",
+    "no_content": "provide books records or a classification",
+    "unknown_line": "a selected statement line was not found on this account",
+    "line_taken": "a selected statement line already belongs to a match",
+    "bad_source_table": "unknown books record type",
+    "unknown_record": "a selected books record was not found",
+    "dead_record": "cannot match a voided or deleted books record",
+    "record_taken": "a selected books record is already matched",
+    "concurrent_run": (
+        "a concurrent reconciliation run changed matches while this one was "
+        "working — nothing was saved; run Suggest matches again"
+    ),
+}
+
+
+def match_refusal_message(exc: Exception) -> str:
+    """Response text for a match refusal: constant-table lookup by code.
+    Plain ValueErrors (id parsing etc.) fall back to a generic message."""
+    return MATCH_REFUSAL_MESSAGES.get(getattr(exc, "code", ""), "invalid match operation")
+
+
 def _cents(amount) -> int:
     return int(Decimal(str(amount)) * 100)
 
@@ -449,10 +489,7 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
         db.commit()
     except Exception as exc:  # noqa: BLE001 — IntegrityError from a concurrent writer
         db.rollback()
-        raise ValueError(
-            "a concurrent reconciliation run changed matches while this one "
-            "was working — nothing was saved; run Suggest matches again"
-        ) from exc
+        raise MatchError("concurrent_run") from exc
     return stats
 
 
@@ -548,7 +585,9 @@ def _apply_confirm_effects(db: Session, match: BankMatch, user_id: str | None) -
             created_by=user_id,
         )
     except PaymentError as exc:
-        _append_note(match, f"no payment auto-recorded: {exc}")
+        from gdx_dispatch.modules.vendor_invoices.payments import payment_refusal_message
+
+        _append_note(match, "no payment auto-recorded: " + payment_refusal_message(exc))
         return result
     return {"payment_recorded": True, "payment_id": str(payment.id), "bill_status": bill.status}
 
@@ -612,7 +651,7 @@ def set_match_status(db: Session, match: BankMatch, status: str, user_id: str | 
     from gdx_dispatch.core.audit import utcnow
 
     if status not in (MATCH_SUGGESTED, MATCH_CONFIRMED, MATCH_REJECTED):
-        raise ValueError(f"invalid status {status!r}")
+        raise MatchError("invalid_status")
     previous = match.status
     if status == MATCH_CONFIRMED and previous != MATCH_CONFIRMED:
         # Diff-audit SHOULD-FIX 4: a suggested match can outlive its books
@@ -624,8 +663,9 @@ def set_match_status(db: Session, match: BankMatch, status: str, user_id: str | 
         ).all():
             dead = _dead_source_reason(db, ext.source_table, ext.source_id)
             if dead is not None:
-                raise ValueError(
-                    f"cannot confirm: {dead} — re-run suggestions to refresh this match"
+                raise MatchError(
+                    "dead_external_confirm",
+                    f"cannot confirm: {dead} — re-run suggestions to refresh this match",
                 )
     match.status = status
     effects: dict = {}
@@ -661,18 +701,18 @@ def create_manual_match(
     from gdx_dispatch.core.audit import utcnow
 
     if not line_ids:
-        raise ValueError("at least one statement line is required")
+        raise MatchError("no_lines")
     if not externals and not classification:
-        raise ValueError("provide books records or a classification")
+        raise MatchError("no_content")
 
     matched = _matched_line_ids(db)
     lines = []
     for line_id in line_ids:
         line = db.get(BankStatementLine, line_id)
         if line is None or line.bank_account_id != account.id:
-            raise ValueError(f"unknown statement line {line_id}")
+            raise MatchError("unknown_line", f"unknown statement line {line_id}")
         if line.id in matched:
-            raise ValueError(f"line {line_id} already belongs to a match")
+            raise MatchError("line_taken", f"line {line_id} already belongs to a match")
         lines.append(line)
 
     used = _used_externals(db)
@@ -682,15 +722,15 @@ def create_manual_match(
         model = {"payments": Payment, "expenses": Expense,
                  "vendor_invoices": VendorInvoice}.get(source_table)
         if model is None:
-            raise ValueError(f"unknown source_table {source_table!r}")
+            raise MatchError("bad_source_table", f"unknown source_table {source_table!r}")
         row = db.get(model, source_id)
         if row is None:
-            raise ValueError(f"unknown {source_table} record {source_id}")
+            raise MatchError("unknown_record", f"unknown {source_table} record {source_id}")
         dead = _dead_source_reason(db, source_table, source_id)
         if dead is not None:
-            raise ValueError(f"cannot match a dead books record: {dead}")
+            raise MatchError("dead_record", f"cannot match a dead books record: {dead}")
         if (source_table, source_id) in used:
-            raise ValueError(f"{source_table} record {source_id} is already matched")
+            raise MatchError("record_taken", f"{source_table} record {source_id} is already matched")
         amount = getattr(row, "amount", None) or getattr(row, "total", 0)
         external_cents += _cents(amount or 0)
         validated.append((source_table, source_id))

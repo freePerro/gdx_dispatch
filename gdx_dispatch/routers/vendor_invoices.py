@@ -432,6 +432,9 @@ async def record_bill_payment(
     """Record a manual payment against a bill — the replacement for the
     retired Mark-paid status PATCH. Capped at the open balance; the status
     derives from the records."""
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+    from gdx_dispatch.modules.vendor_invoices.payments import payment_refusal_message
+
     invoice = _load(db, invoice_id)
     try:
         payment = record_payment(
@@ -444,7 +447,12 @@ async def record_bill_payment(
             created_by=_actor(user),
         )
     except PaymentError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=payment_refusal_message(exc)) from exc
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="the payment date falls in a locked accounting period",
+        ) from exc
     db.commit()
     db.refresh(invoice)
     log_audit_event_sync(
@@ -480,6 +488,9 @@ async def void_bill_payment(
     """Void one payment record (payments are never deleted or edited).
     Match-created payments refuse this while their bank match stays
     confirmed — unconfirm the match instead."""
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+    from gdx_dispatch.modules.vendor_invoices.payments import payment_refusal_message
+
     invoice = _load(db, invoice_id)
     payment = db.get(VendorBillPayment, payment_id)
     if payment is None or payment.vendor_invoice_id != invoice.id:
@@ -487,7 +498,12 @@ async def void_bill_payment(
     try:
         void_payment(db, payment, voided_by=_actor(user))
     except PaymentError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=payment_refusal_message(exc)) from exc
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="unwinding this payment would post into a locked accounting period",
+        ) from exc
     db.commit()
     db.refresh(invoice)
     log_audit_event_sync(

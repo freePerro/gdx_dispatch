@@ -577,6 +577,248 @@ def test_vendor_bill_confirm_skips_pre_cutover_era(tenant_db):
     ).first() is None, "pre-cutover era expenses belong to the QBO-era books"
 
 
+# ── cash-basis expense dating (Doug: payment date for cash basis) ──────
+
+
+def _bill_with_confirmed_line(db, total="50.00", invoice_date=date(2026, 6, 20)):
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoiceLine
+
+    bill = make_bill(db, total, invoice_date=invoice_date)
+    line = VendorInvoiceLine(
+        vendor_invoice_id=bill.id, line_no=0, kind="item",
+        description="widget", quantity=Decimal("1"),
+        unit_cost=Decimal(str(total)), line_total=Decimal(str(total)),
+    )
+    db.add(line)
+    db.commit()
+    confirm_line(db, bill, line, disposition="overhead",
+                 company_id=COMPANY, actor_id="tester")
+    db.commit()
+    return bill, line
+
+
+def test_settlement_redates_expense_and_void_reverts(tenant_db):
+    bill, line = _bill_with_confirmed_line(tenant_db)
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 6, 20)  # placeholder: invoice date
+
+    payment = record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                             paid_date=date(2026, 7, 3), source="manual")
+    tenant_db.commit()
+    tenant_db.refresh(expense)
+    assert expense.date == date(2026, 7, 3)  # cash basis: payment date
+
+    void_payment(tenant_db, payment, voided_by="tester")
+    tenant_db.commit()
+    tenant_db.refresh(expense)
+    assert expense.date == date(2026, 6, 20)  # un-settled: back to placeholder
+
+
+def test_partial_payment_keeps_placeholder_date(tenant_db):
+    bill, line = _bill_with_confirmed_line(tenant_db, total="100.00")
+    record_payment(tenant_db, bill, amount=Decimal("40.00"),
+                   paid_date=date(2026, 7, 1), source="manual")
+    tenant_db.commit()
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 6, 20)  # not settled yet
+    record_payment(tenant_db, bill, amount=Decimal("60.00"),
+                   paid_date=date(2026, 7, 9), source="manual")
+    tenant_db.commit()
+    tenant_db.refresh(expense)
+    assert expense.date == date(2026, 7, 9)  # settling payment's date
+
+
+def test_mixed_dateless_and_dated_settlement_keeps_placeholder(tenant_db):
+    """The contentious branch of the ALL-dated rule: a backfilled dateless
+    payment + a dated settling payment → recognition date is unknowable, so
+    the placeholder stays (no fictional date)."""
+    bill, line = _bill_with_confirmed_line(tenant_db, total="100.00")
+    record_payment(tenant_db, bill, amount=Decimal("60.00"),
+                   paid_date=None, source="manual")
+    record_payment(tenant_db, bill, amount=Decimal("40.00"),
+                   paid_date=date(2026, 7, 9), source="manual")
+    tenant_db.commit()
+    assert bill.status == STATUS_PAID
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 6, 20)
+
+
+def _bank_sums_by_date(db, expense_id):
+    """Per-(account, effective_date) net of journal lines for one expense
+    across ALL entries — a reversed original keeps its lines (status is
+    metadata; the mirror entry is what cancels it), so economic truth is
+    the sum over everything. A fully-unwound date nets zero per account."""
+    from collections import defaultdict
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry, GlJournalLine
+
+    sums = defaultdict(int)
+    entries = {e.id: e for e in db.scalars(_select(GlJournalEntry).where(
+        GlJournalEntry.source_type == "expense",
+        GlJournalEntry.source_id == str(expense_id),
+    )).all()}
+    if entries:
+        for line in db.scalars(_select(GlJournalLine).where(
+                GlJournalLine.entry_id.in_(list(entries)))).all():
+            sums[(line.account_id, entries[line.entry_id].effective_at)] += int(line.amount_cents)
+    return sums
+
+
+def test_locked_month_settlement_still_records_flag_on(tenant_db):
+    """Gate-audit BLOCKER 1 (was proven to raise): June closed, bill
+    confirmed in June, paid in July — recording the July payment must work,
+    with the June entry's reversal posted at the TARGET date (reverse_entry's
+    documented locked-period escape hatch), never a refusal or a 500."""
+    from gdx_dispatch.modules.ledger.models import GlPeriodLock
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    settings = ensure_gl_seed(tenant_db, COMPANY)
+    settings.ledger_posting_enabled = True
+    tenant_db.commit()
+
+    bill, line = _bill_with_confirmed_line(tenant_db)  # P5 posted at 6/20
+    tenant_db.add(GlPeriodLock(lock_date=date(2026, 6, 30), company_id=COMPANY))
+    tenant_db.commit()
+
+    record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                   paid_date=date(2026, 7, 3), source="manual")
+    tenant_db.commit()
+
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 7, 3)
+    # A locked month's amounts are immutable — the correction posts in the
+    # open period (Phase-1 lock rules). The invariant that matters: the
+    # expense is recognized exactly ONCE per account across all dates (no
+    # double-post, no lost recognition), and nothing crashed.
+    from collections import defaultdict
+
+    totals = defaultdict(int)
+    for (acct, _day), v in _bank_sums_by_date(tenant_db, line.expense_id).items():
+        totals[acct] += v
+    assert sorted(totals.values()) == [-5000, 5000], \
+        "exactly one net recognition per account, regardless of lock gymnastics"
+
+
+def test_void_on_pre_cutover_bill_unwinds_live_entry_flag_on(tenant_db):
+    """Gate-audit BLOCKER 2 (was proven to strand): cutover 6/01, bill dated
+    5/15, settled 7/03 (entry posted at 7/03), payment voided — the era
+    branch must REVERSE the live entry, never leave the GL claiming cash
+    left a bill that just reopened."""
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    settings = ensure_gl_seed(tenant_db, COMPANY)
+    settings.ledger_posting_enabled = True
+    settings.cutover_month = date(2026, 6, 1)
+    tenant_db.commit()
+
+    bill, line = _bill_with_confirmed_line(tenant_db, invoice_date=date(2026, 5, 15))
+    payment = record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                             paid_date=date(2026, 7, 3), source="manual")
+    tenant_db.commit()
+    assert any(v != 0 for v in _bank_sums_by_date(tenant_db, line.expense_id).values())
+
+    void_payment(tenant_db, payment, voided_by="tester")
+    tenant_db.commit()
+
+    assert bill.status == STATUS_OPEN
+    sums = _bank_sums_by_date(tenant_db, line.expense_id)
+    assert all(v == 0 for v in sums.values()), \
+        "every posted amount must be unwound after the void"
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 5, 15)
+
+    # Re-audit BLOCKER pin: a SECOND settle→void cycle must also net to
+    # zero — reversal entries inherit the expense's source ids, and a
+    # naive "posted entries" sweep would reverse the reversal, silently
+    # re-asserting the original amounts.
+    payment2 = record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                              paid_date=date(2026, 7, 20), source="manual")
+    tenant_db.commit()
+    assert any(v != 0 for v in _bank_sums_by_date(tenant_db, line.expense_id).values())
+    void_payment(tenant_db, payment2, voided_by="tester")
+    tenant_db.commit()
+    sums = _bank_sums_by_date(tenant_db, line.expense_id)
+    assert all(v == 0 for v in sums.values()), \
+        "cycle two must unwind cleanly — never reverse a reversal"
+
+
+def test_dateless_backfill_payment_never_redates(tenant_db):
+    bill, line = _bill_with_confirmed_line(tenant_db)
+    record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                   paid_date=None, source="manual")  # migration-style, date unknown
+    tenant_db.commit()
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert bill.status == STATUS_PAID
+    assert expense.date == date(2026, 6, 20)  # no fictional date invented
+
+
+def test_confirm_on_settled_bill_dates_at_settlement(tenant_db):
+    from gdx_dispatch.modules.vendor_invoices.confirm import confirm_line
+    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoiceLine
+
+    bill = make_bill(tenant_db, "50.00", invoice_date=date(2026, 6, 20))
+    record_payment(tenant_db, bill, amount=Decimal("50.00"),
+                   paid_date=date(2026, 7, 3), source="manual")
+    tenant_db.commit()
+    line = VendorInvoiceLine(
+        vendor_invoice_id=bill.id, line_no=0, kind="item",
+        description="late-confirmed widget", quantity=Decimal("1"),
+        unit_cost=Decimal("50"), line_total=Decimal("50.00"),
+    )
+    tenant_db.add(line)
+    tenant_db.commit()
+    confirm_line(tenant_db, bill, line, disposition="overhead",
+                 company_id=COMPANY, actor_id="tester")
+    tenant_db.commit()
+    expense = tenant_db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 7, 3)
+
+
+def test_bank_match_settlement_posts_at_bank_date_flag_on(world):
+    """The full cash-basis chain with the ledger LIVE: bill line confirmed
+    (P5 at invoice-date placeholder) → bank match confirmed (payment at the
+    BANK date) → the live journal entry's effective date IS the bank date."""
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    db, account = world
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.ledger_posting_enabled = True
+    db.commit()
+
+    # invoice_date 6/10: far enough from the 6/03 debit that the R2 expense
+    # rung (±3 business days) misses the line-expense, close enough that the
+    # vendor rung (±10 days) fires — the rung this test needs.
+    bill, line = _bill_with_confirmed_line(db, total="100.00", invoice_date=date(2026, 6, 10))
+    confirmed_vendor_match(db, account, bill)  # debit 6/03 $100 → payment @ bank date
+
+    db.refresh(bill)
+    assert bill.status == STATUS_PAID
+    expense = db.get(Expense, line.expense_id)
+    assert expense.date == date(2026, 6, 3)
+
+    live = [e for e in db.scalars(_select(GlJournalEntry).where(
+        GlJournalEntry.source_type == "expense",
+        GlJournalEntry.source_id == str(expense.id),
+        GlJournalEntry.status == "posted",
+    )).all()]
+    assert any(e.effective_at == date(2026, 6, 3) for e in live), \
+        "the P5 credit must land on the bank date (cash basis)"
+    # Gate-audit SHOULD-FIX 4: the placeholder-dated original must be fully
+    # unwound — a double-credit regression (post-without-reverse) fails here.
+    sums = _bank_sums_by_date(db, line.expense_id)
+    assert all(v == 0 for (acct, day), v in sums.items() if day == date(2026, 6, 10)), \
+        "the invoice-date entry must be reversed, not left standing"
+
+
 # ── QB schedule health ─────────────────────────────────────────────────
 
 

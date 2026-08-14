@@ -1340,10 +1340,19 @@ def confirm_match(
         # no-op, never a re-stamp that re-fires effects.
         return {"id": str(match.id), "status": match.status, "effects": {"already_confirmed": True}}
     user_id = str(current_user.get("sub") or "")[:64] or None
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+
     try:
         result = statement_matching.set_match_status(db, match, MATCH_CONFIRMED, user_id)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+        raise HTTPException(
+            status_code=409, detail=statement_matching.match_refusal_message(exc)
+        ) from None
+    except PeriodLockedError:
+        raise HTTPException(
+            status_code=409,
+            detail="confirming would record a payment dated in a locked accounting period",
+        ) from None
     _audit(db, request, current_user, "bank_match_confirmed", str(match.id))
     return result
 
@@ -1380,7 +1389,15 @@ def unconfirm_match(
     if match.status != MATCH_CONFIRMED:
         raise HTTPException(status_code=409, detail="Only confirmed matches can be unconfirmed")
     user_id = str(current_user.get("sub") or "")[:64] or None
-    result = statement_matching.set_match_status(db, match, MATCH_SUGGESTED, user_id)
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+
+    try:
+        result = statement_matching.set_match_status(db, match, MATCH_SUGGESTED, user_id)
+    except PeriodLockedError:
+        raise HTTPException(
+            status_code=409,
+            detail="unwinding this match would post into a locked accounting period",
+        ) from None
     _audit(db, request, current_user, "bank_match_unconfirmed", str(match.id))
     return result
 
@@ -1415,11 +1432,20 @@ def create_match(
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid id") from None
     user_id = str(current_user.get("sub") or "")[:64] or None
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+
     try:
         match = statement_matching.create_manual_match(
             db, account, line_ids, externals, body.classification, body.note, user_id)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(
+            status_code=422, detail=statement_matching.match_refusal_message(exc)
+        ) from None
+    except PeriodLockedError:
+        raise HTTPException(
+            status_code=409,
+            detail="matching would record a payment dated in a locked accounting period",
+        ) from None
     _audit(db, request, current_user, "bank_match_created_manual", str(match.id))
     return _match_out(db, match)
 
