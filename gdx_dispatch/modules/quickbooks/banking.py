@@ -20,11 +20,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    Boolean,
+    JSON,
     Date,
     DateTime,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
@@ -458,7 +457,7 @@ def _reconcile_entries_for(
         params["ed"] = end_date
 
     rows = db.execute(
-        text(f"SELECT qb_txn_id, qb_line_index FROM qb_banking_entries WHERE " + " AND ".join(where)),
+        text("SELECT qb_txn_id, qb_line_index FROM qb_banking_entries WHERE " + " AND ".join(where)),
         params,
     ).all()
     to_tombstone = [(r[0], int(r[1])) for r in rows if (r[0], int(r[1])) not in seen_keys]
@@ -914,6 +913,7 @@ _LOAN_SUB_TYPES_OCL = ("LoanPayable", "NotesPayable", "ShareholderNotesPayable")
 # Anchored on word boundaries so "Payroll Loan Officer Salary" doesn't
 # false-positive (would need an unrelated entity to share the word).
 import re as _loan_re
+
 _LOAN_NAME_PATTERN = _loan_re.compile(r"\b(loan|notes?\s+payable|mortgage)\b", _loan_re.IGNORECASE)
 
 

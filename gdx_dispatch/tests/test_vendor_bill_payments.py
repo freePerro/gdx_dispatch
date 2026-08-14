@@ -45,8 +45,8 @@ from gdx_dispatch.modules.vendor_invoices.payments import (
     PaymentError,
     open_balance,
     paid_total,
-    record_payment,
     recompute_status,
+    record_payment,
     void_payment,
 )
 from gdx_dispatch.tests.test_bank_statement_import import checking_text
@@ -507,8 +507,8 @@ def test_create_expense_from_line_posts_and_unconfirm_reverses_gl(world):
 
     entry_ids = [e.id for e in entries()]
     net = sum(
-        int(l.amount_cents)
-        for l in db.scalars(_select(GlJournalLine).where(
+        int(jl.amount_cents)
+        for jl in db.scalars(_select(GlJournalLine).where(
             GlJournalLine.entry_id.in_(entry_ids))).all()
     )
     assert net == 0, "unconfirm must leave a zero net journal footprint"
@@ -707,9 +707,7 @@ def test_void_on_pre_cutover_bill_unwinds_live_entry_flag_on(tenant_db):
     5/15, settled 7/03 (entry posted at 7/03), payment voided — the era
     branch must REVERSE the live entry, never leave the GL claiming cash
     left a bill that just reopened."""
-    from sqlalchemy import select as _select
 
-    from gdx_dispatch.modules.ledger.models import GlJournalEntry
     from gdx_dispatch.modules.ledger.service import ensure_gl_seed
 
     settings = ensure_gl_seed(tenant_db, COMPANY)

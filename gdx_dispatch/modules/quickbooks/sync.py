@@ -5,14 +5,13 @@ No SDK dependencies — pure httpx REST calls via QBClient.
 """
 from __future__ import annotations
 
-import contextlib
 import logging
-import secrets
 import os
+import secrets
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError

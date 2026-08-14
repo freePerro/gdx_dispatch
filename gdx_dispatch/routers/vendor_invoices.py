@@ -33,19 +33,19 @@ from gdx_dispatch.modules.vendor_invoices.confirm import (
 from gdx_dispatch.modules.vendor_invoices.matching import suggest_job_matches
 from gdx_dispatch.modules.vendor_invoices.models import (
     PAY_SOURCE_MANUAL,
-    STATUS_PAID,
     STATUS_OPEN,
+    STATUS_PAID,
     VALID_STATUSES,
     VendorBillPayment,
     VendorInvoice,
 )
+from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import MidwestInvoiceParseError
 from gdx_dispatch.modules.vendor_invoices.payments import (
     PaymentError,
     payment_summary,
     record_payment,
     void_payment,
 )
-from gdx_dispatch.modules.vendor_invoices.parsers.midwest_invoice import MidwestInvoiceParseError
 from gdx_dispatch.modules.vendor_invoices.service import upload_midwest_invoice
 
 log = logging.getLogger(__name__)

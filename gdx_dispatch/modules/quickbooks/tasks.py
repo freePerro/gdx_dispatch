@@ -3,18 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
 _task_log = logging.getLogger(__name__)
 
 from gdx_dispatch.core.celery_app import celery_app
 from gdx_dispatch.core.database import SessionLocal
 from gdx_dispatch.models.tenant_models import Customer, Invoice
-from gdx_dispatch.modules.quickbooks.client import QBAPIError, QBAuthError
+from gdx_dispatch.modules.quickbooks.client import QBAPIError
 from gdx_dispatch.modules.quickbooks.oauth import connection_healthy, get_qb_client
 from gdx_dispatch.modules.quickbooks.sync import (
     QBRateLimitError,
-    QBSyncError,
     pull_accounts,
     pull_customers,
     pull_invoices,

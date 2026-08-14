@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.quickbooks.client import QBClient
 
-
 log = logging.getLogger(__name__)
 
 
