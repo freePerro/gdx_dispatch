@@ -180,7 +180,10 @@ def test_both_branches_use_the_shared_restatement(db) -> None:
     from gdx_dispatch.routers import mobile_invoicing
 
     src = inspect.getsource(mobile_invoicing.mobile_create_invoice)
-    assert src.count("restate_invoice_header(") == 2
+    # 2 → 3 (2026-08-14): the line-built-tier branch (per-line copy with
+    # taxable flags, the recalc-stability fix) is a third caller of the SAME
+    # shared restatement — which is exactly what this guard demands.
+    assert src.count("restate_invoice_header(") == 3
     # No branch may hand-assign the header again.
     assert "invoice.total = price" not in src
     assert "invoice.total = _money(new_subtotal)" not in src

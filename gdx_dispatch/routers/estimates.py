@@ -247,6 +247,23 @@ def _ensure_editable(estimate: Estimate) -> None:
 
 
 def _recalculate_total(estimate: Estimate, db: Session) -> None:
+    # An accepted TIER is the contract: est.total was set to the tier's price
+    # at accept (2026-08-14 fix), and a post-accept line edit re-summing the
+    # base lines would silently revert an $8,000 accept to its $500 scope
+    # lines. Line edits on finalized estimates are 409-gated anyway
+    # (_ensure_editable); this guard covers reopened-then-edited estimates
+    # that still carry accepted_tier_id.
+    if estimate.accepted_tier_id is not None:
+        from gdx_dispatch.modules.proposals.models import ProposalTier
+        from gdx_dispatch.modules.proposals.service import tier_contract_subtotal
+
+        tier = db.execute(
+            select(ProposalTier).where(ProposalTier.id == estimate.accepted_tier_id)
+        ).scalar_one_or_none()
+        if tier is not None:
+            estimate.total = _money(_to_float(tier_contract_subtotal(db, tier)))
+            estimate.updated_at = utcnow()
+            return
     total = db.execute(
         select(func.sum(EstimateLine.line_total)).where(EstimateLine.estimate_id == estimate.id)
     ).scalar_one_or_none() or 0
@@ -1707,6 +1724,71 @@ def _holding_area_id_by_name(db: Session, name: str) -> str | None:
         return None
 
 
+def _copy_tier_package_to_job(estimate, new_job, db: Session) -> int | None:
+    """When a TIER was accepted, the job carries the accepted package — its
+    tier lines when it is line-built, else one row named for the tier.
+    Returns None when no tier is accepted (caller falls through to the
+    estimate-lines copy).
+
+    The estimate_lines rows are deliberately NOT copied on the tier path:
+    on office-built proposals they are base scope under a differently-priced
+    package, and on MOBILE-built proposals they are all three tiers' items
+    untagged — copying them handed receiving three doors for a one-door job.
+    Scope detail stays readable on the linked estimate.
+    """
+    if getattr(estimate, "accepted_tier_id", None) is None:
+        return None
+    from gdx_dispatch.modules.proposals.models import ProposalTier
+    from gdx_dispatch.modules.proposals.service import tier_contract_lines
+
+    tier = db.execute(
+        select(ProposalTier).where(ProposalTier.id == estimate.accepted_tier_id)
+    ).scalar_one_or_none()
+    if tier is None:
+        return None
+    now = utcnow()
+    company = str(new_job.company_id or estimate.company_id or "")
+    tier_lines = tier_contract_lines(db, tier)
+    copied = 0
+    if tier_lines:
+        for line in tier_lines:
+            note_bits = []
+            if line.category:
+                note_bits.append(str(line.category))
+            if line.unit_price:
+                note_bits.append(f"${_to_float(line.unit_price):.2f} ea")
+            db.add(JobPartNeeded(
+                id=str(uuid4()),
+                company_id=company,
+                job_id=str(new_job.id),
+                part_name=(line.description or "Item")[:200],
+                quantity=int(line.quantity or 1),
+                status="needed",
+                notes=(" • ".join(note_bits) or None),
+                created_at=now,
+                updated_at=now,
+            ))
+            copied += 1
+    else:
+        label = {"good": "Good", "better": "Better", "best": "Best"}.get(tier.tier_name, tier.tier_name)
+        name = f"{label} package"
+        if tier.description:
+            name = f"{name} — {tier.description}"
+        db.add(JobPartNeeded(
+            id=str(uuid4()),
+            company_id=company,
+            job_id=str(new_job.id),
+            part_name=name[:200],
+            quantity=1,
+            status="needed",
+            notes=f"Accepted tier • ${_to_float(tier.total_price):.2f}",
+            created_at=now,
+            updated_at=now,
+        ))
+        copied = 1
+    return copied
+
+
 def _copy_estimate_lines_to_job(estimate, new_job, db: Session) -> int:
     """Copy each estimate line onto the job as a parts-needed row (#56).
 
@@ -1783,7 +1865,9 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     db.add(new_job)
     db.flush()
 
-    copied_lines = _copy_estimate_lines_to_job(estimate, new_job, db)
+    copied_lines = _copy_tier_package_to_job(estimate, new_job, db)
+    if copied_lines is None:
+        copied_lines = _copy_estimate_lines_to_job(estimate, new_job, db)
 
     estimate.job_id = new_job.id
     estimate.updated_at = utcnow()
@@ -2303,8 +2387,11 @@ def duplicate_estimate(
         source_tiers = db.execute(
             select(ProposalTier).where(ProposalTier.estimate_id == source.id)
         ).scalars().all()
+        from gdx_dispatch.modules.proposals.models import ProposalTierLine
+        from gdx_dispatch.modules.proposals.service import tier_contract_lines
+
         for tier in source_tiers:
-            db.add(ProposalTier(
+            new_tier = ProposalTier(
                 estimate_id=new_estimate.id,
                 tier_name=tier.tier_name,
                 description=tier.description,
@@ -2313,7 +2400,23 @@ def duplicate_estimate(
                 warranty_months=tier.warranty_months,
                 stripe_payment_link=None,  # payment links are per-estimate; mint new on demand
                 display_order=tier.display_order,
-            ))
+            )
+            db.add(new_tier)
+            db.flush()
+            # Line-built tiers (2026-08-14) clone WITH their lines — a copy
+            # that kept the synced price but dropped the lines would freeze a
+            # read-only price nobody can edit.
+            for tl in tier_contract_lines(db, tier):
+                db.add(ProposalTierLine(
+                    tier_id=new_tier.id,
+                    description=tl.description,
+                    category=tl.category,
+                    quantity=tl.quantity,
+                    unit_price=tl.unit_price,
+                    line_total=tl.line_total,
+                    sort_order=tl.sort_order,
+                    company_id=tenant_id,
+                ))
             tier_count += 1
 
     db.commit()

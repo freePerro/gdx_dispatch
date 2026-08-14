@@ -76,6 +76,45 @@ class ProposalTier(TenantBase):
     warranty_months: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     stripe_payment_link: Mapped[str] = mapped_column(String(500), nullable=True)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines: Mapped[list["ProposalTierLine"]] = relationship(
+        back_populates="tier",
+        cascade="all, delete-orphan",
+        order_by="ProposalTierLine.sort_order",
+    )
+
+
+class ProposalTierLine(TenantBase):
+    """A line item INSIDE a good/better/best tier — tiers built like estimates.
+
+    Deliberately its OWN table, not a tier_id column on estimate_lines: the
+    2026-08-14 adversarial audit enumerated ~12 consumers that treat every
+    estimate_lines row as the estimate's own content (PDF, email, portal,
+    public GET, install sheet, _recalculate_total, duplicate, …), and the
+    mobile quote builder already stores all three tiers' items there untagged.
+    A separate table gives tier content zero blast radius — only code that
+    asks for a tier's lines ever sees them.
+
+    Ships via create_orm_tables() at boot (the convention for NEW tables —
+    see migration 064's docstring); no ALTER migration needed.
+    """
+
+    __tablename__ = "proposal_tier_lines"
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    tier_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("proposal_tiers.id"), nullable=False, index=True
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Same category convention as EstimateLine ("Labor" drives the tax_labor
+    # exclusion) so tier lines tax exactly like estimate lines would.
+    category: Mapped[str] = mapped_column(String(80), nullable=True)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    line_total: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    tier: Mapped[ProposalTier] = relationship(back_populates="lines")
 
 
 class EstimateLine(TenantBase):

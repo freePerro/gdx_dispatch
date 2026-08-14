@@ -690,3 +690,180 @@ def test_invoice_install_lane_flat_price_no_double_labor(session_factory):
         assert not hourly_lines, "install lane must not ALSO add an hourly line"
     finally:
         db.close()
+
+
+def test_line_built_tier_truck_invoice_is_recalc_stable(session_factory):
+    """Quality-review catch (2026-08-14): the truck's single all-taxable
+    summary line made a LINE-BUILT tier with Labor grow on the first office
+    _recalculate_invoice (record_payment, any line edit) — the seeded tax
+    excluded labor, the recalc re-taxed the whole package. The truck now
+    copies the tier's lines with per-line taxable flags, so the recalc
+    reproduces the seeded tax instead of silently growing the total."""
+    from decimal import Decimal
+
+    from gdx_dispatch.models.tenant_models import Invoice
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    seed = _seed(session_factory)
+
+    # Build the quote, then make the "better" tier LINE-BUILT (a labor line
+    # + materials) BEFORE the customer accepts. tax_rate on the estimate so
+    # the invoice runs rate-mode — the unstable configuration.
+    db = session_factory()
+    try:
+        build = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        quote = _as_json(build)
+        better = next(t for t in quote["tiers"] if t["tier_name"] == "better")
+        from uuid import UUID as _PyUUID
+        db.add(ProposalTierLine(
+            tier_id=_PyUUID(better["id"]), description="Install labor", category="Labor",
+            quantity=1, unit_price=Decimal("2000.00"), line_total=Decimal("2000.00"),
+            sort_order=1, company_id="tenant-a",
+        ))
+        db.add(ProposalTierLine(
+            tier_id=_PyUUID(better["id"]), description="Opener + hardware",
+            quantity=1, unit_price=Decimal("6000.00"), line_total=Decimal("6000.00"),
+            sort_order=2, company_id="tenant-a",
+        ))
+        from gdx_dispatch.modules.proposals.models import Estimate as _Est
+        est_row = db.get(_Est, _PyUUID(quote["id"]))
+        est_row.tax_rate = Decimal("0.07375")
+        db.commit()
+
+        sig = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+        mobile_quoting.accept_quote(
+            estimate_id=quote["id"],
+            payload=mobile_quoting.AcceptQuoteIn(
+                chosen_tier_id=better["id"], signature_data=sig, signed_by="John Customer",
+            ),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        # The truck accept books the LINE sum, not the preset tier price.
+        db.refresh(est_row)
+        assert float(est_row.total) == pytest.approx(8000.0)
+
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            resp = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=quote["id"]),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        assert len(body["lines"]) == 2  # the tier's lines, not one summary line
+        total_before = float(body["total"])
+        # Labor excluded: tax on 6000 only → 8000 + 442.50.
+        assert total_before == pytest.approx(8442.50)
+
+        # THE pin: an office recalc must not change the total.
+        inv = db.get(Invoice, _PyUUID(body["id"]))
+        _recalculate_invoice(inv, db)
+        db.commit()
+        db.refresh(inv)
+        assert float(inv.total) == pytest.approx(total_before)
+    finally:
+        db.close()
+
+
+def test_line_built_tier_truck_invoice_carries_the_discount(session_factory):
+    """Gate-audit catch: the seeded tax subtracts est.discount, so the lines
+    must carry the M7 discount line too — without it the truck over-billed a
+    discounted line-built proposal by exactly the discount."""
+    from decimal import Decimal
+    from uuid import UUID as _PyUUID
+
+    from gdx_dispatch.modules.proposals.models import Estimate as _Est
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        build = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        quote = _as_json(build)
+        better = next(t for t in quote["tiers"] if t["tier_name"] == "better")
+        db.add(ProposalTierLine(
+            tier_id=_PyUUID(better["id"]), description="Opener + hardware",
+            quantity=1, unit_price=Decimal("6000.00"), line_total=Decimal("6000.00"),
+            sort_order=1, company_id="tenant-a",
+        ))
+        est_row = db.get(_Est, _PyUUID(quote["id"]))
+        est_row.discount = Decimal("500.00")
+        db.commit()
+
+        sig = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+        mobile_quoting.accept_quote(
+            estimate_id=quote["id"],
+            payload=mobile_quoting.AcceptQuoteIn(
+                chosen_tier_id=better["id"], signature_data=sig, signed_by="John Customer",
+            ),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+            resp = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=quote["id"]),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        descs = [ln["description"] for ln in body["lines"]]
+        assert "Discount" in descs
+        # 6000 − 500 discount, no tax configured on this estimate.
+        assert float(body["total"]) == pytest.approx(5500.0)
+    finally:
+        db.close()
+
+
+def test_line_built_tier_zero_price_line_blocked_by_policy(session_factory):
+    """Gate-audit catch: the tier-lines branch must enforce the F-75
+    zero-price block like both sibling branches."""
+    from decimal import Decimal
+    from uuid import UUID as _PyUUID
+
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        build = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        quote = _as_json(build)
+        better = next(t for t in quote["tiers"] if t["tier_name"] == "better")
+        db.add(ProposalTierLine(
+            tier_id=_PyUUID(better["id"]), description="Mystery item",
+            quantity=1, unit_price=Decimal("0.00"), line_total=Decimal("0.00"),
+            sort_order=1, company_id="tenant-a",
+        ))
+        db.commit()
+
+        sig = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+        mobile_quoting.accept_quote(
+            estimate_id=quote["id"],
+            payload=mobile_quoting.AcceptQuoteIn(
+                chosen_tier_id=better["id"], signature_data=sig, signed_by="John Customer",
+            ),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"), \
+             patch("gdx_dispatch.modules.catalog_policy.get_policy") as pol:
+            pol.return_value.block_zero_price_on_invoice = True
+            resp = mobile_invoicing.mobile_create_invoice(
+                job_id=seed["job_id"],
+                payload=mobile_invoicing.CreateInvoiceIn(estimate_id=quote["id"]),
+                request=_request(), current_user=_TEST_USER, db=db,
+            )
+        assert resp.status_code == 422, resp.body
+    finally:
+        db.close()

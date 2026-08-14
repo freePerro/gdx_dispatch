@@ -604,7 +604,12 @@ def accept_quote(
     estimate.status = "accepted"
     estimate.accepted_at = now
     estimate.accepted_tier_id = chosen_uuid
-    estimate.total = _money(tier.total_price)
+    # tier_contract_subtotal, not tier.total_price (2026-08-14): a LINE-BUILT
+    # tier's contract is Σ its lines. total_price is kept in sync by the CRUD,
+    # but the helper is the one number every accept path must agree on — a
+    # truck accept and a web accept of the same tier must book the same total.
+    from gdx_dispatch.modules.proposals.service import tier_contract_subtotal
+    estimate.total = _money(tier_contract_subtotal(db, tier))
     if hasattr(estimate, "signature_data"):
         if sig:
             estimate.signature_data = sig
@@ -648,8 +653,9 @@ def accept_quote(
 
         amount = payload.deposit_amount
         if amount is None and payload.collect_deposit:
+            from gdx_dispatch.modules.proposals.service import tier_contract_subtotal
             pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
-            accepted_total = float(_money(tier.total_price) or 0)
+            accepted_total = float(_money(tier_contract_subtotal(db, tier)) or 0)
             amount = round(accepted_total * pct / 100.0, 2) if pct > 0 else 0.0
         if amount and amount > 0:
             try:

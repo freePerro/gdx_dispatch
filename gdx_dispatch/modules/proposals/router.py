@@ -26,8 +26,13 @@ from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 from gdx_dispatch.modules.proposals.service import (
     accept_tier,
     add_proposal_tier,
+    add_tier_line,
     delete_proposal_tier,
+    delete_tier_line,
+    tier_contract_lines,
+    tier_contract_subtotal,
     update_proposal_tier,
+    update_tier_line,
 )
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -52,19 +57,73 @@ TierName = Literal["good", "better", "best"]
 class TierIn(BaseModel): tier_name: TierName; description: str | None = Field(default=None, max_length=5000); total_price: float = Field(default=0, ge=0, le=10_000_000); warranty_months: int = Field(default=0, ge=0, le=600)  # noqa: E701,E702
 class TierPatch(BaseModel): tier_name: TierName | None = None; description: str | None = Field(default=None, max_length=5000); total_price: float | None = Field(default=None, ge=0, le=10_000_000); warranty_months: int | None = Field(default=None, ge=0, le=600); includes_parts: bool | None = None  # noqa: E701,E702
 class AcceptIn(BaseModel): tier_id: UUID  # noqa: E701,E702
+class TierLineIn(BaseModel): description: str = Field(min_length=1, max_length=5000); quantity: int = Field(default=1, ge=1, le=10_000); unit_price: float = Field(default=0, ge=0, le=10_000_000); category: str | None = Field(default=None, max_length=80)  # noqa: E701,E702
+class TierLinePatch(BaseModel): description: str | None = Field(default=None, min_length=1, max_length=5000); quantity: int | None = Field(default=None, ge=1, le=10_000); unit_price: float | None = Field(default=None, ge=0, le=10_000_000); category: str | None = Field(default=None, max_length=80)  # noqa: E701,E702
+
+
+def _tier_line_dict(ln) -> dict[str, object]:
+    return {
+        "id": str(ln.id),
+        "description": ln.description,
+        "category": ln.category,
+        "quantity": int(ln.quantity or 1),
+        "unit_price": float(ln.unit_price or 0),
+        "line_total": float(ln.line_total or 0),
+        "sort_order": ln.sort_order,
+    }
+
+
+def _tier_dict(db: Session, t: ProposalTier) -> dict[str, object]:
+    """Staff wire shape for a tier + its lines. Explicit dict (not the ORM
+    row) so the new `lines` relationship serializes deterministically."""
+    return {
+        "id": str(t.id),
+        "estimate_id": str(t.estimate_id),
+        "tier_name": t.tier_name,
+        "description": t.description,
+        "total_price": float(t.total_price or 0),
+        "includes_parts": bool(t.includes_parts),
+        "warranty_months": t.warranty_months,
+        "stripe_payment_link": t.stripe_payment_link,
+        "display_order": t.display_order,
+        "lines": [_tier_line_dict(ln) for ln in tier_contract_lines(db, t)],
+    }
 
 @router.get("/estimates/{estimate_id}/proposal", response_model=None)
-def get_proposal(estimate_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[ProposalTier]:
+def get_proposal(estimate_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> list[dict[str, object]]:
     if not db.execute(select(Estimate.id).where(Estimate.id == estimate_id)).scalar_one_or_none(): raise HTTPException(status_code=404, detail="Estimate not found")  # noqa: E701,E702
-    return list(db.execute(select(ProposalTier).where(ProposalTier.estimate_id == estimate_id).order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())).scalars().all())
+    tiers = db.execute(select(ProposalTier).where(ProposalTier.estimate_id == estimate_id).order_by(ProposalTier.display_order.asc(), ProposalTier.id.asc())).scalars().all()
+    return [_tier_dict(db, t) for t in tiers]
 
 @router.post("/estimates/{estimate_id}/proposal-tiers", response_model=None)
-def post_proposal_tier(estimate_id: UUID, payload: TierIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> ProposalTier:
-    return add_proposal_tier(estimate_id, payload.tier_name, payload.description, payload.total_price, payload.warranty_months, db, actor=resolve_audit_actor(current_user))
+def post_proposal_tier(estimate_id: UUID, payload: TierIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _tier_dict(db, add_proposal_tier(estimate_id, payload.tier_name, payload.description, payload.total_price, payload.warranty_months, db, actor=resolve_audit_actor(current_user)))
 
 @router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}", response_model=None)
-def patch_proposal_tier(estimate_id: UUID, tier_id: UUID, payload: TierPatch, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> ProposalTier:
-    return update_proposal_tier(estimate_id, tier_id, payload.model_dump(exclude_unset=True), db, actor=resolve_audit_actor(current_user))
+def patch_proposal_tier(estimate_id: UUID, tier_id: UUID, payload: TierPatch, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
+    return _tier_dict(db, update_proposal_tier(estimate_id, tier_id, payload.model_dump(exclude_unset=True), db, actor=resolve_audit_actor(current_user)))
+
+# ── tier line items (2026-08-14: tiers built like estimates) ────────────────
+
+@router.post("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines", response_model=None, status_code=201)
+def post_tier_line(estimate_id: UUID, tier_id: UUID, payload: TierLineIn, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
+    row = add_tier_line(
+        estimate_id, tier_id,
+        description=payload.description, quantity=payload.quantity,
+        unit_price=payload.unit_price, category=payload.category,
+        db=db, actor=resolve_audit_actor(current_user),
+    )
+    return _tier_line_dict(row)
+
+@router.patch("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", response_model=None)
+def patch_tier_line(estimate_id: UUID, tier_id: UUID, line_id: UUID, payload: TierLinePatch, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, object]:
+    row = update_tier_line(estimate_id, tier_id, line_id, payload.model_dump(exclude_unset=True), db, actor=resolve_audit_actor(current_user))
+    return _tier_line_dict(row)
+
+@router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}/lines/{line_id}", status_code=204)
+def del_tier_line(estimate_id: UUID, tier_id: UUID, line_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+    delete_tier_line(estimate_id, tier_id, line_id, db, actor=resolve_audit_actor(current_user))
+    return Response(status_code=204)
 
 @router.delete("/estimates/{estimate_id}/proposal-tiers/{tier_id}", status_code=204)
 def del_proposal_tier(estimate_id: UUID, tier_id: UUID, _: None = Depends(require_module("proposals")), current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
@@ -196,6 +255,24 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
                 "includes_parts": bool(t.includes_parts),
                 "warranty_months": t.warranty_months,
                 "display_order": t.display_order,
+                # Line-built tiers (2026-08-14): what's included in the
+                # package, same public-safe projection + price stripping as
+                # the estimate lines below.
+                "lines": [
+                    {
+                        "description": tl.description,
+                        "quantity": float(tl.quantity or 0),
+                        **(
+                            {}
+                            if hide_prices
+                            else {
+                                "unit_price": float(tl.unit_price or 0),
+                                "line_total": float(tl.line_total or 0),
+                            }
+                        ),
+                    }
+                    for tl in tier_contract_lines(db, t)
+                ],
                 # stripe_payment_link deliberately OMITTED: it is a payment
                 # path that bypasses the deposit invoice, and it leaked here
                 # before this page had any consumer.
@@ -220,11 +297,13 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
         "deposit_pct": deposit_pct,
     }
 
-    # Totals ONLY for line estimates. In proposal_mode `est.total` can be the
-    # HIGHEST tier (mobile builder) and compute_estimate_totals is tier-blind,
-    # so any single number would show the best-tier price to a customer
-    # picking good — the page shows per-tier prices instead.
-    if not proposal_mode:
+    # Totals for line estimates — and for ACCEPTED proposals (2026-08-14):
+    # once a tier is accepted, est.total IS the tier's contract subtotal and
+    # the totals engine taxes off the tier's own lines, so the number is
+    # finally true. An OPEN proposal still gets NO single total — `est.total`
+    # can be the HIGHEST tier (mobile builder), and any one number would show
+    # the best-tier price to a customer picking good.
+    if not proposal_mode or est.accepted_tier_id is not None:
         try:
             t = compute_estimate_totals(est, db)
             body["totals"] = {
@@ -336,6 +415,9 @@ def public_proposal_accept(
     est.updated_at = now
     if tier is not None:
         est.accepted_tier_id = tier.id
+        # The accepted price lands in the billing data model (2026-08-14 fix,
+        # mobile's convention): est.total drives totals/invoice/deposit-default.
+        est.total = tier_contract_subtotal(db, tier)
     db.commit()
     db.refresh(est)
 
@@ -388,9 +470,11 @@ def public_proposal_accept(
         pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
         if pct > 0 and est.customer_id is not None:
             if tier is not None:
-                # The tier price is the contract price as presented — and the
-                # cap must compare against it, not the tier-blind lines total.
-                base_amount = float(tier.total_price or 0)
+                # The tier's contract subtotal (Σ its lines when line-built,
+                # else its price) — the SAME number est.total was just set to,
+                # and the cap must compare against it, not the tier-blind
+                # estimate-lines total.
+                base_amount = float(tier_contract_subtotal(db, tier))
                 cap: float | None = base_amount
             else:
                 base_amount = float(compute_estimate_totals(est, db)["total"] or 0)

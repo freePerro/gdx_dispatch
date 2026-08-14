@@ -562,8 +562,56 @@
                     <label :for="`tier-price-${t}`">Price</label>
                     <InputNumber :id="`tier-price-${t}`" v-model="tierForm[t].total_price"
                       mode="currency" currency="USD" locale="en-US" :min="0"
-                      :disabled="tiersLocked" class="w-full"
+                      :disabled="tiersLocked || tierForm[t].lines.length > 0" class="w-full"
                       :data-testid="`estimate-tier-price-${t}`" />
+                    <small v-if="tierForm[t].lines.length" class="muted">
+                      Synced from the line items below.
+                    </small>
+                  </div>
+                  <!-- Line-built tiers (2026-08-14): build the package from
+                       items like the estimate itself. Price above becomes the
+                       synced sum the moment the first line exists. -->
+                  <div class="form-field" :data-testid="`tier-lines-${t}`">
+                    <label>Line items</label>
+                    <div v-for="ln in tierForm[t].lines" :key="ln.id" class="tier-line-row">
+                      <InputText v-model="ln.description" :disabled="tiersLocked" class="tl-desc"
+                        :data-testid="`tier-line-desc-${t}`" />
+                      <InputNumber v-model="ln.quantity" :min="1" :disabled="tiersLocked" class="tl-qty"
+                        :data-testid="`tier-line-qty-${t}`" />
+                      <InputNumber v-model="ln.unit_price" mode="currency" currency="USD" locale="en-US"
+                        :min="0" :disabled="tiersLocked" class="tl-price"
+                        :data-testid="`tier-line-price-${t}`" />
+                      <label class="tl-labor" v-tooltip="'Labor is not taxed'">
+                        <Checkbox :modelValue="ln.category === 'Labor'" :binary="true" :disabled="tiersLocked"
+                          :data-testid="`tier-line-labor-${t}`"
+                          @update:modelValue="(v) => { ln.category = v ? 'Labor' : null; }" />
+                        <span>Labor</span>
+                      </label>
+                      <Button icon="pi pi-check" text size="small" aria-label="Save line"
+                        :disabled="tiersLocked" :data-testid="`tier-line-save-${t}`"
+                        @click="saveTierLine(t, ln)" />
+                      <Button icon="pi pi-trash" severity="danger" text size="small" aria-label="Delete line"
+                        :disabled="tiersLocked" :data-testid="`tier-line-delete-${t}`"
+                        @click="removeTierLine(t, ln)" />
+                    </div>
+                    <div v-if="tierForm[t].id && !tiersLocked" class="tier-line-row">
+                      <InputText v-model="tierNewLine[t].description" placeholder="Add item…" class="tl-desc"
+                        :data-testid="`tier-line-new-desc-${t}`" />
+                      <InputNumber v-model="tierNewLine[t].quantity" :min="1" class="tl-qty"
+                        :data-testid="`tier-line-new-qty-${t}`" />
+                      <InputNumber v-model="tierNewLine[t].unit_price" mode="currency" currency="USD"
+                        locale="en-US" :min="0" class="tl-price"
+                        :data-testid="`tier-line-new-price-${t}`" />
+                      <label class="tl-labor" v-tooltip="'Labor is not taxed'">
+                        <Checkbox v-model="tierNewLine[t].labor" :binary="true"
+                          :data-testid="`tier-line-new-labor-${t}`" />
+                        <span>Labor</span>
+                      </label>
+                      <Button icon="pi pi-plus" size="small" outlined aria-label="Add line"
+                        :disabled="!tierNewLine[t].description" :data-testid="`tier-line-add-${t}`"
+                        @click="addTierLine(t)" />
+                    </div>
+                    <small v-if="!tierForm[t].id" class="muted">Save the tier first to add line items.</small>
                   </div>
                   <div class="form-field">
                     <label :for="`tier-warranty-${t}`">Warranty (months)</label>
@@ -952,6 +1000,7 @@ import { formatDate, formatMoney, formatPercent, formatPhone } from "../composab
 import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
 import PaymentCaptureForm from "../components/PaymentCaptureForm.vue";
 import Button from "primevue/button";
+import Checkbox from "primevue/checkbox";
 import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
@@ -1982,9 +2031,14 @@ const acceptedTierId = ref(null);
 const tierSaving = ref(null);
 
 function blankTier() {
-  return { id: null, total_price: 0, warranty_months: 0, description: "" };
+  return { id: null, total_price: 0, warranty_months: 0, description: "", lines: [] };
 }
 const tierForm = ref({ good: blankTier(), better: blankTier(), best: blankTier() });
+
+function blankNewLine() {
+  return { description: "", quantity: 1, unit_price: 0, labor: false };
+}
+const tierNewLine = ref({ good: blankNewLine(), better: blankNewLine(), best: blankNewLine() });
 
 function tierLabel(t) {
   return t.charAt(0).toUpperCase() + t.slice(1);
@@ -2017,6 +2071,13 @@ async function loadTiers() {
         total_price: toNum(row.total_price ?? 0),
         warranty_months: Number(row.warranty_months ?? 0),
         description: row.description || "",
+        lines: (row.lines || []).map((ln) => ({
+          id: ln.id,
+          description: ln.description || "",
+          quantity: Number(ln.quantity ?? 1),
+          unit_price: toNum(ln.unit_price ?? 0),
+          category: ln.category || null,
+        })),
       };
     }
     tierForm.value = next;
@@ -2072,6 +2133,55 @@ async function removeTier(name) {
     tierForm.value[name] = blankTier();
   } catch {
     toast.add({ severity: "error", summary: "Delete failed", life: 4000 });
+  }
+}
+
+// --- Tier line items (2026-08-14: tiers built like estimates) ---
+// Every write re-loads the tiers: the server re-syncs tier.total_price from
+// its lines, and the reload is what keeps the read-only Price input honest.
+async function addTierLine(name) {
+  const t = tierForm.value[name];
+  const draft = tierNewLine.value[name];
+  if (!t.id || !draft.description) return;
+  try {
+    await api.post(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}/lines`, {
+      description: draft.description,
+      quantity: Number(draft.quantity || 1),
+      unit_price: toNum(draft.unit_price || 0),
+      category: draft.labor ? "Labor" : null,
+    });
+    tierNewLine.value[name] = blankNewLine();
+    await loadTiers();
+  } catch {
+    toast.add({ severity: "error", summary: "Could not add the line", life: 4000 });
+  }
+}
+
+async function saveTierLine(name, line) {
+  const t = tierForm.value[name];
+  if (!t.id || !line.id) return;
+  try {
+    await api.patch(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}/lines/${line.id}`, {
+      description: line.description,
+      quantity: Number(line.quantity || 1),
+      unit_price: toNum(line.unit_price || 0),
+      category: line.category,
+    });
+    await loadTiers();
+    toast.add({ severity: "success", summary: "Line saved", life: 2000 });
+  } catch {
+    toast.add({ severity: "error", summary: "Could not save the line", life: 4000 });
+  }
+}
+
+async function removeTierLine(name, line) {
+  const t = tierForm.value[name];
+  if (!t.id || !line.id) return;
+  try {
+    await api.del(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}/lines/${line.id}`);
+    await loadTiers();
+  } catch {
+    toast.add({ severity: "error", summary: "Could not delete the line", life: 4000 });
   }
 }
 
@@ -3534,4 +3644,11 @@ onUnmounted(() => {
 .tier-card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .tier-name { font-weight: 600; color: var(--text-primary, inherit); }
 .tier-card-actions { display: flex; align-items: center; gap: 0.5rem; margin-top: auto; }
+.tier-line-row { display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.35rem; }
+.tier-line-row .tl-desc { flex: 1; min-width: 0; }
+.tier-line-row .tl-qty { width: 4.2rem; flex: none; }
+.tier-line-row .tl-qty :deep(input) { width: 100%; }
+.tier-line-row .tl-price { width: 7rem; flex: none; }
+.tier-line-row .tl-price :deep(input) { width: 100%; }
+.tier-line-row .tl-labor { display: flex; align-items: center; gap: 0.25rem; font-size: 0.8rem; flex: none; cursor: pointer; }
 </style>

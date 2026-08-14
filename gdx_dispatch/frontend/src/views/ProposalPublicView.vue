@@ -57,6 +57,12 @@
                 <span class="tier-name">{{ tierLabel(t.tier_name) }}</span>
                 <span class="tier-price">{{ currency(t.total_price) }}</span>
                 <span v-if="t.description" class="meta">{{ t.description }}</span>
+                <ul v-if="t.lines?.length" class="tier-included" :data-testid="`tier-lines-${t.tier_name}`">
+                  <li v-for="(ln, i) in t.lines" :key="i" class="meta">
+                    {{ ln.quantity > 1 ? `${ln.quantity}× ` : "" }}{{ ln.description }}<template
+                      v-if="ln.line_total != null"> — {{ currency(ln.line_total) }}</template>
+                  </li>
+                </ul>
                 <span v-if="t.warranty_months" class="meta">{{ t.warranty_months }} month warranty</span>
                 <Tag v-if="est.accepted_tier_id === t.id" value="Selected" severity="success" />
               </button>
@@ -363,6 +369,8 @@ onMounted(load);
 .tier-card:disabled { cursor: default; opacity: 0.85; }
 .tier-name { font-weight: 700; }
 .tier-price { font-size: 1.25rem; font-weight: 700; color: var(--p-primary-color); }
+.tier-included { margin: 0.25rem 0 0; padding-left: 1.1rem; }
+.tier-included li { margin-bottom: 0.15rem; }
 .action-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .flex-1 { flex: 1; }
 .deposit-row { margin-top: 0.75rem; }

@@ -3,6 +3,7 @@ import json as _json
 import logging
 import secrets
 import uuid as _uuid
+from types import SimpleNamespace
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
@@ -1071,11 +1072,49 @@ def create_invoice(
         db.flush()
 
     if estimate:
-        lines = db.execute(
-            select(EstimateLine)
-            .where(EstimateLine.estimate_id == estimate.id)
-            .order_by(EstimateLine.sort_order.asc(), EstimateLine.created_at.asc(), EstimateLine.id.asc())
-        ).scalars().all()
+        # Accepted TIER (2026-08-14): the contract is the accepted tier's
+        # content, not the estimate_lines rows. Office-built tiers keep base
+        # scope lines there ($500 of scope under an $8,000 package), and the
+        # MOBILE builder stores ALL THREE tiers' lines there untagged — the
+        # old unconditional copy billed Good+Better+Best summed. Tier lines
+        # (line-built tiers) copy like estimate lines; a flat tier becomes
+        # one package line at the tier price. _recalculate_invoice derives
+        # totals from these lines, so this copy IS the bill.
+        _accepted_tier = None
+        if getattr(estimate, "accepted_tier_id", None) is not None:
+            from gdx_dispatch.modules.proposals.models import ProposalTier
+
+            _accepted_tier = db.execute(
+                select(ProposalTier).where(ProposalTier.id == estimate.accepted_tier_id)
+            ).scalar_one_or_none()
+        if _accepted_tier is not None:
+            from gdx_dispatch.modules.proposals.service import tier_contract_lines
+
+            lines = tier_contract_lines(db, _accepted_tier)
+            if not lines:
+                _label = {"good": "Good", "better": "Better", "best": "Best"}.get(
+                    _accepted_tier.tier_name, _accepted_tier.tier_name
+                )
+                _desc = f"{_label} package"
+                if _accepted_tier.description:
+                    _desc = f"{_desc} — {_accepted_tier.description}"
+                lines = [SimpleNamespace(
+                    description=_desc[:500],
+                    quantity=1,
+                    unit_price=_accepted_tier.total_price,
+                    line_total=_accepted_tier.total_price,
+                    category=None,
+                    cost_snapshot=None,
+                    margin_pct_snapshot=None,
+                    margin_pct_override=None,
+                    sort_order=1,
+                )]
+        else:
+            lines = db.execute(
+                select(EstimateLine)
+                .where(EstimateLine.estimate_id == estimate.id)
+                .order_by(EstimateLine.sort_order.asc(), EstimateLine.created_at.asc(), EstimateLine.id.asc())
+            ).scalars().all()
         # M24 (money audit 2026-08-04): estimates exclude labor from tax when
         # the tenant's tax_labor flag is off, but the copy below never carried
         # `taxable`, and InvoiceLine defaults it to True — so a quote of

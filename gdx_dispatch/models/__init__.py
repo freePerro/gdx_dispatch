@@ -136,7 +136,12 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
 
 # Import module models so they register on TenantBase.metadata
 try:
-    from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine, ProposalTier  # noqa: F401
+    from gdx_dispatch.modules.proposals.models import (  # noqa: F401
+        Estimate,
+        EstimateLine,
+        ProposalTier,
+        ProposalTierLine,
+    )
 except ImportError:
     pass
 try:

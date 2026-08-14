@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy import delete as _sa_delete
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -488,3 +489,143 @@ def test_cap_total_override_allows_tier_priced_deposit(db):
             db, estimate=est2, amount=9000.0, tenant_id="tenant-1",
             actor="user-1", source="test", cap_total=8000.0,
         )
+
+
+# ── tier accepts bill the TIER, and the page equals the invoice (2026-08-14) ─
+
+def _seed_tier(db, est, *, name="best", price=8000.0, description=None):
+    from gdx_dispatch.modules.proposals.models import ProposalTier
+
+    tier = ProposalTier(
+        estimate_id=est.id, tier_name=name, total_price=Decimal(str(price)),
+        description=description, display_order=2,
+    )
+    db.add(tier)
+    db.flush()
+    est.proposal_mode = True
+    est.accepted_tier_id = tier.id
+    est.total = Decimal(str(price))  # what accept_tier/public accept now write
+    db.commit()
+    db.refresh(tier)
+    return tier
+
+
+def test_tier_accept_invoice_bills_the_tier_not_base_lines(db):
+    """Office shape: $500 of base scope lines under an accepted $8,000 flat
+    tier. The invoice carries ONE package line at the tier price —
+    _recalculate_invoice derives totals from lines, so the copy IS the bill."""
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=500.0, job=job)   # 1 base line @500
+    _seed_tier(db, est, price=8000.0, description="Belt + battery + camera")
+
+    resp = _make_final(db, est, job)
+    inv = db.get(Invoice, UUID(resp["id"]))
+    assert float(inv.total) == pytest.approx(8000.0)
+    lines = db.execute(select(InvoiceLine).where(InvoiceLine.invoice_id == inv.id)).scalars().all()
+    assert [ln.description for ln in lines] == ["Best package — Belt + battery + camera"]
+
+
+def test_mobile_shape_bills_only_the_chosen_tier(db):
+    """THE summed-bill regression: the mobile builder stores ALL THREE tiers'
+    lines in estimate_lines untagged. The old unconditional copy billed
+    Good+Better+Best summed ($9,500 here); the tier path bills the chosen
+    tier only."""
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=650.0, job=job)
+    # Replace the seed line with mobile's three untagged tier bands.
+    db.execute(_sa_delete(EstimateLine).where(EstimateLine.estimate_id == est.id))
+    for band, (desc, price) in enumerate([("Good: chain", 650.0), ("Better: belt", 850.0), ("Best: belt+battery", 8000.0)], 1):
+        db.add(EstimateLine(
+            estimate_id=est.id, description=desc, quantity=1,
+            unit_price=Decimal(str(price)), line_total=Decimal(str(price)),
+            sort_order=band * 100, company_id="tenant-1",
+        ))
+    db.commit()
+    _seed_tier(db, est, price=8000.0)
+
+    resp = _make_final(db, est, job)
+    inv = db.get(Invoice, UUID(resp["id"]))
+    assert float(inv.total) == pytest.approx(8000.0)   # NOT 9500
+
+
+def test_line_built_tier_invoice_carries_the_tier_lines(db):
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=500.0, job=job)
+    tier = _seed_tier(db, est, price=1.0)
+    for i, (desc, qty, unit) in enumerate([("Belt drive opener", 1, 6000.0), ("Battery backup", 2, 1000.0)], 1):
+        db.add(ProposalTierLine(
+            tier_id=tier.id, description=desc, quantity=qty,
+            unit_price=Decimal(str(unit)), line_total=Decimal(str(unit * qty)),
+            sort_order=i, company_id="tenant-1",
+        ))
+    est.total = Decimal("8000.00")
+    db.commit()
+
+    resp = _make_final(db, est, job)
+    inv = db.get(Invoice, UUID(resp["id"]))
+    assert float(inv.total) == pytest.approx(8000.0)
+    lines = db.execute(select(InvoiceLine).where(InvoiceLine.invoice_id == inv.id)).scalars().all()
+    assert sorted(ln.description for ln in lines) == ["Battery backup", "Belt drive opener"]
+
+
+def test_accepted_page_total_equals_invoice_total_with_discount_and_labor(db):
+    """The audit's §3 equality: what the accepted page displays
+    (compute_estimate_totals) must equal what the invoice bills, including a
+    discount and a labor line under tax_labor=False, at a real tax rate."""
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=500.0, job=job)
+    est.tax_rate = Decimal("0.07")
+    est.discount = Decimal("100.00")
+    tier = _seed_tier(db, est, price=1.0)
+    db.add(ProposalTierLine(
+        tier_id=tier.id, description="Install labor", category="Labor", quantity=1,
+        unit_price=Decimal("2000.00"), line_total=Decimal("2000.00"),
+        sort_order=1, company_id="tenant-1",
+    ))
+    db.add(ProposalTierLine(
+        tier_id=tier.id, description="Door + hardware", quantity=1,
+        unit_price=Decimal("6000.00"), line_total=Decimal("6000.00"),
+        sort_order=2, company_id="tenant-1",
+    ))
+    est.total = Decimal("8000.00")
+    db.commit()
+
+    page = compute_estimate_totals(est, db)
+    resp = _make_final(db, est, job)
+    inv = db.get(Invoice, UUID(resp["id"]))
+    assert float(inv.total) == pytest.approx(page["total"]), (
+        f"page shows {page['total']} but the invoice bills {float(inv.total)}"
+    )
+
+
+def test_tier_deposit_nets_fully_on_final(db):
+    """End-to-end: the $4,000 deposit from an $8,000 tier accept nets fully
+    against the final invoice — zero unapplied, no hand-fixing. This is the
+    scenario that used to strand $3,500."""
+    cust = _seed_customer(db)
+    job = _seed_job(db, cust)
+    est = _seed_estimate(db, cust, total=500.0, job=job)
+    _seed_tier(db, est, price=8000.0)
+
+    dep = create_deposit_invoice(
+        db, estimate=est, amount=4000.0, tenant_id="tenant-1",
+        actor="user-1", source="public_accept", cap_total=8000.0,
+    )
+    _pay(db, dep, 4000.0)
+
+    resp = _make_final(db, est, job)
+    # The FULL paid deposit netted — zero stranded (netting is a negative
+    # line, so total reads 8000 − 4000).
+    assert resp["deposit_netting"]["deposit_paid_applied"] == pytest.approx(4000.0)
+    inv = db.get(Invoice, UUID(resp["id"]))
+    assert float(inv.total) == pytest.approx(4000.0)
+    assert float(inv.balance_due) == pytest.approx(4000.0)
