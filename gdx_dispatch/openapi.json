@@ -91197,7 +91197,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "pattern": "^(new|contacted|discarded)$",
+            "pattern": "^(new|contacted|completed|discarded)$",
             "title": "Status"
           }
         },
