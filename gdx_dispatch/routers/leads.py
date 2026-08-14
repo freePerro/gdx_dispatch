@@ -43,7 +43,10 @@ router = APIRouter(
 # though nothing was sent and nobody called — a fabricated contact fact
 # (same sin as inventing labor hours). contacted_at is only ever written by
 # an actual outreach event: the manual Contacted button or an inbox send.
-LANDING_STATUSES = ("new", "contacted", "promoted", "discarded")
+# "completed" (2026-08-13): handled entirely outside the pipeline — question
+# answered, booked directly, duplicate of a walk-in. Terminal like promoted/
+# discarded, but records "done" rather than "entered pipeline" or "junk".
+LANDING_STATUSES = ("new", "contacted", "completed", "promoted", "discarded")
 LEAD_STAGES = ("new", "contacted", "qualified", "quoted", "won", "lost")
 
 
@@ -72,7 +75,8 @@ class LandingLeadIn(BaseModel):
 
 
 class LandingLeadStatusIn(BaseModel):
-    status: str = Field(pattern=r"^(new|contacted|discarded)$")
+    # "promoted" is deliberately absent: only the convert endpoint may set it.
+    status: str = Field(pattern=r"^(new|contacted|completed|discarded)$")
 
 
 # LeadsView renders capitalized stages ("Contacted") and echoes them back on

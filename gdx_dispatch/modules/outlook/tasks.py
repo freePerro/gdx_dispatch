@@ -729,6 +729,18 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             tdb.commit()
             return {"error": str(exc)[:200]}
 
+        # Bounce detection AFTER all folders committed: the NDR and its
+        # Sent-Items sibling may arrive in the same cycle, and the matcher
+        # needs both persisted. Idempotent (gates on the document still
+        # claiming delivery), so a failure here just retries next sync.
+        bounce_totals: dict = {}
+        try:
+            from gdx_dispatch.modules.outlook.bounce_detect import process_bounces
+            bounce_totals = process_bounces(tdb, account)
+        except Exception:
+            log.exception("bounce_detect failed for account %s (sync unaffected)", aid)
+            tdb.rollback()
+
         account.last_sync_at = datetime.now(timezone.utc)
         account.last_error = None
         tdb.commit()
@@ -739,6 +751,7 @@ def sync_outlook_mailbox(self, account_id: str, tenant_id: str) -> dict:
             "messages_removed": msgs_rem,
             "failed_folders": failed,
             "vendor_bills": ingest_totals,
+            "bounces": bounce_totals,
         }
 
 

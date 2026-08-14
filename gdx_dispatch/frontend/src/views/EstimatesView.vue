@@ -94,10 +94,14 @@
         </Column>
         <Column header="Actions" style="width: 160px">
           <template #body="{ data }">
+            <!-- This button only FLIPS STATUS (a bare PATCH) — no email goes
+                 out. Emailing lives in the estimate's composer. The old
+                 "Send to customer" tooltip claimed a delivery that never
+                 happened (2026-08-13, same audit as the bounce detector). -->
             <Button
               v-if="data.status === 'Draft'"
-              v-tooltip="'Send to customer'"
-              aria-label="Send to customer"
+              v-tooltip="'Mark as sent — does not email. Open the estimate to email it.'"
+              aria-label="Mark as sent (does not email)"
               icon="pi pi-send"
               text
               size="small"
@@ -153,7 +157,7 @@
 <script setup>
 import { estimateStatusSeverity } from '../utils/statusSeverity';
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
@@ -200,6 +204,10 @@ const statusTabs = [
   { label: "Sent", value: "Sent" },
   { label: "Accepted", value: "Accepted" },
   { label: "Declined", value: "Declined" },
+  // Email bounced (the outlook sync's bounce detector). Without a tab the
+  // dashboard's "estimate emails bounced" row linked to a page where the
+  // rejected rows were invisible behind whatever tab was persisted.
+  { label: "Rejected", value: "Rejected" },
 ];
 
 // Persist status tab + search across reloads (JobsView/BillingView pattern).
@@ -214,6 +222,15 @@ useListPrefs(
     searchQuery: { default: "", valid: (v) => typeof v === "string" },
   },
 );
+
+// Deep link: /estimates?status=rejected (the dashboard's bounced-email
+// row). The query param wins over the persisted tab for this visit.
+const route = useRoute();
+const _queryStatus = String(route.query.status || "");
+if (_queryStatus) {
+  const _hit = statusTabs.find((t) => t.value.toLowerCase() === _queryStatus.toLowerCase());
+  if (_hit) activeStatus.value = _hit.value;
+}
 
 // --- Computed ---
 const filteredEstimates = computed(() => {
@@ -349,7 +366,11 @@ async function loadData() {
 
 async function sendEstimate(est) {
   try {
-    await api.patch(`/api/estimates/${est.id}`, { status: "Sent" });
+    // /mark-sent is the real endpoint. The old PATCH {status:"Sent"} was a
+    // fake success: EstimatePatchIn has no status field, so the server
+    // ignored it and the optimistic flip reverted on every reload
+    // (found by the 2026-08-13 bounce audit).
+    await api.post(`/api/estimates/${est.id}/mark-sent`, {});
     est.status = "Sent";
     toast.add({ severity: "success", summary: "Sent", detail: "Estimate marked as sent", life: 3000 });
   } catch (err) {

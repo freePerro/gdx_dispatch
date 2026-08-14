@@ -621,10 +621,16 @@ def estimates_pipeline_summary(
 def list_estimates(
     job_id: UUID | None = Query(default=None),
     customer_id: UUID | None = Query(default=None),
+    status: str | None = Query(
+        default=None,
+        pattern=r"^(draft|sent|accepted|declined|rejected|expired)$",
+    ),
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
     q = select(Estimate).where(Estimate.deleted_at.is_(None))
+    if status:
+        q = q.where(Estimate.status == status)
     if job_id:
         q = q.where(Estimate.job_id == job_id)
     if customer_id:
@@ -1501,26 +1507,14 @@ def send_estimate(
     estimate = _get_estimate_or_404(estimate_id, db)
     if estimate.status in {"accepted", "declined"}:
         raise HTTPException(status_code=409, detail="estimate is finalized")
-    estimate.status = "sent"
-    estimate.sent_at = utcnow()
-    _apply_send_expiry(estimate)
-    estimate.updated_at = utcnow()
-    db.commit()
-    db.refresh(estimate)
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=_actor_id(_),
-        action="estimate_sent",
-        entity_type="estimate",
-        entity_id=str(estimate.id),
-        details={"status": estimate.status},
-    )
-    db.commit()
 
     # Send the estimate email to the customer. Routes through the
     # unified transactional-email helper so an Outlook-connected user
     # actually delivers via Graph; falls back to SMTP via email_settings.
+    # The status flip comes AFTER, gated on a provider actually accepting
+    # the message (2026-08-13): this endpoint used to stamp sent/sent_at
+    # up front, so a failed send still read "sent" everywhere. Manual
+    # out-of-band delivery has its own endpoint (/mark-sent).
     email_sent = False
     email_provider: str | None = None
     email_skip_reason: str | None = None
@@ -1629,6 +1623,38 @@ def send_estimate(
     except Exception:
         log.exception("estimate_email_send_failed")
         email_skip_reason = "exception"
+
+    if email_sent:
+        estimate.status = "sent"
+        estimate.sent_at = utcnow()
+        _apply_send_expiry(estimate)
+        estimate.updated_at = utcnow()
+        db.commit()
+        db.refresh(estimate)
+        log_audit_event_sync(
+            db=db,
+            tenant_id=None,
+            user_id=_actor_id(_),
+            action="estimate_sent",
+            entity_type="estimate",
+            entity_id=str(estimate.id),
+            details={"status": estimate.status, "provider": email_provider},
+        )
+        db.commit()
+    else:
+        # No provider accepted the message — the estimate's status is
+        # UNCHANGED (a failed re-send must not un-send an earlier
+        # delivery either). The audit row + response payload carry why.
+        log_audit_event_sync(
+            db=db,
+            tenant_id=None,
+            user_id=_actor_id(_),
+            action="estimate_send_failed",
+            entity_type="estimate",
+            entity_id=str(estimate.id),
+            details={"status": estimate.status, "skip_reason": email_skip_reason},
+        )
+        db.commit()
 
     payload = _serialize_estimate(estimate, include_lines=False)
     payload["email_sent"] = email_sent
@@ -2350,7 +2376,9 @@ def expire_stale_estimates(
     stale = (
         db.query(Estimate)
         .filter(
-            Estimate.status.in_(("sent", "draft")),
+            # "rejected" (email bounced) ages out like sent — see the
+            # nightly task's filter for why.
+            Estimate.status.in_(("sent", "draft", "rejected")),
             Estimate.valid_until.isnot(None),
             Estimate.valid_until < now,
             Estimate.deleted_at.is_(None),

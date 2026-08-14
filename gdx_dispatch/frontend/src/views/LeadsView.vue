@@ -185,7 +185,7 @@
             <template #body="{ data }">
               <Tag
                 :value="data.status || 'new'"
-                :severity="data.status === 'contacted' ? 'info' : data.status === 'promoted' ? 'success' : data.status === 'discarded' ? 'secondary' : 'warn'"
+                :severity="data.status === 'contacted' ? 'info' : data.status === 'promoted' || data.status === 'completed' ? 'success' : data.status === 'discarded' ? 'secondary' : 'warn'"
                 data-testid="landing-status-tag"
               />
             </template>
@@ -193,7 +193,7 @@
           <Column field="created_at" header="Submitted" style="width:140px" sortable>
             <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
           </Column>
-          <Column header="Actions" style="width:340px">
+          <Column header="Actions" style="width:460px">
             <template #body="{ data }">
               <div class="row-actions">
                 <Button
@@ -207,6 +207,30 @@
                   :loading="landingContactingId === data.id"
                   :disabled="landingConvertingId === data.id || landingDeletingId === data.id || landingContactingId === data.id"
                   @click.stop="markLandingContacted(data)"
+                />
+                <Button
+                  v-if="canWrite && ['new', 'contacted'].includes(data.status || 'new')"
+                  label="Completed"
+                  icon="pi pi-check"
+                  size="small"
+                  severity="success"
+                  outlined
+                  data-testid="landing-mark-completed"
+                  :loading="landingCompletingId === data.id"
+                  :disabled="landingConvertingId === data.id || landingDeletingId === data.id || landingCompletingId === data.id"
+                  @click.stop="markLandingCompleted(data)"
+                />
+                <Button
+                  v-if="canWrite && data.status === 'completed'"
+                  label="Reopen"
+                  icon="pi pi-undo"
+                  size="small"
+                  severity="secondary"
+                  outlined
+                  data-testid="landing-reopen"
+                  :loading="landingCompletingId === data.id"
+                  :disabled="landingConvertingId === data.id || landingDeletingId === data.id || landingCompletingId === data.id"
+                  @click.stop="reopenLanding(data)"
                 />
                 <Button
                   v-if="canWrite"
@@ -368,6 +392,26 @@
         <template #footer>
           <Button label="Close" severity="secondary" text @click="showLandingDialog = false" />
           <Button
+            v-if="canWrite && selectedLanding && ['new', 'contacted'].includes(selectedLanding.status || 'new')"
+            label="Completed"
+            icon="pi pi-check"
+            severity="success"
+            outlined
+            data-testid="landing-dialog-completed"
+            :loading="landingCompletingId === selectedLanding.id"
+            @click="completeFromDialog(selectedLanding)"
+          />
+          <Button
+            v-if="canWrite && selectedLanding && selectedLanding.status === 'completed'"
+            label="Reopen"
+            icon="pi pi-undo"
+            severity="secondary"
+            outlined
+            data-testid="landing-dialog-reopen"
+            :loading="landingCompletingId === selectedLanding.id"
+            @click="reopenFromDialog(selectedLanding)"
+          />
+          <Button
             v-if="canWrite && selectedLanding"
             label="Convert to Lead"
             icon="pi pi-arrow-right"
@@ -450,6 +494,7 @@ const convertingLeadId = ref(null);
 const advancingLeadId = ref(null);
 const landingConvertingId = ref(null);
 const landingContactingId = ref(null);
+const landingCompletingId = ref(null);
 const landingDeletingId = ref(null);
 const deletingLeadId = ref(null);
 const showLandingDialog = ref(false);
@@ -820,6 +865,51 @@ async function markLandingContacted(landingLead) {
   }
 }
 
+// "Handled, and it's done" — answered their question, booked them directly,
+// or it duplicates a lead already worked. Unlike Contacted this is terminal;
+// unlike Convert nothing enters the pipeline; unlike Spam/Delete the row
+// stays visible as a real, honestly-handled inquiry.
+async function markLandingCompleted(landingLead) {
+  landingCompletingId.value = landingLead.id;
+  try {
+    await api.patch(
+      `/api/landing-leads/${landingLead.id}/status`,
+      { status: 'completed' },
+      { successMessage: `${landingLead.name || 'Lead'} marked completed` },
+    );
+    await loadLandingLeads();
+  } finally {
+    landingCompletingId.value = null;
+  }
+}
+
+async function completeFromDialog(landingLead) {
+  await markLandingCompleted(landingLead);
+  showLandingDialog.value = false;
+}
+
+// Undo for a misclicked Completed (it sits one button over from Contacted,
+// and confirm dialogs are broken — issue #215). Returns the row to its last
+// honest state: 'contacted' if an outreach actually happened, else 'new'.
+async function reopenLanding(landingLead) {
+  landingCompletingId.value = landingLead.id;
+  try {
+    await api.patch(
+      `/api/landing-leads/${landingLead.id}/status`,
+      { status: landingLead.contacted_at ? 'contacted' : 'new' },
+      { successMessage: `${landingLead.name || 'Lead'} reopened` },
+    );
+    await loadLandingLeads();
+  } finally {
+    landingCompletingId.value = null;
+  }
+}
+
+async function reopenFromDialog(landingLead) {
+  await reopenLanding(landingLead);
+  showLandingDialog.value = false;
+}
+
 function confirmDeleteLead(lead) {
   const who = lead.name || lead.email || 'this lead';
   confirmDestructive({
@@ -932,6 +1022,7 @@ onMounted(async () => {
 .row-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.4rem;
 }
 

@@ -40,7 +40,12 @@ def expire_stale_nightly() -> dict:
             stale = (
                 db.query(Estimate)
                 .filter(
-                    Estimate.status == "sent",
+                    # "rejected" (email bounced, 2026-08-13) ages out like
+                    # sent: the portal presents it as an open estimate and
+                    # accept has no valid_until check of its own — without
+                    # this, a bounced-never-resent estimate stays acceptable
+                    # forever at frozen pricing.
+                    Estimate.status.in_(("sent", "rejected")),
                     Estimate.valid_until.isnot(None),
                     Estimate.valid_until < now,
                     Estimate.deleted_at.is_(None),

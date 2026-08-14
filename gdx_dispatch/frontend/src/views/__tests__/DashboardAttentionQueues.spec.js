@@ -439,3 +439,45 @@ describe('dashboard attention queue: parts to order', () => {
     expect(w2.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
   });
 });
+
+describe('dashboard attention queue: bounced estimate emails', () => {
+  // The outlook sync's bounce detector flips estimates whose email
+  // bounced to status='rejected'; the dashboard surfaces them so the
+  // rejection isn't only visible as an NDR buried in the inbox.
+  const REJECTED = { id: 'e1', estimate_number: 'EST-000085', status: 'rejected' };
+
+  it('renders a danger row with the count and links to /estimates', async () => {
+    const w = mountDashboard({ '/api/estimates': [REJECTED, { ...REJECTED, id: 'e2' }] });
+    await flushPromises();
+    const texts = attentionTexts(w);
+    expect(
+      texts.some((t) => t.includes('2 estimate emails bounced — the customer never received them')),
+    ).toBe(true);
+  });
+
+  it('uses the singular for one', async () => {
+    const w = mountDashboard({ '/api/estimates': [REJECTED] });
+    await flushPromises();
+    expect(
+      attentionTexts(w).some((t) => t.includes('1 estimate email bounced — the customer never received it')),
+    ).toBe(true);
+  });
+
+  it('queries with the rejected status filter (never the whole list)', async () => {
+    mountDashboard({ '/api/estimates': [] });
+    await flushPromises();
+    const call = mockGet.mock.calls.find(([url]) => url.startsWith('/api/estimates?'));
+    expect(call?.[0]).toBe('/api/estimates?status=rejected');
+  });
+
+  it('renders nothing when clean and survives a failing fetch', async () => {
+    const w1 = mountDashboard({ '/api/estimates': [] });
+    await flushPromises();
+    expect(attentionTexts(w1).some((t) => t.includes('bounced'))).toBe(false);
+
+    const w2 = mountDashboard({}, { reject: ['/api/estimates'] });
+    await flushPromises();
+    expect(attentionTexts(w2).some((t) => t.includes('bounced'))).toBe(false);
+    expect(w2.find('[data-testid="recent-activity-list"]').exists()).toBe(true);
+  });
+});

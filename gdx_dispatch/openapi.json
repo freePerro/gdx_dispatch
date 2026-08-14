@@ -3166,6 +3166,23 @@
             "schema": {
               "title": "Request"
             }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(draft|sent|accepted|declined|rejected|expired)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
           }
         ],
         "responses": {
@@ -91180,7 +91197,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "pattern": "^(new|contacted|discarded)$",
+            "pattern": "^(new|contacted|completed|discarded)$",
             "title": "Status"
           }
         },
