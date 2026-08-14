@@ -2,6 +2,10 @@
     <section class="mobile-timeclock">
       <header class="mobile-page-head">
         <h1>Time Clock</h1>
+        <!-- Field receipt capture lives on BOTH mobile landings (techs are
+             role-redirected here, everyone else lands on Today's Route) so
+             "snap the fuel receipt" is one tap from wherever you start. -->
+        <MobileReceiptCapture />
       </header>
 
       <!-- MH-7 (audit P1 #9): max-shift guard banners. The 8-16h
@@ -274,6 +278,7 @@ import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
+import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
 import TimeEntryDialog from '../components/TimeEntryDialog.vue'
 import { useWeeklyTimesheet } from '../composables/useWeeklyTimesheet'
 
@@ -692,6 +697,10 @@ onUnmounted(() => {
 
 .mobile-page-head {
   margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 .mobile-page-head h1 {
   margin: 0;
