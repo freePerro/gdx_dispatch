@@ -59,7 +59,11 @@ def test_baseline_does_not_silently_grow(current: set[str]) -> None:
             f"\n{len(stale)} baseline entries are now authenticated — "
             f"prune them from {BASELINE_PATH.name}:\n  " + "\n  ".join(stale)
         )
-    assert len(_baseline()) <= 91, (
+    # 91 → 93 (2026-08-13): POST /api/proposals/{token}/accept + /decline —
+    # the public estimate approval page. Group 2, token IS the credential
+    # (64-char Estimate.public_token, sent_at-gated, uniform 404, row-locked);
+    # same authorization model the /api/payments/* endpoints pin below.
+    assert len(_baseline()) <= 93, (
         "The ungated-route baseline grew. It is a debt list to work down, not "
         "a place to record new exceptions."
     )

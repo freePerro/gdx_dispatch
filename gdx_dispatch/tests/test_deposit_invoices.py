@@ -458,3 +458,33 @@ def test_orphan_deposit_adopted_at_job_conversion(db):
     new_job = _create_job_from_estimate(est, db, "user-1")
     db.refresh(dep)
     assert dep.job_id == new_job.id
+
+
+def test_cap_total_override_allows_tier_priced_deposit(db):
+    """cap_total lets a tier accept cap against the TIER price instead of the
+    tier-blind lines total. Without it, a tier priced above the base lines
+    trips exceeds_estimate_total and the deposit silently never exists."""
+    cust = _seed_customer(db)
+    est = _seed_estimate(db, cust, total=500.0)  # lines total 500
+
+    # Without the override: 4000 > 500 → refused (existing behavior).
+    with pytest.raises(DepositError):
+        create_deposit_invoice(
+            db, estimate=est, amount=4000.0, tenant_id="tenant-1",
+            actor="user-1", source="test",
+        )
+
+    # With the tier price as the ceiling, the same deposit is legitimate.
+    inv = create_deposit_invoice(
+        db, estimate=est, amount=4000.0, tenant_id="tenant-1",
+        actor="user-1", source="test", cap_total=8000.0,
+    )
+    assert float(inv.total) == 4000.0
+
+    # And the ceiling still binds: a deposit above cap_total is refused.
+    est2 = _seed_estimate(db, _seed_customer(db), total=500.0)
+    with pytest.raises(DepositError):
+        create_deposit_invoice(
+            db, estimate=est2, amount=9000.0, tenant_id="tenant-1",
+            actor="user-1", source="test", cap_total=8000.0,
+        )

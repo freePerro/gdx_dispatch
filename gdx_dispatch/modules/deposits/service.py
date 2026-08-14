@@ -123,11 +123,18 @@ def create_deposit_invoice(
     tenant_id: str,
     actor: str,
     source: str,
+    cap_total: float | None = None,
 ) -> Invoice:
     """Create + issue (status 'sent') a deposit invoice for an accepted
     estimate. Commits. Idempotent per estimate: an existing live deposit
     invoice is returned instead of minting a second one (double-tapped
     accept buttons, office accept after mobile accept).
+
+    cap_total: ceiling for the sanity cap instead of compute_estimate_totals.
+    The tier-accept path passes the selected tier's price — the totals engine
+    sums ESTIMATE LINES and knows nothing about tiers, so an office-built
+    tier priced above the base lines would otherwise trip
+    ``exceeds_estimate_total`` and silently skip a legitimate deposit.
 
     Raises DepositError for requests that must not become invoices; the
     caller decides whether that's a 4xx (explicit office request) or a
@@ -155,15 +162,19 @@ def create_deposit_invoice(
         raise DepositError("amount_not_positive")
 
     # Sanity cap: never invoice a deposit larger than the estimate itself.
-    # compute_estimate_totals is the canonical total (tiers/discount/tax);
-    # a $0 estimate (no lines yet) skips the cap — the operator knows better.
-    try:
-        from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+    # compute_estimate_totals is the canonical LINE total (discount/tax; it is
+    # tier-blind — tier accepts pass cap_total instead); a $0 estimate (no
+    # lines yet) skips the cap — the operator knows better.
+    if cap_total is not None:
+        est_total = _to_f(cap_total)
+    else:
+        try:
+            from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
 
-        est_total = _to_f(compute_estimate_totals(estimate, db)["total"])
-    except Exception:
-        log.exception("deposit_estimate_total_failed estimate=%s", estimate.id)
-        est_total = _to_f(estimate.total)
+            est_total = _to_f(compute_estimate_totals(estimate, db)["total"])
+        except Exception:
+            log.exception("deposit_estimate_total_failed estimate=%s", estimate.id)
+            est_total = _to_f(estimate.total)
     if est_total > 0 and float(amount_dec) > est_total + 0.005:
         # The amounts stay out of the message (constant table) but land in
         # the log so the office can still see what was actually asked for.

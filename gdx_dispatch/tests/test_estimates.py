@@ -1190,3 +1190,104 @@ def test_patch_line_price_with_override_sets_line_override_source(client: TestCl
     assert body["unit_price"] == pytest.approx(1666.0)  # client's price, not re-derived 1666.67
     assert body["margin_pct_override"] == pytest.approx(0.40)
     assert body["pricing_source"] == "line_override"
+
+
+# ── the emailed approval link ────────────────────────────────────────────────
+
+def _capture_email(monkeypatch) -> dict:
+    """Stub the unified email helper as a successful delivery and capture its
+    kwargs so tests can inspect the html body that would have gone out."""
+    import gdx_dispatch.core.transactional_email as te
+    captured: dict = {}
+
+    def _fake(**kw):
+        captured.update(kw)
+        return (True, "outlook_graph", None)
+
+    monkeypatch.setattr(te, "send_transactional_email", _fake)
+    return captured
+
+
+def _public_token(client: TestClient, est_id: str) -> str:
+    dep = client.app.dependency_overrides[get_db]
+    db = next(dep())
+    try:
+        return db.get(Estimate, UUID(est_id)).public_token
+    finally:
+        db.close()
+
+
+def test_send_email_carries_public_approval_link(client: TestClient, monkeypatch):
+    """The 'View & Accept Estimate' button must point at the token-addressed
+    public page — this resolves the old Tier-9.8 deferral (no portal login)."""
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    token = _public_token(client, estimate["id"])
+    assert f"https://gdx.example.com/proposals/{token}" in captured["html_body"]
+    assert "View & Accept Estimate" in captured["html_body"]
+
+
+def test_send_email_has_no_link_when_base_unset(client: TestClient, monkeypatch):
+    """Audit-critique pin (§6.7): a bare f-string over an empty base yields
+    '/proposals/<tok>' — truthy, so the builder renders a RELATIVE href that
+    is dead inside a mail client. Base unset must mean no link at all."""
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert "/proposals/" not in captured["html_body"]
+
+
+def test_email_compose_appends_approval_link(client: TestClient, monkeypatch):
+    """The manual-composer path must carry the same link (invoice compose's
+    'Pay online:' pattern). PDF rendering is stubbed — this asserts the body
+    text, not the attachment."""
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates._estimate_pdf_bytes",
+        lambda *a, **k: b"%PDF-stub",
+    )
+    estimate = _create_estimate(client)
+
+    r = client.get(f"/api/estimates/{estimate['id']}/email-compose")
+    assert r.status_code == 200, r.text
+    token = _public_token(client, estimate["id"])
+    assert f"Review & approve online: https://gdx.example.com/proposals/{token}" in r.json()["body_text"]
+
+
+def test_email_compose_no_link_when_base_unset(client: TestClient, monkeypatch):
+    monkeypatch.delenv("GDX_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates._estimate_pdf_bytes",
+        lambda *a, **k: b"%PDF-stub",
+    )
+    estimate = _create_estimate(client)
+
+    r = client.get(f"/api/estimates/{estimate['id']}/email-compose")
+    assert r.status_code == 200, r.text
+    assert "/proposals/" not in r.json()["body_text"]
+
+
+def test_email_compose_suppresses_link_for_finalized_never_sent(client: TestClient, monkeypatch):
+    """Quality-review catch: office accepts over the phone (sent_at stays
+    NULL), then composes the customer's copy. The public lookup requires
+    sent_at and /mark-sent 409s finalized estimates — that link would 404
+    forever. A finalized-never-sent estimate composes with NO link."""
+    monkeypatch.setenv("GDX_PUBLIC_BASE_URL", "https://gdx.example.com")
+    monkeypatch.setattr(
+        "gdx_dispatch.routers.estimates._estimate_pdf_bytes",
+        lambda *a, **k: b"%PDF-stub",
+    )
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/accept")
+    assert r.status_code == 200, r.text
+
+    r = client.get(f"/api/estimates/{estimate['id']}/email-compose")
+    assert r.status_code == 200, r.text
+    assert "/proposals/" not in r.json()["body_text"]

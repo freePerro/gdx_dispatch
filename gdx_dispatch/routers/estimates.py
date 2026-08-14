@@ -1277,6 +1277,17 @@ _DEFAULT_BODY_TEMPLATE = (
 )
 
 
+def _public_proposal_url(estimate: Estimate) -> str:
+    """Absolute customer-facing approval-page URL, or "" when
+    GDX_PUBLIC_BASE_URL is unset. The explicit guard matters: a bare f-string
+    over an empty base yields "/proposals/<tok>" — truthy, so the email
+    builder would render a relative href that is dead in a mail client."""
+    base = os.getenv("GDX_PUBLIC_BASE_URL", "").rstrip("/")
+    if not (base and estimate.public_token):
+        return ""
+    return f"{base}/proposals/{estimate.public_token}"
+
+
 def _render_template(tpl: str, ctx: dict[str, str]) -> str:
     """Lightweight {{placeholder}} substitution — no logic, no escapes."""
     out = tpl
@@ -1385,6 +1396,13 @@ def estimate_email_compose(
     from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
     _ctx_totals = compute_estimate_totals(estimate, db)
     label_or_job = job_title or (estimate.label or "").strip() or f"Estimate {estimate.estimate_number or ''}".strip()
+    proposal_url = _public_proposal_url(estimate)
+    # A finalized estimate that was NEVER sent (phone accept, office decline)
+    # can still be composed — but the public lookup requires sent_at, and
+    # /mark-sent 409s finalized estimates, so its link would 404 forever.
+    # Suppress it; the compose is then just the document, like before.
+    if estimate.sent_at is None and estimate.status in {"accepted", "declined"}:
+        proposal_url = ""
     ctx = {
         "customer_name": (customer.name if customer else "") or "there",
         "job_title": label_or_job,
@@ -1392,9 +1410,15 @@ def estimate_email_compose(
         "estimate_label": (estimate.label or "").strip(),
         "company_name": company_name,
         "total": f"${_ctx_totals['total']:.2f}",
+        "estimate_link": proposal_url,
     }
     subject = _render_template(subject_tpl, ctx).strip() or label_or_job
     body_text = _render_template(body_tpl, ctx)
+    # Approval link rides every composed email (invoice compose's "Pay
+    # online:" pattern): appended unless the tenant's template already placed
+    # it via {{estimate_link}}. No link when the public base URL is unset.
+    if proposal_url and proposal_url not in body_text:
+        body_text = f"{body_text}\n\nReview & approve online: {proposal_url}"
     pdf_bytes = _estimate_pdf_bytes(db, estimate, customer, tenant_id)
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
     pdf_name = f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf"
@@ -1562,13 +1586,11 @@ def send_estimate(
                 # Tax-inclusive total — matches the attached PDF.
                 from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
                 _email_totals = compute_estimate_totals(estimate, db)
-                # NOTE (Tier-9.8 deferred): the estimate email still carries no
-                # accept-link. The audit showed a bare /customer-portal link is
-                # a dead end — a first-time recipient has no CustomerUser, so
-                # portal login 401s AND the magic-link request is silently
-                # dropped by anti-enumeration. The correct build (mint a
-                # per-customer magic-link token + provision the CustomerUser on
-                # send) is its own change; a dead CTA is worse than none.
+                # "View & Accept Estimate" button → the public token-addressed
+                # approval page (no CustomerUser/login needed — the token IS
+                # the authorization, resolving the old Tier-9.8 deferral).
+                # Guard: base unset must yield NO link at all — a bare
+                # f-string would render a relative, dead-in-email href.
                 html = build_estimate_email_html(
                     company_name=company_name,
                     estimate_number=estimate.estimate_number or str(estimate.id)[:8],
@@ -1576,6 +1598,7 @@ def send_estimate(
                     line_items=lines_data,
                     total=_email_totals["total"],
                     notes=estimate.notes or "",
+                    portal_url=_public_proposal_url(estimate),
                     description=estimate.description or "",
                 )
                 # 2026-07-20 — actually attach the estimate PDF (same bytes
