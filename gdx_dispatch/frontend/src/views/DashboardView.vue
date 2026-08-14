@@ -645,8 +645,8 @@ async function loadVendorBills() {
 // Website leads still marked status='new' — nobody has called them back.
 // The landing form was silently dropping leads until 2026-07-19; now that
 // they flow again, a lead that cools uncontacted is the front-door version
-// of the same leak the other queues close. 'contacted'/'discarded' are the
-// handled states.
+// of the same leak the other queues close. 'contacted'/'completed'/
+// 'discarded' are the handled states.
 const newLeadCount = ref(0);
 
 async function loadWebsiteLeads() {
