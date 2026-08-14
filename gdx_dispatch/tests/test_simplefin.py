@@ -72,6 +72,16 @@ def _epoch(d: date, hour: int = 12) -> int:
     return int(datetime(d.year, d.month, d.day, hour, tzinfo=timezone.utc).timestamp())
 
 
+def _today_local(db) -> date:
+    """The module's notion of "today": tenant timezone (America/New_York
+    when AppSettings is empty), exactly as quota_state/record_fetches and
+    the watermark stamps compute it. ``date.today()`` is the CONTAINER's
+    day — from 00:00 UTC until Eastern midnight the two differ, and every
+    date assertion here went off by one (CI shard 7, 2026-08-14 02:08 UTC:
+    six failures, all vs the module's still-yesterday local day)."""
+    return datetime.now(timezone.utc).astimezone(service.tenant_zoneinfo(db)).date()
+
+
 def _txn(i, posted_epoch, amount="-10.00", description="Fishing bait", **extra):
     return {"id": f"sftxn-{i}", "posted": posted_epoch, "amount": amount,
             "description": description, **extra}
@@ -230,7 +240,7 @@ def test_within_fetch_window(start, end, now, allowed):
 def test_ledger_rolls_on_new_local_day(tenant_db):
     sched = service.get_or_create_schedule(tenant_db)
     tz = service.tenant_zoneinfo(tenant_db)
-    sched.fetch_count_date = date.today() - timedelta(days=1)
+    sched.fetch_count_date = _today_local(tenant_db) - timedelta(days=1)
     sched.fetch_count_today = 17
     tenant_db.commit()
     quota = ss.quota_state(tenant_db, sched, tz)
@@ -258,7 +268,7 @@ def test_first_sync_backfills_creates_accounts_txns_snapshots(tenant_db, sfin):
     sched = service.get_or_create_schedule(tenant_db)
     sched.backfill_days = 100  # two 89-day windows
     tenant_db.commit()
-    today = date.today()
+    today = _today_local(tenant_db)
     txns = [
         _txn(1, _epoch(today - timedelta(days=3)), "-65.50"),
         _txn(2, _epoch(today - timedelta(days=2)), "1200.00", "Customer payment"),
@@ -300,7 +310,7 @@ def test_first_sync_backfills_creates_accounts_txns_snapshots(tenant_db, sfin):
 @respx.mock
 def test_second_sync_is_incremental_and_dedupes(tenant_db, sfin):
     inst, conn = sfin
-    today = date.today()
+    today = _today_local(tenant_db)
     txns = [_txn(1, _epoch(today - timedelta(days=2)))]
     route = respx.get(ACCOUNTS_URL).mock(
         return_value=Response(200, json=_payload([_acct(txns=txns)]))
@@ -320,7 +330,7 @@ def test_second_sync_is_incremental_and_dedupes(tenant_db, sfin):
 @respx.mock
 def test_act_failed_freezes_that_accounts_watermark(tenant_db, sfin):
     inst, conn = sfin
-    today = date.today()
+    today = _today_local(tenant_db)
     payload = _payload(
         [_acct("A1", "Checking 1111", txns=[_txn(1, _epoch(today))]),
          _acct("A2", "Savings 2222", txns=[])],
@@ -379,7 +389,7 @@ def test_quota_midrun_stop_resumes_next_day(tenant_db, sfin):
     sched.backfill_days = 200   # needs 3 windows
     sched.daily_fetch_cap = 2
     tenant_db.commit()
-    today = date.today()
+    today = _today_local(tenant_db)
     route = respx.get(ACCOUNTS_URL).mock(
         return_value=Response(200, json=_payload([_acct(txns=[])]))
     )
@@ -438,7 +448,7 @@ def test_disconnected_connection_is_skipped(tenant_db, sfin):
 def test_watermark_only_advances_for_payload_members(tenant_db, sfin):
     """An account MX omitted from this response must NOT be stamped synced."""
     inst, conn = sfin
-    today = date.today()
+    today = _today_local(tenant_db)
     old_mark = today - timedelta(days=10)
     for ext in ("A1", "A2"):
         tenant_db.add(BankFeedAccount(
@@ -460,7 +470,7 @@ def test_new_account_in_incremental_gets_full_backfill_next_run(tenant_db, sfin)
     """A brand-new bank account appearing mid-incremental must not be marked
     done off a few days of overlap — the next run backfills its history."""
     inst, conn = sfin
-    today = date.today()
+    today = _today_local(tenant_db)
     tenant_db.add(BankFeedAccount(
         connection_id=conn.id, external_account_id="A1", provider=PROVIDER_SIMPLEFIN,
         name="A1", initial_backfill_done=True, backfill_synced_through=today - timedelta(days=2),
