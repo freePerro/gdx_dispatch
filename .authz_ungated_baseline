@@ -88,6 +88,12 @@ POST /api/payments/ach/charge
 POST /api/payments/ach/setup
 POST /api/payments/confirm
 POST /api/payments/create-intent
+# Group 2 (token IS the credential): the public estimate approval page.
+# 64-char urlsafe Estimate.public_token, sent_at+deleted_at gated, uniform
+# 404, row-locked accept — see modules/proposals/router.py "public customer
+# surface" (2026-08-13, same model as GET /api/proposals/{token} above).
+POST /api/proposals/{token}/accept
+POST /api/proposals/{token}/decline
 POST /api/push/send
 POST /api/push/send-user/{user_id}
 POST /api/push/subscribe

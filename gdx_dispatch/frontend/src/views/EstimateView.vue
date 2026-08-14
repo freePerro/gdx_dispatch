@@ -2693,7 +2693,18 @@ async function sendComposer() {
       try {
         const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, {});
         estimate.value.status = _titleCase(result?.status || "sent");
-      } catch { /* status flip best-effort */ }
+      } catch {
+        // NOT just status drift anymore: the composed body carries the public
+        // approval link, and that link only resolves once sent_at is stamped.
+        // A swallowed failure here = the customer holds a dead link while the
+        // office saw "Sent". Say so.
+        toast.add({
+          severity: "warn",
+          summary: "Marked-sent failed",
+          detail: "The email went out, but the estimate could not be marked sent — the approval link in it won't work until you Mark as Sent from the menu.",
+          life: 10000,
+        });
+      }
       toast.add({
         severity: "success",
         summary: "Sent",
@@ -2739,7 +2750,16 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   try {
     const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, {});
     estimate.value.status = _titleCase(result?.status || "sent");
-  } catch { /* ignore */ }
+  } catch {
+    // Same stakes as the composer path: the mailto body carries the approval
+    // link, which is dead until sent_at is stamped.
+    toast.add({
+      severity: "warn",
+      summary: "Marked-sent failed",
+      detail: "Mark the estimate as sent from the menu, or the approval link in the email won't work.",
+      life: 10000,
+    });
+  }
 }
 
 // 2026-05-12 audit — Accept / Decline / Convert all commit state changes

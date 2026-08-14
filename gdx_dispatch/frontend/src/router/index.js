@@ -126,6 +126,7 @@ const ResourcesView = () => import('../views/ResourcesView.vue');
 const SsoView = () => import('../views/SsoView.vue');
 const PortalView = () => import('../views/PortalView.vue');
 const CustomerPortalView = () => import('../views/CustomerPortalView.vue');
+const ProposalPublicView = () => import('../views/ProposalPublicView.vue');
 const PricingView = () => import('../views/PricingView.vue');
 const MarginTiersView = () => import('../views/MarginTiersView.vue');
 const LaborMatrixView = () => import('../views/LaborMatrixView.vue');
@@ -349,9 +350,12 @@ export const routes = [
   // items, no estimate number and no tax, whose line-items endpoint was a stub
   // that saved nothing. Good/better/best now lives where it belongs: on the
   // estimate itself (proposal_mode + tiers, edited on the estimate detail
-  // page). Bookmark redirect; exact path only, so a future public
-  // /proposals/:token customer page is still free to claim its own route.
+  // page). Bookmark redirect; exact path only — the public /proposals/:token
+  // customer page below claims the parameterized route.
   { path: '/proposals', redirect: '/estimates' },
+  // The emailed "View & Accept Estimate" page: unauthenticated, addressed by
+  // the estimate's public token (QuickBooks-style approve/decline + deposit).
+  { path: '/proposals/:token', name: 'proposal-public', component: ProposalPublicView, meta: { public: true, noSidebar: true, noShell: true } },
   { path: '/signatures', name: 'signatures', component: SignaturesView },
   { path: '/technicians', name: 'technicians', component: TechniciansView },
   { path: '/job-costing', name: 'job-costing', component: JobCostingView },
