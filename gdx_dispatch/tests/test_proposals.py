@@ -742,3 +742,289 @@ def test_public_accept_unknown_token_is_uniform_404(client: TestClient, monkeypa
     r = client.post("/api/proposals/not-a-real-token/accept", json={})
     assert r.status_code == 404
     assert r.json()["detail"] == "Invalid proposal token"
+
+
+# ── tier line items + the accept-persists-the-price fix (2026-08-14) ────────
+
+def _add_tier_line(client: TestClient, est_id: str, tier_id: str, description: str,
+                   quantity: int = 1, unit_price: float = 0, **overrides) -> dict:
+    body = {"description": description, "quantity": quantity, "unit_price": unit_price}
+    body.update(overrides)
+    r = client.post(f"/api/estimates/{est_id}/proposal-tiers/{tier_id}/lines", json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _tier_by_name(client: TestClient, est_id: str, name: str) -> dict:
+    r = client.get(f"/api/estimates/{est_id}/proposal")
+    assert r.status_code == 200, r.text
+    return next(t for t in r.json() if t["tier_name"] == name)
+
+
+def test_tier_line_crud_syncs_the_tier_price(client: TestClient):
+    """A line-built tier's price IS the sum of its lines — the manual price
+    stops mattering the moment the first line exists, and every write
+    re-syncs. This is what "tiers built like estimates" means."""
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=999.0)  # manual price
+
+    ln1 = _add_tier_line(client, est["id"], tier["id"], "Belt drive opener", 1, 6000.0)
+    _add_tier_line(client, est["id"], tier["id"], "Battery backup", 2, 1000.0)
+    assert _tier_by_name(client, est["id"], "best")["total_price"] == pytest.approx(8000.0)
+
+    # PATCH re-prices and re-syncs.
+    r = client.patch(
+        f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}/lines/{ln1['id']}",
+        json={"unit_price": 5000.0},
+    )
+    assert r.status_code == 200, r.text
+    best = _tier_by_name(client, est["id"], "best")
+    assert best["total_price"] == pytest.approx(7000.0)
+    assert len(best["lines"]) == 2
+
+    # DELETE re-syncs; the last deletion keeps the final sum as the manual
+    # price (a tier's price never silently drops to zero).
+    for ln in best["lines"]:
+        r = client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}/lines/{ln['id']}")
+        assert r.status_code == 204
+    assert _tier_by_name(client, est["id"], "best")["lines"] == []
+
+
+def test_tier_line_validation_and_lock(client: TestClient):
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "good", total_price=650.0)
+
+    # A tier from another estimate is not addressable through this one.
+    other = _create_estimate(client)
+    client.patch(f"/api/estimates/{other['id']}", json={"proposal_mode": True})
+    foreign = _add_tier(client, other["id"], "good", total_price=1.0)
+    r = client.post(
+        f"/api/estimates/{est['id']}/proposal-tiers/{foreign['id']}/lines",
+        json={"description": "sneak", "quantity": 1, "unit_price": 5.0},
+    )
+    assert r.status_code == 404
+
+    # Accepted estimates lock tier lines like they lock tiers.
+    client.post(f"/api/estimates/{est['id']}/accept")
+    r = client.post(
+        f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}/lines",
+        json={"description": "late add", "quantity": 1, "unit_price": 5.0},
+    )
+    assert r.status_code == 409
+
+
+def test_staff_tier_accept_persists_the_contract_price(client: TestClient):
+    """THE fix: accepting a tier writes the tier's price into est.total —
+    before this, accepted_tier_id was a pointer and the $500 base lines
+    stayed the billable truth under an $8,000 accept."""
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 500.0)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=8000.0)
+
+    r = client.post(f"/api/estimates/{est['id']}/proposal/accept", json={"tier_id": tier["id"]})
+    assert r.status_code == 200, r.text
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        assert float(row.total) == pytest.approx(8000.0)
+        assert str(row.accepted_tier_id) == tier["id"]
+    finally:
+        db.close()
+
+
+def test_public_tier_accept_persists_line_built_price(client: TestClient, monkeypatch):
+    """Line-built tier through the public page: est.total = Σ tier lines,
+    deposit = pct × that sum."""
+    _fake_features(monkeypatch, deposit_pct=50)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 500.0)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=1.0)  # manual price is overridden by lines
+    _add_tier_line(client, est["id"], tier["id"], "Belt drive opener", 1, 6000.0)
+    _add_tier_line(client, est["id"], tier["id"], "Battery backup", 2, 1000.0)
+    token = _publish(client, est["id"])
+
+    r = client.post(f"/api/proposals/{token}/accept", json={"tier_id": tier["id"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["deposit"]["amount"] == pytest.approx(4000.0)
+    assert body["totals"]["total"] == pytest.approx(8000.0)  # accepted → totals are true now
+
+    db = _db(client)
+    try:
+        assert float(db.get(Estimate, UUID(est["id"])).total) == pytest.approx(8000.0)
+    finally:
+        db.close()
+
+
+def test_public_payload_tier_lines_present_and_stripped(client: TestClient, monkeypatch):
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "better", total_price=1.0)
+    _add_tier_line(client, est["id"], tier["id"], "Quiet belt drive", 1, 850.0)
+    token = _publish(client, est["id"])
+
+    body = client.get(f"/api/proposals/{token}").json()
+    t = next(x for x in body["tiers"] if x["tier_name"] == "better")
+    assert t["lines"][0]["description"] == "Quiet belt drive"
+    assert t["lines"][0]["line_total"] == pytest.approx(850.0)
+    assert t["total_price"] == pytest.approx(850.0)  # synced
+    # The flat estimate-lines array carries only base lines — no tier leakage.
+    assert body["lines"] == []
+    # An OPEN proposal still shows no single total.
+    assert "totals" not in body
+
+    # hide_line_prices strips tier line prices the same as estimate lines.
+    db = _db(client)
+    try:
+        db.get(Estimate, UUID(est["id"])).hide_line_prices = True
+        db.commit()
+    finally:
+        db.close()
+    body = client.get(f"/api/proposals/{token}").json()
+    t = next(x for x in body["tiers"] if x["tier_name"] == "better")
+    assert "line_total" not in t["lines"][0]
+    assert "850" not in str(t["lines"])
+
+
+def test_public_tier_accept_job_carries_the_package_not_base_lines(client: TestClient, monkeypatch):
+    """The job created by a tier accept carries the accepted package. Base
+    estimate lines (office scope, or mobile's three-tier dump) stay off the
+    job — copying them handed receiving three doors for a one-door job."""
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+
+    _fake_features(monkeypatch, deposit_pct=0)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 500.0)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=8000.0, description="Belt + battery + camera")
+    token = _publish(client, est["id"])
+
+    r = client.post(f"/api/proposals/{token}/accept", json={"tier_id": tier["id"]})
+    assert r.status_code == 200, r.text
+
+    db = _db(client)
+    try:
+        job_id = db.get(Estimate, UUID(est["id"])).job_id
+        assert job_id is not None
+        parts = db.execute(select(JobPartNeeded).where(JobPartNeeded.job_id == str(job_id))).scalars().all()
+        names = [p.part_name for p in parts]
+        assert names == ["Best package — Belt + battery + camera"]
+        assert "8000.00" in (parts[0].notes or "")
+    finally:
+        db.close()
+
+
+def test_recalculate_total_guard_protects_the_contract_price(client: TestClient):
+    """A reopened-then-edited estimate that still carries accepted_tier_id
+    must not have its contract price silently re-summed from base lines."""
+    from gdx_dispatch.routers.estimates import _recalculate_total
+
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 500.0)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=8000.0)
+    client.post(f"/api/estimates/{est['id']}/proposal/accept", json={"tier_id": tier["id"]})
+
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        _recalculate_total(row, db)
+        db.commit()
+        assert float(row.total) == pytest.approx(8000.0)  # NOT 500
+    finally:
+        db.close()
+
+
+def test_duplicate_clones_tier_lines(client: TestClient):
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "good", total_price=1.0)
+    _add_tier_line(client, est["id"], tier["id"], "Chain drive opener", 1, 650.0)
+
+    r = client.post(f"/api/estimates/{est['id']}/duplicate")
+    assert r.status_code == 201, r.text
+    dup_id = r.json()["id"]
+
+    good = _tier_by_name(client, dup_id, "good")
+    assert [ln["description"] for ln in good["lines"]] == ["Chain drive opener"]
+    assert good["total_price"] == pytest.approx(650.0)
+    # The clone's lines are its own rows, not shared references.
+    assert good["lines"][0]["id"] != _tier_by_name(client, est["id"], "good")["lines"][0]["id"]
+
+
+def test_tier_delete_cascades_its_lines(client: TestClient):
+    from gdx_dispatch.modules.proposals.models import ProposalTierLine
+
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "good", total_price=1.0)
+    _add_tier_line(client, est["id"], tier["id"], "Chain drive opener", 1, 650.0)
+
+    r = client.delete(f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}")
+    assert r.status_code == 204
+    db = _db(client)
+    try:
+        orphans = db.execute(select(ProposalTierLine).where(ProposalTierLine.tier_id == UUID(tier["id"]))).scalars().all()
+        assert orphans == []
+    finally:
+        db.close()
+
+
+def test_manual_price_cannot_contradict_a_line_built_tier(client: TestClient):
+    """Quality-review catch: PATCHing total_price on a line-built tier used to
+    stick ($9,999 on the card, $6,000 in the contract). The field is dropped
+    and re-synced — the office UI's whole-card save (which echoes the synced
+    value) keeps working, an API caller cannot fork the two numbers."""
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=1.0)
+    _add_tier_line(client, est["id"], tier["id"], "Opener", 1, 6000.0)
+
+    r = client.patch(
+        f"/api/estimates/{est['id']}/proposal-tiers/{tier['id']}",
+        json={"total_price": 9999.0, "warranty_months": 24},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_price"] == pytest.approx(6000.0)  # synced, not 9999
+    assert body["warranty_months"] == 24                 # the rest of the PATCH landed
+
+    # The upsert path (POST for an existing name) is guarded the same way.
+    r = client.post(
+        f"/api/estimates/{est['id']}/proposal-tiers",
+        json={"tier_name": "best", "total_price": 4242.0, "warranty_months": 36},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["total_price"] == pytest.approx(6000.0)
+
+
+def test_totals_self_heal_a_stale_pre_fix_accepted_tier(client: TestClient, monkeypatch):
+    """Gate-audit catch: rows accepted BEFORE the est.total fix (self-hosted
+    installs) still carry the base-lines sum. The totals engine now derives
+    the accepted subtotal from the TIER itself, so the public page shows the
+    contract price no matter when the row was accepted."""
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 500.0)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=8000.0)
+
+    # Fabricate the PRE-fix shape: accepted pointer set, est.total stale.
+    token = _publish(client, est["id"], status="accepted")
+    db = _db(client)
+    try:
+        row = db.get(Estimate, UUID(est["id"]))
+        row.accepted_tier_id = UUID(tier["id"])
+        row.total = 500.0  # the stale base-lines sum the fix exists to kill
+        db.commit()
+    finally:
+        db.close()
+
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["totals"]["total"] == pytest.approx(8000.0)  # NOT 500

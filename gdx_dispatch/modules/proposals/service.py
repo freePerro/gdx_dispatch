@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -9,7 +10,33 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event, utcnow
-from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
+from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier, ProposalTierLine
+
+
+def _money2(v) -> Decimal:
+    """2dp money quantization — same shape mobile_quoting._money applies to
+    est.total at accept, kept local to avoid a modules→routers import."""
+    return Decimal(str(v or 0)).quantize(Decimal("0.01"))
+
+
+def tier_contract_lines(db: Session, tier: ProposalTier) -> list[ProposalTierLine]:
+    """The tier's own line items, in display order. Empty for a flat tier."""
+    return list(db.execute(
+        select(ProposalTierLine)
+        .where(ProposalTierLine.tier_id == tier.id)
+        .order_by(ProposalTierLine.sort_order.asc(), ProposalTierLine.id.asc())
+    ).scalars().all())
+
+
+def tier_contract_subtotal(db: Session, tier: ProposalTier) -> Decimal:
+    """What accepting this tier commits the customer to: Σ its lines when it
+    is line-built, else its manual total_price. This is the ONE number the
+    accept flows write into est.total, the invoice bills, and the deposit
+    percent applies to — page and invoice agree because they share it."""
+    lines = tier_contract_lines(db, tier)
+    if lines:
+        return _money2(sum(Decimal(str(ln.line_total or 0)) for ln in lines))
+    return _money2(tier.total_price)
 
 
 def next_estimate_number(db: Session) -> str:
@@ -99,7 +126,16 @@ def add_proposal_tier(estimate_id: UUID, tier_name: str, description: str | None
     row = db.execute(select(ProposalTier).where(ProposalTier.estimate_id == estimate_id, ProposalTier.tier_name == tier_name)).scalar_one_or_none()
     action = "proposal_tier_updated" if row else "proposal_tier_created"
     if row:
-        row.description = description; row.total_price = total_price; row.warranty_months = warranty_months  # noqa: E702
+        row.description = description; row.warranty_months = warranty_months  # noqa: E702
+        # A line-built tier's price is Σ its lines — a manual total_price on
+        # the upsert is silently superseded by the sync (the office UI sends
+        # the already-synced value; an API caller sending anything else would
+        # otherwise make the card show one number and the accept record
+        # another).
+        if tier_contract_lines(db, row):
+            _resync_tier_price(db, row)
+        else:
+            row.total_price = total_price
     else:
         row = ProposalTier(estimate_id=estimate_id, tier_name=tier_name, description=description, total_price=total_price, warranty_months=warranty_months, display_order=TIER_ORDER.get(tier_name, 0))
         db.add(row)
@@ -123,6 +159,13 @@ def update_proposal_tier(estimate_id: UUID, tier_id: UUID, fields: dict, db: Ses
             ProposalTier.id != tier_id,
         )).scalar_one_or_none()
         if clash: raise HTTPException(status_code=409, detail=f"a '{new_name}' tier already exists on this estimate")  # noqa: E701,E702
+    # A line-built tier's price cannot be hand-set: it IS the sum of its
+    # lines, and the accept paths record that sum — honoring a manual PATCH
+    # here would let the public card show $9,999 while the contract books
+    # $6,000. The field is dropped (not 409d) so the office UI's whole-card
+    # save, which echoes the synced value, keeps working.
+    if "total_price" in fields and tier_contract_lines(db, tier):
+        fields = {k: v for k, v in fields.items() if k != "total_price"}
     for key, value in fields.items():
         setattr(tier, key, value)
     if new_name:
@@ -157,5 +200,94 @@ def accept_tier(estimate_id: UUID, tier_id: UUID, db: Session, actor: str = SYST
     tier = db.execute(select(ProposalTier).where(ProposalTier.id == tier_id, ProposalTier.estimate_id == estimate_id)).scalar_one_or_none()
     if not tier: raise HTTPException(status_code=404, detail="Proposal tier not found")  # noqa: E701,E702
     est.status = "accepted"; est.accepted_at = utcnow(); est.accepted_tier_id = tier_id  # noqa: E701,E702
-    asyncio.run(log_audit_event(db, "proposal_tier_accepted", actor, "estimate", str(est.id), {"tier_id": str(tier_id), "tier_name": tier.tier_name}))
+    # The accepted price must land in the billing data model, not just the
+    # pointer (2026-08-14 tier-accept fix; mobile_quoting has done this since
+    # its accept shipped). est.total drives compute_estimate_totals, the
+    # invoice subtotal and the deposit default — leaving it at the base-lines
+    # sum billed $500 jobs on $8,000 accepts.
+    est.total = tier_contract_subtotal(db, tier)
+    est.updated_at = utcnow()
+    asyncio.run(log_audit_event(db, "proposal_tier_accepted", actor, "estimate", str(est.id), {"tier_id": str(tier_id), "tier_name": tier.tier_name, "contract_total": str(est.total)}))
     db.commit(); db.refresh(est); return est  # noqa: E701,E702
+
+
+# ── tier line items (2026-08-14: tiers built like estimates) ─────────────────
+
+
+def _resync_tier_price(db: Session, tier: ProposalTier) -> None:
+    """A line-built tier's price IS the sum of its lines — one source of
+    truth. Called by every tier-line write; a tier with no lines keeps its
+    manual total_price (today's flat behavior, fully backward compatible).
+    No commit — callers own the transaction."""
+    lines = tier_contract_lines(db, tier)
+    if lines:
+        tier.total_price = _money2(sum(Decimal(str(ln.line_total or 0)) for ln in lines))
+
+
+def _tier_line_or_404(tier: ProposalTier, line_id: UUID, db: Session) -> ProposalTierLine:
+    row = db.execute(select(ProposalTierLine).where(
+        ProposalTierLine.id == line_id, ProposalTierLine.tier_id == tier.id
+    )).scalar_one_or_none()
+    if not row: raise HTTPException(status_code=404, detail="Tier line not found")  # noqa: E701,E702
+    return row
+
+
+def add_tier_line(
+    estimate_id: UUID, tier_id: UUID, *, description: str, quantity: int,
+    unit_price: float, category: str | None, db: Session, actor: str = SYSTEM_ACTOR,
+) -> ProposalTierLine:
+    est = _editable_estimate(estimate_id, db)
+    tier = _tier_or_404(estimate_id, tier_id, db)
+    qty = max(1, int(quantity or 1))
+    unit = _money2(unit_price)
+    next_sort = 1 + max([ln.sort_order for ln in tier_contract_lines(db, tier)] or [0])
+    row = ProposalTierLine(
+        tier_id=tier.id,
+        description=description,
+        category=category,
+        quantity=qty,
+        unit_price=unit,
+        line_total=_money2(unit * qty),
+        sort_order=next_sort,
+        company_id=str(est.company_id or ""),
+    )
+    db.add(row)
+    db.flush()
+    _resync_tier_price(db, tier)
+    _log_tier_event(db, "proposal_tier_line_created", actor, estimate_id,
+                    {"tier_id": str(tier_id), "tier_name": tier.tier_name, "description": description[:120], "line_total": str(row.line_total)})
+    db.commit(); db.refresh(row); return row  # noqa: E701,E702
+
+
+def update_tier_line(
+    estimate_id: UUID, tier_id: UUID, line_id: UUID, fields: dict, db: Session, actor: str = SYSTEM_ACTOR,
+) -> ProposalTierLine:
+    _editable_estimate(estimate_id, db)
+    tier = _tier_or_404(estimate_id, tier_id, db)
+    row = _tier_line_or_404(tier, line_id, db)
+    for key in ("description", "category"):
+        if key in fields:
+            setattr(row, key, fields[key])
+    if "quantity" in fields:
+        row.quantity = max(1, int(fields["quantity"] or 1))
+    if "unit_price" in fields:
+        row.unit_price = _money2(fields["unit_price"])
+    row.line_total = _money2(Decimal(str(row.unit_price)) * row.quantity)
+    _resync_tier_price(db, tier)
+    _log_tier_event(db, "proposal_tier_line_updated", actor, estimate_id,
+                    {"tier_id": str(tier_id), "line_id": str(line_id), "changed": sorted(fields)})
+    db.commit(); db.refresh(row); return row  # noqa: E701,E702
+
+
+def delete_tier_line(
+    estimate_id: UUID, tier_id: UUID, line_id: UUID, db: Session, actor: str = SYSTEM_ACTOR,
+) -> None:
+    _editable_estimate(estimate_id, db)
+    tier = _tier_or_404(estimate_id, tier_id, db)
+    row = _tier_line_or_404(tier, line_id, db)
+    db.delete(row)
+    db.flush()
+    _resync_tier_price(db, tier)
+    _log_tier_event(db, "proposal_tier_line_deleted", actor, estimate_id,
+                    {"tier_id": str(tier_id), "line_id": str(line_id), "description": (row.description or "")[:120]})
+    db.commit()

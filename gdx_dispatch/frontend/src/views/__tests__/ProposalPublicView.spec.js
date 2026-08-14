@@ -143,6 +143,30 @@ describe('ProposalPublicView', () => {
     expect(w.find('[data-testid="deposit-pay-dialog"]').text()).toContain('4,000');
   });
 
+  it('line-built tiers list their included items on the card', async () => {
+    mockFetch({
+      'GET /api/proposals/tok-abc': {
+        ...TIER_PAYLOAD,
+        tiers: [
+          {
+            ...TIER_PAYLOAD.tiers[1],
+            lines: [
+              { description: 'Belt drive opener', quantity: 1, unit_price: 6000, line_total: 6000 },
+              { description: 'Battery backup', quantity: 2, unit_price: 1000, line_total: 2000 },
+            ],
+          },
+        ],
+      },
+    });
+    const w = await mountPage();
+
+    const included = w.find('[data-testid="tier-lines-best"]');
+    expect(included.exists()).toBe(true);
+    expect(included.text()).toContain('Belt drive opener');
+    expect(included.text()).toContain('2× Battery backup');
+    expect(included.text()).toContain('2,000');
+  });
+
   it('accepted estimate with a still-owed deposit shows the pay button on load', async () => {
     mockFetch({
       'GET /api/proposals/tok-abc': {

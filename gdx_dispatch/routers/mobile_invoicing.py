@@ -568,7 +568,74 @@ def mobile_create_invoice(
                 ),
                 {"tid": tid_str, "tid_dashed": str(tid_val)},
             ).first()
-            if tier_row is not None:
+            # LINE-BUILT tier (2026-08-14): copy its lines with per-line
+            # taxable flags instead of one all-taxable summary line. The
+            # summary line was recalc-UNSTABLE for line-built tiers with
+            # Labor: the seeded tax excludes labor (compute_estimate_totals'
+            # accepted branch), but the first office _recalculate_invoice
+            # (record_payment, any line edit) re-taxed the whole package —
+            # silent growth after acceptance. Flat tiers have no labor to
+            # exclude, so their summary line stays (and stays stable).
+            from gdx_dispatch.modules.proposals.models import ProposalTierLine
+            from gdx_dispatch.modules.proposals.totals import (
+                _is_labor_line,
+                _load_tax_labor_flag,
+            )
+
+            tier_lines = list(db.execute(
+                select(ProposalTierLine)
+                .where(ProposalTierLine.tier_id == estimate.accepted_tier_id)
+                .order_by(ProposalTierLine.sort_order.asc(), ProposalTierLine.id.asc())
+            ).scalars().all())
+            if tier_lines:
+                # F-75 zero-price gate (gate-audit catch): BOTH sibling
+                # branches enforce it; a line-built tier must not dodge
+                # tenant policy just because it came from the truck.
+                if any(float(tl.unit_price or 0) <= 0 for tl in tier_lines):
+                    from gdx_dispatch.modules.catalog_policy import get_policy
+                    if get_policy(str(tenant_id)).block_zero_price_on_invoice:
+                        db.rollback()
+                        return _jr(
+                            {"detail": "the accepted tier has an unpriced line — price it before invoicing (tenant policy blocks zero-price invoice lines)"},
+                            422,
+                        )
+                _tax_labor = bool(_load_tax_labor_flag(db))
+                line_sum = Decimal("0")
+                for tl in tier_lines:
+                    lt = _money(tl.line_total or 0)
+                    db.add(InvoiceLine(
+                        id=uuid4(),
+                        invoice_id=invoice.id,
+                        description=(tl.description or "Item")[:500],
+                        quantity=int(tl.quantity or 1),
+                        unit_price=_money(tl.unit_price or 0),
+                        line_total=lt,
+                        taxable=True if _tax_labor else not _is_labor_line(tl),
+                        category=tl.category,
+                        sort_order=tl.sort_order,
+                        company_id=str(tenant_id),
+                    ))
+                    line_sum += lt
+                # M7 (gate-audit catch): the seeded tax already subtracted
+                # est.discount, so the lines must carry it too or the truck
+                # over-bills by exactly the discount. Same materialized
+                # negative line the plain branch writes.
+                _disc = Decimal(str(getattr(estimate, "discount", None) or 0))
+                if _disc > 0:
+                    db.add(InvoiceLine(
+                        id=uuid4(),
+                        invoice_id=invoice.id,
+                        description="Discount",
+                        quantity=1,
+                        unit_price=_money(-_disc),
+                        line_total=_money(-_disc),
+                        taxable=True,
+                        sort_order=len(tier_lines) + 1,
+                        company_id=str(tenant_id),
+                    ))
+                    line_sum -= _disc
+                restate_invoice_header(invoice, line_sum)
+            elif tier_row is not None:
                 tier_name, tier_desc, tier_total = tier_row
                 price = _money(tier_total or 0)
                 # PR1-billing-capture: F-75 zero-price policy applies from

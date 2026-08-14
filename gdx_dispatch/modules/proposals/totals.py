@@ -65,7 +65,28 @@ def _load_tax_labor_flag(db: Session | None) -> bool:
         return False
 
 
-def _load_lines(estimate: Estimate, db: Session | None) -> list[EstimateLine]:
+def _load_lines(estimate: Estimate, db: Session | None) -> list:
+    # Accepted TIER (2026-08-14): est.total is the tier's contract subtotal,
+    # so the labor-exclusion base must be the TIER's lines — never the base
+    # estimate lines (they aren't in the subtotal) and never other tiers'.
+    # A flat tier has no lines → no exclusion → the package taxes in full,
+    # which is exactly how its synthesized invoice line taxes. This branch
+    # runs BEFORE the relationship shortcut on purpose: estimate.lines holds
+    # the base lines even when a tier is accepted.
+    if getattr(estimate, "accepted_tier_id", None) is not None and db is not None:
+        # No try/except here ON PURPOSE (gate-audit catch): the table is
+        # guaranteed by create_orm_tables at boot, and swallowing a real DB
+        # error would silently tax the labor in a money path (and leave a
+        # poisoned PG transaction behind). Loud beats wrong.
+        from gdx_dispatch.modules.proposals.models import ProposalTierLine
+
+        return list(
+            db.execute(
+                select(ProposalTierLine).where(
+                    ProposalTierLine.tier_id == estimate.accepted_tier_id
+                )
+            ).scalars()
+        )
     # Use already-loaded relationship if the caller eager-loaded it.
     loaded = getattr(estimate, "lines", None)
     if loaded is not None:
@@ -87,6 +108,21 @@ def _load_lines(estimate: Estimate, db: Session | None) -> list[EstimateLine]:
 
 def compute_estimate_totals(estimate: Estimate, db: Session | None) -> EstimateTotals:
     subtotal = _to_float(estimate.total)
+    # Accepted TIER (2026-08-14): derive the subtotal from the tier itself,
+    # not the stored est.total. The accept paths write est.total = the tier's
+    # contract subtotal, but rows accepted BEFORE that fix (self-hosted
+    # installs; GDX prod verified zero) still carry the base-lines sum — and
+    # this engine is what the public page and the invoice seed display, so it
+    # must be true regardless of when the row was accepted.
+    if getattr(estimate, "accepted_tier_id", None) is not None and db is not None:
+        from gdx_dispatch.modules.proposals.models import ProposalTier
+        from gdx_dispatch.modules.proposals.service import tier_contract_subtotal
+
+        _tier = db.execute(
+            select(ProposalTier).where(ProposalTier.id == estimate.accepted_tier_id)
+        ).scalar_one_or_none()
+        if _tier is not None:
+            subtotal = _to_float(tier_contract_subtotal(db, _tier))
     discount = _to_float(getattr(estimate, "discount", None))
     if estimate.tax_rate is not None:
         rate = _to_float(estimate.tax_rate)
