@@ -1334,8 +1334,16 @@ def confirm_match(
     match = _load_match(db, match_id)
     if match.status == MATCH_REJECTED:
         raise HTTPException(status_code=409, detail="Rejected match — re-run suggestions instead")
+    if match.status == MATCH_CONFIRMED:
+        # Idempotent re-confirm (plan-audit BLOCKER 3): confirming now
+        # mutates books, so a double-click/client retry must be a pure
+        # no-op, never a re-stamp that re-fires effects.
+        return {"id": str(match.id), "status": match.status, "effects": {"already_confirmed": True}}
     user_id = str(current_user.get("sub") or "")[:64] or None
-    result = statement_matching.set_match_status(db, match, MATCH_CONFIRMED, user_id)
+    try:
+        result = statement_matching.set_match_status(db, match, MATCH_CONFIRMED, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     _audit(db, request, current_user, "bank_match_confirmed", str(match.id))
     return result
 
@@ -1447,6 +1455,123 @@ def match_candidates(
     if line is None or line.bank_account_id != account.id:
         raise HTTPException(status_code=404, detail="Statement line not found")
     return statement_matching.manual_candidates(db, line)
+
+
+class CreateExpenseFromLineIn(BaseModel):
+    account_id: str
+    vendor: str = Field(min_length=1, max_length=200)
+    category: str
+    description: str | None = None
+    job_id: str | None = None
+
+
+@router.post("/statements/lines/{line_id}/create-expense", dependencies=[_MODULE])
+def create_expense_from_line(
+    line_id: str,
+    body: CreateExpenseFromLineIn,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.write")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Books-convergence Track 1: an unmatched bank debit becomes a
+    categorized Expense + a born-confirmed match binding the two — one
+    atomic transaction (expense, flag-gated P5 posting, match; any failure
+    rolls the whole thing back). Amount and date come from the BANK LINE —
+    the bank date IS the cash date, which is exactly what P5's
+    paid-on-date credit wants. The category must be canonical vocabulary or
+    posting would fall to the 6900 fallback forever."""
+    from gdx_dispatch.core.expense_categories import (
+        EXPENSE_CATEGORIES,
+        canonicalize_expense_category,
+    )
+    from gdx_dispatch.models.tenant_models import Expense, Job
+    from gdx_dispatch.modules.bank_feeds.statement_models import (
+        SECTION_CHECK,
+        SECTION_DEBIT,
+    )
+
+    account = _load_bank_account(db, body.account_id)
+    try:
+        line = db.get(BankStatementLine, UUID(str(line_id)))
+    except ValueError:
+        line = None
+    if line is None or line.bank_account_id != account.id:
+        raise HTTPException(status_code=404, detail="Statement line not found")
+    if line.section not in (SECTION_DEBIT, SECTION_CHECK):
+        raise HTTPException(status_code=422, detail="only debit/check lines can become expenses")
+
+    canonical = canonicalize_expense_category(body.category)
+    if canonical is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"category must be one of {EXPENSE_CATEGORIES}",
+        )
+    job_id = None
+    if body.job_id:
+        try:
+            job_id = UUID(str(body.job_id))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid job_id") from None
+        if db.get(Job, job_id) is None:
+            raise HTTPException(status_code=422, detail="job not found")
+
+    from decimal import Decimal as _D
+
+    tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "tenant-test")
+    now = datetime.now(timezone.utc)
+    expense = Expense(
+        company_id=tenant_id,
+        vendor=body.vendor.strip(),
+        amount=_D(abs(line.amount_cents)) / 100,
+        date=line.txn_date,
+        category=canonical,
+        description=(body.description or line.description.split("\n", 1)[0]).strip(),
+        job_id=job_id,
+        source="bank_match",
+        # Equal stamps on purpose: unconfirm's "unmodified since creation"
+        # check compares them (statement_matching._revert_confirm_effects).
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(expense)
+    db.flush()
+
+    # Flag-gated P5, same era guard as the vendor-bill confirm path: a
+    # pre-cutover-dated bank line belongs to the QBO-era books.
+    from gdx_dispatch.modules.ledger import service as ledger_service
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+    from gdx_dispatch.modules.ledger.rules import (
+        ExpenseCompositionError,
+        post_expense_recorded,
+    )
+
+    settings = ledger_service.get_gl_settings(db, tenant_id)
+    cutover = settings.cutover_month if settings else None
+    try:
+        if not (cutover is not None and line.txn_date < cutover):
+            post_expense_recorded(db, expense, actor=str(current_user.get("sub") or "") or None)
+    except ExpenseCompositionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"bank line date falls in a locked accounting period — {exc}",
+        ) from exc
+
+    user_id = str(current_user.get("sub") or "")[:64] or None
+    try:
+        match = statement_matching.create_manual_match(
+            db, account, [line.id], [("expenses", expense.id)],
+            None, f"expense created from bank line ({canonical})", user_id,
+            created_expense_id=expense.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    _audit(db, request, current_user, "bank_line_expense_created", str(expense.id))
+    out = _match_out(db, match)
+    out["expense_id"] = str(expense.id)
+    return out
 
 
 # ── SimpleFIN provider (Settings → Integrations card) ──────────────────

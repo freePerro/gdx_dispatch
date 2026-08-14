@@ -51,6 +51,21 @@ VALID_KINDS = {KIND_ITEM, KIND_FREIGHT, KIND_TAX}
 LINE_PENDING = "pending"
 LINE_CONFIRMED = "confirmed"
 
+# Payment provenance (books-convergence Track 1). ``manual`` = office keyed it
+# (incl. the migration-065 backfill of historically Mark-paid bills);
+# ``statement_match`` = auto-recorded when a confirmed bank match consumed this
+# bill; ``statement_diff`` = office accepted a supplier-statement settlement
+# suggestion (date is the STATEMENT date — the true pay date is unknown inside
+# the statement gap, so the reference says so).
+PAY_SOURCE_MANUAL = "manual"
+PAY_SOURCE_STATEMENT_MATCH = "statement_match"
+PAY_SOURCE_STATEMENT_DIFF = "statement_diff"
+VALID_PAYMENT_SOURCES = {
+    PAY_SOURCE_MANUAL,
+    PAY_SOURCE_STATEMENT_MATCH,
+    PAY_SOURCE_STATEMENT_DIFF,
+}
+
 
 class VendorInvoice(TenantBase):
     __tablename__ = "vendor_invoices"
@@ -196,3 +211,57 @@ class VendorInvoiceLine(TenantBase):
     invoice: Mapped[VendorInvoice] = relationship(
         back_populates="lines", foreign_keys=[vendor_invoice_id]
     )
+
+
+class VendorBillPayment(TenantBase):
+    """A payment applied to a vendor bill — the record the header ``status``
+    is derived FROM (write-through: ``payments.recompute_status`` is the only
+    status writer besides void; the raw PATCH no longer accepts 'paid').
+
+    Void-only lifecycle: rows are never deleted or edited; a wrong payment is
+    voided (``voided_at``) and the status recomputes. ``match_id`` is the
+    bank-match provenance seam — a payment auto-recorded by a confirmed bank
+    match refuses direct voiding while that match stays confirmed (unconfirm
+    is the ceremony, mirroring the statement-void rule), and unconfirm voids
+    it exactly once. Table is migration-shipped (065) like the sibling
+    evidence tables — later columns must ship migrations too, NOT rely on
+    ``create_orm_tables()``.
+    """
+
+    __tablename__ = "vendor_bill_payments"
+    __table_args__ = (
+        # One LIVE auto-recorded payment per bank match (idempotency backstop
+        # for double-confirm races; the service also no-ops on re-confirm).
+        Index(
+            "uq_vendor_bill_payment_match",
+            "match_id",
+            unique=True,
+            postgresql_where=text("match_id IS NOT NULL AND voided_at IS NULL"),
+            sqlite_where=text("match_id IS NOT NULL AND voided_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    vendor_invoice_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("vendor_invoices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Nullable: the migration-065 backfill mints records for historically
+    # Mark-paid bills whose true pay date is unknown — NULL means exactly that.
+    paid_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default=PAY_SOURCE_MANUAL)
+    reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Provenance seams — plain UUIDs by design where the source module is
+    # optional; match_id FKs the migration-shipped bank_matches table.
+    match_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_matches.id"), nullable=True, index=True
+    )
+    statement_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    voided_by: Mapped[str | None] = mapped_column(String(100), nullable=True)

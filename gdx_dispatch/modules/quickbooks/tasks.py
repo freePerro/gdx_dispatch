@@ -364,6 +364,12 @@ def sync_account_task(self, tenant_id: str, entity_id: str | None = None) -> dic
 # Banking + scheduled-sync dispatcher
 # ---------------------------------------------------------------------------
 
+# Scheduled pulls fetch this many days back. Wide enough that late-posted /
+# backdated QBO entries (CPA journal entries land weeks after the fact) are
+# re-swept for a long overlap; narrow enough that a nightly cycle costs tens
+# of metered reads, not a full-history walk.
+SCHEDULED_PULL_WINDOW_DAYS = 45
+
 
 @celery_app.task(bind=True, max_retries=3, queue="priority:low")
 def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
@@ -395,6 +401,7 @@ def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
             await _try("journal_entries", lambda: _banking.pull_journal_entries(tenant_id, db, qb, start_date, ""))
             await _try("customer_payments", lambda: _banking.pull_customer_payments(tenant_id, db, qb, start_date, ""))
             await _try("vendor_credits", lambda: _banking.pull_vendor_credits(tenant_id, db, qb, start_date, ""))
+            out["_reads"] = qb.read_count
         return out
 
     with _tenant_session(tenant_id) as db:
@@ -402,7 +409,18 @@ def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
             return {}
         try:
             result = asyncio.run(_run(db))
-            _banking.record_scheduled_run(db, status="ok")
+            reads = result.pop("_reads", None)
+            # _try swallows per-entity failures so one bad entity can't kill
+            # the rest — but that means "the run finished" is NOT "the run
+            # succeeded". Only an error-free run may bump last_success_at
+            # (the loud-stale anchor); a run where every pull errored would
+            # otherwise report "ok" nightly while the mirror rots.
+            errored = [k for k, v in result.items()
+                       if isinstance(v, dict) and v.get("errors")]
+            status = "ok" if not errored else (
+                "error" if len(errored) == len(result) else f"partial:{','.join(sorted(errored))[:30]}"
+            )
+            _banking.record_scheduled_run(db, status=status, reads=reads)
             return result
         except QBRateLimitError as e:
             # Don't roll next_run_at forward on a retryable failure — Celery
@@ -461,7 +479,15 @@ def qb_sync_schedule_dispatcher() -> dict:
                     "updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM qb_sync_schedule LIMIT 1)"
                 ), {"nra": nra})
                 db.commit()
-            qb_banking_sync_task.delay(str(tid))
+            # Scoped window (books-convergence, plan-audit finding 10a): the
+            # scheduled path used to queue with NO start_date → a full
+            # QBO-history pull every cycle. Recent-window is all the
+            # verification loop needs; the manual Sync-Now endpoint keeps
+            # the ability to pull deeper on demand.
+            window_start = (
+                datetime.now(timezone.utc) - timedelta(days=SCHEDULED_PULL_WINDOW_DAYS)
+            ).date().isoformat()
+            qb_banking_sync_task.delay(str(tid), window_start)
             queued.append(slug)
         except Exception:
             _task_log.exception("qb_dispatcher_tenant_failed tenant=%s", tid)

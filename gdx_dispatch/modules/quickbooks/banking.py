@@ -23,6 +23,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Integer,
     JSON,
     Numeric,
     String,
@@ -214,6 +215,13 @@ class QBSyncSchedule(TenantBase):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_run_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_run_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Books-convergence (migration 065 ALTERs — this table exists on prod, so
+    # new columns must never rely on create_all): loud-stale health needs the
+    # last SUCCESS separately from last attempt (a nightly pull failing for a
+    # week keeps bumping last_run_at while the mirror silently rots), and the
+    # metered-read ledger from QBClient.read_count.
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_reads: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -1426,24 +1434,54 @@ def update_schedule(db: Session, frequency: str) -> QBSyncSchedule:
     return row
 
 
+# Stale threshold per frequency: ~2 missed cycles + slack. A schedule whose
+# last SUCCESS is older than this is loud-stale — the mirror can no longer be
+# trusted for match/divergence visibility.
+_STALE_AFTER = {
+    FREQ_HOURLY: timedelta(hours=3),
+    FREQ_EVERY_4H: timedelta(hours=9),
+    FREQ_DAILY: timedelta(hours=26),
+    FREQ_WEEKLY: timedelta(days=8),
+}
+
+
 def schedule_dict(s: QBSyncSchedule) -> dict[str, Any]:
+    stale = False
+    if s.frequency in _STALE_AFTER:
+        anchor = s.last_success_at or s.created_at
+        if anchor is not None and anchor.tzinfo is None:
+            # SQLite hands back naive datetimes even for timezone=True columns.
+            anchor = anchor.replace(tzinfo=UTC)
+        stale = anchor is None or (_utcnow() - anchor) > _STALE_AFTER[s.frequency]
     return {
         "frequency": s.frequency,
         "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
         "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
         "last_run_status": s.last_run_status,
         "last_run_error": s.last_run_error,
+        "last_success_at": s.last_success_at.isoformat() if s.last_success_at else None,
+        "last_run_reads": s.last_run_reads,
+        "stale": stale,
     }
 
 
-def record_scheduled_run(db: Session, status: str, error: str | None = None) -> None:
+def record_scheduled_run(
+    db: Session, status: str, error: str | None = None, reads: int | None = None,
+) -> None:
     """Called by the dispatcher after running a scheduled sync. Sets
-    last_run_at = now and rolls next_run_at forward by the frequency delta."""
+    last_run_at = now and rolls next_run_at forward by the frequency delta.
+    ``last_success_at`` moves only on ok — a week of failures keeps bumping
+    last_run_at while success age (the loud-stale signal) keeps growing."""
     s = get_or_create_schedule(db)
     now = _utcnow()
     s.last_run_at = now
     s.last_run_status = status
     s.last_run_error = (error or "")[:500] if error else None
+    if status == "ok":
+        s.last_success_at = now
+    # Unconditional: an error run clears the count rather than leaving the
+    # prior run's number looking current.
+    s.last_run_reads = reads
     s.next_run_at = compute_next_run_at(s.frequency, base=now)
     db.commit()
 

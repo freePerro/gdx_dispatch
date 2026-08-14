@@ -681,6 +681,12 @@ class Expense(Base):
     # expense-push MUST anti-join `source = 'vendor_invoice'` or the same
     # dollars post to QB twice. `push_expense` has no callers today; this
     # column is the contract that keeps it correct when someone wires it.
+    # 'bank_match' (books-convergence Track 1) = created from an unmatched
+    # bank debit on the Reconcile tab; born inside a confirmed bank match
+    # (bank_matches.created_expense_id points back). These describe money QB
+    # may know nothing about — a future expense-push should INCLUDE them,
+    # the same-dollars risk is the mirror-side Purchase, checked via the
+    # bank match, not the source value.
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual", server_default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)

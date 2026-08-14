@@ -631,8 +631,10 @@ async function loadVendorBills() {
       payables.value = {
         loaded: true,
         count: rows.length,
-        // Decimal serializes as a string — toNumber coerces.
-        total: rows.reduce((sum, b) => sum + toNumber(b?.total), 0),
+        // Decimal serializes as a string — toNumber coerces. open_balance
+        // (books-convergence T1) nets out partial payments; fall back to
+        // total for rows from an older API.
+        total: rows.reduce((sum, b) => sum + toNumber(b?.open_balance ?? b?.total), 0),
         next_due: dued[0] || null,
       };
     }

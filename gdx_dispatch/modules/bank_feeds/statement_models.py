@@ -235,9 +235,19 @@ class BankMatch(TenantBase):
     per-invoice payments, which a single line_id·matched_id row physically
     cannot hold — the plan-level audit's foundational finding).
 
-    Matches NEVER mutate the matched records; confirming is metadata-only
-    in this phase, and every confirm is reversible (unconfirm → suggested).
-    ``classification`` set (with no externals) = classify-only (R5).
+    Books-convergence Track 1 ended the metadata-only phase, narrowly:
+    confirming a match whose ONLY external is a single vendor bill records a
+    ``vendor_bill_payments`` row (in the same transaction; refused entirely
+    beyond the bill's open balance — see
+    ``statement_matching._apply_confirm_effects`` for the full refusal
+    ladder), and unconfirm voids exactly that payment.
+    Everything else stays metadata-only: matches never edit Payments,
+    Expenses, or the bill rows themselves, and every confirm remains
+    reversible (unconfirm → suggested). ``created_expense_id`` is the other
+    mutation seam — set only by create-expense-from-bank-line so unconfirm
+    can find (and soft-delete if unmodified, else detach) exactly the
+    expense the confirm created. ``classification`` set (with no externals)
+    = classify-only (R5).
     """
 
     __tablename__ = "bank_matches"
@@ -254,6 +264,9 @@ class BankMatch(TenantBase):
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # create-expense-from-bank-line provenance (migration 065 — this table is
+    # migration-shipped, column adds must never rely on create_all).
+    created_expense_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow

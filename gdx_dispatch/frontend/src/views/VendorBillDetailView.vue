@@ -16,18 +16,50 @@
         </h1>
       </template>
       <template #end>
+        <Tag v-if="invoice?.is_partial" value="partially paid" severity="warn" data-testid="partial-tag" />
         <Tag v-if="invoice" :value="invoice.status" :severity="statusSeverity(invoice.status)" />
         <Button
-          v-if="invoice && invoice.status !== 'paid'"
-          label="Mark paid"
-          icon="pi pi-check"
+          v-if="invoice && invoice.status === 'open'"
+          label="Record payment"
+          icon="pi pi-dollar"
           size="small"
           severity="secondary"
           :disabled="busy"
-          @click="setStatus('paid')"
+          data-testid="record-payment-btn"
+          @click="openPaymentDialog"
         />
       </template>
     </Toolbar>
+
+    <Dialog v-model:visible="paymentDialog" header="Record payment" modal :style="{ width: '26rem' }">
+      <div class="pay-form">
+        <label class="block-label" for="pay-amount">Amount</label>
+        <InputNumber
+          v-model="paymentDraft.amount"
+          inputId="pay-amount"
+          mode="currency"
+          currency="USD"
+          locale="en-US"
+          :min="0.01"
+          :max="invoice?.open_balance || undefined"
+          class="target-input"
+        />
+        <label class="block-label" for="pay-date">Paid date</label>
+        <DatePicker v-model="paymentDraft.paid_date" inputId="pay-date" dateFormat="yy-mm-dd" showIcon class="target-input" />
+        <label class="block-label" for="pay-ref">Reference (check #, txn id…)</label>
+        <InputText v-model="paymentDraft.reference" inputId="pay-ref" class="target-input" />
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text :disabled="busy" @click="paymentDialog = false" />
+        <Button
+          label="Record"
+          icon="pi pi-check"
+          :disabled="busy || !paymentDraft.amount"
+          data-testid="record-payment-submit"
+          @click="recordPayment"
+        />
+      </template>
+    </Dialog>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
     <div v-if="loading" class="spinner-wrap"><ProgressSpinner /></div>
@@ -61,6 +93,14 @@
               <div class="tile-value">{{ formatCurrency(invoice.total) }}</div>
             </div>
             <div class="summary-tile">
+              <div class="tile-label">Paid</div>
+              <div class="tile-value">{{ formatCurrency(invoice.paid_total || 0) }}</div>
+            </div>
+            <div class="summary-tile">
+              <div class="tile-label">Open</div>
+              <div class="tile-value">{{ formatCurrency(invoice.open_balance ?? invoice.total) }}</div>
+            </div>
+            <div class="summary-tile">
               <div class="tile-label">Due</div>
               <div class="tile-value">{{ formatDate(invoice.due_date) || '—' }}</div>
             </div>
@@ -68,6 +108,47 @@
               <div class="tile-label">Terms</div>
               <div class="tile-value">{{ invoice.terms || '—' }}</div>
             </div>
+          </div>
+
+          <!-- Payments -->
+          <div v-if="invoice.payments?.length" class="match-block" data-testid="payments-block">
+            <div class="block-label">Payments</div>
+            <DataTable :value="invoice.payments" size="small" responsiveLayout="scroll">
+              <Column header="Amount" style="width: 110px">
+                <template #body="{ data }">
+                  <span :class="{ voided: data.voided_at }">{{ formatCurrency(data.amount) }}</span>
+                </template>
+              </Column>
+              <Column header="Date" style="width: 120px">
+                <template #body="{ data }">
+                  <span :class="{ voided: data.voided_at }">{{ formatDate(data.paid_date) || 'unknown' }}</span>
+                </template>
+              </Column>
+              <Column header="Source" style="width: 140px">
+                <template #body="{ data }">
+                  <Tag :value="paymentSourceLabel(data)" :severity="data.voided_at ? 'secondary' : 'info'" />
+                </template>
+              </Column>
+              <Column header="Reference">
+                <template #body="{ data }">
+                  <span class="muted small">{{ data.reference || '—' }}</span>
+                </template>
+              </Column>
+              <Column header="" style="width: 90px">
+                <template #body="{ data }">
+                  <Button
+                    v-if="!data.voided_at"
+                    label="Void"
+                    size="small"
+                    severity="danger"
+                    text
+                    :disabled="busy"
+                    @click="voidPayment(data)"
+                  />
+                  <Tag v-else value="voided" severity="secondary" />
+                </template>
+              </Column>
+            </DataTable>
           </div>
 
           <!-- Header job match -->
@@ -203,6 +284,9 @@ import Tag from 'primevue/tag'
 import SelectButton from 'primevue/selectbutton'
 import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
+import InputNumber from 'primevue/inputnumber'
+import DatePicker from 'primevue/datepicker'
+import Dialog from 'primevue/dialog'
 import ProgressSpinner from 'primevue/progressspinner'
 
 const api = useApi()
@@ -336,13 +420,62 @@ async function setMatch(jobId) {
   }
 }
 
-async function setStatus(status) {
+// Books-convergence Track 1: 'paid' is DERIVED from payment records — the
+// old Mark-paid status PATCH is retired (backend 409s it). Record a payment.
+const paymentDialog = ref(false)
+const paymentDraft = reactive({ amount: null, paid_date: null, reference: '' })
+
+function paymentSourceLabel(p) {
+  if (p.source === 'statement_match') return 'bank match'
+  if (p.source === 'statement_diff') return 'statement'
+  return (p.reference || '').startsWith('migrated:') ? 'migrated' : 'manual'
+}
+
+function openPaymentDialog() {
+  paymentDraft.amount = invoice.value?.open_balance || null
+  paymentDraft.paid_date = new Date()
+  paymentDraft.reference = ''
+  paymentDialog.value = true
+}
+
+function toIsoDate(d) {
+  if (!d) return null
+  const dt = d instanceof Date ? d : new Date(d)
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+
+async function recordPayment() {
   busy.value = true
   try {
-    invoice.value = await api.patch(`/api/vendor-invoices/${invoice.value.id}`, { status }, { successMessage: `Marked ${status}` })
+    invoice.value = await api.post(
+      `/api/vendor-invoices/${invoice.value.id}/payments`,
+      {
+        amount: paymentDraft.amount,
+        paid_date: toIsoDate(paymentDraft.paid_date),
+        reference: paymentDraft.reference || null,
+      },
+      { successMessage: 'Payment recorded' },
+    )
+    paymentDialog.value = false
     seedDrafts()
   } catch (err) {
-    error.value = err.message || 'Failed to update status'
+    error.value = err.message || 'Failed to record payment'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function voidPayment(payment) {
+  busy.value = true
+  try {
+    invoice.value = await api.post(
+      `/api/vendor-invoices/${invoice.value.id}/payments/${payment.id}/void`,
+      {},
+      { successMessage: 'Payment voided' },
+    )
+    seedDrafts()
+  } catch (err) {
+    error.value = err.message || 'Failed to void payment'
   } finally {
     busy.value = false
   }
@@ -378,7 +511,7 @@ onBeforeUnmount(() => {
 })
 
 // Exposed for unit tests (load contract + confirm payloads).
-defineExpose({ invoice, draft, pdfUrl, jobPick, jobOptions, confirmLine, setMatch, onJobPick, setStatus, canConfirm, dispositionOptionsFor })
+defineExpose({ invoice, draft, pdfUrl, jobPick, jobOptions, confirmLine, setMatch, onJobPick, canConfirm, dispositionOptionsFor, openPaymentDialog, recordPayment, voidPayment, paymentDraft })
 </script>
 
 <style scoped>
@@ -410,4 +543,6 @@ defineExpose({ invoice, draft, pdfUrl, jobPick, jobOptions, confirmLine, setMatc
 .warn-banner { background: var(--p-yellow-50, #fffbeb); color: var(--p-yellow-800, #92400e); border: 1px solid var(--p-yellow-200, #fde68a); border-radius: 6px; padding: 0.5rem 0.75rem; }
 .spinner-wrap { display: flex; justify-content: center; padding: 2rem; }
 .empty-message { text-align: center; padding: 1.5rem; color: var(--p-text-muted-color); }
+.pay-form { display: flex; flex-direction: column; gap: 0.35rem; }
+.voided { text-decoration: line-through; color: var(--p-text-muted-color); }
 </style>

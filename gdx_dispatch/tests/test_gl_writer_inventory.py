@@ -61,6 +61,11 @@ STATUS_WRITERS: dict[str, tuple[int, str]] = {
     # endpoint. The regex `(?:\w+_)?invoice\.status` can't tell the models
     # apart; this write is outside the ledger chokepoint by design.
     "routers/vendor_invoices.py": (1, "VendorInvoice.status (A/P bill), not core Invoice.status"),
+    # Same model, new writer (books-convergence T1): recompute_status is the
+    # write-through derivation of VendorInvoice.status from payment records —
+    # deliberately the SINGLE writer of 'paid'/'open' for A/P bills, still
+    # nothing to do with the GL-governed core Invoice.
+    "modules/vendor_invoices/payments.py": (1, "VendorInvoice.status derivation (A/P bill), not core Invoice.status"),
 }
 
 # Matches `invoice.status = x` / `the_invoice.status = x` — NOT `inv.status`

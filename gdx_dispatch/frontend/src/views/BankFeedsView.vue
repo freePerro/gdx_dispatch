@@ -569,14 +569,54 @@
               </Column>
               <Column field="description" header="Description" :style="{ minWidth: '220px' }" />
               <Column field="check_number" header="Check #" :style="{ width: '90px' }" />
-              <Column header="" :style="{ width: '210px' }">
+              <Column header="" :style="{ width: '300px' }">
                 <template #body="{ data }">
                   <Tag v-if="data.has_suggestion" value="suggestion above" severity="info" />
-                  <Button v-else-if="canReconcile" label="Match…" size="small" class="p-button-text"
-                          icon="pi pi-link" @click="openManualMatch(data)" />
+                  <div v-else-if="canReconcile" class="row-actions">
+                    <Button label="Match…" size="small" class="p-button-text"
+                            icon="pi pi-link" @click="openManualMatch(data)" />
+                    <Button label="Create expense" size="small" class="p-button-text"
+                            icon="pi pi-plus" :data-testid="`recon-create-expense-${data.id}`"
+                            @click="openCreateExpense(data)" />
+                  </div>
                 </template>
               </Column>
             </DataTable>
+
+            <Dialog v-model:visible="showCreateExpense" header="Create expense from bank line" modal :style="{ width: '30rem' }">
+              <p v-if="createExpenseLine" class="muted recon-note">
+                {{ createExpenseLine.txn_date }} · {{ formatCents(-createExpenseLine.amount_cents) }} ·
+                {{ createExpenseLine.description }} — the amount and date come from the bank line
+                (the bank date is the cash date).
+              </p>
+              <div class="ce-form">
+                <label class="muted small" for="ce-vendor">Vendor / payee</label>
+                <InputText v-model="createExpenseForm.vendor" inputId="ce-vendor" data-testid="ce-vendor" />
+                <label class="muted small" for="ce-category">Category (drives the ledger account)</label>
+                <Select
+                  v-model="createExpenseForm.category"
+                  :options="expenseCategoryOptions"
+                  inputId="ce-category"
+                  placeholder="Pick a category…"
+                  data-testid="ce-category"
+                />
+                <span v-if="!expenseCategoryOptions.length" class="muted small">
+                  Couldn't load categories — close and retry, or check your connection.
+                </span>
+                <label class="muted small" for="ce-desc">Description</label>
+                <InputText v-model="createExpenseForm.description" inputId="ce-desc" :placeholder="createExpenseLine?.description || ''" />
+              </div>
+              <template #footer>
+                <Button label="Cancel" severity="secondary" text @click="showCreateExpense = false" />
+                <Button
+                  label="Create & match"
+                  icon="pi pi-check"
+                  :disabled="actionLoading === 'create-expense' || !createExpenseForm.vendor || !createExpenseForm.category"
+                  data-testid="ce-submit"
+                  @click="saveCreateExpense"
+                />
+              </template>
+            </Dialog>
           </template>
         </TabPanel>
 
@@ -1399,6 +1439,45 @@ const saveManualMatch = async () => {
   }
 };
 
+// Create-expense-from-bank-line (books-convergence Track 1): an unmatched
+// debit becomes a categorized expense + a born-confirmed match in one call.
+const showCreateExpense = ref(false);
+const createExpenseLine = ref(null);
+const createExpenseForm = reactive({ vendor: '', category: null, description: '' });
+const expenseCategoryOptions = ref([]);
+
+const openCreateExpense = async (line) => {
+  createExpenseLine.value = line;
+  createExpenseForm.vendor = '';
+  createExpenseForm.category = null;
+  createExpenseForm.description = '';
+  showCreateExpense.value = true;
+  if (!expenseCategoryOptions.value.length) {
+    try {
+      const data = await api.get('/api/expense-categories');
+      expenseCategoryOptions.value = Array.isArray(data) ? data : (data?.categories || []);
+    } catch {
+      expenseCategoryOptions.value = [];
+    }
+  }
+};
+
+const saveCreateExpense = async () => {
+  actionLoading.value = 'create-expense';
+  try {
+    await api.post(`/api/bank-feeds/statements/lines/${createExpenseLine.value.id}/create-expense`, {
+      account_id: reconAccountId.value,
+      vendor: createExpenseForm.vendor,
+      category: createExpenseForm.category,
+      description: createExpenseForm.description || null,
+    }, { successMessage: 'Expense created and matched' });
+    showCreateExpense.value = false;
+    await loadReconciliation();
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
 // Void (local confirm dialog on purpose — see issue #215:
 // useDestructiveConfirm can auto-accept without rendering).
 
@@ -1584,6 +1663,11 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+.ce-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 .add-bank-row {
   margin-top: 1rem;
