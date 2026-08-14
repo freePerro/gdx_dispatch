@@ -102,6 +102,12 @@ def record_payment(
     transaction as its status flip — plan-audit BLOCKER 3)."""
     if source not in VALID_PAYMENT_SOURCES:
         raise PaymentError(f"invalid payment source {source!r}")
+    # Lock the bill row before reading the balance: the open-balance cap is
+    # a read-then-insert invariant, and two concurrent recorders (office
+    # double-click + a bank-match confirm) could both pass an unlocked
+    # check and overpay the bill. Postgres honors FOR UPDATE; SQLite
+    # (tests) degrades to a refresh — same pattern as confirm_line.
+    db.refresh(invoice, with_for_update=True)
     if invoice.status == STATUS_VOID:
         raise PaymentError("bill is void — reopen it before recording payments")
     amount = Decimal(amount)

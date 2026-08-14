@@ -1382,13 +1382,35 @@ const runSuggest = async () => {
 };
 
 const actOnMatch = async (matchId, action) => {
-  const messages = {
-    confirm: 'Match confirmed',
-    reject: 'Suggestion rejected',
-    unconfirm: 'Match unconfirmed — line returned to the worklist',
-  };
-  await api.post(`/api/bank-feeds/statements/matches/${matchId}/${action}`, {},
-    { successMessage: messages[action] || 'Done' });
+  const result = await api.post(`/api/bank-feeds/statements/matches/${matchId}/${action}`, {});
+  // Confirming can now act on the books (record a bill payment) OR refuse
+  // with a note — a static "Match confirmed" toast would bury the refusal
+  // and the bill would silently stay open under a green light. Say what
+  // actually happened.
+  const fx = result?.effects || {};
+  let severity = 'success';
+  let detail = { confirm: 'Match confirmed', reject: 'Suggestion rejected',
+                 unconfirm: 'Match unconfirmed — line returned to the worklist' }[action] || 'Done';
+  if (action === 'confirm') {
+    if (fx.payment_recorded) {
+      detail = `Match confirmed — bill payment recorded${fx.bill_status === 'paid' ? ', bill is now paid' : ''}`;
+    } else if (fx.already_confirmed || fx.already_recorded) {
+      detail = 'Already confirmed';
+    }
+  } else if (action === 'unconfirm') {
+    const undone = [];
+    if (fx.payments_voided) undone.push(`${fx.payments_voided} payment(s) voided`);
+    if (fx.expense_deleted) undone.push('created expense removed');
+    if (fx.expense_detached) { undone.push('expense kept (was modified) — review it'); severity = 'warn'; }
+    if (undone.length) detail = `Match unconfirmed — ${undone.join(', ')}`;
+  }
+  toast.add({ severity, summary: detail, life: 6000 });
+  // Refusal notes ("no payment auto-recorded: …") ride back on the
+  // response; surface them so a declined booking is never a silent green.
+  const note = result?.note || '';
+  if (action === 'confirm' && !fx.payment_recorded && note.includes('no payment auto-recorded')) {
+    toast.add({ severity: 'warn', summary: 'Confirmed as evidence only', detail: note, life: 9000 });
+  }
   await loadReconciliation();
 };
 

@@ -113,6 +113,10 @@ def upgrade() -> None:
         "ALTER TABLE IF EXISTS qb_sync_schedule "
         "ADD COLUMN IF NOT EXISTS last_run_reads integer"
     )
+    bind.exec_driver_sql(
+        "ALTER TABLE IF EXISTS qb_sync_schedule "
+        "ADD COLUMN IF NOT EXISTS last_full_sync_at timestamptz"
+    )
 
     # Backfill: one synthetic full-total payment per historically-paid bill
     # with no live payment record. Python-generated UUIDs would need a row

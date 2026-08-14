@@ -476,6 +476,44 @@ def test_create_expense_refuses_deposits(world):
     assert exc.value.status_code == 422
 
 
+def test_create_expense_from_line_posts_and_unconfirm_reverses_gl(world):
+    """Flag-ON path for the Reconcile create-expense flow: creation posts
+    P5; unconfirm (which soft-deletes the unmodified expense) reverses it —
+    the expense's journal footprint nets to zero."""
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.modules.ledger.models import GlJournalEntry, GlJournalLine
+    from gdx_dispatch.modules.ledger.service import ensure_gl_seed
+
+    db, account = world
+    settings = ensure_gl_seed(db, COMPANY)
+    settings.ledger_posting_enabled = True
+    db.commit()
+
+    line = line_by_amount(db, -2500)
+    out = create_expense_via_endpoint(db, account, line)
+    expense_id = out["expense_id"]
+
+    def entries():
+        return db.scalars(_select(GlJournalEntry).where(
+            GlJournalEntry.source_type == "expense",
+            GlJournalEntry.source_id == expense_id,
+        )).all()
+
+    assert entries(), "create-expense-from-line must post P5 with the flag on"
+
+    match = db.get(BankMatch, uuid.UUID(out["id"]))
+    statement_matching.set_match_status(db, match, MATCH_SUGGESTED, "tester")
+
+    entry_ids = [e.id for e in entries()]
+    net = sum(
+        int(l.amount_cents)
+        for l in db.scalars(_select(GlJournalLine).where(
+            GlJournalLine.entry_id.in_(entry_ids))).all()
+    )
+    assert net == 0, "unconfirm must leave a zero net journal footprint"
+
+
 # ── GL symmetry on vendor-bill confirm ─────────────────────────────────
 
 

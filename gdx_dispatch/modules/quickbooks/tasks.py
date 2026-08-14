@@ -364,11 +364,19 @@ def sync_account_task(self, tenant_id: str, entity_id: str | None = None) -> dic
 # Banking + scheduled-sync dispatcher
 # ---------------------------------------------------------------------------
 
-# Scheduled pulls fetch this many days back. Wide enough that late-posted /
-# backdated QBO entries (CPA journal entries land weeks after the fact) are
-# re-swept for a long overlap; narrow enough that a nightly cycle costs tens
-# of metered reads, not a full-history walk.
+# Scheduled pulls fetch this many days back by TxnDate. Wide enough that
+# late-posted entries dated within the last month-and-a-half are re-swept;
+# narrow enough that a nightly cycle costs tens of metered reads, not a
+# full-history walk. TxnDate windows are structurally blind to BACKDATED
+# entries (a CPA adjustment keyed next tax season, dated into this year)
+# and to edits/deletes of older rows — so the dispatcher escalates to a
+# FULL pull once every FULL_PULL_EVERY_DAYS (gate-audit finding: without
+# it, the loud-stale light reports "fresh" on a mirror that can never see
+# exactly the divergence class the nightly pull exists to catch). At this
+# business's row counts a full pull is a handful of pages per entity —
+# cheap against the monthly read cap, and the read counter proves it.
 SCHEDULED_PULL_WINDOW_DAYS = 45
+FULL_PULL_EVERY_DAYS = 7
 
 
 @celery_app.task(bind=True, max_retries=3, queue="priority:low")
@@ -420,7 +428,11 @@ def qb_banking_sync_task(self, tenant_id: str, start_date: str = "") -> dict:
             status = "ok" if not errored else (
                 "error" if len(errored) == len(result) else f"partial:{','.join(sorted(errored))[:30]}"
             )
-            _banking.record_scheduled_run(db, status=status, reads=reads)
+            _banking.record_scheduled_run(
+                db, status=status, reads=reads,
+                # A clean FULL pull re-arms the weekly full-history sweep.
+                full_pull=(status == "ok" and not start_date),
+            )
             return result
         except QBRateLimitError as e:
             # Don't roll next_run_at forward on a retryable failure — Celery
@@ -481,10 +493,21 @@ def qb_sync_schedule_dispatcher() -> dict:
                 db.commit()
             # Scoped window (books-convergence, plan-audit finding 10a): the
             # scheduled path used to queue with NO start_date → a full
-            # QBO-history pull every cycle. Recent-window is all the
-            # verification loop needs; the manual Sync-Now endpoint keeps
-            # the ability to pull deeper on demand.
-            window_start = (
+            # QBO-history pull every cycle. Nightly runs use the recent
+            # window; every FULL_PULL_EVERY_DAYS one run goes full-history
+            # so backdated entries and old-row edits/deletes still surface
+            # (TxnDate windows can't see them). Manual Sync-Now stays full.
+            with _tenant_session(str(tid)) as db2:
+                row2 = db2.execute(_text(
+                    "SELECT last_full_sync_at FROM qb_sync_schedule LIMIT 1"
+                )).first()
+            last_full = row2[0] if row2 else None
+            if last_full is not None and last_full.tzinfo is None:
+                last_full = last_full.replace(tzinfo=timezone.utc)
+            due_full = last_full is None or (
+                datetime.now(timezone.utc) - last_full > timedelta(days=FULL_PULL_EVERY_DAYS)
+            )
+            window_start = "" if due_full else (
                 datetime.now(timezone.utc) - timedelta(days=SCHEDULED_PULL_WINDOW_DAYS)
             ).date().isoformat()
             qb_banking_sync_task.delay(str(tid), window_start)

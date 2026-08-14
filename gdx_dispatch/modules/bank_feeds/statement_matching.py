@@ -644,7 +644,8 @@ def set_match_status(db: Session, match: BankMatch, status: str, user_id: str | 
             effects = _revert_confirm_effects(db, match, user_id)
     _sync_children(db, match)
     db.commit()
-    return {"id": str(match.id), "status": match.status, "effects": effects}
+    return {"id": str(match.id), "status": match.status, "effects": effects,
+            "note": match.note}
 
 
 def create_manual_match(

@@ -222,6 +222,12 @@ class QBSyncSchedule(TenantBase):
     # metered-read ledger from QBClient.read_count.
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_run_reads: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The scheduled 45-day window filters on TxnDate, which is structurally
+    # blind to BACKDATED entries (a CPA adjustment keyed in 2027, dated into
+    # 2026) and to edits/deletes of older rows. A periodic FULL pull closes
+    # that hole; this stamps the last one so the dispatcher knows when the
+    # next is due (gate-audit 2026-08-14, finding 1).
+    last_full_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -1461,12 +1467,14 @@ def schedule_dict(s: QBSyncSchedule) -> dict[str, Any]:
         "last_run_error": s.last_run_error,
         "last_success_at": s.last_success_at.isoformat() if s.last_success_at else None,
         "last_run_reads": s.last_run_reads,
+        "last_full_sync_at": s.last_full_sync_at.isoformat() if s.last_full_sync_at else None,
         "stale": stale,
     }
 
 
 def record_scheduled_run(
     db: Session, status: str, error: str | None = None, reads: int | None = None,
+    full_pull: bool = False,
 ) -> None:
     """Called by the dispatcher after running a scheduled sync. Sets
     last_run_at = now and rolls next_run_at forward by the frequency delta.
@@ -1479,6 +1487,8 @@ def record_scheduled_run(
     s.last_run_error = (error or "")[:500] if error else None
     if status == "ok":
         s.last_success_at = now
+        if full_pull:
+            s.last_full_sync_at = now
     # Unconditional: an error run clears the count rather than leaving the
     # prior run's number looking current.
     s.last_run_reads = reads
