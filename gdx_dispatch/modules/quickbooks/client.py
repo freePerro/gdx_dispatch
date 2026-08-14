@@ -59,6 +59,10 @@ class QBClient:
             new_customer = await qb.create("Customer", {"DisplayName": "Alice"})
     """
 
+    # Class-level default so partially-constructed clients (tests build via
+    # ``__new__`` to stub the transport) still count reads correctly.
+    read_count = 0
+
     def __init__(
         self,
         *,
@@ -73,6 +77,11 @@ class QBClient:
         env = environment or os.getenv("QB_ENVIRONMENT", "production")
         self.base_url = QB_BASE_URLS.get(env, QB_BASE_URLS["production"])
         self.minor_version = minor_version
+        # Metered-read ledger (books-convergence: CorePlus counts every
+        # query API call against the monthly cap). Each pagination page is
+        # one metered read; tasks report the total via record_scheduled_run
+        # so the health surface can show real consumption.
+        self.read_count = 0
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
@@ -154,6 +163,7 @@ class QBClient:
             stmt += f" STARTPOSITION {start} MAXRESULTS {page_size}"
 
             url = f"/v3/company/{self.realm_id}/query?query={quote(stmt)}&minorversion={self.minor_version}"
+            self.read_count += 1
             resp = await self._client.get(url)
             self._raise_for_status(resp)
 

@@ -58,6 +58,33 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _post_expense_to_ledger(db: Session, expense: Expense) -> None:
+    """GL symmetry (books-convergence Track 1): a vendor-bill expense posts
+    P5 exactly like a manually keyed one. ``post_expense_recorded`` is
+    flag-gated internally (no-op until ``ledger_posting_enabled``), and the
+    flag-flip backfill sweeps ALL expenses regardless of source, so pre-flag
+    rows are covered either way.
+
+    Era guard (plan-audit MUST-FIX 9c): a bill dated before the GL cutover
+    belongs to the QBO-era books — the backfill deliberately skips
+    pre-cutover expenses, and posting one here would slam into the era lock
+    at confirm time. Same by-DATE rule, applied symmetrically.
+
+    CPA flag (9b, recorded in the plan): P5 credits Operating Bank at
+    ``expense.date`` = the bill's invoice date, but cash actually leaves at
+    payment. Until the CPA rules on receipt-vs-payment timing, tie-out
+    months spanning a bill's receipt→payment gap will surface the drift.
+    """
+    from gdx_dispatch.modules.ledger import service as ledger_service
+    from gdx_dispatch.modules.ledger.rules import post_expense_recorded
+
+    settings = ledger_service.get_gl_settings(db, expense.company_id)
+    cutover = settings.cutover_month if settings else None
+    if cutover is not None and expense.date and expense.date < cutover:
+        return
+    post_expense_recorded(db, expense)
+
+
 def _int_qty(qty: Decimal) -> int:
     # Inventory quantities are integers; truncate fractional coverage.
     return int(qty)
@@ -124,6 +151,7 @@ def confirm_line(
         )
         db.add(expense)
         db.flush()
+        _post_expense_to_ledger(db, expense)
         line.expense_id = expense.id
         result["expense_id"] = str(expense.id)
 
@@ -192,6 +220,7 @@ def confirm_line(
         )
         db.add(expense)
         db.flush()
+        _post_expense_to_ledger(db, expense)
         line.expense_id = expense.id
         result["expense_id"] = str(expense.id)
 

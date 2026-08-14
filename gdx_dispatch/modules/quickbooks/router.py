@@ -994,9 +994,17 @@ def get_qb_schedule(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    _tenant_id(request)
+    tenant_id = _tenant_id(request)
     s = _banking.get_or_create_schedule(db)
-    return _banking.schedule_dict(s)
+    out = _banking.schedule_dict(s)
+    # Loud-stale health (books-convergence): a dead OAuth connection makes
+    # every scheduled sync no-op at INFO level — the mirror rots silently
+    # exactly when divergence detection matters. Surface the auth state next
+    # to the staleness math so the UI can say WHY it's stale.
+    from gdx_dispatch.modules.quickbooks.oauth import connection_healthy
+
+    out["connection_healthy"] = connection_healthy(str(tenant_id), db)
+    return out
 
 
 @router.put("/schedule")

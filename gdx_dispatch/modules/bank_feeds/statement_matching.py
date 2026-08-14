@@ -12,16 +12,26 @@ confirms; nothing auto-confirms in this phase):
   R2  exact 1:1 — deposit ↔ single non-voided Payment of equal amount
       within ±3 business days, with NO competing candidate on either side
       (bipartite degree 1); debit/check ↔ single Expense (same test), else
-      single open/paid VendorInvoice total within ±10 days (weak, 0.60).
+      single open VendorInvoice total within ±10 days (weak, 0.60).
   R3  deposit sweep — a deposit slip is a BATCH: find the unique subset
       (n≤12 candidates, k≤6) of unconsumed non-card payments in
       [date−7d, date+1d] summing exactly to the deposit. Ambiguity (two
       subsets) means NO suggestion — ambiguous money is manual by design.
 
-Invariants: matches never mutate the matched records; every confirm is
-reversible (unconfirm → suggested); a books record or line sits in at
-most one non-rejected match (partial unique on the children's denormalized
-``match_status``, synced here — single writer).
+Invariants (books-convergence Track 1 narrowed the old metadata-only rule):
+every confirm is reversible (unconfirm → suggested, and it reverses exactly
+what confirm created); a books record or line sits in at most one
+non-rejected match (partial unique on the children's denormalized
+``match_status``, synced here — single writer). Confirming a match whose
+ONLY external is a single vendor bill records a ``vendor_bill_payments``
+row in the SAME transaction as the status flip — see
+``_apply_confirm_effects`` for the refusal ladder (multi-external,
+over-balance, void bill → metadata-only with a loud note; suggestions and
+rules never auto-confirm, so a human gate precedes every mutation).
+Matches never edit the matched records' own CONTENT — the recorded payment
+drives the bill's derived status, and unconfirm may soft-delete an expense
+the confirm itself created; nothing else about a Payment, Expense, or bill
+row is ever touched.
 
 Money comparison is integer cents on both sides; Payment/Expense amounts
 are Numeric dollars converted with Decimal, never float arithmetic.
@@ -55,9 +65,13 @@ from gdx_dispatch.modules.bank_feeds.statement_models import (
 )
 
 try:
-    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoice
+    from gdx_dispatch.modules.vendor_invoices.models import (
+        VendorBillPayment,
+        VendorInvoice,
+    )
 except ImportError:  # pragma: no cover — module optional
     VendorInvoice = None
+    VendorBillPayment = None
 
 # Both transfer grammars observed in the real corpus (§6 R5 note): the
 # second wraps its counterpart line, so match on the ANCHOR text.
@@ -377,9 +391,13 @@ def suggest_matches(db: Session, account: BankAccount, date_from: date, date_to:
     ]
     vendor_invoices = []
     if VendorInvoice is not None:
+        # Open bills only (plan-audit MUST-FIX 7): status is now derived
+        # write-through from payment records, so 'open' == has remaining
+        # balance — a paid bill as a candidate would only ever produce an
+        # over-balance refusal at confirm.
         vendor_invoices = [
             v for v in db.scalars(
-                select(VendorInvoice).where(VendorInvoice.status != "void")
+                select(VendorInvoice).where(VendorInvoice.status == "open")
             ).all()
             if ("vendor_invoices", v.id) not in used_externals and v.invoice_date
         ]
@@ -448,27 +466,193 @@ def _sync_children(db: Session, match: BankMatch) -> None:
         child.match_status = match.status
 
 
+def _append_note(match: BankMatch, text: str) -> None:
+    match.note = f"{match.note} | {text}".strip(" |") if match.note else text
+
+
+def _apply_confirm_effects(db: Session, match: BankMatch, user_id: str | None) -> dict:
+    """The one mutation confirming is allowed to make (plan-audit conditions
+    3/4/6): when the match's ONLY external is a single vendor bill, record a
+    ``vendor_bill_payments`` row — amount = the matched bank money, date =
+    the bank date, provenance = this match. Runs in the CALLER'S transaction
+    (no commit here); idempotent via the live-payment-per-match check plus
+    the partial unique index as the concurrency backstop.
+
+    The refusal ladder — every refusal is metadata-only PLUS a loud note on
+    the match (never silent):
+      - multi-external or mixed-source matches: no allocation rule exists,
+        record payments manually;
+      - bank money exceeding the bill's open balance: two evidence streams
+        witnessing one settlement must not double-book it (the second
+        stream corroborates; it does not re-record);
+      - void bills.
+    """
+    result = {"payment_recorded": False}
+    if VendorBillPayment is None:
+        return result
+    externals = db.scalars(
+        select(BankMatchExternal).where(BankMatchExternal.match_id == match.id)
+    ).all()
+    bill_externals = [e for e in externals if e.source_table == "vendor_invoices"]
+    if not bill_externals:
+        return result
+    if len(externals) > 1:
+        _append_note(match, "no payment auto-recorded: multi-record match has no allocation rule — record bill payments manually")
+        return result
+
+    existing = db.scalars(
+        select(VendorBillPayment).where(
+            VendorBillPayment.match_id == match.id,
+            VendorBillPayment.voided_at.is_(None),
+        )
+    ).first()
+    if existing is not None:
+        return {"payment_recorded": False, "already_recorded": True}
+
+    lines = [
+        db.get(BankStatementLine, ml.line_id)
+        for ml in db.scalars(
+            select(BankMatchLine).where(BankMatchLine.match_id == match.id)
+        ).all()
+    ]
+    lines = [line for line in lines if line is not None]
+    if not lines:
+        return result
+    if any(line.section not in (SECTION_DEBIT, SECTION_CHECK) for line in lines):
+        # Diff-audit MUST-FIX 2: money direction matters. A deposit manually
+        # matched to a bill is a vendor refund/credit, not a payment — never
+        # book it as one.
+        _append_note(match, "no payment auto-recorded: non-debit lines in the match (a deposit against a bill is a refund, not a payment)")
+        return result
+    bill = db.get(VendorInvoice, bill_externals[0].source_id)
+    if bill is None:
+        return result
+
+    from decimal import Decimal as _D
+
+    from gdx_dispatch.modules.vendor_invoices.payments import (
+        PaymentError,
+        record_payment,
+    )
+
+    amount = _D(sum(abs(line.amount_cents) for line in lines)) / 100
+    try:
+        payment = record_payment(
+            db,
+            bill,
+            amount=amount,
+            paid_date=min(line.txn_date for line in lines),
+            source="statement_match",
+            reference=f"bank match {match.rule}",
+            match_id=match.id,
+            created_by=user_id,
+        )
+    except PaymentError as exc:
+        _append_note(match, f"no payment auto-recorded: {exc}")
+        return result
+    return {"payment_recorded": True, "payment_id": str(payment.id), "bill_status": bill.status}
+
+
+def _revert_confirm_effects(db: Session, match: BankMatch, user_id: str | None) -> dict:
+    """Unconfirm reverses exactly what confirm created, nothing else
+    (plan-audit conditions 4/5): void the match-created payment (no-op if
+    already voided — never a double-reversal), and for
+    create-expense-from-bank-line matches soft-delete the created expense
+    ONLY if it is unmodified since creation — an expense the office edited
+    is real work and detaches instead (loud note, never destroyed)."""
+    result = {"payments_voided": 0, "expense_deleted": False, "expense_detached": False}
+    if VendorBillPayment is not None:
+        payments = db.scalars(
+            select(VendorBillPayment).where(
+                VendorBillPayment.match_id == match.id,
+                VendorBillPayment.voided_at.is_(None),
+            )
+        ).all()
+        if payments:
+            from gdx_dispatch.modules.vendor_invoices.payments import void_payment
+
+            for payment in payments:
+                void_payment(db, payment, voided_by=user_id, via_unconfirm=True)
+                # Detach (diff-audit BLOCKER 1): the match drops back to
+                # 'suggested', which the suggest-wipe and statement-void
+                # paths hard-DELETE as derived data — a voided payment still
+                # holding match_id would pin the row and turn every later
+                # suggest run into a permanent FK crash. Provenance moves
+                # into the reference text; the FK's job is done.
+                payment.reference = (
+                    f"{payment.reference or ''} [unconfirmed from match {match.id}]".strip()
+                )[:200]
+                payment.match_id = None
+                result["payments_voided"] += 1
+
+    if match.created_expense_id is not None:
+        expense = db.get(Expense, match.created_expense_id)
+        if expense is not None and expense.deleted_at is None:
+            # Sub-second tolerance: created_at/updated_at come from two
+            # separate default() calls at insert, so exact equality would
+            # misread every untouched expense as "modified".
+            drift = abs((expense.updated_at - expense.created_at).total_seconds())
+            unmodified = drift < 2 and (expense.status or "draft") == "draft"
+            if unmodified:
+                from gdx_dispatch.core.audit import utcnow as _utcnow
+
+                expense.deleted_at = _utcnow()
+                from gdx_dispatch.modules.ledger.rules import repost_expense
+
+                repost_expense(db, expense)  # flag-gated GL reversal
+                result["expense_deleted"] = True
+            else:
+                _append_note(match, "created expense was modified after creation — detached, not deleted")
+                result["expense_detached"] = True
+        match.created_expense_id = None
+    return result
+
+
 def set_match_status(db: Session, match: BankMatch, status: str, user_id: str | None = None) -> dict:
     from gdx_dispatch.core.audit import utcnow
 
     if status not in (MATCH_SUGGESTED, MATCH_CONFIRMED, MATCH_REJECTED):
         raise ValueError(f"invalid status {status!r}")
+    previous = match.status
+    if status == MATCH_CONFIRMED and previous != MATCH_CONFIRMED:
+        # Diff-audit SHOULD-FIX 4: a suggested match can outlive its books
+        # records (e.g. the expense a reverted create-expense match minted,
+        # now soft-deleted). Confirming would settle the line with dead
+        # money — refuse instead; the next suggest run wipes the husk.
+        for ext in db.scalars(
+            select(BankMatchExternal).where(BankMatchExternal.match_id == match.id)
+        ).all():
+            dead = _dead_source_reason(db, ext.source_table, ext.source_id)
+            if dead is not None:
+                raise ValueError(
+                    f"cannot confirm: {dead} — re-run suggestions to refresh this match"
+                )
     match.status = status
+    effects: dict = {}
     if status == MATCH_CONFIRMED:
         match.confirmed_by = user_id
         match.confirmed_at = utcnow()
+        if previous != MATCH_CONFIRMED:
+            # Same transaction as the flip — a failure rolls BOTH back, so a
+            # confirmed match can never exist without its recorded payment
+            # (or vice versa).
+            effects = _apply_confirm_effects(db, match, user_id)
     else:
         match.confirmed_by = None
         match.confirmed_at = None
+        if previous == MATCH_CONFIRMED:
+            effects = _revert_confirm_effects(db, match, user_id)
     _sync_children(db, match)
     db.commit()
-    return {"id": str(match.id), "status": match.status}
+    return {"id": str(match.id), "status": match.status, "effects": effects,
+            "note": match.note}
 
 
 def create_manual_match(
     db: Session, account: BankAccount, line_ids: list[UUID],
     externals: list[tuple[str, UUID]], classification: str | None,
     note: str | None, user_id: str | None,
+    created_expense_id: UUID | None = None,
 ) -> BankMatch:
     """Office-confirmed manual match. Validates existence + exclusivity and
     creates it CONFIRMED (a human just asserted it). Amounts are NOT
@@ -502,6 +686,9 @@ def create_manual_match(
         row = db.get(model, source_id)
         if row is None:
             raise ValueError(f"unknown {source_table} record {source_id}")
+        dead = _dead_source_reason(db, source_table, source_id)
+        if dead is not None:
+            raise ValueError(f"cannot match a dead books record: {dead}")
         if (source_table, source_id) in used:
             raise ValueError(f"{source_table} record {source_id} is already matched")
         amount = getattr(row, "amount", None) or getattr(row, "total", 0)
@@ -520,39 +707,74 @@ def create_manual_match(
     match.created_by = user_id
     match.confirmed_by = user_id
     match.confirmed_at = utcnow()
+    match.created_expense_id = created_expense_id
     # Stack-audit F1: sessions run autoflush=False, so without this flush
     # _sync_children's SELECT cannot see the pending children — they would
     # commit as 'suggested' under a 'confirmed' parent, the reports would
     # contradict each other about this match, and the void seam (which
     # trusts child match_status) would silently delete a confirmed match.
     db.flush()
+    # Born-confirmed matches run the SAME confirm effects as the confirm
+    # endpoint (plan-audit BLOCKER 3: without this, the books diverge by
+    # which UI path the office used).
+    _apply_confirm_effects(db, match, user_id)
     _sync_children(db, match)
     db.commit()
     return match
 
 
-def _dead_external_reason(db: Session, ext: BankMatchExternal) -> str | None:
-    """Why a confirmed match's books record no longer counts: voided,
-    soft-deleted, void-status, or hard-deleted (no FK on source_id — a
-    GDPR purge leaves a dangling reference)."""
-    if ext.source_table == "payments":
-        row = db.get(Payment, ext.source_id)
+def _dead_source_reason(db: Session, source_table: str, source_id) -> str | None:
+    """Row-state check shared by the report sweep AND the confirm/create
+    guards (diff-audit SHOULD-FIX 4: without the guard, re-confirming a
+    reverted create-expense match would settle the line with a soft-deleted
+    expense): voided, soft-deleted, void-status, or hard-deleted (no FK on
+    source_id — a GDPR purge leaves a dangling reference)."""
+    if source_table == "payments":
+        row = db.get(Payment, source_id)
         if row is None:
             return "payment record missing"
         if row.voided_at is not None:
             return "payment voided"
-    elif ext.source_table == "expenses":
-        row = db.get(Expense, ext.source_id)
+    elif source_table == "expenses":
+        row = db.get(Expense, source_id)
         if row is None:
             return "expense record missing"
         if row.deleted_at is not None:
             return "expense deleted"
-    elif ext.source_table == "vendor_invoices" and VendorInvoice is not None:
-        row = db.get(VendorInvoice, ext.source_id)
+    elif source_table == "vendor_invoices" and VendorInvoice is not None:
+        row = db.get(VendorInvoice, source_id)
         if row is None:
             return "vendor invoice record missing"
         if row.status == "void":
             return "vendor invoice voided"
+    return None
+
+
+def _dead_external_reason(db: Session, ext: BankMatchExternal) -> str | None:
+    reason = _dead_source_reason(db, ext.source_table, ext.source_id)
+    if reason is not None:
+        return reason
+    if ext.source_table == "vendor_invoices" and VendorInvoice is not None:
+        # Plan-audit MUST-FIX 4: for a bill match the external is the BILL,
+        # so a voided match-created payment would otherwise be invisible —
+        # the line stays "settled by dead money". A payment that was
+        # recorded by this match and later voided (possible pre-ceremony
+        # data, or a rolled-back unconfirm) breaks the match.
+        if VendorBillPayment is not None:
+            voided = db.scalars(
+                select(VendorBillPayment).where(
+                    VendorBillPayment.match_id == ext.match_id,
+                    VendorBillPayment.voided_at.is_not(None),
+                )
+            ).first()
+            live = db.scalars(
+                select(VendorBillPayment).where(
+                    VendorBillPayment.match_id == ext.match_id,
+                    VendorBillPayment.voided_at.is_(None),
+                )
+            ).first()
+            if voided is not None and live is None:
+                return "recorded bill payment voided"
     return None
 
 
@@ -603,6 +825,13 @@ def manual_candidates(db: Session, line: BankStatementLine) -> dict:
             ).all() if ("expenses", e.id) not in used
         ]
         if VendorInvoice is not None:
+            # Paid bills stay OFFERED here on purpose (diff-audit MUST-FIX 3):
+            # the bank debit for a bill someone already recorded as paid still
+            # needs its corroborating match — the open-balance cap makes that
+            # confirm metadata-only instead of a double-record. Removing them
+            # would leave "Create expense" as the row's only affordance and
+            # steer the office into double-counting dollars already booked.
+            # Only the AUTO rung (suggest_matches) filters to open bills.
             out["vendor_invoices"] = [
                 {"id": str(v.id), "invoice_date": v.invoice_date.isoformat(),
                  "total_cents": _cents(v.total or 0), "vendor_key": v.vendor_key,
