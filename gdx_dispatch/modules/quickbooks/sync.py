@@ -1890,29 +1890,38 @@ async def pull_bank_transactions(
         account_name = str(account_ref.get("name") or "") if isinstance(account_ref, dict) else ""
 
         try:
-            existing = db.execute(text(
-                "SELECT id FROM qb_bank_transactions WHERE qb_txn_id = :qid"
-            ), {"qid": qb_id}).scalar()
-            if existing:
-                # Clear deleted_at on re-sync — same inverse-operation logic
-                # as qb_deposits/qb_transfers. A row that QBO returns again
-                # un-tombstones itself.
-                db.execute(text("""
-                    UPDATE qb_bank_transactions SET txn_date = :dt, amount = :amt, payee = :payee,
-                        account_name = :acct, memo = :memo, txn_type = :tt,
-                        synced_at = CURRENT_TIMESTAMP, deleted_at = NULL
-                    WHERE qb_txn_id = :qid
-                """), {"dt": txn_date, "amt": total, "payee": payee, "acct": account_name,
-                       "memo": memo, "tt": payment_type, "qid": qb_id})
-                updated += 1
-            else:
-                db.execute(text("""
-                    INSERT INTO qb_bank_transactions (id, qb_txn_id, txn_date, txn_type,
-                        account_name, payee, amount, memo)
-                    VALUES (:id, :qid, :dt, :tt, :acct, :payee, :amt, :memo)
-                """), {"id": str(uuid4()), "qid": qb_id, "dt": txn_date,
-                       "tt": payment_type, "acct": account_name, "payee": payee, "amt": total, "memo": memo})
-                created += 1
+            # SAVEPOINT per row: a poisoned statement aborts the whole PG
+            # transaction otherwise — the 2026-08-14 v1.59.0 deploy proved
+            # it (first fresh INSERT failed, the abort cascaded and zeroed
+            # a 1,627-row pull into all-errors).
+            with db.begin_nested():
+                existing = db.execute(text(
+                    "SELECT id FROM qb_bank_transactions WHERE qb_txn_id = :qid"
+                ), {"qid": qb_id}).scalar()
+                if existing:
+                    # Clear deleted_at on re-sync — same inverse-operation logic
+                    # as qb_deposits/qb_transfers. A row that QBO returns again
+                    # un-tombstones itself.
+                    db.execute(text("""
+                        UPDATE qb_bank_transactions SET txn_date = :dt, amount = :amt, payee = :payee,
+                            account_name = :acct, memo = :memo, txn_type = :tt,
+                            synced_at = CURRENT_TIMESTAMP, deleted_at = NULL
+                        WHERE qb_txn_id = :qid
+                    """), {"dt": txn_date, "amt": total, "payee": payee, "acct": account_name,
+                           "memo": memo, "tt": payment_type, "qid": qb_id})
+                    updated += 1
+                else:
+                    # synced_at is NOT NULL with no server default on the
+                    # legacy prod shape — raw INSERT must supply it (the ORM
+                    # default never fires here); omitting it was the row that
+                    # poisoned the pull above.
+                    db.execute(text("""
+                        INSERT INTO qb_bank_transactions (id, qb_txn_id, txn_date, txn_type,
+                            account_name, payee, amount, memo, synced_at)
+                        VALUES (:id, :qid, :dt, :tt, :acct, :payee, :amt, :memo, CURRENT_TIMESTAMP)
+                    """), {"id": str(uuid4()), "qid": qb_id, "dt": txn_date,
+                           "tt": payment_type, "acct": account_name, "payee": payee, "amt": total, "memo": memo})
+                    created += 1
         except Exception as row_exc:
             log.exception("qb_pull_bank_transactions_row_failed qb_id=%s", qb_id)
             errors.append({"qb_id": qb_id, "error": str(row_exc)[:200]})
