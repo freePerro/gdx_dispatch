@@ -13,10 +13,10 @@ from fastapi import Request as FastAPIRequest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.tenant import company_id
 from gdx_dispatch.modules.quickbooks.webhook_models import QBWebhookEvent
 
 log = logging.getLogger(__name__)

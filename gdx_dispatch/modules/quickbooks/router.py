@@ -723,7 +723,8 @@ def qb_dashboard(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    from sqlalchemy import func, text as _text
+    from sqlalchemy import func
+    from sqlalchemy import text as _text
     tenant_id = _tenant_id(request)
     conn = db.execute(
         select(QBConnection).where(QBConnection.tenant_id == tenant_id)
@@ -826,8 +827,10 @@ def qb_dashboard(
 # Banking (Purchases + Deposits + Transfers) + per-tenant sync schedule
 # ---------------------------------------------------------------------------
 
+from pydantic import BaseModel as _BaseModel
+from pydantic import Field as _Field
+
 from gdx_dispatch.modules.quickbooks import banking as _banking
-from pydantic import BaseModel as _BaseModel, Field as _Field
 
 
 class _ScheduleIn(_BaseModel):
