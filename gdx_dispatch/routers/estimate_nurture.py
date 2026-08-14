@@ -126,9 +126,12 @@ def run_nurture(
         return {"processed": 0, "sent": 0, "message": "No active nurture rules"}
 
     # Three-plane (2026-04-24 B1): tenant isolation is the connection; company_id filter removed.
+    # "rejected" removed 2026-08-13: it now means the estimate EMAIL bounced —
+    # robot nurture against an address that just hard-bounced is exactly wrong;
+    # the office fixes the address and re-sends by hand.
     estimates = db.execute(
         select(Estimate).where(
-            Estimate.status.in_(["draft", "sent", "declined", "rejected"]),
+            Estimate.status.in_(["draft", "sent", "declined"]),
             Estimate.deleted_at.is_(None),
         ).order_by(Estimate.created_at.asc())
     ).scalars().all()
@@ -226,7 +229,8 @@ def pending_nurtures(
     estimates = db.execute(
         select(Estimate).where(
             Estimate.company_id == tid,
-            Estimate.status.in_(["draft", "sent", "declined", "rejected"]),
+            # No "rejected" — bounced-email estimates never nurture (see above).
+            Estimate.status.in_(["draft", "sent", "declined"]),
             Estimate.deleted_at.is_(None),
             Estimate.created_at >= _window_dt,
         ).order_by(Estimate.created_at.asc()).limit(100)

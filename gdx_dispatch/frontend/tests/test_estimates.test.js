@@ -8,6 +8,7 @@ const getMock = vi.fn();
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: pushMock }),
+  useRoute: () => ({ query: {} }),
 }));
 
 vi.mock("primevue/useconfirm", () => ({

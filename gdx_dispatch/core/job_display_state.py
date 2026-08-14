@@ -50,7 +50,11 @@ TYPE_WON = "won"
 TYPE_LOST = "lost"
 
 # Estimate.status values that mean "the customer said no to the quote".
-_ESTIMATE_LOST = {"declined", "rejected", "expired"}
+# "rejected" is deliberately NOT here (2026-08-13): the bounce detector
+# sets it when the estimate EMAIL bounced — the customer never saw the
+# quote, so the job is still an open estimate needing a re-send, not a
+# lost one. (Prod had zero rejected rows before the repurpose.)
+_ESTIMATE_LOST = {"declined", "expired"}
 # Invoice.status values that mean "billed, awaiting / settled money".
 # `written_off`/`uncollectible` is NET-NEW (Slice 2) — listed so the branch
 # exists today and Slice 2 only has to add the stored value.

@@ -947,13 +947,16 @@ def sales_funnel(
     # Close rate over last 30 days: accepted / (accepted+declined+expired)
     # filtered by sent_at — i.e., decisions on estimates that were actually
     # presented to customers. Drafts that never went out shouldn't dilute.
+    # "rejected" is deliberately NOT a decision (2026-08-13): the bounce
+    # detector sets it when the estimate EMAIL bounced — the customer never
+    # saw the estimate, so counting it as a "no" would poison the rate.
     decision_total = db.scalar(
         select(func.count()).where(
             Estimate.deleted_at.is_(None),
             Estimate.sent_at.is_not(None),
             Estimate.sent_at >= last30_start,
             Estimate.sent_at < tomorrow_start,
-            Estimate.status.in_(("accepted", "declined", "rejected", "expired")),
+            Estimate.status.in_(("accepted", "declined", "expired")),
         )
     ) or 0
     decision_accepted = db.scalar(
