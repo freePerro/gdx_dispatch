@@ -7,6 +7,7 @@ import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
 import MobileChatDialog from '../components/MobileChatDialog.vue'
 import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
+import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
@@ -1113,6 +1114,7 @@ function replayTour() {
             />
           </template>
           <template v-else>
+            <MobileReceiptCapture button-label="" />
             <SelectButton
               v-model="view"
               :options="VIEW_OPTIONS"
