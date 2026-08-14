@@ -108,10 +108,32 @@ and on `vendor-payment-visibility-plan.md` §A.
 3. **PR: symmetric GL posting.** `confirm.py` calls `post_expense_recorded` for the
    expenses it creates (no-op while the flag is off). Audit conditions applied: the
    confirm path gets the `_post_or_409` error seam, pre-cutover-dated expenses skip
-   posting (era-by-date, matching the backfill's rule), and one CPA item is explicitly
-   flagged — vendor-bill expenses are dated at invoice receipt while P5 credits
-   Operating Bank at `expense.date` (cash left later); tie-out months spanning a bill's
-   receipt→payment gap will surface this timing until the CPA rules on it.
+   posting (era-by-date, matching the backfill's rule).
+   ~~CPA item: receipt vs payment timing~~ **RESOLVED (Doug, 2026-08-14): payment
+   date, cash basis.** Implemented in the follow-up PR: vendor-bill expenses are
+   dated by `payments.effective_expense_date` — the settlement date once the bill is
+   fully paid (a bank-match payment carries the literal bank date, so a settled
+   bill's P5 credit lands when cash left; an UNPAID confirmed bill still posts at
+   the invoice-date placeholder, so GL Operating Bank differs from the real bank by
+   exactly open confirmed A/P until settlement — the tie-out will show it), else
+   the invoice date as a placeholder;
+   `payments.sync_expense_dates` re-dates + reposts (flag-gated, era-guarded) on
+   every payment record/void, so settlement moves the expense and un-settlement
+   moves it back. Backfilled date-unknown payments never re-date (no fictional
+   dates). Partial payments keep the placeholder until the bill settles — the
+   recognition date is the settling payment's date (documented simplification).
+   Locked periods: a settlement whose OLD entry sits in a locked month posts its
+   reversal at the target date (reverse_entry's escape hatch — locked amounts are
+   countered in the open period, never edited); recording a payment DATED into a
+   locked month refuses as a 409. No history sweep is needed at deploy — VERIFIED
+   on prod 2026-08-14: `vendor_bill_payments` does not exist there yet (065 is
+   unreleased), so zero payments predate this rule. Caveat: that stays true only
+   if Track 1 (#321) and the cash-basis PR ship in the SAME release; deploying
+   #321 alone first and recording dated payments before this lands would create
+   settled bills with invoice-dated expenses that nothing re-dates. Re-dating is the rule's writer of record for
+   vendor-bill expense dates — a hand-edited date on one of these expenses is
+   overwritten by the next payment event on its bill (edit the payment, not the
+   expense, to move recognition).
 
 Exit criterion: the office can work the Reconcile tab and the books actually change —
 bills go paid with dates, bank-only debits become categorized expenses.

@@ -70,10 +70,12 @@ def _post_expense_to_ledger(db: Session, expense: Expense) -> None:
     pre-cutover expenses, and posting one here would slam into the era lock
     at confirm time. Same by-DATE rule, applied symmetrically.
 
-    CPA flag (9b, recorded in the plan): P5 credits Operating Bank at
-    ``expense.date`` = the bill's invoice date, but cash actually leaves at
-    payment. Until the CPA rules on receipt-vs-payment timing, tie-out
-    months spanning a bill's receipt→payment gap will surface the drift.
+    Cash-basis timing (Doug, 2026-08-14: "payment date for cash basis" —
+    resolves the 9b CPA flag): the expense date comes from
+    ``payments.effective_expense_date`` — the settlement date when the bill
+    is fully paid (for bank-match payments that's the literal bank date),
+    else the invoice date as a placeholder that
+    ``payments.sync_expense_dates`` re-dates + reposts when payment lands.
     """
     from gdx_dispatch.modules.ledger import service as ledger_service
     from gdx_dispatch.modules.ledger.rules import post_expense_recorded
@@ -127,7 +129,11 @@ def confirm_line(
         return {"line_id": str(line.id), "already_confirmed": True}
 
     vendor_name = invoice.vendor_name_raw
-    invoice_date = invoice.invoice_date or _now().date()
+    # Cash basis: a line confirmed on an ALREADY-settled bill dates its
+    # expense at the settlement date, not the invoice date.
+    from gdx_dispatch.modules.vendor_invoices.payments import effective_expense_date
+
+    invoice_date = effective_expense_date(db, invoice)
     result: dict = {"line_id": str(line.id), "disposition": disposition}
 
     if disposition == DISP_JOB:
