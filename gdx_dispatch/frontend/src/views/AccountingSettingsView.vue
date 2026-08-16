@@ -129,6 +129,51 @@
         </div>
       </section>
 
+      <!-- Evidence-derived starting balances -->
+      <section class="form-card" data-testid="gl-opening-card">
+        <header class="form-card-header">
+          <h3>Starting balances from bank statements</h3>
+        </header>
+        <p class="hint">
+          The imported statement archive can derive the books' starting point:
+          the latest unbroken, balance-chained statement run sets the cutover
+          date, and its ending balance is the opening bank balance — evidence,
+          not typing.
+        </p>
+        <div v-if="openingError" class="hint opening-error" data-testid="gl-opening-error">
+          {{ openingError }}
+        </div>
+        <template v-else-if="openingProposal">
+          <div class="opening-summary" data-testid="gl-opening-proposal">
+            <div><strong>Cutover:</strong> {{ openingProposal.cutover }}</div>
+            <div v-for="a in openingProposal.accounts" :key="a.bank_account_id">
+              <template v-if="a.usable">
+                <strong>{{ a.name }}:</strong>
+                {{ formatCents(a.opening_cents) }} opening
+                <span class="hint">
+                  (statements {{ a.chain_from }} → {{ a.chain_to }}, {{ a.chain_statements }} linked)
+                </span>
+              </template>
+              <template v-else>
+                <strong>{{ a.name }}:</strong> <span class="hint">{{ a.reason }}</span>
+              </template>
+            </div>
+            <div v-if="openingProposal.entries_to_reverse?.length" class="hint">
+              Applying reverses {{ openingProposal.entries_to_reverse.length }}
+              journal entr{{ openingProposal.entries_to_reverse.length === 1 ? 'y' : 'ies' }}
+              dated before the cutover (they belong to the pre-ledger era).
+            </div>
+          </div>
+          <Button
+            label="Apply starting balances"
+            icon="pi pi-check"
+            :loading="openingApplying"
+            data-testid="gl-opening-apply"
+            @click="applyOpening"
+          />
+        </template>
+      </section>
+
       <!-- Payment method map -->
       <section class="form-card" data-testid="gl-payment-map-card">
         <header class="form-card-header">
@@ -401,6 +446,49 @@ async function load() {
     applyPayload(data);
   } finally {
     loading.value = false;
+  }
+  loadOpeningProposal();
+}
+
+// ── evidence-derived starting balances ─────────────────────────────────
+const openingProposal = ref(null);
+const openingError = ref(null);
+const openingApplying = ref(false);
+
+function formatCents(cents) {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+async function loadOpeningProposal() {
+  openingError.value = null;
+  try {
+    // suppressErrorToast: "no usable chain yet" renders in the card — a
+    // red toast on every settings visit would just be noise.
+    openingProposal.value = await get('/api/accounting/opening/proposal', {
+      suppressErrorToast: true,
+    });
+  } catch (err) {
+    openingProposal.value = null;
+    openingError.value = err?.message || 'No statement evidence available yet.';
+  }
+}
+
+async function applyOpening() {
+  openingApplying.value = true;
+  try {
+    // The apply is BOUND to the proposal on screen: if a statement import
+    // changed the derivation between viewing and clicking, the server 409s
+    // instead of acting on numbers nobody reviewed.
+    const out = await post('/api/accounting/opening/apply', {
+      expected_cutover: openingProposal.value.cutover,
+      expected_reversals: openingProposal.value.entries_to_reverse?.length || 0,
+    }, {
+      successMessage: 'Starting balances applied from statement evidence',
+    });
+    await load();
+    return out;
+  } finally {
+    openingApplying.value = false;
   }
 }
 

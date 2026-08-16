@@ -307,6 +307,63 @@ def patch_accounting_settings(
     return _settings_payload(db, settings, company_id)
 
 
+@router.get("/accounting/opening/proposal")
+def opening_proposal(
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.read")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Evidence-derived starting point: what the statement archive supports
+    as cutover date + opening bank balance(s), and what applying would do."""
+    from gdx_dispatch.modules.ledger.opening import OpeningDerivationError, propose_opening
+
+    try:
+        return propose_opening(db, _tenant_id(user))
+    except OpeningDerivationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class OpeningApplyIn(BaseModel):
+    # Binds the apply to the proposal the operator reviewed — the server
+    # refuses if the evidence changed in between (TOCTOU guard).
+    expected_cutover: date
+    expected_reversals: int
+
+
+@router.post("/accounting/opening/apply")
+def opening_apply(
+    payload: OpeningApplyIn,
+    user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("accounting.close")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The audited initialization: reverse era-contradicting entries, set
+    cutover, map bank GL accounts, post opening entries (reversing stale
+    ones from superseded evidence), lock the pre-ledger era, stamp the
+    attestation, anchor pre-cutover open invoices as opening AR.
+    Idempotent; bound to the reviewed proposal."""
+    from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+    from gdx_dispatch.modules.ledger.opening import OpeningDerivationError, apply_opening
+
+    company_id = _tenant_id(user)
+    try:
+        result = apply_opening(
+            db, company_id, _actor(user),
+            expected_cutover=payload.expected_cutover,
+            expected_reversals=payload.expected_reversals,
+        )
+    except OpeningDerivationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PeriodLockedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"initialization touched a locked period — {exc}",
+        ) from exc
+    _audit(db, company_id, _actor(user), "gl_opening_applied", result)
+    db.commit()
+    return result
+
+
 class CpaReviewIn(BaseModel):
     keys: list[str] = Field(min_length=1, max_length=50)
 
