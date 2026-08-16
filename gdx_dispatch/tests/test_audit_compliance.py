@@ -374,3 +374,38 @@ def test_audit_request_id_propagated(db_session):
     row = db_session.query(AuditLog).filter_by(entity_id="s-1").first()
     assert row is not None
     assert row.request_id == "req-xyz"
+
+
+def test_audit_details_survive_unserializable_types(db_session):
+    """Prod 2026-08-16: an expense PATCH's audit details carried a raw
+    `date` — the JSON column raised AFTER the mutation committed, so the
+    user saw a 500 while the change persisted UNAUDITED. The impl must
+    sanitize details up front (same default=str form the hash uses), so
+    dates/Decimals/UUIDs can neither veto nor skip the stamp."""
+    import uuid as _uuid
+    from datetime import date as _date
+    from decimal import Decimal as _dec
+
+    entry = asyncio.run(
+        log_audit_event(
+            db=db_session,
+            tenant_id="tenant-1",
+            user_id="user-1",
+            action="expense_updated",
+            entity_type="expense",
+            entity_id="e-1",
+            details={
+                "date": _date(2026, 8, 16),
+                "amount": _dec("89.93"),
+                "ref": _uuid.UUID("31b35dc6-23fe-470b-9ed0-87e9ec41977d"),
+                "status": "approved",
+            },
+        )
+    )
+    db_session.commit()  # the insert itself must not raise
+    row = db_session.query(AuditLog).filter_by(entity_id="e-1").one()
+    assert row.details["date"] == "2026-08-16"
+    assert row.details["amount"] == "89.93"
+    assert row.details["ref"] == "31b35dc6-23fe-470b-9ed0-87e9ec41977d"
+    assert row.details["status"] == "approved"
+    assert entry.row_hash  # chained normally
