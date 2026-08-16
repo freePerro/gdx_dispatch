@@ -1,10 +1,14 @@
 <template>
+  <!-- pi-receipt, not pi-camera (Doug 2026-08-16): a camera glyph reads as
+       "take pictures", not "file a receipt" — the camera lives INSIDE the
+       dialog where it really does mean "take the photo". -->
   <Button
-    v-tooltip="'Snap a receipt'"
-    icon="pi pi-camera"
+    v-tooltip="'Add a receipt'"
+    icon="pi pi-receipt"
     :label="buttonLabel"
     severity="secondary"
     size="small"
+    aria-label="Add a receipt"
     data-testid="receipt-capture-open"
     @click="open"
   />
