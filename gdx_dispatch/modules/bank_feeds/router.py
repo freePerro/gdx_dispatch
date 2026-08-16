@@ -317,12 +317,21 @@ def bank_feeds_status(
                     BankFeedAccount.connection_id == connection.id
                 )
             ).scalar_one()
+        # "Configured" is provider-shaped (Doug 2026-08-16 — a live,
+        # syncing SimpleFIN feed read "not configured" forever): Banno
+        # needs an OAuth client_id+secret on the INSTITUTION; SimpleFIN's
+        # whole credential is the claimed access URL on the CONNECTION.
+        if inst.provider == "simplefin":
+            configured = bool(connection is not None and connection.access_token_enc)
+        else:
+            configured = bool(inst.client_id and inst.client_secret_enc)
         out.append({
             "id": str(inst.id),
             "label": inst.display_label,
+            "provider": inst.provider,
             "fi_host": inst.fi_host,
             "enabled": inst.enabled,
-            "configured": bool(inst.client_id and inst.client_secret_enc),
+            "configured": configured,
             "connected": connection is not None,
             "auth_state": connection.auth_state if connection else None,
             "account_count": account_count,

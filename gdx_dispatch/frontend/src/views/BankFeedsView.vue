@@ -40,7 +40,13 @@
                     : 'No banks are configured yet. Ask an admin to add one.'"
                 />
               </template>
-              <Column field="label" header="Bank" :style="{ minWidth: '160px' }" />
+              <Column header="Bank" :style="{ minWidth: '160px' }">
+                <template #body="{ data }">
+                  <div>{{ data.label }}</div>
+                  <!-- The BANK is the name; the pipe it rides is a detail. -->
+                  <div v-if="data.provider === 'simplefin'" class="muted small">via SimpleFIN Bridge</div>
+                </template>
+              </Column>
               <Column header="Status" :style="{ minWidth: '150px' }">
                 <template #body="{ data }">
                   <Tag :value="stateLabel(data)" :severity="stateSeverity(data)" />
@@ -1690,6 +1696,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+}
+.small {
+  font-size: 0.78rem;
 }
 .add-bank-row {
   margin-top: 1rem;
