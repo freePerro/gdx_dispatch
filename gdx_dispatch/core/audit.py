@@ -440,6 +440,19 @@ def _log_audit_event_impl(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
             "purpose": imp_purpose,
         })
 
+    # JSON-sanitize ONCE, up front: dates/Decimals/UUIDs in details become
+    # strings here, exactly as _payload_json hashes them — so the stored
+    # JSON is byte-consistent with the hashed representation AND the row
+    # insert can no longer fail on an unserializable VALUE. (Exotic dict
+    # KEYS and NaN/Infinity floats can still refuse — default=str never
+    # applies to keys — same as the hash line always did.) Proven on prod 2026-08-16: an expense PATCH's
+    # audit details carried a raw `date`, the JSON column raised
+    # StatementError AFTER the mutation had already committed — the user
+    # saw a 500 while the change silently persisted UNAUDITED. Both halves
+    # are unacceptable: an audit stamp must neither veto nor skip the
+    # action it records over a representational issue.
+    details = json.loads(_payload_json(details))
+
     result = db.execute(select(AuditLog.row_hash).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(1))
     row = result
     if inspect.isawaitable(result):
