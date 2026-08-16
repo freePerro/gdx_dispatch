@@ -241,3 +241,17 @@ def test_checking_claims_operating_bank_before_savings(tenant_db):
     tenant_db.refresh(savings)
     gl_s = tenant_db.get(GlAccount, savings.gl_account_id)
     assert gl_s.role is None and gl_s.code == "1010"
+
+
+def test_opening_routes_are_mounted():
+    """The router carries prefix='/api/accounting' — a path written with a
+    duplicate '/accounting/…' segment registers at a URL nobody calls and
+    404s silently (shipped exactly that way in v1.61.0). Auth-gated (401)
+    or permission-gated (403) proves mounted; 404 is the regression."""
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.app import create_app
+
+    client = TestClient(create_app())
+    assert client.get("/api/accounting/opening/proposal").status_code != 404
+    assert client.post("/api/accounting/opening/apply", json={}).status_code != 404

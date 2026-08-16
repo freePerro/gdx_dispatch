@@ -307,7 +307,7 @@ def patch_accounting_settings(
     return _settings_payload(db, settings, company_id)
 
 
-@router.get("/accounting/opening/proposal")
+@router.get("/opening/proposal")
 def opening_proposal(
     user: dict = Depends(get_current_user),
     _perm: None = Depends(require_permission("accounting.read")),
@@ -330,7 +330,7 @@ class OpeningApplyIn(BaseModel):
     expected_reversals: int
 
 
-@router.post("/accounting/opening/apply")
+@router.post("/opening/apply")
 def opening_apply(
     payload: OpeningApplyIn,
     user: dict = Depends(get_current_user),
