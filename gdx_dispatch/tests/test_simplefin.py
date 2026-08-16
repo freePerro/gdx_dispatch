@@ -951,3 +951,78 @@ def test_tieout_rejects_bad_month(tenant_db, sfin):
             month="2026-13", _perm=None, db=tenant_db,
         )
     assert exc.value.status_code == 422
+
+
+def test_promote_org_label_names_the_bank(tenant_db):
+    """Doug 2026-08-16: the institution must read as the BANK, not the
+    bridge it rides. org comes from stored raw_json; generic bridge labels
+    get replaced, operator renames stick."""
+    from gdx_dispatch.modules.bank_feeds import simplefin_service as sfs
+    from gdx_dispatch.modules.bank_feeds.models import (
+        BankFeedAccount,
+        BannoConnection,
+        BannoInstitution,
+    )
+
+    inst = BannoInstitution(
+        fi_host="beta-bridge.simplefin.org",
+        display_label="SimpleFIN Bridge",
+        provider="simplefin",
+    )
+    tenant_db.add(inst)
+    tenant_db.flush()
+    conn = BannoConnection(
+        institution_id=inst.id, fi_host="beta-bridge.simplefin.org",
+        banno_user_id="sfin-conn-1", access_token_enc="enc",
+    )
+    tenant_db.add(conn)
+    tenant_db.flush()
+    tenant_db.add(BankFeedAccount(
+        connection_id=conn.id, external_account_id="a1", provider="simplefin",
+        name="Business Checking", raw_json={"org": {"name": "Primary Bank", "domain": "bank.example"}},
+    ))
+    tenant_db.commit()
+
+    assert sfs.promote_org_label(tenant_db, inst) is True
+    assert inst.display_label == "Primary Bank"
+
+    # Operator rename sticks: no longer a generic label → never replaced.
+    inst.display_label = "My Renamed Bank"
+    tenant_db.commit()
+    assert sfs.promote_org_label(tenant_db, inst) is False
+    assert inst.display_label == "My Renamed Bank"
+
+
+def test_status_configured_is_provider_aware(tenant_db):
+    """A live SimpleFIN connection must never read 'not configured' — its
+    credential is the access URL on the connection, not a Banno OAuth
+    client on the institution."""
+    from gdx_dispatch.modules.bank_feeds.models import (
+        BannoConnection,
+        BannoInstitution,
+    )
+    from gdx_dispatch.modules.bank_feeds.router import bank_feeds_status
+
+    inst = BannoInstitution(
+        fi_host="bridge.simplefin.org", display_label="Primary Bank",
+        provider="simplefin",
+    )
+    tenant_db.add(inst)
+    tenant_db.flush()
+    tenant_db.add(BannoConnection(
+        institution_id=inst.id, fi_host="bridge.simplefin.org",
+        banno_user_id="sfin-conn-2", access_token_enc="enc", auth_state="healthy",
+    ))
+    tenant_db.commit()
+
+    class _Req:
+        class _State:
+            tenant = {"id": "11111111-1111-1111-1111-111111111111"}
+        state = _State()
+
+    out = bank_feeds_status(_Req(), {"sub": "t"}, None, tenant_db)
+    row = next(i for i in out["institutions"] if i["label"] == "Primary Bank")
+    assert row["provider"] == "simplefin"
+    assert row["configured"] is True
+    assert row["connected"] is True
+    assert row["auth_state"] == "healthy"

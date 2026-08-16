@@ -384,6 +384,31 @@ def _ingest_payload(
     return stats, present
 
 
+_DEFAULT_SFIN_LABELS = {"SimpleFIN Bridge", "SimpleFIN", "beta-bridge.simplefin.org", "bridge.simplefin.org"}
+
+
+def promote_org_label(db: Session, institution: BannoInstitution) -> bool:
+    """Name the institution after the BANK, not the pipe (Doug 2026-08-16:
+    "isn't that where the information came from — how do we know what bank
+    it is"). SimpleFIN's per-account ``org`` carries the real institution
+    (name/domain); it already rides in ``bank_feed_accounts.raw_json``.
+    Only replaces the generic bridge labels — an operator rename sticks."""
+    if (institution.display_label or "") not in _DEFAULT_SFIN_LABELS:
+        return False
+    connection = get_simplefin_connection(db, institution)
+    if connection is None:
+        return False
+    for account in db.execute(
+        select(BankFeedAccount).where(BankFeedAccount.connection_id == connection.id)
+    ).scalars().all():
+        org = (account.raw_json or {}).get("org") or {}
+        name = str(org.get("name") or org.get("domain") or "").strip()
+        if name:
+            institution.display_label = name[:120]
+            return True
+    return False
+
+
 def sync_institution(db: Session, institution: BannoInstitution) -> dict:
     """Entry point called from ``_sync_one_institution`` for provider rows.
     Mirrors the Banno path's result contract ({institution_id, errors:[…]}).
@@ -396,6 +421,11 @@ def sync_institution(db: Session, institution: BannoInstitution) -> dict:
     if connection.auth_state != AUTH_HEALTHY:
         result["errors"].append({"connection": str(connection.id), "skipped_unhealthy": True})
         return result
+
+    # Runs on stored raw_json, so an institution still carrying the generic
+    # bridge label heals on the NEXT sync — no re-claim needed.
+    if promote_org_label(db, institution):
+        result["label_promoted"] = institution.display_label
 
     schedule = service.get_or_create_schedule(db)
     tz = service.tenant_zoneinfo(db)
