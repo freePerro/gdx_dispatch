@@ -496,6 +496,149 @@ def test_send_invoice_twice_is_a_valid_resend(tenant_db_session, monkeypatch):
     assert second["sent_at"] >= first["sent_at"]
 
 
+def _seed_paid_invoice_with_customer(db, email: str, monkeypatch):
+    """Customer with an email + a fully-paid $450 invoice (real Payment row —
+    _recalculate flips status to 'paid' at zero balance) + delivery mocks.
+    Returns (inv_dict, captured_send_kwargs)."""
+    from gdx_dispatch.models.tenant_models import Customer
+
+    captured = {}
+
+    def fake_send(**kwargs):
+        captured.update(kwargs)
+        return True, "outlook_graph", None
+
+    monkeypatch.setattr(
+        "gdx_dispatch.core.transactional_email.send_transactional_email", fake_send
+    )
+    monkeypatch.setattr(
+        "gdx_dispatch.core.pdf_generator.generate_invoice_pdf",
+        lambda **kw: b"%PDF-1.4 tiny",
+    )
+
+    cust = Customer(
+        name="Receipt Customer", email=email,
+        phone="555-0402", company_id="tenant-test",
+    )
+    db.add(cust)
+    db.commit()
+    db.refresh(cust)
+
+    job = _seed_job(db)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id, customer_id=cust.id,
+            line_items=[{"description": "Opener", "quantity": 1, "unit_price": 450.00}],
+        ),
+        _=_current_user(), db=db,
+    )
+    _verify(db, inv)
+    record_payment(
+        invoice_id=UUID(inv["id"]),
+        payload=PaymentCreateIn(amount=450.0, method="check"),
+        _=_current_user(), db=db,
+    )
+    return inv, captured
+
+
+def test_send_invoice_on_paid_is_a_receipt(tenant_db_session, monkeypatch):
+    """2026-08-17 — sending a PAID invoice must read as a receipt: 'Payment
+    received' subject + '-paid' PDF name, status stays paid (no AR
+    resurrection), and the delivery stamp still moves."""
+    inv, captured = _seed_paid_invoice_with_customer(
+        tenant_db_session, "receipt@example.com", monkeypatch
+    )
+
+    sent = send_invoice(invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session)
+
+    assert sent["status"] == "paid"
+    assert sent["email_sent"] is True
+    assert captured["subject"].startswith("Payment received — Invoice #")
+    assert captured["attachments"][0]["name"].endswith("-paid.pdf")
+    assert sent["sent_at"] is not None
+    assert sent["sent_via"] == "email"
+
+
+def test_send_receipt_delivers_the_paid_invoice_for_real(tenant_db_session, monkeypatch):
+    """2026-08-17 — POST /send-receipt was a fake-success no-op (issue #220,
+    contract class C6): it wrote a payment_receipt_sent audit row and returned
+    {"sent": true} with NO email behind it. Pin the honest version: a real
+    transactional send goes out with the receipt subject, and the response
+    only claims sent on acknowledged delivery."""
+    from gdx_dispatch.routers.invoices import send_payment_receipt
+
+    inv, captured = _seed_paid_invoice_with_customer(
+        tenant_db_session, "receipt2@example.com", monkeypatch
+    )
+
+    out = send_payment_receipt(invoice_id=inv["id"], db=tenant_db_session, _=_current_user())
+
+    assert out["sent"] is True
+    assert out["to"] == "receipt2@example.com"
+    assert out["pdf_attached"] is True
+    assert captured["subject"].startswith("Payment received — Invoice #")
+    row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    assert row.status == "paid"
+    assert row.sent_at is not None
+
+
+def test_send_receipt_reports_failed_delivery_honestly(tenant_db_session, monkeypatch):
+    """A failed send must not claim success — that lie is exactly what the
+    old stub did. sent stays False and the delivery stamp does not move."""
+    from gdx_dispatch.routers.invoices import send_payment_receipt
+
+    inv, _captured = _seed_paid_invoice_with_customer(
+        tenant_db_session, "receipt3@example.com", monkeypatch
+    )
+    monkeypatch.setattr(
+        "gdx_dispatch.core.transactional_email.send_transactional_email",
+        lambda **kwargs: (False, None, "no_email_provider"),
+    )
+
+    out = send_payment_receipt(invoice_id=inv["id"], db=tenant_db_session, _=_current_user())
+
+    assert out["sent"] is False
+    assert out["email_skip_reason"] == "no_email_provider"
+    row = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    assert row.sent_at is None
+
+
+def test_send_receipt_refuses_unpaid_invoice(tenant_db_session):
+    """Receipts are for settled invoices — an unpaid one goes through /send."""
+    from gdx_dispatch.routers.invoices import send_payment_receipt
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=tenant_db_session,
+    )
+    _verify(tenant_db_session, inv)
+
+    with pytest.raises(HTTPException) as exc:
+        send_payment_receipt(invoice_id=inv["id"], db=tenant_db_session, _=_current_user())
+    assert exc.value.status_code == 409
+
+
+def test_send_receipt_requires_a_real_payment(tenant_db_session):
+    """A credit-memo'd invoice reaches status 'paid' with zero money received
+    — "payment received" over a write-off would be a lie, so no Payment rows
+    means 422."""
+    from gdx_dispatch.routers.invoices import send_payment_receipt
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=tenant_db_session,
+    )
+    invoice_obj = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    invoice_obj.status = "paid"
+    tenant_db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        send_payment_receipt(invoice_id=inv["id"], db=tenant_db_session, _=_current_user())
+    assert exc.value.status_code == 422
+
+
 def test_send_invoice_attaches_the_invoice_pdf(tenant_db_session, monkeypatch):
     """2026-07-20 — the direct /send email must carry the invoice PDF.
 
@@ -617,6 +760,59 @@ def test_invoice_email_compose_returns_pdf_and_template(tenant_db_session):
     assert "Spring" in rendered  # line-item description
 
 
+def test_invoice_email_compose_on_paid_is_receipt_flavored(tenant_db_session):
+    """2026-08-17 — composing on a PAID invoice drafts the receipt: thank-you
+    subject/body with Paid + $0.00 Balance lines, no 'Pay online' ask, a
+    '-paid' PDF name, and the PDF itself carries the PAID badge (extracted
+    from the real render, not just the payload)."""
+    from gdx_dispatch.models.tenant_models import Customer
+    from gdx_dispatch.routers.invoices import invoice_email_compose
+
+    cust = Customer(
+        name="Paidup Customer", email="paidup@example.com",
+        phone="555-0101", company_id="tenant-test",
+    )
+    tenant_db_session.add(cust)
+    tenant_db_session.commit()
+    tenant_db_session.refresh(cust)
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id, customer_id=cust.id,
+            due_date=date.today() + timedelta(days=30),
+            line_items=[{"description": "Opener install", "quantity": 1, "unit_price": 450.00}],
+        ),
+        _=_current_user(), db=tenant_db_session,
+    )
+    _verify(tenant_db_session, inv)
+    record_payment(
+        invoice_id=UUID(inv["id"]),
+        payload=PaymentCreateIn(amount=450.0, method="check"),
+        _=_current_user(), db=tenant_db_session,
+    )
+
+    payload = invoice_email_compose(
+        invoice_id=UUID(inv["id"]), _=_current_user(), db=tenant_db_session,
+    )
+    assert payload["subject"].startswith("Payment received")
+    assert "Thank you for your payment" in payload["body_text"]
+    assert "Paid: $450.00" in payload["body_text"]
+    assert "Balance Due: $0.00" in payload["body_text"]
+    assert "Pay online" not in payload["body_text"]
+    assert payload["pdf"]["name"].endswith("-paid.pdf")
+
+    import base64 as _b64
+    import io
+
+    from pypdf import PdfReader
+    pdf_bytes = _b64.b64decode(payload["pdf"]["content_base64"])
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    rendered = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "PAID" in rendered
+    assert "Paid to Date" in rendered
+
+
 def test_invoice_email_compose_counter_sale_no_job(tenant_db_session):
     """Counter-sale invoices have no job; compose still returns a PDF and
     the customer's email — body just omits the job_title placeholder."""
@@ -701,9 +897,12 @@ def test_mark_invoice_sent_mail_channel_records_paper_delivery(tenant_db_session
     assert out["sent_via"] == "mail"
 
 
-def test_mark_invoice_sent_rejects_paid(tenant_db_session):
-    """Can't re-send a paid invoice — 409 like the estimate equivalent."""
-    from gdx_dispatch.routers.invoices import mark_invoice_sent
+def test_mark_invoice_sent_on_paid_stamps_delivery_without_status_regress(tenant_db_session):
+    """2026-08-17 — "Send Receipt": the composer's post-send handoff lands on
+    mark-sent for PAID invoices too. Paid is terminal — regressing to 'sent'
+    would resurrect AR (and fire a GL S5 posting) — so the endpoint stamps
+    the delivery fact (sent_at + sent_via) and leaves status alone."""
+    from gdx_dispatch.routers.invoices import MarkSentIn, mark_invoice_sent
 
     job = _seed_job(tenant_db_session)
     inv = create_invoice(
@@ -712,6 +911,29 @@ def test_mark_invoice_sent_rejects_paid(tenant_db_session):
     )
     invoice_obj = tenant_db_session.get(Invoice, UUID(inv["id"]))
     invoice_obj.status = "paid"
+    tenant_db_session.commit()
+
+    out = mark_invoice_sent(
+        invoice_id=UUID(inv["id"]), payload=MarkSentIn(channel="email"),
+        _=_current_user(), db=tenant_db_session,
+    )
+    assert out["status"] == "paid"
+    assert out["sent_at"] is not None
+    assert out["sent_via"] == "email"
+
+
+def test_mark_invoice_sent_rejects_void(tenant_db_session):
+    """Void stays locked — marking a voided invoice sent would resurrect a
+    cancelled bill into the delivery-facing columns."""
+    from gdx_dispatch.routers.invoices import mark_invoice_sent
+
+    job = _seed_job(tenant_db_session)
+    inv = create_invoice(
+        payload=InvoiceCreateIn(job_id=job.id, customer_id=job.customer_id),
+        _=_current_user(), db=tenant_db_session,
+    )
+    invoice_obj = tenant_db_session.get(Invoice, UUID(inv["id"]))
+    invoice_obj.status = "void"
     tenant_db_session.commit()
 
     with pytest.raises(HTTPException) as exc:
