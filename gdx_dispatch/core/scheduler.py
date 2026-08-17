@@ -294,4 +294,14 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=13, minute=0),
             "options": {"queue": "priority:low"},
         },
+        "webhook-retry-sweep-every-5m": {
+            # n8n/plugin-event platform Sprint 1. Re-dispatches webhook
+            # deliveries whose backoff window elapsed, AND rescues rows stranded
+            # 'pending' with next_retry_at=NULL (their after_commit enqueue
+            # failed because the broker was briefly down). Without this entry the
+            # retry ladder in deliver_webhook is dead — nothing walks it.
+            "task": "gdx_dispatch.core.webhooks.tasks.retry_failed_webhooks_task",
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": "priority:high"},
+        },
     }

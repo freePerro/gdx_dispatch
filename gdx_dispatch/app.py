@@ -1272,6 +1272,11 @@ def create_app() -> FastAPI:
     from gdx_dispatch.modules.ledger.guard import install_flush_guard
 
     install_flush_guard()
+    # Arm the webhook after_commit dispatch hook: domain events staged during a
+    # business transaction are enqueued for delivery once that txn commits.
+    from gdx_dispatch.core.webhooks.emit import install_webhook_dispatch_hook
+
+    install_webhook_dispatch_hook()
     app = FastAPI(
         title="GDX API",
         description="GDX Dispatch — field service dispatch API (single-tenant). "

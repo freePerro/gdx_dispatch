@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets as pysecrets
 import time
 import urllib.error
 import urllib.request
@@ -35,7 +36,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
-from gdx_dispatch.core.ssrf_guard import validate_outbound_url
+from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked, validate_outbound_url
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
@@ -191,6 +192,16 @@ def _serialize_delivery(d: WebhookDeliveryLog) -> dict[str, Any]:
     }
 
 
+def _reject_unsafe_url(url: str) -> None:
+    """SSRF guard at write time (create/update), not just at send. Blocks a
+    subscription pointed at an internal host before it can ever be delivered to
+    or test-sent (adversarial audit, truth-F9)."""
+    try:
+        validate_outbound_url(url)
+    except OutboundURLBlocked as exc:
+        raise HTTPException(status_code=422, detail=f"URL not allowed: {exc}") from exc
+
+
 def _get_scoped(db: Session, sub_id: UUID, tenant_id: str) -> WebhookSubscription:
     row = db.execute(
         select(WebhookSubscription).where(
@@ -270,11 +281,16 @@ def create_subscription(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    _reject_unsafe_url(payload.url)
+    # Signing material is mandatory — deliver_webhook signs every payload and a
+    # NULL secret would crash the worker. Auto-mint when the caller omits one so
+    # every delivery is HMAC-signed (adversarial audit, security-F7).
+    secret = payload.secret or pysecrets.token_hex(32)
     row = WebhookSubscription(
         company_id=tenant_id,
         name=payload.name,
         url=payload.url,
-        secret=payload.secret,
+        secret=secret,
         events=json.dumps(payload.events),
         active=payload.active,
         created_by=_user_id(user),
@@ -317,6 +333,7 @@ def update_subscription(
     if payload.name is not None:
         row.name = payload.name
     if payload.url is not None:
+        _reject_unsafe_url(payload.url)
         row.url = payload.url
     if payload.secret is not None:
         row.secret = payload.secret

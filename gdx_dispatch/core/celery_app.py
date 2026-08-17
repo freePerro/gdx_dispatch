@@ -95,6 +95,12 @@ from gdx_dispatch.modules.ledger.guard import install_flush_guard  # noqa: E402
 
 install_flush_guard()
 
+# Arm the webhook after_commit dispatch hook in worker/beat processes too —
+# beat-driven emits (e.g. recurring-job creation) commit here, not in the API.
+from gdx_dispatch.core.webhooks.emit import install_webhook_dispatch_hook  # noqa: E402
+
+install_webhook_dispatch_hook()
+
 # Ensure external task modules are imported so Celery registers decorated tasks.
 from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401
