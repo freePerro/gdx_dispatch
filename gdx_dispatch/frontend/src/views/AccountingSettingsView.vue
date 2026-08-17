@@ -181,8 +181,10 @@
           <LockNote field="payment_method_role_map" />
         </header>
         <p class="hint">
-          Where each payment method lands when recorded: Undeposited Funds until a bank
-          deposit clears it, or straight into the Operating Bank.
+          Where each payment method lands when recorded: Undeposited Funds, or straight
+          into the Operating Bank. (Deposit recording that clears Undeposited Funds
+          arrives with the bank-feeds reconciliation work — until then that balance
+          accumulates by design.)
         </p>
         <div class="map-grid">
           <div v-for="(role, method) in settings.payment_method_role_map" :key="method" class="map-row">

@@ -205,6 +205,7 @@
 </template>
 
 <script setup>
+import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import EmptyState from '../components/EmptyState.vue';
@@ -230,6 +231,7 @@ import Tag from 'primevue/tag';
 import Toolbar from 'primevue/toolbar';
 
 const api = useApiWithToast();
+const toast = useToast();
 const route = useRoute();
 const router = useRouter();
 
@@ -318,7 +320,7 @@ const loadQuickbooks = async () => {
     };
     syncEvents.value = Array.isArray(events?.events) ? events.events : [];
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'QuickBooks load failed',
       detail: err?.message || 'Unable to fetch QuickBooks status',
@@ -362,7 +364,7 @@ const onSyncEntity = async (entity) => {
     await api.post(url, undefined, { successMessage: `${entity} synced` });
     await loadQuickbooks();
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: `${entity} sync failed`,
       detail: err?.message || 'Unknown error',
@@ -391,7 +393,7 @@ const runAction = async (action) => {
       if (response?.redirect_url) {
         const popup = window.open(response.redirect_url, '_blank', 'width=600,height=700');
         if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-          api.toast?.add?.({
+          toast.add({
             severity: 'warn',
             summary: 'Popup blocked',
             detail: 'Redirecting in this window instead...',

@@ -406,6 +406,17 @@ def _source_descriptor(session: Session, entry: GlJournalEntry) -> dict:
                 invoice = session.get(Invoice, payment.invoice_id)
                 if invoice is not None:
                     out["invoice_number"] = invoice.invoice_number
+        elif entry.source_type == "bank_account" and source_uuid:
+            # Opening-balance entries (sweep M7): say WHICH account, not the
+            # raw string "bank_account".
+            try:
+                from gdx_dispatch.modules.bank_feeds.statement_models import BankAccount
+
+                bank_account = session.get(BankAccount, source_uuid)
+                if bank_account is not None:
+                    out["bank_account_label"] = f"{bank_account.name} …{bank_account.last4}"
+            except ImportError:
+                pass
         elif entry.source_type == "adjustment" and source_uuid:
             from gdx_dispatch.models.tenant_models import InvoiceAdjustment
 

@@ -1180,6 +1180,12 @@ const qbSyncHasErrors = computed(() => qbSyncAllErrors.value.length > 0);
 const toast = useToast();
 const theme = useThemeStore();
 const activeTab = ref("branding");
+// Deep-link support: /settings?tab=integrations (Bank Feeds re-link points
+// here — sweep H1).
+try {
+  const _qtab = new URLSearchParams(window.location.search).get('tab');
+  if (_qtab) activeTab.value = _qtab;
+} catch { /* SSR/test envs without location */ }
 const saveState = ref("");
 const brandingSaving = ref(false);
 const modulesBusy = ref(false);

@@ -603,6 +603,22 @@ const todaysJobs = ref([]);
 const vendorBillsNeedsReview = ref(0);
 const payables = ref({ loaded: false, count: 0, total: 0, next_due: null });
 
+// Sweep H2: techs file receipt drafts from the truck (v1.60.0) and NOTHING
+// told the office — the pipeline stalled silently at Draft. Same guard
+// idiom as vendor bills: never fire a guaranteed 403 for stripped roles.
+const draftExpenseCount = ref(0);
+
+async function loadDraftExpenses() {
+  try {
+    await auth.loadPermissions();
+    if (!auth.hasPermission('accounting.read')) return;
+    const rows = await api.get('/api/expenses?status=draft', { suppressErrorToast: true });
+    draftExpenseCount.value = Array.isArray(rows) ? rows.length : 0;
+  } catch {
+    draftExpenseCount.value = 0;
+  }
+}
+
 async function loadVendorBills() {
   try {
     await auth.loadPermissions();
@@ -741,6 +757,16 @@ const attentionItems = computed(() => {
       severity: 'warn',
       text: `${rv} return visit${rv === 1 ? '' : 's'} from completed jobs awaiting scheduling`,
       link: '/dispatch',
+    });
+  }
+  const drafts = toNumber(draftExpenseCount.value);
+  if (drafts > 0) {
+    items.push({
+      id: 'draft-expenses',
+      type: 'Expense Review',
+      severity: 'warn',
+      text: `${drafts} draft expense${drafts === 1 ? '' : 's'} (field receipts) awaiting review`,
+      link: '/expenses',
     });
   }
   // Unread comms — "a customer wrote and nobody saw it" is the same silent

@@ -66,12 +66,27 @@
       <Column header="Due" style="width: 120px">
         <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
       </Column>
-      <Column header="Total" style="width: 130px; text-align: right">
-        <template #body="{ data }">{{ formatCurrency(data.total) }}</template>
+      <Column header="Total" style="width: 150px; text-align: right">
+        <template #body="{ data }">
+          {{ formatCurrency(data.total) }}
+          <!-- Sweep M5: a half-paid bill looked identical to an untouched
+               one here while the dashboard netted balances — two surfaces
+               disagreeing about the same bill. -->
+          <div v-if="data.is_partial" class="partial-note">
+            {{ formatCurrency(data.open_balance) }} open
+          </div>
+        </template>
       </Column>
       <Column header="Status" style="width: 210px">
         <template #body="{ data }">
           <Tag :value="data.status" :severity="statusSeverity(data.status)" />
+          <Tag
+            v-if="data.is_partial"
+            value="partially paid"
+            severity="warn"
+            class="chip"
+            data-testid="partial-chip"
+          />
           <Tag
             v-if="needsReview(data)"
             value="needs review"
@@ -234,4 +249,8 @@ defineExpose({ items, statusFilter, notice, fetchItems, onUpload, needsReview, m
 }
 .spinner-wrap { display: flex; justify-content: center; padding: 2rem; }
 .empty-message { text-align: center; padding: 1.5rem; color: var(--p-text-muted-color); }
+.partial-note {
+  font-size: 0.75rem;
+  color: var(--p-amber-600, #d97706);
+}
 </style>

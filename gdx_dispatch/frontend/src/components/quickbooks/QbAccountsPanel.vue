@@ -53,6 +53,7 @@
 </template>
 
 <script setup>
+import { useToast } from 'primevue/usetoast';
 import { onMounted, ref } from 'vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -62,6 +63,7 @@ import Tag from 'primevue/tag';
 import { useApiWithToast } from '../../composables/useApiWithToast';
 
 const api = useApiWithToast();
+const toast = useToast();
 const accounts = ref([]);
 const loading = ref(false);
 const syncing = ref(false);
@@ -72,7 +74,7 @@ const fetch = async () => {
     const resp = await api.get('/api/qb/accounts');
     accounts.value = Array.isArray(resp?.items) ? resp.items : [];
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'Could not load accounts',
       detail: err?.message || 'Unknown error',
@@ -89,7 +91,7 @@ const syncAccounts = async () => {
     await api.post('/api/qb/sync/accounts', undefined, { successMessage: 'Chart of Accounts synced' });
     await fetch();
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'Sync failed',
       detail: err?.message || 'Unknown error',

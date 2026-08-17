@@ -92,6 +92,7 @@
 </template>
 
 <script setup>
+import { useToast } from 'primevue/usetoast';
 import { onMounted, ref, watch } from 'vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -102,6 +103,7 @@ import ToggleSwitch from 'primevue/toggleswitch';
 import { useApiWithToast } from '../../composables/useApiWithToast';
 
 const api = useApiWithToast();
+const toast = useToast();
 const rows = ref([]);
 const loading = ref(false);
 const status = ref({ delete_sync_enabled: false, delete_sync_source: 'env' });
@@ -127,7 +129,7 @@ const fetch = async () => {
       delete_sync_source: dashboard?.delete_sync_source || 'env',
     };
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'Could not load reconciliation log',
       detail: err?.message || 'Unknown error',
@@ -145,7 +147,7 @@ const onToggle = async (next) => {
   toggling.value = true;
   try {
     await api.post('/api/qb/settings/delete-sync', { enabled: !!next });
-    api.toast?.add?.({
+    toast.add({
       severity: 'success',
       summary: next ? 'Delete sync enabled' : 'Delete sync disabled',
       detail: next
@@ -155,7 +157,7 @@ const onToggle = async (next) => {
     });
     await fetch();
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'Could not update flag',
       detail: err?.message || 'Unknown error',
@@ -173,7 +175,7 @@ const onClearOverride = async () => {
   toggling.value = true;
   try {
     await api.post('/api/qb/settings/delete-sync', { enabled: null });
-    api.toast?.add?.({
+    toast.add({
       severity: 'success',
       summary: 'Override cleared',
       detail: 'Now following the global default.',
@@ -181,7 +183,7 @@ const onClearOverride = async () => {
     });
     await fetch();
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error',
       summary: 'Could not clear override',
       detail: err?.message || 'Unknown error',

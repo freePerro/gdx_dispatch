@@ -127,6 +127,7 @@ def _line_to_dict(line: ExpenseLine) -> dict:
 def list_expenses(
     start_date: _dt.date | None = None,
     end_date: _dt.date | None = None,
+    status: str | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -135,6 +136,8 @@ def list_expenses(
         q = q.where(Expense.date >= start_date)
     if end_date is not None:
         q = q.where(Expense.date <= end_date)
+    if status:
+        q = q.where(Expense.status == status.lower())
     rows = list(db.execute(q.order_by(Expense.date.desc(), Expense.created_at.desc())).scalars().all())
     payloads = [_expense_to_dict(row) for row in rows]
     _annotate_gl_accounts(db, rows, payloads)

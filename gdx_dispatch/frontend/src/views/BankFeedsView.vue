@@ -70,8 +70,22 @@
               <Column v-if="canManage" header="" :style="{ minWidth: '280px' }">
                 <template #body="{ data }">
                   <div class="row-actions">
+                    <!-- Sweep H1/M4: /connect is Banno OAuth — for SimpleFIN
+                         the recovery is the setup-token re-link on the
+                         Settings card. A Banno Reconnect here dead-ends
+                         with instructions about credentials that don't
+                         exist for this provider. -->
                     <Button
-                      v-if="!data.connected"
+                      v-if="data.provider === 'simplefin' && (!data.connected || data.auth_state !== 'healthy')"
+                      label="Re-link in Settings"
+                      size="small"
+                      icon="pi pi-arrow-up-right"
+                      :severity="data.connected ? 'warn' : 'secondary'"
+                      :data-testid="`bank-simplefin-relink-${data.id}`"
+                      @click="$router.push('/settings/integrations')"
+                    />
+                    <Button
+                      v-else-if="!data.connected"
                       label="Connect"
                       size="small"
                       icon="pi pi-link"
@@ -937,6 +951,12 @@ const loadStatus = async () => {
 };
 
 const stateLabel = (inst) => {
+  // SimpleFIN has no OAuth config concept: it's connected (claimed access
+  // URL) or it isn't — "not configured" was Banno vocabulary (sweep M4).
+  if (inst.provider === 'simplefin') {
+    if (!inst.connected) return 'disconnected — re-link in Settings';
+    return inst.auth_state === 'healthy' ? 'connected' : inst.auth_state.replace('_', ' ');
+  }
   if (!inst.configured) return 'not configured';
   if (!inst.connected) return 'not connected';
   if (inst.auth_state === 'healthy') return 'connected';
@@ -1204,7 +1224,7 @@ const downloadDocument = async (doc) => {
     credentials: 'include',
   });
   if (!response.ok) {
-    api.toast?.add?.({ severity: 'error', summary: 'Download failed', life: 4000 });
+    toast.add({ severity: 'error', summary: 'Download failed', life: 4000 });
     return;
   }
   const blob = await response.blob();

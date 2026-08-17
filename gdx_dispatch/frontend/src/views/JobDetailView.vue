@@ -2571,7 +2571,7 @@ async function openApplyTemplate() {
   try {
     const templates = await api.get('/api/job-templates');
     if (!Array.isArray(templates) || !templates.length) {
-      api.toast?.('No job templates available', 'info');
+      toast.add({ severity: 'info', summary: 'No job templates available', life: 3000 });
       return;
     }
     // For now apply the first template; UI will be extended with a picker later.
