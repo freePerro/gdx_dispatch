@@ -866,3 +866,16 @@ def test_list_endpoint_annotates_partials(tenant_db):
     row = next(r for r in rows if r.invoice_number == "LIST-PART-1")
     assert row.is_partial is True
     assert row.open_balance == 75.0
+
+
+def test_reports_expose_merchant_from_continuation_lines(world):
+    """Doug 2026-08-17: 'DBT CRD 1507 …' is the anchor; the MERCHANT lives
+    on the continuation lines and was stored but never shown."""
+    db, account = world
+    line = line_by_amount(db, -2500)
+    line.description = "DBT CRD 1507 06/18/26 23045245\nDICK S STANDARD\nPARKERS PRAIR MN C#0256"
+    db.commit()
+    reports = statement_matching.build_reports(db, account, date(2026, 6, 1), date(2026, 6, 30))
+    row = next(r for r in reports["unmatched_debits"] if r["id"] == str(line.id))
+    assert row["description"] == "DBT CRD 1507 06/18/26 23045245"
+    assert row["merchant"] == "DICK S STANDARD · PARKERS PRAIR MN C#0256"

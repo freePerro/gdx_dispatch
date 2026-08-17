@@ -1270,6 +1270,7 @@ def _match_out(db: Session, match: BankMatch) -> dict:
                 "txn_date": line.txn_date.isoformat(),
                 "amount_cents": line.amount_cents,
                 "description": line.description.split("\n", 1)[0],
+                "merchant": statement_matching._merchant(line),
                 "section": line.section,
                 "check_number": line.check_number,
             })
@@ -1561,7 +1562,11 @@ def create_expense_from_line(
         amount=_D(abs(line.amount_cents)) / 100,
         date=line.txn_date,
         category=canonical,
-        description=(body.description or line.description.split("\n", 1)[0]).strip(),
+        # Full description, newlines flattened: the merchant lives on the
+        # continuation lines ('DBT CRD …' + 'DICK S STANDARD' + city).
+        description=(body.description or " · ".join(
+            p.strip() for p in line.description.split("\n") if p.strip()
+        )).strip(),
         job_id=job_id,
         source="bank_match",
         # Equal stamps on purpose: unconfirm's "unmodified since creation"

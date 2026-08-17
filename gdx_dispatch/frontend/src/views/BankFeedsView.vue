@@ -474,6 +474,7 @@
                   <template #body="{ data }">
                     <div v-for="l in data.lines" :key="l.id">
                       {{ l.txn_date }} · {{ formatCents(l.amount_cents) }} · {{ l.description }}
+                      <div v-if="l.merchant" class="merchant-line">{{ l.merchant }}</div>
                     </div>
                   </template>
                 </Column>
@@ -511,6 +512,7 @@
                 <template #body="{ data }">
                   <div v-for="l in data.lines" :key="l.id">
                     {{ l.txn_date }} · {{ formatCents(l.amount_cents) }} · {{ l.description }}
+                    <div v-if="l.merchant" class="merchant-line">{{ l.merchant }}</div>
                   </div>
                 </template>
               </Column>
@@ -540,7 +542,12 @@
               <Column header="Amount" :style="{ width: '120px' }">
                 <template #body="{ data }">{{ formatCents(data.amount_cents) }}</template>
               </Column>
-              <Column field="description" header="Description" :style="{ minWidth: '220px' }" />
+              <Column header="Description" :style="{ minWidth: '220px' }">
+                <template #body="{ data }">
+                  {{ data.description }}
+                  <div v-if="data.merchant" class="merchant-line">{{ data.merchant }}</div>
+                </template>
+              </Column>
               <Column header="" :style="{ width: '210px' }">
                 <template #body="{ data }">
                   <Tag v-if="data.has_suggestion" value="suggestion above" severity="info" />
@@ -587,7 +594,12 @@
               <Column header="Amount" :style="{ width: '120px' }">
                 <template #body="{ data }">{{ formatCents(-data.amount_cents) }}</template>
               </Column>
-              <Column field="description" header="Description" :style="{ minWidth: '220px' }" />
+              <Column header="Description" :style="{ minWidth: '220px' }">
+                <template #body="{ data }">
+                  {{ data.description }}
+                  <div v-if="data.merchant" class="merchant-line">{{ data.merchant }}</div>
+                </template>
+              </Column>
               <Column field="check_number" header="Check #" :style="{ width: '90px' }" />
               <Column header="" :style="{ width: '300px' }">
                 <template #body="{ data }">
@@ -606,8 +618,8 @@
             <Dialog v-model:visible="showCreateExpense" header="Create expense from bank line" modal :style="{ width: '30rem' }">
               <p v-if="createExpenseLine" class="muted recon-note">
                 {{ createExpenseLine.txn_date }} · {{ formatCents(-createExpenseLine.amount_cents) }} ·
-                {{ createExpenseLine.description }} — the amount and date come from the bank line
-                (the bank date is the cash date).
+                {{ createExpenseLine.merchant || createExpenseLine.description }} — the amount and
+                date come from the bank line (the bank date is the cash date).
               </p>
               <div class="ce-form">
                 <label class="muted small" for="ce-vendor">Vendor / payee</label>
@@ -1496,7 +1508,9 @@ const expenseCategoryOptions = ref([]);
 
 const openCreateExpense = async (line) => {
   createExpenseLine.value = line;
-  createExpenseForm.vendor = '';
+  // The merchant name lives on the statement's continuation lines — hand
+  // it to the vendor field instead of making the office retype it.
+  createExpenseForm.vendor = (line.merchant || '').split(' · ')[0] || '';
   createExpenseForm.category = null;
   createExpenseForm.description = '';
   showCreateExpense.value = true;
@@ -1719,6 +1733,10 @@ onBeforeUnmount(() => {
 }
 .small {
   font-size: 0.78rem;
+}
+.merchant-line {
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 .add-bank-row {
   margin-top: 1rem;
