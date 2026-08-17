@@ -35,6 +35,14 @@ describe('BillingView — row Send opens the composer flow', () => {
     expect(body).not.toMatch(/api\.patch/);
   });
 
+  it('the row Send button shows for Paid rows too (2026-08-17 — Send Receipt)', () => {
+    // Paid invoices compose as receipts: "Payment received" subject, PAID-
+    // badged PDF. The row button routes to the same detail composer, so the
+    // v-if must admit Paid alongside Draft and the tooltip must say which.
+    expect(SRC).toMatch(/\['Draft', 'Paid'\]\.includes\(data\.status\)/);
+    expect(SRC).toMatch(/data\.status === 'Paid' \? 'Send Receipt' : 'Send'/);
+  });
+
   it('bulk send keeps the server-side path but reports delivery honestly', () => {
     expect(SRC).toMatch(/async function bulkSend/);
     const start = SRC.indexOf('async function bulkSend');
