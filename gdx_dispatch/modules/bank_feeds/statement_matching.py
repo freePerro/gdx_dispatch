@@ -164,6 +164,15 @@ def _anchor(line: BankStatementLine) -> str:
     return line.description.split("\n", 1)[0]
 
 
+def _merchant(line: BankStatementLine) -> str | None:
+    """The continuation lines of a statement description carry the actual
+    merchant (Doug 2026-08-17: 'DBT CRD 1507 06/18/26 23045245' is line one;
+    'DICK S STANDARD / PARKERS PRAIR MN' is lines two and three — the part a
+    human needs was stored but never shown)."""
+    parts = [p.strip() for p in line.description.split("\n")[1:] if p.strip()]
+    return " · ".join(parts) or None
+
+
 def _is_transfer(line: BankStatementLine) -> bool:
     text = _anchor(line).strip()
     return any(rx.match(text) for rx in _TRANSFER_RES)
@@ -911,6 +920,7 @@ def build_reports(db: Session, account: BankAccount, date_from: date, date_to: d
             "txn_date": line.txn_date.isoformat(),
             "amount_cents": line.amount_cents,
             "description": _anchor(line),
+            "merchant": _merchant(line),
             "section": line.section,
             "check_number": line.check_number,
             "has_suggestion": line.id in suggested_line_ids,
