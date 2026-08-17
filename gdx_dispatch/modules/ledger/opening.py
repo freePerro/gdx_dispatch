@@ -120,6 +120,29 @@ def _month_boundary_after(day: date) -> date | None:
     return candidate if candidate.day == 1 else None
 
 
+def _boundary_candidates(run: list) -> dict:
+    """Every month-boundary cutover the chained run can prove, with its
+    opening cents. TWO proofs exist (the real bank's periods drift off
+    calendar months — July ran 7/1→8/2, which broke the end-only rule):
+
+    - a period ENDING on a month end proves the next day's opening via its
+      ending balance;
+    - a period STARTING on a month first proves that day's opening via its
+      beginning balance.
+
+    Where both prove the same boundary the chain link already guarantees
+    they agree (beginning == prior ending). Latest boundary wins later.
+    """
+    candidates: dict = {}
+    for imp in run:
+        after = _month_boundary_after(imp.period_end)
+        if after is not None:
+            candidates[after] = imp.ending_balance_cents
+        if imp.period_start.day == 1:
+            candidates.setdefault(imp.period_start, imp.beginning_balance_cents)
+    return candidates
+
+
 def _pre_cutover_live_entries(db: Session, company_id: str, cutover: date) -> list:
     return list(
         db.scalars(
@@ -149,57 +172,63 @@ def propose_opening(db: Session, company_id: str) -> dict:
             "no bank accounts registered — import a bank statement first"
         )
 
-    proposals = []
-    cutovers = set()
+    staged = []
     for account in accounts:
         imports = _statement_chain(db, account.id)
-        if not imports:
-            proposals.append({
-                "bank_account_id": str(account.id),
-                "name": f"{account.name} …{account.last4}",
-                "usable": False,
-                "reason": "no statements imported",
-            })
-            continue
-        run = _latest_contiguous_run(imports)
-        last = run[-1]
-        cutover = _month_boundary_after(last.period_end)
-        if cutover is None:
-            proposals.append({
-                "bank_account_id": str(account.id),
-                "usable": False,
-                "name": f"{account.name} …{account.last4}",
-                "reason": (
-                    f"latest statement ends {last.period_end.isoformat()}, which is "
-                    "not a month end — import the next statement"
-                ),
-            })
-            continue
-        cutovers.add(cutover)
-        proposals.append({
+        entry = {
             "bank_account_id": str(account.id),
             "name": f"{account.name} …{account.last4}",
-            "usable": True,
-            "chain_from": run[0].period_start.isoformat(),
-            "chain_to": last.period_end.isoformat(),
-            "chain_statements": len(run),
-            "opening_cents": last.ending_balance_cents,
-            "cutover": cutover.isoformat(),
-        })
+        }
+        if not imports:
+            staged.append((entry, None, {"reason": "no statements imported"}))
+            continue
+        run = _latest_contiguous_run(imports)
+        candidates = _boundary_candidates(run)
+        if not candidates:
+            staged.append((entry, run, {"reason": (
+                "no statement in the chain starts on a month first or ends on "
+                "a month end — import an adjacent statement"
+            )}))
+            continue
+        staged.append((entry, run, candidates))
 
-    usable = [p for p in proposals if p["usable"]]
+    usable = [(e, run, c) for e, run, c in staged if run is not None and "reason" not in c]
     if not usable:
         raise OpeningDerivationError(
             "no bank account has a usable statement chain: "
-            + "; ".join(f"{p['name']}: {p['reason']}" for p in proposals)
-        )
-    if len(cutovers) > 1:
-        raise OpeningDerivationError(
-            "bank accounts' statement chains end at different month boundaries — "
-            "import statements up to a common month end first"
+            + "; ".join(f"{e['name']}: {c['reason']}" for e, _run, c in staged)
         )
 
-    cutover = cutovers.pop()
+    # The cutover must hold for EVERY usable account (one book, one era
+    # boundary): intersect each account's provable boundaries, take the
+    # latest common one.
+    common = set(usable[0][2].keys())
+    for _e, _run, candidates in usable[1:]:
+        common &= set(candidates.keys())
+    if not common:
+        detail = "; ".join(
+            f"{e['name']}: {', '.join(d.isoformat() for d in sorted(c))}"
+            for e, _run, c in usable
+        )
+        raise OpeningDerivationError(
+            f"the accounts' statement chains prove no COMMON month boundary — {detail}"
+        )
+    cutover = max(common)
+
+    proposals = []
+    for entry, run, candidates in staged:
+        if run is None or "reason" in candidates:
+            proposals.append({**entry, "usable": False, "reason": candidates["reason"]})
+            continue
+        proposals.append({
+            **entry,
+            "usable": True,
+            "chain_from": run[0].period_start.isoformat(),
+            "chain_to": run[-1].period_end.isoformat(),
+            "chain_statements": len(run),
+            "opening_cents": candidates[cutover],
+            "cutover": cutover.isoformat(),
+        })
     conflicts = _pre_cutover_live_entries(db, company_id, cutover)
     return {
         "cutover": cutover.isoformat(),

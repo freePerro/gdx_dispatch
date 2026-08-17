@@ -100,15 +100,68 @@ def test_broken_chain_uses_latest_contiguous_run(world):
     assert acct["opening_cents"] == 448893  # ending anchor unchanged
 
 
-def test_non_month_end_chain_is_unusable(tenant_db):
+def test_no_boundary_chain_is_unusable(tenant_db):
+    """A chain with NO month-first start and NO month-end end proves no
+    opening at all."""
     ensure_gl_seed(tenant_db, COMPANY)
     account = BankAccount(name="Mid", kind="checking", institution="B", last4="1111")
     tenant_db.add(account)
     tenant_db.flush()
-    _mk_import(tenant_db, account, date(2026, 6, 1), date(2026, 6, 15), 100, 200, 0)
+    _mk_import(tenant_db, account, date(2026, 6, 5), date(2026, 6, 15), 100, 200, 0)
     tenant_db.commit()
-    with pytest.raises(OpeningDerivationError, match="not a month end"):
+    with pytest.raises(OpeningDerivationError, match="no statement in the chain"):
         propose_opening(tenant_db, COMPANY)
+
+
+def test_drifting_period_end_still_proves_cutover(world):
+    """The real bank's July period ran 7/1→8/2 (not a month end). The July
+    1 boundary is still proven TWICE: June's ending balance AND July's
+    beginning balance. The end-only rule shipped in v1.61 refused this."""
+    db, account = world
+    _mk_import(db, account, date(2026, 7, 1), date(2026, 8, 2), 448893, 1081091, 90)
+    db.commit()
+    out = propose_opening(db, COMPANY)
+    assert out["cutover"] == "2026-07-01"
+    acct = out["accounts"][0]
+    assert acct["opening_cents"] == 448893
+    assert acct["chain_to"] == "2026-08-02"
+    assert acct["chain_statements"] == 7
+
+
+def test_multi_account_common_boundary_via_period_start(world):
+    """An account with a SINGLE statement starting on the month first
+    proves that day's opening via its beginning balance — exactly the two
+    new accounts Doug's July upload introduced."""
+    db, checking = world
+    second = BankAccount(name="Business Checking", kind="checking",
+                         institution="Primary Bank", last4="4078")
+    savings = BankAccount(name="Business Savings", kind="savings",
+                          institution="Primary Bank", last4="2839")
+    db.add_all([second, savings])
+    db.flush()
+    _mk_import(db, checking, date(2026, 7, 1), date(2026, 8, 2), 448893, 1081091, 91)
+    _mk_import(db, second, date(2026, 7, 1), date(2026, 8, 2), 184912, 141819, 92)
+    _mk_import(db, savings, date(2026, 7, 1), date(2026, 8, 2), 11274, 41274, 93)
+    db.commit()
+
+    out = propose_opening(db, COMPANY)
+    assert out["cutover"] == "2026-07-01"
+    by_name = {a["name"]: a for a in out["accounts"]}
+    assert by_name["Business Checking …2204"]["opening_cents"] == 448893
+    assert by_name["Business Checking …4078"]["opening_cents"] == 184912
+    assert by_name["Business Savings …2839"]["opening_cents"] == 11274
+
+    result = apply_opening(db, COMPANY, actor="doug",
+                           expected_cutover=date(2026, 7, 1), expected_reversals=0)
+    db.commit()
+    assert len(result["opening_entries"]) == 3
+    # 2204 (lowest last4 among checkings) claims the Operating Bank role.
+    db.refresh(checking)
+    gl = db.get(GlAccount, checking.gl_account_id)
+    assert gl.role is not None
+    db.refresh(savings)
+    gl_s = db.get(GlAccount, savings.gl_account_id)
+    assert gl_s.role is None
 
 
 def test_apply_full_initialization_and_idempotency(world):
