@@ -89,3 +89,19 @@ def test_resync_updates_and_untombstones(tenant_db):
     )).one()
     assert float(row[0]) == 77.0
     assert row[1] is None
+
+
+def test_reconnect_heals_auth_state(tenant_db):
+    """Prod 2026-08-16: OAuth reconnect stored fresh working tokens while
+    auth_state stayed needs_reconnect — Intuit said connected, GDX said not,
+    and every sync skipped forever. save_tokens must reset the flag; the
+    refresh path re-classifies if the new tokens actually fail."""
+    from gdx_dispatch.modules.quickbooks.oauth import QBTokenStore, save_tokens
+
+    row = save_tokens("tenant-test", "realm-1", "acc", "ref", db=tenant_db)
+    row.auth_state = "needs_reconnect"
+    tenant_db.commit()
+
+    healed = save_tokens("tenant-test", "realm-1", "acc2", "ref2", db=tenant_db)
+    assert healed.auth_state == "healthy"
+    assert tenant_db.query(QBTokenStore).filter_by(realm_id="realm-1").one().auth_state == "healthy"

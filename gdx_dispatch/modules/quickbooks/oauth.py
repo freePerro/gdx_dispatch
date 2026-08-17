@@ -217,6 +217,12 @@ def save_tokens(
     row.refresh_token_enc = _encrypt(refresh_token)
     row.access_token_expires_at = now + timedelta(seconds=int(expires_in))
     row.refresh_token_expires_at = now + timedelta(seconds=int(refresh_expires_in))
+    # Fresh tokens ARE health (2026-08-16, Doug: "quick books says im
+    # connected the software says i am not"): without this reset a
+    # needs_reconnect connection could NEVER heal — the OAuth reconnect
+    # stored new working tokens while the sync gate kept skipping on the
+    # stale flag. The refresh path re-classifies if these tokens fail.
+    row.auth_state = "healthy"
     row.updated_at = now
     db.commit()
 
