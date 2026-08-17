@@ -1659,6 +1659,19 @@ _DEFAULT_INVOICE_BODY_TEMPLATE = (
     "Total: {{total}}{{balance_line}}{{due_line}}\n\n"
     "Thanks,\n{{company_name}}"
 )
+# Receipt flavor (2026-08-17): composing on a PAID invoice is a thank-you,
+# not an ask — the paid/balance figures come from _invoice_settlement, the
+# same math the PDF prints, so the numbers in the body and the attachment
+# always agree.
+_DEFAULT_RECEIPT_SUBJECT_TEMPLATE = "Payment received — Invoice {{invoice_number}} from {{company_name}}"
+_DEFAULT_RECEIPT_BODY_TEMPLATE = (
+    "Hi {{customer_name}},\n\n"
+    "Thank you for your payment on {{job_title}}. Invoice {{invoice_number}} "
+    "is paid — a copy is attached for your records.\n"
+    "Total: {{total}}{{paid_line}}{{balance_line}}\n\n"
+    "We appreciate your business!\n\n"
+    "Thanks,\n{{company_name}}"
+)
 
 
 @router.get("/{invoice_id}/email-compose", response_model=None)
@@ -1690,7 +1703,7 @@ def invoice_email_compose(
     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
     from gdx_dispatch.models.tenant_models import AppSettings, Customer
     from gdx_dispatch.routers.estimates import _render_template
-    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
+    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _invoice_settlement, _template_config
 
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
 
@@ -1722,6 +1735,12 @@ def invoice_email_compose(
     _total_v = _to_float(invoice.total)
     _balance_v = _to_float(invoice.balance_due)
     balance_line = f"\nBalance Due: ${_balance_v:.2f}" if abs(_balance_v - _total_v) > 0.005 else ""
+    # Paid compose = receipt (2026-08-17). Real payments only — a credit-memo'd
+    # invoice zeroes its balance without money received, and "thank you for
+    # your payment" over a write-off would be a lie.
+    _is_paid = invoice.status == "paid"
+    _paid_v, _ = _invoice_settlement(invoice, db)
+    paid_line = f"\nPaid: ${_paid_v:.2f}" if (_is_paid and _paid_v > 0) else ""
     ctx = {
         "customer_name": (customer.name if customer else "") or "there",
         "job_title": invoice_label,
@@ -1730,10 +1749,15 @@ def invoice_email_compose(
         "total": f"${_total_v:.2f}",
         "balance_due": f"${_balance_v:.2f}",
         "balance_line": balance_line,
+        "paid_line": paid_line,
         "due_line": due_line,
     }
-    subject = _render_template(_DEFAULT_INVOICE_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
-    body_text = _render_template(_DEFAULT_INVOICE_BODY_TEMPLATE, ctx)
+    if _is_paid:
+        subject = _render_template(_DEFAULT_RECEIPT_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
+        body_text = _render_template(_DEFAULT_RECEIPT_BODY_TEMPLATE, ctx)
+    else:
+        subject = _render_template(_DEFAULT_INVOICE_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
+        body_text = _render_template(_DEFAULT_INVOICE_BODY_TEMPLATE, ctx)
 
     # The public pay link goes into the editable draft — the operator sees
     # exactly what the customer gets, and deleting the line is opting out.
@@ -1760,7 +1784,8 @@ def invoice_email_compose(
         template_config=_template_config(db, "invoice"),
     )
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
-    pdf_name = f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}.pdf"
+    _pdf_suffix = "-paid" if _is_paid else ""
+    pdf_name = f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}{_pdf_suffix}.pdf"
 
     # extra_attachments: kept empty by design (S122 audit catch). Estimates
     # filter `Document.estimate_id == estimate.id` because Documents have an
@@ -1812,13 +1837,18 @@ def mark_invoice_sent(
     """
     channel = payload.channel if payload else "manual"
     invoice = _get_invoice_or_404(invoice_id, db)
-    if invoice.status in {"paid", "void"}:
-        raise HTTPException(status_code=409, detail="invoice is finalized")
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void — it cannot be sent")
     # §11 rail (2026-08-08): Mark-as-Mailed on an unverified draft both
     # skipped review AND fed the draft into the auto-dunning population
     # (dunning filters on status='sent').
     require_deliverable(invoice)
-    transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5: P1 posts here when the flag is on
+    # PAID stays terminal (2026-08-17): the composer now sends paid invoices
+    # too ("Send Receipt"), and its post-send handoff lands here. Regressing
+    # paid→sent would resurrect AR and fire a GL S5 posting — so a paid
+    # invoice only gets the delivery-fact stamp below, never the transition.
+    if invoice.status != "paid":
+        transition_invoice_status(db, invoice, "sent", actor=_actor_id(_))  # GL S5: P1 posts here when the flag is on
     invoice.sent_at = datetime.now(UTC)
     invoice.sent_via = channel
     if not invoice.public_token:
@@ -1996,20 +2026,28 @@ def send_invoice(
                             invoice.id, len(pdf_bytes),
                         )
                     else:
+                        _sfx = "-paid" if invoice.status == "paid" else ""
                         attachments = [{
-                            "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}.pdf",
+                            "name": f"invoice-{invoice.invoice_number or str(invoice.id)[:8]}{_sfx}.pdf",
                             "content_type": "application/pdf",
                             "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
                         }]
                 except Exception:
                     log.exception("invoice_send_pdf_attach_failed")
+                # Receipt flavor (2026-08-17): a PAID invoice emails as a
+                # thank-you, not an ask — Billing's "Send Receipt" button and
+                # POST /send-receipt both land here. Body already prints
+                # Paid to Date / Balance Due from _invoice_settlement above.
+                subject = f"Invoice #{invoice.invoice_number} from {company_name}"
+                if invoice.status == "paid":
+                    subject = f"Payment received — Invoice #{invoice.invoice_number} from {company_name}"
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
                     user_id=str(_actor_id(_)),
                     to_email=cust.email,
                     to_name=cust.name or "",
-                    subject=f"Invoice #{invoice.invoice_number} from {company_name}",
+                    subject=subject,
                     html_body=html,
                     attachments=attachments,
                 )
@@ -3001,12 +3039,40 @@ def send_payment_receipt(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
-    """Send a payment receipt email to the customer."""
+    """Email the customer their payment receipt — the paid invoice itself.
+
+    2026-08-17: this endpoint (issue #220) used to write a payment_receipt_sent
+    audit row and return {"sent": true} WITHOUT SENDING ANYTHING — a
+    fake-success no-op (frontend-contract class C6). It now delegates to the
+    shared /send path, which is receipt-flavored for paid invoices
+    ("Payment received" subject, -paid PDF name, Paid-to-Date in the body),
+    and reports delivery honestly.
+    """
     _validate_uuid(invoice_id, "Invoice")
-    invoice = _get_invoice_or_404(invoice_id, db)
+    # A real UUID from here on — the string id the route captures dies in the
+    # Uuid bind processor on SQLite (str has no .hex), which is exactly how
+    # the old stub stayed green: it never touched the row hard enough to care.
+    invoice_uuid = UUID(invoice_id)
+    invoice = _get_invoice_or_404(invoice_uuid, db)
     # §11 rail (2026-08-08): mirror the mobile receipt gate — a receipt on
     # an unverified draft means money moved on unreviewed numbers.
     require_deliverable(invoice)
+    if invoice.status != "paid":
+        raise HTTPException(
+            status_code=409,
+            detail="invoice is not paid — use /send to (re)send the invoice itself",
+        )
+    # Real payments only: a credit-memo'd invoice reaches status 'paid' with
+    # zero money received, and "payment received" over a write-off is a lie.
+    # (Partial-payment receipts stay the mobile endpoint's domain — it
+    # receipts a specific payment row.)
+    from gdx_dispatch.routers.pdf import _invoice_settlement
+    paid_to_date, _credits = _invoice_settlement(invoice, db)
+    if paid_to_date <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="no payment recorded on this invoice — record the payment before sending a receipt",
+        )
 
     # Resolve recipient. Prefer invoice.customer_id (NOT NULL since 2026-05-11);
     # the legacy job→customer hop only matters for older rows where the column
@@ -3023,12 +3089,32 @@ def send_payment_receipt(
     if not cust or not cust.email:
         raise HTTPException(status_code=422, detail="customer has no email on file")
     email = cust.email
+    if invoice.customer_id is None:
+        # Legacy row resolved via the job hop — backfill so the shared send
+        # path (which reads invoice.customer_id) can actually deliver.
+        invoice.customer_id = customer_uuid
+        db.commit()
+
+    payload = send_invoice(invoice_id=invoice_uuid, _=_, db=db)
+    email_sent = bool(payload.get("email_sent"))
 
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="payment_receipt_sent", entity_type="invoice", entity_id=str(invoice.id),
-        details={"to": email, "total": _to_float(invoice.total), "paid": _to_float(invoice.amount_paid)},
+        details={
+            "to": email,
+            "total": _to_float(invoice.total),
+            "paid": paid_to_date,
+            "email_sent": email_sent,
+        },
     )
     db.commit()
 
-    return {"sent": True, "to": email, "invoice_id": str(invoice.id)}
+    return {
+        "sent": email_sent,
+        "to": email,
+        "invoice_id": str(invoice.id),
+        "pdf_attached": bool(payload.get("pdf_attached")),
+        "email_provider": payload.get("email_provider"),
+        "email_skip_reason": payload.get("email_skip_reason"),
+    }

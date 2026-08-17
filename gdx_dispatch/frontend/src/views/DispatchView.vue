@@ -253,6 +253,12 @@
                     <i class="pi pi-calendar"></i> {{ formatScheduled(job.scheduled_at) }} · needs a tech
                   </p>
                   <p v-else class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
+                  <!-- Self-assigned at create (mobile "Assign to me"): the
+                       tech is known, the date isn't — the opposite gap from
+                       "needs a tech" above. -->
+                  <p v-if="!job.scheduled_at && job.technician_id" class="job-line job-line-dated" :data-testid="`unassigned-tech-${job.id}`">
+                    <i class="pi pi-user"></i> {{ techName(job.technician_id) }} · needs a date
+                  </p>
                   <p v-if="job.address" class="job-line"><i class="pi pi-map-marker"></i> {{ job.address }}</p>
                 </div>
                 <div class="job-card-actions" @click.stop>
@@ -1098,8 +1104,9 @@ const rangeFilteredJobs = computed(() => {
 });
 const dayJobs = computed(() => rangeFilteredJobs.value.filter((j) => matchesDate(j, selectedDateStr.value)));
 
-// "New Jobs to Schedule" section: jobs with no date AND no tech AND no
-// holding area — true leads waiting to be slotted. Scheduled-but-no-tech
+// "New Jobs to Schedule" section: jobs still missing a date or a tech (or
+// both) and not parked in a genuine holding area — work a dispatcher still
+// owes a decision. Scheduled-but-no-tech
 // jobs live in the red "Scheduled — Not Assigned" lane regardless of date,
 // so a salesperson penciling in an asap job can't slip past the dispatcher.
 // "Ready to Schedule" is not a parking lot — it is the INTAKE QUEUE. Every
@@ -1139,7 +1146,15 @@ const knownHoldingAreaIds = computed(
 const unassignedJobs = computed(() =>
   jobs.value.filter((j) => {
     if (isCompletedStatus(j.status)) return false;
-    if (j.technician_id) return false;
+    // 2026-08-17 ("Assign to me"): techs can self-assign at create, so a
+    // tech on the job no longer implies dispatch is done with it. A job
+    // with a tech but NO date still needs scheduling and stays in this
+    // queue — the card names who has it — otherwise every self-assigned
+    // job would skip the intake queue and sit dateless in the tech's
+    // column on every day, which is the 2026-08-10 invisibility bug
+    // wearing a new hat. Only a job with BOTH a tech and a date has
+    // actually left the dispatcher's inbox.
+    if (j.technician_id && j.scheduled_at) return false;
     if (j.holding_area_id) {
       const areaId = String(j.holding_area_id);
       const parked = areaId !== readyToScheduleAreaId.value && knownHoldingAreaIds.value.has(areaId);

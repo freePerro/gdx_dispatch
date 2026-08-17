@@ -329,12 +329,15 @@
           <!-- Re-send is allowed on sent/overdue (2026-07-20): the composer
                already gates on an explicit click, and the concrete need is
                re-sending an invoice whose first email went out without the
-               PDF. Only paid/void stay locked. -->
+               PDF. Paid unlocked 2026-08-17 as "Send Receipt" — compose
+               returns thank-you wording and the PDF carries the PAID badge.
+               Only void stays locked. -->
           <Button
-            :label="['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) ? 'Re-send Invoice' : 'Send Invoice'"
+            :label="String(invoice.status || '').toLowerCase() === 'paid' ? 'Send Receipt'
+              : (['sent','overdue'].includes(String(invoice.status || '').toLowerCase()) ? 'Re-send Invoice' : 'Send Invoice')"
             icon="pi pi-send"
             data-testid="send-invoice-btn"
-            :disabled="['paid','void'].includes(String(invoice.status || '').toLowerCase())"
+            :disabled="String(invoice.status || '').toLowerCase() === 'void'"
             @click="sendInvoice"
           />
           <!-- Paper invoices: printed + posted, no email involved. Stamps the
@@ -1879,7 +1882,8 @@ onMounted(() => {
   // goes through the composer (preview + explicit click) instead of the
   // old fire-and-forget POST /send. Strip the flag so refresh/back doesn't
   // reopen the dialog, and gate on the loaded status so a hand-typed URL
-  // can't open the composer on a paid/void invoice (mirrors the button).
+  // can't open the composer on a void invoice (mirrors the button — paid
+  // composes as a receipt since 2026-08-17).
   const autoCompose = !!route.query?.compose;
   if (autoCompose) {
     const { compose, ...rest } = route.query;
@@ -1887,7 +1891,7 @@ onMounted(() => {
   }
   Promise.resolve(fetchInvoice()).then(() => {
     const st = String(invoice.value.status || "").toLowerCase();
-    if (autoCompose && !["paid", "void"].includes(st)) sendInvoice();
+    if (autoCompose && st !== "void") sendInvoice();
   });
   loadTaxRate();
   loadQbStatus();

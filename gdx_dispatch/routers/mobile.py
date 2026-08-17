@@ -2278,10 +2278,16 @@ def get_mobile_job_detail(
             "photos": [dict(r) for r in photos],
             "parts": [dict(r) for r in parts],
             "door_specs": door_specs,
-            # Company-wide browsing (techs_see_all_jobs) is view-only: the
-            # write endpoints would 404 anyway, but the UI should not offer
-            # "On my way"/complete buttons that can only fail.
-            "read_only": grant == "company",
+            # Company-wide browsing (techs_see_all_jobs) AND creator-grant
+            # views are view-only: the write endpoints would 404 either
+            # grant anyway (creator access deliberately carries no write
+            # path — /audit 2026-07-22), but until 2026-08-17 the UI showed
+            # the creator a full action bar whose every button failed with
+            # "Could not save — job not found" (the 2026-08-17 field report). The
+            # grant reason ships alongside so the client can say WHY it's
+            # read-only instead of just hiding the buttons.
+            "read_only": grant in ("company", "creator"),
+            "access_grant": grant,
         }
     )
 

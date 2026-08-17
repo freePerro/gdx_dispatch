@@ -29,6 +29,8 @@ import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { useAuthStore } from '../stores/auth'
+import { isTechnician } from '../constants/roles'
 import { usePermission } from '../composables/usePermission'
 import { useDirtyDialog } from '../composables/useDirtyDialog'
 import { formatPhone } from '../composables/useFormatters'
@@ -48,7 +50,19 @@ const emit = defineEmits(['update:visible', 'created'])
 
 const api = useApi()
 const toast = useToast()
+const auth = useAuthStore()
 const { hasPermission } = usePermission()
+
+// "Assign to me" (2026-08-17 field report): a tech creating a job
+// from the truck is usually the one doing the work RIGHT NOW — but the old
+// always-unassigned create left him unable to touch the job he'd just made
+// (every action 404'd "job not found" behind the assignment write gate).
+// Default ON for technicians; the toggle stays visible so "log it for
+// dispatch to hand out" is still one tap away. Hidden for non-tech roles:
+// the backend resolves the flag against the caller's technician record, and
+// office accounts have none, so showing it would be a lying switch.
+const isTech = computed(() => isTechnician(auth.role))
+const assignToMe = ref(true)
 
 const open = computed({
   get: () => props.visible,
@@ -300,6 +314,10 @@ async function submit() {
             ? Number(job.scheduled_duration_hours)
             : null,
         location_id: job.location_id || null,
+        // Backend resolves this against the CALLER's technician record —
+        // never a client-supplied tech id. False for non-tech roles (the
+        // toggle isn't rendered for them, so its default must not leak).
+        assign_to_me: isTech.value && assignToMe.value,
       }
       createdJob = await api.post('/api/jobs', jobPayload)
     } catch (e) {
@@ -355,12 +373,20 @@ async function submit() {
         life: 5000,
       })
     } else {
+      // Word the toast from what the server actually did, not the toggle:
+      // assign_to_me quietly no-ops for callers with no technician record,
+      // and "you can start it now" on a job the tech can't touch is exactly
+      // the lie this feature exists to kill.
+      const mine = Boolean(createdJob?.assigned_to)
+      const partsNote = partsToSubmit.length
+        ? `Added ${partsToSubmit.length} part${partsToSubmit.length === 1 ? '' : 's'}. `
+        : ''
       toast.add({
         severity: 'success',
         summary: 'Job created',
-        detail: partsToSubmit.length
-          ? `Added ${partsToSubmit.length} part${partsToSubmit.length === 1 ? '' : 's'}. Dispatch will schedule it.`
-          : 'It stays in your Jobs list until dispatch assigns it.',
+        detail: partsNote + (mine
+          ? "It's assigned to you — open it from your Jobs list to get started."
+          : 'It stays in your Jobs list until dispatch assigns it.'),
         life: 3000,
       })
     }
@@ -390,6 +416,7 @@ function _resetForm() {
   job.location_id = null
   customerLocations.value = []
   parts.value = []
+  assignToMe.value = true
 }
 
 // Unsaved-changes guard — Esc / the header X are disabled while dirty, and
@@ -404,6 +431,7 @@ const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(
     selectedCustomerId: selectedCustomer.value?.id ?? null,
     newCust: { ...newCust },
     job: { ...job },
+    assignToMe: assignToMe.value,
     parts: parts.value.map((p) => ({
       part_name: p.part_name,
       sku: p.sku,
@@ -620,8 +648,17 @@ watch(open, async (v) => {
           />
           <small class="muted">Optional. Helps dispatch plan the day. Leave blank if unsure.</small>
         </div>
-        <p class="muted hint">
-          Saved as a Service Call. Dispatch will schedule and assign it.
+        <label v-if="isTech" class="toggle-row">
+          <ToggleSwitch v-model="assignToMe" data-testid="mjn-assign-me" />
+          <span>Assign to me — I'm doing this work</span>
+        </label>
+        <p class="muted hint" data-testid="mjn-dispatch-hint">
+          <template v-if="isTech && assignToMe">
+            Saved as a Service Call assigned to you — you can start it right away. Dispatch will schedule it.
+          </template>
+          <template v-else>
+            Saved as a Service Call. Dispatch will schedule and assign it.
+          </template>
         </p>
       </section>
 
