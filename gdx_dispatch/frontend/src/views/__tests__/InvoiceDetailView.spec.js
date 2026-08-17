@@ -308,8 +308,18 @@ describe('InvoiceDetailView — send composer PDF preview (2026-07-20)', () => {
     expect(btn.attributes('disabled')).toBeUndefined();
   });
 
-  it('paid invoices keep the send button disabled', async () => {
+  it('paid invoices get an enabled "Send Receipt" button (2026-08-17 — the paid copy is the receipt)', async () => {
     mockApi(buildInvoicePayload({ status: 'paid', effective_status: 'paid' }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    const btn = wrapper.get('[data-testid="send-invoice-btn"]');
+    expect(btn.text()).toBe('Send Receipt');
+    expect(btn.attributes('disabled')).toBeUndefined();
+  });
+
+  it('void invoices keep the send button disabled', async () => {
+    mockApi(buildInvoicePayload({ status: 'void', effective_status: 'void' }));
     const wrapper = mountView();
     await flushPromises();
 
@@ -328,9 +338,19 @@ describe('InvoiceDetailView — send composer PDF preview (2026-07-20)', () => {
     expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(true);
   });
 
-  it('?compose=1 on a paid invoice does NOT auto-open the composer (mirrors the disabled button)', async () => {
+  it('?compose=1 on a paid invoice DOES auto-open the composer (Billing "Send Receipt" lands here)', async () => {
     routeMock.query = { compose: '1' };
     mockApi(buildInvoicePayload({ status: 'paid', effective_status: 'paid' }));
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(apiGet).toHaveBeenCalledWith('/api/invoices/inv-1/email-compose');
+    expect(wrapper.find('[data-testid="invoice-composer"]').exists()).toBe(true);
+  });
+
+  it('?compose=1 on a void invoice does NOT auto-open the composer (mirrors the disabled button)', async () => {
+    routeMock.query = { compose: '1' };
+    mockApi(buildInvoicePayload({ status: 'void', effective_status: 'void' }));
     const wrapper = mountView();
     await flushPromises();
 

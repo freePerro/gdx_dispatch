@@ -546,3 +546,27 @@ def test_invoice_payload_lines_include_category_and_taxable():
     }
     assert payload["lines"][1]["category"] == ""
     assert payload["lines"][1]["taxable"] is True
+
+
+# ---------------------------------------------------------------------------
+# PAID badge (2026-08-17) — the paid copy doubles as the customer's receipt
+# ---------------------------------------------------------------------------
+
+def test_paid_invoice_renders_paid_badge(captured_html):
+    """A paid invoice's PDF must make the settled state unmissable — the
+    "Send Receipt" flow attaches exactly this document, so a lowercase
+    'paid' in the status footer line alone would read like an unpaid bill."""
+    pdf_generator.generate_invoice_pdf(
+        _invoice_data(status="paid", balance_due=0.0, paid_to_date=1738.56),
+        _BRANDING,
+    )
+    html = captured_html["html"]
+    assert '<span class="paid-badge">PAID</span>' in html
+    assert "Paid to Date" in html
+
+
+def test_unpaid_invoice_has_no_paid_badge(captured_html):
+    """The badge is exclusive to paid — a sent invoice showing PAID would
+    invite non-payment."""
+    pdf_generator.generate_invoice_pdf(_invoice_data(), _BRANDING)
+    assert '<span class="paid-badge">PAID</span>' not in captured_html["html"]

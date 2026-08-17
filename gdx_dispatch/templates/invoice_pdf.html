@@ -31,6 +31,7 @@
     .totals td { border: none; padding: 4px 0; }
     .totals .label { color: #4b5563; }
     .totals .grand { border-top: 1px solid #d1d5db; font-weight: 700; color: {{ branding.secondary_color }}; }
+    .paid-badge { display: inline-block; border: 2.5px solid #16a34a; color: #16a34a; font-weight: 800; font-size: 18px; letter-spacing: 3px; padding: 3px 14px; border-radius: 6px; }
     .status { margin-top: 10px; color: #4b5563; }
     .signature { margin-top: 34px; border-top: 1px solid #9ca3af; padding-top: 6px; width: 280px; color: #4b5563; }
     /* Job photos grid — same shapes as estimate_pdf.html's attachments. */
@@ -99,6 +100,13 @@
     {% endif %}
     <tr class="grand"><td>Balance Due</td><td class="num">${{ '%.2f'|format(data.balance_due or 0) }}</td></tr>
   </table>
+
+  {# PAID badge (2026-08-17) — the paid copy doubles as the customer's
+     receipt, so the settled state must be unmissable, not a lowercase word
+     in the footer line. #}
+  {% if (data.status or '')|lower == 'paid' %}
+  <div style="text-align: right; margin-top: 8px"><span class="paid-badge">PAID</span></div>
+  {% endif %}
 
   <div class="status">
     Payment Status: {{ data.status or '' }}
