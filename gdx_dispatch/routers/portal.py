@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.office_notifications import notify_estimate_decision
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.deposits import (
@@ -1216,6 +1217,17 @@ def portal_estimate_accept(
     )
     db.commit()
 
+    # Office alert — same gap as the public link: a portal accept was
+    # invisible until someone reopened the estimate. Rides the bell badge;
+    # never blocks the accept.
+    try:
+        from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+        _alert_amount = float(compute_estimate_totals(estimate, db)["total"] or 0)
+    except Exception:
+        _alert_amount = 0.0
+    notify_estimate_decision(db, tenant_id, estimate, verb="accepted", amount=_alert_amount)
+
     # Mirror the staff accept flow (2026-05-13 directive: accept = job
     # created) so a portal acceptance lands on the dispatch board too.
     if estimate.job_id is None:
@@ -1310,6 +1322,10 @@ def portal_estimate_decline(
         details={"customer_id": str(principal.customer_id), "reason": reason},
     )
     db.commit()
+
+    # A NO is office-actionable too (call back, counter, close the lead).
+    notify_estimate_decision(db, tenant_id, estimate, verb="declined", reason=reason)
+
     return _serialize_portal_estimate(estimate, db)
 
 
