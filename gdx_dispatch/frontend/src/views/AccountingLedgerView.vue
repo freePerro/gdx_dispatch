@@ -183,6 +183,9 @@
                 <span v-else-if="data.source.source_type === 'expense'">
                   expense · {{ data.source.vendor }} ({{ data.source.category }})
                 </span>
+                <span v-else-if="data.source.source_type === 'bank_account'">
+                  opening · {{ data.source.bank_account_label || 'bank account' }}
+                </span>
                 <span v-else>{{ data.source.source_type || 'manual' }}</span>
               </template>
             </Column>
@@ -275,6 +278,7 @@ const bsSections = [
   { key: 'equity', label: 'Equity', totalKey: 'equity_cents' },
 ];
 const journalSourceOptions = [
+  { label: 'Opening balances', value: 'bank_account' },
   { label: 'Invoices', value: 'invoice' },
   { label: 'Payments', value: 'payment' },
   { label: 'Adjustments', value: 'adjustment' },

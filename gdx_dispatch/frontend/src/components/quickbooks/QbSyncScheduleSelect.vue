@@ -16,20 +16,34 @@
     <div v-if="lastRunAt || lastRunStatus" class="schedule-meta">
       Last run: {{ formatDateTime(lastRunAt) }}<span v-if="lastRunStatus"> · {{ lastRunStatus }}</span>
       <span v-if="lastRunError" class="schedule-err" :title="lastRunError"> · error</span>
+      <span v-if="lastRunReads != null"> · {{ lastRunReads }} metered reads</span>
+    </div>
+    <!-- Money-surface sweep H4: these three shipped in the API and were
+         rendered NOWHERE — the whole point of loud-stale is being loud. -->
+    <div v-if="connectionHealthy === false" class="schedule-err" data-testid="qb-reconnect-warning">
+      QuickBooks connection needs reconnecting — syncs are skipped until then.
+    </div>
+    <div v-else-if="stale" class="schedule-warn" data-testid="qb-stale-warning">
+      No successful sync recently — the QuickBooks mirror may be out of date.
     </div>
   </div>
 </template>
 
 <script setup>
+import { useToast } from 'primevue/usetoast';
 import { onMounted, ref } from 'vue';
 import Select from 'primevue/select';
 import { useApiWithToast } from '../../composables/useApiWithToast';
 
 const api = useApiWithToast();
+const toast = useToast();
 const frequency = ref('manual');
 const lastRunAt = ref(null);
 const lastRunStatus = ref(null);
 const lastRunError = ref(null);
+const lastRunReads = ref(null);
+const stale = ref(false);
+const connectionHealthy = ref(null);
 const loading = ref(false);
 
 const options = [
@@ -48,8 +62,11 @@ const load = async () => {
     lastRunAt.value = s?.last_run_at || null;
     lastRunStatus.value = s?.last_run_status || null;
     lastRunError.value = s?.last_run_error || null;
+    lastRunReads.value = s?.last_run_reads ?? null;
+    stale.value = !!s?.stale;
+    connectionHealthy.value = s?.connection_healthy ?? null;
   } catch (err) {
-    api.toast?.add?.({ severity: 'error', summary: 'Could not load sync schedule', detail: err?.message || 'Unknown error', life: 4000 });
+    toast.add({ severity: 'error', summary: 'Could not load sync schedule', detail: err?.message || 'Unknown error', life: 4000 });
   } finally {
     loading.value = false;
   }
@@ -63,7 +80,7 @@ const save = async () => {
     lastRunAt.value = s?.last_run_at || lastRunAt.value;
     lastRunStatus.value = s?.last_run_status || lastRunStatus.value;
   } catch (err) {
-    api.toast?.add?.({ severity: 'error', summary: 'Could not save schedule', detail: err?.message || 'Unknown error', life: 4000 });
+    toast.add({ severity: 'error', summary: 'Could not save schedule', detail: err?.message || 'Unknown error', life: 4000 });
   }
 };
 
@@ -91,4 +108,5 @@ onMounted(load);
 .schedule-select { min-width: 12rem; }
 .schedule-meta { font-size: 0.75rem; color: var(--p-text-muted-color); }
 .schedule-err { color: var(--p-red-600, #dc2626); }
+.schedule-warn { color: var(--p-amber-600, #d97706); font-size: 0.75rem; }
 </style>

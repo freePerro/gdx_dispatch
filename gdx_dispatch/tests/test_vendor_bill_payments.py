@@ -853,3 +853,16 @@ def test_schedule_stale_when_success_old(tenant_db):
     s.last_success_at = datetime.now(timezone.utc) - timedelta(days=3)
     tenant_db.commit()
     assert schedule_dict(s)["stale"] is True
+
+
+def test_list_endpoint_annotates_partials(tenant_db):
+    """Sweep M5: the LIST must show partial state, not just /payables."""
+    from gdx_dispatch.routers.vendor_invoices import list_invoices
+
+    bill = make_bill(tenant_db, "100.00", number="LIST-PART-1")
+    record_payment(tenant_db, bill, amount=Decimal("25.00"), paid_date=None, source="manual")
+    tenant_db.commit()
+    rows = asyncio.run(list_invoices(None, False, {"sub": "t"}, tenant_db))
+    row = next(r for r in rows if r.invoice_number == "LIST-PART-1")
+    assert row.is_partial is True
+    assert row.open_balance == 75.0

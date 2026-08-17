@@ -268,9 +268,15 @@ async def upload_invoice(
     )
 
 
+class PayableOut(InvoiceSummaryOut):
+    paid_total: float = 0.0
+    open_balance: float = 0.0
+    is_partial: bool = False
+
+
 @router.get(
     "",
-    response_model=list[InvoiceSummaryOut],
+    response_model=list[PayableOut],
     dependencies=[Depends(require_permission("vendor_invoices.read"))],
 )
 async def list_invoices(
@@ -286,13 +292,33 @@ async def list_invoices(
         stmt = stmt.where(VendorInvoice.reviewed_at.is_(None))
     stmt = stmt.order_by(VendorInvoice.created_at.desc())
     rows = db.execute(stmt).scalars().all()
-    return [InvoiceSummaryOut.model_validate(r) for r in rows]
+    # Sweep M5: the LIST hid partial payments — a half-paid bill looked
+    # identical to an untouched one while the dashboard payables card
+    # correctly netted balances. One grouped query annotates the truth.
+    paid_by_bill: dict = {}
+    if rows:
+        from sqlalchemy import func as _func
 
-
-class PayableOut(InvoiceSummaryOut):
-    paid_total: float = 0.0
-    open_balance: float = 0.0
-    is_partial: bool = False
+        for bill_id, paid in db.execute(
+            select(VendorBillPayment.vendor_invoice_id, _func.sum(VendorBillPayment.amount))
+            .where(
+                VendorBillPayment.vendor_invoice_id.in_([r.id for r in rows]),
+                VendorBillPayment.voided_at.is_(None),
+            )
+            .group_by(VendorBillPayment.vendor_invoice_id)
+        ).all():
+            paid_by_bill[bill_id] = paid or Decimal("0.00")
+    out = []
+    for r in rows:
+        paid = paid_by_bill.get(r.id, Decimal("0.00"))
+        total = r.total or Decimal("0.00")
+        out.append(PayableOut(
+            **InvoiceSummaryOut.model_validate(r).model_dump(),
+            paid_total=float(paid),
+            open_balance=float(total - paid),
+            is_partial=bool(paid > 0 and paid < total),
+        ))
+    return out
 
 
 @router.get(

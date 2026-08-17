@@ -281,3 +281,23 @@ def test_expense_routes_registered_in_main_app():
     assert "/api/expenses/{expense_id}" in paths
     assert "/api/expenses/{expense_id}/lines" in paths
     assert "/api/expense-categories" in paths
+
+
+def test_list_expenses_status_filter(tenant_db):
+    """Sweep H2: the dashboard's draft-expense attention row counts via
+    ?status=draft — the filter must actually filter."""
+    from gdx_dispatch.models.tenant_models import Expense
+    from gdx_dispatch.routers.expenses import list_expenses
+    import datetime as _dt
+
+    tenant_db.add_all([
+        Expense(vendor="A", amount=10, date=_dt.date(2026, 8, 1), category="Fuel",
+                status="draft", company_id="11111111-1111-1111-1111-111111111111"),
+        Expense(vendor="B", amount=20, date=_dt.date(2026, 8, 2), category="Fuel",
+                status="approved", company_id="11111111-1111-1111-1111-111111111111"),
+    ])
+    tenant_db.commit()
+    drafts = list_expenses(status="draft", _={"sub": "t"}, db=tenant_db)
+    assert {r["vendor"] for r in drafts} == {"A"}
+    everything = list_expenses(_={"sub": "t"}, db=tenant_db)
+    assert len(everything) >= 2

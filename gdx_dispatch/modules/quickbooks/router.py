@@ -971,8 +971,23 @@ async def banking_sync(
             await _try_pull("journal_entries", lambda: _banking.pull_journal_entries(tenant_id, db, qb, start_date, end_date))
             await _try_pull("customer_payments", lambda: _banking.pull_customer_payments(tenant_id, db, qb, start_date, end_date))
             await _try_pull("vendor_credits", lambda: _banking.pull_vendor_credits(tenant_id, db, qb, start_date, end_date))
+            manual_reads = qb.read_count
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # A manual pull is still a run (money-surface sweep H4): without this
+    # stamp, the schedule card kept showing the last SCHEDULED run's error —
+    # or "stale" — after a clean manual sync, and the metered-read count of
+    # manual pulls vanished.
+    errored = [k for k, v in out.items() if isinstance(v, dict) and v.get("errors")]
+    run_status = "ok" if not errored else (
+        "error" if len(errored) == len(out) else f"partial:{','.join(sorted(errored))[:30]}"
+    )
+    _banking.record_scheduled_run(
+        db, status=run_status, reads=manual_reads,
+        full_pull=(run_status == "ok" and not start_date),
+    )
+
     def _audit_slice(v: Any) -> dict[str, Any]:
         if not isinstance(v, dict):
             return {}

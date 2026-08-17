@@ -195,6 +195,7 @@
 </template>
 
 <script setup>
+import { useToast } from 'primevue/usetoast';
 import { computed, onMounted, ref, watch } from 'vue';
 import Button from 'primevue/button';
 import Column from 'primevue/column';
@@ -208,6 +209,7 @@ import { useApiWithToast } from '../../composables/useApiWithToast';
 import { buildBankingSyncSummary } from './bankingSyncSummary.js';
 
 const api = useApiWithToast();
+const toast = useToast();
 const balances = ref([]);
 const rows = ref([]);
 const total = ref(0);
@@ -297,7 +299,7 @@ const fetchRows = async () => {
     rows.value = Array.isArray(t?.items) ? t.items : [];
     total.value = Number.isFinite(t?.total) ? t.total : rows.value.length;
   } catch (err) {
-    api.toast?.add?.({
+    toast.add({
       severity: 'error', summary: 'Could not load banking data',
       detail: err?.message || 'Unknown error', life: 4000,
     });
@@ -350,7 +352,7 @@ const syncBanking = async () => {
     const url = '/api/qb/banking/sync' + (params.toString() ? `?${params}` : '');
     const result = await api.post(url);
     const { summary, totalErrors } = buildBankingSyncSummary(result, iso);
-    api.toast?.add?.({
+    toast.add({
       severity: totalErrors > 0 ? 'warn' : 'success',
       summary: totalErrors > 0 ? 'Banking synced with errors' : 'Banking synced',
       detail: summary,
@@ -359,7 +361,7 @@ const syncBanking = async () => {
     await fetchBalances();
     await fetchRows();
   } catch (err) {
-    api.toast?.add?.({ severity: 'error', summary: 'Sync failed', detail: err?.message || 'Unknown error', life: 4000 });
+    toast.add({ severity: 'error', summary: 'Sync failed', detail: err?.message || 'Unknown error', life: 4000 });
   } finally {
     syncing.value = false;
   }

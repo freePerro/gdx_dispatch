@@ -657,7 +657,7 @@ def journal_browser(
     company_id = _tenant_id(user)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    if source_type and source_type not in ("invoice", "payment", "adjustment", "expense"):
+    if source_type and source_type not in ("invoice", "payment", "adjustment", "expense", "bank_account"):
         raise HTTPException(status_code=422, detail="unknown source_type")
     if account_id:
         try:
