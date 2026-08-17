@@ -11,6 +11,24 @@
 # Every step is idempotent, so this is safe to run on each container start.
 set -e
 
+# Self-host runtime env (docker-compose.customer.yml): the secrets-init
+# service mints SECRET_KEY / JWT_SECRET / encryption keys / DATABASE_URL once
+# and persists them on a shared volume, so every container agrees on every key
+# across restarts. Opt-in via GDX_RUNTIME_ENV_FILE — unset (prod/dev compose)
+# means this block is inert. The file wins over container env by construction:
+# mint_runtime_env already folded any operator-set env value into it.
+if [ -n "${GDX_RUNTIME_ENV_FILE:-}" ]; then
+    if [ -f "${GDX_RUNTIME_ENV_FILE}" ]; then
+        echo "[entrypoint] Loading runtime env from ${GDX_RUNTIME_ENV_FILE}…"
+        set -a
+        . "${GDX_RUNTIME_ENV_FILE}"
+        set +a
+    else
+        echo "[entrypoint] ERROR: GDX_RUNTIME_ENV_FILE=${GDX_RUNTIME_ENV_FILE} is set but the file is missing — did the secrets-init service run?" >&2
+        exit 1
+    fi
+fi
+
 # Alembic should migrate the SAME database the app uses. Pinning
 # ALEMBIC_DATABASE_URL to DATABASE_URL also avoids relying on the dev
 # fallback URL baked into alembic.ini.

@@ -41,7 +41,14 @@ RUN mkdir -p /plugins && chown pwuser /plugins
 # Run as the Playwright image's non-root user so headless Chromium keeps its
 # sandbox — no insecure/"unsupported" --no-sandbox flag. Browsers under
 # /ms-playwright are readable by pwuser in the base image.
+RUN chmod +x /app/gdx_dispatch/docker/entrypoint.sh
 USER pwuser
 
 EXPOSE 8000
+# Same entrypoint as the app image. Compose always sets GDX_SKIP_MIGRATIONS/
+# GDX_SKIP_BOOTSTRAP=1 for plugin-host, so migrations/bootstrap are inert here
+# — what this buys is the GDX_RUNTIME_ENV_FILE loading in self-host deploys.
+# Without it plugin-host silently missed the minted DATABASE_URL and fell back
+# to a container-local SQLite while reporting healthy.
+ENTRYPOINT ["/app/gdx_dispatch/docker/entrypoint.sh"]
 CMD ["uvicorn", "gdx_dispatch.plugin_host.main:app", "--host", "0.0.0.0", "--port", "8000"]
