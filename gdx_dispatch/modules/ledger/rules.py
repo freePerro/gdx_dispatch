@@ -420,9 +420,26 @@ def build_payment_lines(session: Session, payment, invoice) -> tuple[PostingLine
 
 def post_payment_received(session: Session, payment, invoice, actor: str | None = None):
     """P3 — called from every path that creates a Payment row. No-op with
-    the flag off or for zero-amount payments. Never commits."""
+    the flag off or for zero-amount payments. Never commits.
+
+    Era exception: recording a pre-cutover-DATED payment on an era invoice
+    (the office backfilling history) posts the era-settlement correction at
+    the cutover date instead of a P3 — a P3 would slam the era lock at
+    record time AND double-count cash already inside the opening bank
+    balances."""
     if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
         return None
+    if pre_cutover_era(session, invoice):
+        cutover = _cutover_date(session, invoice.company_id)
+        if _is_late_era_settlement(payment, True, cutover):
+            # Whole-invoice resettle, never a single-slice post: the
+            # allocation is a function of ALL the invoice's late payments,
+            # so recording one out of date order moves siblings' slices —
+            # a single-slice post leaves the siblings' stale entries live
+            # and over-credits AR (2026-08-17 audit, executed repro).
+            resettle_invoice_payments(session, invoice, actor)
+            live = _live_era_settlement_entries(session, payment, invoice.company_id)
+            return live[0] if live else None
     lines = build_payment_lines(session, payment, invoice)
     if not lines:
         return None
@@ -450,6 +467,141 @@ def _live_payment_entries(session: Session, payment, company_id):
             GlJournalEntry.idempotency_key.like(f"payment:{payment.id}:{EVENT_PAYMENT}:%"),
         )
     ).all()
+
+
+EVENT_ERA_SETTLEMENT = "era_settlement"
+
+
+def _is_late_era_settlement(payment, invoice_is_era: bool, cutover) -> bool:
+    """The third payment category (2026-08-17, the 41 locked replay events):
+    an ERA invoice's payment DATED before cutover but RECORDED after it —
+    the August QB paid-status repair backfilled history the operational
+    system didn't know at cutover, so the P8 anchor snapshot is overstated
+    by exactly these settlements. They are era FACTS learned late: never
+    P3 (their cash already sits inside the statement-derived opening bank
+    balances — a P3 would double-count it into 1050), never lock fodder."""
+    return (
+        invoice_is_era
+        and cutover is not None
+        and payment.payment_date is not None
+        and payment.payment_date < cutover
+        and not _existed_at_cutover(payment, cutover)
+    )
+
+
+def _late_era_allocation(session: Session, invoice, cutover: date) -> dict:
+    """Deterministic settlement allocation for an era invoice's late-learned
+    era payments: the pool is the P8 anchor amount (immutably derived by
+    ``opening_balance_cents``), consumed in (payment_date, created_at, id)
+    order and capped so allocations never exceed the anchor — same state →
+    same allocation → same content keys, the §5.6 replay principle. Voided
+    payments allocate 0 (their reversal path handles any live entry)."""
+    from gdx_dispatch.models.tenant_models import Payment
+
+    pool = max(0, opening_balance_cents(session, invoice, cutover))
+    allocation: dict = {}
+    late = [
+        p for p in session.scalars(
+            select(Payment).where(Payment.invoice_id == invoice.id)
+        ).all()
+        if _is_late_era_settlement(p, True, cutover)
+    ]
+    def _ts(p):
+        # SQLite hands back naive datetimes, fresh rows carry aware ones —
+        # normalize or the sort TypeErrors on the mix (same hazard
+        # _prior_nonvoided_paid_cents already guards against).
+        ts = p.created_at
+        if ts is not None and ts.tzinfo is not None:
+            ts = ts.astimezone(dt_timezone.utc).replace(tzinfo=None)
+        return ts or datetime.min
+
+    for payment in sorted(late, key=lambda p: (p.payment_date, _ts(p), str(p.id))):
+        if payment.voided_at is not None:
+            allocation[payment.id] = 0
+            continue
+        cents = min(to_cents(_dec(payment.amount)), pool)
+        allocation[payment.id] = cents
+        pool -= cents
+    return allocation
+
+
+def _live_era_settlement_entries(session: Session, payment, company_id):
+    return session.scalars(
+        select(GlJournalEntry).where(
+            GlJournalEntry.company_id == company_id,
+            GlJournalEntry.source_type == "payment",
+            GlJournalEntry.source_id == str(payment.id),
+            GlJournalEntry.status == ENTRY_STATUS_POSTED,
+            GlJournalEntry.idempotency_key.like(
+                f"payment:{payment.id}:{EVENT_ERA_SETTLEMENT}:%"
+            ),
+        )
+    ).all()
+
+
+def post_era_settlement(
+    session: Session, payment, invoice, cents: int, actor: str | None = None
+):
+    """The late-learned era settlement entry: debit 3950 Opening Balance
+    Equity / credit 1200 AR at the CUTOVER date, memo naming the true
+    payment date. Not cash movement — the money was already in the opening
+    bank balances; this corrects the anchor the late knowledge overstated.
+    Content-keyed idempotent; zero-allocation returns None (loudly — an
+    uncovered amount means the anchor pool ran out and someone must look).
+
+    "First open day" is hardcoded to cutover: no close endpoint exists yet,
+    so cutover IS the first open day. When period closes ship, this must
+    become "first day after the latest lock" or late records/voids will 409
+    against the new lock (2026-08-17 audit, accepted forward)."""
+    if not ledger_service.ledger_posting_enabled(session, invoice.company_id):
+        return None
+    amount_cents = to_cents(_dec(payment.amount))
+    if payment.voided_at is None and cents < amount_cents:
+        log.warning(
+            "era settlement shortfall on %s: payment %s dated %s allocates "
+            "%d of %d cents — the uncovered %d cents get NO ledger effect "
+            "(anchor pool exhausted; either the opening snapshot or the "
+            "payment record is wrong). reconciliation_report lists it under "
+            "era_settlement_shortfalls.",
+            invoice.invoice_number,
+            payment.id,
+            payment.payment_date,
+            cents,
+            amount_cents,
+            amount_cents - cents,
+        )
+    if cents <= 0:
+        return None
+    cutover = _cutover_date(session, invoice.company_id)
+    true_date = payment.payment_date.isoformat() if payment.payment_date else "unknown"
+    memo = (
+        f"era settlement of {invoice.invoice_number}: payment dated {true_date}, "
+        f"recorded after cutover — posted at first open day"
+    )
+    return post_for_event(
+        session,
+        PostingEvent(
+            company_id=invoice.company_id,
+            source_type="payment",
+            source_id=str(payment.id),
+            event=EVENT_ERA_SETTLEMENT,
+            effective_at=cutover,
+            lines=(
+                # Dimensions mirror the P8 anchor (build_opening_lines) so
+                # per-job and per-customer AR net to zero once settled.
+                PostingLine(
+                    amount_cents=cents, role=ROLE_OPENING_EQUITY, memo=memo,
+                    customer_id=getattr(invoice, "customer_id", None),
+                ),
+                PostingLine(
+                    amount_cents=-cents, role=ROLE_AR, memo=memo,
+                    job_id=getattr(invoice, "job_id", None),
+                    customer_id=getattr(invoice, "customer_id", None),
+                ),
+            ),
+            created_by=actor,
+        ),
+    )
 
 
 def resettle_invoice_payments(session: Session, invoice, actor: str | None = None) -> None:
@@ -481,15 +633,35 @@ def resettle_invoice_payments(session: Session, invoice, actor: str | None = Non
     payments = session.scalars(
         select(Payment).where(Payment.invoice_id == invoice.id)
     ).all()
+    era_allocation = (
+        _late_era_allocation(session, invoice, cutover)
+        if era_invoice and cutover is not None
+        else {}
+    )
     for payment in payments:
         in_opening = (
             era_invoice and cutover is not None and _existed_at_cutover(payment, cutover)
         )
+        late_era = _is_late_era_settlement(payment, era_invoice, cutover)
         if payment.voided_at is not None:
             for live in _live_payment_entries(session, payment, invoice.company_id):
                 reverse_entry(session, live, created_by=actor)
+            for live in _live_era_settlement_entries(session, payment, invoice.company_id):
+                # A voided late-learned era payment un-settles: the anchor
+                # correction reverses (AR back up, 3950 back up).
+                reverse_entry(session, live, created_by=actor)
             if in_opening and not _voided_before_cutover(payment, cutover):
                 _post_opening_payment_void(session, payment, invoice, actor)
+            continue
+        if late_era:
+            posted = post_era_settlement(
+                session, payment, invoice, era_allocation.get(payment.id, 0), actor
+            )
+            # Repost discipline: content changed (allocation moved) → new
+            # key posts above; reverse any stale era-settlement entry.
+            for live in _live_era_settlement_entries(session, payment, invoice.company_id):
+                if posted is None or live.id != posted.id:
+                    reverse_entry(session, live, created_by=actor)
             continue
         if in_opening:
             continue

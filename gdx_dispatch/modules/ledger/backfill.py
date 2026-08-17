@@ -295,15 +295,57 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
     The §5.7 hand-check — compare the per-invoice rows against QBO's AR
     aging before flipping the flag; the totals row is the running monthly
     check afterwards."""
+    from gdx_dispatch.models.tenant_models import Payment
+    from gdx_dispatch.modules.ledger.rules import (
+        _cutover_date,
+        _late_era_allocation,
+    )
+
     rows = []
     op_total = 0
     gl_attributed = 0
     legacy_credit_suspects = []
+    era_settlement_shortfalls = []
+    cutover = _cutover_date(session, company_id)
     for invoice in _company_invoices(session, company_id):
         if invoice.status not in ISSUED_STATUSES:
             continue
         op_cents = to_cents(_dec(invoice.balance_due))
         gl_cents = invoice_ar_balance_cents(session, invoice)
+        # Late-learned era payments the anchor pool couldn't cover post
+        # NOTHING (post_era_settlement caps at the pool) — and the delta
+        # arithmetic below is blind to them because balance_due clamps at
+        # zero too. Surface every uncovered cent; silence here would read
+        # as "reconciled" when money vanished (2026-08-17 audit).
+        if cutover is not None and pre_cutover_era(session, invoice):
+            allocation = _late_era_allocation(session, invoice, cutover)
+            if allocation:
+                by_id = {
+                    p.id: p
+                    for p in session.scalars(
+                        select(Payment).where(Payment.invoice_id == invoice.id)
+                    ).all()
+                }
+                for pid, allocated in allocation.items():
+                    p = by_id.get(pid)
+                    if p is None or p.voided_at is not None:
+                        continue
+                    uncovered = to_cents(_dec(p.amount)) - allocated
+                    if uncovered > 0:
+                        era_settlement_shortfalls.append(
+                            {
+                                "invoice_number": invoice.invoice_number,
+                                "payment_id": str(pid),
+                                "payment_date": (
+                                    p.payment_date.isoformat()
+                                    if p.payment_date
+                                    else None
+                                ),
+                                "amount_cents": to_cents(_dec(p.amount)),
+                                "allocated_cents": allocated,
+                                "uncovered_cents": uncovered,
+                            }
+                        )
         op_total += op_cents
         gl_attributed += gl_cents
         # Pre-GL credit memos lived as amount_paid mutations — invisible to
@@ -335,6 +377,7 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
         "rows": rows,
         "mismatches": mismatches,
         "legacy_credit_suspects": legacy_credit_suspects,
+        "era_settlement_shortfalls": era_settlement_shortfalls,
         "totals": {
             "operational_ar_cents": op_total,
             "gl_attributed_ar_cents": gl_attributed,
