@@ -152,7 +152,13 @@ jobs:
           labels: ${{ steps.meta_ph.outputs.labels }}
           cache-from: type=gha
 
+      # The one-click compose file ships as a release asset so
+      # …/releases/latest/download/docker-compose.customer.yml is a stable,
+      # evergreen URL — it's what the Deploy on Hostinger button points at
+      # (compose_url=) and what self-hosters paste into Docker Manager.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
+        run: |
+          gh release create "${{ github.ref_name }}" --generate-notes --verify-tag \
+            gdx_dispatch/docker/docker-compose.customer.yml
