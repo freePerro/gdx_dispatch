@@ -106,18 +106,20 @@ def main() -> int:
 
     resolved: dict[str, str] = {}
     minted: list[str] = []
-    for key, generate in MANAGED_SECRETS.items():
-        env_value = os.getenv(key, "").strip()
+    # `var_name` is the environment-variable NAME (e.g. "JWT_SECRET"), never
+    # its value — only names reach the log lines below.
+    for var_name, generate in MANAGED_SECRETS.items():
+        env_value = os.getenv(var_name, "").strip()
         if env_value and not _SAFE_VALUE.fullmatch(env_value):
             log.error(
                 "%s contains characters that are not safe for the runtime env "
                 "file (allowed: letters, digits, _.:/@%%+=,-). Set a simpler "
                 "value or leave it blank to have one generated.",
-                key,
+                var_name,
             )
             return 1
-        stored_value = stored.get(key, "")
-        if key == "DB_PASSWORD" and stored_value:
+        stored_value = stored.get(var_name, "")
+        if var_name == "DB_PASSWORD" and stored_value:
             # Postgres baked the stored password into its data dir on first
             # init — a changed env value can't take effect and would only
             # desync DATABASE_URL.
@@ -126,14 +128,14 @@ def main() -> int:
                     "DB_PASSWORD env differs from the persisted value; keeping the "
                     "persisted one (postgres fixed it at first init)."
                 )
-            resolved[key] = stored_value
+            resolved[var_name] = stored_value
         elif env_value:
-            resolved[key] = env_value
+            resolved[var_name] = env_value
         elif stored_value:
-            resolved[key] = stored_value
+            resolved[var_name] = stored_value
         else:
-            resolved[key] = generate()
-            minted.append(key)
+            resolved[var_name] = generate()
+            minted.append(var_name)
 
     # ── Derived, non-secret values ──
     # Percent-encode the password: SQLAlchemy URL-decodes it back to the raw
@@ -183,7 +185,7 @@ def main() -> int:
         log.info("Minted new values for: %s", ", ".join(sorted(minted)))
     else:
         log.info("All managed values already present — nothing minted.")
-    log.info("Runtime env written to %s (%d keys).", env_path, len(resolved))
+    log.info("Wrote %s (%d entries).", RUNTIME_ENV_NAME, len(resolved))
     return 0
 
 
