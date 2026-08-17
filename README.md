@@ -184,4 +184,19 @@ under [`docs/`](docs/).
 
 ## License
 
-Released under the [MIT License](LICENSE).
+GDX Dispatch is released under the [GNU Affero General Public License v3](LICENSE)
+(AGPLv3), with one additional permission: the
+[Plugin Exception](LICENSE-PLUGIN-EXCEPTION.md).
+
+What that means in practice:
+
+- **The core stays open.** If you modify GDX Dispatch and run it for others
+  to use — including as a hosted service — you must make your modified
+  source available to those users (AGPLv3 §13). Improvements to the core
+  can't be taken private.
+- **Plugins can be anything.** Plugins that talk to GDX Dispatch only
+  through the Plugin API may be released under any license, including
+  proprietary ones. See the exception for the exact conditions.
+
+Versions released before this change were published under the MIT License
+and remain available under those terms.
