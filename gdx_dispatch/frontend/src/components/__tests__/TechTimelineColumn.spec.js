@@ -202,6 +202,61 @@ describe('TechTimelineColumn', () => {
     expect(w.emitted('open-drawer')[0][0].id).toBe('k3');
   });
 
+  // "Several jobs for one customer" (Doug, 2026-08-17): the block and tray
+  // chip must carry the job title, not just the customer, or same-customer
+  // jobs are indistinguishable on the board.
+  it('renders the job title on blocks and tray chips when it adds information', () => {
+    const sel = new Date(2026, 4, 21);
+    const timedJob = {
+      id: 't1', customer_name: 'Acme', title: 'Opener replacement',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 2,
+    };
+    const trayJob = {
+      id: 't2', customer_name: 'Acme', title: 'Spring repair',
+      scheduled_at: new Date(2026, 4, 21, 0, 0).toISOString(),
+      effective_duration_hours: 2,
+    };
+    const w = mountColumn({ jobs: [timedJob, trayJob], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-t1"]');
+    expect(block.find('.block-title').text()).toBe('Opener replacement');
+    expect(block.attributes('aria-label')).toContain('Opener replacement');
+    const chip = w.find('[data-testid="tray-job-t2"]');
+    expect(chip.find('.tray-title').text()).toBe('Spring repair');
+  });
+
+  // Short blocks must keep the start-time line, so the title line yields —
+  // but the title must still be reachable via the hover title + aria label.
+  it('hides the title line on short blocks but keeps it on hover and aria', () => {
+    const sel = new Date(2026, 4, 21);
+    const shortJob = {
+      id: 't4', customer_name: 'Acme', title: 'Keypad program',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 1, // 48px at default zoom — below the 56px gate
+    };
+    const w = mountColumn({ jobs: [shortJob], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-t4"]');
+    expect(block.find('.block-title').exists()).toBe(false);
+    expect(block.find('.block-meta').exists()).toBe(true);
+    expect(block.attributes('aria-label')).toContain('Keypad program');
+    expect(block.attributes('title')).toContain('Keypad program');
+  });
+
+  it('does not repeat the title when it already stands in for the customer', () => {
+    const sel = new Date(2026, 4, 21);
+    // No customer: displayCustomer falls back to the title, so a separate
+    // title line would render the same string twice.
+    const job = {
+      id: 't3', title: 'Warehouse door tune-up',
+      scheduled_at: new Date(2026, 4, 21, 10, 0).toISOString(),
+      scheduled_duration_hours: 1,
+    };
+    const w = mountColumn({ jobs: [job], selectedDate: sel });
+    const block = w.find('[data-testid="timeline-job-t3"]');
+    expect(block.find('.block-customer').text()).toContain('Warehouse door tune-up');
+    expect(block.find('.block-title').exists()).toBe(false);
+  });
+
   it('marks a block that overflows the shift end with the overflow class', () => {
     const sel = new Date(2026, 4, 21);
     // 16:00 + 2h = 18:00 — shift ends at 17:00, so 1h overflow.

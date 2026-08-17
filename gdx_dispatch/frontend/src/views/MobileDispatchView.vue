@@ -173,6 +173,13 @@ function displayCustomer(job) {
   return job.customer_name || job.customer?.name || job.title || 'Job'
 }
 
+// Title renders only when it adds information — displayCustomer already
+// falls back to the title for customer-less jobs, which would show it twice.
+function displayTitle(job) {
+  const t = (job?.title || '').trim()
+  return t && t !== displayCustomer(job) ? t : ''
+}
+
 function timeWindow(job) {
   if (job.time_window) return job.time_window
   if (job.scheduled_at) {
@@ -536,6 +543,7 @@ onUnmounted(() => {
                   <span class="job-customer"><i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" /> {{ displayCustomer(job) }}</span>
                   <Tag :value="statusBadgeValue(job.status)" :severity="statusSeverity(job.status)" />
                 </div>
+                <p v-if="displayTitle(job)" class="job-title-line">{{ displayTitle(job) }}</p>
                 <div class="job-meta">
                   <span v-if="job.job_type" class="meta-item"><i class="pi pi-briefcase" /> {{ job.job_type }}</span>
                   <span v-if="timeWindow(job)" class="meta-item"><i class="pi pi-clock" /> {{ timeWindow(job) }}</span>
@@ -572,6 +580,7 @@ onUnmounted(() => {
                   <span class="job-customer"><i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" /> {{ displayCustomer(job) }}</span>
                   <Tag :value="canonicalStatus(job.status) ? job.status : 'assigned'" :severity="statusSeverity(job.status)" />
                 </div>
+                <p v-if="displayTitle(job)" class="job-title-line">{{ displayTitle(job) }}</p>
                 <div class="job-meta">
                   <span v-if="job.job_type" class="meta-item"><i class="pi pi-briefcase" /> {{ job.job_type }}</span>
                   <span v-if="timeWindow(job)" class="meta-item"><i class="pi pi-clock" /> {{ timeWindow(job) }}</span>
@@ -955,6 +964,13 @@ onUnmounted(() => {
 .job-customer {
   font-weight: 700;
   font-size: 1rem;
+}
+
+/* What the job IS — the discriminator when one customer has several jobs. */
+.job-title-line {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
 }
 
 .job-meta {

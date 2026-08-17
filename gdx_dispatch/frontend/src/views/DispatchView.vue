@@ -243,6 +243,7 @@
                   <JobStateChip :job="job" data-testid="job-status-tag" />
                 </div>
                 <div class="job-card-body">
+                  <p v-if="displayTitle(job)" class="job-line job-title-line" :data-testid="`unassigned-title-${job.id}`">{{ displayTitle(job) }}</p>
                   <p class="job-line"><i class="pi pi-briefcase"></i> {{ job.job_type || 'Service' }}</p>
                   <!-- This section now also carries dated-but-untechhed jobs
                        (see unassignedJobs), so the card has to say which it
@@ -460,6 +461,7 @@
                   @dragend="draggingJobId = null"
                   @click="openJobDrawer(job)">
                   <div class="job-customer-name">{{ displayCustomer(job) === 'No customer attached (lead)' ? '' : displayCustomer(job) }}</div>
+                  <div v-if="displayTitle(job)" class="job-line holding-job-title">{{ displayTitle(job) }}</div>
                   <Tag :value="area.name" size="small" class="holding-area-tag"
                     :style="{ backgroundColor: area.color, color: readableText(area.color), borderColor: area.color }" />
                   <JobStateChip v-if="job.display_state || job.status" :job="job" :show-icon="false" />
@@ -522,6 +524,7 @@
                   </span>
                   <JobStateChip :job="job" />
                 </div>
+                <p v-if="displayTitle(job)" class="job-line job-title-line">{{ displayTitle(job) }}</p>
                 <p class="job-line"><i class="pi pi-user"></i> {{ techName(job.technician_id) }}</p>
                 <p class="job-line"><i class="pi pi-clock"></i> {{ job.time_window || 'Anytime' }} · <span class="job-duration">{{ formatDurationHours(job.effective_duration_hours) }}</span></p>
               </div>
@@ -631,7 +634,7 @@
         class="assign-dialog"
         data-testid="assign-dialog"
       >
-        <p>Assign <strong>{{ assignDialogJob?.customer_name }}</strong> to a technician:</p>
+        <p>Assign <strong>{{ assignDialogJob?.customer_name }}</strong><span v-if="assignDialogJob?.title"> — {{ assignDialogJob.title }}</span> to a technician:</p>
         <Select
           v-model="assignDialogTechId"
           :options="assignableTechnicians"
@@ -680,6 +683,7 @@
             <span class="muted">Status</span>
             <JobStateChip :job="drawerJob" />
           </div>
+          <p class="job-drawer-line"><strong>Job:</strong> {{ drawerJob.title || drawerJob.job_number || '—' }}</p>
           <p class="job-drawer-line"><strong>Customer:</strong> {{ drawerJob.customer_name }}</p>
           <p class="job-drawer-line"><strong>Address:</strong> {{ drawerJob.address || 'N/A' }}</p>
           <p class="job-drawer-line"><strong>Job type:</strong> {{ drawerJob.job_type }}</p>
@@ -1244,6 +1248,16 @@ function displayCustomer(job) {
     return `${job.customer_name} · ${job.location_label}`;
   }
   return job.customer_name;
+}
+
+// Same guard as TechTimelineColumn/MobileDispatchView: render the title only
+// when it isn't already the string standing in for the customer. This view's
+// displayCustomer never falls back to the title today, but the three views
+// share cards conceptually — keep the dedupe policy uniform so harmonizing
+// displayCustomer later can't introduce double-printed titles here.
+function displayTitle(job) {
+  const t = (job?.title || '').trim();
+  return t && t !== displayCustomer(job) ? t : '';
 }
 
 function techName(techId) {
@@ -2273,6 +2287,16 @@ defineExpose({
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* What the job IS — the discriminator when one customer has several jobs
+   on the board, so it reads stronger than the muted meta lines. */
+.job-title-line {
+  color: var(--p-text-color);
+  font-weight: 500;
+}
+/* The holding card is a wrapping flex row of chips; the title takes a full
+   row of its own so it doesn't interleave with the tags. */
+.holding-job-title { flex-basis: 100%; }
 
 /* A dated job in this section is waiting on a TECH, not on a date — call
    that out rather than letting it read like the undated cards. */

@@ -65,6 +65,7 @@
               <i v-if="job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
               {{ displayCustomer(job) }}
             </span>
+            <span v-if="displayTitle(job)" class="tray-title">{{ displayTitle(job) }}</span>
             <span class="tray-dur">{{ formatDuration(job.effective_duration_hours) }}</span>
           </div>
         </div>
@@ -127,6 +128,7 @@
             role="button"
             tabindex="0"
             :aria-label="blockAriaLabel(block)"
+            :title="blockHoverTitle(block)"
             draggable="true"
             @dragstart="onJobDragStart(block.job, $event)"
             @dragend="emit('job-drag-end')"
@@ -138,6 +140,11 @@
               <i v-if="block.job.is_return_visit" class="pi pi-replay return-visit-icon" v-tooltip="'Return visit'" />
               {{ displayCustomer(block.job) }}
             </div>
+            <!-- Height gate: on short blocks (≤1h at default zoom) a third
+                 line would clip the start-time meta line, which is the
+                 load-bearing datum on a timeline. The hover title + aria
+                 label still carry the job title there. -->
+            <div v-if="displayTitle(block.job) && block.heightPx >= 56" class="block-title">{{ displayTitle(block.job) }}</div>
             <div class="block-meta">
               {{ formatTime(block.startDate) }} · {{ formatDuration(block.durationHours) }}
             </div>
@@ -327,13 +334,27 @@ function displayCustomer(job) {
   if (typeof job.customer === 'object') return job.customer?.name || job.title || 'Job';
   return job.customer_name || job.customer || job.title || 'Job';
 }
+// Title renders only when it adds information — displayCustomer already
+// falls back to the title for customer-less jobs, which would show it twice.
+function displayTitle(job) {
+  const t = (job?.title || '').trim();
+  return t && t !== displayCustomer(job) ? t : '';
+}
 // Screen-reader labels for the keyboard-activatable job targets. Keyboard
 // covers open-drawer only; drag placement stays mouse-only (known limitation).
 function blockAriaLabel(block) {
-  return `Open job: ${displayCustomer(block.job)}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}`;
+  const title = displayTitle(block.job);
+  return `Open job: ${displayCustomer(block.job)}${title ? `, ${title}` : ''}, ${formatTime(block.startDate)}, ${formatDuration(block.durationHours)}`;
 }
 function trayAriaLabel(job) {
-  return `Open job: ${displayCustomer(job)}, unscheduled, ${formatDuration(job.effective_duration_hours)}`;
+  const title = displayTitle(job);
+  return `Open job: ${displayCustomer(job)}${title ? `, ${title}` : ''}, unscheduled, ${formatDuration(job.effective_duration_hours)}`;
+}
+// Native hover tooltip — short and overlapping blocks ellipsize/hide the
+// title line, so hovering must reveal the full identity.
+function blockHoverTitle(block) {
+  const title = displayTitle(block.job);
+  return `${displayCustomer(block.job)}${title ? ` — ${title}` : ''} (${formatTime(block.startDate)} · ${formatDuration(block.durationHours)})`;
 }
 
 // Drop coordinate → snapped ISO timestamp on selectedDate.
@@ -456,6 +477,13 @@ defineExpose({ dropYToISO });
   outline-offset: 2px;
 }
 .tray-customer { font-weight: 500; }
+.tray-title {
+  color: var(--p-text-muted-color, #6b7280);
+  max-width: 9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .return-visit-icon { color: var(--color-warning-500, #d97706); font-size: 0.8em; margin-right: 0.25rem; }
 .tray-dur { color: var(--p-text-muted-color, #6b7280); font-size: 0.7rem; }
 .tray-empty {
@@ -551,6 +579,7 @@ defineExpose({ dropYToISO });
   border-bottom-width: 2px;
 }
 .block-customer { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.block-title { font-size: 0.65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block-meta { font-size: 0.65rem; color: var(--p-text-muted-color, #6b7280); }
 .block-overflow {
   position: absolute;
