@@ -349,3 +349,40 @@ describe("time is shown, never edited", () => {
     expect(timer.text()).toContain("closed out");
   });
 });
+
+describe("view-only grants (2026-08-17 field report)", () => {
+  // read_only/access_grant are TOP-LEVEL response fields, sibling to `job`.
+  async function mountPayloadExtra(extra) {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    getMock.mockImplementation(async () => ({ ...jobPayload(), ...extra }));
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    return w;
+  }
+
+  it("creator grant hides actions and says dispatch still owns the handoff", async () => {
+    // The original failure: a tech opened the job he'd just created and got
+    // a full action bar whose every tap answered "Could not save — job not
+    // found". Creator grant is now honestly read-only with a reason.
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "creator" });
+    expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(false);
+    const banner = w.find('[data-testid="mjd-readonly-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("You created this job");
+    expect(banner.text()).toContain("isn't assigned to you");
+  });
+
+  it("company grant shows the generic view-only banner", async () => {
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "company" });
+    expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(false);
+    const banner = w.find('[data-testid="mjd-readonly-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("View only");
+  });
+
+  it("an assigned (writable) job shows no banner and keeps its actions", async () => {
+    const w = await mountWith({ dispatch_status: "assigned" });
+    expect(w.find('[data-testid="mjd-readonly-banner"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(true);
+  });
+});
