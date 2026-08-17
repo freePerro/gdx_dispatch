@@ -463,6 +463,42 @@ def test_estimate_decline_records_reason(tenant_db_session):
     assert est.declined_reason == "Too expensive"
 
 
+def test_portal_decision_alerts_the_office(tenant_db_session):
+    """Same gap as the emailed public link (2026-08-17): a portal accept or
+    decline was invisible to the office until someone reopened the estimate.
+    Both must land a broadcast bell notification — user_id NULL (every office
+    user), category "estimate" (drawer deep-link)."""
+    from gdx_dispatch.models.tenant_models import Notification
+
+    seeded = _seed_customer_data(tenant_db_session)
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    portal_router.portal_estimate_accept(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    rows = tenant_db_session.execute(select(Notification)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].user_id is None
+    assert rows[0].category == "estimate"
+    assert rows[0].title == "Estimate accepted"
+    assert "Customer A" in rows[0].message
+    assert est.estimate_number in rows[0].message
+
+    est2 = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    portal_router.portal_estimate_decline(
+        estimate_id=est2.id,
+        request=_mock_request(),
+        payload=portal_router.DeclineEstimateIn(reason="Too expensive"),
+        principal=principal,
+        db=tenant_db_session,
+    )
+    rows = tenant_db_session.execute(select(Notification)).scalars().all()
+    assert sorted(r.title for r in rows) == ["Estimate accepted", "Estimate declined"]
+    declined = next(r for r in rows if r.title == "Estimate declined")
+    assert '"Too expensive"' in declined.message
+
+
 def _seed_estimate_with_lines(db, customer_id, status="sent"):
     est = _seed_estimate(db, customer_id, status=status)
     db.add_all([

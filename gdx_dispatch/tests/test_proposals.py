@@ -30,6 +30,7 @@ from gdx_dispatch.modules.proposals.models import Estimate, ProposalTier
 from gdx_dispatch.modules.proposals.router import router as proposals_router
 from gdx_dispatch.routers.auth import get_current_user
 from gdx_dispatch.routers.estimates import router as estimates_router
+from gdx_dispatch.routers.notifications import router as notifications_router
 
 TENANT = "tenant-test"
 
@@ -64,6 +65,16 @@ def client():
         INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
         VALUES ('g2', 'tenant-test', 'estimates', datetime('now'), datetime('now'))
     """))
+    # The notifications router (mounted below so the bell-badge tests can hit
+    # the REAL count endpoint) gates on "communications".
+    setup.execute(text("""
+        INSERT OR IGNORE INTO tenant_module_grants (id, tenant_id, module_key, granted_at, created_at)
+        VALUES ('g3', 'tenant-test', 'communications', datetime('now'), datetime('now'))
+    """))
+    setup.execute(text("""
+        INSERT OR IGNORE INTO company_module_grants (id, company_id, module_key, granted_at, created_at)
+        VALUES ('g4', 'tenant-test', 'communications', datetime('now'), datetime('now'))
+    """))
     setup.commit()
     setup.close()
 
@@ -83,6 +94,7 @@ def client():
 
     app.include_router(estimates_router)
     app.include_router(proposals_router)
+    app.include_router(notifications_router)
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_user] = lambda: {
         "user_id": "user-1", "sub": "user-1", "role": "admin", "tenant_id": TENANT,
@@ -735,6 +747,109 @@ def test_public_decline_records_reason(client: TestClient, monkeypatch):
     r = client.post(f"/api/proposals/{token}/decline", json={"reason": "Went another way"})
     assert r.status_code == 200
     assert r.json()["estimate"]["declined_reason"] == "Went another way"
+
+
+# ── the office hears about the decision ──────────────────────────────────────
+# The reported gap (2026-08-17): a customer accepted from the emailed link and
+# nobody in the shop was told — the only evidence was the status cell whenever
+# somebody next opened the estimate. The decision must land a broadcast bell
+# notification: user_id NULL (every office user), category "estimate" (the
+# drawer deep-links it to /estimates).
+
+from gdx_dispatch.models.tenant_models import Notification  # noqa: E402
+
+
+def _notifications(client: TestClient) -> list[Notification]:
+    db = _db(client)
+    try:
+        return db.execute(select(Notification)).scalars().all()
+    finally:
+        db.close()
+
+
+def test_public_accept_alerts_the_office_once(client: TestClient, monkeypatch):
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 2600.0)
+    token = _publish(client, est["id"], tax_rate=0.07)
+
+    assert client.post(f"/api/proposals/{token}/accept", json={}).status_code == 200
+    # The idempotent re-click must not ring the bell a second time.
+    assert client.post(f"/api/proposals/{token}/accept", json={}).status_code == 200
+
+    rows = _notifications(client)
+    assert len(rows) == 1, [r.message for r in rows]
+    n = rows[0]
+    assert n.user_id is None            # broadcast, not one user's inbox
+    assert n.category == "estimate"     # drawer deep-link target
+    assert n.title == "Estimate accepted"
+    assert est["estimate_number"] in n.message
+    assert "Acme Customer" in n.message
+    assert "$2,782.00" in n.message     # tax-inclusive — same number as the page
+
+    # Bind the row to the BELL: the real count endpoint (the one the topbar
+    # polls) must see the broadcast for a logged-in office user. Without this
+    # the tests only prove a row exists and trust the count query matches it.
+    r = client.get("/api/notifications/count")
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 1
+
+
+def test_public_accept_survives_a_dead_notification_write(client: TestClient, monkeypatch):
+    """The alert is best-effort BY CONTRACT: a broken notifications table must
+    never fail — or roll back — the customer's accept. Patches the model class
+    the helper lazily imports so the insert itself explodes."""
+    import gdx_dispatch.models.tenant_models as tenant_models
+
+    class Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("notifications table on fire")
+
+    monkeypatch.setattr(tenant_models, "Notification", Boom)
+
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 1000.0)
+    token = _publish(client, est["id"])
+
+    r = client.post(f"/api/proposals/{token}/accept", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["estimate"]["status"] == "accepted"
+    # This module's own Notification import predates the patch, so the query
+    # still works — and proves nothing landed.
+    assert _notifications(client) == []
+
+
+def test_public_tier_accept_alert_names_the_package(client: TestClient, monkeypatch):
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    client.patch(f"/api/estimates/{est['id']}", json={"proposal_mode": True})
+    tier = _add_tier(client, est["id"], "best", total_price=8000.0)
+    token = _publish(client, est["id"])
+
+    r = client.post(f"/api/proposals/{token}/accept", json={"tier_id": tier["id"]})
+    assert r.status_code == 200, r.text
+
+    rows = _notifications(client)
+    assert len(rows) == 1
+    assert "Best package" in rows[0].message
+    assert "$8,000.00" in rows[0].message
+
+
+def test_public_decline_alerts_the_office_with_reason(client: TestClient, monkeypatch):
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    token = _publish(client, est["id"])
+
+    assert client.post(f"/api/proposals/{token}/decline", json={"reason": "Went another way"}).status_code == 200
+
+    rows = _notifications(client)
+    assert len(rows) == 1
+    n = rows[0]
+    assert n.user_id is None
+    assert n.title == "Estimate declined"
+    assert "Acme Customer" in n.message
+    assert '"Went another way"' in n.message
 
 
 def test_public_accept_unknown_token_is_uniform_404(client: TestClient, monkeypatch):

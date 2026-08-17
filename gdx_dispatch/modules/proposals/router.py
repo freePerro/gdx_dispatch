@@ -13,6 +13,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, u
 from gdx_dispatch.core.customer_views import record_customer_view
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.office_notifications import notify_estimate_decision
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.modules.deposits.service import (
     DepositError,
@@ -438,6 +439,26 @@ def public_proposal_accept(
     )
     db.commit()
 
+    # Office alert — the audit row above is forensics, not a ping: without
+    # this, a customer says YES from the emailed link and nobody in the shop
+    # hears about it until someone happens to reopen the estimate. Rides the
+    # existing bell badge; never blocks the accept. The idempotent re-click
+    # path returned early above, so this rings exactly once.
+    try:
+        amount = (
+            float(est.total or 0)  # just set to the tier's contract subtotal
+            if tier is not None
+            else float(compute_estimate_totals(est, db)["total"] or 0)
+        )
+    except Exception:
+        amount = 0.0
+    notify_estimate_decision(
+        db, tenant_id, est,
+        verb="accepted",
+        tier_name=str(tier.tier_name) if tier is not None else None,
+        amount=amount,
+    )
+
     # Mirror the staff/portal accept flow (2026-05-13 directive: accept = job
     # created) so a public acceptance lands on the dispatch board too.
     if est.job_id is None:
@@ -530,9 +551,10 @@ def public_proposal_decline(
     db.commit()
     db.refresh(est)
 
+    tenant_id = _public_tenant_id(request, est)
     log_audit_event_sync(
         db=db,
-        tenant_id=_public_tenant_id(request, est),
+        tenant_id=tenant_id,
         user_id=_PUBLIC_ACTOR,
         action="public_estimate_declined",
         entity_type="estimate",
@@ -544,5 +566,9 @@ def public_proposal_decline(
         },
     )
     db.commit()
+
+    # A NO is office-actionable too (call back, counter, close the lead) —
+    # same bell alert as accept, with the customer's reason when they gave one.
+    notify_estimate_decision(db, tenant_id, est, verb="declined", reason=reason)
 
     return _serialize_public_estimate(est, db, request)
