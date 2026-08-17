@@ -341,17 +341,20 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
         "token_type": "bearer",
         "user": user_payload,
     })
-    # Cookies are scoped to .example.com so the same session is valid
-    # across every tenant subdomain AND the platform host (app.*). This is a
-    # load-bearing invariant: duplicate host-only cookies would shadow the
-    # domain-wide one (RFC 6265 §5.4 orders by path then creation time, NOT
-    # domain specificity), so EVERY set/delete_cookie in this module must use
-    # the same domain. SameSite=lax on the refresh cookie (was strict) so it
-    # survives the platform-host hand-off redirect from app.* to <slug>.*.
+    # Host-only cookies (no Domain attribute): the browser scopes them to the
+    # exact host that set them, which is correct for a single-tenant install on
+    # ANY domain — prod, demo, or a self-hosted customer box — with zero
+    # configuration. A hardcoded Domain would be silently REJECTED by the
+    # browser on every host that doesn't match it (RFC 6265 §5.3 step 6),
+    # which kills the refresh flow: sessions then die at ACCESS_TTL. (That was
+    # live from the initial public release until 2026-08-17: the sanitized
+    # `.example.com` placeholder domain-matched no real deployment.) EVERY
+    # set/delete_cookie in this module must stay host-only for the logout
+    # delete to match.
     resp.set_cookie(
         "refresh_token", refresh,
         httponly=True, secure=True, samesite="lax",
-        domain=".example.com", max_age=REFRESH_TTL,
+        max_age=REFRESH_TTL,
     )
     # access_token cookie powers the /oauth/authorize bridge for claude.ai
     # connectors. HttpOnly + Secure; SPA continues to use the JSON-body
@@ -359,7 +362,7 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> J
     resp.set_cookie(
         "access_token", access,
         httponly=True, secure=True, samesite="lax",
-        domain=".example.com", max_age=ACCESS_TTL,
+        max_age=ACCESS_TTL,
     )
     return resp
 
@@ -443,12 +446,12 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
                 resp.set_cookie(
                     "refresh_token", cached["refresh"],
                     httponly=True, secure=True, samesite="lax",
-                    domain=".example.com", max_age=REFRESH_TTL,
+                    max_age=REFRESH_TTL,
                 )
                 resp.set_cookie(
                     "access_token", cached["access"],
                     httponly=True, secure=True, samesite="lax",
-                    domain=".example.com", max_age=ACCESS_TTL,
+                    max_age=ACCESS_TTL,
                 )
                 return resp
 
@@ -597,13 +600,13 @@ def refresh(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     resp.set_cookie(
         "refresh_token", refresh_new,
         httponly=True, secure=True, samesite="lax",
-        domain=".example.com", max_age=REFRESH_TTL,
+        max_age=REFRESH_TTL,
     )
     # See login() for rationale on the SameSite=Lax access_token cookie.
     resp.set_cookie(
         "access_token", access,
         httponly=True, secure=True, samesite="lax",
-        domain=".example.com", max_age=ACCESS_TTL,
+        max_age=ACCESS_TTL,
     )
     return resp
 
@@ -636,13 +639,12 @@ def logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
         db.commit()
     except Exception:
         log.exception("logout_audit_error")
-    # Cookies are domain-scoped (.example.com) so the delete must use
-    # the same domain — without it Starlette emits a host-only Set-Cookie
-    # Max-Age=0 which leaves the actual domain-wide cookie in place and the
-    # user appears logged in on the next page load.
+    # Host-only delete to match the host-only set in login()/refresh() — a
+    # delete whose Domain attribute differs from the set cookie's leaves the
+    # real cookie in place and the user appears logged in on the next load.
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie("refresh_token", domain=".example.com")
-    resp.delete_cookie("access_token", domain=".example.com")
+    resp.delete_cookie("refresh_token")
+    resp.delete_cookie("access_token")
     return resp
 
 # ---------------------------------------------------------------------------
