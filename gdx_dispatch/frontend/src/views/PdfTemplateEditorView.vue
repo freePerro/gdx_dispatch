@@ -161,6 +161,8 @@
 <script setup>
 import { ref, computed, onMounted } from "vue";
 import { useToast } from "primevue/usetoast";
+import Button from "primevue/button";
+import ColorPicker from "primevue/colorpicker";
 import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import ProgressSpinner from "primevue/progressspinner";
