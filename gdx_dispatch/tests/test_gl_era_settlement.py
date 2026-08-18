@@ -20,12 +20,12 @@ from sqlalchemy import select
 
 from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Payment
 from gdx_dispatch.modules.ledger.models import (
+    ROLE_AR,
+    ROLE_OPENING_EQUITY,
     GlAccount,
     GlJournalEntry,
     GlJournalLine,
     GlPeriodLock,
-    ROLE_AR,
-    ROLE_OPENING_EQUITY,
 )
 from gdx_dispatch.modules.ledger.rules import (
     EVENT_ERA_SETTLEMENT,
@@ -113,7 +113,7 @@ def test_late_era_payment_settles_anchor_not_cash(db):
     entry = entries[0]
     assert entry.effective_at == CUTOVER  # first open day, era lock respected
     lines = db.scalars(select(GlJournalLine).where(GlJournalLine.entry_id == entry.id)).all()
-    by_role = {db.get(GlAccount, l.account_id).role: int(l.amount_cents) for l in lines}
+    by_role = {db.get(GlAccount, line.account_id).role: int(line.amount_cents) for line in lines}
     assert by_role[ROLE_OPENING_EQUITY] == 100000   # equity debit (anchor correction)
     assert by_role[ROLE_AR] == -100000              # AR credit — NOT cash
     assert invoice_ar_balance_cents(db, inv) == 0   # ledger AR now matches truth
@@ -132,7 +132,7 @@ def test_allocation_caps_at_anchor_and_is_idempotent(db):
         e = _era_entries(db, p)
         if not e:
             return 0
-        return max(int(l.amount_cents) for l in db.scalars(
+        return max(int(line.amount_cents) for line in db.scalars(
             select(GlJournalLine).where(GlJournalLine.entry_id == e[0].id)).all())
 
     assert cents(p1) == 8000
@@ -188,7 +188,7 @@ def _live_settlement_cents(db, payment):
     entries = _era_entries(db, payment)
     if not entries:
         return 0
-    return max(int(l.amount_cents) for l in db.scalars(
+    return max(int(line.amount_cents) for line in db.scalars(
         select(GlJournalLine).where(GlJournalLine.entry_id == entries[0].id)).all())
 
 
@@ -312,8 +312,8 @@ def test_settlement_lines_carry_anchor_dimensions(db):
 
     entry = _era_entries(db, p)[0]
     lines = db.scalars(select(GlJournalLine).where(GlJournalLine.entry_id == entry.id)).all()
-    ar_line = next(l for l in lines if int(l.amount_cents) < 0)
-    eq_line = next(l for l in lines if int(l.amount_cents) > 0)
+    ar_line = next(line for line in lines if int(line.amount_cents) < 0)
+    eq_line = next(line for line in lines if int(line.amount_cents) > 0)
     assert str(ar_line.job_id) == str(inv.job_id)
     assert str(ar_line.customer_id) == str(inv.customer_id)
     assert str(eq_line.customer_id) == str(inv.customer_id)

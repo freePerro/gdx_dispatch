@@ -24,7 +24,7 @@ class PluginEvent:
     delivery_id: str
 
     @classmethod
-    def from_wire(cls, body: dict[str, Any]) -> "PluginEvent":
+    def from_wire(cls, body: dict[str, Any]) -> PluginEvent:
         return cls(
             name=str(body.get("event") or body.get("name") or ""),
             data=dict(body.get("data") or {}),

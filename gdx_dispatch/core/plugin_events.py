@@ -105,7 +105,7 @@ def deliver_plugin_event_task(self, envelope: dict) -> int:
             # plugin-host transiently down → retry (bounded). Handlers dedupe on
             # delivery_id, so a retried delivery is safe.
             log.warning("plugin_event_dispatch_unreachable event=%s (retrying)", event_name)
-            raise self.retry(exc=exc)
+            raise self.retry(exc=exc) from exc
         if r.status_code >= 500:
             raise self.retry(exc=RuntimeError(f"plugin-host {r.status_code}"))
         if r.status_code >= 300:

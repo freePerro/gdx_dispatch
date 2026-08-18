@@ -19,11 +19,12 @@ def _run(secrets_dir, n8n_dir, monkeypatch):
 
 def test_mints_redis_password_into_url(tmp_path, monkeypatch):
     s, n = tmp_path / "s", tmp_path / "n8n"
-    s.mkdir(); n.mkdir()
+    s.mkdir()
+    n.mkdir()
     _run(s, n, monkeypatch)
 
     env = (s / "runtime.env").read_text()
-    lines = dict(l.split("=", 1) for l in env.splitlines() if "=" in l and not l.startswith("#"))
+    lines = dict(ln.split("=", 1) for ln in env.splitlines() if "=" in ln and not ln.startswith("#"))
     assert lines["REDIS_URL"].startswith("redis://:")  # password embedded
     assert lines["REDIS_URL"].endswith("@redis:6379/0")
     assert (s / "redis_password").exists()
@@ -34,7 +35,8 @@ def test_mints_redis_password_into_url(tmp_path, monkeypatch):
 
 def test_n8n_key_file_has_no_trailing_newline(tmp_path, monkeypatch):
     s, n = tmp_path / "s", tmp_path / "n8n"
-    s.mkdir(); n.mkdir()
+    s.mkdir()
+    n.mkdir()
     _run(s, n, monkeypatch)
 
     key = (n / "encryption_key").read_bytes()
@@ -46,7 +48,8 @@ def test_n8n_key_file_has_no_trailing_newline(tmp_path, monkeypatch):
 
 def test_minting_is_idempotent(tmp_path, monkeypatch):
     s, n = tmp_path / "s", tmp_path / "n8n"
-    s.mkdir(); n.mkdir()
+    s.mkdir()
+    n.mkdir()
     _run(s, n, monkeypatch)
     env1 = (s / "runtime.env").read_text()
     key1 = (n / "encryption_key").read_bytes()
@@ -57,7 +60,8 @@ def test_minting_is_idempotent(tmp_path, monkeypatch):
 
 def test_n8n_dir_unset_skips_n8n_files(tmp_path, monkeypatch):
     # dev/prod don't set GDX_N8N_SECRETS_DIR → no n8n files written, no crash.
-    s = tmp_path / "s"; s.mkdir()
+    s = tmp_path / "s"
+    s.mkdir()
     monkeypatch.setenv("GDX_SECRETS_DIR", str(s))
     monkeypatch.delenv("GDX_N8N_SECRETS_DIR", raising=False)
     assert m.main() == 0

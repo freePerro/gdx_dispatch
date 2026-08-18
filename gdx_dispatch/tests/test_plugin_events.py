@@ -7,7 +7,6 @@ enumeration with fail-closed drift detection.
 """
 from __future__ import annotations
 
-import json
 import os
 from unittest.mock import patch
 
@@ -24,7 +23,6 @@ from gdx_dispatch.plugin_api.events import (
 )
 from gdx_dispatch.plugin_api.manifest import PluginManifest
 from gdx_dispatch.plugin_host.app import create_plugin_host
-
 
 # ---------------------------------------------------------------------------
 # Manifest validation
@@ -200,17 +198,18 @@ def test_internal_ws_token_gate():
     client = TestClient(_host_with(received))
     os.environ["GDX_INTERNAL_TOKEN"] = "ws-tok"
     try:
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(
-                "/internal/browser/ws?url=https://example.com&key=n8n"
-            ) as ws:
-                ws.receive_text()  # server closed 1008 → disconnect
-        with patch("gdx_dispatch.plugin_host.browser_stream.stream_browser", new=_ok_stream):
-            with client.websocket_connect(
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+            "/internal/browser/ws?url=https://example.com&key=n8n"
+        ) as ws:
+            ws.receive_text()  # server closed 1008 → disconnect
+        with (
+            patch("gdx_dispatch.plugin_host.browser_stream.stream_browser", new=_ok_stream),
+            client.websocket_connect(
                 "/internal/browser/ws?url=https://example.com&key=n8n",
                 headers={"X-GDX-Internal-Token": "ws-tok"},
-            ) as ws:
-                assert ws.receive_text() == "ok"
+            ) as ws,
+        ):
+            assert ws.receive_text() == "ok"
     finally:
         del os.environ["GDX_INTERNAL_TOKEN"]
 
@@ -275,8 +274,9 @@ def test_any_event_consent_missing_table_does_not_poison_postgres_txn(pg_test_se
     # (lazily created, not an ORM model), so a bare SELECT would raise
     # UndefinedTable and ABORT the caller's money transaction. SQLite can't
     # reproduce this (it doesn't poison), so it must be tested on real Postgres.
-    import gdx_dispatch.core.plugin_consent as pc
     from sqlalchemy import text
+
+    import gdx_dispatch.core.plugin_consent as pc
 
     db = pg_test_session
     db.execute(text("DROP TABLE IF EXISTS plugin_consent"))
