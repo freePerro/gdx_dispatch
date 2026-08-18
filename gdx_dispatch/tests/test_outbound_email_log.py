@@ -119,3 +119,29 @@ def test_make_primary_is_single_writer(client):
     listed = client.get(f"/api/customers/{cust.id}/contacts").json()
     primaries = [c for c in listed if c["is_primary"]]
     assert len(primaries) == 1 and primaries[0]["name"] == "Bob"
+
+
+def test_make_primary_writes_an_audit_row(client):
+    """Invariant #1: every mutation carries an audit row (caught by holding
+    the branch against the new CLAUDE.md working agreement)."""
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.core.audit import AuditLog
+
+    db = client._db
+    cust = Customer(id=_uuid4(), name="Audited Co", email="a@co.example", company_id=TENANT)
+    db.add(cust)
+    db.flush()
+    c = CustomerContact(company_id=TENANT, customer_id=cust.id,
+                        name="Pat", email="pat@co.example")
+    db.add(c)
+    db.commit()
+
+    r = client.post(f"/api/customers/{cust.id}/contacts/{c.id}/make-primary")
+    assert r.status_code == 200, r.text
+    row = db.execute(_select(AuditLog).where(
+        AuditLog.action == "customer_primary_contact_set")).scalars().first()
+    assert row is not None
+    assert row.entity_id == str(cust.id)

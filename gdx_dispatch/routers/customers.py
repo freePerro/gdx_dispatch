@@ -1321,8 +1321,25 @@ async def make_contact_primary(
             CustomerContact.deleted_at.is_(None),
         )
     ).scalars().all()
+    previous = next((c for c in others if c.is_primary and c.id != target.id), None)
     for c in others:
         c.is_primary = c.id == target.id
+    db.commit()
+    # Invariant #1 (ARCHITECTURAL_INVARIANTS.md): every mutation carries an
+    # audit row — this changes who automated emails address for the account.
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=str(current_user.get("sub") or current_user.get("user_id") or "system"),
+        action="customer_primary_contact_set",
+        entity_type="customer",
+        entity_id=str(customer_id),
+        details={
+            "contact_id": str(target.id),
+            "contact_name": target.name,
+            "previous_contact_id": str(previous.id) if previous else None,
+        },
+    )
     db.commit()
     return {"ok": True, "primary_contact_id": str(target.id)}
 
