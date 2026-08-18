@@ -1674,9 +1674,189 @@ _DEFAULT_RECEIPT_BODY_TEMPLATE = (
 )
 
 
+def _prepare_invoice_email(
+    db: Session,
+    invoice,
+    *,
+    contact_id: str | None = None,
+    body_text_override: str | None = None,
+    subject_override: str | None = None,
+    to_email_override: str | None = None,
+    mint_token: bool = True,
+) -> dict[str, object]:
+    """One render for composer, preview and send — the invoice twin of
+    estimates._prepare_estimate_email. Returns {customer, recipient, subject,
+    body_text, html, is_paid, pay_url}."""
+    from gdx_dispatch.core.email_layout import email_branding, linkify, nl2br
+    from gdx_dispatch.core.email_recipients import resolve_recipient
+    from gdx_dispatch.core.email_sender import build_invoice_email_html
+    from gdx_dispatch.core.payments import public_pay_url
+    from gdx_dispatch.models.tenant_models import Customer
+    from gdx_dispatch.routers.estimates import _render_template
+    from gdx_dispatch.routers.pdf import _invoice_settlement
+
+    customer = None
+    if invoice.customer_id:
+        customer = db.execute(
+            select(Customer).where(Customer.id == invoice.customer_id, Customer.deleted_at.is_(None))
+        ).scalar_one_or_none()
+    if to_email_override and (to_email_override or "").strip():
+        from gdx_dispatch.core.email_recipients import override_recipient
+        recipient = override_recipient(
+            to_email_override, (customer.name if customer else "") or "",
+        )
+    else:
+        recipient = resolve_recipient(db, customer, contact_id) if customer is not None else None
+
+    job_title = ""
+    if invoice.job_id:
+        job_row = db.execute(
+            select(Job).where(Job.id == invoice.job_id, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if job_row:
+            job_title = (job_row.title or "").strip()
+
+    branding = email_branding(db)
+    company_name = branding["company_name"]
+
+    invoice_label = job_title or f"Invoice {invoice.invoice_number or ''}".strip()
+    due_line = f"\nDue: {invoice.due_date.isoformat()}" if invoice.due_date else ""
+    _total_v = _to_float(invoice.total)
+    _balance_v = _to_float(invoice.balance_due)
+    balance_line = f"\nBalance Due: ${_balance_v:,.2f}" if abs(_balance_v - _total_v) > 0.005 else ""
+    _is_paid = invoice.status == "paid"
+    _paid_v, _credits_v = _invoice_settlement(invoice, db)
+    paid_line = f"\nPaid: ${_paid_v:,.2f}" if (_is_paid and _paid_v > 0) else ""
+    greeting = (recipient.greeting_name if recipient and recipient.ok else "") or \
+        ((customer.name if customer else "") or "there")
+    ctx = {
+        "customer_name": greeting,
+        "job_title": invoice_label,
+        # Same fallback as the body/PDF name — an empty serial otherwise
+        # renders "Invoice # from Acme" and breaks bounce rung-1 matching.
+        "invoice_number": invoice.invoice_number or str(invoice.id)[:8],
+        "company_name": company_name,
+        "total": f"${_total_v:,.2f}",
+        "balance_due": f"${_balance_v:,.2f}",
+        "balance_line": balance_line,
+        "paid_line": paid_line,
+        "due_line": due_line,
+    }
+    if _is_paid:
+        subject_tpl, body_tpl = _DEFAULT_RECEIPT_SUBJECT_TEMPLATE, _DEFAULT_RECEIPT_BODY_TEMPLATE
+    else:
+        subject_tpl, body_tpl = _DEFAULT_INVOICE_SUBJECT_TEMPLATE, _DEFAULT_INVOICE_BODY_TEMPLATE
+    subject = (subject_override or "").strip() or _render_template(subject_tpl, ctx).strip() or invoice_label
+    if body_text_override is not None and body_text_override.strip():
+        body_text = body_text_override
+    else:
+        body_text = _render_template(body_tpl, ctx)
+
+    pay_url = None
+    if _balance_v > 0:
+        if not invoice.public_token and mint_token:
+            invoice.public_token = secrets.token_urlsafe(48)[:64]
+            db.commit()
+            db.refresh(invoice)
+        if invoice.public_token:
+            pay_url = public_pay_url(invoice.public_token)
+    link_line = f"Pay online: {pay_url}" if pay_url else ""
+    if pay_url and pay_url not in body_text:
+        body_text = f"{body_text.rstrip()}\n\n{link_line}\n"
+
+    copy_for_html = body_text
+    if link_line:
+        stripped = copy_for_html.rstrip()
+        if stripped.endswith(link_line):
+            copy_for_html = stripped[: -len(link_line)].rstrip()
+    intro_html = "<p style=\"margin:0 0 12px;\">" + linkify(
+        nl2br(copy_for_html), branding.get("accent") or "#2563eb"
+    ).replace("<br><br>", "</p><p style=\"margin:0 0 12px;\">") + "</p>"
+
+    lines_data = [
+        {
+            "description": ln.description,
+            "quantity": ln.quantity,
+            "unit_price": _to_float(ln.unit_price),
+            "line_total": _to_float(ln.line_total),
+        }
+        for ln in (invoice.lines or [])
+        if getattr(ln, "deleted_at", None) is None
+    ]
+    html = build_invoice_email_html(
+        company_name=company_name,
+        invoice_number=invoice.invoice_number or str(invoice.id)[:8],
+        customer_name=greeting,
+        line_items=lines_data,
+        subtotal=_to_float(invoice.subtotal),
+        tax_amount=_to_float(invoice.tax_amount),
+        total=_total_v,
+        balance_due=_balance_v,
+        due_date=invoice.due_date.isoformat() if invoice.due_date else "",
+        notes=invoice.notes or "",
+        portal_url=pay_url or "",
+        tax_rate=float(invoice.tax_rate) if invoice.tax_rate is not None else None,
+        paid_to_date=_paid_v,
+        credits_applied=_credits_v,
+        branding=branding,
+        intro_html=intro_html,
+        is_receipt=_is_paid,
+    )
+    return {
+        "customer": customer,
+        "recipient": recipient,
+        "subject": subject,
+        "body_text": body_text,
+        "html": html,
+        "is_paid": _is_paid,
+        "pay_url": pay_url,
+        "branding": branding,
+    }
+
+
+class SendInvoiceIn(BaseModel):
+    """Optional composer payload for /send — empty body keeps the one-click
+    behavior (template copy, resolver's default recipient)."""
+
+    body_text: str | None = None
+    subject: str | None = Field(default=None, max_length=500)
+    contact_id: str | None = Field(default=None, max_length=36)
+    to_email: str | None = Field(default=None, max_length=254)
+
+
+@router.post("/{invoice_id}/email-preview", response_model=None)
+def invoice_email_preview(
+    invoice_id: UUID,
+    payload: SendInvoiceIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
+    if invoice.status == "void":
+        raise HTTPException(status_code=409, detail="invoice is void — it cannot be emailed")
+    require_deliverable(invoice)
+    p = payload or SendInvoiceIn()
+    prep = _prepare_invoice_email(
+        db, invoice,
+        contact_id=p.contact_id,
+        body_text_override=p.body_text,
+        subject_override=p.subject,
+        to_email_override=p.to_email,
+        mint_token=False,
+    )
+    recipient = prep["recipient"]
+    return {
+        "subject": prep["subject"],
+        "html": prep["html"],
+        "to_email": recipient.email if recipient else "",
+        "to_name": recipient.to_name if recipient else "",
+    }
+
+
 @router.get("/{invoice_id}/email-compose", response_model=None)
 def invoice_email_compose(
     invoice_id: UUID,
+    contact_id: str | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1701,82 +1881,16 @@ def invoice_email_compose(
     import base64 as _b64
 
     from gdx_dispatch.core.pdf_generator import generate_invoice_pdf
-    from gdx_dispatch.models.tenant_models import AppSettings, Customer
-    from gdx_dispatch.routers.estimates import _render_template
-    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _invoice_settlement, _template_config
+    from gdx_dispatch.routers.estimates import _estimate_recipient_options
+    from gdx_dispatch.routers.pdf import _branding_payload, _invoice_payload, _template_config
 
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
-
-    customer = None
-    if invoice.customer_id:
-        customer = db.execute(
-            select(Customer).where(Customer.id == invoice.customer_id, Customer.deleted_at.is_(None))
-        ).scalar_one_or_none()
-
-    job_title = ""
-    if invoice.job_id:
-        job_row = db.execute(
-            select(Job).where(Job.id == invoice.job_id, Job.deleted_at.is_(None))
-        ).scalar_one_or_none()
-        if job_row:
-            job_title = (job_row.title or "").strip()
-
-    company_name = "Your Service Company"
-    settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-    if settings_obj and settings_obj.company_name:
-        company_name = settings_obj.company_name
-
-    invoice_label = job_title or f"Invoice {invoice.invoice_number or ''}".strip()
-    due_line = f"\nDue: {invoice.due_date.isoformat()}" if invoice.due_date else ""
-    # Tier-9.5: the draft advertised the gross Total even after a partial
-    # payment or credit; balance_due sat in the context UNUSED. Surface it as
-    # its own line when it differs from the total, so the customer is asked
-    # for what they actually owe.
-    _total_v = _to_float(invoice.total)
-    _balance_v = _to_float(invoice.balance_due)
-    balance_line = f"\nBalance Due: ${_balance_v:.2f}" if abs(_balance_v - _total_v) > 0.005 else ""
-    # Paid compose = receipt (2026-08-17). Real payments only — a credit-memo'd
-    # invoice zeroes its balance without money received, and "thank you for
-    # your payment" over a write-off would be a lie.
-    _is_paid = invoice.status == "paid"
-    _paid_v, _ = _invoice_settlement(invoice, db)
-    paid_line = f"\nPaid: ${_paid_v:.2f}" if (_is_paid and _paid_v > 0) else ""
-    ctx = {
-        "customer_name": (customer.name if customer else "") or "there",
-        "job_title": invoice_label,
-        "invoice_number": invoice.invoice_number or "",
-        "company_name": company_name,
-        "total": f"${_total_v:.2f}",
-        "balance_due": f"${_balance_v:.2f}",
-        "balance_line": balance_line,
-        "paid_line": paid_line,
-        "due_line": due_line,
-    }
-    if _is_paid:
-        subject = _render_template(_DEFAULT_RECEIPT_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
-        body_text = _render_template(_DEFAULT_RECEIPT_BODY_TEMPLATE, ctx)
-    else:
-        subject = _render_template(_DEFAULT_INVOICE_SUBJECT_TEMPLATE, ctx).strip() or invoice_label
-        body_text = _render_template(_DEFAULT_INVOICE_BODY_TEMPLATE, ctx)
-
-    # The public pay link goes into the editable draft — the operator sees
-    # exactly what the customer gets, and deleting the line is opting out.
-    # public_pay_url returns None unless the link can actually charge
-    # (balance outstanding + GDX_PUBLIC_BASE_URL + Stripe keys), so
-    # unconfigured installs keep a clean draft with no dead link. The
-    # legacy-row token mint stays inside the balance gate so a zero-balance
-    # compose stays a pure read.
-    from gdx_dispatch.core.payments import public_pay_url
-
-    pay_url = None
-    if _to_float(invoice.balance_due) > 0:
-        if not invoice.public_token:
-            invoice.public_token = secrets.token_urlsafe(48)[:64]
-            db.commit()
-            db.refresh(invoice)
-        pay_url = public_pay_url(invoice.public_token)
-    if pay_url:
-        body_text = f"{body_text.rstrip()}\n\nPay online: {pay_url}\n"
+    prep = _prepare_invoice_email(db, invoice, contact_id=contact_id)
+    customer = prep["customer"]
+    recipient = prep["recipient"]
+    subject = prep["subject"]
+    body_text = prep["body_text"]
+    _is_paid = prep["is_paid"]
 
     pdf_bytes = generate_invoice_pdf(
         invoice_data=_invoice_payload(invoice, customer, db),
@@ -1799,7 +1913,9 @@ def invoice_email_compose(
     extra: list[dict[str, object]] = []
 
     return {
-        "to": [customer.email] if (customer and customer.email) else [],
+        "to": [recipient.email] if (recipient and recipient.ok) else [],
+        "recipients": _estimate_recipient_options(db, customer),
+        "selected_contact_id": recipient.contact_id if recipient else None,
         "customer_id": str(customer.id) if customer else None,
         "subject": subject,
         "body_text": body_text,
@@ -1905,6 +2021,7 @@ def get_invoice_pay_link(
 @router.post("/{invoice_id}/send", response_model=None)
 def send_invoice(
     invoice_id: UUID,
+    payload: SendInvoiceIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1943,71 +2060,31 @@ def send_invoice(
     email_provider: str | None = None
     email_skip_reason: str | None = None
     pdf_attached = False
+    p = payload or SendInvoiceIn()
     try:
-        from gdx_dispatch.core.email_sender import build_invoice_email_html
-        from gdx_dispatch.core.transactional_email import send_transactional_email
-        from gdx_dispatch.models.tenant_models import AppSettings, Customer
+        from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
-        if tid and invoice.customer_id:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == invoice.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if cust and cust.email:
-                lines_data = [
-                    {
-                        "description": ln.description,
-                        "quantity": ln.quantity,
-                        "unit_price": _to_float(ln.unit_price),
-                        "line_total": _to_float(ln.line_total),
-                    }
-                    for ln in (invoice.lines or [])
-                    if getattr(ln, "deleted_at", None) is None
-                ]
-                company_name = "Your Service Company"
-                try:
-                    settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-                    if settings_obj and settings_obj.company_name:
-                        company_name = settings_obj.company_name
-                except Exception:
-                    log.exception("send_invoice_company_name_lookup_failed")
-                tax_rate_val = float(invoice.tax_rate) if invoice.tax_rate is not None else None
-                # The "View & Pay Invoice" CTA. public_pay_url returns None
-                # unless the link would actually charge (base URL + Stripe
-                # keys present), so an unconfigured install still sends a
-                # clean PDF email with no dead link.
-                from gdx_dispatch.core.payments import public_pay_url
-                pay_url = (
-                    public_pay_url(invoice.public_token)
-                    if _to_float(invoice.balance_due) > 0
-                    else None
-                )
-                from gdx_dispatch.routers.pdf import _invoice_settlement
-                _paid, _credits = _invoice_settlement(invoice, db)
-                html = build_invoice_email_html(
-                    company_name=company_name,
-                    invoice_number=invoice.invoice_number or str(invoice.id)[:8],
-                    customer_name=cust.name or "Valued Customer",
-                    line_items=lines_data,
-                    subtotal=_to_float(invoice.subtotal),
-                    tax_amount=_to_float(invoice.tax_amount),
-                    total=_to_float(invoice.total),
-                    balance_due=_to_float(invoice.balance_due),
-                    due_date=invoice.due_date.isoformat() if invoice.due_date else "",
-                    notes=invoice.notes or "",
-                    portal_url=pay_url or "",
-                    tax_rate=tax_rate_val,
-                    paid_to_date=_paid,
-                    credits_applied=_credits,
-                )
-                # 2026-07-20 — attach the actual invoice PDF (same generator
-                # the composer flow uses). This path shipped html-only for
-                # months; a real customer got an invoice email with no PDF.
-                # Best-effort like the rest of this block: a render failure
-                # downgrades to html-only (pdf_attached=False in the response)
-                # rather than blocking the send.
+        _dup_kind = "receipt" if invoice.status == "paid" else "document"
+        if tid and invoice.customer_id and recently_sent(db, "invoice", str(invoice.id), kind=_dup_kind):
+            # Server-side double-send guard (kind-scoped: a receipt right
+            # after the invoice email is legitimate; the same receipt twice
+            # in one window is not).
+            email_skip_reason = "duplicate_send_suppressed"
+        elif tid and invoice.customer_id:
+            # One prep for composer sends and one-click/bulk sends alike —
+            # template copy (or the operator's edit) inside the branded
+            # shell, settlement rows, CTA button, person-aware recipient.
+            # Receipt flavor rides invoice.status == 'paid' inside the prep.
+            prep = _prepare_invoice_email(
+                db, invoice,
+                contact_id=p.contact_id,
+                body_text_override=p.body_text,
+                subject_override=p.subject,
+                to_email_override=p.to_email,
+            )
+            cust = prep["customer"]
+            recipient = prep["recipient"]
+            if cust is not None and recipient is not None and recipient.ok:
                 attachments: list[dict[str, object]] | None = None
                 try:
                     import base64 as _b64
@@ -2034,25 +2111,25 @@ def send_invoice(
                         }]
                 except Exception:
                     log.exception("invoice_send_pdf_attach_failed")
-                # Receipt flavor (2026-08-17): a PAID invoice emails as a
-                # thank-you, not an ask — Billing's "Send Receipt" button and
-                # POST /send-receipt both land here. Body already prints
-                # Paid to Date / Balance Due from _invoice_settlement above.
-                subject = f"Invoice #{invoice.invoice_number} from {company_name}"
-                if invoice.status == "paid":
-                    subject = f"Payment received — Invoice #{invoice.invoice_number} from {company_name}"
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
                     user_id=str(_actor_id(_)),
-                    to_email=cust.email,
-                    to_name=cust.name or "",
-                    subject=subject,
-                    html_body=html,
+                    to_email=recipient.email,
+                    to_name=recipient.to_name,
+                    subject=prep["subject"],
+                    html_body=prep["html"],
                     attachments=attachments,
+                    kind="receipt" if invoice.status == "paid" else "document",
+                    entity_type="invoice",
+                    entity_id=str(invoice.id),
+                    recipient_source=recipient.source,
+                    recipient_contact_id=recipient.contact_id,
                 )
                 pdf_attached = email_sent and bool(attachments)
-            elif cust:
+            elif recipient is not None and recipient.source == "invalid_override":
+                email_skip_reason = "invalid_recipient_email"
+            elif cust is not None:
                 email_skip_reason = "customer_has_no_email"
             else:
                 email_skip_reason = "customer_not_found"
@@ -2067,9 +2144,14 @@ def send_invoice(
     # out, so a failed bulk-send showed "Last Sent: today" on the very rows
     # the toast reported as not delivered. Status still flips above (the
     # response's email_sent keeps the UI honest); only the stamp is gated.
+    # Receipt sends (status 'paid' with an existing sent_at) must NOT
+    # overwrite the ORIGINAL invoice delivery date — the receipt attempt is
+    # fully recorded in outbound_emails; sent_at keeps meaning "when the
+    # invoice itself reached the customer".
     if email_sent:
-        invoice.sent_at = datetime.now(UTC)
-        invoice.sent_via = "email"
+        if not (invoice.status == "paid" and invoice.sent_at is not None):
+            invoice.sent_at = datetime.now(UTC)
+            invoice.sent_via = "email"
         db.commit()
         db.refresh(invoice)
 

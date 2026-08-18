@@ -82,11 +82,12 @@ def client():
     engine.dispose()
 
 
-def _create_customer(client: TestClient, name: str = "Acme Customer") -> str:
+def _create_customer(client: TestClient, name: str = "Acme Customer",
+                     email: str = "customer@example.com") -> str:
     dep = client.app.dependency_overrides[get_db]
     db = next(dep())
     try:
-        row = Customer(name=name, email="customer@example.com", company_id="tenant-test")
+        row = Customer(name=name, email=email, company_id="tenant-test")
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -1228,7 +1229,8 @@ def test_send_email_carries_public_approval_link(client: TestClient, monkeypatch
     assert r.status_code == 200, r.text
     token = _public_token(client, estimate["id"])
     assert f"https://gdx.example.com/proposals/{token}" in captured["html_body"]
-    assert "View & Accept Estimate" in captured["html_body"]
+    # The shared shell HTML-escapes the CTA label, so "&" is "&amp;" in source.
+    assert "View &amp; Accept Estimate" in captured["html_body"]
 
 
 def test_send_email_has_no_link_when_base_unset(client: TestClient, monkeypatch):
@@ -1291,3 +1293,226 @@ def test_email_compose_suppresses_link_for_finalized_never_sent(client: TestClie
     r = client.get(f"/api/estimates/{estimate['id']}/email-compose")
     assert r.status_code == 200, r.text
     assert "/proposals/" not in r.json()["body_text"]
+
+
+# ── Phase 2: one send pipeline (template copy, contacts, tiers, expiry) ──────
+
+def _db(client: TestClient):
+    dep = client.app.dependency_overrides[get_db]
+    return next(dep())
+
+
+def _add_contact(client: TestClient, customer_id: str, *, name="Bob Jones",
+                 email="bob@acme.example", is_primary=False, label="manager"):
+    from gdx_dispatch.models.tenant_models import CustomerContact
+    db = _db(client)
+    try:
+        c = CustomerContact(
+            company_id="t1", customer_id=UUID(customer_id), name=name,
+            email=email, is_primary=is_primary, label=label,
+        )
+        db.add(c)
+        db.commit()
+        return str(c.id)
+    finally:
+        db.close()
+
+
+def test_send_honors_tenant_template_copy(client: TestClient, monkeypatch):
+    """Locked decision: the tenant-editable template IS the send copy — the
+    one-click path used to ignore it entirely."""
+    import gdx_dispatch.routers.estimates as est_mod
+    monkeypatch.setattr(
+        est_mod, "_estimate_email_templates",
+        lambda tid: ("Quote {{estimate_number}}", "Howdy {{customer_name}} — custom copy here."),
+    )
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert "custom copy here." in captured["html_body"]
+    assert captured["subject"].startswith("Quote ")
+
+
+def test_send_uses_composer_body_override(client: TestClient, monkeypatch):
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    r = client.post(
+        f"/api/estimates/{estimate['id']}/send",
+        json={"body_text": "Operator-edited copy <with brackets>", "subject": "My subject"},
+    )
+    assert r.status_code == 200, r.text
+    assert "Operator-edited copy &lt;with brackets&gt;" in captured["html_body"]
+    assert captured["subject"] == "My subject"
+
+
+def test_send_greets_primary_contact_not_company(client: TestClient, monkeypatch):
+    """'Hi Bob,' — never 'Hi Acme Lumber Yard,' once a primary contact exists."""
+    captured = _capture_email(monkeypatch)
+    customer_id = _create_customer(client, name="Acme Lumber Yard", email="front@acme.example")
+    _add_contact(client, customer_id, name="Bob Jones", email="bob@acme.example", is_primary=True)
+    estimate = _create_estimate(client, customer_id=customer_id)
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert captured["to_email"] == "bob@acme.example"
+    assert captured["to_name"] == "Bob Jones"
+    assert "Hi Bob," in captured["html_body"].replace("&nbsp;", " ")
+    assert captured["recipient_source"] == "primary_contact"
+    assert captured["entity_type"] == "estimate"
+
+
+def test_send_explicit_contact_id_wins(client: TestClient, monkeypatch):
+    captured = _capture_email(monkeypatch)
+    customer_id = _create_customer(client, name="Acme Lumber Yard", email="front@acme.example")
+    _add_contact(client, customer_id, name="Sue Ops", email="sue@acme.example", is_primary=True)
+    other = _add_contact(client, customer_id, name="Bob Jones", email="bob@acme.example")
+    estimate = _create_estimate(client, customer_id=customer_id)
+    r = client.post(f"/api/estimates/{estimate['id']}/send", json={"contact_id": other})
+    assert r.status_code == 200, r.text
+    assert captured["to_email"] == "bob@acme.example"
+    assert captured["recipient_contact_id"] == other
+
+
+def test_send_tiered_estimate_shows_tiers_not_flat_lines(client: TestClient, monkeypatch):
+    """proposal_mode emails a tier summary — not a flat (possibly mixed)
+    line dump under a misleading single total."""
+    from gdx_dispatch.modules.proposals.models import ProposalTier
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    db = _db(client)
+    try:
+        est = db.get(Estimate, UUID(estimate["id"]))
+        est.proposal_mode = True
+        db.add(ProposalTier(estimate_id=est.id, tier_name="good", total_price=1000,
+                            description="Base door", display_order=0))
+        db.add(ProposalTier(estimate_id=est.id, tier_name="better", total_price=1500.5,
+                            description="", display_order=1))
+        db.commit()
+    finally:
+        db.close()
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    html = captured["html_body"]
+    assert "Good" in html and "Better" in html
+    assert "$1,500.50" in html
+
+
+def test_send_prints_real_expiry_not_30_day_lie(client: TestClient, monkeypatch):
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    assert "valid for 30 days" not in captured["html_body"]
+    assert "valid until" in captured["html_body"]
+    # sent_via is now real data, not an audit-blob guess.
+    db = _db(client)
+    try:
+        assert db.get(Estimate, UUID(estimate["id"])).sent_via == "email"
+    finally:
+        db.close()
+
+
+def test_email_preview_matches_send_body(client: TestClient, monkeypatch):
+    """The preview endpoint and /send use the same prep — zero drift."""
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    pv = client.post(
+        f"/api/estimates/{estimate['id']}/email-preview",
+        json={"body_text": "Preview copy"},
+    )
+    assert pv.status_code == 200, pv.text
+    r = client.post(f"/api/estimates/{estimate['id']}/send", json={"body_text": "Preview copy"})
+    assert r.status_code == 200, r.text
+    assert pv.json()["html"] == captured["html_body"]
+    assert pv.json()["subject"] == captured["subject"]
+
+
+def test_compose_lists_recipients_with_contacts(client: TestClient):
+    customer_id = _create_customer(client, name="Acme Lumber Yard", email="front@acme.example")
+    _add_contact(client, customer_id, name="Bob Jones", email="bob@acme.example",
+                 is_primary=True, label="site manager")
+    estimate = _create_estimate(client, customer_id=customer_id)
+    r = client.get(f"/api/estimates/{estimate['id']}/email-compose")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    emails = {opt["email"] for opt in data["recipients"]}
+    assert {"front@acme.example", "bob@acme.example"} <= emails
+    # Primary contact is the default recipient for the send.
+    assert data["to"] == ["bob@acme.example"]
+    assert "Hi Bob," in data["body_text"]
+
+
+def test_send_reports_pdf_attached(client: TestClient, monkeypatch):
+    captured = _capture_email(monkeypatch)
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["email_sent"] is True
+    assert body["pdf_attached"] is True
+    assert captured["attachments"][0]["name"].startswith("estimate-")
+
+
+def test_second_send_within_window_is_suppressed(client: TestClient, monkeypatch):
+    """Phase 5.5: two tabs / retried request / double-click = ONE email.
+    Uses the real pipeline (SMTP faked) so the outbound_emails row the guard
+    reads is actually written."""
+    import gdx_dispatch.core.transactional_email as te
+    monkeypatch.setattr(te, "_try_smtp", lambda **kw: (True, None))
+    estimate = _create_estimate(client)
+
+    r1 = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r1.status_code == 200 and r1.json()["email_sent"] is True
+
+    r2 = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["email_sent"] is False
+    assert body["email_skip_reason"] == "duplicate_send_suppressed"
+
+
+def test_mark_sent_accepts_channel_and_stamps_sent_via(client: TestClient):
+    """Walk catch 2026-08-18: the mailto fallback marked sent but sent_via
+    stayed NULL and the audit channel was hardcoded 'manual'. Mirrors the
+    invoice MarkSentIn."""
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/mark-sent", json={"channel": "email"})
+    assert r.status_code == 200, r.text
+    db = _db(client)
+    try:
+        assert db.get(Estimate, UUID(estimate["id"])).sent_via == "email"
+    finally:
+        db.close()
+
+    # Empty body keeps the legacy meaning: out-of-band, channel unknown.
+    est2 = _create_estimate(client)
+    r = client.post(f"/api/estimates/{est2['id']}/mark-sent")
+    assert r.status_code == 200, r.text
+    db = _db(client)
+    try:
+        assert db.get(Estimate, UUID(est2["id"])).sent_via == "manual"
+    finally:
+        db.close()
+
+
+def test_send_honors_free_typed_recipient(client: TestClient, monkeypatch):
+    """Audit round 2: a customer with NO stored email shows the composer's
+    free To field — that typed address was collected and silently dropped.
+    It must reach the server as the override recipient."""
+    captured = _capture_email(monkeypatch)
+    customer_id = _create_customer(client, name="No Email Yet", email="")
+    estimate = _create_estimate(client, customer_id=customer_id)
+    r = client.post(
+        f"/api/estimates/{estimate['id']}/send",
+        json={"to_email": "typed@example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["email_sent"] is True
+    assert captured["to_email"] == "typed@example.com"
+    assert captured["recipient_source"] == "override"
+
+    # Malformed override = honest failure, not customer_has_no_email.
+    est2 = _create_estimate(client, customer_id=customer_id)
+    r = client.post(f"/api/estimates/{est2['id']}/send", json={"to_email": "not-an-email"})
+    assert r.status_code == 200
+    assert r.json()["email_skip_reason"] == "invalid_recipient_email"

@@ -867,3 +867,92 @@ def test_line_built_tier_zero_price_line_blocked_by_policy(session_factory):
         assert resp.status_code == 422, resp.body
     finally:
         db.close()
+
+
+def _receipt_ready_invoice(session_factory, db):
+    """Verified invoice + one recorded payment + a customer with an email."""
+    seed = _seed(session_factory)
+    estimate_id = _build_and_accept(session_factory, seed)
+    with patch("gdx_dispatch.routers.mobile_invoicing._send_invoice_email"):
+        create = mobile_invoicing.mobile_create_invoice(
+            job_id=seed["job_id"],
+            payload=mobile_invoicing.CreateInvoiceIn(estimate_id=estimate_id, send_email=False),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+    inv = _as_json(create)
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+    from uuid import UUID as _UUID
+
+    from gdx_dispatch.models.tenant_models import Customer as _Cust
+    from gdx_dispatch.models.tenant_models import Invoice as _Inv
+    from gdx_dispatch.models.tenant_models import Payment as _Pay
+    row = db.get(_Inv, _UUID(inv["id"]))
+    row.verified_at = _dt.now(_UTC)
+    # The raw-SQL seed stores a dashed uuid string SQLite ORM lookups can't
+    # match — attach an ORM-created customer so resolve_recipient finds it.
+    cust = _Cust(name="Payer Person", email="payer@example.com", company_id="tenant-a")
+    db.add(cust)
+    db.flush()
+    row.customer_id = cust.id
+    db.add(_Pay(invoice_id=row.id, amount=50, method="cash",
+                company_id=str(row.company_id or "t1")))
+    db.commit()
+    return inv
+
+
+def test_send_receipt_reports_real_outcome_not_fake_success(session_factory, monkeypatch):
+    """Audit find 2026-08-18: the old path discarded the send result and
+    answered a hardcoded {"sent": true} (and was SMTP-only — guaranteed
+    non-delivery on a tenant with no email_settings row, i.e. prod). The
+    endpoint must now surface the REAL outcome."""
+    import gdx_dispatch.core.transactional_email as te
+    db = session_factory()
+    try:
+        inv = _receipt_ready_invoice(session_factory, db)
+
+        monkeypatch.setattr(
+            te, "send_transactional_email",
+            lambda **kw: (False, None, "no_email_provider_connected"),
+        )
+        resp = mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"], payload=mobile_invoicing.SendReceiptIn(),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 200
+        body = _as_json(resp)
+        assert body["sent"] is False
+        assert body["skip_reason"] == "no_email_provider_connected"
+    finally:
+        db.close()
+
+
+def test_send_receipt_branded_body_and_pipeline(session_factory, monkeypatch):
+    """The receipt rides the unified pipeline (Outlook-capable, audited) with
+    a branded body carrying the remaining balance."""
+    import gdx_dispatch.core.transactional_email as te
+    captured = {}
+
+    def _fake(**kw):
+        captured.update(kw)
+        return (True, "outlook_graph", None)
+
+    db = session_factory()
+    try:
+        inv = _receipt_ready_invoice(session_factory, db)
+        monkeypatch.setattr(te, "send_transactional_email", _fake)
+        resp = mobile_invoicing.mobile_send_receipt(
+            invoice_id=inv["id"], payload=mobile_invoicing.SendReceiptIn(),
+            request=_request(), current_user=_TEST_USER, db=db,
+        )
+        assert resp.status_code == 200
+        assert _as_json(resp)["sent"] is True
+        assert captured["to_email"] == "payer@example.com"
+        assert captured["entity_type"] == "invoice"
+        html = captured["html_body"]
+        assert "Payment received" in html
+        assert "$50.00" in html
+        # Branded shell, not the old three bare <p> tags.
+        assert "<table role=\"presentation\"" in html
+    finally:
+        db.close()

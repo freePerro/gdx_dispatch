@@ -205,3 +205,23 @@ describe('MobileInvoiceDialog — job photos', () => {
     expect(w.find('[data-testid="mid-generate"]').exists()).toBe(true);
   });
 });
+
+describe('sendReceipt reads the REAL outcome (2026-08-18)', () => {
+  // The backend stopped hardcoding {"sent": true}; a toast that ignores the
+  // response would re-create the fake-success defect one layer up.
+  const { readFileSync } = require('node:fs')
+  const { join } = require('node:path')
+  const SRC = readFileSync(join(__dirname, '..', 'MobileInvoiceDialog.vue'), 'utf8')
+
+  it('branches on payload.sent and surfaces skip_reason on failure', () => {
+    const start = SRC.indexOf('async function sendReceipt')
+    expect(start).toBeGreaterThan(-1)
+    const end = SRC.indexOf('</script>', start)
+    const body = SRC.slice(start, end)
+    expect(body).toContain('payload?.sent')
+    expect(body).toContain('skip_reason')
+    expect(body).toContain('Receipt NOT sent')
+    // Success toast must be inside the sent branch, not unconditional.
+    expect(body.indexOf('payload?.sent')).toBeLessThan(body.indexOf("summary: 'Receipt sent'"))
+  })
+})

@@ -118,6 +118,7 @@ export const MODULE_CATEGORIES = [
       { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
       { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
       { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Reminders' },
+      { key: 'email_log', label: 'Email Log', icon: 'pi pi-envelope', to: '/email-log', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Email Log' },
     ],
   },
   {
@@ -183,6 +184,7 @@ export const MODULE_CATEGORIES = [
       { key: 'campaigns', label: 'Campaigns', icon: 'pi pi-megaphone', to: '/campaigns', type: 'Jobs', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Campaigns' },
       { key: 'segments', label: 'Segments', icon: 'pi pi-sliders-h', to: '/segments', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Segments' },
       { key: 'automations', label: 'Automations', icon: 'pi pi-bolt', to: '/automations', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Automations' },
+      { key: 'automation_rules', label: 'Event Rules', icon: 'pi pi-sitemap', to: '/automation-rules', type: 'Customers', permission: 'nav.admin', cluster: 'marketing_hub', tabLabel: 'Event Rules' },
       { key: 'winback', label: 'Winback & Follow-ups', icon: 'pi pi-refresh', to: '/winback', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Winback' },
       { key: 'loyalty', label: 'Loyalty', icon: 'pi pi-star', to: '/loyalty', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Loyalty' },
     ],

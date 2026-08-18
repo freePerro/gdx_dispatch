@@ -60,6 +60,13 @@ class SettingsPatchIn(BaseModel):
     # are normally swallowed are also recorded to the Server Errors log.
     debug_logging_enabled: bool | None = None
     customer_listings_enabled: bool | None = None
+    # Email overhaul Phase 4a (locked: automation emails are an on/off
+    # OPTION). Default OFF is load-bearing: every workflow action has been a
+    # no-op forever, so rules configured in the past must not surprise-send
+    # on deploy. The sender user is whose Outlook the automated emails go
+    # out as (background sends have no calling user).
+    automation_emails_enabled: bool | None = None
+    automation_sender_user_id: str | None = Field(default=None, max_length=36)
 
 
 class BrandingPatchIn(BaseModel):
@@ -144,6 +151,8 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         ),
         "debug_logging_enabled": bool(getattr(row, "debug_logging_enabled", False)),
         "customer_listings_enabled": bool(getattr(row, "customer_listings_enabled", False)),
+        "automation_emails_enabled": bool(getattr(row, "automation_emails_enabled", False)),
+        "automation_sender_user_id": getattr(row, "automation_sender_user_id", None) or "",
     }
 
 
@@ -195,6 +204,7 @@ def patch_settings(
         "default_shift_start", "default_shift_end", "default_workdays",
         "qb_accounting_method", "debug_logging_enabled",
         "customer_listings_enabled",
+        "automation_emails_enabled", "automation_sender_user_id",
     ):
         if key in updates:
             setattr(row, key, updates[key])

@@ -233,8 +233,24 @@ async function resendInvoice(inv) {
 async function sendReceipt(inv) {
   submitting.value = true
   try {
-    await api.post(`/api/mobile/invoices/${inv.id}/send-receipt`, {})
-    toast.add({ severity: 'success', summary: 'Receipt sent', life: 2500 })
+    const res = await api.post(`/api/mobile/invoices/${inv.id}/send-receipt`, {})
+    const payload = res?.data || res
+    // The endpoint now reports the REAL outcome (it used to hardcode
+    // sent:true) — a toast that ignores it would re-create the fake-success
+    // defect one layer up. CLAUDE.md: no faked success, ever.
+    if (payload?.sent) {
+      toast.add({ severity: 'success', summary: 'Receipt sent', life: 2500 })
+    } else {
+      const reason = payload?.skip_reason || 'delivery failed'
+      toast.add({
+        severity: 'error',
+        summary: 'Receipt NOT sent',
+        detail: reason === 'no_email_provider_connected'
+          ? 'No email account is connected — ask the office to set up email sending.'
+          : reason,
+        life: 6000,
+      })
+    }
   } catch (e) {
     const msg = e.message || 'Receipt failed'
     if (msg.includes('no payment')) {

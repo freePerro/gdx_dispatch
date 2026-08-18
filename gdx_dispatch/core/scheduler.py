@@ -12,6 +12,14 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(minute=0),
             "options": {"queue": "priority:high"},
         },
+        "drain-plugin-email-outbox-every-minute": {
+            # Email overhaul P6: plugins queue mail on the shared DB
+            # (plugin-host has no egress); this drain delivers via the
+            # unified pipeline. No-ops instantly when the outbox is empty.
+            "task": "gdx_dispatch.tasks.plugin_email_outbox.drain_plugin_email_outbox",
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "priority:low"},
+        },
         "planner-digest-daily": {
             # First staff-facing scheduled reminder. Emails a summary of open
             # planner tasks so call-notes taken on a busy day don't scroll away.

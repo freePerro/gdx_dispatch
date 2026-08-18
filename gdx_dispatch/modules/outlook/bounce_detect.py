@@ -79,8 +79,11 @@ MATCH_WINDOW = timedelta(days=14)
 # stamp happens in the same request as the Graph send, so seconds apart.
 TIME_CORRELATION_SLACK = timedelta(minutes=5)
 
-_EST_SUBJECT_RE = re.compile(r"Estimate #(.+?) from ", re.IGNORECASE)
-_INV_SUBJECT_RE = re.compile(r"Invoice #(.+?) from ", re.IGNORECASE)
+# '#' optional (2026-08-18): server sends now subject via the tenant
+# templates ("Invoice {{number}} from {{company}}" — no '#'); NDRs quote
+# either form.
+_EST_SUBJECT_RE = re.compile(r"Estimate #?(.+?) from ", re.IGNORECASE)
+_INV_SUBJECT_RE = re.compile(r"Invoice #?(.+?) from ", re.IGNORECASE)
 # Exchange NDR body: "Your message to bad@x.com couldn't be delivered."
 _FAILED_RECIPIENT_RE = re.compile(
     r"Your message to\s+(\S+@\S+?)\s+couldn't be delivered", re.IGNORECASE
@@ -320,9 +323,105 @@ def _match_invoices(
             )
         ).scalars().all()
         for inv in rows:
-            if _in_window(inv.sent_at, ndr_received):
+            if not _in_window(inv.sent_at, ndr_received):
+                continue
+            # Email-overhaul Phase 5.2: this rung used to clear sent_at on
+            # ANY bounce to the customer's address — including a bounced
+            # REMINDER or RECEIPT about an invoice that was delivered fine
+            # (reminder subjects never match rung 1, so their NDRs all fell
+            # through to here). The outbound_emails audit trail now tells us
+            # what was actually sent last: only a bounced 'document' send
+            # disproves delivery of the invoice itself. No audit row =
+            # pre-overhaul send = keep the old behavior.
+            # Adversarial-audit fix (2026-08-18, round 2): latest-row-wins
+            # was wrong for a DEFERRED document NDR — an Exchange bounce can
+            # arrive 24-48h late, by which time the daily dunning tick has
+            # postdated the document row with a reminder, and the invoice
+            # would have stayed "sent" forever. Rule now: a DOCUMENT send to
+            # that recipient inside the NDR match window disproves delivery,
+            # regardless of newer non-document rows; only when NO document
+            # row is in-window does a non-document row absorb the bounce.
+            doc_row = _outbound_row(tdb, recipients, "invoice", str(inv.id),
+                                    ndr_received, kind="document")
+            if doc_row is not None:
+                _stamp_bounced(tdb, doc_row, ndr_received)
                 _clear(inv, "customer_email")
+                continue
+            other = _outbound_row(tdb, recipients, "invoice", str(inv.id),
+                                  ndr_received, kind=None)
+            if other is not None:
+                _stamp_bounced(tdb, other, ndr_received)
+                _audit(
+                    tdb,
+                    action="invoice_email_bounce_ignored_non_document",
+                    entity_type="invoice",
+                    entity_id=str(inv.id),
+                    ndr=ndr,
+                    matched_by="customer_email",
+                    recipients=recipients,
+                )
+                continue
+            # Pre-overhaul send (no audit rows): the old behavior stands.
+            _clear(inv, "customer_email")
     return cleared
+
+
+def _outbound_row(tdb: Session, recipients: set[str], entity_type: str,
+                  entity_id: str, ndr_received: datetime, *, kind: str | None):
+    """Most recent SENT outbound_emails row to any of these addresses about
+    this entity inside the NDR match window (a bounce reports a send that
+    PRECEDES it). kind narrows to one send type; None matches any. None on
+    pre-overhaul sends (no rows) or read failure (never block processing)."""
+    try:
+        from gdx_dispatch.models.tenant_models import OutboundEmail
+
+        q = select(OutboundEmail).where(
+            func.lower(OutboundEmail.to_email).in_(recipients),
+            OutboundEmail.entity_type == entity_type,
+            OutboundEmail.entity_id == entity_id,
+            OutboundEmail.status == "sent",
+        )
+        if kind is not None:
+            q = q.where(OutboundEmail.kind == kind)
+        rows = tdb.execute(q.order_by(OutboundEmail.created_at.desc()).limit(10)).scalars().all()
+        for row in rows:
+            if _in_window(row.created_at, ndr_received):
+                return row
+        return None
+    except Exception:
+        log.exception("bounce_outbound_lookup_failed entity=%s", entity_id)
+        return None
+
+
+def _stamp_bounced(tdb: Session, row, ndr_received: datetime) -> None:
+    """Record the bounce on the audit row (the one UPDATE the append-only
+    table allows). Idempotent — first stamp wins."""
+    try:
+        if row.bounced_at is None:
+            row.bounced_at = ndr_received
+            tdb.flush()
+            try:
+                from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+                emit_domain_event(
+                    tdb,
+                    "email.bounced",
+                    str(row.entity_id or row.to_email or ""),
+                    {
+                        "to_email": row.to_email,
+                        "subject": row.subject,
+                        "kind": row.kind,
+                        "entity_type": row.entity_type,
+                        "entity_id": row.entity_id,
+                        "outbound_email_id": str(row.id),
+                        "company_id": str(row.company_id or ""),
+                    },
+                    tenant_id=str(row.company_id or "") or None,
+                )
+            except Exception:
+                log.exception("email_bounced_event_emit_failed")
+    except Exception:
+        log.exception("bounce_stamp_failed outbound_email=%s", getattr(row, "id", None))
 
 
 def process_bounces(tdb: Session, account: OutlookAccount) -> dict[str, Any]:

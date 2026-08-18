@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from gdx_dispatch.core.email_sender import _money, build_invoice_email_html
+from gdx_dispatch.core.email_sender import build_invoice_email_html
+from gdx_dispatch.core.money_format import format_money as _money
 
 # ── 9.10 sign placement ─────────────────────────────────────────────────────
 

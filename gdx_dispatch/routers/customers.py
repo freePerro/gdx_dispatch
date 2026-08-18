@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -49,6 +49,24 @@ class CustomerCreateIn(BaseModel):
     notes: str | None = None
     referral_source: str | None = Field(default=None, max_length=50)
 
+    @field_validator("email")
+    @classmethod
+    def _email_format(cls, value: str | None) -> str | None:
+        # Phase 5.6 (email overhaul): core/validation.validate_email existed
+        # as dead code while typo'd addresses sailed into sends — caught only
+        # by NDR detection, only on Outlook tenants. Empty string → None;
+        # otherwise the address must look like an address.
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        from gdx_dispatch.core.validation import _EMAIL_RE
+
+        if not _EMAIL_RE.match(value) or ".." in value:
+            raise ValueError("invalid email address format")
+        return value
+
 
 class CustomerUpdateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -64,6 +82,24 @@ class CustomerUpdateIn(BaseModel):
     clear_margin_override: bool = False
     notes: str | None = None
     referral_source: str | None = Field(default=None, max_length=50)
+
+    @field_validator("email")
+    @classmethod
+    def _email_format(cls, value: str | None) -> str | None:
+        # Phase 5.6 (email overhaul): core/validation.validate_email existed
+        # as dead code while typo'd addresses sailed into sends — caught only
+        # by NDR detection, only on Outlook tenants. Empty string → None;
+        # otherwise the address must look like an address.
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        from gdx_dispatch.core.validation import _EMAIL_RE
+
+        if not _EMAIL_RE.match(value) or ".." in value:
+            raise ValueError("invalid email address format")
+        return value
 
 
 class CustomerOut(BaseModel):
@@ -1219,6 +1255,93 @@ def merge_customers(
         merged_count=len(payload.merge_ids),
         rows_updated=rows_updated,
     )
+
+
+# ── Contacts: office-side default recipient (email overhaul Phase 2) ───────
+# The mobile job screen creates contacts; the office needed a way to LIST them
+# and pick which person automated emails greet/address on a business account.
+
+
+@router.get("/{customer_id}/contacts", response_model=None)
+async def list_customer_contacts(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    rows = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        ).order_by(CustomerContact.created_at)
+    ).scalars().all()
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "email": c.email,
+            "phone": c.phone,
+            "label": c.label,
+            "is_primary": bool(c.is_primary),
+        }
+        for c in rows
+    ]
+
+
+@router.post("/{customer_id}/contacts/{contact_id}/make-primary", response_model=None)
+async def make_contact_primary(
+    customer_id: str,
+    contact_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Set THE default person automated sends (bulk, reminders, receipts,
+    workflow rules, plugins) greet and address for this account. At most one
+    live primary per customer — enforced here, the single writer."""
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    target = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.id == str(contact_id),
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if not (target.email or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="This contact has no email address — add one before making them the default recipient.",
+        )
+    others = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    previous = next((c for c in others if c.is_primary and c.id != target.id), None)
+    for c in others:
+        c.is_primary = c.id == target.id
+    db.commit()
+    # Invariant #1 (ARCHITECTURAL_INVARIANTS.md): every mutation carries an
+    # audit row — this changes who automated emails address for the account.
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id=str(current_user.get("sub") or current_user.get("user_id") or "system"),
+        action="customer_primary_contact_set",
+        entity_type="customer",
+        entity_id=str(customer_id),
+        details={
+            "contact_id": str(target.id),
+            "contact_name": target.name,
+            "previous_contact_id": str(previous.id) if previous else None,
+        },
+    )
+    db.commit()
+    return {"ok": True, "primary_contact_id": str(target.id)}
 
 
 # ── Route-order fix ─────────────────────────────────────────────────────────

@@ -501,3 +501,23 @@ async def test_list_customers_bypasses_cache_for_searches(tenant_db_session, mon
 
     await list_customers(request=_mock_request(), q=None, page=1, per_page=50, _={}, db=tenant_db_session)
     assert len(calls) == 1, "the q='' default list should still be cached"
+
+
+# ── Phase 5.6 (email overhaul): recipient hygiene at the source ────────────
+
+
+def test_customer_email_format_validated_on_write():
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from gdx_dispatch.routers.customers import CustomerCreateIn, CustomerUpdateIn
+
+    with _pytest.raises(ValidationError):
+        CustomerCreateIn(name="X", email="not-an-email")
+    with _pytest.raises(ValidationError):
+        CustomerUpdateIn(email="a@@b.com")
+    with _pytest.raises(ValidationError):
+        CustomerCreateIn(name="X", email="a..b@x.com")
+    # Empty string normalizes to None (no email on file) instead of failing.
+    assert CustomerCreateIn(name="X", email="  ").email is None
+    assert CustomerCreateIn(name="X", email="bob@acme.example").email == "bob@acme.example"

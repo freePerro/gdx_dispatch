@@ -483,6 +483,41 @@
             </template>
           </Card>
 
+          <Card data-testid="automation-email-card" style="margin-bottom:1rem">
+            <template #title>Automation emails</template>
+            <template #content>
+              <div style="display:flex; align-items:center; gap:0.75rem;">
+                <ToggleSwitch v-model="automationEmailsEnabled" inputId="automation-emails" data-testid="automation-emails-toggle" />
+                <div>
+                  <strong>Let workflow rules send email</strong>
+                  <div class="muted">
+                    When on, <RouterLink to="/automation-rules">Event Rules</RouterLink>
+                    with a "send email" action actually email your customers
+                    (branded, and recorded in the
+                    <RouterLink to="/email-log">Email Log</RouterLink>). Off by
+                    default so rules configured before this existed can't
+                    surprise-send. Plugin email is separate — it is governed by
+                    each plugin's install consent, not this switch.
+                  </div>
+                </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:0.75rem; margin-top:0.85rem;">
+                <label for="automation-sender" style="min-width:11rem;"><strong>Send as</strong></label>
+                <Select v-model="automationSenderUserId" :options="staffOptions" option-label="label"
+                  option-value="value" show-clear placeholder="No sender — automated email can't deliver"
+                  inputId="automation-sender" style="min-width: 20rem" data-testid="automation-sender-select" />
+              </div>
+              <div class="muted" style="margin-top:0.35rem;">
+                Automated and plugin emails go out through this person's connected
+                Outlook account. Without a sender (and with no SMTP configured),
+                automated sends fail with "no email provider connected".
+              </div>
+              <div style="margin-top:0.85rem;">
+                <Button label="Save" icon="pi pi-save" :loading="automationEmailSaving" @click="saveAutomationEmail" data-testid="automation-email-save" />
+              </div>
+            </template>
+          </Card>
+
           <Card>
             <template #title>Estimates</template>
             <template #content>
@@ -1784,6 +1819,43 @@ async function saveDebugLogging() {
   }
 }
 
+// ── Automation emails (email overhaul 4a; locked: an on/off option) ──
+const automationEmailsEnabled = ref(false);
+const automationSenderUserId = ref(null);
+const automationEmailSaving = ref(false);
+const staffOptions = ref([]);
+async function loadAutomationEmail() {
+  try {
+    const s = await api.get("/api/settings");
+    automationEmailsEnabled.value = !!s?.automation_emails_enabled;
+    automationSenderUserId.value = s?.automation_sender_user_id || null;
+  } catch (_e) { /* defaults off */ }
+  try {
+    const users = await api.get("/api/users");
+    const list = Array.isArray(users) ? users : users?.items || [];
+    staffOptions.value = list
+      .filter((u) => u?.id)
+      .map((u) => ({ label: `${u.name || u.email || u.id}`, value: String(u.id) }));
+  } catch (_e) { /* sender select stays empty; toggle still works */ }
+}
+async function saveAutomationEmail() {
+  automationEmailSaving.value = true;
+  try {
+    await api.patch(
+      "/api/settings",
+      {
+        automation_emails_enabled: automationEmailsEnabled.value,
+        automation_sender_user_id: automationSenderUserId.value || null,
+      },
+      { successMessage: automationEmailsEnabled.value
+          ? "Automation emails ON — rules with a send-email action now deliver."
+          : "Automation emails off." },
+    );
+  } finally {
+    automationEmailSaving.value = false;
+  }
+}
+
 async function loadEstimatesFeatures() {
   try {
     const p = await api.get("/api/estimates-features");
@@ -2124,7 +2196,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail()]);
 });
 
 onBeforeUnmount(() => {

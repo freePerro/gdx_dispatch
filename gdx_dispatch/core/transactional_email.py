@@ -29,6 +29,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
@@ -97,9 +98,8 @@ def _try_outlook_graph(
     def _send_once() -> None:
         # New control_db per attempt — the context manager's tenant_id
         # stash on .info is a per-session artifact, not safe to reuse.
-        with SessionLocal() as control_db:
-            with with_outlook_client(control_db, tenant_db, user_id, tenant_id) as gc:
-                gc._request("POST", "/me/sendMail", json=body)
+        with SessionLocal() as control_db, with_outlook_client(control_db, tenant_db, user_id, tenant_id) as gc:
+            gc._request("POST", "/me/sendMail", json=body)
 
     # Distinguish "never connected" (the user has no outlook_accounts row)
     # from "expired/needs reconnect" (had tokens but refresh failed). The
@@ -165,6 +165,127 @@ def _try_smtp(
         return False, "smtp_exception"
 
 
+def _record_outbound(
+    *,
+    tenant_db: Session | None,
+    tenant_id: str,
+    initiator_kind: str,
+    initiator_ref: str | None,
+    kind: str | None,
+    entity_type: str | None,
+    entity_id: str | None,
+    to_email: str,
+    to_name: str,
+    recipient_source: str | None,
+    recipient_contact_id: str | None,
+    subject: str,
+    html_body: str,
+    attachments: list[dict[str, Any]] | None,
+    provider: str | None,
+    sent: bool,
+    skip_reason: str | None,
+) -> None:
+    """Append-only audit row for this send attempt (locked requirement:
+    everything auditable). Rides the caller's session (every send path
+    commits right after a send); if that session is unusable — mid-rollback,
+    or None — a fresh session on the same bind (or SessionLocal) records it
+    anyway. A logging failure must never block or fail the send itself."""
+    from gdx_dispatch.models.tenant_models import OutboundEmail
+
+    meta = [
+        {
+            "name": a.get("name") or "attachment",
+            "content_type": a.get("content_type") or "application/octet-stream",
+            "size_bytes": int(len(a.get("content_base64") or "") * 3 / 4),
+        }
+        for a in (attachments or [])
+    ]
+
+    def _row() -> OutboundEmail:
+        return OutboundEmail(
+            company_id=str(tenant_id or ""),
+            initiator_kind=initiator_kind or "user",
+            initiator_ref=initiator_ref,
+            kind=kind,
+            entity_type=entity_type,
+            entity_id=str(entity_id) if entity_id else None,
+            to_email=to_email or "",
+            to_name=to_name or None,
+            recipient_source=recipient_source,
+            recipient_contact_id=recipient_contact_id,
+            subject=subject or "",
+            body_html=html_body or "",
+            attachments_meta=meta or None,
+            provider=provider,
+            status="sent" if sent else "failed",
+            skip_reason=skip_reason,
+        )
+
+    try:
+        if tenant_db is not None:
+            tenant_db.add(_row())
+            tenant_db.flush()
+            return
+    except Exception:
+        log.exception("outbound_email_audit_primary_write_failed tenant=%s", tenant_id)
+    try:
+        from sqlalchemy.orm import Session as _Session
+
+        if tenant_db is not None:
+            bind = tenant_db.get_bind()
+            with _Session(bind=bind) as audit_db:
+                audit_db.add(_row())
+                audit_db.commit()
+        else:
+            from gdx_dispatch.core.database import SessionLocal
+            with SessionLocal() as audit_db:
+                audit_db.add(_row())
+                audit_db.commit()
+    except Exception:
+        log.exception("outbound_email_audit_write_failed tenant=%s", tenant_id)
+
+
+def recently_sent(
+    db: Session,
+    entity_type: str,
+    entity_id: str,
+    *,
+    within_seconds: int = 20,
+    kind: str | None = None,
+) -> bool:
+    """Server-side double-send guard (Phase 5.5): True when this entity had a
+    SUCCESSFUL send inside the window. A second tab, a retried request, or a
+    re-clicked bulk row used to mean two identical customer emails — the
+    only guards were frontend button flags. Uses the outbound_emails audit
+    trail, so it needs no new state and can't disagree with it.
+
+    Honest limit (adversarial audit round 2): this is check-then-act over
+    COMMITTED rows — two requests in flight in the same instant both pass
+    (the audit row commits at request end). It reliably stops the sequential
+    re-click/retry class, which is the observed failure mode; a same-instant
+    race needs a DB constraint this table can't express. Accepted."""
+    try:
+        from datetime import timedelta
+
+        from gdx_dispatch.core.audit import utcnow
+        from gdx_dispatch.models.tenant_models import OutboundEmail
+
+        cutoff = utcnow() - timedelta(seconds=within_seconds)
+        q = select(OutboundEmail.id).where(
+            OutboundEmail.entity_type == entity_type,
+            OutboundEmail.entity_id == str(entity_id),
+            OutboundEmail.status == "sent",
+            OutboundEmail.created_at >= cutoff,
+        )
+        if kind:
+            q = q.where(OutboundEmail.kind == kind)
+        return db.execute(q.limit(1)).first() is not None
+    except Exception:
+        # The guard must never block a legitimate send.
+        log.exception("recently_sent_check_failed entity=%s", entity_id)
+        return False
+
+
 def send_transactional_email(
     *,
     tenant_db: Session,
@@ -175,6 +296,13 @@ def send_transactional_email(
     subject: str,
     html_body: str,
     attachments: list[dict[str, Any]] | None = None,
+    initiator_kind: str = "user",
+    initiator_ref: str | None = None,
+    kind: str | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    recipient_source: str | None = None,
+    recipient_contact_id: str | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Send a transactional email. Returns (sent, provider, skip_reason).
 
@@ -185,9 +313,65 @@ def send_transactional_email(
       message instead of a generic error.
     - attachments: [{name, content_type, content_base64}] — delivered by
       whichever provider wins (Graph fileAttachment / SMTP MIME part).
+    - initiator_* / entity_* / recipient_*: audit-trail context recorded in
+      outbound_emails for EVERY attempt. initiator_ref defaults to user_id
+      for 'user' sends.
+
+    Every call — success, failure, or missing recipient — writes one
+    outbound_emails row; that is the delivery audit trail, not the logs.
     """
+    def _finish(sent: bool, provider: str | None, skip: str | None):
+        _record_outbound(
+            tenant_db=tenant_db,
+            tenant_id=str(tenant_id or ""),
+            initiator_kind=initiator_kind,
+            initiator_ref=initiator_ref or (str(user_id) if user_id and initiator_kind == "user" else initiator_ref),
+            kind=kind,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            to_email=to_email,
+            to_name=to_name,
+            recipient_source=recipient_source,
+            recipient_contact_id=recipient_contact_id,
+            subject=subject,
+            html_body=html_body,
+            attachments=attachments,
+            provider=provider,
+            sent=sent,
+            skip_reason=skip,
+        )
+        # email.sent / email.send_failed into the domain-event stream (P6):
+        # webhook subscribers and consented plugins (the n8n path) can react
+        # to delivery outcomes. emit_domain_event never raises into callers
+        # and stages nothing when nobody listens.
+        if tenant_db is not None and tenant_id:
+            try:
+                from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+                emit_domain_event(
+                    tenant_db,
+                    "email.sent" if sent else "email.send_failed",
+                    str(entity_id or to_email or ""),
+                    {
+                        "to_email": to_email,
+                        "subject": subject,
+                        "kind": kind,
+                        "entity_type": entity_type,
+                        "entity_id": str(entity_id) if entity_id else None,
+                        "provider": provider,
+                        "skip_reason": skip,
+                        "initiator_kind": initiator_kind,
+                        "initiator_ref": initiator_ref,
+                        "company_id": str(tenant_id),
+                    },
+                    tenant_id=str(tenant_id),
+                )
+            except Exception:
+                log.exception("email_event_emit_failed")
+        return sent, provider, skip
+
     if not to_email:
-        return False, None, "no_recipient_email"
+        return _finish(False, None, "no_recipient_email")
 
     tid = _to_uuid(tenant_id)
     uid = _to_uuid(user_id)
@@ -206,7 +390,7 @@ def send_transactional_email(
             attachments=attachments,
         )
         if sent_ol:
-            return True, "outlook_graph", None
+            return _finish(True, "outlook_graph", None)
 
     # 2. SMTP via email_settings.
     sent_smtp, smtp_reason = _try_smtp(
@@ -219,7 +403,7 @@ def send_transactional_email(
         attachments=attachments,
     )
     if sent_smtp:
-        return True, "smtp", None
+        return _finish(True, "smtp", None)
 
     # 3. Neither path delivered. Pick the most informative reason: prefer
     # the Outlook diagnosis when Outlook was actually attempted; otherwise
@@ -228,6 +412,6 @@ def send_transactional_email(
     # configure call to action.
     if smtp_reason == "smtp_not_configured":
         if outlook_reason in ("outlook_not_connected", None):
-            return False, None, "no_email_provider_connected"
-        return False, None, outlook_reason
-    return False, None, smtp_reason or outlook_reason or "send_failed"
+            return _finish(False, None, "no_email_provider_connected")
+        return _finish(False, None, outlook_reason)
+    return _finish(False, None, smtp_reason or outlook_reason or "send_failed")

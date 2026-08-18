@@ -31,6 +31,9 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.tasks.estimate_archive",
             "gdx_dispatch.core.webhooks.tasks",
             "gdx_dispatch.core.plugin_events",
+            # Email overhaul P6 — plugin email outbox drain + P4a workflow rules.
+            "gdx_dispatch.tasks.plugin_email_outbox",
+            "gdx_dispatch.modules.workflows.tasks",
             "gdx_dispatch.modules.campaigns.tasks",
             "gdx_dispatch.core.reconciliation_tasks",
             "gdx_dispatch.modules.outlook.tasks",

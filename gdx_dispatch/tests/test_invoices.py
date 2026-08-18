@@ -553,7 +553,8 @@ def test_send_invoice_on_paid_is_a_receipt(tenant_db_session, monkeypatch):
 
     assert sent["status"] == "paid"
     assert sent["email_sent"] is True
-    assert captured["subject"].startswith("Payment received — Invoice #")
+    # Template-driven subject (composer parity): "Invoice INV-x from Co".
+    assert captured["subject"].startswith("Payment received — Invoice ")
     assert captured["attachments"][0]["name"].endswith("-paid.pdf")
     assert sent["sent_at"] is not None
     assert sent["sent_via"] == "email"
@@ -576,7 +577,8 @@ def test_send_receipt_delivers_the_paid_invoice_for_real(tenant_db_session, monk
     assert out["sent"] is True
     assert out["to"] == "receipt2@example.com"
     assert out["pdf_attached"] is True
-    assert captured["subject"].startswith("Payment received — Invoice #")
+    # Template-driven subject (composer parity): "Invoice INV-x from Co".
+    assert captured["subject"].startswith("Payment received — Invoice ")
     row = tenant_db_session.get(Invoice, UUID(inv["id"]))
     assert row.status == "paid"
     assert row.sent_at is not None

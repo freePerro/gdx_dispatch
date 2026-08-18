@@ -41,6 +41,7 @@ class EmailConfigIn(BaseModel):
     password: str = Field(default="", max_length=500)
     from_email: str = Field(default="", max_length=254)
     from_name: str = Field(default="", max_length=100)
+    reply_to_email: str = Field(default="", max_length=254)
 
 
 @router.get("/email")
@@ -60,6 +61,7 @@ def get_email_config(
             "username": row.username,
             "from_email": row.from_email,
             "from_name": row.from_name,
+            "reply_to_email": getattr(row, "reply_to_email", "") or "",
             "is_verified": row.is_verified,
         }
     return {"provider": "disabled", "smtp_host": "", "smtp_port": 587,
@@ -74,7 +76,11 @@ def save_email_config(
 ) -> dict[str, Any]:
     tid = _tid(request)
     now = datetime.now(timezone.utc)
-    pw_enc = base64.b64encode(payload.password.encode()).decode() if payload.password else ""
+    # Phase 5.8: real encryption (pii Fernet), not the base64 obfuscation
+    # the column name always implied. Legacy b64 rows still read (see
+    # core/pii.decrypt_secret).
+    from gdx_dispatch.core.pii import encrypt_secret
+    pw_enc = encrypt_secret(payload.password) if payload.password else ""
 
     # Auto-fill SMTP host/port from provider
     defaults = PROVIDER_DEFAULTS.get(payload.provider, {})
@@ -92,6 +98,7 @@ def save_email_config(
         existing.password_enc = pw_enc
         existing.from_email = payload.from_email
         existing.from_name = payload.from_name
+        existing.reply_to_email = payload.reply_to_email or None
         existing.is_verified = False
         existing.updated_at = now
     else:
@@ -105,6 +112,7 @@ def save_email_config(
             password_enc=pw_enc,
             from_email=payload.from_email,
             from_name=payload.from_name,
+            reply_to_email=payload.reply_to_email or None,
             is_verified=False,
             created_at=now,
             updated_at=now,

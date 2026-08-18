@@ -359,24 +359,26 @@ describe('InvoiceDetailView — send composer PDF preview (2026-07-20)', () => {
   });
 });
 
-describe('InvoiceDetailView — composer body escapes then linkifies URLs (2026-07-21)', () => {
-  // Source pin: the "Pay online: https://…/pay/{token}" line the compose
-  // endpoint now prefills must arrive clickable — Outlook desktop does not
-  // auto-link plain text inside HTML bodies. Escaping must happen BEFORE
-  // linkifying or the injected <a> tags would themselves get escaped.
+describe('InvoiceDetailView — composer sends plain text; the SERVER renders the email (2026-08-18)', () => {
+  // Email overhaul: escaping + linkifying moved server-side (core/email_layout,
+  // pytest-covered) so composer sends and one-click sends produce the same
+  // branded email. The browser must no longer hand-roll email HTML.
   const { readFileSync } = require('node:fs');
   const { join } = require('node:path');
   const SRC = readFileSync(join(__dirname, '..', 'InvoiceDetailView.vue'), 'utf8');
 
-  it('sendComposer escapes the body, then wraps bare URLs in anchors', () => {
+  it('sendComposer posts body_text to the invoice send endpoint, builds no HTML', () => {
     const start = SRC.indexOf('async function sendComposer');
     expect(start).toBeGreaterThan(-1);
-    const body = SRC.slice(start, SRC.indexOf('/api/outlook/send', start));
-    const escapeAt = body.indexOf('&amp;');
-    const linkifyAt = body.indexOf('<a href=');
-    expect(escapeAt).toBeGreaterThan(-1);
-    expect(linkifyAt).toBeGreaterThan(escapeAt);
-    expect(body).toContain('https?:\\/\\/'); // the URL-matching regex is present
+    const end = SRC.indexOf('async function _emailViaMailtoFallback', start);
+    const body = SRC.slice(start, end);
+    expect(body).toMatch(/api\.post\(`\/api\/invoices\/\$\{route\.params\.id\}\/send`/);
+    expect(body).toContain('body_text:');
+    expect(body).toContain('contact_id:');
+    // The legacy client-built email is gone: no <pre> wrapper, no direct
+    // Outlook relay from this path.
+    expect(body).not.toContain('<pre');
+    expect(body).not.toContain('/api/outlook/send');
   });
 });
 

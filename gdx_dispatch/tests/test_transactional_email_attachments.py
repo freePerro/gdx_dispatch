@@ -79,7 +79,11 @@ def test_send_email_attaches_pdf_as_mixed_mime(monkeypatch):
     (msg,) = _FakeSMTP.sent_messages
     assert msg.get_content_type() == "multipart/mixed"
     parts = msg.get_payload()
-    assert parts[0].get_content_type() == "text/html"
+    # The body travels as a text+html alternative pair inside the mixed
+    # envelope (plain-text part added with the shared email shell).
+    assert parts[0].get_content_type() == "multipart/alternative"
+    alt_parts = parts[0].get_payload()
+    assert [p.get_content_type() for p in alt_parts] == ["text/plain", "text/html"]
     pdf_part = parts[1]
     assert pdf_part.get_content_type() == "application/pdf"
     assert pdf_part.get_filename() == "invoice-INV-1.pdf"

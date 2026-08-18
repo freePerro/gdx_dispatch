@@ -688,20 +688,31 @@ def forgot_password(body: ForgotPasswordBody, request: Request, db: Session = De
         reset_link = f"{base}/reset-password?token={token}"
 
         try:
+            # Shared shell (email overhaul): the old div body used rem units
+            # (unreliable in mail clients), anchor padding (no button in
+            # Outlook) and no background-color (dark-mode fragile). Platform-
+            # branded on purpose — this is an auth email, not tenant mail.
+            from gdx_dispatch.core.email_layout import cta_button, esc, render_email
+
+            _reset_body = (
+                '<h2 style="margin:0 0 16px;font-size:20px;color:#3b82f6;">Reset Your Password</h2>'
+                '<p style="margin:0 0 12px;">You requested a password reset. '
+                "Click the button below to set a new password:</p>"
+                + cta_button(reset_link, "Reset Password", "#3b82f6")
+                + '<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link expires in '
+                "1 hour. If you didn&#39;t request this, ignore this email.</p>"
+                f'<p style="margin:0;font-size:12px;color:#556270;">Link: '
+                f'<a href="{esc(reset_link)}" style="color:#3b82f6;">{esc(reset_link)}</a></p>'
+            )
             _send_platform_email(
                 str(row["email"]),
                 "Password Reset — DispatchApp",
-                f"""<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:2rem;">
-                <h2 style="color:#1e293b;">Reset Your Password</h2>
-                <p>You requested a password reset. Click the button below to set a new password:</p>
-                <p style="text-align:center;margin:1.5rem 0;">
-                  <a href="{reset_link}" style="background:#3b82f6;color:white;padding:12px 24px;
-                    border-radius:6px;text-decoration:none;font-weight:600;">Reset Password</a>
-                </p>
-                <p style="color:#64748b;font-size:0.85rem;">This link expires in 1 hour.
-                If you didn't request this, ignore this email.</p>
-                <p style="color:#94a3b8;font-size:0.75rem;">Link: {reset_link}</p>
-                </div>""",
+                render_email(
+                    branding={"company_name": "DispatchApp", "accent": "#3b82f6"},
+                    body_html=_reset_body,
+                    title="Password Reset",
+                    preheader="Reset your DispatchApp password",
+                ),
             )
         except Exception:
             log.exception("forgot_password_email_failed")

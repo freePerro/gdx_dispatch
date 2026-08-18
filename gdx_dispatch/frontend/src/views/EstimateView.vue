@@ -968,8 +968,25 @@
         <div v-else class="composer-form">
           <div class="form-field">
             <label>To</label>
-            <InputText v-model="composer.to" placeholder="customer@example.com"
+            <Select v-if="composer.recipients.length" v-model="composer.contact_id"
+              :options="composer.recipients" option-value="contact_id" option-label="email"
+              class="w-full" data-testid="composer-recipient"
+              @change="onRecipientChange">
+              <template #option="{ option }">
+                <span>{{ option.name }} &lt;{{ option.email }}&gt;</span>
+                <Tag v-if="option.is_primary" value="primary" severity="info" class="ml-2" />
+                <small class="muted ml-2">{{ option.label }}</small>
+              </template>
+              <template #value="{ value }">
+                <span>{{ recipientDisplay(value) }}</span>
+              </template>
+            </Select>
+            <InputText v-else v-model="composer.to" placeholder="customer@example.com"
               class="w-full" data-testid="composer-to" />
+            <small v-if="canMakeDefaultRecipient" class="muted">
+              <a href="#" data-testid="composer-make-default"
+                @click.prevent="makeDefaultRecipient">Always send to this person</a>
+            </small>
           </div>
           <div class="form-field">
             <label>Subject</label>
@@ -978,7 +995,8 @@
           <div class="form-field">
             <label>Message</label>
             <Textarea v-model="composer.body_text" rows="8" class="w-full" data-testid="composer-body" />
-            <small class="muted">Plain text — line breaks are preserved.</small>
+            <small class="muted">Your message — line items, totals and the approval button are added
+              automatically around it. Use Preview to see the final email.</small>
           </div>
           <div class="form-field">
             <label>Attachments</label>
@@ -998,11 +1016,21 @@
             </div>
             <ComposerPdfPreview :pdf="composer.pdf" />
           </div>
+          <div v-if="composer.previewHtml" class="form-field">
+            <label>Email preview</label>
+            <!-- sandboxed: the preview is server-rendered trusted markup, but
+                 an iframe keeps its styles from bleeding into the app -->
+            <iframe class="composer-preview" sandbox="" :srcdoc="composer.previewHtml"
+              data-testid="composer-preview" title="Email preview" />
+          </div>
         </div>
         <template #footer>
           <Button label="Cancel" text @click="showComposer = false" />
-          <Button label="Send via Outlook" icon="pi pi-send" severity="primary"
-            :loading="composerSending" :disabled="composerLoading || !composer.to"
+          <Button label="Preview" icon="pi pi-eye" severity="secondary" outlined
+            :loading="composerPreviewing" :disabled="composerLoading"
+            data-testid="composer-preview-btn" @click="previewComposer" />
+          <Button label="Send" icon="pi pi-send" severity="primary"
+            :loading="composerSending" :disabled="composerLoading || !composerHasRecipient"
             data-testid="composer-send" @click="sendComposer" />
         </template>
       </Dialog>
@@ -1069,7 +1097,18 @@ const attachmentInput = ref(null);
 const showComposer = ref(false);
 const composerLoading = ref(false);
 const composerSending = ref(false);
-const composer = ref({ to: "", subject: "", body_text: "", pdf: null, extras: [] });
+const composerPreviewing = ref(false);
+const composer = ref({
+  to: "", subject: "", body_text: "", pdf: null, extras: [],
+  recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
+});
+const composerHasRecipient = computed(() =>
+  composer.value.recipients.length ? true : Boolean(composer.value.to)
+);
+function recipientDisplay(contactId) {
+  const opt = composer.value.recipients.find((r) => r.contact_id === (contactId || ""));
+  return opt ? `${opt.name} <${opt.email}>` : composer.value.to || "Choose a recipient";
+}
 const lineCategories = ["Doors", "Openers", "Springs", "Labor", "Parts", "Other"];
 
 const isExisting = computed(() => Boolean(route.params.id));
@@ -2791,7 +2830,10 @@ async function emailEstimate() {
   }
   composerLoading.value = true;
   showComposer.value = true;
-  composer.value = { to: "", subject: "", body_text: "", pdf: null, extras: [] };
+  composer.value = {
+    to: "", subject: "", body_text: "", pdf: null, extras: [],
+    recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
+  };
   try {
     const data = await api.get(`/api/estimates/${route.params.id}/email-compose`);
     const payload = data?.data || data;
@@ -2799,8 +2841,14 @@ async function emailEstimate() {
       to: (payload.to && payload.to[0]) || "",
       subject: payload.subject || "",
       body_text: payload.body_text || "",
+      prefillBody: payload.body_text || "",
       pdf: payload.pdf,
       extras: (payload.extra_attachments || []).map((a) => ({ ...a, _include: true })),
+      // Select can't hold null — the account-email option uses "".
+      recipients: (payload.recipients || []).map((r) => ({ ...r, contact_id: r.contact_id || "" })),
+      contact_id: payload.selected_contact_id || "",
+      customer_id: payload.customer_id || null,
+      previewHtml: "",
     };
   } catch (err) {
     showComposer.value = false;
@@ -2810,99 +2858,124 @@ async function emailEstimate() {
   }
 }
 
-async function _blobToBase64(blob) {
-  return await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onerror = () => reject(r.error);
-    r.onload = () => {
-      const s = String(r.result || "");
-      const i = s.indexOf(",");
-      resolve(i >= 0 ? s.slice(i + 1) : s);
-    };
-    r.readAsDataURL(blob);
-  });
+const canMakeDefaultRecipient = computed(() => {
+  const opt = (composer.value.recipients || []).find(
+    (r) => r.contact_id === (composer.value.contact_id || "")
+  );
+  return Boolean(opt && opt.contact_id && !opt.is_primary && composer.value.customer_id);
+});
+
+async function makeDefaultRecipient() {
+  const contactId = composer.value.contact_id;
+  const customerId = composer.value.customer_id;
+  if (!contactId || !customerId) return;
+  try {
+    await api.post(
+      `/api/customers/${customerId}/contacts/${contactId}/make-primary`, {},
+      { successMessage: "Saved — automated emails for this account now go to this person." },
+    );
+    composer.value.recipients = composer.value.recipients.map((r) => ({
+      ...r, is_primary: r.contact_id === contactId,
+    }));
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Could not save default", detail: err?.message || "", life: 4000 });
+  }
+}
+
+async function onRecipientChange() {
+  // Re-prefill the greeting for the newly chosen person — but never clobber
+  // copy the operator already edited; then only the address changes.
+  const contactId = composer.value.contact_id || "";
+  const opt = composer.value.recipients.find((r) => r.contact_id === contactId);
+  if (opt) composer.value.to = opt.email;
+  const edited = composer.value.body_text !== composer.value.prefillBody;
+  if (edited) return;
+  try {
+    const q = contactId ? `?contact_id=${encodeURIComponent(contactId)}` : "";
+    const data = await apiRaw.get(`/api/estimates/${route.params.id}/email-compose${q}`);
+    const payload = data?.data || data;
+    composer.value.subject = payload.subject || composer.value.subject;
+    composer.value.body_text = payload.body_text || composer.value.body_text;
+    composer.value.prefillBody = payload.body_text || "";
+    composer.value.previewHtml = "";
+  } catch {
+    // Prefill refresh is cosmetic — the send path re-resolves the greeting
+    // server-side from contact_id anyway.
+  }
+}
+
+async function previewComposer() {
+  composerPreviewing.value = true;
+  try {
+    const data = await apiRaw.post(`/api/estimates/${route.params.id}/email-preview`, {
+      body_text: composer.value.body_text,
+      subject: composer.value.subject,
+      contact_id: composer.value.contact_id || null,
+      // Free-typed address (no stored recipients) must reach the server —
+      // audit catch: it used to be collected and silently dropped.
+      to_email: composer.value.recipients.length ? null : (composer.value.to || null),
+    });
+    const payload = data?.data || data;
+    composer.value.previewHtml = payload.html || "";
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Preview failed", detail: err?.message || "", life: 4000 });
+  } finally {
+    composerPreviewing.value = false;
+  }
 }
 
 async function sendComposer() {
-  if (!composer.value.to) return;
+  if (!composerHasRecipient.value) return;
   composerSending.value = true;
   try {
-    // Gather attachments. PDF is already base64 from the server.
-    const atts = [
-      {
+    // Server-side render + send: the backend wraps this copy in the branded
+    // shell (line items / tiers, totals, clickable approval button), resolves
+    // the recipient, attaches the PDF + selected extras under one size
+    // budget, delivers via Outlook Graph or SMTP, stamps sent/sent_via, and
+    // records the attempt in the outbound email log. The old path built a
+    // bare <pre> body in the browser and needed a separate mark-sent call.
+    const result = await apiRaw.post(`/api/estimates/${route.params.id}/send`, {
+      body_text: composer.value.body_text,
+      subject: composer.value.subject,
+      contact_id: composer.value.contact_id || null,
+      extra_attachment_ids: composer.value.extras.filter((e) => e._include).map((e) => e.id),
+    });
+    const payload = result?.data || result;
+    if (payload.email_sent) {
+      estimate.value.status = _titleCase(payload.status || "sent");
+      let detail = `Estimate emailed to ${composer.value.to || "the customer"}.`;
+      if (payload.attachments_skipped?.length) {
+        detail += ` Not attached (too large): ${payload.attachments_skipped.join(", ")}.`;
+      }
+      toast.add({ severity: "success", summary: "Sent", detail, life: 6000 });
+      showComposer.value = false;
+    } else if (
+      ["no_email_provider_connected", "outlook_not_connected", "outlook_reconnect_required"]
+        .includes(payload.email_skip_reason)
+    ) {
+      // No connected provider — fall back to mailto + PDF download.
+      toast.add({
+        severity: "info",
+        summary: "Opening your mail client",
+        detail: "No email provider is connected for this user — using your default mail client instead.",
+        life: 5000,
+      });
+      await _emailViaMailtoFallback(composer.value, {
         name: composer.value.pdf.name,
         content_type: composer.value.pdf.content_type,
         content_base64: composer.value.pdf.content_base64,
-      },
-    ];
-    for (const ex of composer.value.extras) {
-      if (!ex._include) continue;
-      try {
-        const blobUrl = await createAuthedBlobUrl(
-          `/api/estimates/${route.params.id}/attachments/${ex.id}/download`,
-        );
-        const blob = await (await fetch(blobUrl)).blob();
-        URL.revokeObjectURL(blobUrl);
-        atts.push({
-          name: ex.name,
-          content_type: ex.content_type,
-          content_base64: await _blobToBase64(blob),
-        });
-      } catch (e) {
-        toast.add({ severity: "warn", summary: "Skipping attachment", detail: ex.name, life: 3000 });
-      }
-    }
-    // Plain-text body → wrap in <pre> so newlines survive.
-    const bodyHtml = `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap">${
-      composer.value.body_text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    }</pre>`;
-    try {
-      // Use the raw API client so a 409 (Outlook not connected) doesn't fire
-      // useApiWithToast's generic error toast — we handle it as a fallback.
-      await apiRaw.post("/api/outlook/send", {
-        to: [composer.value.to],
-        subject: composer.value.subject,
-        body_html: bodyHtml,
-        attachments: atts,
-      });
-      try {
-        const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, {});
-        estimate.value.status = _titleCase(result?.status || "sent");
-      } catch {
-        // NOT just status drift anymore: the composed body carries the public
-        // approval link, and that link only resolves once sent_at is stamped.
-        // A swallowed failure here = the customer holds a dead link while the
-        // office saw "Sent". Say so.
-        toast.add({
-          severity: "warn",
-          summary: "Marked-sent failed",
-          detail: "The email went out, but the estimate could not be marked sent — the approval link in it won't work until you Mark as Sent from the menu.",
-          life: 10000,
-        });
-      }
-      toast.add({
-        severity: "success",
-        summary: "Sent",
-        detail: `Estimate emailed to ${composer.value.to}. Check your Sent folder.`,
-        life: 5000,
       });
       showComposer.value = false;
-    } catch (err) {
-      const status = err?.status || err?.response?.status;
-      if (status === 409) {
-        // Outlook not connected for this user — fall back to mailto + download.
-        toast.add({
-          severity: "info",
-          summary: "Opening your mail client",
-          detail: "Outlook isn't connected for this user — using your default mail client instead.",
-          life: 5000,
-        });
-        await _emailViaMailtoFallback(composer.value, atts[0]);
-        showComposer.value = false;
-      } else {
-        toast.add({ severity: "error", summary: "Send failed", detail: err?.message || "Outlook rejected the send", life: 5000 });
-      }
+    } else {
+      toast.add({
+        severity: "error",
+        summary: "Send failed",
+        detail: payload.email_skip_reason || "The email could not be delivered",
+        life: 6000,
+      });
     }
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Send failed", detail: err?.message || "", life: 5000 });
   } finally {
     composerSending.value = false;
   }
@@ -2923,7 +2996,7 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   const mailto = `mailto:${encodeURIComponent(c.to)}?subject=${encodeURIComponent(c.subject)}&body=${encodeURIComponent(c.body_text)}`;
   window.location.href = mailto;
   try {
-    const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, {});
+    const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, { channel: "email" });
     estimate.value.status = _titleCase(result?.status || "sent");
   } catch {
     // Same stakes as the composer path: the mailto body carries the approval
@@ -3669,6 +3742,14 @@ onUnmounted(() => {
 }
 .attachment-icon-small { font-size: 1.5rem; color: #6b7280; }
 .composer-loading { padding: 2rem; text-align: center; color: #6b7280; }
+.composer-preview {
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--p-surface-300, #d1d5db);
+  border-radius: 6px;
+  /* No background here — the email document inside the iframe paints its
+     own; a hardcoded light surface fails the dark-mode contrast gate. */
+}
 .composer-form { display: flex; flex-direction: column; gap: 0.75rem; }
 .composer-form .form-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .composer-attachments { display: flex; flex-direction: column; gap: 0.4rem; }

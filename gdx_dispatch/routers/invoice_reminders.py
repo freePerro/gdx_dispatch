@@ -396,6 +396,8 @@ def preview_reminder(
 def _reminder_context(db: Session, invoice) -> dict[str, Any]:
     from datetime import UTC, date, datetime
 
+    from gdx_dispatch.core.email_recipients import resolve_recipient
+    from gdx_dispatch.core.payments import public_pay_url
     from gdx_dispatch.models.tenant_models import Customer
 
     customer = None
@@ -403,18 +405,32 @@ def _reminder_context(db: Session, invoice) -> dict[str, Any]:
         customer = db.execute(
             select(Customer).where(Customer.id == invoice.customer_id)
         ).scalar_one_or_none()
+    recipient = resolve_recipient(db, customer) if customer is not None else None
     days_overdue = 0
     if invoice.due_date:
         days_overdue = max((date.today() - invoice.due_date).days, 0)
     _ = datetime.now(UTC)
+    # The one thing a collections email must do is let the customer pay —
+    # public_pay_url returns None unless the link would actually charge, so
+    # the placeholder renders empty on unconfigured installs.
+    pay_link = ""
+    if float(invoice.balance_due or 0) > 0 and getattr(invoice, "public_token", None):
+        pay_link = public_pay_url(invoice.public_token) or ""
+    greeting = (recipient.greeting_name if recipient and recipient.ok else None) or \
+        ((customer.name if customer else None) or "Valued Customer")
     return {
         "customer": customer,
+        "recipient": recipient,
+        "pay_link": pay_link,
         "ctx": {
             "invoice_number": invoice.invoice_number or str(invoice.id)[:8],
-            "customer_name": (customer.name if customer else None) or "Valued Customer",
-            "amount_due": f"{float(invoice.balance_due or 0):.2f}",
+            "customer_name": greeting,
+            "amount_due": f"{float(invoice.balance_due or 0):,.2f}",
             "days_overdue": days_overdue,
             "due_date": invoice.due_date.isoformat() if invoice.due_date else "",
+            # Optional template placeholder; the branded shell also always
+            # renders the pay button when a link exists.
+            "pay_link": pay_link,
         },
     }
 
@@ -434,23 +450,56 @@ def send_reminder_email_for_invoice(
     theater. No email config / no customer email = a VISIBLE skip_reason,
     never a silent log row.
     """
+    from gdx_dispatch.core.email_layout import (
+        cta_button,
+        email_branding,
+        linkify,
+        nl2br,
+        render_email,
+    )
     from gdx_dispatch.core.transactional_email import send_transactional_email
 
     bits = _reminder_context(db, invoice)
     customer = bits["customer"]
-    if customer is None or not (customer.email or "").strip():
+    recipient = bits["recipient"]
+    if customer is None or recipient is None or not recipient.ok:
         return False, "no_recipient_email"
     subject = _render_template(settings.subject_template, bits["ctx"])
     body = _render_template(settings.body_template, bits["ctx"])
-    html = "<p>" + body.replace("\n", "<br>") + "</p>"
+    # The tenant's template text, escaped + linkified, inside the branded
+    # shell — the old body was a single unstyled <p> with NO way to pay.
+    branding = email_branding(db)
+    accent = branding.get("accent") or "#2563eb"
+    body_html = (
+        '<p style="margin:0 0 12px;">'
+        + linkify(nl2br(body), accent).replace(
+            "<br><br>", '</p><p style="margin:0 0 12px;">'
+        )
+        + "</p>"
+    )
+    pay_link = bits["pay_link"]
+    if pay_link and pay_link not in body:
+        body_html += cta_button(pay_link, "Pay Invoice Online", accent)
+    html = render_email(
+        branding=branding,
+        body_html=body_html,
+        title=subject,
+        preheader=subject,
+    )
     sent, _provider, skip_reason = send_transactional_email(
         tenant_db=db,
         tenant_id=tenant_id,
         user_id=user_id,
-        to_email=customer.email.strip(),
-        to_name=customer.name or "",
+        to_email=recipient.email,
+        to_name=recipient.to_name,
         subject=subject,
         html_body=html,
+        initiator_kind="user" if user_id else "reminder_task",
+        kind="reminder",
+        entity_type="invoice",
+        entity_id=str(invoice.id),
+        recipient_source=recipient.source,
+        recipient_contact_id=recipient.contact_id,
     )
     return sent, skip_reason
 

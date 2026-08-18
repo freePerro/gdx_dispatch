@@ -98,9 +98,14 @@ describe('InvoiceDetailView — Mark as Mailed', () => {
     expect(span).toMatch(/fetchInvoice\(\)/);
   });
 
-  it('both composer handoffs declare the email channel', () => {
+  it('only the mailto fallback still calls mark-sent — the composer send is server-stamped', () => {
+    // Email overhaul 2026-08-18: sendComposer posts to /api/invoices/{id}/send,
+    // which stamps status/sent_at/sent_via server-side in the same request.
+    // The mailto fallback is the one remaining out-of-band handoff that needs
+    // an explicit mark-sent with the email channel.
     const calls = DETAIL.match(/mark-sent`,\s*\{\s*channel:\s*"email"\s*\}/g) || [];
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBe(1);
+    expect(DETAIL).toMatch(/api\.post\(`\/api\/invoices\/\$\{route\.params\.id\}\/send`/);
   });
 
   it('normalizeInvoice maps payload.sent_via', () => {

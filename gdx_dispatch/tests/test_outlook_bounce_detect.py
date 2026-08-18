@@ -351,3 +351,80 @@ def test_process_bounces_is_idempotent(db, account):
     assert second["estimates_rejected"] == 0  # already rejected → no-op
     # exactly one audit row despite two runs
     assert _audit_actions(db).count("estimate_email_rejected") == 1
+
+
+# ── Phase 5.2 (email overhaul): a bounced REMINDER must not un-send ────
+
+
+def _mk_outbound(db, *, to_email, entity_id, kind, status="sent"):
+    from gdx_dispatch.models.tenant_models import OutboundEmail
+    row = OutboundEmail(
+        company_id="t1", initiator_kind="reminder_task", kind=kind,
+        entity_type="invoice", entity_id=str(entity_id),
+        to_email=to_email, subject="s", body_html="<p>b</p>", status=status,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_bounced_reminder_does_not_unsend_delivered_invoice(db, account):
+    """Rung 2 used to clear sent_at off ANY bounce to the customer's address.
+    A reminder's NDR (subject never matches rung 1) about a delivered invoice
+    was un-sending that invoice. The outbound_emails kind now decides."""
+    cust = _mk_customer(db, email="payer@lumber.example")
+    inv = _mk_invoice(db, cust, number="INV-0042",
+                      sent_at=NOW - timedelta(minutes=30))
+    row = _mk_outbound(db, to_email="payer@lumber.example",
+                       entity_id=inv.id, kind="reminder")
+    _mk_msg(db, account, subject="Undeliverable: Payment reminder for invoice INV-0042",
+            to=["payer@lumber.example"], received=NOW)
+
+    totals = process_bounces(db, account)
+
+    db.refresh(inv)
+    assert inv.sent_at is not None   # the invoice delivery stands
+    assert totals["invoices_unsent"] == 0
+    db.refresh(row)
+    assert row.bounced_at is not None  # ...but the bounce IS recorded
+
+
+def test_bounced_document_send_still_unsends(db, account):
+    cust = _mk_customer(db, email="payer2@lumber.example")
+    inv = _mk_invoice(db, cust, number="INV-0043",
+                      sent_at=NOW - timedelta(minutes=30))
+    row = _mk_outbound(db, to_email="payer2@lumber.example",
+                       entity_id=inv.id, kind="document")
+    _mk_msg(db, account, subject="Undeliverable: your invoice",
+            to=["payer2@lumber.example"], received=NOW)
+
+    process_bounces(db, account)
+
+    db.refresh(inv)
+    assert inv.sent_at is None
+    db.refresh(row)
+    assert row.bounced_at is not None
+
+
+def test_deferred_document_ndr_unsends_despite_later_reminder(db, account):
+    """Audit round 2: Exchange can NDR a document 24-48h late; the daily
+    dunning tick postdates the document row with a reminder meanwhile.
+    Latest-row-wins would have suppressed the un-send forever — the rule is
+    now 'a document send in the NDR window disproves delivery'."""
+    cust = _mk_customer(db, email="late@lumber.example")
+    inv = _mk_invoice(db, cust, number="INV-0044",
+                      sent_at=NOW - timedelta(days=2))
+    doc_row = _mk_outbound(db, to_email="late@lumber.example",
+                           entity_id=inv.id, kind="document")
+    _mk_outbound(db, to_email="late@lumber.example",
+                 entity_id=inv.id, kind="reminder")
+    _mk_msg(db, account, subject="Undeliverable: your invoice",
+            to=["late@lumber.example"], received=NOW)
+
+    totals = process_bounces(db, account)
+
+    db.refresh(inv)
+    assert inv.sent_at is None          # the deferred document NDR still lands
+    assert totals["invoices_unsent"] == 1
+    db.refresh(doc_row)
+    assert doc_row.bounced_at is not None  # stamped on the RIGHT row
