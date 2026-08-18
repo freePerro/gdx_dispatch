@@ -92,8 +92,16 @@ services:
     user: "0:0"
     environment:
       <<: *app-env
+      # Mints n8n's encryption key + db password into their OWN volume
+      # (gdx_n8n_secrets). n8n mounts ONLY that volume — never gdx_secrets — so
+      # its Code node can't read the GDX secret set. Runs even when the
+      # automation profile is off, so enabling n8n later reuses the persisted key
+      # instead of orphaning stored credentials.
+      GDX_N8N_SECRETS_DIR: /n8n-secrets
     volumes:
       - gdx_secrets:/secrets
+      - gdx_n8n_secrets:/n8n-secrets
+    networks: [backend]
     restart: "no"
 
   db:
@@ -113,16 +121,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [backend]
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # --requirepass from the minted secret so an untrusted container that reaches
+    # redis (the Celery broker) can't inject tasks into DB-credentialed workers.
+    # `$(cat …)` strips the trailing newline, matching REDIS_URL's copy.
+    command: >
+      sh -c 'exec redis-server --requirepass "$$(cat /secrets/redis_password)"
+      --maxmemory 256mb --maxmemory-policy allkeys-lru'
+    volumes:
+      - gdx_secrets:/secrets:ro
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /secrets/redis_password)\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks: [backend]
     restart: unless-stopped
 
   # Runs migrations + first-boot bootstrap (tenant, company, admin account),
@@ -151,6 +171,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # Tri-homed: backend (db/redis/plugin-host), edge (caddy→app), automation
+    # (n8n→app for the gdx_live_ API). n8n reaching app is the intended inbound
+    # path — app routes are all auth-gated; the /internal/* routes live on
+    # plugin-host (backend), which n8n cannot reach.
+    networks: [backend, edge, automation]
     restart: unless-stopped
 
   # All installed third-party plugins run here, isolated from the core app
@@ -176,6 +201,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [backend]
     restart: unless-stopped
 
   celery-high:
@@ -194,6 +220,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    networks: [backend]
     restart: unless-stopped
 
   celery-low:
@@ -209,6 +236,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    networks: [backend]
     restart: unless-stopped
 
   celery-beat:
@@ -224,6 +252,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    networks: [backend]
     restart: unless-stopped
 
   # Public entrypoint. No GDX_DOMAIN → plain HTTP on port 80 (first boot,
@@ -234,10 +263,28 @@ services:
     image: caddy:2-alpine
     environment:
       GDX_DOMAIN: ${GDX_DOMAIN:-}
+      GDX_N8N_ENABLED: ${GDX_N8N_ENABLED:-}
+    # Generate a Caddyfile then run it (the old `caddy reverse-proxy` one-liner
+    # can express only ONE route, so it can't add the n8n subdomain). Three
+    # branches: no domain → plain :80 (bare-IP first boot); domain → auto-HTTPS;
+    # domain AND GDX_N8N_ENABLED=1 → also serve n8n.<domain>. The n8n block is
+    # gated on an EXPLICIT env, not on the domain being set — so it exists only
+    # after the operator has pointed the 2nd A record, and Caddy never burns
+    # Let's Encrypt failed-validation limits retrying a missing n8n host. Never
+    # `depends_on: n8n` (a hard error when the automation profile is off);
+    # reverse_proxy resolves n8n at request time and 502s harmlessly if absent.
     command: >
-      sh -c 'if [ -n "$$GDX_DOMAIN" ];
-      then exec caddy reverse-proxy --from "https://$$GDX_DOMAIN" --to app:8000;
-      else exec caddy reverse-proxy --from :80 --to app:8000; fi'
+      sh -c 'CF=/etc/caddy/Caddyfile;
+      if [ -z "$$GDX_DOMAIN" ]; then
+      printf ":80 {\n  reverse_proxy app:8000\n}\n" > $$CF;
+      else
+      printf "%s {\n  reverse_proxy app:8000\n}\n" "$$GDX_DOMAIN" > $$CF;
+      if [ "$$GDX_N8N_ENABLED" = "1" ]; then
+      printf "n8n.%s {\n  reverse_proxy n8n:5678\n}\n" "$$GDX_DOMAIN" >> $$CF;
+      fi;
+      fi;
+      echo "--- generated Caddyfile ---"; cat $$CF;
+      exec caddy run --config $$CF --adapter caddyfile'
     ports:
       - "${GDX_HTTP_PORT:-80}:80"
       - "${GDX_HTTPS_PORT:-443}:443"
@@ -247,12 +294,22 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    # edge (→app) + automation (→n8n). NOT backend — caddy needs neither db,
+    # redis, nor plugin-host.
+    networks: [edge, automation]
     restart: unless-stopped
 
   # Daily logical dump, independent of (and complementing) host snapshots.
   # pipefail + write-to-partial-then-rename so a failing pg_dump can never
   # masquerade as a good backup (gzip alone exits 0 on an empty pipe).
   # Restore: gunzip -c <file> | docker compose exec -T db psql -U gdx gdx
+  #
+  # ALSO copies runtime.env into the backup set: without the encryption keys a
+  # pg_dump is UNREADABLE after a restore to a fresh box (every EncryptedString
+  # column). This closed a pre-existing DR hole. And dumps the n8n database when
+  # the automation profile added it (n8n-db is reachable on the automation net).
+  # ⚠ gdx_backups now holds runtime.env (ALL secrets in plaintext) — treat that
+  # volume as secret-bearing wherever it's copied off-box.
   backup:
     image: postgres:16-alpine
     entrypoint: >
@@ -264,17 +321,103 @@ services:
       && echo "[backup] wrote gdx_$${ts}.sql.gz";
       else rm -f /backups/.partial.gz;
       echo "[backup] FAILED — pg_dump error, no backup written" >&2; fi;
+      cp /secrets/runtime.env "/backups/runtime.env.bak" 2>/dev/null
+      && echo "[backup] saved runtime.env (needed to decrypt a restore)";
+      if PGPASSWORD="$$(cat /n8n-secrets/db_password)" pg_dump -h n8n-db -U n8n n8n | gzip > /backups/.n8n.partial.gz 2>/dev/null;
+      then mv /backups/.n8n.partial.gz "/backups/n8n_$${ts}.sql.gz"
+      && echo "[backup] wrote n8n_$${ts}.sql.gz";
+      else rm -f /backups/.n8n.partial.gz; fi;
       find /backups -name "gdx_*.sql.gz" -mtime +${GDX_BACKUP_RETAIN_DAYS:-30} -delete;
+      find /backups -name "n8n_*.sql.gz" -mtime +${GDX_BACKUP_RETAIN_DAYS:-30} -delete;
       sleep 86400; done'
     volumes:
       - gdx_secrets:/secrets:ro
+      - gdx_n8n_secrets:/n8n-secrets:ro
       - gdx_backups:/backups
     depends_on:
       # app healthy (not just db) so the first dump captures a migrated
       # schema instead of an empty pre-bootstrap database.
       app:
         condition: service_healthy
+    # backend (dump db) + automation (dump n8n-db when present).
+    networks: [backend, automation]
     restart: unless-stopped
+
+  # ── Optional automation (n8n) — enabled with COMPOSE_PROFILES=automation ──
+  # Runs UNTRUSTED tenant workflows, so it lives ONLY on the `automation`
+  # network: it can reach app (the gdx_live_ API) and its own database, but NOT
+  # db, redis, or plugin-host (the money/broker/internal surfaces). Its
+  # encryption key + DB password come from the dedicated gdx_n8n_secrets volume;
+  # n8n never mounts gdx_secrets, so its Code node can't read the GDX secret set.
+  # ⚠ Pair COMPOSE_PROFILES=automation WITH GDX_N8N_ENABLED=1: the profile runs
+  # n8n, the flag adds its Caddy route. Profile without flag = n8n unreachable;
+  # flag without profile = Caddy provisions a cert for a host that isn't there.
+  n8n-db:
+    image: postgres:16-alpine
+    profiles: ["automation"]
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD_FILE: /n8n-secrets/db_password
+    volumes:
+      - gdx_n8n_db_data:/var/lib/postgresql/data
+      - gdx_n8n_secrets:/n8n-secrets:ro
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [automation]
+    restart: unless-stopped
+
+  n8n:
+    # Pinned — n8n releases weekly; bump this with our releases like APP_VERSION.
+    image: n8nio/n8n:1.108.2
+    profiles: ["automation"]
+    mem_limit: 512m
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD_FILE: /n8n-secrets/db_password
+      # Managed key (one-way door: decided day one, so a later switch can't hit
+      # n8n's "Mismatching encryption keys" crash). Read from the file untrimmed.
+      N8N_ENCRYPTION_KEY_FILE: /n8n-secrets/encryption_key
+      # Behind Caddy at n8n.<domain> — otherwise the editor renders localhost
+      # webhook URLs and inbound webhooks/OAuth callbacks break.
+      N8N_HOST: n8n.${GDX_DOMAIN:-}
+      N8N_PROTOCOL: https
+      N8N_PORT: "5678"
+      N8N_EDITOR_BASE_URL: https://n8n.${GDX_DOMAIN:-}/
+      WEBHOOK_URL: https://n8n.${GDX_DOMAIN:-}/
+      # Isolate Code-node execution in a task runner (else it runs in-process —
+      # unacceptable for a container running untrusted workflows).
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - gdx_n8n_secrets:/n8n-secrets:ro
+      - gdx_n8n_data:/home/node/.n8n
+    depends_on:
+      secrets-init:
+        condition: service_completed_successfully
+      n8n-db:
+        condition: service_healthy
+    networks: [automation]
+    restart: unless-stopped
+
+# Three isolated networks enforce the trust boundary. n8n sits ONLY on
+# `automation`, so it can never open a socket to db/redis/plugin-host — the
+# single highest-leverage control once an untrusted-workflow container shares
+# the box. app is tri-homed (it legitimately talks to everything); caddy bridges
+# edge+automation for ingress; backup bridges backend+automation to dump both
+# databases.
+networks:
+  backend:
+  edge:
+  automation:
 
 # All managed (auto-created on first deploy — required for one-click), and
 # reused as long as the compose project name stays the same. Redeploying the
@@ -287,3 +430,6 @@ volumes:
   gdx_backups:
   gdx_caddy_data:
   gdx_caddy_config:
+  gdx_n8n_secrets:
+  gdx_n8n_data:
+  gdx_n8n_db_data:

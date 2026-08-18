@@ -43,6 +43,17 @@ log = logging.getLogger("gdx_dispatch.mint_runtime_env")
 
 RUNTIME_ENV_NAME = "runtime.env"
 DB_PASSWORD_NAME = "db_password"
+REDIS_PASSWORD_NAME = "redis_password"
+# n8n reads its encryption key + DB password from files via *_FILE env vars,
+# written to a SEPARATE volume (gdx_n8n_secrets) WITHOUT a trailing newline (n8n
+# uses file contents untrimmed). n8n mounts ONLY that volume, never gdx_secrets,
+# so its Code node cannot read the GDX secret set — that is the isolation that
+# matters. (The key values are ALSO in runtime.env on gdx_secrets, because
+# they're MANAGED_SECRETS and persistence/idempotency reads back only from
+# runtime.env; that copy lives in the TRUSTED GDX containers, which n8n can't
+# reach, so it doesn't widen n8n's access.) Only materialized when the dir is set.
+N8N_SECRETS_DIR_ENV = "GDX_N8N_SECRETS_DIR"
+N8N_KEY_NAME = "encryption_key"
 
 # The file is consumed by plain `set -a; . file` in entrypoint.sh, so every
 # value must be shell-source-safe. Minted values are by construction (hex /
@@ -70,6 +81,17 @@ MANAGED_SECRETS = {
     # plugin-host (both load runtime.env), never into n8n. Enforcement is
     # opt-in: plugin-host only checks it when this is set (staged rollout).
     "GDX_INTERNAL_TOKEN": lambda: pysecrets.token_hex(32),
+    # Redis --requirepass. URL-safe so it drops cleanly into REDIS_URL. The redis
+    # service reads the bare value from the redis_password file; app/celery get it
+    # via the derived REDIS_URL below. Kept out of n8n's reach (isolated network +
+    # no password file mounted there).
+    "REDIS_PASSWORD": lambda: pysecrets.token_urlsafe(24),
+    # n8n's data-at-rest encryption key. Persisted (a rotation orphans every
+    # stored n8n credential). Written to its own file too (see below).
+    "N8N_ENCRYPTION_KEY": lambda: pysecrets.token_hex(32),
+    # Password for n8n's OWN isolated postgres (n8n-db). token_hex (no URL
+    # metachars) since it's passed as a file to both n8n-db and n8n.
+    "N8N_DB_PASSWORD": lambda: pysecrets.token_hex(24),
 }
 
 
@@ -148,6 +170,13 @@ def main() -> int:
     resolved["DATABASE_URL"] = (
         f"postgresql://gdx:{quote(resolved['DB_PASSWORD'], safe='')}@db:5432/gdx"
     )
+    # REDIS_URL carries the minted password so app/celery/plugin-host authenticate
+    # to the --requirepass'd redis. Overrides the passwordless compose default
+    # (runtime.env is sourced after the container env). Percent-encode like the
+    # DB password so URL metacharacters can't corrupt the URL.
+    resolved["REDIS_URL"] = (
+        f"redis://:{quote(resolved['REDIS_PASSWORD'], safe='')}@redis:6379/0"
+    )
 
     domain = os.getenv("GDX_DOMAIN", "").strip()
     for url_key in ("GDX_PUBLIC_BASE_URL", "GDX_BASE_URL"):
@@ -166,6 +195,25 @@ def main() -> int:
     lines += [f"{key}={value}" for key, value in sorted(resolved.items())]
     _write_atomic(env_path, "\n".join(lines) + "\n")
     _write_atomic(os.path.join(secrets_dir, DB_PASSWORD_NAME), resolved["DB_PASSWORD"] + "\n")
+    # Bare redis password for `redis-server --requirepass "$(cat …)"` (command
+    # substitution strips the trailing newline, so it matches REDIS_URL's copy).
+    _write_atomic(os.path.join(secrets_dir, REDIS_PASSWORD_NAME), resolved["REDIS_PASSWORD"] + "\n")
+
+    # n8n encryption key → its OWN volume (never gdx_secrets), NO trailing newline
+    # (n8n uses the file contents untrimmed). Only when the dir is mounted (the
+    # customer compose sets GDX_N8N_SECRETS_DIR); dev/prod skip it.
+    n8n_dir = os.getenv(N8N_SECRETS_DIR_ENV, "").strip()
+    n8n_key_path = None
+    n8n_files: list[str] = []
+    if n8n_dir:
+        os.makedirs(n8n_dir, exist_ok=True)
+        n8n_key_path = os.path.join(n8n_dir, N8N_KEY_NAME)
+        # Both files newline-free: n8n reads _FILE contents untrimmed, and
+        # postgres' POSTGRES_PASSWORD_FILE strips a trailing newline — so a
+        # newline would make n8n and n8n-db disagree on the DB password.
+        _write_atomic(n8n_key_path, resolved["N8N_ENCRYPTION_KEY"])
+        _write_atomic(os.path.join(n8n_dir, DB_PASSWORD_NAME), resolved["N8N_DB_PASSWORD"])
+        n8n_files = [n8n_key_path, os.path.join(n8n_dir, DB_PASSWORD_NAME)]
 
     # A fresh named volume is root-owned, so the compose file runs this
     # service as root — hand the results over so the non-root consumers can
@@ -181,9 +229,18 @@ def main() -> int:
         gid = int(os.getenv("GDX_SECRETS_OWNER_GID", "1000"))
         os.chmod(secrets_dir, 0o755)
         os.chown(secrets_dir, uid, gid)
-        for name in (RUNTIME_ENV_NAME, DB_PASSWORD_NAME):
+        for name in (RUNTIME_ENV_NAME, DB_PASSWORD_NAME, REDIS_PASSWORD_NAME):
             os.chown(os.path.join(secrets_dir, name), uid, gid)
         os.chmod(os.path.join(secrets_dir, RUNTIME_ENV_NAME), 0o644)
+        # n8n runs as its image's `node` user (uid 1000, = default owner uid);
+        # hand it its secret files (0600 — only n8n reads them) on its own volume.
+        # n8n-db (postgres) also reads db_password as root, so 0600 is fine there.
+        if n8n_files:
+            n8n_uid = int(os.getenv("GDX_N8N_OWNER_UID", "1000"))
+            os.chown(n8n_dir, n8n_uid, n8n_uid)
+            for f in n8n_files:
+                os.chown(f, n8n_uid, n8n_uid)
+                os.chmod(f, 0o600)
 
     if minted:
         log.info("Minted new values for: %s", ", ".join(sorted(minted)))

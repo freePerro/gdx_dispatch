@@ -375,6 +375,35 @@ depending on a profile-inactive one is a hard compose error (ops-6);
   KVM 1's 4 GB already grazes the ceiling; n8n makes the OOM killer the
   scheduler).
 
+### Sprint 3 build status (2026-08-17) — customer compose built + locally validated
+
+Scoped to `docker-compose.customer.yml` (the funnel target); base-compose n8n for
+our-VPS dogfood is a documented follow-up.
+- ✅ **Network isolation** (`networks: backend / edge / automation`): n8n + n8n-db
+  on `automation` only; db/redis/plugin-host/celery on `backend`; app tri-homed;
+  caddy bridges edge+automation; backup bridges backend+automation. **Proven at
+  runtime** — a probe on `automation` cannot even resolve `redis` (backend), but
+  reaches `app`.
+- ✅ **Redis `--requirepass`** from the minted `redis_password`; `REDIS_URL` gains
+  the password (minted into `runtime.env`, wins over the compose default).
+- ✅ **Generated Caddyfile** (replaces the one-route CLI): 3 branches (bare `:80`,
+  domain, domain+`GDX_N8N_ENABLED=1` → `n8n.<domain>`), all `caddy validate`-clean;
+  bare-IP first boot preserved; caddy never `depends_on` n8n.
+- ✅ **n8n on its OWN isolated `n8n-db`** (postgres, automation net) —
+  `pg_dump`-able, zero route to the business DB. Pinned image, `mem_limit 512m`,
+  `N8N_RUNNERS_ENABLED`, correct N8N_HOST/PROTOCOL/EDITOR_BASE_URL, `profiles:
+  ["automation"]`, `depends_on secrets-init` (key-file race), own encryption key
+  + DB password on the dedicated `gdx_n8n_secrets` volume (newline-free files).
+- ✅ **Minting** (`mint_runtime_env`): REDIS_PASSWORD, N8N_ENCRYPTION_KEY (+ file,
+  no trailing newline), N8N_DB_PASSWORD (+ file); idempotent; 4 unit tests.
+- ✅ **Backup DR fix**: sidecar now copies `runtime.env` into `/backups` (a
+  pg_dump was unreadable after restore without the encryption keys — pre-existing
+  hole) and dumps `n8n-db` when present.
+- **Deploy-gated (Doug-side):** the full zero-env boot of all 12 services needs a
+  RELEASE — the compose pulls the published GHCR image, which won't carry these
+  mint/entrypoint changes until this branch is released. Compose-parse, profile
+  gating, isolation, Caddyfile validity, and minting are all locally verified.
+
 ### Backup bycatch — fix a live prod bug (ops-5)
 
 `gdx_secrets` is **not** backed up today, so the nightly `pg_dump` is
