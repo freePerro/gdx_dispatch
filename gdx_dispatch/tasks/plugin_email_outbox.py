@@ -148,23 +148,59 @@ def _deliver(db, row) -> tuple[bool, str | None]:
     return sent, skip_reason
 
 
+# A 'sending' claim older than this is a crashed worker's orphan — reclaim.
+STALE_CLAIM_MINUTES = 15
+
+
 @celery_app.task
 def drain_plugin_email_outbox() -> dict[str, Any]:
-    """Process up to BATCH_SIZE queued rows. Returns counters."""
-    from sqlalchemy import select
+    """Process up to BATCH_SIZE queued rows. Returns counters.
+
+    Audit round 2: the first version snapshotted queued rows and delivered
+    while they still read 'queued' — a slow batch (25 Graph sends with
+    retries can outlive the 60s beat) let the NEXT beat re-read the tail and
+    double-send customer email. Each row is now claimed atomically
+    (queued→sending, UPDATE-guarded) before delivery; stale 'sending' rows
+    from a crashed worker are reclaimed after STALE_CLAIM_MINUTES.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import or_, select, update
 
     from gdx_dispatch.core.audit import utcnow
     from gdx_dispatch.models.tenant_models import PluginEmailOutbox
 
     sent = failed = retried = 0
+    stale_cutoff = utcnow() - timedelta(minutes=STALE_CLAIM_MINUTES)
     with SessionLocal() as db:
-        rows = db.execute(
-            select(PluginEmailOutbox)
-            .where(PluginEmailOutbox.status == "queued")
+        candidates = db.execute(
+            select(PluginEmailOutbox.id)
+            .where(or_(
+                PluginEmailOutbox.status == "queued",
+                (PluginEmailOutbox.status == "sending")
+                & (PluginEmailOutbox.processed_at < stale_cutoff),
+            ))
             .order_by(PluginEmailOutbox.created_at)
             .limit(BATCH_SIZE)
         ).scalars().all()
-        for row in rows:
+        for row_id in candidates:
+            # Atomic claim: only ONE worker's UPDATE matches the guard.
+            claimed = db.execute(
+                update(PluginEmailOutbox)
+                .where(
+                    PluginEmailOutbox.id == row_id,
+                    or_(
+                        PluginEmailOutbox.status == "queued",
+                        (PluginEmailOutbox.status == "sending")
+                        & (PluginEmailOutbox.processed_at < stale_cutoff),
+                    ),
+                )
+                .values(status="sending", processed_at=utcnow())
+            ).rowcount
+            db.commit()
+            if not claimed:
+                continue  # another worker got it
+            row = db.get(PluginEmailOutbox, row_id)
             try:
                 ok, reason = _deliver(db, row)
             except Exception:
@@ -181,7 +217,7 @@ def drain_plugin_email_outbox() -> dict[str, Any]:
                 row.last_error = (reason or "send_failed")[:120]
                 failed += 1
             else:
-                # stays queued for the next drain
+                row.status = "queued"  # back in line for the next drain
                 row.last_error = (reason or "send_failed")[:120]
                 retried += 1
             db.commit()

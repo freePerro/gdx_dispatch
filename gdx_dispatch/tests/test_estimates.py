@@ -1493,3 +1493,26 @@ def test_mark_sent_accepts_channel_and_stamps_sent_via(client: TestClient):
         assert db.get(Estimate, UUID(est2["id"])).sent_via == "manual"
     finally:
         db.close()
+
+
+def test_send_honors_free_typed_recipient(client: TestClient, monkeypatch):
+    """Audit round 2: a customer with NO stored email shows the composer's
+    free To field — that typed address was collected and silently dropped.
+    It must reach the server as the override recipient."""
+    captured = _capture_email(monkeypatch)
+    customer_id = _create_customer(client, name="No Email Yet", email="")
+    estimate = _create_estimate(client, customer_id=customer_id)
+    r = client.post(
+        f"/api/estimates/{estimate['id']}/send",
+        json={"to_email": "typed@example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["email_sent"] is True
+    assert captured["to_email"] == "typed@example.com"
+    assert captured["recipient_source"] == "override"
+
+    # Malformed override = honest failure, not customer_has_no_email.
+    est2 = _create_estimate(client, customer_id=customer_id)
+    r = client.post(f"/api/estimates/{est2['id']}/send", json={"to_email": "not-an-email"})
+    assert r.status_code == 200
+    assert r.json()["email_skip_reason"] == "invalid_recipient_email"

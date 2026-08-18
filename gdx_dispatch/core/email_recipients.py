@@ -114,3 +114,22 @@ def resolve_recipient(
             source="account_email",
         )
     return ResolvedRecipient(email="", to_name="", greeting_name="", source="none")
+
+
+def override_recipient(to_email: str, fallback_name: str = "") -> ResolvedRecipient:
+    """A free-typed address from the composer (audit fix 2026-08-18): the
+    operator's explicit choice wins over resolution. Format-checked; a
+    malformed address returns .ok False with source 'invalid_override'."""
+    from gdx_dispatch.core.validation import _EMAIL_RE
+
+    addr = (to_email or "").strip()
+    if not addr or not _EMAIL_RE.match(addr) or ".." in addr:
+        return ResolvedRecipient(email="", to_name="", greeting_name="",
+                                 source="invalid_override")
+    name = (fallback_name or "").strip()
+    return ResolvedRecipient(
+        email=addr,
+        to_name=name,
+        greeting_name=_first_name(name) or name or "there",
+        source="override",
+    )

@@ -404,3 +404,27 @@ def test_bounced_document_send_still_unsends(db, account):
     assert inv.sent_at is None
     db.refresh(row)
     assert row.bounced_at is not None
+
+
+def test_deferred_document_ndr_unsends_despite_later_reminder(db, account):
+    """Audit round 2: Exchange can NDR a document 24-48h late; the daily
+    dunning tick postdates the document row with a reminder meanwhile.
+    Latest-row-wins would have suppressed the un-send forever — the rule is
+    now 'a document send in the NDR window disproves delivery'."""
+    cust = _mk_customer(db, email="late@lumber.example")
+    inv = _mk_invoice(db, cust, number="INV-0044",
+                      sent_at=NOW - timedelta(days=2))
+    doc_row = _mk_outbound(db, to_email="late@lumber.example",
+                           entity_id=inv.id, kind="document")
+    _mk_outbound(db, to_email="late@lumber.example",
+                 entity_id=inv.id, kind="reminder")
+    _mk_msg(db, account, subject="Undeliverable: your invoice",
+            to=["late@lumber.example"], received=NOW)
+
+    totals = process_bounces(db, account)
+
+    db.refresh(inv)
+    assert inv.sent_at is None          # the deferred document NDR still lands
+    assert totals["invoices_unsent"] == 1
+    db.refresh(doc_row)
+    assert doc_row.bounced_at is not None  # stamped on the RIGHT row

@@ -1582,6 +1582,7 @@ def _prepare_estimate_email(
     contact_id: str | None = None,
     body_text_override: str | None = None,
     subject_override: str | None = None,
+    to_email_override: str | None = None,
 ) -> dict[str, object]:
     """One render for every path — composer, preview, one-click send.
 
@@ -1606,7 +1607,12 @@ def _prepare_estimate_email(
         ).scalar_one_or_none()
 
     recipient = None
-    if customer is not None:
+    if to_email_override and (to_email_override or "").strip():
+        from gdx_dispatch.core.email_recipients import override_recipient
+        recipient = override_recipient(
+            to_email_override, (customer.name if customer else "") or "",
+        )
+    elif customer is not None:
         recipient = resolve_recipient(db, customer, contact_id)
 
     job_title = ""
@@ -1811,6 +1817,10 @@ class SendEstimateIn(BaseModel):
     body_text: str | None = None
     subject: str | None = Field(default=None, max_length=500)
     contact_id: str | None = Field(default=None, max_length=36)
+    # Free-typed address (audit fix 2026-08-18): a customer with NO stored
+    # email shows the composer's free InputText — that address must reach the
+    # server or the operator watches their own typing get ignored.
+    to_email: str | None = Field(default=None, max_length=254)
     extra_attachment_ids: list[str] | None = None
 
 
@@ -1830,6 +1840,7 @@ def estimate_email_preview(
         contact_id=p.contact_id,
         body_text_override=p.body_text,
         subject_override=p.subject,
+        to_email_override=p.to_email,
     )
     recipient = prep["recipient"]
     return {
@@ -1885,6 +1896,7 @@ def send_estimate(
                 contact_id=p.contact_id,
                 body_text_override=p.body_text,
                 subject_override=p.subject,
+                to_email_override=p.to_email,
             )
             cust = prep["customer"]
             recipient = prep["recipient"]
@@ -1938,6 +1950,8 @@ def send_estimate(
                 pdf_attached = email_sent and any(
                     a["name"].startswith("estimate-") for a in attachments
                 )
+            elif recipient is not None and recipient.source == "invalid_override":
+                email_skip_reason = "invalid_recipient_email"
             elif cust is not None:
                 email_skip_reason = "customer_has_no_email"
             else:
@@ -1954,6 +1968,27 @@ def send_estimate(
         estimate.sent_via = "email"
         _apply_send_expiry(estimate)
         estimate.updated_at = utcnow()
+        # estimate.sent domain event (audit round 2: SUPPORTED_TRIGGERS
+        # advertised it but nothing ever emitted it — a rule on the marquee
+        # trigger of an email branch sat dead forever).
+        try:
+            from gdx_dispatch.core.webhooks.emit import emit_domain_event
+            tid_ev = str(estimate.company_id or "")
+            emit_domain_event(
+                db,
+                "estimate.sent",
+                str(estimate.id),
+                {
+                    "estimate_id": str(estimate.id),
+                    "estimate_number": estimate.estimate_number,
+                    "status": "sent",
+                    "customer_id": str(estimate.customer_id) if estimate.customer_id else None,
+                    "company_id": tid_ev,
+                },
+                tenant_id=tid_ev or None,
+            )
+        except Exception:
+            log.exception("estimate_sent_event_emit_failed")
         db.commit()
         db.refresh(estimate)
         log_audit_event_sync(

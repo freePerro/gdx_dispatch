@@ -13,8 +13,9 @@ Requirements:
 - The plugin must declare the ``"email"`` permission in its manifest and the
   owner must have consented (ADR-014). Enforced at DRAIN time by core —
   a queued row from an unconsented plugin fails with ``consent_missing``.
-- ``delivery_id`` is the idempotency key: queueing is at-least-once, sending
-  is exactly-once per key. Re-queue with the same key = no-op.
+- ``delivery_id`` is the idempotency key, scoped PER PLUGIN: queueing is
+  at-least-once, sending is exactly-once per (plugin_key, delivery_id).
+  Re-queue with the same key = no-op.
 
 Usage from a plugin::
 

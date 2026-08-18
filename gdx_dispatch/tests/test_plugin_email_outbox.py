@@ -130,3 +130,62 @@ def test_transient_failure_requeues_then_fails(db, monkeypatch):
         counts, _ = _drain(db, monkeypatch,
                            send_result=(False, None, "outlook_send_failed"))
         assert counts[expected] == 1, expected
+
+
+def test_real_drain_claims_rows_atomically(db, monkeypatch):
+    """Audit round 2: an unclaimed batch let an overlapping beat re-send the
+    still-queued tail. Rows are now claimed queued→sending before delivery,
+    and a fresh 'sending' claim is NOT picked up by another drain."""
+    from datetime import timedelta
+
+    from gdx_dispatch.core.audit import utcnow
+
+    class _Ctx:
+        def __enter__(self):
+            return db
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(drain_mod, "SessionLocal", lambda: _Ctx())
+    monkeypatch.setattr(drain_mod, "_consented", lambda _db, key: True)
+    import gdx_dispatch.core.transactional_email as te
+    monkeypatch.setattr(te, "send_transactional_email",
+                        lambda **kw: (True, "outlook_graph", None))
+
+    queue_email(db, tenant_id=TENANT, plugin_key="p1", delivery_id="claim-1",
+                subject="s", body_text="b", to_email="x@example.com")
+    out = drain_mod.drain_plugin_email_outbox()
+    assert out == {"sent": 1, "failed": 0, "retried": 0}
+    row = db.execute(select(PluginEmailOutbox).where(
+        PluginEmailOutbox.delivery_id == "claim-1")).scalars().one()
+    assert row.status == "sent"
+
+    # A row another worker JUST claimed must be skipped...
+    queue_email(db, tenant_id=TENANT, plugin_key="p1", delivery_id="claim-2",
+                subject="s", body_text="b", to_email="x@example.com")
+    claimed = db.execute(select(PluginEmailOutbox).where(
+        PluginEmailOutbox.delivery_id == "claim-2")).scalars().one()
+    claimed.status = "sending"
+    claimed.processed_at = utcnow()
+    db.commit()
+    out = drain_mod.drain_plugin_email_outbox()
+    assert out == {"sent": 0, "failed": 0, "retried": 0}
+    # ...but a STALE claim (crashed worker) is reclaimed and delivered.
+    claimed.processed_at = utcnow() - timedelta(minutes=drain_mod.STALE_CLAIM_MINUTES + 1)
+    db.commit()
+    out = drain_mod.drain_plugin_email_outbox()
+    assert out["sent"] == 1
+
+
+def test_delivery_id_scoped_per_plugin(db):
+    """Two plugins may use the same natural key without eating each other's
+    mail (globally-unique delivery_id was the audit's finding)."""
+    a = queue_email(db, tenant_id=TENANT, plugin_key="plugin-a", delivery_id="welcome:c1",
+                    subject="s", body_text="b", to_email="x@example.com")
+    b = queue_email(db, tenant_id=TENANT, plugin_key="plugin-b", delivery_id="welcome:c1",
+                    subject="s", body_text="b", to_email="x@example.com")
+    assert a["queued"] is True and b["queued"] is True
+    dup = queue_email(db, tenant_id=TENANT, plugin_key="plugin-a", delivery_id="welcome:c1",
+                      subject="s", body_text="b", to_email="x@example.com")
+    assert dup["reason"] == "duplicate_delivery_id"

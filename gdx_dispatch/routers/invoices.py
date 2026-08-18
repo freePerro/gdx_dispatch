@@ -1681,6 +1681,7 @@ def _prepare_invoice_email(
     contact_id: str | None = None,
     body_text_override: str | None = None,
     subject_override: str | None = None,
+    to_email_override: str | None = None,
     mint_token: bool = True,
 ) -> dict[str, object]:
     """One render for composer, preview and send — the invoice twin of
@@ -1699,7 +1700,13 @@ def _prepare_invoice_email(
         customer = db.execute(
             select(Customer).where(Customer.id == invoice.customer_id, Customer.deleted_at.is_(None))
         ).scalar_one_or_none()
-    recipient = resolve_recipient(db, customer, contact_id) if customer is not None else None
+    if to_email_override and (to_email_override or "").strip():
+        from gdx_dispatch.core.email_recipients import override_recipient
+        recipient = override_recipient(
+            to_email_override, (customer.name if customer else "") or "",
+        )
+    else:
+        recipient = resolve_recipient(db, customer, contact_id) if customer is not None else None
 
     job_title = ""
     if invoice.job_id:
@@ -1814,6 +1821,7 @@ class SendInvoiceIn(BaseModel):
     body_text: str | None = None
     subject: str | None = Field(default=None, max_length=500)
     contact_id: str | None = Field(default=None, max_length=36)
+    to_email: str | None = Field(default=None, max_length=254)
 
 
 @router.post("/{invoice_id}/email-preview", response_model=None)
@@ -1833,6 +1841,7 @@ def invoice_email_preview(
         contact_id=p.contact_id,
         body_text_override=p.body_text,
         subject_override=p.subject,
+        to_email_override=p.to_email,
         mint_token=False,
     )
     recipient = prep["recipient"]
@@ -2071,6 +2080,7 @@ def send_invoice(
                 contact_id=p.contact_id,
                 body_text_override=p.body_text,
                 subject_override=p.subject,
+                to_email_override=p.to_email,
             )
             cust = prep["customer"]
             recipient = prep["recipient"]
@@ -2117,6 +2127,8 @@ def send_invoice(
                     recipient_contact_id=recipient.contact_id,
                 )
                 pdf_attached = email_sent and bool(attachments)
+            elif recipient is not None and recipient.source == "invalid_override":
+                email_skip_reason = "invalid_recipient_email"
             elif cust is not None:
                 email_skip_reason = "customer_has_no_email"
             else:

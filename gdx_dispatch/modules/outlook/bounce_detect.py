@@ -333,42 +333,61 @@ def _match_invoices(
             # what was actually sent last: only a bounced 'document' send
             # disproves delivery of the invoice itself. No audit row =
             # pre-overhaul send = keep the old behavior.
-            latest = _latest_outbound_row(tdb, recipients, "invoice", str(inv.id))
-            if latest is not None:
-                _stamp_bounced(tdb, latest, ndr_received)
-                if (latest.kind or "document") != "document":
-                    _audit(
-                        tdb,
-                        action="invoice_email_bounce_ignored_non_document",
-                        entity_type="invoice",
-                        entity_id=str(inv.id),
-                        ndr=ndr,
-                        matched_by="customer_email",
-                        recipients=recipients,
-                    )
-                    continue
+            # Adversarial-audit fix (2026-08-18, round 2): latest-row-wins
+            # was wrong for a DEFERRED document NDR — an Exchange bounce can
+            # arrive 24-48h late, by which time the daily dunning tick has
+            # postdated the document row with a reminder, and the invoice
+            # would have stayed "sent" forever. Rule now: a DOCUMENT send to
+            # that recipient inside the NDR match window disproves delivery,
+            # regardless of newer non-document rows; only when NO document
+            # row is in-window does a non-document row absorb the bounce.
+            doc_row = _outbound_row(tdb, recipients, "invoice", str(inv.id),
+                                    ndr_received, kind="document")
+            if doc_row is not None:
+                _stamp_bounced(tdb, doc_row, ndr_received)
+                _clear(inv, "customer_email")
+                continue
+            other = _outbound_row(tdb, recipients, "invoice", str(inv.id),
+                                  ndr_received, kind=None)
+            if other is not None:
+                _stamp_bounced(tdb, other, ndr_received)
+                _audit(
+                    tdb,
+                    action="invoice_email_bounce_ignored_non_document",
+                    entity_type="invoice",
+                    entity_id=str(inv.id),
+                    ndr=ndr,
+                    matched_by="customer_email",
+                    recipients=recipients,
+                )
+                continue
+            # Pre-overhaul send (no audit rows): the old behavior stands.
             _clear(inv, "customer_email")
     return cleared
 
 
-def _latest_outbound_row(tdb: Session, recipients: set[str], entity_type: str, entity_id: str):
-    """Most recent outbound_emails row to any of these addresses about this
-    entity — the audit trail that says WHAT bounced. None on pre-overhaul
-    sends (no row) or read failure (never block bounce processing)."""
+def _outbound_row(tdb: Session, recipients: set[str], entity_type: str,
+                  entity_id: str, ndr_received: datetime, *, kind: str | None):
+    """Most recent SENT outbound_emails row to any of these addresses about
+    this entity inside the NDR match window (a bounce reports a send that
+    PRECEDES it). kind narrows to one send type; None matches any. None on
+    pre-overhaul sends (no rows) or read failure (never block processing)."""
     try:
         from gdx_dispatch.models.tenant_models import OutboundEmail
 
-        return tdb.execute(
-            select(OutboundEmail)
-            .where(
-                func.lower(OutboundEmail.to_email).in_(recipients),
-                OutboundEmail.entity_type == entity_type,
-                OutboundEmail.entity_id == entity_id,
-                OutboundEmail.status == "sent",
-            )
-            .order_by(OutboundEmail.created_at.desc())
-            .limit(1)
-        ).scalars().first()
+        q = select(OutboundEmail).where(
+            func.lower(OutboundEmail.to_email).in_(recipients),
+            OutboundEmail.entity_type == entity_type,
+            OutboundEmail.entity_id == entity_id,
+            OutboundEmail.status == "sent",
+        )
+        if kind is not None:
+            q = q.where(OutboundEmail.kind == kind)
+        rows = tdb.execute(q.order_by(OutboundEmail.created_at.desc()).limit(10)).scalars().all()
+        for row in rows:
+            if _in_window(row.created_at, ndr_received):
+                return row
+        return None
     except Exception:
         log.exception("bounce_outbound_lookup_failed entity=%s", entity_id)
         return None

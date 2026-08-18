@@ -1427,6 +1427,9 @@ async function previewComposer() {
       body_text: composer.value.body_text,
       subject: composer.value.subject,
       contact_id: composer.value.contact_id || null,
+      // Free-typed address (no stored recipients) must reach the server —
+      // audit catch: it used to be collected and silently dropped.
+      to_email: composer.value.recipients.length ? null : (composer.value.to || null),
     }, { suppressErrorToast: true });
     const payload = data?.data || data;
     composer.value.previewHtml = payload.html || "";

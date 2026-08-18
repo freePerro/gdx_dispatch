@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.modules.workflows.models import WorkflowRule, WorkflowRun
 
-SUPPORTED_TRIGGERS = ["job.stage_changed", "job.created", "invoice.created", "invoice.paid", "estimate.sent", "customer.created"]
+# Only events the app ACTUALLY emits (audit round 2): advertising a trigger
+# nothing fires means a rule sits active with run_count 0 forever. Re-add an
+# event here the same commit that adds its emit_domain_event call.
+SUPPORTED_TRIGGERS = ["job.created", "invoice.paid", "estimate.sent", "customer.created"]
 SUPPORTED_ACTIONS = ["send_sms", "send_email", "create_followup_task", "emit_webhook", "update_job_field"]
 logger = logging.getLogger(__name__)
 

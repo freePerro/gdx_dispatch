@@ -3492,11 +3492,17 @@ class PluginEmailOutbox(Base):
     """
 
     __tablename__ = "plugin_email_outbox"
+    __table_args__ = (
+        Index("uq_plugin_email_outbox_delivery", "plugin_key", "delivery_id", unique=True),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     plugin_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    delivery_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    # Idempotency key scoped PER PLUGIN (audit round 2: globally unique meant
+    # two plugins using the same natural key — "welcome:{customer_id}" —
+    # silently dropped the second plugin's mail as a duplicate).
+    delivery_id: Mapped[str] = mapped_column(String(80), nullable=False)
     to_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     customer_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

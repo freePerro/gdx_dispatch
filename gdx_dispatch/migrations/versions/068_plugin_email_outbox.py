@@ -28,7 +28,7 @@ def upgrade() -> None:
             id            uuid PRIMARY KEY,
             company_id    varchar(36) NOT NULL,
             plugin_key    varchar(80) NOT NULL,
-            delivery_id   varchar(80) NOT NULL UNIQUE,
+            delivery_id   varchar(80) NOT NULL,
             to_email      text,
             customer_id   varchar(36),
             contact_id    varchar(36),
@@ -44,6 +44,10 @@ def upgrade() -> None:
             processed_at  timestamptz
         );
         """
+    )
+    bind.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_email_outbox_delivery "
+        "ON plugin_email_outbox (plugin_key, delivery_id);"
     )
     bind.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_plugin_email_outbox_status ON plugin_email_outbox (status);"

@@ -1,6 +1,14 @@
 # Customer email overhaul — readability, missing features, silent non-delivery
 
-Status: PLAN (investigated 2026-08-18). Not built yet.
+Status: BUILT on `feat/email-overhaul` (2026-08-18) — all six phases
+implemented with tests, PG-validated migrations (066-068), and a live
+browser walk (light + dark). Deviations from plan, both logged in
+[email-overhaul-tech-debt.md](email-overhaul-tech-debt.md): invoice/receipt
+tenant template columns deferred (estimate templates ARE honored end-to-end,
+the locked decision); bounce rung-1 hardening limited to accepting both
+subject forms. Bonus fixes found during build: hide_line_prices now honored
+by email, mobile receipt payment lookup raw-SQL→ORM, mark-sent channel
+stamping, migration guards for boot-created tables.
 
 Locked decisions (Doug, 2026-08-18):
 

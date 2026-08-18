@@ -254,10 +254,16 @@ def recently_sent(
     kind: str | None = None,
 ) -> bool:
     """Server-side double-send guard (Phase 5.5): True when this entity had a
-    SUCCESSFUL send inside the window. Two browser tabs, a retried request,
-    or a double-clicked bulk row used to mean two identical customer emails —
-    the only guards were frontend button flags. Uses the outbound_emails
-    audit trail, so it needs no new state and can't disagree with it."""
+    SUCCESSFUL send inside the window. A second tab, a retried request, or a
+    re-clicked bulk row used to mean two identical customer emails — the
+    only guards were frontend button flags. Uses the outbound_emails audit
+    trail, so it needs no new state and can't disagree with it.
+
+    Honest limit (adversarial audit round 2): this is check-then-act over
+    COMMITTED rows — two requests in flight in the same instant both pass
+    (the audit row commits at request end). It reliably stops the sequential
+    re-click/retry class, which is the observed failure mode; a same-instant
+    race needs a DB constraint this table can't express. Accepted."""
     try:
         from datetime import timedelta
 
