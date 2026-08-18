@@ -3478,6 +3478,40 @@ class OutboundEmail(Base):
 Index("ix_outbound_emails_entity", OutboundEmail.entity_type, OutboundEmail.entity_id)
 
 
+class PluginEmailOutbox(Base):
+    """Plugin → email bridge (email overhaul Phase 6; locked: full access,
+    auditable). The plugin-host container has NO egress by design, so a
+    plugin cannot send mail — it queues a row here through plugin_api.email,
+    and the core app (which has Outlook tokens/SMTP creds) drains it through
+    send_transactional_email. Consent-gated on the "email" permission
+    (ADR-014) at DRAIN time — core owns the decision, same as event routing.
+
+    body_text → rendered inside the branded shell; body_html → sent raw
+    (full access means both modes). delivery_id is the plugin's idempotency
+    key: at-least-once queueing, exactly-once send per key.
+    """
+
+    __tablename__ = "plugin_email_outbox"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    plugin_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    delivery_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    to_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 # The invoice totals invariant (money audit 2026-08-04). Registered here rather
 # than in create_app so it also covers direct-session callers — tasks, tools,
 # migrations-adjacent scripts and the router unit tests — not just HTTP

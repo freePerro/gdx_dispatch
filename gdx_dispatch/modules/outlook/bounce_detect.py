@@ -378,6 +378,26 @@ def _stamp_bounced(tdb: Session, row, ndr_received: datetime) -> None:
         if row.bounced_at is None:
             row.bounced_at = ndr_received
             tdb.flush()
+            try:
+                from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+                emit_domain_event(
+                    tdb,
+                    "email.bounced",
+                    str(row.entity_id or row.to_email or ""),
+                    {
+                        "to_email": row.to_email,
+                        "subject": row.subject,
+                        "kind": row.kind,
+                        "entity_type": row.entity_type,
+                        "entity_id": row.entity_id,
+                        "outbound_email_id": str(row.id),
+                        "company_id": str(row.company_id or ""),
+                    },
+                    tenant_id=str(row.company_id or "") or None,
+                )
+            except Exception:
+                log.exception("email_bounced_event_emit_failed")
     except Exception:
         log.exception("bounce_stamp_failed outbound_email=%s", getattr(row, "id", None))
 

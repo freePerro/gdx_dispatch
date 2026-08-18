@@ -29,7 +29,7 @@ _NAV_CATEGORY_RE = re.compile(r"^[a-z0-9_]+$")
 
 # Elevated capabilities a plugin may declare; each is consent-gated at install
 # (ADR-014). Keep this the single source of truth — core + frontend read it.
-KNOWN_PERMISSIONS = frozenset({"browser", "events", "schedules", "services"})
+KNOWN_PERMISSIONS = frozenset({"browser", "events", "schedules", "services", "email"})
 
 # One-line human descriptions shown in the owner consent dialog. Every entry in
 # KNOWN_PERMISSIONS must have a description here.
@@ -51,6 +51,11 @@ PERMISSION_RISKS = {
     "services": (
         "Runs an extra background container this plugin brings, with its own "
         "storage and web address. Only install plugins you trust."
+    ),
+    "email": (
+        "Sends email to your customers AS YOUR COMPANY (your branding, your "
+        "sending account). Every send is recorded in the outbound email log. "
+        "Only install plugins you trust."
     ),
 }
 

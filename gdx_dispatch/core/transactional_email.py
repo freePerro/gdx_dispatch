@@ -334,6 +334,34 @@ def send_transactional_email(
             sent=sent,
             skip_reason=skip,
         )
+        # email.sent / email.send_failed into the domain-event stream (P6):
+        # webhook subscribers and consented plugins (the n8n path) can react
+        # to delivery outcomes. emit_domain_event never raises into callers
+        # and stages nothing when nobody listens.
+        if tenant_db is not None and tenant_id:
+            try:
+                from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+                emit_domain_event(
+                    tenant_db,
+                    "email.sent" if sent else "email.send_failed",
+                    str(entity_id or to_email or ""),
+                    {
+                        "to_email": to_email,
+                        "subject": subject,
+                        "kind": kind,
+                        "entity_type": entity_type,
+                        "entity_id": str(entity_id) if entity_id else None,
+                        "provider": provider,
+                        "skip_reason": skip,
+                        "initiator_kind": initiator_kind,
+                        "initiator_ref": initiator_ref,
+                        "company_id": str(tenant_id),
+                    },
+                    tenant_id=str(tenant_id),
+                )
+            except Exception:
+                log.exception("email_event_emit_failed")
         return sent, provider, skip
 
     if not to_email:
