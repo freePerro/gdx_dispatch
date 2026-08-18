@@ -1469,3 +1469,27 @@ def test_second_send_within_window_is_suppressed(client: TestClient, monkeypatch
     body = r2.json()
     assert body["email_sent"] is False
     assert body["email_skip_reason"] == "duplicate_send_suppressed"
+
+
+def test_mark_sent_accepts_channel_and_stamps_sent_via(client: TestClient):
+    """Walk catch 2026-08-18: the mailto fallback marked sent but sent_via
+    stayed NULL and the audit channel was hardcoded 'manual'. Mirrors the
+    invoice MarkSentIn."""
+    estimate = _create_estimate(client)
+    r = client.post(f"/api/estimates/{estimate['id']}/mark-sent", json={"channel": "email"})
+    assert r.status_code == 200, r.text
+    db = _db(client)
+    try:
+        assert db.get(Estimate, UUID(estimate["id"])).sent_via == "email"
+    finally:
+        db.close()
+
+    # Empty body keeps the legacy meaning: out-of-band, channel unknown.
+    est2 = _create_estimate(client)
+    r = client.post(f"/api/estimates/{est2['id']}/mark-sent")
+    assert r.status_code == 200, r.text
+    db = _db(client)
+    try:
+        assert db.get(Estimate, UUID(est2["id"])).sent_via == "manual"
+    finally:
+        db.close()

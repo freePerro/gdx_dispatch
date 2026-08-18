@@ -969,7 +969,7 @@
           <div class="form-field">
             <label>To</label>
             <Select v-if="composer.recipients.length" v-model="composer.contact_id"
-              :options="composer.recipients" option-value="contact_id"
+              :options="composer.recipients" option-value="contact_id" option-label="email"
               class="w-full" data-testid="composer-recipient"
               @change="onRecipientChange">
               <template #option="{ option }">
@@ -2993,7 +2993,7 @@ async function _emailViaMailtoFallback(c, pdfAtt) {
   const mailto = `mailto:${encodeURIComponent(c.to)}?subject=${encodeURIComponent(c.subject)}&body=${encodeURIComponent(c.body_text)}`;
   window.location.href = mailto;
   try {
-    const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, {});
+    const result = await api.post(`/api/estimates/${route.params.id}/mark-sent`, { channel: "email" });
     estimate.value.status = _titleCase(result?.status || "sent");
   } catch {
     // Same stakes as the composer path: the mailto body carries the approval

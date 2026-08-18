@@ -1478,9 +1478,19 @@ def _apply_send_expiry(estimate: Estimate) -> None:
     estimate.valid_until = estimate.sent_at + timedelta(days=days)
 
 
+class MarkEstimateSentIn(BaseModel):
+    # 'manual' default keeps old callers' rows meaning what they always meant
+    # ("operator says it went out, channel unknown"); the mailto fallback
+    # passes 'email'. Mirrors invoices' MarkSentIn — before this, the channel
+    # was a HARDCODED audit blob and estimates.sent_via stayed NULL on every
+    # out-of-band send (caught in the 2026-08-18 browser walk).
+    channel: str = Field(default="manual", pattern=r"^(manual|email|mail)$")
+
+
 @router.post("/{estimate_id}/mark-sent", response_model=None)
 def mark_estimate_sent(
     estimate_id: UUID,
+    payload: MarkEstimateSentIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1489,8 +1499,10 @@ def mark_estimate_sent(
     estimate = _get_estimate_or_404(estimate_id, db)
     if estimate.status in {"accepted", "declined"}:
         raise HTTPException(status_code=409, detail="estimate is finalized")
+    channel = (payload or MarkEstimateSentIn()).channel
     estimate.status = "sent"
     estimate.sent_at = utcnow()
+    estimate.sent_via = channel
     _apply_send_expiry(estimate)
     estimate.updated_at = utcnow()
     db.commit()
@@ -1502,7 +1514,7 @@ def mark_estimate_sent(
         action="estimate_marked_sent",
         entity_type="estimate",
         entity_id=str(estimate.id),
-        details={"status": estimate.status, "channel": "manual"},
+        details={"status": estimate.status, "channel": channel},
     )
     db.commit()
     return _serialize_estimate(estimate, include_lines=False)

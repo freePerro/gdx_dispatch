@@ -79,8 +79,11 @@ MATCH_WINDOW = timedelta(days=14)
 # stamp happens in the same request as the Graph send, so seconds apart.
 TIME_CORRELATION_SLACK = timedelta(minutes=5)
 
-_EST_SUBJECT_RE = re.compile(r"Estimate #(.+?) from ", re.IGNORECASE)
-_INV_SUBJECT_RE = re.compile(r"Invoice #(.+?) from ", re.IGNORECASE)
+# '#' optional (2026-08-18): server sends now subject via the tenant
+# templates ("Invoice {{number}} from {{company}}" — no '#'); NDRs quote
+# either form.
+_EST_SUBJECT_RE = re.compile(r"Estimate #?(.+?) from ", re.IGNORECASE)
+_INV_SUBJECT_RE = re.compile(r"Invoice #?(.+?) from ", re.IGNORECASE)
 # Exchange NDR body: "Your message to bad@x.com couldn't be delivered."
 _FAILED_RECIPIENT_RE = re.compile(
     r"Your message to\s+(\S+@\S+?)\s+couldn't be delivered", re.IGNORECASE

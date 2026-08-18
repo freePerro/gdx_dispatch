@@ -589,7 +589,7 @@
           <div class="form-field">
             <label>To</label>
             <Select v-if="composer.recipients.length" v-model="composer.contact_id"
-              :options="composer.recipients" option-value="contact_id"
+              :options="composer.recipients" option-value="contact_id" option-label="email"
               class="w-full" data-testid="composer-recipient"
               @change="onRecipientChange">
               <template #option="{ option }">
