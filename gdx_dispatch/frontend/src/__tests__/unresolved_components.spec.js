@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
+import { parse } from 'vue/compiler-sfc';
 
 const SRC_DIR = join(__dirname, '..');
 const REPO_ROOT = join(SRC_DIR, '..', '..', '..', '..');
@@ -44,20 +45,23 @@ function walk(dir) {
 
 /** Tags used in markup, imports/declarations available to resolve them. */
 export function findUnresolvedTags(source, selfName = '') {
-  const scripts = [];
-  // Markup = the file with <script>/<style> bodies and comments blanked out;
-  // this sidesteps nested <template> tags inside the SFC's root template.
-  const markup = String(source)
-    .replace(/<script[^>]*>([\s\S]*?)<\/script>/g, (_, body) => {
-      scripts.push(body);
-      return '';
-    })
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/g, '')
-    .replace(/<!--[\s\S]*?-->/g, '');
-  const script = scripts.join('\n');
+  // Vue's own SFC parser, not regexes: comments and <style> bodies never
+  // reach the tag walk, and the template AST is the same ground truth the
+  // compiler resolves against. (An earlier regex version of this drew
+  // CodeQL "incomplete HTML sanitization" findings — pattern-matched as a
+  // sanitizer, which this is not; the real parser moots the whole class.)
+  const { descriptor } = parse(String(source));
+  const script = [descriptor.script?.content, descriptor.scriptSetup?.content]
+    .filter(Boolean)
+    .join('\n');
 
   const used = new Set();
-  for (const [, tag] of markup.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)) used.add(tag);
+  const visit = (node) => {
+    // NodeTypes.ELEMENT === 1; comment nodes are a different type and fall out.
+    if (node?.type === 1 && /^[A-Z]/.test(node.tag)) used.add(node.tag);
+    for (const child of node?.children || []) visit(child);
+  };
+  visit(descriptor.template?.ast);
 
   const resolved = new Set(GLOBALLY_RESOLVED);
   // A recursive SFC resolves itself by filename (FolderTreeNode.vue).
