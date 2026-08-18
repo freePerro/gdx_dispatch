@@ -320,3 +320,42 @@ no-browser-JS + scoped-DB-role + require_module model.
 
 **Where:** `frontend/src/composables/usePluginScreen.js`,
 `frontend/src/components/PluginScreen.vue`. First consumer: an internal estimator plugin (dependent dropdowns + a number field).
+
+## Addendum (2026-08-18) — plugin nav polish: `ui.icon` + `ui.category`
+
+Two optional top-level keys on the UI manifest let a plugin shape its sidebar
+entry (previously: always `pi pi-box`, always under the trailing "Plugins"
+category):
+
+- **`icon`** — exactly one PrimeIcons class pair (`"pi pi-history"`). The value
+  lands on `<i :class>` in the host chrome, so it is pattern-locked
+  (`^pi pi-[a-z0-9-]+$`) in **two** places: the frontend is the authoritative
+  guard (`sanitizePluginIcon`, `useTenantModules.js` — a stale/compromised
+  catalog can't inject arbitrary classes; bad values render the generic box),
+  and `PluginManifest.__post_init__` re-checks at declaration for author
+  feedback.
+- **`category`** — a core nav category key (`operations`, `customers`, `sales`,
+  `invoicing`, `accounting`, ...) whose group the entry joins, after the core
+  modules. The key list is **frontend-owned** (`MODULE_CATEGORIES`); the
+  manifest checks shape only (`^[a-z0-9_]+$`), and an unknown key degrades to
+  the Plugins group (`pluginNavCategory` → null) so a typo'd manifest still
+  shows up somewhere. **`admin` and `experimental` are reserved** — a
+  single-entry category flattens to a bare top-level sidebar link
+  (`AppSidebar.vue`), so joining Admin would let a third-party entry pose as
+  the Admin item; the deny-list routes both to the Plugins group. If every
+  core module of the targeted category is disabled/hidden, the category is
+  recreated at its canonical position (`placePluginModules`) so the plugin
+  entry keeps a home (rendered per the sidebar's normal rules — a lone entry
+  shows as a direct link, not a group header).
+
+**Degrade, don't die (manifest side).** Malformed `icon`/`category` values are
+**stripped with a warning** in `__post_init__`, never raised: `load_manifests`
+skips a whole plugin on any load error, so raising would turn a nav-icon typo
+into silent loss of the plugin's screens *and event delivery* on the next
+plugin-host restart. Nav polish is cosmetic; only the frontend fallback
+(box icon / Plugins group) is load-bearing.
+
+Per-plugin read-permission gating, the mobile "Desktop" pill, and the owner-only
+"Manage plugins" link are unchanged; the Plugins group simply may be absent when
+every installed plugin placed itself elsewhere (the manage link still forces it
+for owners). Reference use: `gdx-plugin-eventlog` declares `icon`.

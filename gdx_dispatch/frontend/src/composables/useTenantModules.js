@@ -144,6 +144,88 @@ export function pluginMobileFriendly(plugin) {
   return screens.some((s) => s?.type !== 'browser');
 }
 
+/**
+ * A plugin's declared nav icon, or the generic box.
+ *
+ * The manifest's `ui.icon` lands on `<i :class>` in the sidebar and the More
+ * drawer, so it must be exactly one PrimeIcons pair — a free-form string would
+ * let a plugin inject arbitrary CSS classes into the host chrome. The manifest
+ * validates the same pattern server-side; this guard is for catalogs written
+ * before that check (or a compromised plugin-host) and never trusts the wire.
+ *
+ * Exported for the unit spec.
+ */
+const PLUGIN_ICON_RE = /^pi pi-[a-z0-9-]+$/;
+export function sanitizePluginIcon(icon) {
+  return typeof icon === 'string' && PLUGIN_ICON_RE.test(icon) ? icon : 'pi pi-box';
+}
+
+/**
+ * The core nav category a plugin asked to join (`ui.category`), or null for
+ * the default Plugins group. Only real MODULE_CATEGORIES keys count — an
+ * unknown/malformed value degrades to null so a typo'd manifest still shows
+ * up somewhere rather than vanishing from the nav entirely.
+ *
+ * `admin` and `experimental` are reserved (audit 2026-08-18): Admin implies
+ * host-level authority a third-party entry must not borrow (a single-entry
+ * category even flattens to a bare top-level link in the sidebar, so a plugin
+ * could pose AS the Admin item), and Experimental is the core feature-flag
+ * shelf. Business-domain categories added later stay joinable automatically.
+ *
+ * Exported for the unit spec.
+ */
+const RESERVED_PLUGIN_NAV_CATEGORIES = new Set(['admin', 'experimental']);
+export function pluginNavCategory(plugin) {
+  const category = plugin?.ui?.category;
+  if (typeof category !== 'string') return null;
+  if (RESERVED_PLUGIN_NAV_CATEGORIES.has(category)) return null;
+  return MODULE_CATEGORIES.some((c) => c.key === category) ? category : null;
+}
+
+/**
+ * Merge plugin nav entries into the core category list. Entries carrying a
+ * validated `category` join that category (after its core modules); the rest
+ * form the trailing Plugins group. A plugin may target a category whose core
+ * modules are all disabled/hidden — the category header is then recreated at
+ * its MODULE_CATEGORIES position so the entry still has a home. Rebuilt from
+ * MODULE_CATEGORIES order, which `baseCategories` (a filtered subset of it)
+ * already follows, so core ordering is preserved exactly.
+ *
+ * Exported for the unit spec.
+ */
+export function placePluginModules(baseCategories, pluginModules) {
+  const grouped = new Map();
+  const pluginsGroup = [];
+  for (const module of pluginModules) {
+    if (module.category) {
+      if (!grouped.has(module.category)) grouped.set(module.category, []);
+      grouped.get(module.category).push(module);
+    } else {
+      pluginsGroup.push(module);
+    }
+  }
+  let out;
+  if (grouped.size === 0) {
+    out = [...baseCategories];
+  } else {
+    const baseByKey = new Map(baseCategories.map((c) => [c.key, c]));
+    out = [];
+    for (const def of MODULE_CATEGORIES) {
+      const base = baseByKey.get(def.key);
+      const extra = grouped.get(def.key);
+      if (base) {
+        out.push(extra ? { ...base, modules: [...base.modules, ...extra] } : base);
+      } else if (extra) {
+        out.push({ key: def.key, label: def.label, icon: def.icon, modules: extra });
+      }
+    }
+  }
+  if (pluginsGroup.length) {
+    out.push({ key: 'plugins', label: 'Plugins', icon: 'pi pi-box', modules: pluginsGroup });
+  }
+  return out;
+}
+
 // ADR-013 plugin nav entries: one per installed plugin, plus an owner-only
 // "Manage plugins" install link. Per-request enablement is enforced
 // server-side by the proxy + each plugin's require_module; this is just nav
@@ -174,9 +256,11 @@ const _pluginModules = computed(() => {
   const pluginModules = _plugins.value.filter((p) => _mayUse(p.key)).map((p) => ({
     key: `plugin:${p.key}`,
     label: p.name || p.key,
-    icon: 'pi pi-box',
+    icon: sanitizePluginIcon(p.ui?.icon),
     to: `/plugins/${p.key}`,
     type: 'Plugin',
+    // Validated core-category key or null; placePluginModules routes on it.
+    category: pluginNavCategory(p),
     // Read by the More drawer's "Desktop" pill. Set here because this is the
     // only place holding the plugin's manifest — the drawer sees nav entries.
     mobile_friendly: pluginMobileFriendly(p),
@@ -232,11 +316,7 @@ const _categories = computed(() => {
     ...category,
     modules: collapseClusters(category.modules),
   }));
-  const pluginModules = _pluginModules.value;
-  if (pluginModules.length) {
-    base.push({ key: 'plugins', label: 'Plugins', icon: 'pi pi-box', modules: pluginModules });
-  }
-  return base;
+  return placePluginModules(base, _pluginModules.value);
 });
 
 // Flat, hub-free module list (real destinations only) + plugin entries.

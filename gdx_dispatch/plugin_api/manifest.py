@@ -10,8 +10,22 @@ See gdx_dispatch/docs/decisions/ADR-013-third-party-module-plugins.md.
 """
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+# The host SPA renders a plugin's nav icon as a CSS class on an <i> element, so
+# the value must be exactly one PrimeIcons token pair ("pi pi-<name>") — never a
+# free-form class string a plugin could use to smuggle extra classes into the
+# sidebar. The frontend re-validates (sanitizePluginIcon); this copy exists to
+# give the plugin author a warning at declaration time.
+_NAV_ICON_RE = re.compile(r"^pi pi-[a-z0-9-]+$")
+# Nav category keys are frontend-owned (MODULE_CATEGORIES); the manifest only
+# checks shape. An unknown-but-well-formed key degrades to the Plugins group.
+_NAV_CATEGORY_RE = re.compile(r"^[a-z0-9_]+$")
 
 # Elevated capabilities a plugin may declare; each is consent-gated at install
 # (ADR-014). Keep this the single source of truth — core + frontend read it.
@@ -61,6 +75,16 @@ class PluginManifest:
                       this module stays import-light).
       migrations_path filesystem path to the plugin's Alembic version dir, or None.
       ui              declarative UI manifest (screens); schema lands in step 4.
+                      Optional nav keys: ``icon`` — one PrimeIcons class pair
+                      ("pi pi-bolt") shown on the plugin's sidebar entry, else
+                      the generic box; ``category`` — a core nav category key
+                      (e.g. "operations", "customers", "sales", "invoicing",
+                      "accounting"; "admin"/"experimental" are reserved) the
+                      entry joins instead of the Plugins group. The category
+                      list is frontend-owned; an unknown key falls back to the
+                      Plugins group. Malformed values are stripped with a
+                      warning, never fatal — nav polish must not cost a plugin
+                      its event delivery.
       permissions     elevated capabilities the plugin needs, each gated by an
                       owner consent dialog at install (ADR-014). Currently only
                       "browser" — a streamed headless browser the operator drives
@@ -154,3 +178,36 @@ class PluginManifest:
                 raise ValueError(f"schedule callable must be callable: {sc!r}")
         if self.schedules and "schedules" not in self.permissions:
             raise ValueError("declaring schedules requires the 'schedules' permission")
+        # ── nav polish (icon / category) — cosmetic, so a malformed value is
+        # STRIPPED with a warning, never raised: discovery skips the whole
+        # plugin on any load error (`load_manifests`), and losing a plugin's
+        # event delivery over a nav-icon typo is the wrong trade (audit
+        # 2026-08-18). The frontend re-validates and falls back to defaults
+        # regardless. Only dict UIs are inspected; `ui` stays Any.
+        if isinstance(self.ui, dict):
+            cleaned = None
+            icon = self.ui.get("icon")
+            if icon is not None and not (
+                isinstance(icon, str) and _NAV_ICON_RE.fullmatch(icon)
+            ):
+                log.warning(
+                    "plugin %s: ui.icon %r is not a single PrimeIcons pair "
+                    "like 'pi pi-bolt' — ignoring it",
+                    self.key, icon,
+                )
+                cleaned = dict(self.ui)
+                cleaned.pop("icon", None)
+            category = self.ui.get("category")
+            if category is not None and not (
+                isinstance(category, str) and _NAV_CATEGORY_RE.fullmatch(category)
+            ):
+                log.warning(
+                    "plugin %s: ui.category %r is not a lowercase nav-category "
+                    "key like 'operations' — ignoring it",
+                    self.key, category,
+                )
+                cleaned = dict(self.ui) if cleaned is None else cleaned
+                cleaned.pop("category", None)
+            if cleaned is not None:
+                # Frozen dataclass — the sanctioned escape hatch for __post_init__.
+                object.__setattr__(self, "ui", cleaned)

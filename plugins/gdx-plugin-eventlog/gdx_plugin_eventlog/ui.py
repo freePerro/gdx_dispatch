@@ -2,6 +2,13 @@
 recorded events, and a help screen explaining what the plugin proves."""
 
 UI = {
+    # Sidebar entry polish (both optional): `icon` is a single PrimeIcons pair
+    # shown instead of the generic box; `category` (not set here) is a core nav
+    # category key ("operations", "customers", "sales", "invoicing", ...) the
+    # entry joins instead of the Plugins group — unknown keys fall back there,
+    # and "admin"/"experimental" are reserved. Malformed values are ignored
+    # with a warning, never fatal.
+    "icon": "pi pi-history",
     "screens": [
         {
             "type": "list",

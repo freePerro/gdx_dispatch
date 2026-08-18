@@ -51,6 +51,34 @@ def test_schedules_require_permission_and_shape():
     assert m.schedules[0][0] == "poll"
 
 
+def test_ui_nav_icon_and_category_shape(caplog):
+    # Valid: one PrimeIcons pair + a lowercase category key — kept verbatim.
+    m = PluginManifest(key="x", name="X",
+                       ui={"icon": "pi pi-history", "category": "operations", "screens": []})
+    assert m.ui["icon"] == "pi pi-history"
+    assert m.ui["category"] == "operations"
+    # Malformed values are STRIPPED with a warning, never raised: discovery
+    # skips a whole plugin on any load error, and a nav-icon typo must not
+    # cost a plugin its event delivery (audit 2026-08-18). The frontend
+    # falls back to the box icon / Plugins group for the stripped key.
+    with caplog.at_level("WARNING"):
+        m = PluginManifest(key="x", name="X",
+                           ui={"icon": "pi pi-box evil-class", "screens": [{"type": "list"}]})
+    assert "icon" not in m.ui
+    assert m.ui["screens"] == [{"type": "list"}]  # rest of the ui survives
+    assert "ui.icon" in caplog.text
+    for bad_icon in ("fa fa-bomb", "pi pi-UPPER", 7):
+        assert "icon" not in PluginManifest(key="x", name="X", ui={"icon": bad_icon}).ui
+    for bad_category in ("Money Stuff!", "", 42):
+        m = PluginManifest(key="x", name="X",
+                           ui={"category": bad_category, "icon": "pi pi-bolt"})
+        assert "category" not in m.ui
+        assert m.ui["icon"] == "pi pi-bolt"  # the valid sibling key survives
+    # Both optional; non-dict / absent ui stays untouched (Any by design).
+    assert PluginManifest(key="x", name="X", ui={"screens": []}).ui == {"screens": []}
+    assert PluginManifest(key="x", name="X", ui=None).ui is None
+
+
 # ---------------------------------------------------------------------------
 # Matching + fingerprint
 # ---------------------------------------------------------------------------
