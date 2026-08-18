@@ -983,6 +983,10 @@
             </Select>
             <InputText v-else v-model="composer.to" placeholder="customer@example.com"
               class="w-full" data-testid="composer-to" />
+            <small v-if="canMakeDefaultRecipient" class="muted">
+              <a href="#" data-testid="composer-make-default"
+                @click.prevent="makeDefaultRecipient">Always send to this person</a>
+            </small>
           </div>
           <div class="form-field">
             <label>Subject</label>
@@ -2843,6 +2847,7 @@ async function emailEstimate() {
       // Select can't hold null — the account-email option uses "".
       recipients: (payload.recipients || []).map((r) => ({ ...r, contact_id: r.contact_id || "" })),
       contact_id: payload.selected_contact_id || "",
+      customer_id: payload.customer_id || null,
       previewHtml: "",
     };
   } catch (err) {
@@ -2850,6 +2855,30 @@ async function emailEstimate() {
     toast.add({ severity: "error", summary: "Compose failed", detail: err?.message || "", life: 4000 });
   } finally {
     composerLoading.value = false;
+  }
+}
+
+const canMakeDefaultRecipient = computed(() => {
+  const opt = (composer.value.recipients || []).find(
+    (r) => r.contact_id === (composer.value.contact_id || "")
+  );
+  return Boolean(opt && opt.contact_id && !opt.is_primary && composer.value.customer_id);
+});
+
+async function makeDefaultRecipient() {
+  const contactId = composer.value.contact_id;
+  const customerId = composer.value.customer_id;
+  if (!contactId || !customerId) return;
+  try {
+    await api.post(
+      `/api/customers/${customerId}/contacts/${contactId}/make-primary`, {},
+      { successMessage: "Saved — automated emails for this account now go to this person." },
+    );
+    composer.value.recipients = composer.value.recipients.map((r) => ({
+      ...r, is_primary: r.contact_id === contactId,
+    }));
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Could not save default", detail: err?.message || "", life: 4000 });
   }
 }
 

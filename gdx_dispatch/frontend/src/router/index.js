@@ -16,6 +16,7 @@ import DispatchView from '../views/DispatchView.vue';
 const EstimatesView = () => import('../views/EstimatesView.vue');
 const EstimateView = () => import('../views/EstimateView.vue');
 const BillingView = () => import('../views/BillingView.vue');
+const OutboundEmailLogView = () => import('../views/OutboundEmailLogView.vue');
 const PaymentsView = () => import('../views/PaymentsView.vue');
 const InvoiceDetailView = () => import('../views/InvoiceDetailView.vue');
 const InvoiceCreateView = () => import('../views/InvoiceCreateView.vue');
@@ -208,6 +209,7 @@ export const routes = [
       { path: '/payments', name: 'payments', component: PaymentsView, meta: { requiresPermission: 'payments.read' } },
       { path: '/collections', name: 'collections', component: CollectionsView, meta: { requiresPermission: 'invoices.read_all' } },
       { path: '/invoice-reminders', name: 'invoice-reminders', component: InvoiceRemindersView, meta: { requiresPermission: 'nav.admin' } },
+      { path: '/email-log', name: 'email-log', component: OutboundEmailLogView, meta: { requiresPermission: 'nav.admin' } },
     ],
   },
   { path: '/billing/new', name: 'invoice-create', component: InvoiceCreateView, meta: { requiresPermission: 'invoices.write' } },

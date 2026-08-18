@@ -279,6 +279,12 @@ except Exception:
     invoice_reminders_router = APIRouter(tags=["invoice_reminders"])
 
 try:
+    from gdx_dispatch.routers import outbound_emails as outbound_emails_router
+except Exception:
+    logging.getLogger("gdx_dispatch.app").exception("outbound_emails_router_load_failed")
+    outbound_emails_router = APIRouter(tags=["outbound-emails"])
+
+try:
     from gdx_dispatch.routers import tasks as tasks_router
 except Exception:
     logging.getLogger("gdx_dispatch.app").exception("tasks_router_load_failed")
@@ -1554,6 +1560,7 @@ def create_app() -> FastAPI:
     app.include_router(gdpr_router.router if hasattr(gdpr_router, "router") else gdpr_router)
     app.include_router(collections_router.router if hasattr(collections_router, "router") else collections_router)
     app.include_router(invoice_reminders_router.router if hasattr(invoice_reminders_router, "router") else invoice_reminders_router)
+    app.include_router(outbound_emails_router.router if hasattr(outbound_emails_router, "router") else outbound_emails_router)
     app.include_router(tasks_router.router if hasattr(tasks_router, "router") else tasks_router)
     app.include_router(appointments_router.router if hasattr(appointments_router, "router") else appointments_router)
     app.include_router(gps_router.router if hasattr(gps_router, "router") else gps_router)

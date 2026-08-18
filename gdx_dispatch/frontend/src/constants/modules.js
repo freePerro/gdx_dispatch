@@ -118,6 +118,7 @@ export const MODULE_CATEGORIES = [
       { key: 'payments', label: 'Payments', icon: 'pi pi-credit-card', to: '/payments', type: 'Invoices', permission: 'payments.read', cluster: 'billing_hub', tabLabel: 'Payments' },
       { key: 'collections', label: 'Collections', icon: 'pi pi-wallet', to: '/collections', type: 'Invoices', permission: 'invoices.read_all', cluster: 'billing_hub', tabLabel: 'Collections' },
       { key: 'invoice_reminders', label: 'Invoice Reminders', icon: 'pi pi-bell', to: '/invoice-reminders', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Reminders' },
+      { key: 'email_log', label: 'Email Log', icon: 'pi pi-envelope', to: '/email-log', type: 'Invoices', permission: 'nav.admin', cluster: 'billing_hub', tabLabel: 'Email Log' },
     ],
   },
   {

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -1255,6 +1255,76 @@ def merge_customers(
         merged_count=len(payload.merge_ids),
         rows_updated=rows_updated,
     )
+
+
+# ── Contacts: office-side default recipient (email overhaul Phase 2) ───────
+# The mobile job screen creates contacts; the office needed a way to LIST them
+# and pick which person automated emails greet/address on a business account.
+
+
+@router.get("/{customer_id}/contacts", response_model=None)
+async def list_customer_contacts(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    rows = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        ).order_by(CustomerContact.created_at)
+    ).scalars().all()
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "email": c.email,
+            "phone": c.phone,
+            "label": c.label,
+            "is_primary": bool(c.is_primary),
+        }
+        for c in rows
+    ]
+
+
+@router.post("/{customer_id}/contacts/{contact_id}/make-primary", response_model=None)
+async def make_contact_primary(
+    customer_id: str,
+    contact_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Set THE default person automated sends (bulk, reminders, receipts,
+    workflow rules, plugins) greet and address for this account. At most one
+    live primary per customer — enforced here, the single writer."""
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    target = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.id == str(contact_id),
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    if not (target.email or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="This contact has no email address — add one before making them the default recipient.",
+        )
+    others = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    for c in others:
+        c.is_primary = c.id == target.id
+    db.commit()
+    return {"ok": True, "primary_contact_id": str(target.id)}
 
 
 # ── Route-order fix ─────────────────────────────────────────────────────────
