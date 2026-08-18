@@ -58,6 +58,16 @@ class AppSettings(Base):
     # key is exposed to every browser that loads /maps anyway, so the real
     # control is HTTP-referrer restriction set in Google Cloud Console.
     google_maps_api_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Email overhaul Phase 4a — workflow send_email actions are an OPTION
+    # (locked 2026-08-18), default OFF: the actions were no-ops forever, so
+    # pre-existing active rules must not surprise-send on deploy. The sender
+    # user is whose Outlook connection automated emails go out as (background
+    # sends have no calling user; without this, an SMTP-less tenant would
+    # silently deliver nothing even with the toggle ON).
+    automation_emails_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    automation_sender_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Phone.com per-tenant integration. voip_id is the Phone.com account ID
     # (not a secret — appears in every API URL). default_extension_id chooses
     # which extension sends outbound SMS by default; default_caller_id is the
@@ -2129,6 +2139,11 @@ class EmailSetting(Base):
     password_enc: Mapped[str] = mapped_column(Text, nullable=True)
     from_email: Mapped[str] = mapped_column(String(254), nullable=True)
     from_name: Mapped[str] = mapped_column(String(100), nullable=True)
+    # Phase 5.7: SMTP replies used to land at from_email (often a relay/no-
+    # reply account) while Graph sends thread to the rep's own mailbox —
+    # reply behavior silently differed by provider. Optional; empty = old
+    # behavior.
+    reply_to_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -3432,6 +3447,11 @@ class OutboundEmail(Base):
     # holds the matching id (user_id / rule_id / plugin key).
     initiator_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     initiator_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # WHAT was sent: 'document' (the invoice/estimate itself) | 'receipt' |
+    # 'reminder' | 'magic_link' | 'automation' | 'plugin'. Bounce detection
+    # keys on this — an NDR for a bounced REMINDER must not un-send the
+    # delivered invoice it reminds about.
+    kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # What document/thing this email was about, for timeline lookups.
     entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

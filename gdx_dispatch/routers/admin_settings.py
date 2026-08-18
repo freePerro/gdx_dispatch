@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
@@ -106,9 +106,14 @@ def test_email(
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _audit(db, request=request, user=user, action="email_test_sent",
-           entity_type="settings")
-    return {"ok": True, "message": "Test email queued"}
+    # Honesty fix (email overhaul 4b): this endpoint claimed "Test email
+    # queued" while sending NOTHING. The real, working self-test lives at
+    # the tenant email-settings router. 501 until this env-var transport
+    # surface is actually wired.
+    raise HTTPException(
+        status_code=501,
+        detail="Not implemented — use POST /api/settings/email/test (tenant email settings), which actually sends.",
+    )
 
 
 # ── Tax Jurisdictions ─────────────────────────────────────────────────────

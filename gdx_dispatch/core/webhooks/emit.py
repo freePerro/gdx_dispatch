@@ -49,6 +49,8 @@ _PENDING_KEY = "_gdx_pending_webhook_dispatch"
 # Envelopes to fan out to consented PLUGINS (the WordPress-model hook), dispatched
 # on the same after_commit as the tenant webhooks.
 _PLUGIN_PENDING_KEY = "_gdx_pending_plugin_dispatch"
+# Workflow-rule dispatch staged on the same commit lifecycle (Phase 4a).
+_WORKFLOW_PENDING_KEY = "_gdx_pending_workflow_dispatch"
 
 _hook_installed = False
 
@@ -210,7 +212,39 @@ def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: di
     except Exception:
         log.exception("plugin_dispatch_stage_failed event=%s", event_type)
 
-    if staged or db.info.get(_PLUGIN_PENDING_KEY):
+    # Workflow-rule sink (email overhaul Phase 4a): the SAME event fires
+    # matching automation rules. Before this, modules/workflows/engine had
+    # ZERO callers — rules could be created and toggled active but no event
+    # ever ran one. Gate on a cheap active-rule existence check so a
+    # zero-rule box stages nothing and fires no task.
+    try:
+        from gdx_dispatch.modules.workflows.engine import SUPPORTED_TRIGGERS
+
+        if event_type in SUPPORTED_TRIGGERS:
+            from gdx_dispatch.modules.workflows.models import WorkflowRule
+
+            has_rule = db.execute(
+                select(WorkflowRule.id).where(
+                    WorkflowRule.is_active.is_(True),
+                    WorkflowRule.trigger_event == event_type,
+                ).limit(1)
+            ).first()
+            if has_rule:
+                db.info.setdefault(_WORKFLOW_PENDING_KEY, []).append(
+                    {
+                        "event_type": event_type,
+                        "tenant_id": tenant_id,
+                        "context": {
+                            **(data or {}),
+                            "entity_type": event_type.split(".", 1)[0],
+                            "entity_id": entity_id,
+                        },
+                    }
+                )
+    except Exception:
+        log.exception("workflow_dispatch_stage_failed event=%s", event_type)
+
+    if staged or db.info.get(_PLUGIN_PENDING_KEY) or db.info.get(_WORKFLOW_PENDING_KEY):
         _install_dispatch_hook()
     return len(staged)
 
@@ -244,6 +278,18 @@ def _dispatch_pending(session: Session) -> None:
                 # not delivered to plugins if the broker is down.
                 log.exception("plugin_dispatch_enqueue_failed event=%s", envelope.get("event"))
 
+    workflow_jobs = session.info.pop(_WORKFLOW_PENDING_KEY, None)
+    if workflow_jobs:
+        from gdx_dispatch.modules.workflows.tasks import run_workflow_rules_task
+
+        for job in workflow_jobs:
+            try:
+                run_workflow_rules_task.delay(job)
+            except Exception:
+                # Best-effort like the plugin sink: broker down = rules skipped
+                # for this event, loudly.
+                log.exception("workflow_dispatch_enqueue_failed event=%s", job.get("event_type"))
+
 
 def _drop_pending(session: Session, previous_transaction) -> None:  # noqa: ANN001
     """Forget staged dispatch when the BUSINESS transaction rolls back, so a later
@@ -260,6 +306,7 @@ def _drop_pending(session: Session, previous_transaction) -> None:  # noqa: ANN0
         return  # savepoint rolled back; the outer business txn is still live
     session.info.pop(_PENDING_KEY, None)
     session.info.pop(_PLUGIN_PENDING_KEY, None)
+    session.info.pop(_WORKFLOW_PENDING_KEY, None)
 
 
 def _install_dispatch_hook() -> None:
