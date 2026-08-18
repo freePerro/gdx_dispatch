@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdx-plugin-n8n"
+version = "0.1.0"
+description = "In-app n8n Automations console: watch the live GDX event stream your n8n workflows trigger on, plus setup + event catalog. Built on the public plugin API (the WordPress model)."
+requires-python = ">=3.11"
+dependencies = []
+
+# Registers under the gdx.modules entry-point group so plugin-host discovery
+# finds `manifest` after `pip install`.
+[project.entry-points."gdx.modules"]
+n8n = "gdx_plugin_n8n:manifest"
+
+[tool.setuptools]
+packages = ["gdx_plugin_n8n"]
