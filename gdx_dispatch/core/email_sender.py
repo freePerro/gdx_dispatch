@@ -153,6 +153,7 @@ def build_estimate_email_html(
     intro_html: str | None = None,
     tiers: list[dict] | None = None,
     valid_until_text: str = "",
+    hide_prices: bool = False,
 ) -> str:
     """Branded estimate email.
 
@@ -187,7 +188,7 @@ def build_estimate_email_html(
     if tiers:
         parts.append(_tier_summary_html(tiers, accent))
     else:
-        parts.append(line_items_table(line_items))
+        parts.append(line_items_table(line_items, hide_prices=hide_prices))
         parts.append(totals_table([("Total", money(total), True)], accent))
     if notes:
         parts.append(f'<p style="margin:12px 0;"><strong>Notes:</strong> {nl2br(notes)}</p>')

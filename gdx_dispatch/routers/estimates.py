@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -1384,81 +1384,25 @@ def _estimate_pdf_bytes(
 def estimate_email_compose(
     estimate_id: UUID,
     request: Request,
+    contact_id: str | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Return a prebuilt compose payload for the in-app composer:
-    {to, subject, body_text, pdf, extra_attachments}.
+    {to, recipients, subject, body_text, pdf, extra_attachments}.
     Subject/body come from per-tenant templates configurable in
-    Settings → Feature Settings."""
+    Settings → Feature Settings — rendered by the SAME prep the send path
+    uses, so the composer previews exactly what /send delivers.
+    ?contact_id=<id> re-renders the prefill addressed to that contact."""
     import base64 as _b64
 
     estimate = _get_estimate_or_404(estimate_id, db, include_lines=True)
-    customer = None
-    if estimate.customer_id:
-        customer = db.execute(
-            select(Customer).where(Customer.id == estimate.customer_id, Customer.deleted_at.is_(None))
-        ).scalar_one_or_none()
-
-    job_title = ""
-    if estimate.job_id:
-        job = db.execute(
-            select(Job).where(Job.id == estimate.job_id, Job.deleted_at.is_(None))
-        ).scalar_one_or_none()
-        if job:
-            job_title = (job.title or "").strip()
-
-    company_name = "Your Service Company"
-    settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-    if settings_obj and settings_obj.company_name:
-        company_name = settings_obj.company_name
-
     tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or estimate.company_id or "")
-
-    # Per-tenant templates (Settings → Feature Settings). Empty string falls
-    # back to the platform defaults so a fresh tenant still gets a sane email.
-    subject_tpl = ""
-    body_tpl = ""
-    try:
-        from gdx_dispatch.modules.estimates_features import get_features
-        if tenant_id:
-            f = get_features(tenant_id)
-            subject_tpl = (f.email_subject_template or "").strip()
-            body_tpl = (f.email_body_template or "").strip()
-    except Exception:
-        log.exception("email_compose_read_features_failed")
-    if not subject_tpl:
-        subject_tpl = _DEFAULT_SUBJECT_TEMPLATE
-    if not body_tpl:
-        body_tpl = _DEFAULT_BODY_TEMPLATE
-
-    # Show tax-inclusive total in the email so it matches the attached PDF.
-    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
-    _ctx_totals = compute_estimate_totals(estimate, db)
-    label_or_job = job_title or (estimate.label or "").strip() or f"Estimate {estimate.estimate_number or ''}".strip()
-    proposal_url = _public_proposal_url(estimate)
-    # A finalized estimate that was NEVER sent (phone accept, office decline)
-    # can still be composed — but the public lookup requires sent_at, and
-    # /mark-sent 409s finalized estimates, so its link would 404 forever.
-    # Suppress it; the compose is then just the document, like before.
-    if estimate.sent_at is None and estimate.status in {"accepted", "declined"}:
-        proposal_url = ""
-    ctx = {
-        "customer_name": (customer.name if customer else "") or "there",
-        "job_title": label_or_job,
-        "estimate_number": estimate.estimate_number or "",
-        "estimate_label": (estimate.label or "").strip(),
-        "company_name": company_name,
-        "total": f"${_ctx_totals['total']:.2f}",
-        "estimate_link": proposal_url,
-    }
-    subject = _render_template(subject_tpl, ctx).strip() or label_or_job
-    body_text = _render_template(body_tpl, ctx)
-    # Approval link rides every composed email (invoice compose's "Pay
-    # online:" pattern): appended unless the tenant's template already placed
-    # it via {{estimate_link}}. No link when the public base URL is unset.
-    if proposal_url and proposal_url not in body_text:
-        body_text = f"{body_text}\n\nReview & approve online: {proposal_url}"
+    prep = _prepare_estimate_email(db, estimate, contact_id=contact_id)
+    customer = prep["customer"]
+    recipient = prep["recipient"]
+    subject = prep["subject"]
+    body_text = prep["body_text"]
     pdf_bytes = _estimate_pdf_bytes(db, estimate, customer, tenant_id)
     pdf_b64 = _b64.b64encode(pdf_bytes).decode("ascii")
     pdf_name = f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf"
@@ -1478,7 +1422,9 @@ def estimate_email_compose(
         })
 
     return {
-        "to": [customer.email] if (customer and customer.email) else [],
+        "to": [recipient.email] if (recipient and recipient.ok) else [],
+        "recipients": _estimate_recipient_options(db, customer),
+        "selected_contact_id": recipient.contact_id if recipient else None,
         "customer_id": str(customer.id) if customer else None,
         "subject": subject,
         "body_text": body_text,
@@ -1562,9 +1508,330 @@ def mark_estimate_sent(
     return _serialize_estimate(estimate, include_lines=False)
 
 
+def _expected_valid_until(estimate: Estimate) -> datetime:
+    """The valid_until this send WILL produce — mirrors _apply_send_expiry's
+    rules (respect a hand-picked future date; else tenant expiry days from
+    now), computed BEFORE compose so the email can print the real date. The
+    old body hardcoded "valid for 30 days" while the actual default is 60."""
+    existing = getattr(estimate, "valid_until", None)
+    now = utcnow()
+    if existing is not None:
+        e = existing if existing.tzinfo is not None else existing.replace(tzinfo=timezone.utc)
+        if e > now:
+            return e
+    try:
+        from gdx_dispatch.modules.estimates_features import get_features
+        days = int(get_features(str(estimate.company_id or "")).estimate_expiry_days or 60)
+    except Exception:
+        days = 60
+    if days < 1:
+        days = 60
+    return now + timedelta(days=days)
+
+
+def _human_date(dt: datetime) -> str:
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year}"
+
+
+def _estimate_email_templates(tenant_id: str) -> tuple[str, str]:
+    """Tenant-editable subject/body templates with platform defaults.
+    Shared by compose, preview and SEND — the locked decision: what the
+    composer previews is what every path delivers."""
+    subject_tpl = ""
+    body_tpl = ""
+    try:
+        from gdx_dispatch.modules.estimates_features import get_features
+        if tenant_id:
+            f = get_features(tenant_id)
+            subject_tpl = (f.email_subject_template or "").strip()
+            body_tpl = (f.email_body_template or "").strip()
+    except Exception:
+        log.exception("email_templates_read_features_failed")
+    return subject_tpl or _DEFAULT_SUBJECT_TEMPLATE, body_tpl or _DEFAULT_BODY_TEMPLATE
+
+
+def _effective_hide_line_prices(estimate: Estimate, tenant_id: str) -> bool:
+    """Estimate tri-state override, else tenant default — same resolution the
+    PDF uses. The email previously ignored this and leaked per-line prices
+    on total-only estimates."""
+    if estimate.hide_line_prices is not None:
+        return bool(estimate.hide_line_prices)
+    try:
+        from gdx_dispatch.modules.estimates_features import get_features
+        return bool(get_features(tenant_id).hide_line_prices) if tenant_id else False
+    except Exception:
+        return False
+
+
+def _prepare_estimate_email(
+    db: Session,
+    estimate: Estimate,
+    *,
+    contact_id: str | None = None,
+    body_text_override: str | None = None,
+    subject_override: str | None = None,
+) -> dict[str, object]:
+    """One render for every path — composer, preview, one-click send.
+
+    Returns {customer, recipient, subject, body_text, html, branding,
+    proposal_url}. body_text is the plain-text copy (template-rendered or
+    the operator's edit, approval link appended for mailto/preview); html is
+    the full branded email: shell + copy + tier summary or line table +
+    totals + CTA button + real expiry date."""
+    from gdx_dispatch.core.email_layout import (
+        email_branding,
+        linkify,
+        nl2br,
+    )
+    from gdx_dispatch.core.email_recipients import resolve_recipient
+    from gdx_dispatch.core.email_sender import build_estimate_email_html
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+    customer = None
+    if estimate.customer_id:
+        customer = db.execute(
+            select(Customer).where(Customer.id == estimate.customer_id, Customer.deleted_at.is_(None))
+        ).scalar_one_or_none()
+
+    recipient = None
+    if customer is not None:
+        recipient = resolve_recipient(db, customer, contact_id)
+
+    job_title = ""
+    if estimate.job_id:
+        job = db.execute(
+            select(Job).where(Job.id == estimate.job_id, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if job:
+            job_title = (job.title or "").strip()
+
+    branding = email_branding(db)
+    company_name = branding["company_name"]
+    tenant_id = str(estimate.company_id or "")
+
+    subject_tpl, body_tpl = _estimate_email_templates(tenant_id)
+    totals = compute_estimate_totals(estimate, db)
+    label_or_job = job_title or (estimate.label or "").strip() or f"Estimate {estimate.estimate_number or ''}".strip()
+    proposal_url = _public_proposal_url(estimate)
+    if estimate.sent_at is None and estimate.status in {"accepted", "declined"}:
+        proposal_url = ""
+    greeting = (recipient.greeting_name if recipient and recipient.ok else "") or \
+        ((customer.name if customer else "") or "there")
+    ctx = {
+        "customer_name": greeting,
+        "job_title": label_or_job,
+        "estimate_number": estimate.estimate_number or "",
+        "estimate_label": (estimate.label or "").strip(),
+        "company_name": company_name,
+        "total": f"${totals['total']:,.2f}",
+        "estimate_link": proposal_url,
+    }
+    subject = (subject_override or "").strip() or _render_template(subject_tpl, ctx).strip() or label_or_job
+    if body_text_override is not None and body_text_override.strip():
+        body_text = body_text_override
+    else:
+        body_text = _render_template(body_tpl, ctx)
+    link_line = f"Review & approve online: {proposal_url}" if proposal_url else ""
+    if proposal_url and proposal_url not in body_text:
+        body_text = f"{body_text}\n\n{link_line}"
+
+    # The branded email carries the link as a real button — drop the
+    # appended text line so it isn't said twice; a link the OPERATOR wrote
+    # into the copy (or the template placed via {{estimate_link}}) stays,
+    # linkified so it is clickable in Outlook.
+    copy_for_html = body_text
+    if link_line and copy_for_html.rstrip().endswith(link_line):
+        copy_for_html = copy_for_html.rstrip()[: -len(link_line)].rstrip()
+    intro_html = "<p style=\"margin:0 0 12px;\">" + linkify(
+        nl2br(copy_for_html), branding.get("accent") or "#2563eb"
+    ).replace("<br><br>", "</p><p style=\"margin:0 0 12px;\">") + "</p>"
+
+    tiers = None
+    line_items: list[dict] = []
+    if estimate.proposal_mode:
+        from gdx_dispatch.modules.proposals.models import ProposalTier
+        tier_rows = db.execute(
+            select(ProposalTier)
+            .where(ProposalTier.estimate_id == estimate.id)
+            .order_by(ProposalTier.display_order)
+        ).scalars().all()
+        tiers = [
+            {
+                "name": (t.tier_name or "").title(),
+                "price": _to_float(t.total_price),
+                "description": (t.description or "").strip(),
+            }
+            for t in tier_rows
+        ]
+    else:
+        lines = db.execute(
+            select(EstimateLine)
+            .where(EstimateLine.estimate_id == estimate.id)
+            .order_by(EstimateLine.sort_order)
+        ).scalars().all()
+        line_items = [
+            {
+                "description": ln.description,
+                "quantity": ln.quantity,
+                "unit_price": _to_float(ln.unit_price),
+                "line_total": _to_float(ln.line_total),
+            }
+            for ln in lines
+        ]
+
+    html = build_estimate_email_html(
+        company_name=company_name,
+        estimate_number=estimate.estimate_number or str(estimate.id)[:8],
+        customer_name=greeting,
+        line_items=line_items,
+        total=totals["total"],
+        notes=estimate.notes or "",
+        portal_url=proposal_url,
+        description=estimate.description or "",
+        branding=branding,
+        intro_html=intro_html,
+        tiers=tiers,
+        valid_until_text=_human_date(_expected_valid_until(estimate)),
+        hide_prices=_effective_hide_line_prices(estimate, tenant_id),
+    )
+    return {
+        "customer": customer,
+        "recipient": recipient,
+        "subject": subject,
+        "body_text": body_text,
+        "html": html,
+        "branding": branding,
+        "proposal_url": proposal_url,
+    }
+
+
+def _estimate_recipient_options(db: Session, customer: Customer | None) -> list[dict[str, object]]:
+    """Composer picker choices: the account email plus every live contact
+    with an email. is_primary marks the default automated sends will use."""
+    options: list[dict[str, object]] = []
+    if customer is None:
+        return options
+    if customer.email:
+        options.append({
+            "contact_id": None,
+            "name": customer.name or "",
+            "email": customer.email,
+            "label": "Account email",
+            "is_primary": False,
+        })
+    from gdx_dispatch.models.tenant_models import CustomerContact
+    rows = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == customer.id,
+            CustomerContact.deleted_at.is_(None),
+        ).order_by(CustomerContact.created_at)
+    ).scalars().all()
+    for c in rows:
+        if (c.email or "").strip():
+            options.append({
+                "contact_id": str(c.id),
+                "name": c.name or "",
+                "email": c.email,
+                "label": (c.label or "").strip() or "Contact",
+                "is_primary": bool(c.is_primary),
+            })
+    return options
+
+
+def _estimate_extra_attachment_payloads(
+    db: Session,
+    estimate: Estimate,
+    tenant_id: str,
+    ids: list[str],
+    budget_bytes: int,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Load requested estimate documents as wire attachments, newest budget
+    rule: attach in the order requested while raw bytes fit the remaining
+    budget; return (attachments, skipped_names). Same realpath containment
+    as the download endpoint."""
+    import base64 as _b64
+
+    attachments: list[dict[str, object]] = []
+    skipped: list[str] = []
+    if not ids:
+        return attachments, skipped
+    rows = db.execute(
+        select(Document).where(
+            Document.id.in_(ids),
+            Document.estimate_id == estimate.id,
+            Document.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    by_id = {str(d.id): d for d in rows}
+    base = str(_attachment_dir(tenant_id, str(estimate.id)))
+    remaining = budget_bytes
+    for want in ids:
+        doc = by_id.get(str(want))
+        if doc is None:
+            skipped.append(str(want))
+            continue
+        fullpath = os.path.realpath(os.path.join(base, doc.filename))
+        if not fullpath.startswith(base + os.sep) or not os.path.isfile(fullpath):
+            skipped.append(doc.original_name or str(doc.id))
+            continue
+        try:
+            with open(fullpath, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            skipped.append(doc.original_name or str(doc.id))
+            continue
+        if len(data) > remaining:
+            skipped.append(doc.original_name or str(doc.id))
+            continue
+        remaining -= len(data)
+        attachments.append({
+            "name": _sanitize_attachment_name(doc.original_name),
+            "content_type": doc.content_type or "application/octet-stream",
+            "content_base64": _b64.b64encode(data).decode("ascii"),
+        })
+    return attachments, skipped
+
+
+class SendEstimateIn(BaseModel):
+    """Optional composer payload for /send. Empty body = one-click send with
+    the tenant template's default copy and the resolver's default recipient."""
+
+    body_text: str | None = None
+    subject: str | None = Field(default=None, max_length=500)
+    contact_id: str | None = Field(default=None, max_length=36)
+    extra_attachment_ids: list[str] | None = None
+
+
+@router.post("/{estimate_id}/email-preview", response_model=None)
+def estimate_email_preview(
+    estimate_id: UUID,
+    payload: SendEstimateIn | None = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """The exact branded HTML /send would deliver, for the composer's
+    preview pane — same prep function, zero drift by construction."""
+    estimate = _get_estimate_or_404(estimate_id, db)
+    p = payload or SendEstimateIn()
+    prep = _prepare_estimate_email(
+        db, estimate,
+        contact_id=p.contact_id,
+        body_text_override=p.body_text,
+        subject_override=p.subject,
+    )
+    recipient = prep["recipient"]
+    return {
+        "subject": prep["subject"],
+        "html": prep["html"],
+        "to_email": recipient.email if recipient else "",
+        "to_name": recipient.to_name if recipient else "",
+    }
+
+
 @router.post("/{estimate_id}/send", response_model=None)
 def send_estimate(
     estimate_id: UUID,
+    payload: SendEstimateIn | None = None,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -1582,104 +1849,78 @@ def send_estimate(
     email_sent = False
     email_provider: str | None = None
     email_skip_reason: str | None = None
+    pdf_attached = False
+    attachments_skipped: list[str] = []
+    p = payload or SendEstimateIn()
     try:
-        from gdx_dispatch.core.email_sender import build_estimate_email_html
-        from gdx_dispatch.core.transactional_email import send_transactional_email
+        from gdx_dispatch.core.transactional_email import (
+            MAX_INLINE_ATTACHMENT_BYTES,
+            send_transactional_email,
+        )
         tid = str(estimate.company_id) if estimate.company_id else None
         if tid and estimate.customer_id:
-            cust = db.execute(
-                select(Customer).where(
-                    Customer.id == estimate.customer_id,
-                    Customer.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if cust and cust.email:
-                # Get line items via ORM
-                lines_data = []
-                try:
-                    lines = db.execute(
-                        select(EstimateLine)
-                        .where(EstimateLine.estimate_id == estimate.id)
-                        .order_by(EstimateLine.sort_order)
-                    ).scalars().all()
-                    lines_data = [
-                        {
-                            "description": ln.description,
-                            "quantity": ln.quantity,
-                            "unit_price": _to_float(ln.unit_price),
-                            "line_total": _to_float(ln.line_total),
-                        }
-                        for ln in lines
-                    ]
-                except Exception:
-                    log.exception("send_estimate caught exception")
-                    pass
-                # Get company name via ORM
-                company_name = "Your Service Company"
-                try:
-                    settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-                    if settings_obj and settings_obj.company_name:
-                        company_name = settings_obj.company_name
-                except Exception:
-                    log.exception("send_estimate caught exception")
-                    pass
-                # Tax-inclusive total — matches the attached PDF.
-                from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
-                _email_totals = compute_estimate_totals(estimate, db)
-                # "View & Accept Estimate" button → the public token-addressed
-                # approval page (no CustomerUser/login needed — the token IS
-                # the authorization, resolving the old Tier-9.8 deferral).
-                # Guard: base unset must yield NO link at all — a bare
-                # f-string would render a relative, dead-in-email href.
-                from gdx_dispatch.core.email_layout import email_branding
-                html = build_estimate_email_html(
-                    company_name=company_name,
-                    estimate_number=estimate.estimate_number or str(estimate.id)[:8],
-                    customer_name=cust.name or "Valued Customer",
-                    line_items=lines_data,
-                    total=_email_totals["total"],
-                    notes=estimate.notes or "",
-                    portal_url=_public_proposal_url(estimate),
-                    description=estimate.description or "",
-                    branding=email_branding(db),
-                )
-                # 2026-07-20 — actually attach the estimate PDF (same bytes
-                # the composer flow sends). The email body has referenced an
-                # "attached PDF" since S110 without ever attaching one.
-                # Best-effort: a render failure downgrades to html-only.
-                attachments = None
+            # One prep for composer sends and one-click sends alike: tenant
+            # template copy (or the operator's edit) inside the branded
+            # shell, tier summary or line table, real expiry date, CTA
+            # button, person-aware recipient.
+            prep = _prepare_estimate_email(
+                db, estimate,
+                contact_id=p.contact_id,
+                body_text_override=p.body_text,
+                subject_override=p.subject,
+            )
+            cust = prep["customer"]
+            recipient = prep["recipient"]
+            if cust is not None and recipient is not None and recipient.ok:
+                # Attach the estimate PDF (same bytes the composer previews)
+                # plus any operator-selected extra documents, inside one raw-
+                # byte budget so an oversized set degrades attachment-by-
+                # attachment instead of Graph rejecting the whole message.
+                attachments: list[dict[str, object]] = []
                 try:
                     import base64 as _b64
 
-                    from gdx_dispatch.core.transactional_email import MAX_INLINE_ATTACHMENT_BYTES
                     pdf_bytes = _estimate_pdf_bytes(db, estimate, cust, tid)
-                    # Estimate PDFs embed job photos — the one attach site that
-                    # can realistically blow the Graph inline limit. Oversized →
-                    # keep the html-only delivery guarantee.
                     if len(pdf_bytes) > MAX_INLINE_ATTACHMENT_BYTES:
                         log.warning(
                             "estimate_send_pdf_too_large_to_attach estimate=%s bytes=%s",
                             estimate.id, len(pdf_bytes),
                         )
+                        attachments_skipped.append("estimate PDF")
+                        budget = MAX_INLINE_ATTACHMENT_BYTES
                     else:
-                        attachments = [{
+                        attachments.append({
                             "name": f"estimate-{estimate.estimate_number or str(estimate.id)[:8]}.pdf",
                             "content_type": "application/pdf",
                             "content_base64": _b64.b64encode(pdf_bytes).decode("ascii"),
-                        }]
+                        })
+                        budget = MAX_INLINE_ATTACHMENT_BYTES - len(pdf_bytes)
                 except Exception:
                     log.exception("estimate_send_pdf_attach_failed")
+                    budget = MAX_INLINE_ATTACHMENT_BYTES
+                extra, extra_skipped = _estimate_extra_attachment_payloads(
+                    db, estimate, tid, p.extra_attachment_ids or [], budget,
+                )
+                attachments.extend(extra)
+                attachments_skipped.extend(extra_skipped)
                 email_sent, email_provider, email_skip_reason = send_transactional_email(
                     tenant_db=db,
                     tenant_id=tid,
                     user_id=str(_actor_id(_)),
-                    to_email=cust.email,
-                    to_name=cust.name or "",
-                    subject=f"Estimate #{estimate.estimate_number} from {company_name}",
-                    html_body=html,
-                    attachments=attachments,
+                    to_email=recipient.email,
+                    to_name=recipient.to_name,
+                    subject=prep["subject"],
+                    html_body=prep["html"],
+                    attachments=attachments or None,
+                    entity_type="estimate",
+                    entity_id=str(estimate.id),
+                    recipient_source=recipient.source,
+                    recipient_contact_id=recipient.contact_id,
                 )
-            elif cust:
+                pdf_attached = email_sent and any(
+                    a["name"].startswith("estimate-") for a in attachments
+                )
+            elif cust is not None:
                 email_skip_reason = "customer_has_no_email"
             else:
                 email_skip_reason = "customer_not_found"
@@ -1692,6 +1933,7 @@ def send_estimate(
     if email_sent:
         estimate.status = "sent"
         estimate.sent_at = utcnow()
+        estimate.sent_via = "email"
         _apply_send_expiry(estimate)
         estimate.updated_at = utcnow()
         db.commit()
@@ -1721,13 +1963,18 @@ def send_estimate(
         )
         db.commit()
 
-    payload = _serialize_estimate(estimate, include_lines=False)
-    payload["email_sent"] = email_sent
+    out = _serialize_estimate(estimate, include_lines=False)
+    out["email_sent"] = email_sent
+    out["pdf_attached"] = pdf_attached
+    if attachments_skipped:
+        # Silent PDF degradation was invisible before — the UI can now say
+        # "sent without <name> (too large)".
+        out["attachments_skipped"] = attachments_skipped
     if email_provider:
-        payload["email_provider"] = email_provider
+        out["email_provider"] = email_provider
     if email_skip_reason:
-        payload["email_skip_reason"] = email_skip_reason
-    return payload
+        out["email_skip_reason"] = email_skip_reason
+    return out
 
 
 def _holding_area_id_by_name(db: Session, name: str) -> str | None:
