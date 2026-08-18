@@ -1966,13 +1966,9 @@ def send_invoice(
                     for ln in (invoice.lines or [])
                     if getattr(ln, "deleted_at", None) is None
                 ]
-                company_name = "Your Service Company"
-                try:
-                    settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-                    if settings_obj and settings_obj.company_name:
-                        company_name = settings_obj.company_name
-                except Exception:
-                    log.exception("send_invoice_company_name_lookup_failed")
+                from gdx_dispatch.core.email_layout import email_branding
+                _branding = email_branding(db)
+                company_name = _branding["company_name"]
                 tax_rate_val = float(invoice.tax_rate) if invoice.tax_rate is not None else None
                 # The "View & Pay Invoice" CTA. public_pay_url returns None
                 # unless the link would actually charge (base URL + Stripe
@@ -2001,6 +1997,8 @@ def send_invoice(
                     tax_rate=tax_rate_val,
                     paid_to_date=_paid,
                     credits_applied=_credits,
+                    branding=_branding,
+                    is_receipt=invoice.status == "paid",
                 )
                 # 2026-07-20 — attach the actual invoice PDF (same generator
                 # the composer flow uses). This path shipped html-only for

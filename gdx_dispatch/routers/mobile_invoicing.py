@@ -876,21 +876,17 @@ def _send_invoice_email(
             log.info("mobile_invoice_email_skipped no_customer_email invoice=%s", invoice.id)
             return False
 
+        from gdx_dispatch.core.email_layout import email_branding as _email_branding
         from gdx_dispatch.core.transactional_email import send_transactional_email
         try:
             from gdx_dispatch.core.email_sender import build_invoice_email_html  # type: ignore[attr-defined]
         except Exception:
             build_invoice_email_html = None  # type: ignore[assignment]
 
-        # Get company name
-        company_name = "Your Service Company"
-        try:
-            from gdx_dispatch.models.tenant_models import AppSettings
-            settings_obj = db.execute(select(AppSettings).limit(1)).scalar_one_or_none()
-            if settings_obj and getattr(settings_obj, "company_name", None):
-                company_name = settings_obj.company_name
-        except Exception:
-            log.exception("mobile_invoice_email_company_name_lookup_failed")
+        # One AppSettings read serves both the subject line and the branded
+        # shell — two lookups drifted before.
+        _branding = _email_branding(db)
+        company_name = _branding["company_name"]
 
         # 2026-07-20 — attach the invoice PDF (built BEFORE the body so the
         # fallback wording can be honest about whether it's really attached).
@@ -981,6 +977,7 @@ def _send_invoice_email(
                 portal_url=pay_url or "",
                 paid_to_date=_paid,
                 credits_applied=_credits,
+                branding=_branding,
             )
         else:
             html = (

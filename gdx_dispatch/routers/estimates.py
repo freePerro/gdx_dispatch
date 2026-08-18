@@ -1631,6 +1631,7 @@ def send_estimate(
                 # the authorization, resolving the old Tier-9.8 deferral).
                 # Guard: base unset must yield NO link at all — a bare
                 # f-string would render a relative, dead-in-email href.
+                from gdx_dispatch.core.email_layout import email_branding
                 html = build_estimate_email_html(
                     company_name=company_name,
                     estimate_number=estimate.estimate_number or str(estimate.id)[:8],
@@ -1640,6 +1641,7 @@ def send_estimate(
                     notes=estimate.notes or "",
                     portal_url=_public_proposal_url(estimate),
                     description=estimate.description or "",
+                    branding=email_branding(db),
                 )
                 # 2026-07-20 — actually attach the estimate PDF (same bytes
                 # the composer flow sends). The email body has referenced an

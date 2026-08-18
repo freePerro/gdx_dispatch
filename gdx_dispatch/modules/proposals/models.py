@@ -41,6 +41,11 @@ class Estimate(TenantBase):
         default="draft",
     )
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # HOW the estimate was delivered ('email' | 'manual' | ...). Mirrors
+    # invoices.sent_via — before this, the channel lived only in a hardcoded
+    # audit blob, so server-emailed and hand-delivered were indistinguishable.
+    # NULL on rows sent before migration 066.
+    sent_via: Mapped[str | None] = mapped_column(String(20), nullable=True)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     declined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     declined_reason: Mapped[str] = mapped_column(Text, nullable=True)

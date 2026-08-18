@@ -258,6 +258,14 @@ class CustomerContact(Base):
     # Every tenant's vocabulary is its own and a dropdown would just be wrong
     # somewhere.
     label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # The default person automated email paths (bulk send, reminders,
+    # receipts, workflow rules, plugins) greet and address on a business
+    # account — no-human sends can't show a picker. At most one live primary
+    # per customer, enforced by the resolver's writer, not a constraint (a
+    # partial unique index can't span soft-deletes portably).
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -3396,6 +3404,58 @@ def _mark_invoice_qb_dirty_on_change(_mapper, _connection, target: Invoice) -> N
 @event.listens_for(Customer, "before_update")
 def _mark_customer_qb_dirty_on_change(_mapper, _connection, target: Customer) -> None:
     _mark_qb_dirty_on_change(target)
+
+
+class OutboundEmail(Base):
+    """Append-only record of every transactional-email send ATTEMPT.
+
+    Written inside send_transactional_email itself (its own short-lived
+    session, so a caller rollback can't lose the row) — no caller can forget
+    to log. This is the answer to "what did we send this customer, and what
+    happened to it": before this table, the exact bytes a customer received
+    existed nowhere (SMTP keeps no copy; Graph saves only to the sending
+    rep's personal Sent Items). Locked requirement 2026-08-18: for any email
+    a customer did or didn't receive, the office can answer WHO/WHAT
+    triggered it, WHAT it said, WHO it went to, and WHAT happened — without
+    reading container logs.
+
+    Append-only by convention: no updater exists except bounce detection
+    stamping bounced_at. Never delete rows.
+    """
+
+    __tablename__ = "outbound_emails"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # Who/what initiated the send: 'user' (a person clicked), 'bulk',
+    # 'reminder_task', 'workflow_rule', 'plugin', 'system'. initiator_ref
+    # holds the matching id (user_id / rule_id / plugin key).
+    initiator_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    initiator_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # What document/thing this email was about, for timeline lookups.
+    entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_email: Mapped[str] = mapped_column(Text, nullable=False)
+    to_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How the recipient was chosen: 'account_email' | 'contact' | 'override'.
+    recipient_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    recipient_contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    # The exact rendered HTML as handed to the provider — the dispute answer.
+    body_html: Mapped[str] = mapped_column(Text, nullable=False)
+    # [{name, content_type, size_bytes}] — metadata only, never the bytes
+    # (the PDF is regenerable; base64 here would bloat the table fast).
+    attachments_meta: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="failed")
+    skip_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    bounced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+
+Index("ix_outbound_emails_entity", OutboundEmail.entity_type, OutboundEmail.entity_id)
 
 
 # The invoice totals invariant (money audit 2026-08-04). Registered here rather
