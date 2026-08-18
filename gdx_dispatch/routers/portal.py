@@ -116,22 +116,33 @@ def _portal_link_base(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _magic_link_html(company_name: str, magic_link: str, expires_text: str) -> str:
-    return f"""
-    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
-      <h2 style="color: #1e293b;">{company_name}</h2>
-      <p>Use the button below to sign in to your customer portal, where you can
-      view your estimates, invoices, and service history.</p>
-      <p style="margin: 24px 0;">
-        <a href="{magic_link}" style="background: #2563eb; color: #ffffff; padding: 12px 24px;
-           border-radius: 6px; text-decoration: none; display: inline-block;">Open My Portal</a>
-      </p>
-      <p style="color: #6b7280; font-size: 13px;">This link {expires_text} and can only be used once.
-      If you didn't request it, you can safely ignore this email.</p>
-      <p style="color: #6b7280; font-size: 13px;">Button not working? Copy this address into your
-      browser:<br>{magic_link}</p>
-    </div>
-    """
+def _magic_link_html(company_name: str, magic_link: str, expires_text: str,
+                     branding: dict | None = None) -> str:
+    # Shared branded shell (email overhaul): table layout that survives
+    # Outlook, td-padded button, tenant logo/color/footer. The old div-based
+    # body used its own blue and no background-color (dark-mode fragile).
+    from gdx_dispatch.core.email_layout import cta_button, esc, render_email
+
+    b = dict(branding or {})
+    b.setdefault("company_name", company_name or "Your Service Company")
+    accent = b.get("accent") or "#2563eb"
+    body = (
+        '<p style="margin:0 0 12px;">Use the button below to sign in to your '
+        "customer portal, where you can view your estimates, invoices, and "
+        "service history.</p>"
+        + cta_button(magic_link, "Open My Portal", accent)
+        + f'<p style="margin:16px 0 8px;font-size:13px;color:#556270;">This link {esc(expires_text)} '
+        "and can only be used once. If you didn&#39;t request it, you can safely "
+        "ignore this email.</p>"
+        f'<p style="margin:0;font-size:13px;color:#556270;">Button not working? Copy this address '
+        f'into your browser:<br><a href="{esc(magic_link)}" style="color:{esc(accent)};">{esc(magic_link)}</a></p>'
+    )
+    return render_email(
+        branding=b,
+        body_html=body,
+        title=f"{b['company_name']} customer portal",
+        preheader="Your one-time portal sign-in link",
+    )
 
 
 def send_portal_magic_link_email(
@@ -151,9 +162,11 @@ def send_portal_magic_link_email(
     transactional-email helper (Outlook Graph when sender_user_id is a
     connected staff user, SMTP via email_settings otherwise).
     """
+    from gdx_dispatch.core.email_layout import email_branding
     from gdx_dispatch.core.transactional_email import send_transactional_email
 
-    company = company_name or _company_name(db)
+    branding = email_branding(db)
+    company = company_name or branding["company_name"] or _company_name(db)
     sent, _provider, skip_reason = send_transactional_email(
         tenant_db=db,
         tenant_id=tenant_id,
@@ -161,7 +174,8 @@ def send_portal_magic_link_email(
         to_email=to_email,
         to_name=to_name,
         subject=f"Your {company} customer portal link",
-        html_body=_magic_link_html(company, magic_link, expires_text),
+        html_body=_magic_link_html(company, magic_link, expires_text, branding=branding),
+        entity_type="portal_magic_link",
     )
     return sent, skip_reason
 

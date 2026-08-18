@@ -1236,32 +1236,34 @@ def mobile_send_receipt(
             409,
         )
 
-    # Find the payment to receipt — explicit payment_id wins, else most recent.
-    payment_row = None
-    if payload.payment_id:
-        payment_row = db.execute(
-            _text(
-                """
-                SELECT id, amount, method, payment_date, reference
-                FROM payments
-                WHERE id = :pid AND invoice_id = :iid
-                """
-            ),
-            {"pid": payload.payment_id, "iid": invoice_id},
-        ).first()
-    else:
-        payment_row = db.execute(
-            _text(
-                """
-                SELECT id, amount, method, payment_date, reference
-                FROM payments
-                WHERE invoice_id = :iid
-                ORDER BY payment_date DESC, created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"iid": invoice_id},
-        ).first()
+    # Find the payment to receipt — explicit payment_id wins, else most
+    # recent. ORM, not raw SQL: the Uuid column stores dashless hex on SQLite
+    # and native uuid on PG — a raw string bind matched only one of them (the
+    # happy path was untestable on the SQLite harness before this).
+    from gdx_dispatch.models.tenant_models import Payment as _Payment
+    payment = None
+    try:
+        if payload.payment_id:
+            payment = db.execute(
+                select(_Payment).where(
+                    _Payment.id == _UUID(str(payload.payment_id)),
+                    _Payment.invoice_id == _UUID(str(invoice_id)),
+                )
+            ).scalars().first()
+        else:
+            payment = db.execute(
+                select(_Payment)
+                .where(_Payment.invoice_id == _UUID(str(invoice_id)))
+                .order_by(_Payment.payment_date.desc(), _Payment.created_at.desc())
+                .limit(1)
+            ).scalars().first()
+    except ValueError:
+        payment = None
+    payment_row = (
+        (payment.id, payment.amount, payment.method, payment.payment_date, payment.reference)
+        if payment is not None
+        else None
+    )
 
     if payment_row is None:
         return _jr(
@@ -1269,8 +1271,17 @@ def mobile_send_receipt(
             404,
         )
 
-    # Best-effort email — we re-use the invoice email path with a "receipt"
-    # subject prefix. A dedicated receipt template can land later.
+    # Receipt email through the REAL pipeline. The old code called the
+    # SMTP-only send_email directly (never Outlook Graph — on a tenant with
+    # no email_settings row, i.e. prod, that is guaranteed non-delivery),
+    # DISCARDED its return value and answered a hardcoded {"sent": true}.
+    # Fake success on a money email; confirmed black-holed on prod
+    # 2026-08-18. Now: branded body with the remaining balance, person-aware
+    # recipient, Outlook-or-SMTP via send_transactional_email (which also
+    # records the attempt in outbound_emails), and the ACTUAL outcome in the
+    # response.
+    sent = False
+    skip_reason: str | None = None
     try:
         cust = None
         if invoice.customer_id is not None:
@@ -1280,37 +1291,78 @@ def mobile_send_receipt(
                     Customer.deleted_at.is_(None),
                 )
             ).scalar_one_or_none()
-        if cust and cust.email:
-            from gdx_dispatch.core.email_sender import send_email
-            html = (
-                f"<p>Hi {cust.name or 'there'},</p>"
-                f"<p>Thank you for your payment of "
-                f"<strong>${float(payment_row[1] or 0):,.2f}</strong> "
-                f"on invoice <strong>#{invoice.invoice_number}</strong>.</p>"
-                f"<p>Method: {payment_row[2]}<br>"
-                f"Date: {payment_row[3].isoformat() if payment_row[3] else 'today'}</p>"
+        if cust is None:
+            skip_reason = "customer_not_found"
+        else:
+            from gdx_dispatch.core.email_layout import (
+                email_branding,
+                esc,
+                money,
+                render_email,
             )
-            send_email(
-                db,
-                str(tenant_id),
-                cust.email,
-                f"Receipt for invoice #{invoice.invoice_number}",
-                html,
-                cust.name,
-            )
+            from gdx_dispatch.core.email_recipients import resolve_recipient
+            from gdx_dispatch.core.transactional_email import send_transactional_email
+
+            recipient = resolve_recipient(db, cust)
+            if not recipient.ok:
+                skip_reason = "customer_has_no_email"
+            else:
+                branding = email_branding(db)
+                accent = branding.get("accent") or "#2563eb"
+                balance = float(invoice.balance_due or 0)
+                balance_html = ""
+                if balance > 0.005:
+                    balance_html = (
+                        f'<p style="margin:0 0 12px;">Remaining balance on this '
+                        f"invoice: <strong>{money(balance)}</strong></p>"
+                    )
+                body = (
+                    f'<h2 style="margin:0 0 16px;font-size:20px;color:{esc(accent)};">Payment received</h2>'
+                    f'<p style="margin:0 0 12px;">Hi {esc(recipient.greeting_name)},</p>'
+                    f'<p style="margin:0 0 12px;">Thank you for your payment of '
+                    f"<strong>{money(payment_row[1] or 0)}</strong> on invoice "
+                    f"<strong>#{esc(invoice.invoice_number)}</strong>.</p>"
+                    f'<p style="margin:0 0 12px;">Method: {esc(payment_row[2] or "")}<br>'
+                    f'Date: {esc(payment_row[3].isoformat() if payment_row[3] else "today")}</p>'
+                    f"{balance_html}"
+                )
+                html = render_email(
+                    branding=branding,
+                    body_html=body,
+                    title=f"Receipt — invoice #{invoice.invoice_number}",
+                    preheader=f"Payment received on invoice #{invoice.invoice_number}",
+                )
+                sent, _provider, skip_reason = send_transactional_email(
+                    tenant_db=db,
+                    tenant_id=str(tenant_id),
+                    user_id=str(user_id) if user_id else None,
+                    to_email=recipient.email,
+                    to_name=recipient.to_name,
+                    subject=f"Receipt for invoice #{invoice.invoice_number} from {branding['company_name']}",
+                    html_body=html,
+                    entity_type="invoice",
+                    entity_id=str(invoice.id),
+                    recipient_source=recipient.source,
+                    recipient_contact_id=recipient.contact_id,
+                )
     except Exception:
         log.exception("mobile_send_receipt_failed invoice=%s", invoice.id)
-        return _jr({"detail": "receipt email failed"}, 500)
+        skip_reason = "exception"
 
     log_audit_event_sync(
         db=db,
         tenant_id=tenant_id,
         user_id=user_id,
-        action="mobile_invoice_receipt_sent",
+        action="mobile_invoice_receipt_sent" if sent else "mobile_invoice_receipt_send_failed",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"payment_id": str(payment_row[0])},
+        details={"payment_id": str(payment_row[0]), "skip_reason": skip_reason},
         request=request,
     )
     db.commit()
-    return _jr({"sent": True, "invoice_id": str(invoice.id), "payment_id": str(payment_row[0])})
+    return _jr({
+        "sent": sent,
+        "skip_reason": skip_reason,
+        "invoice_id": str(invoice.id),
+        "payment_id": str(payment_row[0]),
+    })

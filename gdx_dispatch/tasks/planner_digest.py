@@ -182,7 +182,14 @@ def _html_body(open_tasks, overdue, captures, cold_leads: int) -> str:
     parts.append("</p>")
     parts.append(f"<ul style='padding-left:18px'>{lines}</ul>")
     parts.append(more_line)
-    parts.append("<p style='margin-top:16px'><a href='/mobile/planner'>Open the planner →</a></p>")
+    # Absolute URL or no link at all — a relative href is dead in every mail
+    # client (this one shipped dead for months).
+    import os as _os
+    _base = (_os.environ.get("GDX_PUBLIC_BASE_URL") or "").rstrip("/")
+    if _base:
+        parts.append(
+            f"<p style='margin-top:16px'><a href='{_base}/mobile/planner'>Open the planner →</a></p>"
+        )
     parts.append("</div>")
     return "".join(parts)
 
