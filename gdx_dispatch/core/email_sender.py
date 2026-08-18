@@ -32,7 +32,7 @@ def get_email_config(db: Session, tenant_id: str) -> dict[str, Any] | None:
     """Get the tenant's email config. Returns None if not configured."""
     try:
         row = db.execute(
-            text("SELECT provider, smtp_host, smtp_port, username, password_enc, from_email, from_name "
+            text("SELECT provider, smtp_host, smtp_port, username, password_enc, from_email, from_name, reply_to_email "
                  "FROM email_settings WHERE company_id = :tid"),
             {"tid": tenant_id},
         ).mappings().first()
@@ -65,7 +65,8 @@ def send_email(
         return False
 
     try:
-        pw = base64.b64decode(config["password_enc"]).decode() if config["password_enc"] else ""
+        from gdx_dispatch.core.pii import decrypt_secret
+        pw = decrypt_secret(config["password_enc"]) if config["password_enc"] else ""
 
         # text+html always travel as an "alternative" pair (accessibility +
         # spam scoring); attachments wrap that pair in a "mixed" envelope.
@@ -81,6 +82,8 @@ def send_email(
         msg["Subject"] = subject
         msg["From"] = f"{config['from_name']} <{config['from_email']}>"
         msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
+        if config.get("reply_to_email"):
+            msg["Reply-To"] = config["reply_to_email"]
 
         for att in attachments or []:
             ctype = att.get("content_type") or "application/octet-stream"

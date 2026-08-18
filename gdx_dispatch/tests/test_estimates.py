@@ -1451,3 +1451,21 @@ def test_send_reports_pdf_attached(client: TestClient, monkeypatch):
     assert body["email_sent"] is True
     assert body["pdf_attached"] is True
     assert captured["attachments"][0]["name"].startswith("estimate-")
+
+
+def test_second_send_within_window_is_suppressed(client: TestClient, monkeypatch):
+    """Phase 5.5: two tabs / retried request / double-click = ONE email.
+    Uses the real pipeline (SMTP faked) so the outbound_emails row the guard
+    reads is actually written."""
+    import gdx_dispatch.core.transactional_email as te
+    monkeypatch.setattr(te, "_try_smtp", lambda **kw: (True, None))
+    estimate = _create_estimate(client)
+
+    r1 = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r1.status_code == 200 and r1.json()["email_sent"] is True
+
+    r2 = client.post(f"/api/estimates/{estimate['id']}/send")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["email_sent"] is False
+    assert body["email_skip_reason"] == "duplicate_send_suppressed"

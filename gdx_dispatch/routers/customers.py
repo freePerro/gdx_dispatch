@@ -6,7 +6,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -49,6 +49,24 @@ class CustomerCreateIn(BaseModel):
     notes: str | None = None
     referral_source: str | None = Field(default=None, max_length=50)
 
+    @field_validator("email")
+    @classmethod
+    def _email_format(cls, value: str | None) -> str | None:
+        # Phase 5.6 (email overhaul): core/validation.validate_email existed
+        # as dead code while typo'd addresses sailed into sends — caught only
+        # by NDR detection, only on Outlook tenants. Empty string → None;
+        # otherwise the address must look like an address.
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        from gdx_dispatch.core.validation import _EMAIL_RE
+
+        if not _EMAIL_RE.match(value) or ".." in value:
+            raise ValueError("invalid email address format")
+        return value
+
 
 class CustomerUpdateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -64,6 +82,24 @@ class CustomerUpdateIn(BaseModel):
     clear_margin_override: bool = False
     notes: str | None = None
     referral_source: str | None = Field(default=None, max_length=50)
+
+    @field_validator("email")
+    @classmethod
+    def _email_format(cls, value: str | None) -> str | None:
+        # Phase 5.6 (email overhaul): core/validation.validate_email existed
+        # as dead code while typo'd addresses sailed into sends — caught only
+        # by NDR detection, only on Outlook tenants. Empty string → None;
+        # otherwise the address must look like an address.
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        from gdx_dispatch.core.validation import _EMAIL_RE
+
+        if not _EMAIL_RE.match(value) or ".." in value:
+            raise ValueError("invalid email address format")
+        return value
 
 
 class CustomerOut(BaseModel):

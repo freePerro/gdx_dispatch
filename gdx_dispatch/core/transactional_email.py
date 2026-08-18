@@ -29,6 +29,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ def _record_outbound(
     tenant_id: str,
     initiator_kind: str,
     initiator_ref: str | None,
+    kind: str | None,
     entity_type: str | None,
     entity_id: str | None,
     to_email: str,
@@ -204,6 +206,7 @@ def _record_outbound(
             company_id=str(tenant_id or ""),
             initiator_kind=initiator_kind or "user",
             initiator_ref=initiator_ref,
+            kind=kind,
             entity_type=entity_type,
             entity_id=str(entity_id) if entity_id else None,
             to_email=to_email or "",
@@ -242,6 +245,41 @@ def _record_outbound(
         log.exception("outbound_email_audit_write_failed tenant=%s", tenant_id)
 
 
+def recently_sent(
+    db: Session,
+    entity_type: str,
+    entity_id: str,
+    *,
+    within_seconds: int = 20,
+    kind: str | None = None,
+) -> bool:
+    """Server-side double-send guard (Phase 5.5): True when this entity had a
+    SUCCESSFUL send inside the window. Two browser tabs, a retried request,
+    or a double-clicked bulk row used to mean two identical customer emails —
+    the only guards were frontend button flags. Uses the outbound_emails
+    audit trail, so it needs no new state and can't disagree with it."""
+    try:
+        from datetime import timedelta
+
+        from gdx_dispatch.core.audit import utcnow
+        from gdx_dispatch.models.tenant_models import OutboundEmail
+
+        cutoff = utcnow() - timedelta(seconds=within_seconds)
+        q = select(OutboundEmail.id).where(
+            OutboundEmail.entity_type == entity_type,
+            OutboundEmail.entity_id == str(entity_id),
+            OutboundEmail.status == "sent",
+            OutboundEmail.created_at >= cutoff,
+        )
+        if kind:
+            q = q.where(OutboundEmail.kind == kind)
+        return db.execute(q.limit(1)).first() is not None
+    except Exception:
+        # The guard must never block a legitimate send.
+        log.exception("recently_sent_check_failed entity=%s", entity_id)
+        return False
+
+
 def send_transactional_email(
     *,
     tenant_db: Session,
@@ -254,6 +292,7 @@ def send_transactional_email(
     attachments: list[dict[str, Any]] | None = None,
     initiator_kind: str = "user",
     initiator_ref: str | None = None,
+    kind: str | None = None,
     entity_type: str | None = None,
     entity_id: str | None = None,
     recipient_source: str | None = None,
@@ -281,6 +320,7 @@ def send_transactional_email(
             tenant_id=str(tenant_id or ""),
             initiator_kind=initiator_kind,
             initiator_ref=initiator_ref or (str(user_id) if user_id and initiator_kind == "user" else initiator_ref),
+            kind=kind,
             entity_type=entity_type,
             entity_id=entity_id,
             to_email=to_email,

@@ -1725,7 +1725,9 @@ def _prepare_invoice_email(
     ctx = {
         "customer_name": greeting,
         "job_title": invoice_label,
-        "invoice_number": invoice.invoice_number or "",
+        # Same fallback as the body/PDF name — an empty serial otherwise
+        # renders "Invoice # from Acme" and breaks bounce rung-1 matching.
+        "invoice_number": invoice.invoice_number or str(invoice.id)[:8],
         "company_name": company_name,
         "total": f"${_total_v:,.2f}",
         "balance_due": f"${_balance_v:,.2f}",
@@ -2051,9 +2053,15 @@ def send_invoice(
     pdf_attached = False
     p = payload or SendInvoiceIn()
     try:
-        from gdx_dispatch.core.transactional_email import send_transactional_email
+        from gdx_dispatch.core.transactional_email import recently_sent, send_transactional_email
         tid = str(invoice.company_id) if invoice.company_id else None
-        if tid and invoice.customer_id:
+        _dup_kind = "receipt" if invoice.status == "paid" else "document"
+        if tid and invoice.customer_id and recently_sent(db, "invoice", str(invoice.id), kind=_dup_kind):
+            # Server-side double-send guard (kind-scoped: a receipt right
+            # after the invoice email is legitimate; the same receipt twice
+            # in one window is not).
+            email_skip_reason = "duplicate_send_suppressed"
+        elif tid and invoice.customer_id:
             # One prep for composer sends and one-click/bulk sends alike —
             # template copy (or the operator's edit) inside the branded
             # shell, settlement rows, CTA button, person-aware recipient.
@@ -2102,6 +2110,7 @@ def send_invoice(
                     subject=prep["subject"],
                     html_body=prep["html"],
                     attachments=attachments,
+                    kind="receipt" if invoice.status == "paid" else "document",
                     entity_type="invoice",
                     entity_id=str(invoice.id),
                     recipient_source=recipient.source,

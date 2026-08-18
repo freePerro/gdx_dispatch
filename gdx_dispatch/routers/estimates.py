@@ -1620,7 +1620,7 @@ def _prepare_estimate_email(
     ctx = {
         "customer_name": greeting,
         "job_title": label_or_job,
-        "estimate_number": estimate.estimate_number or "",
+        "estimate_number": estimate.estimate_number or str(estimate.id)[:8],
         "estimate_label": (estimate.label or "").strip(),
         "company_name": company_name,
         "total": f"${totals['total']:,.2f}",
@@ -1855,10 +1855,15 @@ def send_estimate(
     try:
         from gdx_dispatch.core.transactional_email import (
             MAX_INLINE_ATTACHMENT_BYTES,
+            recently_sent,
             send_transactional_email,
         )
         tid = str(estimate.company_id) if estimate.company_id else None
-        if tid and estimate.customer_id:
+        if tid and estimate.customer_id and recently_sent(db, "estimate", str(estimate.id)):
+            # Server-side double-send guard: two tabs / a retried request /
+            # a double-clicked button must not email the customer twice.
+            email_skip_reason = "duplicate_send_suppressed"
+        elif tid and estimate.customer_id:
             # One prep for composer sends and one-click sends alike: tenant
             # template copy (or the operator's edit) inside the branded
             # shell, tier summary or line table, real expiry date, CTA
@@ -1912,6 +1917,7 @@ def send_estimate(
                     subject=prep["subject"],
                     html_body=prep["html"],
                     attachments=attachments or None,
+                    kind="document",
                     entity_type="estimate",
                     entity_id=str(estimate.id),
                     recipient_source=recipient.source,

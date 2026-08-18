@@ -53,6 +53,47 @@ else:
         )
 
 
+def encrypt_secret(value: str) -> str:
+    """Manual Fernet encrypt for columns read via raw SQL (the TypeDecorator
+    contract requires ORM-only access — see EncryptedString's docstring).
+    Consumer: email_settings.password_enc (Phase 5.8 — the column name
+    claimed encryption while storing plain base64). "enc:" prefix marks real
+    ciphertext so reads can tell it from legacy base64 rows. Keyless
+    dev/test degrades to the legacy base64 (encryption is a no-op there,
+    same contract as EncryptedString)."""
+    import base64 as _b64
+
+    if not value:
+        return ""
+    if _FERNET is not None:
+        return "enc:" + _FERNET.encrypt(value.encode("utf-8")).decode("ascii")
+    return _b64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(stored: str) -> str:
+    """Inverse of encrypt_secret; understands legacy plain-base64 rows.
+    Returns "" when real ciphertext can't be decrypted (key rotated away) —
+    refusing the credential beats sending garbage to an SMTP server."""
+    import base64 as _b64
+
+    if not stored:
+        return ""
+    if stored.startswith("enc:"):
+        if _FERNET is None:
+            return ""
+        try:
+            return _FERNET.decrypt(stored[4:].encode("ascii")).decode("utf-8")
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger(__name__).exception("secret_decrypt_failed")
+            return ""
+    try:
+        return _b64.b64decode(stored).decode("utf-8")
+    except Exception:
+        return ""
+
+
 class EncryptedString(TypeDecorator[str]):
     """Fernet-encrypted TEXT column, opt-in per model.
 

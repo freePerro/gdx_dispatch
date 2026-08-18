@@ -40,6 +40,7 @@ def upgrade() -> None:
             id                    uuid PRIMARY KEY,
             company_id            varchar(36) NOT NULL,
             initiator_kind        varchar(20) NOT NULL DEFAULT 'user',
+            kind                  varchar(20),
             initiator_ref         varchar(120),
             entity_type           varchar(30),
             entity_id             varchar(64),

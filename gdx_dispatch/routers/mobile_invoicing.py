@@ -1340,6 +1340,7 @@ def mobile_send_receipt(
                     to_name=recipient.to_name,
                     subject=f"Receipt for invoice #{invoice.invoice_number} from {branding['company_name']}",
                     html_body=html,
+                    kind="receipt",
                     entity_type="invoice",
                     entity_id=str(invoice.id),
                     recipient_source=recipient.source,

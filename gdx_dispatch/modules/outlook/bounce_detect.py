@@ -320,9 +320,66 @@ def _match_invoices(
             )
         ).scalars().all()
         for inv in rows:
-            if _in_window(inv.sent_at, ndr_received):
-                _clear(inv, "customer_email")
+            if not _in_window(inv.sent_at, ndr_received):
+                continue
+            # Email-overhaul Phase 5.2: this rung used to clear sent_at on
+            # ANY bounce to the customer's address — including a bounced
+            # REMINDER or RECEIPT about an invoice that was delivered fine
+            # (reminder subjects never match rung 1, so their NDRs all fell
+            # through to here). The outbound_emails audit trail now tells us
+            # what was actually sent last: only a bounced 'document' send
+            # disproves delivery of the invoice itself. No audit row =
+            # pre-overhaul send = keep the old behavior.
+            latest = _latest_outbound_row(tdb, recipients, "invoice", str(inv.id))
+            if latest is not None:
+                _stamp_bounced(tdb, latest, ndr_received)
+                if (latest.kind or "document") != "document":
+                    _audit(
+                        tdb,
+                        action="invoice_email_bounce_ignored_non_document",
+                        entity_type="invoice",
+                        entity_id=str(inv.id),
+                        ndr=ndr,
+                        matched_by="customer_email",
+                        recipients=recipients,
+                    )
+                    continue
+            _clear(inv, "customer_email")
     return cleared
+
+
+def _latest_outbound_row(tdb: Session, recipients: set[str], entity_type: str, entity_id: str):
+    """Most recent outbound_emails row to any of these addresses about this
+    entity — the audit trail that says WHAT bounced. None on pre-overhaul
+    sends (no row) or read failure (never block bounce processing)."""
+    try:
+        from gdx_dispatch.models.tenant_models import OutboundEmail
+
+        return tdb.execute(
+            select(OutboundEmail)
+            .where(
+                func.lower(OutboundEmail.to_email).in_(recipients),
+                OutboundEmail.entity_type == entity_type,
+                OutboundEmail.entity_id == entity_id,
+                OutboundEmail.status == "sent",
+            )
+            .order_by(OutboundEmail.created_at.desc())
+            .limit(1)
+        ).scalars().first()
+    except Exception:
+        log.exception("bounce_outbound_lookup_failed entity=%s", entity_id)
+        return None
+
+
+def _stamp_bounced(tdb: Session, row, ndr_received: datetime) -> None:
+    """Record the bounce on the audit row (the one UPDATE the append-only
+    table allows). Idempotent — first stamp wins."""
+    try:
+        if row.bounced_at is None:
+            row.bounced_at = ndr_received
+            tdb.flush()
+    except Exception:
+        log.exception("bounce_stamp_failed outbound_email=%s", getattr(row, "id", None))
 
 
 def process_bounces(tdb: Session, account: OutlookAccount) -> dict[str, Any]:

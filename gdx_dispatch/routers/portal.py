@@ -175,6 +175,7 @@ def send_portal_magic_link_email(
         to_name=to_name,
         subject=f"Your {company} customer portal link",
         html_body=_magic_link_html(company, magic_link, expires_text, branding=branding),
+        kind="magic_link",
         entity_type="portal_magic_link",
     )
     return sent, skip_reason

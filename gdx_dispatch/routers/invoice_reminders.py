@@ -495,6 +495,7 @@ def send_reminder_email_for_invoice(
         subject=subject,
         html_body=html,
         initiator_kind="user" if user_id else "reminder_task",
+        kind="reminder",
         entity_type="invoice",
         entity_id=str(invoice.id),
         recipient_source=recipient.source,
