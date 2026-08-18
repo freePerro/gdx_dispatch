@@ -62,7 +62,10 @@ def _job(lifecycle_stage: str) -> Job:
     )
 
 
-def _invoice(job_id, status, balance_due, amount_paid, deleted=False) -> Invoice:
+def _invoice(
+    job_id, status, balance_due, amount_paid, deleted=False,
+    billing_type="standard",
+) -> Invoice:
     n = uuid.uuid4().hex[:12]
     return Invoice(
         id=uuid.uuid4(),
@@ -74,6 +77,7 @@ def _invoice(job_id, status, balance_due, amount_paid, deleted=False) -> Invoice
         status=status,
         balance_due=balance_due,
         amount_paid=amount_paid,
+        billing_type=billing_type,
         deleted_at=datetime.now(timezone.utc) if deleted else None,
         created_at=datetime.now(timezone.utc),
     )
@@ -107,6 +111,7 @@ def test_completed_with_paid_invoice_serializes_as_Paid(db):
     st = _ds(db, job)
     assert st == {
         "stage": "paid", "type": "won", "label": "Paid", "is_finished": True,
+        "deposit_paid": False,
     }
 
 
@@ -143,7 +148,7 @@ def test_declined_estimate_serializes_as_Declined(db):
     st = _ds(db, job)
     assert st == {
         "stage": "declined", "type": "lost", "label": "Declined",
-        "is_finished": True,
+        "is_finished": True, "deposit_paid": False,
     }
 
 
@@ -164,6 +169,50 @@ def test_soft_deleted_invoice_excluded(db):
     # Only invoice is deleted -> treated as no invoice -> Ready to Bill,
     # NOT Paid. Pins the deleted_at filter in the enrichment query.
     assert _ds(db, job)["stage"] == "ready_to_bill"
+
+
+# --- Deposit invoices never drive the stage (2026-08-18) ------------------
+
+def test_paid_deposit_only_is_not_Paid_but_flags_deposit_paid(db):
+    # THE reported bug: customer pays the 50% deposit, the job's only
+    # invoice is that deposit — the card said "Paid" while Ready-for-
+    # Billing still listed the job. Pins billing_type flowing through the
+    # enrichment query into the derivation.
+    job = _job("scheduled")
+    db.add(job)
+    db.add(_invoice(job.id, "paid", 0, 2291.89, billing_type="deposit"))
+    st = _ds(db, job)
+    assert st["stage"] == "scheduled" and st["type"] == "open"
+    assert st["is_finished"] is False
+    assert st["deposit_paid"] is True
+
+
+def test_paid_deposit_completed_job_is_Ready_to_Bill(db):
+    job = _job("completed")
+    db.add(job)
+    db.add(_invoice(job.id, "paid", 0, 500, billing_type="deposit"))
+    st = _ds(db, job)
+    assert st["stage"] == "ready_to_bill" and st["deposit_paid"] is True
+
+
+def test_unpaid_deposit_does_not_flag_and_does_not_bill(db):
+    # An open (sent, $0-paid) deposit invoice neither bills the job nor
+    # claims money was received.
+    job = _job("scheduled")
+    db.add(job)
+    db.add(_invoice(job.id, "sent", 2291.89, 0, billing_type="deposit"))
+    st = _ds(db, job)
+    assert st["stage"] == "scheduled" and st["deposit_paid"] is False
+
+
+def test_deposit_plus_final_paid_is_Paid_with_flag(db):
+    job = _job("completed")
+    db.add(job)
+    db.add(_invoice(job.id, "paid", 0, 500, billing_type="deposit"))
+    db.add(_invoice(job.id, "paid", 0, 1500, billing_type="final"))
+    st = _ds(db, job)
+    assert st["stage"] == "paid" and st["type"] == "won"
+    assert st["deposit_paid"] is True
 
 
 def test_soft_deleted_declined_estimate_does_not_force_Declined(db):

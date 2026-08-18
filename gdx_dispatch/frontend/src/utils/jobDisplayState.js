@@ -49,6 +49,7 @@ const SAFE_DEFAULT = Object.freeze({
   severity: 'secondary',
   icon: '',
   unverified: true,
+  depositPaid: false,
 });
 
 // The legacy values that ARE the deception this sprint exists to kill:
@@ -99,6 +100,11 @@ export function jobDisplayState(job) {
   if (ds && typeof ds === 'object' && ds.label) {
     const type = ds.type === 'won' || ds.type === 'lost' ? ds.type : 'open';
     const stage = String(ds.stage || '').toLowerCase();
+    // Money received on a deposit invoice — a FACT the backend derives
+    // (2026-08-18). Deposits never drive the stage (a paid 50% deposit
+    // used to flip the whole job to a false "Paid"); the collected money
+    // surfaces as this flag, rendered as a badge next to the state chip.
+    const depositPaid = ds.deposit_paid === true;
     // Sub-state refinement: "scheduled" with no appointment date reads as
     // a lie at a glance — relabel + warn so it scans as needing a date.
     // stage stays 'scheduled' (data-stage consumers see the true stage).
@@ -111,6 +117,7 @@ export function jobDisplayState(job) {
         severity: 'warn',
         icon: 'pi pi-clock',
         unverified: false,
+        depositPaid,
       };
     }
     const override = STAGE_OVERRIDE[stage] || null;
@@ -122,6 +129,7 @@ export function jobDisplayState(job) {
       severity: (override && override.severity) || TYPE_SEVERITY[type] || 'info',
       icon: override ? override.icon : TYPE_ICON[type] || '',
       unverified: false,
+      depositPaid,
     };
   }
 
@@ -146,6 +154,7 @@ export function jobDisplayState(job) {
         severity: 'secondary',
         icon: 'pi pi-question-circle',
         unverified: true,
+        depositPaid: false,
       };
     }
     // Non-deceptive work stages (service_call/scheduled/estimate/…) are
@@ -161,6 +170,7 @@ export function jobDisplayState(job) {
         severity: 'warn',
         icon: 'pi pi-clock',
         unverified: true,
+        depositPaid: false,
       };
     }
     return {
@@ -171,6 +181,7 @@ export function jobDisplayState(job) {
       severity: 'info',
       icon: '',
       unverified: true,
+      depositPaid: false,
     };
   }
   return { ...SAFE_DEFAULT };

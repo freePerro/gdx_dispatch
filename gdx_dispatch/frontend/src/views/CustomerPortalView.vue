@@ -83,6 +83,11 @@
                   <div v-else-if="est.deposit?.pay_url" class="action-row">
                     <Button :label="`Pay ${currency(est.deposit.balance_due)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" @click.stop="openPayUrl(est.deposit.pay_url)" data-testid="pay-deposit-btn" />
                   </div>
+                  <!-- Deposit ASK (2026-08-18): no invoice exists yet — the
+                       click mints it and opens the payment page. -->
+                  <div v-else-if="est.deposit_ask" class="action-row">
+                    <Button :label="`Pay ${currency(est.deposit_ask.amount)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" :loading="actionBusy[est.id]" @click.stop="startDepositPay(est.id)" data-testid="pay-deposit-ask-btn" />
+                  </div>
                 </template>
               </Card>
             </div>
@@ -206,6 +211,9 @@
             <div v-else-if="detail.deposit?.pay_url" class="action-row detail-actions">
               <Button :label="`Pay ${currency(detail.deposit.balance_due)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" @click="openPayUrl(detail.deposit.pay_url)" data-testid="detail-pay-deposit-btn" />
             </div>
+            <div v-else-if="detail.deposit_ask" class="action-row detail-actions">
+              <Button :label="`Pay ${currency(detail.deposit_ask.amount)} deposit`" icon="pi pi-credit-card" severity="success" class="flex-1" :loading="actionBusy[detail.id]" @click="startDepositPayFromDetail" data-testid="detail-pay-deposit-ask-btn" />
+            </div>
             <p v-else-if="detail.status === 'declined' && detail.declined_reason" class="meta">Declined: {{ detail.declined_reason }}</p>
           </div>
         </Dialog>
@@ -243,9 +251,10 @@
         >
           <p class="meta">
             Thanks for accepting! A deposit of <b>{{ currency(depositPrompt?.amount) }}</b> is due now
-            to get your job on the schedule (invoice {{ depositPrompt?.invoice_number }}).
+            to get your job on the schedule<template v-if="depositPrompt?.invoice_number">
+            (invoice {{ depositPrompt.invoice_number }})</template>.
           </p>
-          <p class="meta">You can pay securely online by card — or pay later from the Invoices tab.</p>
+          <p class="meta">You can pay securely online by card — or pay later; the button stays on the estimate.</p>
           <!-- Card was the only payment method this dialog acknowledged, which
                read as "card or nothing". A customer cannot record their own
                cash, and must not be able to — so this states the check option
@@ -254,13 +263,16 @@
           <details class="pay-by-check" data-testid="deposit-pay-by-check">
             <summary>Paying by check?</summary>
             <p class="meta">
-              Make it out to <b>{{ company.name }}</b> and write invoice
-              <b>{{ depositPrompt?.invoice_number }}</b> on the memo line.
+              Make it out to <b>{{ company.name }}</b> and write
+              <template v-if="depositPrompt?.invoice_number">invoice
+                <b>{{ depositPrompt.invoice_number }}</b></template>
+              <template v-else>estimate <b>#{{ depositPrompt?.estimate_number }}</b></template>
+              on the memo line.
               <template v-if="company.address"> Mail to {{ company.address }}.</template>
               <template v-else> Use the remit-to address on your invoice.</template>
             </p>
             <p class="meta">
-              We'll mark it paid when it arrives — no need to do anything else here.
+              We'll record it when it arrives — no need to do anything else here.
             </p>
           </details>
           <template #footer>
@@ -527,11 +539,14 @@ function signOut() {
   jobs.value = [];
 }
 
-// One-motion deposit (2026-07-23): the accept response can carry a deposit
-// invoice + its public Stripe pay URL. Accepting flows straight into the
-// payment prompt; "Pay later" is always available — acceptance is never
-// blocked by payment, and the Pay button re-surfaces on the estimate card,
-// the detail dialog, and the Invoices tab until the deposit is settled.
+// Deposit prompt (2026-08-18 rework): the accept response carries either a
+// live deposit invoice (legacy rows — invoice_number + pay_url) or a
+// `deposit_ask` (amount only, NO invoice yet). Accepting flows straight
+// into the payment prompt; "Pay later" is always available — acceptance is
+// never blocked by payment, and the Pay button re-surfaces on the estimate
+// card and the detail dialog. The invoice is minted only when the customer
+// actually clicks to pay online (idempotent server-side); check/cash is
+// recorded by the office when the money arrives.
 const depositPrompt = ref(null);
 const depositPromptOpen = computed({
   get: () => !!depositPrompt.value,
@@ -542,9 +557,48 @@ function openPayUrl(url) {
   if (url) window.open(url, "_blank", "noopener");
 }
 
-function payDepositNow() {
-  openPayUrl(depositPrompt.value?.pay_url);
+async function startDepositPay(estimateId) {
+  actionBusy[estimateId] = true;
+  // Open the tab SYNCHRONOUSLY, inside the click gesture — window.open
+  // after an await is outside the user-gesture stack and Safari (often
+  // Chrome too) silently blocks it: the invoice would mint and the payment
+  // page would never appear. Point the pre-opened tab at the pay URL once
+  // the mint returns; close it on any failure.
+  // (no "noopener" feature here — that makes window.open return null; the
+  // opener link is severed manually below instead.)
+  const payTab = typeof window.open === "function" ? window.open("", "_blank") : null;
+  if (payTab) payTab.opener = null;
+  try {
+    const resp = await authedFetch(`/portal/estimates/${estimateId}/deposit/pay`, { method: "POST" });
+    const payUrl = resp?.deposit?.pay_url;
+    if (payUrl && payTab) payTab.location = payUrl;
+    else if (payTab) payTab.close();
+    // The freshly minted invoice replaces the ask on the card and lands on
+    // the Invoices tab.
+    estimates.value = await authedFetch("/portal/estimates");
+    try { invoices.value = await authedFetch("/portal/invoices"); } catch { /* tab refresh is best-effort */ }
+  } catch (e) {
+    if (payTab) payTab.close();
+    if (e?.auth) { error.value = "Your portal session has expired."; return; }
+    toast.add({ severity: "error", summary: "Error", detail: "Could not start the deposit payment", life: 4000 });
+  } finally {
+    actionBusy[estimateId] = false;
+  }
+}
+
+async function startDepositPayFromDetail() {
+  if (!detail.value) return;
+  const id = detail.value.id;
+  await startDepositPay(id);
+  try { detail.value = await authedFetch(`/portal/estimates/${id}`); } catch { /* dialog keeps stale state */ }
+}
+
+async function payDepositNow() {
+  const p = depositPrompt.value;
   depositPrompt.value = null;
+  if (!p) return;
+  if (p.pay_url) { openPayUrl(p.pay_url); return; }
+  if (p.estimate_id) await startDepositPay(p.estimate_id);
 }
 
 async function estimateAction(id, action, successMsg) {
@@ -552,9 +606,17 @@ async function estimateAction(id, action, successMsg) {
   try {
     const resp = await authedFetch(`/portal/estimates/${id}/${action}`, { method: "POST" });
     toast.add({ severity: action === "accept" ? "success" : "warn", summary: successMsg, life: 3000 });
-    if (action === "accept" && resp?.deposit?.pay_url) depositPrompt.value = resp.deposit;
+    if (action === "accept") {
+      if (resp?.deposit?.pay_url) depositPrompt.value = resp.deposit;
+      else if (resp?.deposit_ask) {
+        depositPrompt.value = {
+          ...resp.deposit_ask,
+          estimate_id: id,
+          estimate_number: resp.estimate_number,
+        };
+      }
+    }
     estimates.value = await authedFetch("/portal/estimates");
-    // The deposit invoice lands on the Invoices tab immediately.
     try { invoices.value = await authedFetch("/portal/invoices"); } catch { /* tab refresh is best-effort */ }
   } catch (e) {
     if (e?.auth) { error.value = "Your portal session has expired."; return; }

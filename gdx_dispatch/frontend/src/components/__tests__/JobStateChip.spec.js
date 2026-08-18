@@ -20,6 +20,7 @@ const Tag = {
     ' :data-icon="icon || \'\'" :data-stage="$attrs[\'data-stage\']"' +
     ' :data-type="$attrs[\'data-type\']"' +
     ' :data-unverified="$attrs[\'data-unverified\'] || \'\'"' +
+    ' :data-badge="$attrs[\'data-badge\'] || \'\'"' +
     ' :title="$attrs.title || \'\'">{{ value }}</span>',
 };
 
@@ -77,5 +78,57 @@ describe('JobStateChip', () => {
   it('null job renders the safe default, does not throw', () => {
     const w = mountChip({ job: null });
     expect(w.find('.tag-stub').attributes('data-value')).toBe('Unknown');
+  });
+
+  // --- Deposit-paid badge (2026-08-18) -----------------------------------
+  // A paid deposit must NOT flip the stage to "Paid" (that was the bug);
+  // it renders as a companion badge next to the true work state.
+
+  it('deposit_paid on an open stage renders the badge next to the state', () => {
+    const w = mountChip({
+      job: {
+        display_state: {
+          stage: 'scheduled', type: 'open', label: 'Scheduled',
+          is_finished: false, deposit_paid: true,
+        },
+        scheduled_at: '2026-08-20T09:00:00Z',
+      },
+    });
+    const tags = w.findAll('.tag-stub');
+    expect(tags).toHaveLength(2);
+    expect(tags[0].attributes('data-value')).toBe('Scheduled');
+    const badge = w.find('[data-badge="deposit-paid"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.attributes('data-value')).toBe('Deposit paid');
+    expect(badge.attributes('data-severity')).toBe('success');
+  });
+
+  it('badge hides on the Paid terminal (redundant there)', () => {
+    const w = mountChip({
+      job: {
+        display_state: {
+          stage: 'paid', type: 'won', label: 'Paid',
+          is_finished: true, deposit_paid: true,
+        },
+      },
+    });
+    expect(w.findAll('.tag-stub')).toHaveLength(1);
+  });
+
+  it('no badge without deposit_paid, and showDepositBadge=false opts out', () => {
+    const plain = mountChip({
+      job: { display_state: { stage: 'scheduled', type: 'open', label: 'Scheduled', is_finished: false } },
+    });
+    expect(plain.findAll('.tag-stub')).toHaveLength(1);
+    const optedOut = mountChip({
+      job: {
+        display_state: {
+          stage: 'scheduled', type: 'open', label: 'Scheduled',
+          is_finished: false, deposit_paid: true,
+        },
+      },
+      showDepositBadge: false,
+    });
+    expect(optedOut.findAll('.tag-stub')).toHaveLength(1);
   });
 });

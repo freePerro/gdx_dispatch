@@ -63,7 +63,12 @@ def test_baseline_does_not_silently_grow(current: set[str]) -> None:
     # the public estimate approval page. Group 2, token IS the credential
     # (64-char Estimate.public_token, sent_at-gated, uniform 404, row-locked);
     # same authorization model the /api/payments/* endpoints pin below.
-    assert len(_baseline()) <= 93, (
+    # 93 → 94 (2026-08-18): POST /api/proposals/{token}/deposit/pay — mints
+    # the deposit invoice at pay-click (accept no longer auto-mints; only an
+    # online payment counts). Same Group-2 token model as accept/decline;
+    # accepted-only (409), row-locked, idempotent, amount server-derived
+    # from the tenant deposit percent — never caller input.
+    assert len(_baseline()) <= 94, (
         "The ungated-route baseline grew. It is a debt list to work down, not "
         "a place to record new exceptions."
     )

@@ -81,6 +81,12 @@ class DisplayState:
     stage: str  # machine key, e.g. "paid", "invoiced", "service_call"
     type: str  # TYPE_OPEN | TYPE_WON | TYPE_LOST
     label: str  # human label, e.g. "Paid", "Ready to Bill"
+    # Money received on a deposit invoice (fact, independent of stage).
+    # Deposit invoices never drive the stage — a downpayment is money BEFORE
+    # the work (same exclusion billing_predicates.py made 2026-07-23), so the
+    # collected deposit surfaces as this flag/badge instead of flipping the
+    # job to a false "Paid".
+    deposit_paid: bool = False
 
     @property
     def is_finished(self) -> bool:
@@ -93,6 +99,7 @@ class DisplayState:
             "type": self.type,
             "label": self.label,
             "is_finished": self.is_finished,
+            "deposit_paid": self.deposit_paid,
         }
 
 
@@ -120,35 +127,57 @@ def derive_job_display_state(
         lifecycle_stage: ``Job.lifecycle_stage`` (work axis).
         estimate_status: ``Estimate.status`` of the originating estimate,
             if the job came from one (``None`` if no estimate).
-        invoices: iterable of ``{"status", "balance_due", "amount_paid"}``
-            dicts for invoices linked to the job (``None``/empty if none).
+        invoices: iterable of ``{"status", "balance_due", "amount_paid",
+            "billing_type"}`` dicts for invoices linked to the job
+            (``None``/empty if none). ``billing_type`` may be absent —
+            an invoice without it is treated as billing-real, so legacy
+            callers keep their exact pre-deposit-aware behavior.
 
     Precedence: terminals first; the money axis overrides the work axis
-    once work is complete; never silently returns "Unknown".
+    once work is complete; never silently returns "Unknown". Deposit
+    invoices are money BEFORE the work (billing_predicates.py, 2026-07-23):
+    they never drive the money-axis stage — a paid deposit sets the
+    ``deposit_paid`` flag instead, so a deposit-only job shows its true
+    work state with a badge rather than a false terminal "Paid".
     """
     lc = (lifecycle_stage or "").strip().lower()
     est = (estimate_status or "").strip().lower()
     inv_list = [i for i in (invoices or []) if i]
 
-    # --- 1. Cancelled (lost) — work was called off, beats everything. ---
-    if lc == "cancelled":
-        return DisplayState("cancelled", TYPE_LOST, "Cancelled")
-
     # Non-void invoices are the ones that carry money meaning.
-    live_invoices = [
+    live_all = [
         i for i in inv_list
         if str(i.get("status", "")).strip().lower() not in _INVOICE_VOID
     ]
+    # Deposits leave the money axis; only billing-real invoices remain in
+    # live_invoices and drive Paid/Invoiced/Partially Paid/Overdue below.
+    live_invoices = [
+        i for i in live_all
+        if str(i.get("billing_type") or "").strip().lower() != "deposit"
+    ]
+    deposit_paid = any(
+        str(i.get("status", "")).strip().lower() == "paid"
+        or _num(i.get("amount_paid")) > 0
+        for i in live_all
+        if str(i.get("billing_type") or "").strip().lower() == "deposit"
+    )
+
+    # --- 1. Cancelled (lost) — work was called off, beats everything. ---
+    # deposit_paid still rides along: money held on a cancelled job is a
+    # refund cue, not something to hide.
+    if lc == "cancelled":
+        return DisplayState("cancelled", TYPE_LOST, "Cancelled", deposit_paid)
 
     # --- 2. Declined (lost) — customer rejected the quote. Only valid ---
-    # when the flow never became real work/money (no live invoice and
-    # still on the quote side of the pipeline).
+    # when the flow never became real work/money (no live invoice — deposit
+    # invoices INCLUDED here: an open or paid deposit means the flow became
+    # real money, so the job must not read as a lost quote).
     if (
         est in _ESTIMATE_LOST
-        and not live_invoices
+        and not live_all
         and lc in ("", "lead", "service_call", "estimate")
     ):
-        return DisplayState("declined", TYPE_LOST, "Declined")
+        return DisplayState("declined", TYPE_LOST, "Declined", deposit_paid)
 
     # --- 3. Written Off (lost) — bad debt. NET-NEW: unreachable until ---
     # Slice 2 adds the invoice_status value; the branch exists so Slice 2
@@ -157,37 +186,40 @@ def derive_job_display_state(
         str(i.get("status", "")).strip().lower() in _INVOICE_WRITTEN_OFF
         for i in inv_list
     ):
-        return DisplayState("written_off", TYPE_LOST, "Written Off")
+        return DisplayState("written_off", TYPE_LOST, "Written Off", deposit_paid)
 
     if live_invoices:
         statuses = [str(i.get("status", "")).strip().lower() for i in live_invoices]
 
-        # --- 4. Paid (won) — every live invoice settled. ---
+        # --- 4. Paid (won) — every live billing-real invoice settled. ---
         all_paid = all(
             s == "paid" or _num(i.get("balance_due")) <= 0
             for s, i in zip(statuses, live_invoices)
         )
         if all_paid:
-            return DisplayState("paid", TYPE_WON, "Paid")
+            return DisplayState("paid", TYPE_WON, "Paid", deposit_paid)
 
         # --- 5. Money-axis open states (work done, money pending). ---
         if any(s == "overdue" for s in statuses):
-            return DisplayState("overdue", TYPE_OPEN, "Overdue")
+            return DisplayState("overdue", TYPE_OPEN, "Overdue", deposit_paid)
         if any(
             _num(i.get("amount_paid")) > 0 and _num(i.get("balance_due")) > 0
             for i in live_invoices
         ):
-            return DisplayState("partially_paid", TYPE_OPEN, "Partially Paid")
+            return DisplayState(
+                "partially_paid", TYPE_OPEN, "Partially Paid", deposit_paid
+            )
         # Anything else with a live invoice = billed, awaiting payment.
-        return DisplayState("invoiced", TYPE_OPEN, "Invoiced")
+        return DisplayState("invoiced", TYPE_OPEN, "Invoiced", deposit_paid)
 
-    # No live invoice. Work physically done but not yet billed.
+    # No live billing-real invoice (a deposit alone doesn't bill the job).
+    # Work physically done but not yet billed.
     if lc == "completed":
-        return DisplayState("ready_to_bill", TYPE_OPEN, "Ready to Bill")
+        return DisplayState("ready_to_bill", TYPE_OPEN, "Ready to Bill", deposit_paid)
 
     # --- 6. Work-axis open states. ---
     if lc in _LIFECYCLE_LABEL:
-        return DisplayState(lc, TYPE_OPEN, _LIFECYCLE_LABEL[lc])
+        return DisplayState(lc, TYPE_OPEN, _LIFECYCLE_LABEL[lc], deposit_paid)
 
     # --- 7. Never silent. Title-case the input, log the surprise. ---
     fallback = (lifecycle_stage or "").strip()
@@ -197,7 +229,7 @@ def derive_job_display_state(
             "(estimate_status=%r, invoices=%d) — falling back to titled",
             lifecycle_stage, estimate_status, len(inv_list),
         )
-        return DisplayState(fallback.lower(), TYPE_OPEN, fallback.title())
+        return DisplayState(fallback.lower(), TYPE_OPEN, fallback.title(), deposit_paid)
     # Empty/None lifecycle_stage on a NOT NULL column with a server default
     # means legacy or corrupt data — log it rather than quietly showing
     # "Unknown", which is what the docstring promises.
@@ -216,4 +248,4 @@ def derive_job_display_state(
             "Further occurrences this process are suppressed.",
             lifecycle_stage, estimate_status, len(inv_list),
         )
-    return DisplayState("unknown", TYPE_OPEN, "Unknown")
+    return DisplayState("unknown", TYPE_OPEN, "Unknown", deposit_paid)

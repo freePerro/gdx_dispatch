@@ -18,6 +18,8 @@ from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.modules.deposits.service import (
     DepositError,
     create_deposit_invoice,
+    deposit_ask_for,
+    deposit_skip_reason,
     deposit_summary,
     find_deposit_invoice_for_estimate,
 )
@@ -320,13 +322,21 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
     if est.status == "declined":
         body["estimate"]["declined_reason"] = est.declined_reason
 
-    # Accept-then-abandon recovery (portal pattern): an accepted estimate with
-    # a still-owed deposit re-surfaces its Pay link on every load.
+    # Deposit surface for accepted estimates (2026-08-18, Doug: only an
+    # ONLINE payment counts — acceptance no longer mints an invoice):
+    #   - a LIVE deposit invoice still owed (minted at pay-click, or legacy
+    #     accept-time rows) re-surfaces its Pay link on every load;
+    #   - otherwise the ASK — the amount we'd like, with NO invoice behind
+    #     it until POST /proposals/{token}/deposit/pay mints one.
     if est.status == "accepted":
         try:
             dep = find_deposit_invoice_for_estimate(db, est.id)
             if dep is not None and float(dep.balance_due or 0) > 0:
                 body["deposit"] = deposit_summary(dep)
+            elif dep is None:
+                ask = deposit_ask_for(est, db, tenant_id)
+                if ask is not None:
+                    body["deposit_ask"] = {"amount": ask[0], "pct": ask[1]}
         except Exception:
             log.exception("public_proposal_deposit_lookup_failed estimate=%s", est.id)
 
@@ -482,46 +492,62 @@ def public_proposal_accept(
             except Exception:
                 log.exception("public_accept_audit_failed")
 
-    # One-motion deposit (portal pattern): acceptance creates the deposit
-    # invoice and the response carries its public /pay URL. Failures never
-    # un-accept the estimate.
-    deposit_payload: dict[str, Any] | None = None
-    try:
-        db.refresh(est)
-        pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
-        if pct > 0 and est.customer_id is not None:
-            if tier is not None:
-                # The tier's contract subtotal (Σ its lines when line-built,
-                # else its price) — the SAME number est.total was just set to,
-                # and the cap must compare against it, not the tier-blind
-                # estimate-lines total.
-                base_amount = float(tier_contract_subtotal(db, tier))
-                cap: float | None = base_amount
-            else:
-                base_amount = float(compute_estimate_totals(est, db)["total"] or 0)
-                cap = None
-            amount = round(base_amount * pct / 100.0, 2)
-            if amount > 0:
-                dep_inv = create_deposit_invoice(
-                    db,
-                    estimate=est,
-                    amount=amount,
-                    tenant_id=tenant_id,
-                    actor=_PUBLIC_ACTOR,
-                    source="public_accept",
-                    cap_total=cap,
-                )
-                deposit_payload = deposit_summary(dep_inv)
-                deposit_payload["pct"] = pct
-    except DepositError as exc:
-        log.warning("public_accept_deposit_skipped estimate=%s: %s", est.id, exc)
-    except Exception:
-        log.exception("public_accept_deposit_failed estimate=%s", est.id)
+    # NO deposit invoice here (2026-08-18, Doug): acceptance only ASKS.
+    # The serializer below attaches `deposit_ask` — the amount we'd like —
+    # and the invoice is minted by /proposals/{token}/deposit/pay at the
+    # moment the customer actually moves to pay online. Accept-time minting
+    # left "sent" invoices nobody committed to (INV-000341) cluttering the
+    # books and inflating A/R; check/cash deposits are recorded manually by
+    # the office when the money arrives.
+    db.refresh(est)
+    return _serialize_public_estimate(est, db, request)
 
-    body = _serialize_public_estimate(est, db, request)
-    if deposit_payload:
-        body["deposit"] = deposit_payload
-    return body
+
+@router.post("/proposals/{token}/deposit/pay")
+def public_proposal_deposit_pay(
+    token: str,
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Mint (or return) the deposit invoice at the moment the customer moves
+    to PAY online — the earliest point money is actually in motion.
+
+    Idempotent under double-click: the estimate row lock (for_update)
+    serializes concurrent calls and ``create_deposit_invoice`` returns the
+    existing live deposit invoice instead of minting a second one.
+    """
+    est = _get_public_estimate_or_404(token, db, for_update=True)
+    if est.status != "accepted":
+        raise HTTPException(
+            status_code=409, detail="Accept the estimate before paying a deposit"
+        )
+    tenant_id = _public_tenant_id(request, est)
+    existing = find_deposit_invoice_for_estimate(db, est.id)
+    if existing is not None:
+        out = deposit_summary(existing)
+        out["existing"] = True
+        return {"deposit": out}
+    ask = deposit_ask_for(est, db, tenant_id)
+    if ask is None:
+        raise HTTPException(
+            status_code=404, detail="No deposit is requested for this estimate"
+        )
+    amount, pct, cap = ask
+    try:
+        dep = create_deposit_invoice(
+            db,
+            estimate=est,
+            amount=amount,
+            tenant_id=tenant_id,
+            actor=_PUBLIC_ACTOR,
+            source="public_pay_click",
+            cap_total=cap,
+        )
+    except DepositError as exc:
+        raise HTTPException(status_code=409, detail=deposit_skip_reason(exc))
+    out = deposit_summary(dep)
+    out["pct"] = pct
+    return {"deposit": out}
 
 
 @router.post("/proposals/{token}/decline")

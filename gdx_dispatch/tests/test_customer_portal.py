@@ -446,6 +446,96 @@ def test_estimate_accept_marks_accepted(tenant_db_session):
     assert getattr(exc.value, "status_code", None) == 409
 
 
+def test_portal_accept_asks_then_pay_click_mints_deposit(tenant_db_session, monkeypatch):
+    """2026-08-18 (Doug): acceptance only ASKS for the deposit — no invoice
+    exists until the customer actually moves to pay online (accept-time
+    minting left phantom 'sent' invoices like INV-000341 inflating A/R).
+    The pay endpoint mints once; a second click lands on the same invoice."""
+    import gdx_dispatch.modules.estimates_features as features_module
+
+    # deposit_ask_for late-imports get_features from the source module.
+    monkeypatch.setattr(
+        features_module,
+        "get_features",
+        lambda tenant_id: SimpleNamespace(deposit_pct=50, hide_line_prices=False),
+    )
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    tenant_db_session.add(EstimateLine(
+        estimate_id=est.id, description="New door", quantity=1,
+        unit_price=1500, line_total=1500, sort_order=1, company_id="tenant-test",
+    ))
+    tenant_db_session.commit()
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    def _deposit_rows():
+        return tenant_db_session.execute(
+            select(Invoice).where(
+                Invoice.estimate_id == est.id, Invoice.billing_type == "deposit"
+            )
+        ).scalars().all()
+
+    body = portal_router.portal_estimate_accept(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert "deposit" not in body
+    ask_amount = body["deposit_ask"]["amount"]
+    assert body["deposit_ask"]["pct"] == 50 and ask_amount > 0
+    assert _deposit_rows() == []  # an ask is a request, not a receivable
+
+    out = portal_router.portal_estimate_deposit_pay(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert out["deposit"]["amount"] == pytest.approx(ask_amount)
+    assert len(_deposit_rows()) == 1
+
+    out2 = portal_router.portal_estimate_deposit_pay(
+        estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+    )
+    assert out2["deposit"]["existing"] is True
+    assert out2["deposit"]["invoice_number"] == out["deposit"]["invoice_number"]
+    assert len(_deposit_rows()) == 1
+
+    # With a live still-owed invoice, the serializer serves IT, not the ask.
+    detail = portal_router.portal_estimates(principal=principal, db=tenant_db_session)[0]
+    assert detail["deposit"]["invoice_number"] == out["deposit"]["invoice_number"]
+    assert "deposit_ask" not in detail
+
+
+def test_portal_deposit_pay_gates(tenant_db_session, monkeypatch):
+    """Not accepted → 409; accepted with no deposit percent → 404. Neither
+    leaves an invoice row behind."""
+    import gdx_dispatch.modules.estimates_features as features_module
+
+    monkeypatch.setattr(
+        features_module,
+        "get_features",
+        lambda tenant_id: SimpleNamespace(deposit_pct=0, hide_line_prices=False),
+    )
+    seeded = _seed_customer_data(tenant_db_session)
+    est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")
+    principal = _principal(seeded["user_a_id"], seeded["customer_a_id"])
+
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_deposit_pay(
+            estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+        )
+    assert getattr(exc.value, "status_code", None) == 409
+
+    est.status = "accepted"
+    tenant_db_session.commit()
+    with pytest.raises(Exception) as exc:
+        portal_router.portal_estimate_deposit_pay(
+            estimate_id=est.id, request=_mock_request(), principal=principal, db=tenant_db_session
+        )
+    assert getattr(exc.value, "status_code", None) == 404
+    assert tenant_db_session.execute(
+        select(Invoice).where(
+            Invoice.estimate_id == est.id, Invoice.billing_type == "deposit"
+        )
+    ).scalars().all() == []
+
+
 def test_estimate_decline_records_reason(tenant_db_session):
     seeded = _seed_customer_data(tenant_db_session)
     est = _seed_estimate(tenant_db_session, seeded["customer_a_id"], status="sent")

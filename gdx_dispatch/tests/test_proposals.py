@@ -473,13 +473,16 @@ from gdx_dispatch.modules.proposals.models import EstimateLine  # noqa: E402
 
 
 def _fake_features(monkeypatch, *, deposit_pct=0, hide_line_prices=False):
-    monkeypatch.setattr(
-        proposals_router_module,
-        "get_features",
-        lambda tenant_id: SimpleNamespace(
-            deposit_pct=deposit_pct, hide_line_prices=hide_line_prices
-        ),
+    fake = lambda tenant_id: SimpleNamespace(  # noqa: E731
+        deposit_pct=deposit_pct, hide_line_prices=hide_line_prices
     )
+    monkeypatch.setattr(proposals_router_module, "get_features", fake)
+    # deposit_ask_for (modules/deposits/service.py) late-imports get_features
+    # from the source module, so the router-namespace patch alone won't
+    # reach it.
+    import gdx_dispatch.modules.estimates_features as features_module
+
+    monkeypatch.setattr(features_module, "get_features", fake)
 
 
 def _publish(client: TestClient, est_id: str, status: str = "sent", **fields) -> str:
@@ -588,9 +591,10 @@ def test_public_payload_hides_line_prices_when_estimate_says_so(client: TestClie
     assert "999" not in str(body["lines"])
 
 
-def test_public_accept_flips_status_creates_job_and_deposit(client: TestClient, monkeypatch):
-    """The one-motion flow: accept → job on the dispatch board + deposit
-    invoice at the tenant's % Down, its summary in the response."""
+def test_public_accept_flips_status_creates_job_and_asks_for_deposit(client: TestClient, monkeypatch):
+    """Accept → job on the dispatch board + deposit ASK at the tenant's
+    % Down — and NO invoice row (2026-08-18, Doug: only an online payment
+    counts; accept-time minting left phantom invoices like INV-000341)."""
     _fake_features(monkeypatch, deposit_pct=50)
     est = _create_estimate(client)
     _add_lines(client, est["id"], 2600.0)
@@ -600,8 +604,9 @@ def test_public_accept_flips_status_creates_job_and_deposit(client: TestClient, 
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["estimate"]["status"] == "accepted"
-    assert body["deposit"]["amount"] == pytest.approx(1300.0)
-    assert body["deposit"]["pct"] == 50
+    assert "deposit" not in body
+    assert body["deposit_ask"]["amount"] == pytest.approx(1300.0)
+    assert body["deposit_ask"]["pct"] == 50
 
     db = _db(client)
     try:
@@ -610,7 +615,81 @@ def test_public_accept_flips_status_creates_job_and_deposit(client: TestClient, 
         assert row.job_id is not None
     finally:
         db.close()
+    # The ask is a request, not a receivable — nothing minted yet.
+    assert _deposit_rows(client, est["id"]) == []
+
+    # The GET page keeps offering the ask (accept-then-return recovery).
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["deposit_ask"]["amount"] == pytest.approx(1300.0)
+
+
+def test_public_deposit_pay_mints_once_and_is_idempotent(client: TestClient, monkeypatch):
+    """The pay-click endpoint mints the invoice at the moment the customer
+    moves to pay online — and a double click lands on the SAME invoice."""
+    _fake_features(monkeypatch, deposit_pct=50)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 2600.0)
+    token = _publish(client, est["id"])
+    client.post(f"/api/proposals/{token}/accept", json={})
+
+    r = client.post(f"/api/proposals/{token}/deposit/pay")
+    assert r.status_code == 200, r.text
+    dep = r.json()["deposit"]
+    assert dep["amount"] == pytest.approx(1300.0)
+    assert dep["pct"] == 50
+    assert dep["balance_due"] == pytest.approx(1300.0)
     assert len(_deposit_rows(client, est["id"])) == 1
+
+    r2 = client.post(f"/api/proposals/{token}/deposit/pay")
+    assert r2.status_code == 200
+    assert r2.json()["deposit"]["invoice_number"] == dep["invoice_number"]
+    assert r2.json()["deposit"]["existing"] is True
+    assert len(_deposit_rows(client, est["id"])) == 1
+
+    # Once a live invoice exists, the page serves IT (pay link recovery),
+    # not the ask.
+    body = client.get(f"/api/proposals/{token}").json()
+    assert body["deposit"]["invoice_number"] == dep["invoice_number"]
+    assert "deposit_ask" not in body
+
+
+def test_public_deposit_pay_service_refusal_is_409_not_500(client: TestClient, monkeypatch):
+    """DepositError from the mint surfaces as a customer-readable 409 (the
+    deposit_skip_reason string), never a 500 — and nothing is minted."""
+    from gdx_dispatch.modules.deposits.service import DepositError
+
+    _fake_features(monkeypatch, deposit_pct=50)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 1000.0)
+    token = _publish(client, est["id"])
+    client.post(f"/api/proposals/{token}/accept", json={})
+
+    def _refuse(*a, **k):
+        raise DepositError("zero_amount")
+
+    monkeypatch.setattr(proposals_router_module, "create_deposit_invoice", _refuse)
+    r = client.post(f"/api/proposals/{token}/deposit/pay")
+    assert r.status_code == 409
+    assert isinstance(r.json()["detail"], str) and r.json()["detail"]
+    assert _deposit_rows(client, est["id"]) == []
+
+
+def test_public_deposit_pay_gates(client: TestClient, monkeypatch):
+    """Not accepted → 409. Accepted with no deposit percent → 404."""
+    _fake_features(monkeypatch, deposit_pct=50)
+    est = _create_estimate(client)
+    _add_lines(client, est["id"], 1000.0)
+    token = _publish(client, est["id"])
+    assert client.post(f"/api/proposals/{token}/deposit/pay").status_code == 409
+    assert _deposit_rows(client, est["id"]) == []
+
+    _fake_features(monkeypatch, deposit_pct=0)
+    est2 = _create_estimate(client)
+    _add_lines(client, est2["id"], 1000.0)
+    token2 = _publish(client, est2["id"])
+    client.post(f"/api/proposals/{token2}/accept", json={})
+    assert client.post(f"/api/proposals/{token2}/deposit/pay").status_code == 404
+    assert _deposit_rows(client, est2["id"]) == []
 
 
 def test_public_accept_no_deposit_when_pct_zero(client: TestClient, monkeypatch):
@@ -622,6 +701,7 @@ def test_public_accept_no_deposit_when_pct_zero(client: TestClient, monkeypatch)
     body = client.post(f"/api/proposals/{token}/accept", json={}).json()
     assert body["estimate"]["status"] == "accepted"
     assert "deposit" not in body
+    assert "deposit_ask" not in body
     assert _deposit_rows(client, est["id"]) == []
 
 
@@ -629,7 +709,9 @@ def test_public_tier_accept_office_shape_deposit_uses_tier_price(client: TestCli
     """THE audit-critique regression (§3): an office-built tier priced ABOVE
     the base lines. The deposit service caps against the tier-blind lines
     total, so without the cap_total override this deposit silently skipped —
-    customer accepts, nobody is asked for money, nobody notices."""
+    customer accepts, nobody is asked for money, nobody notices. Now runs
+    through the ask + pay-click flow: both the ASK and the MINT must use
+    the tier's price."""
     _fake_features(monkeypatch, deposit_pct=50)
     est = _create_estimate(client)
     _add_lines(client, est["id"], 500.0)  # base lines well below the tier
@@ -641,7 +723,12 @@ def test_public_tier_accept_office_shape_deposit_uses_tier_price(client: TestCli
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["estimate"]["accepted_tier_id"] == tier["id"]
-    assert body["deposit"]["amount"] == pytest.approx(4000.0)  # 50% of the TIER
+    assert body["deposit_ask"]["amount"] == pytest.approx(4000.0)  # 50% of the TIER
+    assert _deposit_rows(client, est["id"]) == []
+
+    r = client.post(f"/api/proposals/{token}/deposit/pay")
+    assert r.status_code == 200, r.text
+    assert r.json()["deposit"]["amount"] == pytest.approx(4000.0)
     assert [d["total"] for d in _deposit_rows(client, est["id"])] == [4000.0]
 
 
@@ -672,8 +759,8 @@ def test_public_accept_rejects_tier_for_line_estimate(client: TestClient, monkey
 
 def test_public_accept_is_idempotent_on_reclick(client: TestClient, monkeypatch):
     """An emailed link gets double-clicked routinely; the second click must
-    return the accepted state (200, not the portal's 409) and must NOT mint a
-    second deposit invoice. Deliberate divergence — pinned here."""
+    return the accepted state (200, not the portal's 409) and must NOT mint
+    anything. Deliberate divergence — pinned here."""
     _fake_features(monkeypatch, deposit_pct=50)
     est = _create_estimate(client)
     _add_lines(client, est["id"], 1000.0)
@@ -685,8 +772,16 @@ def test_public_accept_is_idempotent_on_reclick(client: TestClient, monkeypatch)
     body = r2.json()
     assert body["already_accepted"] is True
     assert body["estimate"]["status"] == "accepted"
-    # Recovery path: the still-owed deposit rides the idempotent response too.
-    assert body["deposit"]["balance_due"] == pytest.approx(500.0)
+    # Recovery path: the ASK rides the idempotent response too — still no
+    # invoice until the customer moves to pay.
+    assert body["deposit_ask"]["amount"] == pytest.approx(500.0)
+    assert _deposit_rows(client, est["id"]) == []
+
+    # After a pay-click mints the invoice, the re-click response carries the
+    # still-owed INVOICE instead of the ask.
+    client.post(f"/api/proposals/{token}/deposit/pay")
+    r3 = client.post(f"/api/proposals/{token}/accept", json={})
+    assert r3.json()["deposit"]["balance_due"] == pytest.approx(500.0)
     assert len(_deposit_rows(client, est["id"])) == 1
 
 
@@ -966,7 +1061,7 @@ def test_public_tier_accept_persists_line_built_price(client: TestClient, monkey
     r = client.post(f"/api/proposals/{token}/accept", json={"tier_id": tier["id"]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["deposit"]["amount"] == pytest.approx(4000.0)
+    assert body["deposit_ask"]["amount"] == pytest.approx(4000.0)
     assert body["totals"]["total"] == pytest.approx(8000.0)  # accepted → totals are true now
 
     db = _db(client)

@@ -133,8 +133,9 @@
               at {{ company.phone }}</template>.
             </Message>
 
-            <!-- Accept-then-abandon recovery: a still-owed deposit resurfaces
-                 its pay button on every load, not just in the accept dialog. -->
+            <!-- Accept-then-abandon recovery: a still-owed deposit invoice
+                 resurfaces its pay button on every load, not just in the
+                 accept dialog. -->
             <div v-if="est.status === 'accepted' && deposit?.pay_url" class="action-row deposit-row">
               <Button
                 :label="`Pay ${currency(deposit.balance_due)} deposit`"
@@ -143,6 +144,21 @@
                 class="flex-1"
                 data-testid="pay-deposit-btn"
                 @click="openPayUrl(deposit.pay_url)"
+              />
+            </div>
+            <!-- Deposit ASK (2026-08-18): the amount we'd like — NO invoice
+                 exists yet; clicking mints it via /deposit/pay and goes
+                 straight to the payment page. Only online payment counts;
+                 check/cash is recorded by the office when it arrives. -->
+            <div v-else-if="est.status === 'accepted' && depositAsk" class="action-row deposit-row">
+              <Button
+                :label="`Pay ${currency(depositAsk.amount)} deposit`"
+                icon="pi pi-credit-card"
+                severity="success"
+                class="flex-1"
+                :loading="busy"
+                data-testid="pay-deposit-ask-btn"
+                @click="startDepositPay"
               />
             </div>
           </template>
@@ -178,26 +194,31 @@
         </template>
       </Dialog>
 
-      <!-- One-motion deposit prompt right after accepting (portal copy). -->
+      <!-- Deposit prompt right after accepting. Two shapes: a legacy/live
+           invoice (has invoice_number + pay_url) or the ASK (amount only —
+           the invoice is minted when "Pay deposit now" is clicked). -->
       <Dialog v-model:visible="depositPromptOpen" header="Deposit Due" :modal="true"
         :style="{ width: 'min(440px, 94vw)' }" data-testid="deposit-pay-dialog">
         <p class="meta">
           Thanks for accepting! A deposit of <b>{{ currency(depositPrompt?.amount) }}</b> is due now
-          to get your job on the schedule (invoice {{ depositPrompt?.invoice_number }}).
+          to get your job on the schedule<template v-if="depositPrompt?.invoice_number">
+          (invoice {{ depositPrompt.invoice_number }})</template>.
         </p>
         <p class="meta">You can pay securely online by card — or pay later; the button stays on this page.</p>
         <details class="pay-by-check" data-testid="deposit-pay-by-check">
           <summary>Paying by check?</summary>
           <p class="meta">
-            Make it out to <b>{{ company.name }}</b> and write invoice
-            <b>{{ depositPrompt?.invoice_number }}</b> on the memo line — or use the
-            remit-to address on your invoice.
+            Make it out to <b>{{ company.name }}</b> and write
+            <template v-if="depositPrompt?.invoice_number">invoice
+              <b>{{ depositPrompt.invoice_number }}</b></template>
+            <template v-else>estimate <b>#{{ est?.estimate_number }}</b></template>
+            on the memo line.
           </p>
-          <p class="meta">We'll mark it paid when it arrives — no need to do anything else here.</p>
+          <p class="meta">We'll record it when it arrives — no need to do anything else here.</p>
         </details>
         <template #footer>
           <Button label="Pay later" text @click="depositPrompt = null" data-testid="deposit-pay-later" />
-          <Button label="Pay deposit now" icon="pi pi-credit-card" severity="success"
+          <Button label="Pay deposit now" icon="pi pi-credit-card" severity="success" :loading="busy"
             data-testid="deposit-pay-now" @click="payDepositNow" />
         </template>
       </Dialog>
@@ -243,6 +264,8 @@ const tiers = computed(() => data.value?.tiers || []);
 const lines = computed(() => data.value?.lines || []);
 const totals = computed(() => data.value?.totals || null);
 const deposit = computed(() => data.value?.deposit || null);
+// The ASK: amount we'd like, no invoice behind it yet (2026-08-18).
+const depositAsk = computed(() => data.value?.deposit_ask || null);
 const company = computed(() => data.value?.company || { name: "", phone: "" });
 // Backend masks bounced-internal "rejected" as "sent", so "sent" is the one
 // open state this page can see.
@@ -275,10 +298,47 @@ function tierLabel(name) {
   return map[name] || name;
 }
 function openPayUrl(url) { window.location.assign(url); }
-function payDepositNow() {
-  const url = depositPrompt.value?.pay_url;
+
+// Mint-at-pay-click (2026-08-18): the deposit invoice is created only when
+// the customer actually moves to pay online. Idempotent server-side, so a
+// double click or a re-visit lands on the same invoice.
+async function startDepositPay() {
+  busy.value = true;
+  try {
+    const res = await fetch(`/api/proposals/${encodeURIComponent(token.value)}/deposit/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = typeof payload?.detail === "string"
+        ? payload.detail
+        : "Something went wrong — please try again.";
+      toast.add({ severity: "warn", summary: msg, life: 5000 });
+      await load();
+      return;
+    }
+    if (payload?.deposit?.pay_url) {
+      openPayUrl(payload.deposit.pay_url);
+    } else {
+      // Stripe/base-URL not configured: the invoice now exists — reload so
+      // the page shows its number for a manual payment.
+      await load();
+    }
+  } catch {
+    toast.add({ severity: "error", summary: "Network error — please try again.", life: 5000 });
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function payDepositNow() {
+  const p = depositPrompt.value;
   depositPrompt.value = null;
-  if (url) openPayUrl(url);
+  if (!p) return;
+  if (p.pay_url) { openPayUrl(p.pay_url); return; }
+  await startDepositPay();
 }
 
 async function load() {
@@ -332,6 +392,7 @@ async function accept() {
   if (!resp) return;
   toast.add({ severity: "success", summary: "Estimate accepted — thank you!", life: 4000 });
   if (resp.deposit?.pay_url) depositPrompt.value = resp.deposit;
+  else if (resp.deposit_ask) depositPrompt.value = { ...resp.deposit_ask };
 }
 
 async function decline() {
