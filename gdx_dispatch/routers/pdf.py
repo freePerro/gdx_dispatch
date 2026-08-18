@@ -152,7 +152,10 @@ def _estimate_attachments_for_pdf(
             # WeasyPrint resolves file:// URIs against base_url; use absolute path.
             images.append({
                 "src": f"file://{path}",
-                "name": d.original_name,
+                # The label (door size, "16' × 7'") captions the photo; the
+                # filename is the fallback — for captured photos it's a
+                # machine name, which is why title wins.
+                "name": (d.title or "").strip() or d.original_name,
             })
         else:
             files.append({"name": d.original_name})

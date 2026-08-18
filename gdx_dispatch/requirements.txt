@@ -40,6 +40,7 @@ opentelemetry-instrumentation-sqlalchemy>=0.41b0
 opentelemetry-instrumentation-redis>=0.41b0
 opentelemetry-exporter-otlp>=1.20.0
 Pillow>=12.0.0,<13.0
+pillow-heif>=1.2,<2  # iPhone HEIC/HEIF decode — estimate-attachment allowlist accepts it, customer surfaces must render it
 pytest-xdist>=3.5
 pytest-asyncio>=0.23  # runs the `async def test_*` suites (@pytest.mark.asyncio)
 pytest-split>=0.8     # parallel shards for gdx_dispatch/tools/run_tests_split.sh

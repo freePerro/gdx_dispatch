@@ -178,6 +178,54 @@ def _public_tenant_id(request: Request | None, est: Estimate) -> str:
     return str(tenant.get("id") or est.company_id or "")
 
 
+# How many attachment photos the public page inlines. Same trade as the pay
+# page's _PAY_PAGE_MAX_PHOTOS: the page is fetched on phones and by mail
+# scanners, and the PDF still carries the complete set.
+_PROPOSAL_MAX_PHOTOS = 6
+
+
+def _estimate_public_photos(est: Estimate, db: Session, tenant_id: str) -> list[dict[str, str]]:
+    """The estimate's image attachments for the public page, as {src, label}.
+
+    Same base selection and order as the PDF (`_estimate_attachments_for_pdf`)
+    — image-typed, non-deleted documents, uploaded_at ASC — so the two surfaces
+    draw from one pool. The page then narrows further: it caps at
+    _PROPOSAL_MAX_PHOTOS (the PDF carries the full set) and requires the bytes
+    to actually decode (the PDF only checks the file exists). Inlined as
+    downscaled data: URIs (photo_data_uri) rather than served from a new
+    anonymous image route: the token already unlocked this page, and every
+    extra ungated route is another thing to scope and get wrong.
+
+    Only src + label cross the wire. label is Document.title — the door size
+    ("16' × 7'") the office or the capture flow wrote — never the filename,
+    which for captured photos is a machine name.
+    """
+    from gdx_dispatch.core.job_photos import photo_data_uri
+    from gdx_dispatch.models.tenant_models import Document
+    from gdx_dispatch.routers.estimates import _attachment_dir  # lazy: import cycle
+
+    rows = db.execute(
+        select(Document)
+        .where(Document.estimate_id == est.id, Document.deleted_at.is_(None))
+        .order_by(Document.uploaded_at.asc())
+    ).scalars().all()
+    base = _attachment_dir(tenant_id, str(est.id))
+    out: list[dict[str, str]] = []
+    for d in rows:
+        if len(out) >= _PROPOSAL_MAX_PHOTOS:
+            break
+        # startswith("image/") mirrors the PDF's selection; anything Pillow
+        # can't actually decode (HEIC without a codec, a corrupt file) comes
+        # back None from photo_data_uri and is skipped, never a 500.
+        if not (d.content_type or "").lower().startswith("image/"):
+            continue
+        src = photo_data_uri(str(base / d.filename), d.content_type or "")
+        if not src:
+            continue
+        out.append({"src": src, "label": (d.title or "").strip()})
+    return out
+
+
 def _serialize_public_estimate(est: Estimate, db: Session, request: Request | None) -> dict[str, Any]:
     """Public wire shape. Explicit projection, NOT the ORM row: returning
     `est` whole once handed the caller `notes` — the office's internal notes
@@ -299,6 +347,15 @@ def _serialize_public_estimate(est: Estimate, db: Session, request: Request | No
         ],
         "deposit_pct": deposit_pct,
     }
+
+    # Pictures of the doors being quoted (Doug 2026-08-18: "the estimate link
+    # we send out does not show the pictures of the doors"). Best-effort like
+    # the company block — a photo that won't read must never 500 the proposal.
+    try:
+        body["photos"] = _estimate_public_photos(est, db, tenant_id)
+    except Exception:
+        log.exception("public_proposal_photos_failed estimate=%s", est.id)
+        body["photos"] = []
 
     # Totals for line estimates — and for ACCEPTED proposals (2026-08-14):
     # once a tier is accepted, est.total IS the tier's contract subtotal and

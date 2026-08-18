@@ -1238,3 +1238,142 @@ def test_totals_self_heal_a_stale_pre_fix_accepted_tier(client: TestClient, monk
 
     body = client.get(f"/api/proposals/{token}").json()
     assert body["totals"]["total"] == pytest.approx(8000.0)  # NOT 500
+
+
+# ── photos on the public page ────────────────────────────────────────────────
+# 2026-08-18, Doug: "The estimate link that we send out does not show the
+# pictures of the doors." The PDF has always printed the estimate's image
+# attachments; the link page never did. The payload now carries the SAME set,
+# inlined as downscaled data: URIs, labeled with Document.title (door size).
+
+
+def _jpeg_bytes(color=(180, 40, 40)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), color=color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def _upload_attachment(client: TestClient, est_id: str, *, name="door.jpg",
+                       title=None, data=None, content_type="image/jpeg") -> dict:
+    import io
+
+    r = client.post(
+        f"/api/estimates/{est_id}/attachments",
+        files={"file": (name, io.BytesIO(data if data is not None else _jpeg_bytes()), content_type)},
+        data={"title": title} if title is not None else {},
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_public_payload_photos_match_the_pdf_set_and_carry_labels(
+    client: TestClient, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    _upload_attachment(client, est["id"], name="a.jpg", title="16' × 7'")
+    # A PDF attachment is a file, not a picture — must not appear.
+    _upload_attachment(client, est["id"], name="quote.pdf",
+                       data=b"%PDF-1.4 fake", content_type="application/pdf")
+    _upload_attachment(client, est["id"], name="b.jpg")
+
+    token = _publish(client, est["id"])
+    photos = client.get(f"/api/proposals/{token}").json()["photos"]
+
+    assert len(photos) == 2
+    # Explicit projection: ONLY src + label cross the public wire — never the
+    # filename, uploader, or document id.
+    assert [set(p.keys()) for p in photos] == [{"src", "label"}] * 2
+    # PDF order (uploaded_at ASC): the labeled photo came first.
+    assert photos[0]["label"] == "16' × 7'"
+    assert photos[0]["src"].startswith("data:image/jpeg;base64,")
+    # Unlabeled → blank, never the machine filename.
+    assert photos[1]["label"] == ""
+    assert "b.jpg" not in str(photos)
+
+
+def test_public_payload_photos_cap_and_skip_undecodable(
+    client: TestClient, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    # image/* content-type but garbage bytes: Pillow can't decode it — it must
+    # be SKIPPED (and not eat a slot), never 500 the public page.
+    _upload_attachment(client, est["id"], name="corrupt.png",
+                       data=b"\x89PNG not really", content_type="image/png")
+    for i in range(7):
+        _upload_attachment(client, est["id"], name=f"d{i}.jpg", title=f"{8 + i}' × 7'")
+
+    token = _publish(client, est["id"])
+    r = client.get(f"/api/proposals/{token}")
+    assert r.status_code == 200
+    photos = r.json()["photos"]
+    # _PROPOSAL_MAX_PHOTOS: the page inlines 6; the PDF still carries all.
+    assert len(photos) == 6
+    assert {p["label"] for p in photos} <= {f"{8 + i}' × 7'" for i in range(7)}
+
+
+def test_public_payload_photos_empty_when_estimate_has_none(
+    client: TestClient, monkeypatch
+):
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    token = _publish(client, est["id"])
+    assert client.get(f"/api/proposals/{token}").json()["photos"] == []
+
+
+def test_public_payload_renders_iphone_heic_attachment(client: TestClient, tmp_path, monkeypatch):
+    """image/heic is in ESTIMATE_ATTACHMENT_ALLOWED_MIME — the iPhone default.
+    Without pillow_heif the photo silently vanished from the page, which is
+    the exact bug this feature exists to fix. Skips where the package isn't
+    installed (stale local image); CI installs requirements fresh and runs it."""
+    ph = pytest.importorskip("pillow_heif")
+    ph.register_heif_opener()
+    import io
+
+    from PIL import Image
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 120, 40)).save(buf, format="HEIF")
+    _upload_attachment(client, est["id"], name="door.heic", title="16' × 7'",
+                       data=buf.getvalue(), content_type="image/heic")
+
+    token = _publish(client, est["id"])
+    photos = client.get(f"/api/proposals/{token}").json()["photos"]
+    assert len(photos) == 1
+    assert photos[0]["label"] == "16' × 7'"
+    # Always re-encoded to a browser-safe JPEG, whatever came in.
+    assert photos[0]["src"].startswith("data:image/jpeg;base64,")
+
+
+def test_public_payload_photo_honors_exif_orientation(client: TestClient, tmp_path, monkeypatch):
+    """A portrait phone photo stores landscape pixels + EXIF Orientation; the
+    page must serve it upright, not sideways."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    _fake_features(monkeypatch)
+    est = _create_estimate(client)
+    img = Image.new("RGB", (64, 48), (200, 30, 30))
+    exif = img.getexif()
+    exif[274] = 6  # Orientation: rotate 90° CW to display
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif)
+    _upload_attachment(client, est["id"], name="portrait.jpg", data=buf.getvalue())
+
+    token = _publish(client, est["id"])
+    photos = client.get(f"/api/proposals/{token}").json()["photos"]
+    out = Image.open(io.BytesIO(base64.b64decode(photos[0]["src"].split(",", 1)[1])))
+    assert out.size == (48, 64)  # transposed upright, not the raw (64, 48)

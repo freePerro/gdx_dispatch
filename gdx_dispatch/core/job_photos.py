@@ -120,14 +120,27 @@ def _photo_data_uri_cached(path: str, mtime_ns: int, size: int, max_px: int, qua
     import io
 
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except Exception:  # noqa: BLE001 — Pillow missing is not a payment failure
         log.exception("photo_data_uri_pillow_unavailable")
         return None
 
+    # iPhone-native HEIC/HEIF is in the estimate-attachment allowlist but bare
+    # Pillow can't decode it — without this, an iPhone photo upload silently
+    # vanishes from the page. Registration is idempotent; if the package is
+    # absent, behavior degrades to skipping HEIC (today's behavior), not a 500.
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except Exception:  # noqa: BLE001, S110 — optional codec; absence is the pre-heif status quo
+        pass
+
     try:
         with Image.open(path) as img:
-            img = img.convert("RGB")
+            # Honor EXIF orientation FIRST — phone portraits carry the rotation
+            # as metadata, and thumbnail() alone would serve them sideways.
+            img = (ImageOps.exif_transpose(img) or img).convert("RGB")
             img.thumbnail((max_px, max_px))
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality, optimize=True)

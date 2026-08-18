@@ -509,6 +509,36 @@
                   <div class="attachment-meta">
                     <a href="#" class="attachment-name" @click.prevent="openAttachment(att)">{{ att.original_name }}</a>
                     <small class="muted">{{ formatBytes(att.file_size) }} · {{ att.uploaded_by || 'unknown' }}</small>
+                    <!-- Customer-facing label — the door size ("16' × 7'").
+                         Shows on the public estimate link and captions the PDF. -->
+                    <div class="attachment-label-row">
+                      <template v-if="labelEditId === att.id">
+                        <InputText
+                          v-model="labelDraft"
+                          size="small"
+                          maxlength="255"
+                          placeholder="e.g. 16' × 7' — West door"
+                          :data-testid="`estimate-attachment-label-input-${att.id}`"
+                          @keyup.enter="saveAttachmentLabel(att)"
+                          @keyup.escape="labelEditId = null"
+                        />
+                        <Button icon="pi pi-check" text size="small" aria-label="Save label"
+                          :loading="labelSaving"
+                          :data-testid="`estimate-attachment-label-save-${att.id}`"
+                          @click="saveAttachmentLabel(att)" />
+                        <Button icon="pi pi-times" text size="small" severity="secondary" aria-label="Cancel"
+                          @click="labelEditId = null" />
+                      </template>
+                      <template v-else>
+                        <small v-if="att.title" class="attachment-label" :data-testid="`estimate-attachment-label-${att.id}`">
+                          {{ att.title }}</small>
+                        <small v-else class="muted">No label</small>
+                        <Button icon="pi pi-pencil" text size="small" severity="secondary"
+                          aria-label="Edit label" v-tooltip="'Label (door size) — shows to the customer'"
+                          :data-testid="`estimate-attachment-label-edit-${att.id}`"
+                          @click="startLabelEdit(att)" />
+                      </template>
+                    </div>
                   </div>
                   <Button
                     v-tooltip="'Delete'"
@@ -984,6 +1014,7 @@
 
 <script setup>
 import { estimateStatusSeverity } from '../utils/statusSeverity';
+import { doorSizeLabel } from '../utils/doorSizeLabel';
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useToast } from "primevue/usetoast";
@@ -1395,7 +1426,7 @@ const _pendingCapturedImages = [];
 watch(isExisting, async (nowExists) => {
   if (!nowExists || !_pendingCapturedImages.length) return;
   const batch = _pendingCapturedImages.splice(0);
-  for (const p of batch) await _attachCapturedImage(p.image, p.item, p.pluginKey);
+  for (const p of batch) await _attachCapturedImage(p.image, p.item, p.pluginKey, p.title);
 });
 const capturedError = ref("");             // "" | "forbidden" | "unavailable"
 const capturedPickerVisible = ref(false);
@@ -1495,14 +1526,17 @@ async function insertDraft(draft, item, source) {
   const unpriced = !(li.description && Number(li.unit_price) > 0);
   form.value.line_items.push(li);                    // deep watcher autosaves it
   let photo = "none";
+  // Door size derived HERE, where the draft (spec + description) is in hand —
+  // the flush path only has what the queue row carries.
+  const title = doorSizeLabel(draft);
   if (draft.image && isExisting.value) {
-    await _attachCapturedImage(draft.image, item, source?.pluginKey);
+    await _attachCapturedImage(draft.image, item, source?.pluginKey, title);
     photo = "attached";
   } else if (draft.image) {
     // No estimate id yet — queue the photo; the isExisting watcher
     // attaches it the moment the estimate first saves.
     _pendingCapturedImages.push({
-      image: draft.image, item, pluginKey: source?.pluginKey,
+      image: draft.image, item, pluginKey: source?.pluginKey, title,
     });
     photo = "queued";
   }
@@ -1553,7 +1587,7 @@ async function addSelectedDoors() {
   }
 }
 
-async function _attachCapturedImage(dataUrl, item, pluginKey) {
+async function _attachCapturedImage(dataUrl, item, pluginKey, title) {
   // Door photo → a core Document on the estimate (best-effort; the line + spec
   // already persist via autosave regardless of the photo). `pluginKey` is
   // passed by the deferred-photo flush, where activeSource may have moved on.
@@ -1562,6 +1596,7 @@ async function _attachCapturedImage(dataUrl, item, pluginKey) {
     const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
     const fd = new FormData();
     fd.append("file", blob, `${pluginKey || activeSource.value?.pluginKey || "plugin"}-${item.qcd || item.id}.${ext}`);
+    if (title) fd.append("title", title); // door size → public page + PDF caption
     await api.post(`/api/estimates/${route.params.id}/attachments`, fd);
     await loadAttachments();   // refresh the panel so the photo shows immediately
     toast.add({ severity: "success", summary: "Door photo attached", life: 2500 });
@@ -2262,6 +2297,36 @@ async function deleteAttachment(att) {
     attachments.value = attachments.value.filter((a) => a.id !== att.id);
   } catch {
     toast.add({ severity: "error", summary: "Delete failed", life: 4000 });
+  }
+}
+
+// --- attachment labels (door size — shows on the public link + PDF) --------
+const labelEditId = ref(null);
+const labelDraft = ref("");
+const labelSaving = ref(false);
+
+function startLabelEdit(att) {
+  labelEditId.value = att.id;
+  labelDraft.value = att.title || "";
+}
+
+async function saveAttachmentLabel(att) {
+  if (!route.params.id || !att?.id) return;
+  labelSaving.value = true;
+  try {
+    const updated = await api.patch(
+      `/api/estimates/${route.params.id}/attachments/${att.id}`,
+      { title: labelDraft.value.trim() },
+    );
+    // Patch the row in place — a full reload would refetch every thumbnail.
+    att.title = updated?.title ?? (labelDraft.value.trim() || null);
+    attachments.value = [...attachments.value];
+    labelEditId.value = null;
+  } catch {
+    // useApiWithToast already toasted the failure; the editor stays open so
+    // the typed label isn't lost.
+  } finally {
+    labelSaving.value = false;
   }
 }
 
@@ -3619,6 +3684,9 @@ onUnmounted(() => {
 .composer-att-row span { flex: 1; word-break: break-word; }
 .attachment-icon { font-size: 2rem; color: #b91c1c; width: 56px; text-align: center; }
 .attachment-meta { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.attachment-label-row { display: flex; align-items: center; gap: 0.25rem; margin-top: 0.15rem; }
+.attachment-label-row :deep(.p-inputtext) { max-width: 16rem; }
+.attachment-label { font-weight: 600; }
 .attachment-name { font-weight: 600; color: var(--p-primary-color, #0057a8); text-decoration: none; word-break: break-word; }
 .attachment-name:hover { text-decoration: underline; }
 

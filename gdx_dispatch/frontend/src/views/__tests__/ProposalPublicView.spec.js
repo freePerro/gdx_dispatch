@@ -100,6 +100,43 @@ beforeEach(() => {
 });
 
 describe('ProposalPublicView', () => {
+  it('shows the estimate photos with door-size labels; tap opens the lightbox', async () => {
+    // 2026-08-18, Doug: "the estimate link we send out does not show the
+    // pictures of the doors." The backend inlines the estimate's image
+    // attachments as data URIs; label = Document.title (the door size).
+    mockFetch({
+      'GET /api/proposals/tok-abc': {
+        ...LINE_PAYLOAD,
+        photos: [
+          { src: 'data:image/jpeg;base64,AAA', label: "16' × 7'" },
+          { src: 'data:image/jpeg;base64,BBB', label: '' },
+        ],
+      },
+    });
+    const w = await mountPage();
+
+    expect(w.find('[data-testid="proposal-photos"]').exists()).toBe(true);
+    const first = w.find('[data-testid="proposal-photo-0"]');
+    expect(first.find('img').attributes('src')).toBe('data:image/jpeg;base64,AAA');
+    expect(first.find('[data-testid="proposal-photo-label"]').text()).toBe("16' × 7'");
+    // Unlabeled photo renders NO badge — never a filename or a guess.
+    const second = w.find('[data-testid="proposal-photo-1"]');
+    expect(second.exists()).toBe(true);
+    expect(second.find('[data-testid="proposal-photo-label"]').exists()).toBe(false);
+
+    await first.trigger('click');
+    const box = w.find('[data-testid="photo-lightbox"]');
+    expect(box.exists()).toBe(true);
+    expect(box.find('img').attributes('src')).toBe('data:image/jpeg;base64,AAA');
+  });
+
+  it('renders no photo section when the payload carries none', async () => {
+    // Old payloads (and estimates without pictures) have no photos key at all.
+    mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
+    const w = await mountPage();
+    expect(w.find('[data-testid="proposal-photos"]').exists()).toBe(false);
+  });
+
   it('renders a line estimate with the backend-computed tax-inclusive total', async () => {
     mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
     const w = await mountPage();
