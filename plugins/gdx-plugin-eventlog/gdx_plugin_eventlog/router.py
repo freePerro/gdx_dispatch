@@ -19,7 +19,12 @@ router = APIRouter()
 def list_events(
     ctx: PluginContext = Depends(get_plugin_context),
     db: Session = Depends(get_plugin_db),
-) -> dict:
+) -> list[dict]:
+    # A `type: list` screen's endpoint returns a BARE ARRAY of row objects —
+    # the host renderer (usePluginScreen.load) assigns the response straight to
+    # the DataTable value with no envelope unwrap, so an {"items": [...]} wrapper
+    # renders zero rows. Matches the convention set by the CHI-pricing /quotes
+    # endpoint. Each object's keys line up with the screen's column `field`s.
     rows = (
         db.execute(
             select(EventLogEntry)
@@ -30,14 +35,12 @@ def list_events(
         .scalars()
         .all()
     )
-    return {
-        "items": [
-            {
-                "event": r.event_name,
-                "received_at": r.received_at.isoformat() if r.received_at else None,
-                "delivery_id": r.delivery_id,
-                "data": json.loads(r.payload_json) if r.payload_json else {},
-            }
-            for r in rows
-        ]
-    }
+    return [
+        {
+            "event": r.event_name,
+            "received_at": r.received_at.isoformat() if r.received_at else None,
+            "delivery_id": r.delivery_id,
+            "data": json.loads(r.payload_json) if r.payload_json else {},
+        }
+        for r in rows
+    ]
