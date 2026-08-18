@@ -94,6 +94,12 @@ POST /api/payments/create-intent
 # surface" (2026-08-13, same model as GET /api/proposals/{token} above).
 POST /api/proposals/{token}/accept
 POST /api/proposals/{token}/decline
+# Same Group-2 model (2026-08-18): mints the deposit invoice at the moment
+# the customer moves to pay online — token-resolved estimate, accepted-only
+# (409 otherwise), row-locked (for_update), idempotent via
+# find_deposit_invoice_for_estimate; amount is SERVER-derived from the
+# tenant deposit percent (deposit_ask_for), never caller input.
+POST /api/proposals/{token}/deposit/pay
 POST /api/push/send
 POST /api/push/send-user/{user_id}
 POST /api/push/subscribe

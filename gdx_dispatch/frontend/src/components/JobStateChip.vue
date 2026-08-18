@@ -16,9 +16,19 @@ const props = defineProps({
   job: { type: Object, default: null },
   // Hide the leading status icon (some dense tables don't want it).
   showIcon: { type: Boolean, default: true },
+  // Hide the "Deposit paid" badge (dense tables can opt out).
+  showDepositBadge: { type: Boolean, default: true },
 })
 
 const state = computed(() => jobDisplayState(props.job))
+
+// Money received on a deposit invoice, shown as a companion badge — the
+// stage itself never says "Paid" for a deposit (that was the bug: a paid
+// 50% deposit flipped the whole job card to a false won-terminal "Paid").
+// Redundant once the job actually IS Paid, so it hides on that terminal.
+const showDeposit = computed(
+  () => props.showDepositBadge && state.value.depositPaid && state.value.stage !== 'paid'
+)
 </script>
 
 <template>
@@ -32,5 +42,14 @@ const state = computed(() => jobDisplayState(props.job))
     :title="state.unverified ? 'State not yet confirmed against billing — refresh to sync' : undefined"
     class="job-state-chip"
     :class="{ 'job-state-chip--unverified': state.unverified }"
+  />
+  <Tag
+    v-if="showDeposit"
+    value="Deposit paid"
+    severity="success"
+    icon="pi pi-wallet"
+    data-badge="deposit-paid"
+    title="A deposit has been collected — the job itself is not fully paid"
+    class="job-state-chip job-state-chip__deposit"
   />
 </template>

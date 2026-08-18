@@ -206,7 +206,9 @@ describe('MobileBillingView — the field safety net', () => {
 describe('CustomerPortalView — honest about checks, records nothing', () => {
   it('tells the customer how to pay by check without pretending to record it', () => {
     expect(PORTAL).toMatch(/data-testid="deposit-pay-by-check"/);
-    expect(PORTAL).toMatch(/We'll mark it paid when it arrives/);
+    // 2026-08-18 rework: "record it" (not "mark it paid") — the check may
+    // arrive before any invoice exists; the office records it manually.
+    expect(PORTAL).toMatch(/We'll record it when it arrives/);
   });
 
   it('offers no payment-capture form to the customer', () => {

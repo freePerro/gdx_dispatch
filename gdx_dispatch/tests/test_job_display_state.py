@@ -235,3 +235,121 @@ def test_decimal_and_string_amounts_coerce_safely():
         invoices=[{"status": "sent", "balance_due": Decimal("0.00"), "amount_paid": "450.00"}],
     )
     assert st.stage == "paid"  # balance 0 -> Paid, no crash on Decimal/str
+
+
+# --- Deposit invoices never drive the stage (2026-08-18) -------------------
+# A downpayment is money BEFORE the work (billing_predicates.py exclusion,
+# 2026-07-23). The reported bug: a job whose only invoice was a paid 50%
+# deposit showed the green won-terminal "Paid" while Ready-for-Billing
+# still listed it.
+
+def test_paid_deposit_only_is_work_state_with_flag_not_Paid():
+    st = _s(
+        lifecycle_stage="scheduled",
+        invoices=[{
+            "status": "paid", "balance_due": 0, "amount_paid": 2291.89,
+            "billing_type": "deposit",
+        }],
+    )
+    assert (st.stage, st.type) == ("scheduled", TYPE_OPEN)
+    assert st.is_finished is False
+    assert st.deposit_paid is True
+    assert st.as_dict()["deposit_paid"] is True
+
+
+def test_paid_deposit_on_completed_job_is_Ready_to_Bill():
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[{
+            "status": "paid", "balance_due": 0, "amount_paid": 500,
+            "billing_type": "deposit",
+        }],
+    )
+    assert st.stage == "ready_to_bill" and st.deposit_paid is True
+
+
+def test_unpaid_deposit_neither_bills_nor_flags():
+    # The INV-000341 shape: sent deposit, $0 paid. Must not read as
+    # Invoiced (deposits don't bill) and must not claim money received.
+    st = _s(
+        lifecycle_stage="scheduled",
+        invoices=[{
+            "status": "sent", "balance_due": 2291.89, "amount_paid": 0,
+            "billing_type": "deposit",
+        }],
+    )
+    assert st.stage == "scheduled" and st.deposit_paid is False
+
+
+def test_overdue_deposit_does_not_flip_job_Overdue():
+    # An aged unpaid deposit must not put the job in money trouble —
+    # the work-axis state stays.
+    st = _s(
+        lifecycle_stage="in_progress",
+        invoices=[{
+            "status": "overdue", "balance_due": 1000, "amount_paid": 0,
+            "billing_type": "deposit",
+        }],
+    )
+    assert st.stage == "in_progress" and st.type == TYPE_OPEN
+
+
+def test_deposit_plus_unpaid_final_is_Invoiced_with_flag():
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[
+            {"status": "paid", "balance_due": 0, "amount_paid": 500,
+             "billing_type": "deposit"},
+            {"status": "sent", "balance_due": 1500, "amount_paid": 0,
+             "billing_type": "final"},
+        ],
+    )
+    assert st.stage == "invoiced" and st.deposit_paid is True
+
+
+def test_deposit_plus_paid_final_is_Paid():
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[
+            {"status": "paid", "balance_due": 0, "amount_paid": 500,
+             "billing_type": "deposit"},
+            {"status": "paid", "balance_due": 0, "amount_paid": 1500,
+             "billing_type": "final"},
+        ],
+    )
+    assert st.stage == "paid" and st.type == TYPE_WON
+
+
+def test_void_deposit_does_not_flag():
+    st = _s(
+        lifecycle_stage="scheduled",
+        invoices=[{
+            "status": "void", "balance_due": 0, "amount_paid": 500,
+            "billing_type": "deposit",
+        }],
+    )
+    assert st.deposit_paid is False
+
+
+def test_live_deposit_blocks_Declined_terminal():
+    # Money changed hands (or is still being asked for) — the flow became
+    # real, so a declined estimate must not read as a lost quote.
+    st = _s(
+        lifecycle_stage="estimate",
+        estimate_status="declined",
+        invoices=[{
+            "status": "paid", "balance_due": 0, "amount_paid": 500,
+            "billing_type": "deposit",
+        }],
+    )
+    assert st.type == TYPE_OPEN and st.stage == "estimate"
+    assert st.deposit_paid is True
+
+
+def test_missing_billing_type_is_billing_real_backcompat():
+    # Callers that don't pass billing_type keep pre-deposit-aware behavior.
+    st = _s(
+        lifecycle_stage="completed",
+        invoices=[{"status": "paid", "balance_due": 0, "amount_paid": 500}],
+    )
+    assert st.stage == "paid" and st.deposit_paid is False

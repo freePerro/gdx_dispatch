@@ -27,6 +27,8 @@ from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.deposits import (
     DepositError,
     create_deposit_invoice,
+    deposit_ask_for,
+    deposit_skip_reason,
     deposit_summary,
     find_deposit_invoice_for_estimate,
 )
@@ -1029,14 +1031,21 @@ def _serialize_portal_estimate(
         "declined_at": estimate.declined_at.isoformat() if estimate.declined_at else None,
         "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
     }
-    # Accept-then-abandon recovery (2026-07-23): an accepted estimate with a
-    # still-owed deposit invoice re-surfaces its Pay link on every portal
-    # load — the one-motion accept response isn't the only door to payment.
+    # Deposit surface for accepted estimates (2026-08-18, Doug: only an
+    # ONLINE payment counts — acceptance no longer mints an invoice):
+    #   - a LIVE deposit invoice still owed (minted at pay-click, or legacy
+    #     accept-time rows) re-surfaces its Pay link on every portal load;
+    #   - otherwise the ASK — the amount we'd like, with NO invoice behind
+    #     it until POST /estimates/{id}/deposit/pay mints one.
     if estimate.status == "accepted":
         try:
             dep = find_deposit_invoice_for_estimate(db, estimate.id)
             if dep is not None and float(dep.balance_due or 0) > 0:
                 body["deposit"] = deposit_summary(dep)
+            elif dep is None:
+                ask = deposit_ask_for(estimate, db, str(estimate.company_id or ""))
+                if ask is not None:
+                    body["deposit_ask"] = {"amount": ask[0], "pct": ask[1]}
         except Exception:
             log.exception("portal_estimate_deposit_lookup_failed")
     return body
@@ -1251,40 +1260,70 @@ def portal_estimate_accept(
             except Exception:
                 log.exception("portal_accept_audit_failed")
 
-    # One-motion deposit (2026-07-23): when the tenant's deposit percent is
-    # set (estimate_deposit_pct — the same "% Down" the estimate PDF already
-    # shows the customer), acceptance creates a deposit invoice and the
-    # response carries its public /pay URL so the portal can put the Stripe
-    # payment form one tap away. Failures never un-accept the estimate.
-    deposit_payload: dict[str, Any] | None = None
+    # NO deposit invoice here (2026-08-18, Doug): acceptance only ASKS.
+    # The serializer attaches `deposit_ask` and the invoice is minted by
+    # POST /estimates/{id}/deposit/pay at the moment the customer actually
+    # moves to pay online — accept-time minting left "sent" invoices nobody
+    # committed to cluttering the books. Check/cash deposits are recorded
+    # manually by the office when the money arrives.
+    db.refresh(estimate)
+    return _serialize_portal_estimate(estimate, db)
+
+
+@router.post("/estimates/{estimate_id}/deposit/pay", response_model=None)
+def portal_estimate_deposit_pay(
+    estimate_id: UUID,
+    request: Request,
+    principal: PortalPrincipal = Depends(get_current_portal_customer),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Mint (or return) the deposit invoice at the moment the customer moves
+    to PAY online — portal twin of /api/proposals/{token}/deposit/pay.
+
+    Idempotent under double-click: the row lock taken by the refresh below
+    serializes concurrent calls, and ``create_deposit_invoice`` returns the
+    existing live deposit invoice instead of minting a second one.
+    """
+    estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
+    # Row lock BEFORE the status/existing checks so concurrent pay-clicks
+    # serialize on the whole decision, not just the mint. Real lock on
+    # Postgres, harmless no-op on SQLite (tests) — same serialization the
+    # public pay endpoint gets from for_update=True at fetch.
+    db.refresh(estimate, with_for_update=True)
+    if estimate.status != "accepted":
+        raise HTTPException(
+            status_code=409, detail="accept the estimate before paying a deposit"
+        )
+    tenant_id = (
+        str(getattr(request.state, "tenant", {}).get("id", ""))
+        or str(estimate.company_id or "")
+    )
+    existing = find_deposit_invoice_for_estimate(db, estimate.id)
+    if existing is not None:
+        out = deposit_summary(existing)
+        out["existing"] = True
+        return {"deposit": out}
+    ask = deposit_ask_for(estimate, db, tenant_id)
+    if ask is None:
+        raise HTTPException(
+            status_code=404, detail="no deposit is requested for this estimate"
+        )
+    amount, pct, cap = ask
     try:
-        db.refresh(estimate)
-        pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
-        if pct > 0 and estimate.customer_id is not None:
-            from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
-
-            est_total = float(compute_estimate_totals(estimate, db)["total"] or 0)
-            amount = round(est_total * pct / 100.0, 2)
-            if amount > 0:
-                dep_inv = create_deposit_invoice(
-                    db,
-                    estimate=estimate,
-                    amount=amount,
-                    tenant_id=tenant_id,
-                    actor=actor,
-                    source="portal_accept",
-                )
-                deposit_payload = deposit_summary(dep_inv)
-                deposit_payload["pct"] = pct
+        dep = create_deposit_invoice(
+            db,
+            estimate=estimate,
+            amount=amount,
+            tenant_id=tenant_id,
+            actor=f"portal:{principal.user_id}",
+            source="portal_pay_click",
+            cap_total=cap,
+        )
     except DepositError as exc:
-        log.warning("portal_accept_deposit_skipped estimate=%s: %s", estimate.id, exc)
-    except Exception:
-        log.exception("portal_accept_deposit_failed estimate=%s", estimate.id)
-
-    resp = _serialize_portal_estimate(estimate, db)
-    if deposit_payload:
-        resp["deposit"] = deposit_payload
-    return resp
+        raise HTTPException(status_code=409, detail=deposit_skip_reason(exc))
+    out = deposit_summary(dep)
+    out["pct"] = pct
+    return {"deposit": out}
 
 
 @router.post("/estimates/{estimate_id}/decline", response_model=None)

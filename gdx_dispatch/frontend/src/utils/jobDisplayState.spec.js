@@ -17,6 +17,7 @@ describe('jobDisplayState — authoritative display_state', () => {
     expect(s).toEqual({
       stage: 'paid', type: 'won', label: 'Paid', isFinished: true,
       severity: 'success', icon: 'pi pi-check-circle', unverified: false,
+      depositPaid: false,
     });
   });
 
@@ -131,7 +132,7 @@ describe('jobDisplayState — scheduled-with-no-date sub-state (Doug 2026-07-13)
     });
     expect(s).toEqual({
       stage: 'scheduled', type: 'open', label: 'Awaiting Schedule', isFinished: false,
-      severity: 'warn', icon: 'pi pi-clock', unverified: false,
+      severity: 'warn', icon: 'pi pi-clock', unverified: false, depositPaid: false,
     });
   });
 
@@ -181,5 +182,43 @@ describe('jobDisplayState — null safety', () => {
   it.each([null, undefined, 42, 'x', {}])('safe default for %s', (bad) => {
     const s = jobDisplayState(bad);
     expect(s).toMatchObject({ stage: 'unknown', type: 'open', label: 'Unknown', isFinished: false });
+  });
+});
+
+describe('jobDisplayState — deposit_paid flag (2026-08-18)', () => {
+  it('authoritative deposit_paid passes through as depositPaid', () => {
+    const s = jobDisplayState({
+      display_state: {
+        stage: 'scheduled', type: 'open', label: 'Scheduled',
+        is_finished: false, deposit_paid: true,
+      },
+      scheduled_at: '2026-08-20T09:00:00Z',
+    });
+    expect(s.depositPaid).toBe(true);
+    // The flag never changes the stage — that was the original bug.
+    expect(s.stage).toBe('scheduled');
+    expect(s.isFinished).toBe(false);
+  });
+
+  it('missing/false deposit_paid reads false, including on fallbacks', () => {
+    expect(
+      jobDisplayState({
+        display_state: { stage: 'invoiced', type: 'open', label: 'Invoiced', is_finished: false },
+      }).depositPaid
+    ).toBe(false);
+    expect(jobDisplayState({ status: 'scheduled', scheduled_at: '2026-08-20' }).depositPaid).toBe(false);
+    expect(jobDisplayState(null).depositPaid).toBe(false);
+  });
+
+  it('deposit_paid survives the Awaiting Schedule relabel', () => {
+    const s = jobDisplayState({
+      display_state: {
+        stage: 'scheduled', type: 'open', label: 'Scheduled',
+        is_finished: false, deposit_paid: true,
+      },
+      scheduled_at: null,
+    });
+    expect(s.label).toBe('Awaiting Schedule');
+    expect(s.depositPaid).toBe(true);
   });
 });

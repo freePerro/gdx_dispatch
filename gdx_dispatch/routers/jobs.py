@@ -572,6 +572,7 @@ def _display_state_for_jobs(
                 Invoice.status,
                 Invoice.balance_due,
                 Invoice.amount_paid,
+                Invoice.billing_type,
             ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
         ).all():
             if row.job_id is None:
@@ -581,6 +582,7 @@ def _display_state_for_jobs(
                     "status": row.status,
                     "balance_due": row.balance_due,
                     "amount_paid": row.amount_paid,
+                    "billing_type": row.billing_type,
                 }
             )
         if _HAS_ESTIMATE_ORM:

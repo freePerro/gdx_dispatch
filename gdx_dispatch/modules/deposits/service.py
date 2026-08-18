@@ -102,6 +102,62 @@ def deposit_summary(invoice: Invoice) -> dict:
     }
 
 
+def deposit_ask_for(
+    estimate, db: Session, tenant_id: str
+) -> tuple[float, int, float | None] | None:
+    """``(amount, pct, cap_total)`` for the deposit the tenant would like on
+    an ACCEPTED estimate — or ``None`` when no ask applies (no percent
+    configured, no customer, nothing to base it on).
+
+    An ask is a REQUEST, not a receivable (Doug 2026-08-18): no invoice
+    exists until the customer actually moves to pay online — the old
+    accept-time minting left "sent" deposit invoices nobody committed to
+    (INV-000341) cluttering the invoice list and inflating A/R. The public
+    and portal pay-click endpoints turn this ask into an invoice via
+    ``create_deposit_invoice``; check/cash deposits are recorded manually
+    by the office when the money arrives.
+
+    Tier accepts use the accepted tier's contract subtotal as base AND
+    sanity cap (the totals engine is tier-blind); line estimates use the
+    canonical line total with no extra cap.
+    """
+    # Late imports, same cycle-avoidance pattern as create_deposit_invoice.
+    from gdx_dispatch.modules.estimates_features import get_features
+    from gdx_dispatch.modules.proposals.models import ProposalTier
+    from gdx_dispatch.modules.proposals.service import tier_contract_subtotal
+    from gdx_dispatch.modules.proposals.totals import compute_estimate_totals
+
+    # get_features is best-effort by contract: it swallows read errors and
+    # returns defaults (deposit_pct=50 — the same platform default the
+    # estimate PDF prints as "% Down"). No guard here: wrapping it again
+    # would be dead armor around a function that cannot raise.
+    pct = max(0, min(100, int(get_features(tenant_id).deposit_pct or 0)))
+    if pct <= 0 or estimate.customer_id is None:
+        return None
+    tier = None
+    if getattr(estimate, "accepted_tier_id", None) is not None:
+        tier = db.execute(
+            select(ProposalTier).where(
+                ProposalTier.id == estimate.accepted_tier_id,
+                ProposalTier.estimate_id == estimate.id,
+            )
+        ).scalar_one_or_none()
+    if tier is not None:
+        base = _to_f(tier_contract_subtotal(db, tier))
+        cap: float | None = base
+    else:
+        try:
+            base = _to_f(compute_estimate_totals(estimate, db)["total"])
+        except Exception:
+            log.exception("deposit_ask_total_failed estimate=%s", estimate.id)
+            return None
+        cap = None
+    amount = round(base * pct / 100.0, 2)
+    if amount <= 0:
+        return None
+    return amount, pct, cap
+
+
 def find_deposit_invoice_for_estimate(db: Session, estimate_id) -> Invoice | None:
     """The live (non-void, non-deleted) deposit invoice born from this
     estimate, if one exists. Accept endpoints use this for idempotency."""
