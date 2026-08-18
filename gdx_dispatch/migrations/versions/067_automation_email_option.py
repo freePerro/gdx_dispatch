@@ -27,19 +27,32 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    # app_settings / email_settings are boot-created tables (003/013
+    # pattern): guard so a fresh-DB migration run is a no-op — boot creates
+    # them WITH these columns.
     bind.exec_driver_sql(
-        "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS "
-        "automation_emails_enabled boolean NOT NULL DEFAULT false;"
-    )
-    bind.exec_driver_sql(
-        "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS "
-        "automation_sender_user_id varchar(36);"
+        """
+        DO $$ BEGIN
+            IF to_regclass('app_settings') IS NOT NULL THEN
+                ALTER TABLE app_settings
+                    ADD COLUMN IF NOT EXISTS automation_emails_enabled boolean NOT NULL DEFAULT false;
+                ALTER TABLE app_settings
+                    ADD COLUMN IF NOT EXISTS automation_sender_user_id varchar(36);
+            END IF;
+        END $$;
+        """
     )
     # Phase 5.7 — optional Reply-To for SMTP sends (Graph sends already
     # thread to the sending rep's mailbox).
     bind.exec_driver_sql(
-        "ALTER TABLE email_settings ADD COLUMN IF NOT EXISTS "
-        "reply_to_email varchar(254);"
+        """
+        DO $$ BEGIN
+            IF to_regclass('email_settings') IS NOT NULL THEN
+                ALTER TABLE email_settings
+                    ADD COLUMN IF NOT EXISTS reply_to_email varchar(254);
+            END IF;
+        END $$;
+        """
     )
 
 

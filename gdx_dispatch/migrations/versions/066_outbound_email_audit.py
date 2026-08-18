@@ -68,11 +68,30 @@ def upgrade() -> None:
     bind.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_outbound_emails_entity ON outbound_emails (entity_type, entity_id);"
     )
+    # customer_contacts is a create_orm_tables() boot table (not in the SQL
+    # baseline) — on a fresh DB where migrations run first, the table doesn't
+    # exist yet and boot will create it WITH is_primary, so skipping is
+    # correct; on an existing DB the ALTER adds the column.
     bind.exec_driver_sql(
-        "ALTER TABLE customer_contacts ADD COLUMN IF NOT EXISTS is_primary boolean NOT NULL DEFAULT false;"
+        """
+        DO $$ BEGIN
+            IF to_regclass('customer_contacts') IS NOT NULL THEN
+                ALTER TABLE customer_contacts
+                    ADD COLUMN IF NOT EXISTS is_primary boolean NOT NULL DEFAULT false;
+            END IF;
+        END $$;
+        """
     )
+    # estimates is likewise boot-created (003/013 pattern): fresh DB → the
+    # model already carries sent_via; existing DB → ALTER adds it.
     bind.exec_driver_sql(
-        "ALTER TABLE estimates ADD COLUMN IF NOT EXISTS sent_via varchar(20);"
+        """
+        DO $$ BEGIN
+            IF to_regclass('estimates') IS NOT NULL THEN
+                ALTER TABLE estimates ADD COLUMN IF NOT EXISTS sent_via varchar(20);
+            END IF;
+        END $$;
+        """
     )
 
 
