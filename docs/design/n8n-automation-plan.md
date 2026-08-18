@@ -1,7 +1,59 @@
 # The n8n Plugin & the Plugin Event Platform (the WordPress model)
 
-**Status:** Plan v6 — audit-hardened, re-audited, QC-passed (2026-08-17).
-Sprint 1a cleared to build (GO-WITH-CAVEATS).
+**Status:** Plan v6 — audit-hardened, re-audited, QC-passed, then BUILT
+(2026-08-17). Branch `feat/n8n-event-platform` (unpushed, not merged).
+
+## Implementation status (2026-08-17)
+
+**SHIPPED to the branch (7 commits, every one through the adversarial audit gate):**
+- `7d883e5` Sprint 1a — delivery-core repair (fan-out, race-free after_commit
+  dispatch, redirect-safe SSRF, signed + UI-visible deliveries, stranded-row
+  rescue).
+- `2f1e6b4` Sprint 1b — events fire at the business choke points (invoice.paid,
+  estimate.accepted/declined, customer.created, job.created/completed), guarded
+  + suppressible.
+- `4d9f6c9` Sprint 2 — plugin event platform: manifest `events`/`schedules`
+  hooks, token-gated plugin-host `/internal/events` dispatch, core-owned
+  recipient enumeration with fail-closed drift, all consent-gated.
+- `99771fa` Sprint 3 — optional n8n runtime in the customer compose: isolated
+  `automation` network (n8n can't reach db/redis/plugin-host — proven), redis
+  `--requirepass`, generated Caddyfile, n8n on its own isolated postgres, minted
+  secrets, backup DR fix.
+- `64b6130` Sprint 4a — `GDX_WEBHOOK_PRIVATE_ALLOW` (events reach the internal
+  n8n) + a critical fix: webhook dispatch was silently dropped on fresh Postgres
+  boxes (`after_rollback` fired on savepoint rollbacks).
+- `dcf438e` Sprint 4b — `gdx-plugin-eventlog`, a reference plugin proving the
+  platform end-to-end (the copy-me example for third parties).
+- ~90 new tests incl. real-Postgres regressions; the full webhook/plugin/emit
+  surface is green.
+
+**What this delivers now:** the tenant webhook system fires real signed events
+on every business choke point (any Zapier/Make/n8n/curl receiver works today);
+third parties can build plugins that react to those events (the WordPress model);
+and a customer can deploy GDX + an isolated n8n and wire, e.g., estimate-accepted
+→ SMS by pointing a webhook subscription at n8n.
+
+**REMAINING — Doug-side (deploy-gated) + follow-ups:**
+1. **Cut a release** carrying this branch — the customer compose pulls the
+   published GHCR image, so the mint/entrypoint/compose changes only take effect
+   after a release. Then the full 12-service zero-env boot can be staged.
+2. **Stage on the VPS** (`gdx-staging` via Docker Manager, alt ports) → prove
+   image pulls + boot ordering + volume survival, and that Docker Manager passes
+   `COMPOSE_PROFILES=automation`.
+3. **Dogfood** n8n on our own VPS with one real workflow (estimate accepted →
+   SMS to Doug) before any customer — also answers the after-hours office-bell
+   question.
+4. **Throwaway-VPS E2E** — button → checkout → preloaded deploy → TLS on
+   n8n.test.gdxdispatch.com → backup restore.
+5. **Sprint 2b** — the `schedules` beat driver + `/internal/schedule/{key}/{name}`
+   route; the frontend consent UI for `events`/`schedules` + a re-consent-on-drift
+   banner (v1 drift signal is an ERROR log + a `plugin_consent_drift` record, not
+   yet an in-app bell).
+6. **Gap 3** (traction-gated) — the `gdx-agent` supervisor so a plugin can bring
+   its own container; **`n8n-nodes-gdxdispatch`** npm community node.
+7. **Onboarding runbook** additions: 2nd DNS A record for `n8n.<domain>`, gate
+   the automation offering on KVM 2+, pair `COMPOSE_PROFILES=automation` with
+   `GDX_N8N_ENABLED=1`, treat `gdx_backups` as secret-bearing.
 **North star (Doug, 2026-08-17):** people should be able to build **custom
 plugins for GDX that do this kind of work** — integrations, automation,
 reacting to business events. The WordPress model: the platform ships the hook
