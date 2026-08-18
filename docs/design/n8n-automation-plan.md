@@ -468,8 +468,13 @@ surfaced — worth shipping on its own.
 
 - ✅ **`GDX_WEBHOOK_PRIVATE_ALLOW`** SSRF allowance (exact-hostname; look-alikes
   never match) in `core/ssrf_guard.py`, wired through create/test/deliver/redirect;
-  the customer compose sets it to `n8n`. **This is how events reach n8n** — the
-  app (tri-homed) POSTs to a webhook subscription targeting `http://n8n:5678`.
+  the customer compose sets it to `n8n`. **This is how events reach n8n** — a
+  webhook subscription targets `http://n8n:5678` and the **celery delivery worker**
+  POSTs to it. ⚠ That worker (`celery-high`) therefore also sits on the
+  `automation` network — a fix the throwaway-VPS E2E caught: delivery runs on
+  celery, not the app, and celery was `backend`-only, so deliveries to n8n
+  failed with a connection error. celery has no inbound port, so joining
+  automation doesn't let n8n reach it — isolation holds.
   Architectural note (from Sprint 3 isolation): plugin-host is on `backend` and
   **cannot reach n8n** on `automation`, so n8n event delivery goes through the
   tenant-webhook path, NOT a plugin-host `event_handler`. The plugin event

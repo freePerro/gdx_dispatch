@@ -225,7 +225,13 @@ services:
     depends_on:
       app:
         condition: service_healthy
-    networks: [backend]
+    # ALSO on automation: webhook + plugin delivery run here (priority:high), and
+    # a subscription targeting the bundled n8n (http://n8n:5678) must be
+    # reachable. celery has no inbound port, so joining automation does NOT let
+    # n8n reach it — isolation holds (n8n still can't reach db/redis/plugin-host).
+    # Caught by the throwaway-VPS E2E: without this, deliveries to n8n fail with a
+    # connection error because n8n is automation-only.
+    networks: [backend, automation]
     restart: unless-stopped
 
   celery-low:
