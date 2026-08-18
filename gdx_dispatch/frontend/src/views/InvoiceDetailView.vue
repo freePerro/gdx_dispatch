@@ -588,7 +588,20 @@
         <div v-else class="composer-form">
           <div class="form-field">
             <label>To</label>
-            <InputText v-model="composer.to" placeholder="customer@example.com"
+            <Select v-if="composer.recipients.length" v-model="composer.contact_id"
+              :options="composer.recipients" option-value="contact_id"
+              class="w-full" data-testid="composer-recipient"
+              @change="onRecipientChange">
+              <template #option="{ option }">
+                <span>{{ option.name }} &lt;{{ option.email }}&gt;</span>
+                <Tag v-if="option.is_primary" value="primary" severity="info" class="ml-2" />
+                <small class="muted ml-2">{{ option.label }}</small>
+              </template>
+              <template #value="{ value }">
+                <span>{{ recipientDisplay(value) }}</span>
+              </template>
+            </Select>
+            <InputText v-else v-model="composer.to" placeholder="customer@example.com"
               class="w-full" data-testid="composer-to" />
           </div>
           <div class="form-field">
@@ -598,7 +611,8 @@
           <div class="form-field">
             <label>Message</label>
             <Textarea v-model="composer.body_text" rows="8" class="w-full" data-testid="composer-body" />
-            <small class="muted">Plain text — line breaks are preserved.</small>
+            <small class="muted">Your message — line items, totals and the pay button are added
+              automatically around it. Use Preview to see the final email.</small>
           </div>
           <div class="form-field">
             <label>Attachments</label>
@@ -618,11 +632,19 @@
             </div>
             <ComposerPdfPreview :pdf="composer.pdf" />
           </div>
+          <div v-if="composer.previewHtml" class="form-field">
+            <label>Email preview</label>
+            <iframe class="composer-preview" sandbox="" :srcdoc="composer.previewHtml"
+              data-testid="composer-preview" title="Email preview" />
+          </div>
         </div>
         <template #footer>
           <Button label="Cancel" text @click="showComposer = false" data-testid="composer-cancel" />
-          <Button label="Send via Outlook" icon="pi pi-send" severity="primary"
-            :loading="composerSending" :disabled="composerLoading || !composer.to"
+          <Button label="Preview" icon="pi pi-eye" severity="secondary" outlined
+            :loading="composerPreviewing" :disabled="composerLoading"
+            data-testid="composer-preview-btn" @click="previewComposer" />
+          <Button label="Send" icon="pi pi-send" severity="primary"
+            :loading="composerSending" :disabled="composerLoading || !composerHasRecipient"
             data-testid="composer-send" @click="sendComposer" />
         </template>
       </Dialog>
@@ -802,7 +824,7 @@ import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTim
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
-import { openAuthedFile, createAuthedBlobUrl } from "../composables/useAuthedFile";
+import { openAuthedFile } from "../composables/useAuthedFile";
 import { useTenantTimezone } from "../composables/useTenantTimezone";
 import Button from "primevue/button";
 import Column from "primevue/column";
@@ -888,6 +910,14 @@ async function togglePhoto(id) {
 const showComposer = ref(false);
 const composerLoading = ref(false);
 const composerSending = ref(false);
+const composerPreviewing = ref(false);
+const composerHasRecipient = computed(() =>
+  composer.value.recipients?.length ? true : Boolean(composer.value.to)
+);
+function recipientDisplay(contactId) {
+  const opt = (composer.value.recipients || []).find((r) => r.contact_id === (contactId || ""));
+  return opt ? `${opt.name} <${opt.email}>` : composer.value.to || "Choose a recipient";
+}
 const composer = ref({ to: "", subject: "", body_text: "", pdf: null, extras: [] });
 const paymentMethods = ["Cash", "Check", "Card", "Zelle", "Venmo", "ACH", "Other"];
 const newPayment = ref({ amount: 0, method: "Cash", reference: "", date: "" });
@@ -1314,7 +1344,10 @@ async function sendInvoice() {
   if (!(await ensureVerifiedForDelivery())) return;
   composerLoading.value = true;
   showComposer.value = true;
-  composer.value = { to: "", subject: "", body_text: "", pdf: null, extras: [] };
+  composer.value = {
+    to: "", subject: "", body_text: "", pdf: null, extras: [],
+    recipients: [], contact_id: "", previewHtml: "", prefillBody: "",
+  };
   try {
     const data = await api.get(`/api/invoices/${route.params.id}/email-compose`);
     const payload = data?.data || data;
@@ -1322,8 +1355,12 @@ async function sendInvoice() {
       to: (payload.to && payload.to[0]) || "",
       subject: payload.subject || "",
       body_text: payload.body_text || "",
+      prefillBody: payload.body_text || "",
       pdf: payload.pdf,
       extras: (payload.extra_attachments || []).map((a) => ({ ...a, _include: true })),
+      recipients: (payload.recipients || []).map((r) => ({ ...r, contact_id: r.contact_id || "" })),
+      contact_id: payload.selected_contact_id || "",
+      previewHtml: "",
     };
   } catch (err) {
     showComposer.value = false;
@@ -1333,109 +1370,95 @@ async function sendInvoice() {
   }
 }
 
-async function _blobToBase64(blob) {
-  return await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onerror = () => reject(r.error);
-    r.onload = () => {
-      const s = String(r.result || "");
-      const i = s.indexOf(",");
-      resolve(i >= 0 ? s.slice(i + 1) : s);
-    };
-    r.readAsDataURL(blob);
-  });
+async function onRecipientChange() {
+  // Re-prefill the greeting for the newly chosen person — but never clobber
+  // copy the operator already edited; then only the address changes.
+  const contactId = composer.value.contact_id || "";
+  const opt = (composer.value.recipients || []).find((r) => r.contact_id === contactId);
+  if (opt) composer.value.to = opt.email;
+  const edited = composer.value.body_text !== composer.value.prefillBody;
+  if (edited) return;
+  try {
+    const q = contactId ? `?contact_id=${encodeURIComponent(contactId)}` : "";
+    const data = await api.get(`/api/invoices/${route.params.id}/email-compose${q}`, { suppressErrorToast: true });
+    const payload = data?.data || data;
+    composer.value.subject = payload.subject || composer.value.subject;
+    composer.value.body_text = payload.body_text || composer.value.body_text;
+    composer.value.prefillBody = payload.body_text || "";
+    composer.value.previewHtml = "";
+  } catch {
+    // Prefill refresh is cosmetic — the send path re-resolves server-side.
+  }
+}
+
+async function previewComposer() {
+  composerPreviewing.value = true;
+  try {
+    const data = await api.post(`/api/invoices/${route.params.id}/email-preview`, {
+      body_text: composer.value.body_text,
+      subject: composer.value.subject,
+      contact_id: composer.value.contact_id || null,
+    }, { suppressErrorToast: true });
+    const payload = data?.data || data;
+    composer.value.previewHtml = payload.html || "";
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Preview failed", detail: err?.message || "", life: 4000 });
+  } finally {
+    composerPreviewing.value = false;
+  }
 }
 
 async function sendComposer() {
-  if (!composer.value.to) return;
+  if (!composerHasRecipient.value) return;
   composerSending.value = true;
   try {
-    const atts = [
-      {
-        name: composer.value.pdf.name,
-        content_type: composer.value.pdf.content_type,
-        content_base64: composer.value.pdf.content_base64,
-      },
-    ];
-    for (const ex of composer.value.extras) {
-      if (!ex._include) continue;
-      try {
-        const blobUrl = await createAuthedBlobUrl(
-          `/api/documents/${ex.id}/download`,
-        );
-        const blob = await (await fetch(blobUrl)).blob();
-        URL.revokeObjectURL(blobUrl);
-        atts.push({
-          name: ex.name,
-          content_type: ex.content_type,
-          content_base64: await _blobToBase64(blob),
-        });
-      } catch (e) {
-        toast.add({ severity: "warn", summary: "Skipping attachment", detail: ex.name, life: 3000 });
-      }
-    }
-    // Escape first (quotes included — a raw " in a URL would otherwise
-    // break out of the href attribute), then linkify bare URLs. Outlook
-    // desktop doesn't auto-link plain text inside HTML bodies, so the
-    // "Pay online:" link from the compose draft would arrive unclickable
-    // without the anchor. The URL match stops at any escaped entity except
-    // &amp;, so escaped quotes terminate the href cleanly.
-    const escapedBody = composer.value.body_text
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    const linkedBody = escapedBody.replace(
-      /(https?:\/\/[^\s&]+(?:&amp;[^\s&]+)*)/g,
-      '<a href="$1">$1</a>',
-    );
-    const bodyHtml = `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap">${
-      linkedBody
-    }</pre>`;
-    try {
-      // suppressErrorToast so a 409 (Outlook not connected) doesn't fire a
-      // red error toast before the catch-block surfaces the mailto fallback.
-      // useApiWithToast IS useApi (re-export since 2026-05-09), so the only
-      // way to suppress is via this option — not by picking a different client.
-      await api.post("/api/outlook/send", {
-        to: [composer.value.to],
-        subject: composer.value.subject,
-        body_html: bodyHtml,
-        attachments: atts,
-      }, { suppressErrorToast: true });
-      try {
-        await api.post(`/api/invoices/${route.params.id}/mark-sent`, { channel: "email" }, { suppressErrorToast: true });
-        await fetchInvoice();
-      } catch (mse) {
-        // Email left the building but we couldn't flip the row. Surface so
-        // the operator knows to update status manually instead of resending.
-        toast.add({
-          severity: "warn",
-          summary: "Emailed but status not flipped",
-          detail: "Invoice was sent but the server didn't update its status. Refresh the page; if it still shows Draft, edit and re-mark.",
-          life: 8000,
-        });
-      }
+    // Server-side render + send: the backend wraps this copy in the branded
+    // shell (line items, settlement rows, clickable pay button), resolves
+    // the recipient, attaches the PDF, delivers via Outlook Graph or SMTP,
+    // stamps status/sent_at/sent_via, and records the attempt in the
+    // outbound email log. Replaces the browser-built pre-wrapped body,
+    // the direct Outlook relay, and the separate mark-sent call.
+    const result = await api.post(`/api/invoices/${route.params.id}/send`, {
+      body_text: composer.value.body_text,
+      subject: composer.value.subject,
+      contact_id: composer.value.contact_id || null,
+    }, { suppressErrorToast: true });
+    const payload = result?.data || result;
+    if (payload.email_sent) {
+      await fetchInvoice();
       toast.add({
         severity: "success",
         summary: "Sent",
-        detail: `Invoice emailed to ${composer.value.to}. Check your Sent folder.`,
+        detail: `Invoice emailed to ${composer.value.to || "the customer"}.`,
         life: 5000,
       });
       showComposer.value = false;
-    } catch (err) {
-      const status = err?.status || err?.response?.status;
-      if (status === 409) {
-        toast.add({
-          severity: "info",
-          summary: "Opening your mail client",
-          detail: "Outlook isn't connected for this user — using your default mail client instead.",
-          life: 5000,
-        });
-        await _emailViaMailtoFallback(composer.value, atts[0]);
-        showComposer.value = false;
-      } else {
-        toast.add({ severity: "error", summary: "Send failed", detail: err?.message || "Outlook rejected the send", life: 5000 });
-      }
+    } else if (
+      ["no_email_provider_connected", "outlook_not_connected", "outlook_reconnect_required"]
+        .includes(payload.email_skip_reason)
+    ) {
+      toast.add({
+        severity: "info",
+        summary: "Opening your mail client",
+        detail: "No email provider is connected for this user — using your default mail client instead.",
+        life: 5000,
+      });
+      await _emailViaMailtoFallback(composer.value, {
+        name: composer.value.pdf.name,
+        content_type: composer.value.pdf.content_type,
+        content_base64: composer.value.pdf.content_base64,
+      });
+      showComposer.value = false;
+    } else {
+      toast.add({
+        severity: "error",
+        summary: "Send failed",
+        detail: payload.email_skip_reason || "The email could not be delivered",
+        life: 6000,
+      });
     }
+  } catch (err) {
+    toast.add({ severity: "error", summary: "Send failed", detail: err?.message || "", life: 5000 });
   } finally {
     composerSending.value = false;
   }
@@ -2097,6 +2120,14 @@ onMounted(() => {
   font-size: 0.75rem;
 }
 .composer-loading { padding: 2rem; text-align: center; color: #6b7280; }
+.composer-preview {
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--p-surface-300, #d1d5db);
+  border-radius: 6px;
+  /* No background here — the email document inside the iframe paints its
+     own; a hardcoded light surface fails the dark-mode contrast gate. */
+}
 .composer-form { display: flex; flex-direction: column; gap: 0.75rem; }
 .composer-form .form-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .composer-attachments { display: flex; flex-direction: column; gap: 0.4rem; }
