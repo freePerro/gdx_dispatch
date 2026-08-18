@@ -73,41 +73,40 @@ describe('EmailBodyFrame', () => {
   });
 });
 
-describe('EmailBodyFrame — theme (prod walk, 2026-07-28)', () => {
+describe('EmailBodyFrame — white canvas in both themes (prod walks 2026-07-28 + 2026-08-18)', () => {
+  // Two prod walks, two opposite failures, one lesson:
+  // - 2026-07-28: media-query-only styling left dark slate text on a dark
+  //   pane (fix attempt: inject light text + color:inherit in dark mode).
+  // - 2026-08-18: that injection washed out to pale-grey-on-white whenever
+  //   the sender's own white background filled the frame (Outlook bodies
+  //   bring their own white wrappers) — quoted reply headers near invisible.
+  // Resolution: NEVER theme sender-authored HTML. The email renders on an
+  // explicit white canvas with dark default text in BOTH app themes, same
+  // as the composer preview and Email Log detail.
   afterEach(() => {
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('uses light text when the APP is in dark mode, not just the OS', async () => {
-    // The bug this locks: styling was `@media (prefers-color-scheme: dark)`
-    // only, but GDX switches theme with data-theme on <html>. A user on a
-    // light OS toggling dark mode got #1e293b slate text on a dark pane —
-    // the email body rendered as barely-readable grey on prod.
-    document.documentElement.setAttribute('data-theme', 'dark');
-    const w = mount(EmailBodyFrame, { props: { html: '<p>hello</p>', contentType: 'html' } });
-    await flushPromises();
-    const doc = w.find('iframe').attributes('srcdoc');
-    expect(doc).toContain('color:#e2e8f0');
-    expect(doc).not.toContain('color:#1e293b');
+  it('renders a white canvas with dark text regardless of app theme', async () => {
+    for (const theme of ['dark', 'light']) {
+      document.documentElement.setAttribute('data-theme', theme);
+      const w = mount(EmailBodyFrame, { props: { html: '<p>hello</p>', contentType: 'html' } });
+      await flushPromises();
+      const doc = w.find('iframe').attributes('srcdoc');
+      expect(doc, theme).toContain('background:#ffffff');
+      expect(doc, theme).toContain('color:#1e293b');
+      expect(doc, theme).not.toContain('color:#e2e8f0');
+      expect(doc, theme).not.toContain('color:inherit');
+    }
   });
 
-  it('keeps dark text in light mode', async () => {
-    document.documentElement.setAttribute('data-theme', 'light');
-    const w = mount(EmailBodyFrame, { props: { html: '<p>hello</p>', contentType: 'html' } });
-    await flushPromises();
-    expect(w.find('iframe').attributes('srcdoc')).toContain('color:#1e293b');
-  });
-
-  it('overrides sender-hardcoded text colours in dark mode only', async () => {
-    // Sender HTML routinely hard-codes near-black for a white backdrop.
+  it('srcdoc is theme-independent (no repaint machinery needed)', async () => {
     document.documentElement.setAttribute('data-theme', 'dark');
     const dark = mount(EmailBodyFrame, { props: { html: '<p>x</p>' } });
-    await flushPromises();
-    expect(dark.find('iframe').attributes('srcdoc')).toContain('color:inherit');
-
     document.documentElement.setAttribute('data-theme', 'light');
     const light = mount(EmailBodyFrame, { props: { html: '<p>x</p>' } });
     await flushPromises();
-    expect(light.find('iframe').attributes('srcdoc')).not.toContain('color:inherit');
+    expect(dark.find('iframe').attributes('srcdoc'))
+      .toEqual(light.find('iframe').attributes('srcdoc'));
   });
 });
