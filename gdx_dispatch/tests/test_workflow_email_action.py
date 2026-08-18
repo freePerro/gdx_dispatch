@@ -149,3 +149,52 @@ def test_emit_stages_nothing_without_rules(db):
 
     emit_mod._emit(db, TENANT, "invoice.paid", "inv-9", {})
     assert not db.info.get(emit_mod._WORKFLOW_PENDING_KEY)
+
+
+def test_router_rejects_dead_rules(db):
+    """CLAUDE.md 'can someone actually use it': a rule on a trigger nothing
+    emits, or with an unknown action, sits active with run_count 0 forever.
+    The router now 422s at create/update instead."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gdx_dispatch.core.database import get_db
+    from gdx_dispatch.core.modules import require_module
+    from gdx_dispatch.modules.workflows import router as wf
+    from gdx_dispatch.routers.auth import get_current_user
+
+    app = FastAPI()
+    app.include_router(wf.router)
+
+    def _db():
+        yield db
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u"}
+    app.dependency_overrides[require_module("workflows")] = lambda: None
+    c = TestClient(app)
+
+    ok = c.post("/api/workflows", json={
+        "name": "r1", "trigger_event": "invoice.paid",
+        "actions": [{"action_type": "send_email", "params": {"subject": "s", "body": "b"}}],
+    })
+    assert ok.status_code == 200, ok.text
+    rid = ok.json()["id"]
+
+    bad_trigger = c.post("/api/workflows", json={"name": "x", "trigger_event": "not.an.event"})
+    assert bad_trigger.status_code == 422
+    assert "not.an.event" in bad_trigger.json()["detail"]
+
+    bad_action = c.post("/api/workflows", json={
+        "name": "x", "trigger_event": "invoice.paid",
+        "actions": [{"action_type": "launch_rockets", "params": {}}],
+    })
+    assert bad_action.status_code == 422
+
+    bad_update = c.put(f"/api/workflows/{rid}", json={"trigger_event": "nope.nope"})
+    assert bad_update.status_code == 422
+
+    # The list round-trips (serialization proof — the UI reads this).
+    listed = c.get("/api/workflows")
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "r1"

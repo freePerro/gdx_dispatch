@@ -22,6 +22,30 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        bind.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS plugin_email_outbox (
+                id text PRIMARY KEY, company_id varchar(36) NOT NULL,
+                plugin_key varchar(80) NOT NULL, delivery_id varchar(80) NOT NULL,
+                to_email text, customer_id varchar(36), contact_id varchar(36),
+                subject text NOT NULL, body_text text, body_html text,
+                entity_type varchar(30), entity_id varchar(64),
+                status varchar(12) NOT NULL DEFAULT 'queued',
+                attempts integer NOT NULL DEFAULT 0, last_error varchar(120),
+                created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                processed_at timestamp
+            );
+            """
+        )
+        for idx in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_email_outbox_delivery ON plugin_email_outbox (plugin_key, delivery_id);",
+            "CREATE INDEX IF NOT EXISTS ix_plugin_email_outbox_status ON plugin_email_outbox (status);",
+            "CREATE INDEX IF NOT EXISTS ix_plugin_email_outbox_company_id ON plugin_email_outbox (company_id);",
+            "CREATE INDEX IF NOT EXISTS ix_plugin_email_outbox_plugin_key ON plugin_email_outbox (plugin_key);",
+        ):
+            bind.exec_driver_sql(idx)
+        return
     bind.exec_driver_sql(
         """
         CREATE TABLE IF NOT EXISTS plugin_email_outbox (

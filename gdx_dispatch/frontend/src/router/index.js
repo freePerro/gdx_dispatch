@@ -17,6 +17,7 @@ const EstimatesView = () => import('../views/EstimatesView.vue');
 const EstimateView = () => import('../views/EstimateView.vue');
 const BillingView = () => import('../views/BillingView.vue');
 const OutboundEmailLogView = () => import('../views/OutboundEmailLogView.vue');
+const AutomationRulesView = () => import('../views/AutomationRulesView.vue');
 const PaymentsView = () => import('../views/PaymentsView.vue');
 const InvoiceDetailView = () => import('../views/InvoiceDetailView.vue');
 const InvoiceCreateView = () => import('../views/InvoiceCreateView.vue');
@@ -260,6 +261,7 @@ export const routes = [
       { path: '', name: 'campaigns', component: CampaignsView },
       { path: '/segments', name: 'segments', component: SegmentsView },
       { path: '/automations', name: 'automations', component: AutomationsView },
+      { path: '/automation-rules', name: 'automation-rules', component: AutomationRulesView, meta: { requiresPermission: 'nav.admin' } },
       { path: '/winback', name: 'winback', component: WinbackView },
       { path: '/loyalty', name: 'loyalty', component: LoyaltyView },
     ],

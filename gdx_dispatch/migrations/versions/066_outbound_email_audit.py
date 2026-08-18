@@ -24,6 +24,8 @@ Three pieces, all idempotent:
 Revision ID: 066_outbound_email_audit
 Revises: 065_vendor_bill_payments
 """
+import contextlib
+
 from alembic import op
 
 revision = "066_outbound_email_audit"
@@ -34,6 +36,43 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
+    if not is_pg:
+        # SQLite lane (CLAUDE.md: every migration runs on both engines).
+        # Same objects, portable syntax: CURRENT_TIMESTAMP default, no DO $$
+        # (column-adds are try/except — SQLite lacks ADD COLUMN IF NOT
+        # EXISTS), text-affinity types.
+        bind.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS outbound_emails (
+                id text PRIMARY KEY, company_id varchar(36) NOT NULL,
+                initiator_kind varchar(20) NOT NULL DEFAULT 'user',
+                kind varchar(20), initiator_ref varchar(120),
+                entity_type varchar(30), entity_id varchar(64),
+                to_email text NOT NULL, to_name text,
+                recipient_source varchar(20), recipient_contact_id varchar(36),
+                subject text NOT NULL, body_html text NOT NULL,
+                attachments_meta json, provider varchar(20),
+                status varchar(12) NOT NULL DEFAULT 'failed',
+                skip_reason varchar(60), bounced_at timestamp,
+                created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        for idx in (
+            "CREATE INDEX IF NOT EXISTS ix_outbound_emails_company_id ON outbound_emails (company_id);",
+            "CREATE INDEX IF NOT EXISTS ix_outbound_emails_created_at ON outbound_emails (created_at);",
+            "CREATE INDEX IF NOT EXISTS ix_outbound_emails_entity ON outbound_emails (entity_type, entity_id);",
+        ):
+            bind.exec_driver_sql(idx)
+        for alter in (
+            "ALTER TABLE customer_contacts ADD COLUMN is_primary boolean NOT NULL DEFAULT false;",
+            "ALTER TABLE estimates ADD COLUMN sent_via varchar(20);",
+        ):
+            # Table absent (boot creates it with the column) or column exists.
+            with contextlib.suppress(Exception):
+                bind.exec_driver_sql(alter)
+        return
     bind.exec_driver_sql(
         """
         CREATE TABLE IF NOT EXISTS outbound_emails (

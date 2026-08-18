@@ -17,6 +17,8 @@ real, gated behind a tenant toggle.
 Revision ID: 067_automation_email_option
 Revises: 066_outbound_email_audit
 """
+import contextlib
+
 from alembic import op
 
 revision = "067_automation_email_option"
@@ -27,6 +29,16 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        # SQLite lane: plain ALTERs, try/except for exists-either-way.
+        for alter in (
+            "ALTER TABLE app_settings ADD COLUMN automation_emails_enabled boolean NOT NULL DEFAULT false;",
+            "ALTER TABLE app_settings ADD COLUMN automation_sender_user_id varchar(36);",
+            "ALTER TABLE email_settings ADD COLUMN reply_to_email varchar(254);",
+        ):
+            with contextlib.suppress(Exception):
+                bind.exec_driver_sql(alter)
+        return
     # app_settings / email_settings are boot-created tables (003/013
     # pattern): guard so a fresh-DB migration run is a no-op — boot creates
     # them WITH these columns.

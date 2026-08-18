@@ -491,8 +491,9 @@
                 <div>
                   <strong>Let workflow rules send email</strong>
                   <div class="muted">
-                    When on, automation rules with a "send email" action actually
-                    email your customers (branded, and recorded in the
+                    When on, <RouterLink to="/automation-rules">Event Rules</RouterLink>
+                    with a "send email" action actually email your customers
+                    (branded, and recorded in the
                     <RouterLink to="/email-log">Email Log</RouterLink>). Off by
                     default so rules configured before this existed can't
                     surprise-send. Plugin email is separate — it is governed by

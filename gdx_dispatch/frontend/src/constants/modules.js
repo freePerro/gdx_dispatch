@@ -184,6 +184,7 @@ export const MODULE_CATEGORIES = [
       { key: 'campaigns', label: 'Campaigns', icon: 'pi pi-megaphone', to: '/campaigns', type: 'Jobs', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Campaigns' },
       { key: 'segments', label: 'Segments', icon: 'pi pi-sliders-h', to: '/segments', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Segments' },
       { key: 'automations', label: 'Automations', icon: 'pi pi-bolt', to: '/automations', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Automations' },
+      { key: 'automation_rules', label: 'Event Rules', icon: 'pi pi-sitemap', to: '/automation-rules', type: 'Customers', permission: 'nav.admin', cluster: 'marketing_hub', tabLabel: 'Event Rules' },
       { key: 'winback', label: 'Winback & Follow-ups', icon: 'pi pi-refresh', to: '/winback', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Winback' },
       { key: 'loyalty', label: 'Loyalty', icon: 'pi pi-star', to: '/loyalty', type: 'Customers', permission: 'nav.office', cluster: 'marketing_hub', tabLabel: 'Loyalty' },
     ],
