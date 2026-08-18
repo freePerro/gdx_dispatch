@@ -3,6 +3,7 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
+import { useToast } from 'primevue/usetoast'
 import { formatDateTime as fmtDate } from '../composables/useFormatters'
 import Tree from 'primevue/tree'
 import ContextMenu from 'primevue/contextmenu'
@@ -21,6 +22,7 @@ const api = useApi()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const toast = useToast()
 
 // ── state ────────────────────────────────────────────────────────────
 const folders = ref([])              // flat list from /api/outlook/folders
@@ -621,6 +623,39 @@ async function sendCompose() {
 // Mirrors views_router._TAG_MANAGER_ROLES. Techs consume tags, they don't
 // curate them — the server 403s them, so don't offer the control.
 const _TAG_MANAGER_ROLES = ['owner', 'admin', 'dispatcher', 'csr', 'manager', 'sales']
+const creatingEstimate = ref(false)
+
+// "Start an estimate from the inbox, linked to the customer automatically."
+// Uses the message's customer link (the chip next to From/To). Not linked
+// yet → open the link picker instead of a dead click; once linked, one
+// click creates the estimate (job name = subject) and lands in the editor.
+async function startEstimateFromMessage() {
+  if (!detail.value) return
+  if (!detail.value.linked_customer_id) {
+    toast.add({
+      severity: 'info',
+      summary: 'Link a customer first',
+      detail: 'Pick which customer this message belongs to — the estimate will attach to them.',
+      life: 4000,
+    })
+    openLinkDialog()
+    return
+  }
+  creatingEstimate.value = true
+  try {
+    const res = await api.post('/api/estimates', {
+      customer_id: detail.value.linked_customer_id,
+      label: (detail.value.subject || '').replace(/^(re|fwd?):\s*/i, '').trim() || 'From email',
+    })
+    const est = res?.data || res
+    router.push(`/estimates/${est.id}`)
+  } catch (e) {
+    toast.add({ severity: 'error', summary: 'Could not create estimate', detail: e?.message || '', life: 5000 })
+  } finally {
+    creatingEstimate.value = false
+  }
+}
+
 const canManageLinks = computed(() =>
   _TAG_MANAGER_ROLES.includes(String(auth.user?.role || '').toLowerCase()),
 )
@@ -1304,6 +1339,19 @@ onMounted(async () => {
         <div class="detail-actions">
           <Button label="Reply" icon="pi pi-reply" data-test="inbox-reply" @click="startReply" />
           <Button label="Reply all" icon="pi pi-replay" outlined data-test="inbox-reply-all" @click="startReplyAll" />
+          <!-- Start an estimate for the customer this message is linked to
+               (Doug 2026-08-18). Unlinked message → the click opens the link
+               dialog instead of dead-ending; the estimate opens pre-filled
+               with the subject as the job name. Office-gated like linking. -->
+          <Button
+            v-if="canManageLinks"
+            :label="detail.linked_customer_id ? 'New estimate' : 'New estimate…'"
+            icon="pi pi-file-plus"
+            outlined
+            :loading="creatingEstimate"
+            data-test="inbox-new-estimate"
+            @click="startEstimateFromMessage"
+          />
           <!-- Owner-only, same gate as the personal toggle below: Graph's
                forward action resolves the id against the CALLER's mailbox and
                would send under the owner's name, so the server 403s everyone
@@ -1718,6 +1766,7 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 .pane-header h2 { margin: 0; font-size: 1rem; }
 .btn-link {
@@ -1734,6 +1783,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
+  flex-shrink: 0;
 }
 .detail-body {
   flex: 1;
@@ -1751,6 +1801,24 @@ onMounted(async () => {
   border-top: 1px solid var(--surface-border);
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+/* The body frame yields to the pane's chrome (header, meta, thread strip,
+   actions) and fills whatever remains, instead of dictating 55vh and
+   forcing flex to crush its siblings. Scoped :deep so EmailBodyFrame's
+   other consumers (mobile inbox, timeline) keep their own sizing. */
+.msg-pane .email-body-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 1rem 0.5rem;
+}
+.msg-pane .email-body-frame :deep(.ebf-iframe) {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 10rem;
 }
 .compose-fields {
   flex: 1;
@@ -1873,6 +1941,10 @@ onMounted(async () => {
   padding: 0.5rem 1rem;
   max-height: 9rem;
   overflow-y: auto;
+  /* The pane is a flex column; without this the fixed-height body frame
+     crushed the strip to a sliver — all a user saw was its scrollbar
+     arrows (prod walk 2026-08-18). */
+  flex-shrink: 0;
 }
 .thread-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .thread-row {

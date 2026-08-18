@@ -276,3 +276,32 @@ describe('InboxView', () => {
     expect(wrapper.findAll('[data-test="inbox-row"]')).toHaveLength(2);
   });
 });
+
+describe('Inbox detail pane — thread strip survives and estimates start here (2026-08-18)', () => {
+  const { readFileSync } = require('node:fs')
+  const { join } = require('node:path')
+  const SRC = readFileSync(join(__dirname, '..', 'InboxView.vue'), 'utf8')
+
+  it('thread strip cannot be flex-crushed to a scrollbar sliver', () => {
+    // Prod walk: the fixed-height body frame crushed .thread-strip to ~0 —
+    // all a user saw was its up/down scroll arrows.
+    const start = SRC.indexOf('.thread-strip {')
+    const block = SRC.slice(start, SRC.indexOf('}', start))
+    expect(block).toContain('flex-shrink: 0')
+    // ...and the body frame yields instead of dictating a viewport height.
+    expect(SRC).toContain('.msg-pane .email-body-frame')
+    expect(SRC).toMatch(/\.msg-pane \.email-body-frame :deep\(\.ebf-iframe\)[\s\S]*?height: auto/)
+  })
+
+  it('New estimate action exists, uses the linked customer, and never dead-ends', () => {
+    expect(SRC).toContain('data-test="inbox-new-estimate"')
+    const start = SRC.indexOf('async function startEstimateFromMessage')
+    expect(start).toBeGreaterThan(-1)
+    const body = SRC.slice(start, SRC.indexOf('\n}\n', start + 10))
+    // Linked → create with that customer and land in the editor.
+    expect(body).toContain('customer_id: detail.value.linked_customer_id')
+    expect(body).toMatch(/router\.push\(`\/estimates\/\$\{est\.id\}`\)/)
+    // Unlinked → open the link picker, not a no-op click.
+    expect(body).toContain('openLinkDialog()')
+  })
+})
