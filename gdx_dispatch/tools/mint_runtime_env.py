@@ -66,6 +66,10 @@ MANAGED_SECRETS = {
     "GDX_FERNET_KEY": _fernet_key,
     "FERNET_KEY": _fernet_key,
     "DB_PASSWORD": lambda: pysecrets.token_urlsafe(24),  # URL-safe: goes in DATABASE_URL
+    # Shared secret gating plugin-host's /internal/* routes. Injected into app +
+    # plugin-host (both load runtime.env), never into n8n. Enforcement is
+    # opt-in: plugin-host only checks it when this is set (staged rollout).
+    "GDX_INTERNAL_TOKEN": lambda: pysecrets.token_hex(32),
 }
 
 

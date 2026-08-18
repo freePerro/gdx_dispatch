@@ -36,19 +36,24 @@ See gdx_dispatch/docs/decisions/ADR-013-third-party-module-plugins.md.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import signal
 import threading
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from gdx_dispatch.plugin_api.discovery import discover_plugins
+from gdx_dispatch.plugin_api.events import PluginEvent, event_matches
 
 log = logging.getLogger(__name__)
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+# Header carrying the shared internal-auth token (see _install_internal_guard).
+INTERNAL_TOKEN_HEADER = "x-gdx-internal-token"
 
 
 def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
@@ -68,6 +73,24 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
     catalog = {p.key: p for p in plugins if p.key not in stale}
 
     app = FastAPI(title="GDX Plugin Host")
+
+    # Internal-route auth. plugin-host's `/internal/*` routes (restart, browser
+    # credentials, and the event/schedule dispatch below) were historically
+    # protected only by network isolation ("reached only from the core app").
+    # Once an untrusted-workflow container (n8n) shares the compose network that
+    # assumption breaks, so we add a shared-secret gate. STAGED ROLLOUT: enforced
+    # only when GDX_INTERNAL_TOKEN is set — existing prod/dev (token unset, no n8n
+    # on the net) keep working; Sprint 3 mints the token AND isolates n8n's
+    # network, at which point this becomes the second line of defence.
+    @app.middleware("http")
+    async def _internal_guard(request: Request, call_next):  # noqa: ANN001
+        if request.url.path.startswith("/internal/"):
+            token = os.getenv("GDX_INTERNAL_TOKEN", "")
+            if token and not hmac.compare_digest(
+                request.headers.get(INTERNAL_TOKEN_HEADER, ""), token
+            ):
+                return JSONResponse(status_code=401, content={"detail": "internal token required"})
+        return await call_next(request)
 
     def _degraded_payload() -> dict:
         return {"status": "degraded", "plugins": sorted(catalog),
@@ -97,7 +120,12 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
              # ADR-015 Catalog Pack contributions — DATA the core catalog reads.
              "catalog_types": list(getattr(p, "catalog_types", ())),
              "pricing_strategies": list(getattr(p, "pricing_strategies", ())),
-             "importers": list(getattr(p, "importers", ()))}
+             "importers": list(getattr(p, "importers", ())),
+             # Event platform: names only (handlers/callables never leave the
+             # host). Core reads these to enumerate consented event recipients
+             # and to fingerprint the declared automatic-execution surface.
+             "events": list(getattr(p, "events", ())),
+             "schedules": [str(s[0]) for s in getattr(p, "schedules", ()) if s]}
             for p in catalog.values()
         ]
 
@@ -113,6 +141,39 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
         uvicorn shut down gracefully; the 0.5s delay lets this response flush."""
         threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         return {"status": "restarting"}
+
+    @app.post("/internal/events")
+    def dispatch_event(body: dict):
+        """Deliver one domain event to the plugin handlers the core named.
+
+        Core computes the recipient list from consent + the declared-event
+        fingerprint (plugin-host is OUT of the routing decision — it only
+        delivers to whom it's told, and re-checks the event actually matches
+        each recipient's declared patterns as a belt-and-suspenders). Token-gated
+        by the middleware above. Per-plugin isolation: one handler raising never
+        starves another (degrade, don't die). At-least-once — handlers dedupe on
+        delivery_id."""
+        recipients = [str(k) for k in (body.get("recipients") or [])]
+        if not recipients:
+            return {"dispatched": 0}
+        evt = PluginEvent.from_wire(body)
+        dispatched = 0
+        for key in recipients:
+            p = catalog.get(key)
+            handler = getattr(p, "event_handler", None) if p else None
+            if handler is None:
+                continue
+            # Re-verify the event matches this plugin's declared patterns — core
+            # is trusted, but this makes a routing bug fail safe, not silently
+            # deliver an unsubscribed event.
+            if not event_matches(evt.name, getattr(p, "events", ())):
+                continue
+            try:
+                handler(evt)
+                dispatched += 1
+            except Exception:
+                log.exception("plugin_event_handler_failed key=%s event=%s", key, evt.name)
+        return {"dispatched": dispatched}
 
     @app.post("/internal/browser/credentials")
     def set_browser_credentials(body: dict):
@@ -167,9 +228,21 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
     @app.websocket("/internal/browser/ws")
     async def browser_ws(ws: WebSocket, url: str, key: str = ""):
         """Stream a headless browser to the operator (ADR-014). Internal-only —
-        reached solely via the core proxy, which enforces auth + owner role +
-        consent before relaying here. `url` is allowlist-checked in
-        stream_browser; `key` scopes the remembered login to one plugin."""
+        reached via the core proxy, which enforces auth + owner role + consent
+        before relaying here. `url` is allowlist-checked in stream_browser; `key`
+        scopes the remembered login to one plugin.
+
+        Token check is INLINE, not via _internal_guard: Starlette http middleware
+        never runs for websocket scope, so this — the highest-value /internal/*
+        route (it autofills the operator's stored login) — must gate itself, or
+        an on-network container could open it tokenless. Same staged rule: only
+        enforced when GDX_INTERNAL_TOKEN is set."""
+        token = os.getenv("GDX_INTERNAL_TOKEN", "")
+        if token and not hmac.compare_digest(
+            ws.headers.get(INTERNAL_TOKEN_HEADER, ""), token
+        ):
+            await ws.close(code=1008)  # policy violation
+            return
         from gdx_dispatch.plugin_host.browser_stream import stream_browser
 
         await stream_browser(ws, url, key)

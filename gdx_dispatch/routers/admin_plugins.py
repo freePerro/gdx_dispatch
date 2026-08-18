@@ -220,7 +220,9 @@ def restart_plugin_host(_: dict = Depends(_require_owner)) -> dict:
     /api/plugins to confirm it comes back."""
     url = os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
     try:
-        httpx.post(f"{url}/internal/restart", timeout=5.0)
+        from gdx_dispatch.core.plugin_consent import internal_auth_headers
+
+        httpx.post(f"{url}/internal/restart", timeout=5.0, headers=internal_auth_headers())
     except Exception:
         logging.getLogger(__name__).warning("plugin-host restart trigger failed (may be cycling)")
     # The permission catalog caches the installed-plugin list; a restart is

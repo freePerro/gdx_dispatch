@@ -46,6 +46,9 @@ log = logging.getLogger(__name__)
 # session.info key holding delivery-row ids staged this transaction, dispatched
 # on commit. Distinct, module-private key so nothing else drains it.
 _PENDING_KEY = "_gdx_pending_webhook_dispatch"
+# Envelopes to fan out to consented PLUGINS (the WordPress-model hook), dispatched
+# on the same after_commit as the tenant webhooks.
+_PLUGIN_PENDING_KEY = "_gdx_pending_plugin_dispatch"
 
 _hook_installed = False
 
@@ -184,33 +187,69 @@ def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: di
 
     if staged:
         db.info.setdefault(_PENDING_KEY, []).extend(staged)
+
+    # Plugin sink: the SAME event goes to consented plugins via plugin-host. Gate
+    # on a cheap consent check so a zero-plugin box (the common case) stages
+    # nothing and fires no task. The recipient decision is made later, in the
+    # task, from the stored consent preimage (drift-checked) — core-owned routing.
+    try:
+        from gdx_dispatch.core.plugin_consent import any_event_consent
+
+        if any_event_consent(db):
+            db.info.setdefault(_PLUGIN_PENDING_KEY, []).append(
+                {
+                    "event": event_type,
+                    "data": data,
+                    "tenant_id": tenant_id,
+                    "occurred_at": envelope["occurred_at"],
+                    "delivery_id": hashlib.sha256(
+                        f"{tenant_id}:{event_type}:{entity_id}:{envelope['occurred_at']}".encode()
+                    ).hexdigest(),
+                }
+            )
+    except Exception:
+        log.exception("plugin_dispatch_stage_failed event=%s", event_type)
+
+    if staged or db.info.get(_PLUGIN_PENDING_KEY):
         _install_dispatch_hook()
     return len(staged)
 
 
 def _dispatch_pending(session: Session) -> None:
-    """after_commit: the staged rows are now durable — enqueue delivery. Only
-    ever enqueues; never touches the DB on the just-committed session."""
+    """after_commit: staged work is now durable — enqueue delivery. Only ever
+    enqueues Celery tasks; never touches the DB on the just-committed session."""
     ids = session.info.pop(_PENDING_KEY, None)
-    if not ids:
-        return
-    # Import here: this module is imported early (via choke points) and the task
-    # module pulls in the Celery app — avoid an import cycle at module load.
-    from gdx_dispatch.core.webhooks.tasks import deliver_webhook_task
+    if ids:
+        # Import here: this module is imported early (via choke points) and the
+        # task module pulls in the Celery app — avoid an import cycle at load.
+        from gdx_dispatch.core.webhooks.tasks import deliver_webhook_task
 
-    for delivery_id in ids:
-        try:
-            deliver_webhook_task.delay(delivery_id)
-        except Exception:
-            # Broker unreachable: the row is committed 'pending' with
-            # next_retry_at=NULL; the retry sweep rescues exactly those.
-            log.exception("webhook_dispatch_enqueue_failed id=%s", delivery_id)
+        for delivery_id in ids:
+            try:
+                deliver_webhook_task.delay(delivery_id)
+            except Exception:
+                # Broker unreachable: the row is committed 'pending' with
+                # next_retry_at=NULL; the retry sweep rescues exactly those.
+                log.exception("webhook_dispatch_enqueue_failed id=%s", delivery_id)
+
+    envelopes = session.info.pop(_PLUGIN_PENDING_KEY, None)
+    if envelopes:
+        from gdx_dispatch.core.plugin_events import deliver_plugin_event_task
+
+        for envelope in envelopes:
+            try:
+                deliver_plugin_event_task.delay(envelope)
+            except Exception:
+                # Best-effort (no plugin retry ledger in v1); the event is simply
+                # not delivered to plugins if the broker is down.
+                log.exception("plugin_dispatch_enqueue_failed event=%s", envelope.get("event"))
 
 
 def _drop_pending(session: Session) -> None:
-    """after_rollback: the staged rows rolled back with the txn — forget them so
-    a later commit on the same session can't dispatch phantoms."""
+    """after_rollback: staged work rolled back with the txn — forget it so a
+    later commit on the same session can't dispatch phantoms."""
     session.info.pop(_PENDING_KEY, None)
+    session.info.pop(_PLUGIN_PENDING_KEY, None)
 
 
 def _install_dispatch_hook() -> None:

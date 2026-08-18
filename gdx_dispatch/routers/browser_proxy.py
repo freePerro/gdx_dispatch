@@ -108,9 +108,12 @@ class CredsReq(BaseModel):
 
 async def _creds_call(method: str, **kwargs) -> dict:
     """Relay a credentials op to the plugin-host's internal store."""
+    from gdx_dispatch.core.plugin_consent import internal_auth_headers
+
+    headers = {**internal_auth_headers(), **kwargs.pop("headers", {})}
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.request(
-            method, f"{_host_http_url()}/internal/browser/credentials", **kwargs
+            method, f"{_host_http_url()}/internal/browser/credentials", headers=headers, **kwargs
         )
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.text[:500])
@@ -193,7 +196,11 @@ async def browser_stream_proxy(websocket: WebSocket, ticket: str = "") -> None:
         f"?url={quote(claims['u'], safe='')}&key={quote(str(claims.get('k', '')), safe='')}"
     )
     try:
-        async with websockets.connect(upstream, max_size=None) as up:
+        from gdx_dispatch.core.plugin_consent import internal_auth_headers
+
+        async with websockets.connect(
+            upstream, max_size=None, additional_headers=internal_auth_headers()
+        ) as up:
             await asyncio.gather(
                 _client_to_upstream(websocket, up),
                 _upstream_to_client(up, websocket),

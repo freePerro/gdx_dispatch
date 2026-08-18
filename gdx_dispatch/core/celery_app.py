@@ -30,6 +30,7 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.tasks.customer_volume_refresh",
             "gdx_dispatch.tasks.estimate_archive",
             "gdx_dispatch.core.webhooks.tasks",
+            "gdx_dispatch.core.plugin_events",
             "gdx_dispatch.modules.campaigns.tasks",
             "gdx_dispatch.core.reconciliation_tasks",
             "gdx_dispatch.modules.outlook.tasks",
@@ -71,6 +72,7 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.tasks.recurring.*": {"queue": "priority:low"},
             "gdx_dispatch.tasks.email_poller.*": {"queue": "priority:low"},
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
+            "gdx_dispatch.core.plugin_events.*": {"queue": "priority:high"},
             "gdx_dispatch.modules.campaigns.tasks.*": {"queue": "priority:high"},
             "gdx_dispatch.core.reconciliation_tasks.*": {"queue": "priority:low"},
             "outlook.*": {"queue": "priority:low"},
@@ -102,6 +104,7 @@ from gdx_dispatch.core.webhooks.emit import install_webhook_dispatch_hook  # noq
 install_webhook_dispatch_hook()
 
 # Ensure external task modules are imported so Celery registers decorated tasks.
+from gdx_dispatch.core import plugin_events as _plugin_events_tasks  # noqa: E402,F401
 from gdx_dispatch.core import reconciliation_tasks as _reconciliation_tasks  # noqa: E402,F401
 from gdx_dispatch.core.webhooks import tasks as _webhook_tasks  # noqa: E402,F401
 from gdx_dispatch.modules.bank_feeds import tasks as _bank_feeds_tasks  # noqa: E402,F401

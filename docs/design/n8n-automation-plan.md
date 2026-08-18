@@ -269,6 +269,38 @@ plugin-host dispatches per-plugin, try/except isolated ("degrade, don't die"),
 `delivery_id`. Schedules: one core-beat task (every minute) reads the catalog,
 finds due schedules, POSTs token-gated `/internal/schedule/{key}/{name}`.
 
+**Sprint 2 build status (2026-08-17) — the EVENT path is built + tested.**
+- ✅ Manifest gains `events` / `event_handler` / `schedules`, each consent-gated
+  (declaring them requires the matching permission + a valid handler/shape).
+- ✅ `plugin_api/events.py`: `PluginEvent`, wildcard `event_matches` (exact /
+  `prefix.*` / `*`), `capability_fingerprint` (names only).
+- ✅ plugin-host: `GDX_INTERNAL_TOKEN` middleware on `/internal/*` (staged —
+  enforced only when the token is set, retro-hardening restart + browser creds);
+  `/internal/events` dispatch (recipient list from core, re-checks the pattern,
+  per-plugin isolation); `/api/plugins` exposes events + schedule names.
+- ✅ Core: consent stores the event-list **preimage + fingerprint**;
+  `event_recipients()` enumerates from the stored preimage (+ a defense-in-depth
+  `events`-permission check) and **fail-closes on drift** (plugin changed its
+  declared events → not delivered). Drift signal is v1-honest: an ERROR log
+  (→ Sentry when configured) + a throttled `plugin_consent_drift` record — an
+  owner-facing banner/bell that reads it is Sprint-2b (not yet a UI signal).
+  `deliver_plugin_event_task` (Celery, bounded retry on transient plugin-host
+  downtime) POSTs to plugin-host with the token; `emit_domain_event` gained a
+  **read-only** plugin sink (never commits the caller's txn — a bug the test
+  caught) that stages a dispatch on the same `after_commit`.
+  **Delivery guarantee is best-effort / at-least-once ONCE ENQUEUED** — there is
+  no durable per-plugin ledger, so a broker-down-at-enqueue or retry-exhausted
+  event is dropped with a log (reliability-critical automations use the durable
+  tenant-webhook path; a plugin ledger is a documented open question). The WS
+  `/internal/browser/ws` is token-gated INLINE (http middleware doesn't cover
+  websocket scope — an audit-caught hole).
+- ✅ `GDX_INTERNAL_TOKEN` minted (`mint_runtime_env.py`); existing `/internal/*`
+  callers send it; consent DDL made portable (`CURRENT_TIMESTAMP`).
+- 27 event/consent tests + 205-test plugin/webhook regression batch green.
+- **Follow-up (Sprint 2b):** the `schedules` driver (`/internal/schedule/{key}/{name}`
+  + the beat task) and the frontend consent UI for events/schedules /
+  re-consent-on-drift; full runtime E2E needs a plugin-host image rebuild.
+
 ## Sprint 3 — compose (audit rewrote most of this)
 
 ### Network isolation (security-F1/F3/F4 — the highest-leverage change)
