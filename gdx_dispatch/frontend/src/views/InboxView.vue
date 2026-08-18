@@ -1675,11 +1675,26 @@ onMounted(async () => {
 .row-top {
   display: flex;
   justify-content: space-between;
+  gap: 0.5rem;
   font-size: 0.85rem;
 }
-.row-from { font-weight: 600; }
-.row-when { font-size: 0.75rem; }
-.row-subject { font-size: 0.95rem; }
+/* Long sender addresses must truncate — without min-width:0 + ellipsis they
+   shove the date into a word-per-line vertical wrap and force the list into
+   a horizontal scrollbar (2026-08-18 prod walk). */
+.row-from {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-when { font-size: 0.75rem; white-space: nowrap; flex-shrink: 0; }
+.row-subject {
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .row-preview {
   font-size: 0.8rem;
   white-space: nowrap;
