@@ -245,9 +245,19 @@ def _dispatch_pending(session: Session) -> None:
                 log.exception("plugin_dispatch_enqueue_failed event=%s", envelope.get("event"))
 
 
-def _drop_pending(session: Session) -> None:
-    """after_rollback: staged work rolled back with the txn — forget it so a
-    later commit on the same session can't dispatch phantoms."""
+def _drop_pending(session: Session, previous_transaction) -> None:  # noqa: ANN001
+    """Forget staged dispatch when the BUSINESS transaction rolls back, so a later
+    commit on the same session can't dispatch phantoms.
+
+    Uses after_soft_rollback (not after_rollback) and skips SAVEPOINT rollbacks
+    (`previous_transaction.nested`): emit itself rolls back savepoints as normal
+    control flow — a duplicate-key skip in the fan-out, and the read-only
+    plugin-consent probe on a fresh box (missing table). after_rollback fires on
+    those too, and clearing pending there dropped legitimately-staged deliveries
+    — webhooks silently never fired on a fresh Postgres box. Only a real
+    (non-nested) rollback means the business write is gone with its deliveries."""
+    if getattr(previous_transaction, "nested", False):
+        return  # savepoint rolled back; the outer business txn is still live
     session.info.pop(_PENDING_KEY, None)
     session.info.pop(_PLUGIN_PENDING_KEY, None)
 
@@ -259,7 +269,9 @@ def _install_dispatch_hook() -> None:
     if _hook_installed:
         return
     event.listen(Session, "after_commit", _dispatch_pending)
-    event.listen(Session, "after_rollback", _drop_pending)
+    # after_soft_rollback (not after_rollback) so we can tell a SAVEPOINT rollback
+    # — emit's own normal control flow — from a real business-txn rollback.
+    event.listen(Session, "after_soft_rollback", _drop_pending)
     _hook_installed = True
 
 

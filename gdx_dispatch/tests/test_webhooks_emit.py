@@ -264,6 +264,42 @@ def test_rollback_drops_dispatch():
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
 
 
+def test_emit_still_dispatches_when_consent_probe_savepoint_rolls_back():
+    # Regression: on a FRESH box the plugin_consent table doesn't exist, so
+    # any_event_consent's begin_nested SELECT fails and rolls back its SAVEPOINT.
+    # after_rollback fires on savepoint rollbacks too — an earlier version cleared
+    # the staged webhook dispatch there, so webhooks silently NEVER fired on a
+    # fresh Postgres box. The after_soft_rollback + `nested` guard keeps pending
+    # across savepoint rollbacks. This _session() has NO plugin_consent table, so
+    # the probe savepoint really does roll back.
+    db = _session()
+    install_webhook_dispatch_hook()
+    _sub(db, ["invoice.paid"])
+    with patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+        n = emit_domain_event(db, "invoice.paid", "inv-fresh", {}, tenant_id=TENANT)
+        db.commit()
+    assert n == 1
+    assert delay.call_count == 1  # dispatched despite the probe savepoint rollback
+
+
+def test_emit_never_commits_callers_txn_with_consent_table_present():
+    # Regression: the plugin-sink consent check must be READ-ONLY. An earlier
+    # version called ensure_consent_table() (which commits) in the hot path,
+    # which would commit the caller's half-built invoice/job mid-emit. With the
+    # consent table present so the real SELECT runs, a rollback must still
+    # discard the staged delivery — proving emit committed nothing.
+    from gdx_dispatch.core.plugin_consent import ensure_consent_table
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    ensure_consent_table(db)  # commits; happens BEFORE emit
+    _sub(db, ["invoice.paid"])
+    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+        emit_domain_event(db, "invoice.paid", "inv-x", {}, tenant_id=TENANT)
+        db.rollback()
+    assert db.execute(select(WebhookDelivery)).scalars().all() == []
+
+
 def test_retry_sweep_rescues_stranded_null_next_retry():
     db = _session()
     old = utcnow() - timedelta(minutes=5)
@@ -310,6 +346,34 @@ def test_redirect_handler_revalidates_target():
     with pytest.raises(OutboundURLBlocked):
         # a redirect pointing at an internal host must be refused
         handler.redirect_request(None, None, 307, "x", {}, "http://127.0.0.1:8000/internal/events")
+
+
+def test_webhook_private_allow_is_exact_host_only(monkeypatch):
+    from gdx_dispatch.core.ssrf_guard import (
+        OutboundURLBlocked,
+        validate_outbound_url,
+        webhook_allow_hosts,
+    )
+
+    monkeypatch.setenv("GDX_WEBHOOK_PRIVATE_ALLOW", "n8n")
+    allow = webhook_allow_hosts()
+    assert allow == frozenset({"n8n"})
+    # exact set membership only — look-alikes never match
+    assert "n8n" in allow and "eviln8n" not in allow and "n8n.attacker.com" not in allow
+    # the allowlisted internal host is permitted (short-circuits before DNS)
+    validate_outbound_url("http://n8n:5678/webhook/abc", allow)  # no raise
+    # non-allowlisted literal private/link-local addresses stay blocked
+    with pytest.raises(OutboundURLBlocked):
+        validate_outbound_url("http://169.254.169.254/latest/meta-data", allow)
+    with pytest.raises(OutboundURLBlocked):
+        validate_outbound_url("http://127.0.0.1:6379/", allow)
+
+
+def test_webhook_private_allow_empty_by_default(monkeypatch):
+    from gdx_dispatch.core.ssrf_guard import webhook_allow_hosts
+
+    monkeypatch.delenv("GDX_WEBHOOK_PRIVATE_ALLOW", raising=False)
+    assert webhook_allow_hosts() == frozenset()
 
 
 # ---------------------------------------------------------------------------

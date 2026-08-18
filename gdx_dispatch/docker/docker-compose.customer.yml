@@ -48,6 +48,11 @@ x-app-env: &app-env
   ENVIRONMENT: ${ENVIRONMENT:-production}
   REDIS_URL: redis://redis:6379/0
   GDX_RUNTIME_ENV_FILE: /secrets/runtime.env
+  # Let a webhook subscription target the bundled n8n at http://n8n:5678 (a
+  # Docker-internal RFC1918 address the SSRF guard would otherwise block). Exact
+  # host only. This is how business events reach n8n: the app (tri-homed) posts
+  # to it — plugin-host is isolated from n8n by design and cannot.
+  GDX_WEBHOOK_PRIVATE_ALLOW: ${GDX_WEBHOOK_PRIVATE_ALLOW:-n8n}
   # ── customer-facing settings (see header) ──
   GDX_DOMAIN: ${GDX_DOMAIN:-}
   GDX_TENANT_SLUG: ${GDX_TENANT_SLUG:-gdx}

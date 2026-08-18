@@ -412,6 +412,24 @@ every `EncryptedString` column. Add a line to the sidecar copying `runtime.env`
 into `/backups`. This is a pre-existing disaster-recovery hole the n8n work
 surfaced — worth shipping on its own.
 
+## Sprint 4a build status — n8n event path + a critical dispatch fix
+
+- ✅ **`GDX_WEBHOOK_PRIVATE_ALLOW`** SSRF allowance (exact-hostname; look-alikes
+  never match) in `core/ssrf_guard.py`, wired through create/test/deliver/redirect;
+  the customer compose sets it to `n8n`. **This is how events reach n8n** — the
+  app (tri-homed) POSTs to a webhook subscription targeting `http://n8n:5678`.
+  Architectural note (from Sprint 3 isolation): plugin-host is on `backend` and
+  **cannot reach n8n** on `automation`, so n8n event delivery goes through the
+  tenant-webhook path, NOT a plugin-host `event_handler`. The plugin event
+  platform (Sprint 2) is for plugins whose logic runs *inside* plugin-host.
+- ✅ **Critical dispatch bug fixed** (found by Sprint 4's test run): the emit
+  after-rollback hook used `after_rollback`, which fires on SAVEPOINT rollbacks
+  too — so `any_event_consent`'s probe savepoint (missing `plugin_consent` table
+  on a fresh box) and dup-emit savepoints **silently dropped staged webhook
+  dispatch**. Webhooks would have staged but NEVER fired on a fresh Postgres box.
+  Now uses `after_soft_rollback` + the `nested` flag: pending survives savepoint
+  rollbacks, clears only on a real business-txn rollback. Regression test added.
+
 ## Sprint 4 — the flagship: `gdx-plugin-n8n`
 
 A real pip plugin, key `n8n`, built ONLY on the public plugin API (if it needs

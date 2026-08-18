@@ -36,7 +36,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from gdx_dispatch.core.audit import TenantBase, log_audit_event_sync, utcnow
-from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked, validate_outbound_url
+from gdx_dispatch.core.ssrf_guard import (
+    OutboundURLBlocked,
+    validate_outbound_url,
+    webhook_allow_hosts,
+)
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
 from gdx_dispatch.routers.auth import get_current_user
@@ -197,7 +201,7 @@ def _reject_unsafe_url(url: str) -> None:
     subscription pointed at an internal host before it can ever be delivered to
     or test-sent (adversarial audit, truth-F9)."""
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, webhook_allow_hosts())
     except OutboundURLBlocked as exc:
         raise HTTPException(status_code=422, detail=f"URL not allowed: {exc}") from exc
 
@@ -407,7 +411,7 @@ def test_subscription(
     err: str | None = None
     t0 = time.time()
     try:
-        validate_outbound_url(row.url)
+        validate_outbound_url(row.url, webhook_allow_hosts())
         req = urllib.request.Request(row.url, data=payload_bytes, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             status_code = resp.status

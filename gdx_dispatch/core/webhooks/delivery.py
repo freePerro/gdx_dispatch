@@ -13,7 +13,11 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event, utcnow
-from gdx_dispatch.core.ssrf_guard import OutboundURLBlocked, validate_outbound_url
+from gdx_dispatch.core.ssrf_guard import (
+    OutboundURLBlocked,
+    validate_outbound_url,
+    webhook_allow_hosts,
+)
 from gdx_dispatch.core.webhooks.models import AIAction, WebhookDelivery, WebhookEndpoint
 
 RETRY_DELAYS = [5, 30, 120, 600, 1800, 7200, 21600, 86400]
@@ -36,7 +40,8 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        validate_outbound_url(newurl)  # raises OutboundURLBlocked → delivery fails closed
+        # Re-validate each hop under the same allowlist as the initial URL.
+        validate_outbound_url(newurl, webhook_allow_hosts())  # → OutboundURLBlocked = fail closed
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -45,7 +50,7 @@ _opener = build_opener(_ValidatingRedirectHandler())
 
 def _post(url: str, payload: bytes, headers: dict[str, str]) -> int:
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, webhook_allow_hosts())
     except OutboundURLBlocked:
         log.warning("_post blocked url=%s (SSRF guard)", url)
         return 0
