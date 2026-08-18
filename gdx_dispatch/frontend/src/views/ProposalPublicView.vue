@@ -40,6 +40,23 @@
             </p>
             <p v-if="est.description" class="description">{{ est.description }}</p>
 
+            <!-- Pictures of the doors being quoted (2026-08-18): the estimate's
+                 photo attachments — the same set the PDF prints — inlined by
+                 the backend as downscaled data URIs. Label = door size. -->
+            <div v-if="photos.length" class="photo-grid" data-testid="proposal-photos">
+              <button
+                v-for="(p, i) in photos"
+                :key="i"
+                type="button"
+                class="photo-tile"
+                :data-testid="`proposal-photo-${i}`"
+                @click="lightboxPhoto = p"
+              >
+                <img :src="p.src" :alt="p.label || 'Estimate photo'" loading="lazy" />
+                <span v-if="p.label" class="photo-label" data-testid="proposal-photo-label">{{ p.label }}</span>
+              </button>
+            </div>
+
             <!-- Good/better/best: per-tier prices ONLY. There is deliberately
                  no combined total — the backend omits it because the totals
                  engine is tier-blind and est.total can be the highest tier. -->
@@ -222,6 +239,14 @@
             data-testid="deposit-pay-now" @click="payDepositNow" />
         </template>
       </Dialog>
+
+      <!-- Tap a photo → full size. The data URI is already downscaled server-
+           side, so this is a zoom, not a second fetch. -->
+      <Dialog v-model:visible="lightboxOpen" :header="lightboxPhoto?.label || 'Photo'" :modal="true"
+        :dismissable-mask="true" :style="{ width: 'min(940px, 96vw)' }" data-testid="photo-lightbox">
+        <img v-if="lightboxPhoto" :src="lightboxPhoto.src" class="lightbox-img"
+          :alt="lightboxPhoto.label || 'Estimate photo'" />
+      </Dialog>
     </main>
   </div>
 </template>
@@ -258,8 +283,14 @@ const depositPromptOpen = computed({
   get: () => !!depositPrompt.value,
   set: (v) => { if (!v) depositPrompt.value = null; },
 });
+const lightboxPhoto = ref(null);
+const lightboxOpen = computed({
+  get: () => !!lightboxPhoto.value,
+  set: (v) => { if (!v) lightboxPhoto.value = null; },
+});
 
 const est = computed(() => data.value?.estimate || {});
+const photos = computed(() => data.value?.photos || []);
 const tiers = computed(() => data.value?.tiers || []);
 const lines = computed(() => data.value?.lines || []);
 const totals = computed(() => data.value?.totals || null);
@@ -417,6 +448,13 @@ onMounted(load);
 .state-card { max-width: 520px; margin: 2rem auto; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .description { white-space: pre-wrap; margin: 0.75rem 0; }
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.5rem; margin: 0.75rem 0; }
+.photo-tile { position: relative; padding: 0; border: 1px solid var(--p-content-border-color, #e5e7eb); border-radius: 8px; overflow: hidden; background: var(--p-content-background, #fff); cursor: zoom-in; aspect-ratio: 4 / 3; }
+.photo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Label sits ON the image, so its colors are fixed against the photo, not the
+   theme — white on dark scrim reads in light and dark mode alike. */
+.photo-label { position: absolute; left: 0.4rem; bottom: 0.4rem; max-width: calc(100% - 0.8rem); padding: 0.15rem 0.5rem; border-radius: 4px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 0.8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lightbox-img { display: block; width: 100%; height: auto; border-radius: 6px; }
 .meta { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
 .valid-until { margin-top: 0.75rem; }
 .lines-table { margin: 0.75rem 0; }

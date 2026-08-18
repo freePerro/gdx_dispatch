@@ -145,3 +145,64 @@ def test_upload_to_missing_estimate_404(client: TestClient):
         files={"file": ("a.png", io.BytesIO(b"x"), "image/png")},
     )
     assert r.status_code == 404
+
+
+# ── labels (Document.title — the door size shown to the customer) ───────────
+
+
+def test_upload_with_title_patch_relabel_and_clear(client: TestClient):
+    eid = _create_estimate(client)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    r = client.post(
+        f"/api/estimates/{eid}/attachments",
+        files={"file": ("photo.png", io.BytesIO(png), "image/png")},
+        data={"title": "  16' × 7'  "},
+    )
+    assert r.status_code == 201, r.text
+    att = r.json()
+    assert att["title"] == "16' × 7'"  # trimmed
+
+    # Relabel after the fact — the office fixing/adding a size.
+    r = client.patch(f"/api/estimates/{eid}/attachments/{att['id']}", json={"title": "9' × 7'"})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "9' × 7'"
+
+    # The list carries it (the attachment panel renders from the list).
+    r = client.get(f"/api/estimates/{eid}/attachments")
+    assert [a["title"] for a in r.json() if a["id"] == att["id"]] == ["9' × 7'"]
+
+    # Empty string clears the label back to NULL.
+    r = client.patch(f"/api/estimates/{eid}/attachments/{att['id']}", json={"title": ""})
+    assert r.status_code == 200
+    assert r.json()["title"] is None
+
+
+def test_patch_label_unknown_attachment_is_404(client: TestClient):
+    eid = _create_estimate(client)
+    r = client.patch(
+        f"/api/estimates/{eid}/attachments/00000000-0000-0000-0000-000000000000",
+        json={"title": "x"},
+    )
+    assert r.status_code == 404
+
+
+def test_pdf_caption_prefers_title_over_filename(client: TestClient):
+    """The PDF grid captions each photo with the label when one exists; the
+    old behavior (original_name) survives as the fallback so legacy uploads
+    keep their captions."""
+    from gdx_dispatch.routers.pdf import _estimate_attachments_for_pdf
+
+    eid = _create_estimate(client)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    for name, title in (("labeled.png", "16' × 7'"), ("plain.png", None)):
+        r = client.post(
+            f"/api/estimates/{eid}/attachments",
+            files={"file": (name, io.BytesIO(png), "image/png")},
+            data={"title": title} if title else {},
+        )
+        assert r.status_code == 201, r.text
+
+    with next(client.app.dependency_overrides[get_db]()) as db:
+        images, files = _estimate_attachments_for_pdf(db, UUID(eid), "tenant-test")
+    assert [i["name"] for i in images] == ["16' × 7'", "plain.png"]
+    assert files == []

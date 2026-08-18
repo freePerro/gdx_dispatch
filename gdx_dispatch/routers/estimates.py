@@ -8,7 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
@@ -2607,6 +2607,9 @@ def _serialize_attachment(doc: Document) -> dict[str, object]:
         "id": str(doc.id),
         "filename": doc.filename,
         "original_name": doc.original_name,
+        # The customer-facing label — the door size ("16' × 7'"). Rides the
+        # public proposal page and captions the PDF photo grid.
+        "title": doc.title,
         "content_type": doc.content_type,
         "file_size": int(doc.file_size or 0),
         "uploaded_by": doc.uploaded_by,
@@ -2635,6 +2638,9 @@ def upload_estimate_attachment(
     estimate_id: UUID,
     request: Request,
     file: UploadFile = File(...),
+    # Optional customer-facing label ("16' × 7'"); the capture flow sends the
+    # door size it already knows so nobody has to type it after the fact.
+    title: str | None = Form(default=None),
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -2660,6 +2666,7 @@ def upload_estimate_attachment(
     doc = Document(
         filename=stored,
         original_name=sanitized,
+        title=(title or "").strip()[:255] or None,
         file_size=len(data),
         content_type=ct,
         uploaded_by=str((user or {}).get("name") or (user or {}).get("email") or (user or {}).get("sub") or "system"),
@@ -2715,6 +2722,55 @@ def download_estimate_attachment(
         media_type=doc.content_type or "application/octet-stream",
         filename=doc.original_name,
     )
+
+
+class AttachmentPatch(BaseModel):
+    # None = leave alone (exclude_unset guards); "" = clear the label.
+    title: str | None = Field(default=None, max_length=255)
+
+
+@router.patch("/{estimate_id}/attachments/{document_id}", response_model=None)
+def patch_estimate_attachment(
+    estimate_id: UUID,
+    document_id: UUID,
+    payload: AttachmentPatch,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Label a photo after the fact — the door size ("16' × 7'") on pictures
+    that arrived without one (manual uploads, older captures)."""
+    _get_estimate_or_404(estimate_id, db)
+    doc = db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.estimate_id == estimate_id,
+            Document.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "title" in data:
+        doc.title = (data["title"] or "").strip()[:255] or None
+    db.commit()
+    db.refresh(doc)
+    try:
+        tenant_id = str((getattr(request.state, "tenant", {}) or {}).get("id") or "")
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=str((user or {}).get("sub") or (user or {}).get("user_id") or "system"),
+            action="estimate_attachment_labeled",
+            entity_type="estimate",
+            entity_id=str(estimate_id),
+            details={"document_id": str(document_id), "title": doc.title},
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        log.exception("estimate_attachment_label_audit_failed")
+    return _serialize_attachment(doc)
 
 
 @router.delete("/{estimate_id}/attachments/{document_id}", response_model=None)

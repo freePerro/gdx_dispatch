@@ -145,8 +145,19 @@ describe('EstimateView — providers on NEW estimates (2026-08-13, Doug)', () =>
     // the isExisting watcher attaches it the moment the estimate exists.
     expect(SRC).toMatch(/_pendingCapturedImages\.push\(\{/);
     expect(SRC).toMatch(/watch\(isExisting, async \(nowExists\) => \{/);
-    expect(SRC).toMatch(/_attachCapturedImage\(p\.image, p\.item, p\.pluginKey\)/);
+    expect(SRC).toMatch(/_attachCapturedImage\(p\.image, p\.item, p\.pluginKey, p\.title\)/);
     expect(SRC).toMatch(/will attach once the estimate saves/);
+  });
+
+  it('labels a captured photo with the door size, through both attach paths', () => {
+    // The size is derived where the draft (spec + description) is in hand and
+    // rides the upload as the Document title — the public link page and the
+    // PDF caption both render it. The deferred queue must carry it too, or a
+    // new-estimate capture would silently lose its label.
+    expect(SRC).toMatch(/import \{ doorSizeLabel \} from '\.\.\/utils\/doorSizeLabel'/);
+    expect(SRC).toMatch(/const title = doorSizeLabel\(draft\)/);
+    expect(SRC).toMatch(/if \(title\) fd\.append\("title", title\)/);
+    expect(SRC).toMatch(/pluginKey: source\?\.pluginKey, title,/);
   });
 
   it('carries pre-customer-pick lines across the draft-create flip', () => {
