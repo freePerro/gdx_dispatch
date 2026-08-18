@@ -13,7 +13,17 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.money_format import format_money as _money
+from gdx_dispatch.core.email_layout import (
+    DEFAULT_ACCENT,
+    cta_button,
+    esc,
+    line_items_table,
+    money,
+    nl2br,
+    render_email,
+    to_plain_text,
+    totals_table,
+)
 
 log = logging.getLogger(__name__)
 
@@ -57,14 +67,21 @@ def send_email(
     try:
         pw = base64.b64decode(config["password_enc"]).decode() if config["password_enc"] else ""
 
-        # "mixed" is required for file attachments; keep "alternative" for the
-        # plain html-only mail so existing rendering behavior is untouched.
-        msg = MIMEMultipart("mixed" if attachments else "alternative")
+        # text+html always travel as an "alternative" pair (accessibility +
+        # spam scoring); attachments wrap that pair in a "mixed" envelope.
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(to_plain_text(html_body), "plain"))
+        alternative.attach(MIMEText(html_body, "html"))
+
+        if attachments:
+            msg = MIMEMultipart("mixed")
+            msg.attach(alternative)
+        else:
+            msg = alternative
         msg["Subject"] = subject
         msg["From"] = f"{config['from_name']} <{config['from_email']}>"
         msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
 
-        msg.attach(MIMEText(html_body, "html"))
         for att in attachments or []:
             ctype = att.get("content_type") or "application/octet-stream"
             maintype, _, subtype = ctype.partition("/")
@@ -90,6 +107,38 @@ def send_email(
         return False
 
 
+def _fallback_branding(company_name: str) -> dict[str, str]:
+    """Legacy-caller shim: a builder invoked without a branding dict still
+    renders a correct (if unbranded) shell."""
+    return {
+        "company_name": company_name or "Your Service Company",
+        "logo": "",
+        "accent": DEFAULT_ACCENT,
+        "phone": "",
+        "address": "",
+        "email": "",
+    }
+
+
+def _tier_summary_html(tiers: list[dict], accent: str) -> str:
+    """Proposal-mode body: one row per tier (name + price), no flat line dump.
+    The public approval page is where the customer compares details — the
+    email's job is to name the options and route them to the CTA."""
+    cell = "font-family:Arial,Helvetica,sans-serif;padding:12px 8px;border-bottom:1px solid #e5e7eb;"
+    rows = ""
+    for tier in tiers or []:
+        name = nl2br(tier.get("name") or "Option")
+        desc = nl2br(tier.get("description") or "")
+        desc_html = (
+            f'<br><span style="font-size:13px;color:#556270;">{desc}</span>' if desc else ""
+        )
+        rows += f"""<tr>
+      <td style="{cell}font-size:15px;color:#1f2937;">{name}{desc_html}</td>
+      <td style="{cell}font-size:16px;font-weight:700;color:{esc(accent)};text-align:right;white-space:nowrap;" width="120">{money(tier.get('price', 0))}</td>
+    </tr>"""
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;margin:16px 0;">{rows}</table>"""
+
+
 def build_estimate_email_html(
     company_name: str,
     estimate_number: str,
@@ -99,61 +148,70 @@ def build_estimate_email_html(
     notes: str = "",
     portal_url: str = "",
     description: str = "",
+    *,
+    branding: dict[str, str] | None = None,
+    intro_html: str | None = None,
+    tiers: list[dict] | None = None,
+    valid_until_text: str = "",
 ) -> str:
-    """Build a professional HTML email for an estimate."""
-    items_html = ""
-    for li in line_items:
-        items_html += f"""<tr>
-            <td style="padding:8px;border-bottom:1px solid #eee">{li.get('description','')}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">{li.get('quantity',1)}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('unit_price',0))}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('line_total',0))}</td>
-        </tr>"""
+    """Branded estimate email.
 
-    portal_section = ""
-    if portal_url:
-        portal_section = f"""<p style="margin:20px 0">
-            <a href="{portal_url}" style="background:#0057a8;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:600">
-                View & Accept Estimate
-            </a>
-        </p>"""
-
-    return f"""
-    <div style="max-width:600px;margin:0 auto;font-family:Arial,sans-serif;color:#333">
-        <div style="background:#0057a8;color:white;padding:20px;text-align:center">
-            <h1 style="margin:0;font-size:24px">{company_name}</h1>
-        </div>
-        <div style="padding:20px">
-            <h2 style="color:#0057a8;margin-top:0">Estimate #{estimate_number}</h2>
-            <p>Dear {customer_name},</p>
-            <p>Thank you for your interest. Here is your estimate:</p>
-            {"<p><strong>Description of Work:</strong><br>" + description.replace(chr(10), "<br>") + "</p>" if description else ""}
-            <table style="width:100%;border-collapse:collapse;margin:20px 0">
-                <thead>
-                    <tr style="background:#f8f9fa">
-                        <th style="padding:8px;text-align:left;border-bottom:2px solid #ddd">Description</th>
-                        <th style="padding:8px;text-align:center;border-bottom:2px solid #ddd">Qty</th>
-                        <th style="padding:8px;text-align:right;border-bottom:2px solid #ddd">Price</th>
-                        <th style="padding:8px;text-align:right;border-bottom:2px solid #ddd">Total</th>
-                    </tr>
-                </thead>
-                <tbody>{items_html}</tbody>
-            </table>
-            <p style="text-align:right;font-size:18px;font-weight:700">
-                Total: <span style="color:#0057a8">${total:.2f}</span>
-            </p>
-            {"<p><strong>Notes:</strong> " + notes + "</p>" if notes else ""}
-            {portal_section}
-            <p style="color:#666;font-size:12px;margin-top:30px">
-                This estimate is valid for 30 days. Please contact us if you have any questions.
-            </p>
-        </div>
-        <div style="background:#f8f9fa;padding:15px;text-align:center;color:#666;font-size:12px">
-            {company_name} — Sent via GDX Platform
-        </div>
-    </div>
+    - intro_html: pre-rendered (escaped) copy from the tenant email template;
+      None → the default greeting. Replaces the old hardcoded "Dear {name}".
+    - tiers: proposal-mode summary [{name, price, description}] — when given,
+      the flat line table and single total are suppressed (a tier proposal
+      has no meaningful single total; the CTA is the star).
+    - valid_until_text: human date for the validity line. Empty → no line.
+      (The old hardcoded "valid for 30 days" lied — real expiry is tenant-
+      configured; the caller passes the actual date.)
     """
+    b = branding or _fallback_branding(company_name)
+    accent = b.get("accent") or DEFAULT_ACCENT
 
+    if intro_html is None:
+        intro_html = (
+            f"<p style=\"margin:0 0 12px;\">Dear {esc(customer_name or 'Valued Customer')},</p>"
+            f"<p style=\"margin:0 0 12px;\">Thank you for your interest. Here is your estimate:</p>"
+        )
+
+    parts: list[str] = []
+    parts.append(
+        f'<h2 style="margin:0 0 16px;font-size:20px;color:{esc(accent)};">'
+        f"Estimate #{esc(estimate_number)}</h2>"
+    )
+    parts.append(intro_html)
+    if description:
+        parts.append(
+            f'<p style="margin:0 0 12px;"><strong>Description of Work:</strong><br>{nl2br(description)}</p>'
+        )
+    if tiers:
+        parts.append(_tier_summary_html(tiers, accent))
+    else:
+        parts.append(line_items_table(line_items))
+        parts.append(totals_table([("Total", money(total), True)], accent))
+    if notes:
+        parts.append(f'<p style="margin:12px 0;"><strong>Notes:</strong> {nl2br(notes)}</p>')
+    if portal_url:
+        label = "View Options & Choose Online" if tiers else "View & Accept Estimate"
+        parts.append(cta_button(portal_url, label, accent))
+    if valid_until_text:
+        parts.append(
+            f'<p style="margin:16px 0 0;font-size:13px;color:#556270;">'
+            f"This estimate is valid until {esc(valid_until_text)}. "
+            f"Please contact us if you have any questions.</p>"
+        )
+    else:
+        parts.append(
+            '<p style="margin:16px 0 0;font-size:13px;color:#556270;">'
+            "Please contact us if you have any questions.</p>"
+        )
+
+    return render_email(
+        branding=b,
+        body_html="\n".join(parts),
+        title=f"Estimate #{estimate_number}",
+        preheader=f"Estimate #{estimate_number} from {b.get('company_name', '')}",
+    )
 
 
 def build_invoice_email_html(
@@ -171,103 +229,80 @@ def build_invoice_email_html(
     tax_rate: float | None = None,
     paid_to_date: float = 0.0,
     credits_applied: float = 0.0,
+    *,
+    branding: dict[str, str] | None = None,
+    intro_html: str | None = None,
+    is_receipt: bool = False,
 ) -> str:
-    # Mirrors build_estimate_email_html but speaks invoice-language:
-    # subtotal + tax breakdown, "Balance Due" call-out, "Pay Now" CTA when
-    # a portal URL is supplied. mobile_invoicing.py already imports this
-    # symbol with a try/except fallback; the canonical send_invoice path
-    # in routers/invoices.py uses it post-S110.
-    items_html = ""
-    for li in line_items:
-        items_html += f"""<tr>
-            <td style="padding:8px;border-bottom:1px solid #eee">{li.get('description','')}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">{li.get('quantity',1)}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('unit_price',0))}</td>
-            <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{_money(li.get('line_total',0))}</td>
-        </tr>"""
+    """Branded invoice email; is_receipt flips the copy to a paid thank-you.
 
-    portal_section = ""
-    if portal_url:
-        portal_section = f"""<p style="margin:20px 0">
-            <a href="{portal_url}" style="background:#0057a8;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;font-weight:600">
-                View & Pay Invoice
-            </a>
-        </p>"""
+    Settlement rows (Paid to Date / Credits Applied) stay — without them the
+    totals don't foot on partially-paid invoices (Tier-9.4).
+    """
+    b = branding or _fallback_branding(company_name)
+    accent = b.get("accent") or DEFAULT_ACCENT
+
+    if intro_html is None:
+        greeting = esc(customer_name or "Valued Customer")
+        if is_receipt:
+            intro_html = (
+                f'<p style="margin:0 0 12px;">Dear {greeting},</p>'
+                f'<p style="margin:0 0 12px;">Thank you for your payment — this invoice is paid in full. '
+                f"A copy is included below for your records.</p>"
+            )
+        else:
+            intro_html = (
+                f'<p style="margin:0 0 12px;">Dear {greeting},</p>'
+                f'<p style="margin:0 0 12px;">Thank you for your business. Please find your invoice details below:</p>'
+            )
 
     tax_label = "Tax"
     if tax_rate is not None and tax_rate > 0:
         tax_label = f"Tax ({tax_rate * 100:.2f}%)"
 
-    # Paid to Date + Credits Applied rows (Tier-9.4): without them the body
-    # showed Total then jumped to a smaller Balance Due with no explanation —
-    # the totals didn't foot on partially-paid/credited invoices while the
-    # attached PDF footed correctly.
-    settlement_rows = ""
+    totals_rows: list[tuple[str, str, bool]] = [
+        ("Subtotal", money(subtotal), False),
+        (tax_label, money(tax_amount), False),
+        ("Total", money(total), True),
+    ]
     if paid_to_date and paid_to_date > 0:
-        settlement_rows += f"""<tr>
-                    <td style="padding:4px 8px;text-align:right;color:#555">Paid to Date</td>
-                    <td style="padding:4px 8px;text-align:right">-${paid_to_date:,.2f}</td>
-                </tr>"""
+        totals_rows.append(("Paid to Date", f"-{money(paid_to_date)}", False))
     if credits_applied and credits_applied > 0:
-        settlement_rows += f"""<tr>
-                    <td style="padding:4px 8px;text-align:right;color:#555">Credits Applied</td>
-                    <td style="padding:4px 8px;text-align:right">-${credits_applied:,.2f}</td>
-                </tr>"""
+        totals_rows.append(("Credits Applied", f"-{money(credits_applied)}", False))
+    totals_rows.append(("Balance Due", money(balance_due), True))
 
-    due_section = ""
-    if due_date:
-        due_section = (
-            f"<p style=\"margin:8px 0\"><strong>Due Date:</strong> {due_date}</p>"
+    parts: list[str] = []
+    heading = "Payment received" if is_receipt else f"Invoice #{esc(invoice_number)}"
+    parts.append(
+        f'<h2 style="margin:0 0 16px;font-size:20px;color:{esc(accent)};">{heading}</h2>'
+    )
+    if is_receipt:
+        parts.append(
+            f'<p style="margin:0 0 8px;font-size:13px;color:#556270;">Invoice #{esc(invoice_number)}</p>'
         )
+    parts.append(intro_html)
+    if due_date and not is_receipt:
+        parts.append(
+            f'<p style="margin:0 0 12px;"><strong>Due Date:</strong> {esc(due_date)}</p>'
+        )
+    parts.append(line_items_table(line_items))
+    parts.append(totals_table(totals_rows, accent))
+    if notes:
+        parts.append(f'<p style="margin:12px 0;"><strong>Notes:</strong> {nl2br(notes)}</p>')
+    if portal_url and not is_receipt:
+        parts.append(cta_button(portal_url, "View & Pay Invoice", accent))
+    parts.append(
+        '<p style="margin:16px 0 0;font-size:13px;color:#556270;">'
+        "Please contact us if you have any questions about this invoice.</p>"
+    )
 
-    return f"""
-    <div style="max-width:600px;margin:0 auto;font-family:Arial,sans-serif;color:#333">
-        <div style="background:#0057a8;color:white;padding:20px;text-align:center">
-            <h1 style="margin:0;font-size:24px">{company_name}</h1>
-        </div>
-        <div style="padding:20px">
-            <h2 style="color:#0057a8;margin-top:0">Invoice #{invoice_number}</h2>
-            <p>Dear {customer_name},</p>
-            <p>Thank you for your business. Please find your invoice details below:</p>
-            {due_section}
-            <table style="width:100%;border-collapse:collapse;margin:20px 0">
-                <thead>
-                    <tr style="background:#f8f9fa">
-                        <th style="padding:8px;text-align:left;border-bottom:2px solid #ddd">Description</th>
-                        <th style="padding:8px;text-align:center;border-bottom:2px solid #ddd">Qty</th>
-                        <th style="padding:8px;text-align:right;border-bottom:2px solid #ddd">Price</th>
-                        <th style="padding:8px;text-align:right;border-bottom:2px solid #ddd">Total</th>
-                    </tr>
-                </thead>
-                <tbody>{items_html}</tbody>
-            </table>
-            <table style="width:100%;border-collapse:collapse;margin:8px 0">
-                <tr>
-                    <td style="padding:4px 8px;text-align:right;color:#555">Subtotal</td>
-                    <td style="padding:4px 8px;text-align:right;width:110px">${subtotal:.2f}</td>
-                </tr>
-                <tr>
-                    <td style="padding:4px 8px;text-align:right;color:#555">{tax_label}</td>
-                    <td style="padding:4px 8px;text-align:right">${tax_amount:.2f}</td>
-                </tr>
-                <tr>
-                    <td style="padding:6px 8px;text-align:right;font-weight:700;border-top:1px solid #ddd">Total</td>
-                    <td style="padding:6px 8px;text-align:right;font-weight:700;border-top:1px solid #ddd">${total:.2f}</td>
-                </tr>
-                {settlement_rows}
-                <tr>
-                    <td style="padding:6px 8px;text-align:right;color:#0057a8;font-weight:700">Balance Due</td>
-                    <td style="padding:6px 8px;text-align:right;color:#0057a8;font-weight:700;font-size:18px">${balance_due:.2f}</td>
-                </tr>
-            </table>
-            {"<p><strong>Notes:</strong> " + notes + "</p>" if notes else ""}
-            {portal_section}
-            <p style="color:#666;font-size:12px;margin-top:30px">
-                Please contact us if you have any questions about this invoice.
-            </p>
-        </div>
-        <div style="background:#f8f9fa;padding:15px;text-align:center;color:#666;font-size:12px">
-            {company_name} — Sent via GDX Platform
-        </div>
-    </div>
-    """
+    return render_email(
+        branding=b,
+        body_html="\n".join(parts),
+        title=f"Invoice #{invoice_number}",
+        preheader=(
+            f"Payment received — invoice #{invoice_number}"
+            if is_receipt
+            else f"Invoice #{invoice_number} from {b.get('company_name', '')}"
+        ),
+    )

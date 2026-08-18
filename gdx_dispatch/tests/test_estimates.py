@@ -1228,7 +1228,8 @@ def test_send_email_carries_public_approval_link(client: TestClient, monkeypatch
     assert r.status_code == 200, r.text
     token = _public_token(client, estimate["id"])
     assert f"https://gdx.example.com/proposals/{token}" in captured["html_body"]
-    assert "View & Accept Estimate" in captured["html_body"]
+    # The shared shell HTML-escapes the CTA label, so "&" is "&amp;" in source.
+    assert "View &amp; Accept Estimate" in captured["html_body"]
 
 
 def test_send_email_has_no_link_when_base_unset(client: TestClient, monkeypatch):
