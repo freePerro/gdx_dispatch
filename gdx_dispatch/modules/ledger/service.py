@@ -262,4 +262,32 @@ def transition_invoice_status(session, invoice, new_status: str, *, actor: str |
         rule = _POSTING_RULES.get((old_status, new_status))
         if rule is not None:
             rule(session, invoice, old_status, new_status, actor)
+
+    # invoice.paid domain event — THE payment choke point: every live payment
+    # path (office record_payment, Stripe webhook, mobile, deposits) reaches
+    # 'paid' through here, while QB sync writes status directly and bypasses it
+    # (free importer suppression). emit_domain_event never raises into this
+    # money path (guarded) and is silenced inside suppress_domain_events() for
+    # manual backfills. Fires once per genuine paid transition.
+    if new_status == "paid" and old_status != "paid":
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+        tid = str(getattr(invoice, "company_id", "") or "")
+        emit_domain_event(
+            session,
+            "invoice.paid",
+            str(invoice.id),
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": getattr(invoice, "invoice_number", None),
+                # Integer cents — money in the ledger module is cents end-to-end,
+                # and floats are banned here (the money-safety lint). total is
+                # Numeric(12,2), so *100 is exact and int() truncates nothing.
+                # Matches the invoice.paid.v1 schema's amount_cents.
+                "amount_cents": int((getattr(invoice, "total", 0) or 0) * 100),
+                "billing_type": getattr(invoice, "billing_type", None),
+                "company_id": tid,
+            },
+            tenant_id=tid,
+        )
     return old_status

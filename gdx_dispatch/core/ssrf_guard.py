@@ -17,8 +17,18 @@ case, which requires a resolvable internal address.
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from urllib.parse import urlparse
+
+
+def webhook_allow_hosts() -> frozenset[str]:
+    """Exact hostnames the operator allows webhook deliveries to reach despite
+    resolving to a private address — GDX_WEBHOOK_PRIVATE_ALLOW (comma-separated).
+    The customer compose sets this to ``n8n`` so a subscription can target the
+    bundled, network-isolated n8n at http://n8n:5678. Empty by default."""
+    raw = os.getenv("GDX_WEBHOOK_PRIVATE_ALLOW", "")
+    return frozenset(h.strip() for h in raw.split(",") if h.strip())
 
 
 class OutboundURLBlocked(ValueError):
@@ -36,14 +46,23 @@ def _is_disallowed(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def validate_outbound_url(url: str) -> None:
-    """Raise OutboundURLBlocked if ``url`` is unsafe to request server-side."""
+def validate_outbound_url(url: str, allow_hosts: frozenset[str] | set[str] | None = None) -> None:
+    """Raise OutboundURLBlocked if ``url`` is unsafe to request server-side.
+
+    ``allow_hosts`` — an EXACT-hostname allowlist that bypasses the private-IP
+    check (scheme is still enforced). This is how a same-box service like n8n
+    (``http://n8n:5678``, a Docker-internal RFC1918 address) becomes a legal
+    webhook target. Matching is exact equality, never suffix/substring — so
+    ``n8n`` in the list does NOT admit ``n8n.attacker.com`` or ``eviln8n``.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise OutboundURLBlocked(f"scheme not allowed: {parsed.scheme!r}")
     host = parsed.hostname
     if not host:
         raise OutboundURLBlocked("missing host")
+    if allow_hosts and host in allow_hosts:
+        return  # operator-allowlisted internal host (e.g. the bundled n8n)
     # A bare IP literal must be checked directly (getaddrinfo would echo it).
     try:
         literal = ipaddress.ip_address(host)

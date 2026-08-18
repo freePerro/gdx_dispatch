@@ -176,6 +176,29 @@ def _user_id(current_user: dict | None) -> str:
     return str(u.get("sub") or u.get("user_id") or "system")
 
 
+def _emit_job_event(db, job, event: str, tenant_id: str) -> None:
+    """Stage a job.created / job.completed webhook before the caller's commit.
+    Guarded — never fails the job write."""
+    from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+    cid = getattr(job, "customer_id", None)
+    emit_domain_event(
+        db,
+        event,
+        str(job.id),
+        {
+            "job_id": str(job.id),
+            "job_number": getattr(job, "job_number", None),
+            "title": getattr(job, "title", None),
+            "status": getattr(job, "status", None),
+            "lifecycle_stage": getattr(job, "lifecycle_stage", None),
+            "customer_id": str(cid) if cid else None,
+            "company_id": str(tenant_id or ""),
+        },
+        tenant_id=str(tenant_id or ""),
+    )
+
+
 def _validate_location_for_customer(
     db: Any, location_id: str | None, customer_id: str | None
 ) -> tuple[bool, str | None]:
@@ -954,6 +977,7 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
                 user_id=_user_id(current_user),
             )
         _sync_job_appointment(db, job, tenant_id, current_user, customer_name=customer_name)
+        _emit_job_event(db, job, "job.created", tenant_id)
         db.commit()
         # assigned_to is in the response so the mobile dialog can tell whether
         # assign_to_me actually landed (a caller with no technician row gets
@@ -1497,6 +1521,7 @@ def complete_job(
             job.notes = (job.notes + "\n\n" if job.notes else "") + payload.notes.strip()
         job.updated_at = now
         db.flush()
+        _emit_job_event(db, job, "job.completed", tenant_id)
         db.commit()
 
         log_audit_event_sync(

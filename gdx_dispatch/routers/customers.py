@@ -365,6 +365,29 @@ async def create_customer(
 
     try:
         db.add(customer)
+        # flush FIRST: Customer.id is a flush-time uuid4 default, None until now.
+        # Without this the emit ships customer_id="None" AND a constant
+        # idempotency key, so only the first customer per tenant ever stages a
+        # delivery and the rest silently collide (audit BLOCKER).
+        db.flush()
+        # Stage customer.created before commit so it dispatches with this txn.
+        # Guarded — cannot fail the customer write. PII-minimized: id + name +
+        # type only (no email/phone/address) since this crosses to receivers.
+        from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+        _cid_tid = str(getattr(customer, "company_id", "") or "")
+        emit_domain_event(
+            db,
+            "customer.created",
+            str(customer.id),
+            {
+                "customer_id": str(customer.id),
+                "name": customer.name,
+                "customer_type": getattr(customer, "customer_type", None),
+                "company_id": _cid_tid,
+            },
+            tenant_id=_cid_tid,
+        )
         db.commit()
         db.refresh(customer)
     except SQLAlchemyError as exc:

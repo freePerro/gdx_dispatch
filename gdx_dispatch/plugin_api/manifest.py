@@ -15,7 +15,7 @@ from typing import Any
 
 # Elevated capabilities a plugin may declare; each is consent-gated at install
 # (ADR-014). Keep this the single source of truth — core + frontend read it.
-KNOWN_PERMISSIONS = frozenset({"browser"})
+KNOWN_PERMISSIONS = frozenset({"browser", "events", "schedules", "services"})
 
 # One-line human descriptions shown in the owner consent dialog. Every entry in
 # KNOWN_PERMISSIONS must have a description here.
@@ -24,6 +24,19 @@ PERMISSION_RISKS = {
         "Runs a real web browser on the server that this plugin controls, and "
         "lets you drive it from your screen. It can load external sites and use "
         "any login you complete in it. Only install plugins you trust."
+    ),
+    "events": (
+        "Runs this plugin's code automatically whenever the business events it "
+        "subscribes to happen — a job, estimate, invoice, customer or payment "
+        "changing — and hands it that data. Only install plugins you trust."
+    ),
+    "schedules": (
+        "Runs this plugin's code automatically on a fixed schedule (e.g. every "
+        "few minutes), without anyone triggering it."
+    ),
+    "services": (
+        "Runs an extra background container this plugin brings, with its own "
+        "storage and web address. Only install plugins you trust."
     ),
 }
 
@@ -79,6 +92,19 @@ class PluginManifest:
     catalog_types: tuple = ()
     pricing_strategies: tuple = ()
     importers: tuple = ()
+    # ── Plugin event platform (the WordPress-model hooks) ──
+    # events: domain events this plugin's handler runs on. Each is an exact event
+    #   name ("invoice.paid"), a prefix wildcard ("invoice.*"), or "*" (all).
+    #   Declaring any REQUIRES the "events" permission (consent-gated) — enforced
+    #   below so a plugin can't receive events without an owner opting in.
+    # event_handler: callable(PluginEvent) -> None, invoked by the plugin-host on
+    #   dispatch. Runs in-process on the plugin-host; must be idempotent
+    #   (at-least-once, unordered) and finish inside the dispatch budget.
+    # schedules: ((name, cron, callable), ...) run by the core beat driver.
+    #   Declaring any REQUIRES the "schedules" permission.
+    events: tuple[str, ...] = ()
+    event_handler: Any = None
+    schedules: tuple = ()
 
     def __post_init__(self) -> None:
         # Fail loud at declaration time — a malformed key would otherwise surface
@@ -104,3 +130,27 @@ class PluginManifest:
         for ps in self.pricing_strategies:
             if not isinstance(ps, dict) or not ps.get("id") or not ps.get("kind"):
                 raise ValueError(f"pricing_strategy needs id+kind: {ps!r}")
+        # ── event platform shape + consent coupling ──
+        # Declaring events/schedules without the matching permission would let a
+        # plugin receive automatic execution the owner never consented to — fail
+        # loud at declaration, not silently at dispatch.
+        for ev in self.events:
+            if not isinstance(ev, str) or not ev.strip():
+                raise ValueError(f"event name must be a non-empty string: {ev!r}")
+        if self.events:
+            if "events" not in self.permissions:
+                raise ValueError("declaring events requires the 'events' permission")
+            if not callable(self.event_handler):
+                raise ValueError("declaring events requires a callable event_handler")
+        for sc in self.schedules:
+            if not (isinstance(sc, (tuple, list)) and len(sc) == 3):
+                raise ValueError(f"schedule must be (name, cron, callable): {sc!r}")
+            name, cron, fn = sc
+            if not (isinstance(name, str) and name.strip()):
+                raise ValueError(f"schedule name must be a non-empty string: {sc!r}")
+            if not (isinstance(cron, str) and cron.strip()):
+                raise ValueError(f"schedule cron must be a non-empty string: {sc!r}")
+            if not callable(fn):
+                raise ValueError(f"schedule callable must be callable: {sc!r}")
+        if self.schedules and "schedules" not in self.permissions:
+            raise ValueError("declaring schedules requires the 'schedules' permission")
