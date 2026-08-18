@@ -319,3 +319,187 @@ def test_job_belongs_to_user_ignores_created_by(session_factory):
         assert not job_belongs_to_user(db, "tenant-a", job_id, "user-creator")
     finally:
         db.close()
+
+
+# ─── Part C: assign_to_me (2026-08-17 field report) ───────────────
+#
+# A tech creating a job from the truck is usually the one doing the work.
+# The always-unassigned create left him with a job he could see but not
+# touch: every action button 404'd behind the write gate ("Could not save —
+# job not found"). assign_to_me resolves the CALLER's technician record
+# server-side and assigns it at create, so ownership is real — none of the
+# Part B read-only invariants above change.
+
+
+def _seed_tech_row(client: TestClient, tech_id: str = "tech-creator") -> None:
+    db = client._session_factory()
+    try:
+        db.execute(
+            text(
+                "INSERT INTO technicians (id, company_id, user_id, active, created_at) "
+                "VALUES (:id, :tid, 'user-creator', 1, datetime('now'))"
+            ),
+            {"id": tech_id, "tid": TENANT_ID},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _job_assignment_row(client: TestClient, job_id: str) -> dict | None:
+    # job_assignments.job_id stores str(uuid) (dashed) while SQLite renders
+    # jobs.id undashed — normalize both sides so the check is format-proof.
+    db = client._session_factory()
+    try:
+        row = db.execute(
+            text(
+                "SELECT tech_id FROM job_assignments "
+                "WHERE REPLACE(CAST(job_id AS TEXT), '-', '') = REPLACE(:j, '-', '') "
+                "AND deleted_at IS NULL"
+            ),
+            {"j": job_id},
+        ).mappings().first()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+def test_assign_to_me_assigns_callers_technician(client: TestClient) -> None:
+    _seed_tech_row(client)
+    r = client.post("/api/jobs", json={"title": "self-assign", "assign_to_me": True})
+    assert r.status_code == 201, r.text[:300]
+    body = r.json()
+    assert body["assigned_to"] == "tech-creator"
+    db = client._session_factory()
+    try:
+        row = db.execute(
+            text(
+                "SELECT assigned_to, dispatch_status FROM jobs "
+                "WHERE CAST(id AS TEXT) = :id OR id = :id"
+            ),
+            {"id": body["id"].replace("-", "")},
+        ).mappings().first()
+    finally:
+        db.close()
+    assert row["assigned_to"] == "tech-creator"
+    assert row["dispatch_status"] == "assigned"
+    # The crew row exists too — the mobile ownership gate matches either.
+    ja = _job_assignment_row(client, body["id"].replace("-", ""))
+    assert ja is not None and ja["tech_id"] == "tech-creator"
+
+
+def test_assign_to_me_makes_job_writable_by_creator(client: TestClient) -> None:
+    """The point of the feature: the shared WRITE gate passes because the
+    tech is genuinely assigned — created_by still plays no part in it."""
+    _seed_tech_row(client)
+    r = client.post("/api/jobs", json={"title": "writable", "assign_to_me": True})
+    assert r.status_code == 201, r.text[:300]
+    db = client._session_factory()
+    try:
+        assert job_belongs_to_user(
+            db, TENANT_ID, r.json()["id"].replace("-", ""), "user-creator"
+        )
+    finally:
+        db.close()
+
+
+def test_assign_to_me_without_technician_row_is_a_noop(client: TestClient) -> None:
+    """Office accounts have no technician record: the flag must degrade to
+    today's behavior (unassigned, dispatch assigns), never an error."""
+    r = client.post("/api/jobs", json={"title": "no tech row", "assign_to_me": True})
+    assert r.status_code == 201, r.text[:300]
+    assert r.json()["assigned_to"] is None
+
+
+def test_assign_to_me_never_overrides_explicit_assignment(client: TestClient) -> None:
+    _seed_tech_row(client)
+    db = client._session_factory()
+    try:
+        db.execute(
+            text(
+                "INSERT INTO technicians (id, company_id, user_id, active, created_at) "
+                "VALUES ('tech-explicit', :tid, 'user-else', 1, datetime('now'))"
+            ),
+            {"tid": TENANT_ID},
+        )
+        db.commit()
+    finally:
+        db.close()
+    r = client.post(
+        "/api/jobs",
+        json={
+            "title": "explicit wins",
+            "assign_to_me": True,
+            "assigned_tech_id": "tech-explicit",
+        },
+    )
+    assert r.status_code == 201, r.text[:300]
+    assert r.json()["assigned_to"] == "tech-explicit"
+
+
+def test_assign_to_me_still_routes_to_ready_to_schedule(client: TestClient) -> None:
+    """Self-assignment must not hide the job from dispatch intake — the
+    "Ready to Schedule" routing keys off scheduled_at only."""
+    _seed_tech_row(client)
+    db = client._session_factory()
+    try:
+        db.execute(
+            text(
+                "INSERT INTO holding_areas (id, company_id, name, created_at) "
+                "VALUES ('ha-rts', :tid, 'Ready to Schedule', datetime('now'))"
+            ),
+            {"tid": TENANT_ID},
+        )
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/api/jobs", json={"title": "intake stays", "assign_to_me": True})
+    assert r.status_code == 201, r.text[:300]
+    db = client._session_factory()
+    try:
+        row = db.execute(
+            text(
+                "SELECT holding_area_id FROM jobs "
+                "WHERE CAST(id AS TEXT) = :id OR id = :id"
+            ),
+            {"id": r.json()["id"].replace("-", "")},
+        ).mappings().first()
+    finally:
+        db.close()
+    assert row["holding_area_id"] == "ha-rts"
+
+
+# ─── Part D: creator-grant detail is honestly read-only ────────────────────
+
+
+def test_creator_detail_is_read_only_with_grant_reason(session_factory):
+    """The creator can open his unassigned job but has no write path — the
+    detail response must SAY so (read_only + access_grant) instead of letting
+    the client render an action bar whose every button 404s."""
+    job_id = _seed(session_factory)
+    db = session_factory()
+    try:
+        r = mobile_router.get_mobile_job_detail(
+            job_id=job_id, request=_request(), current_user=CREATOR, db=db
+        )
+        assert r.status_code == 200
+        body = _as_json(r)
+        assert body["read_only"] is True
+        assert body["access_grant"] == "creator"
+    finally:
+        db.close()
+
+
+def test_assigned_tech_detail_is_not_read_only(session_factory):
+    job_id = _seed(session_factory, assigned_to="tech-creator")
+    db = session_factory()
+    try:
+        r = mobile_router.get_mobile_job_detail(
+            job_id=job_id, request=_request(), current_user=CREATOR, db=db
+        )
+        assert r.status_code == 200
+        body = _as_json(r)
+        assert body["read_only"] is False
+        assert body["access_grant"] == "assigned"
+    finally:
+        db.close()

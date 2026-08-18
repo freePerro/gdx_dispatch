@@ -43,6 +43,18 @@
         </div>
       </div>
 
+      <!-- Why there are no action buttons. Without this, a view-only job
+           reads as broken — the 2026-08-17 field report was a tech staring at his
+           own new job while every tap said "job not found". -->
+      <div v-if="readOnly" class="readonly-banner" data-testid="mjd-readonly-banner">
+        <i class="pi pi-lock" />
+        <span v-if="accessGrant === 'creator'">
+          You created this job but it isn't assigned to you — dispatch will
+          schedule and assign it. View only until then.
+        </span>
+        <span v-else>View only — this job isn't assigned to you.</span>
+      </div>
+
       <div class="detail-card">
         <h2>Customer</h2>
         <a
@@ -632,9 +644,13 @@ const parts = ref([])
 // Captured door build spec(s) for an install, carried from the estimate. Empty
 // for service calls — the section only renders when there's a door to show.
 const doorSpecs = ref([])
-// True when the server granted company-wide (techs_see_all_jobs) viewing of
-// a job the tech has no claim on — hide dispatch actions, they'd only 404.
+// True when the server granted view-only access: company-wide browsing
+// (techs_see_all_jobs) or the creator of a still-unassigned job — hide
+// dispatch actions, they'd only 404. accessGrant carries WHY ("company" |
+// "creator" | "assigned" | "manager") so the banner can explain instead of
+// leaving the tech staring at a job he just created with no buttons on it.
 const readOnly = ref(false)
+const accessGrant = ref('')
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 const invoiceOpen = ref(false)
@@ -772,6 +788,7 @@ async function load() {
     parts.value = r?.parts || []
     doorSpecs.value = r?.door_specs || []
     readOnly.value = Boolean(r?.read_only)
+    accessGrant.value = r?.access_grant || ''
     if (!job.value) error.value = 'Job not found'
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.
@@ -1488,4 +1505,14 @@ onMounted(() => {
   background: var(--p-highlight-background, #eff6ff);
   border: 1px solid var(--p-content-border-color, #bfdbfe);
 }
+
+.readonly-banner {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem; font-size: 0.85rem;
+  background: var(--p-highlight-background, #eff6ff);
+  border: 1px solid var(--p-content-border-color, #bfdbfe);
+  color: var(--p-text-muted-color, #6b7280);
+}
+.readonly-banner .pi { margin-top: 0.1rem; }
 </style>

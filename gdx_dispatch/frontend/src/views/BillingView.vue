@@ -377,8 +377,8 @@
         <Column header="Actions" style="width: 220px">
           <template #body="{ data }">
             <div class="action-btns">
-              <Button v-if="data.status === 'Draft'" icon="pi pi-send" aria-label="Send" severity="info" text size="small"
-                v-tooltip="'Send'" :data-testid="`send-invoice-${data.id}`" @click.stop="sendInvoice(data)" />
+              <Button v-if="['Draft', 'Paid'].includes(data.status)" icon="pi pi-send" aria-label="Send" severity="info" text size="small"
+                v-tooltip="data.status === 'Paid' ? 'Send Receipt' : 'Send'" :data-testid="`send-invoice-${data.id}`" @click.stop="sendInvoice(data)" />
               <Button icon="pi pi-file-pdf" aria-label="Download PDF" severity="secondary" text size="small"
                 v-tooltip="'Download PDF'" :data-testid="`pdf-invoice-${data.id}`" @click.stop="downloadPdf(data)" />
               <!-- §11 rail: no pay link for an unverified draft — the /pay

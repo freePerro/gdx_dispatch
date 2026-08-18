@@ -102,6 +102,18 @@ class JobCreate(BaseModel):
     # at create time was silently dropped. Declared here AND assigned in
     # create_job; a field without the assignment is the same bug wearing a hat.
     notes: str | None = Field(default=None, max_length=20000)
+    # 2026-08-17: "Assign to me" from the mobile dialog. A tech creating a
+    # job from the truck is usually standing at the door about to do (or
+    # having just done) the work — leaving the job unassigned meant every
+    # action on it (en-route/start/notes/closeout) 404'd behind the
+    # assignment-only write gate, and the tech read "Could not save — job
+    # not found" on a job they had just created. Resolved server-side to
+    # the CALLER's technician row only (never a caller-chosen id); ignored
+    # when explicit tech assignment fields are present or the caller has
+    # no technician record. The job still lands in "Ready to Schedule"
+    # (that routing keys off scheduled_at, not assignment), so dispatch
+    # review is unchanged.
+    assign_to_me: bool = False
 
 
 class JobUpdate(BaseModel):
@@ -213,6 +225,27 @@ def _validate_location_for_customer(
     if not row:
         return False, f"location_id {location_id!r} does not belong to customer"
     return True, None
+
+
+def _caller_technician_id(db: Session, user_id: str) -> str | None:
+    """The caller's own active technician id — the assign_to_me resolver.
+
+    Mirrors routers/mobile.py:_get_technician_id (active IS NOT FALSE,
+    newest row first) so "me" resolves to the same technician on both
+    surfaces. Returns None for callers with no technician record (office
+    accounts) — assign_to_me is then a no-op, not an error."""
+    if not user_id:
+        return None
+    row = (
+        db.query(Technician.id)
+        .filter(
+            Technician.user_id == user_id,
+            Technician.active.isnot(False),
+        )
+        .order_by(Technician.created_at.desc())
+        .first()
+    )
+    return str(row[0]) if row else None
 
 
 def _holding_area_id_by_name(db: Any, name: str) -> str | None:
@@ -840,6 +873,14 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         payload.assigned_tech_ids,
         payload.assigned_tech_id or payload.assigned_to,
     )
+    # assign_to_me (mobile dialog): explicit tech fields always win; the
+    # caller's own technician record fills in only when nothing was named.
+    self_assigned = False
+    if payload.assign_to_me and not tech_ids:
+        own_tech = _caller_technician_id(db, _user_id(current_user))
+        if own_tech:
+            tech_ids = [own_tech]
+            self_assigned = True
     require_tech_for_scheduled_job(
         tenant_id, payload.scheduled_at, tech_ids[0] if tech_ids else None
     )
@@ -938,7 +979,10 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         _sync_job_appointment(db, job, tenant_id, current_user, customer_name=customer_name)
         _emit_job_event(db, job, "job.created", tenant_id)
         db.commit()
-        result = {"id": job.id, "title": job.title, "description": job.description, "status": job.status, "customer_id": job.customer_id, "scheduled_at": job.scheduled_at, "created_at": job.created_at, "job_number": job.job_number}
+        # assigned_to is in the response so the mobile dialog can tell whether
+        # assign_to_me actually landed (a caller with no technician row gets
+        # an unassigned job back) and word its success toast honestly.
+        result = {"id": job.id, "title": job.title, "description": job.description, "status": job.status, "customer_id": job.customer_id, "scheduled_at": job.scheduled_at, "created_at": job.created_at, "job_number": job.job_number, "assigned_to": job.assigned_to}
         log_audit_event_sync(
             db=db,
             tenant_id=tenant_id,
@@ -946,7 +990,16 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
             action="job_created",
             entity_type="job",
             entity_id=str(job.id),
-            details={"title": job.title, "status": job.status, "customer_id": str(job.customer_id) if job.customer_id else None},
+            details={
+                "title": job.title,
+                "status": job.status,
+                "customer_id": str(job.customer_id) if job.customer_id else None,
+                # Self-assignment is an authorization-relevant act (the tech
+                # granted himself the write path) — the audit row must show
+                # who ended up on the job and that assign_to_me did it.
+                "assigned_to": str(job.assigned_to) if job.assigned_to else None,
+                "self_assigned": self_assigned,
+            },
             ip_address=request.client.host if request.client else None,
             request=request,
         )

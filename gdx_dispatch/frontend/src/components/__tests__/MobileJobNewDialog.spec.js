@@ -36,6 +36,15 @@ vi.mock('../../composables/usePermission', () => ({
     reloadPermissions: vi.fn(),
   }),
 }));
+// Auth store backs the "Assign to me" toggle (technicians only). Mocked so
+// the spec needs no pinia instance; mutate mockAuthRole per-test to exercise
+// the non-tech path (beforeEach resets it to 'technician').
+let mockAuthRole = 'technician';
+vi.mock('../../stores/auth', () => ({
+  useAuthStore: () => ({
+    get role() { return mockAuthRole; },
+  }),
+}));
 
 import MobileJobNewDialog from '../MobileJobNewDialog.vue';
 
@@ -104,6 +113,7 @@ describe('MobileJobNewDialog', () => {
     toastAdd.mockReset();
     hasPermission.mockReset();
     hasPermission.mockReturnValue(true);
+    mockAuthRole = 'technician';
     vi.useFakeTimers();
   });
 
@@ -466,5 +476,89 @@ describe('MobileJobNewDialog', () => {
     const sug = wrapper.find('[data-testid="mjn-part-suggestion-0"]');
     expect(sug.exists()).toBe(true);
     expect(sug.text()).toContain('SPR-200');
+  });
+
+  // ─── Assign to me (2026-08-17 field report) ─────────────────
+  // A tech's freshly created job was untouchable: unassigned by design,
+  // every action 404'd behind the assignment write gate. The dialog now
+  // sends assign_to_me (default ON for technicians) so the backend assigns
+  // the caller's own technician record at create.
+
+  it('tech submit sends assign_to_me: true by default', async () => {
+    apiPost.mockResolvedValue({ id: 'job-a', assigned_to: 'tech-1' });
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mjn-assign-me"]').exists()).toBe(true);
+
+    await setInput(wrapper, 'mjn-job-title', 'Replace springs');
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
+      assign_to_me: true,
+    }));
+    // Server confirmed the assignment → toast says it's startable, not
+    // "wait for dispatch".
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'success',
+      detail: expect.stringContaining('assigned to you'),
+    }));
+  });
+
+  it('toggling Assign to me off sends assign_to_me: false and keeps the dispatch wording', async () => {
+    apiPost.mockResolvedValue({ id: 'job-b', assigned_to: null });
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    const toggle = wrapper.find('[data-testid="mjn-assign-me"]');
+    toggle.element.checked = false;
+    await toggle.trigger('change');
+
+    await setInput(wrapper, 'mjn-job-title', 'Order door for later');
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
+      assign_to_me: false,
+    }));
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'success',
+      detail: expect.stringContaining('until dispatch assigns it'),
+    }));
+  });
+
+  it('non-tech roles get no toggle and assign_to_me: false', async () => {
+    mockAuthRole = 'dispatcher';
+    apiPost.mockResolvedValue({ id: 'job-c', assigned_to: null });
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="mjn-assign-me"]').exists()).toBe(false);
+
+    await setInput(wrapper, 'mjn-job-title', 'Office-created job');
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
+      assign_to_me: false,
+    }));
+  });
+
+  it('toast never claims assignment the server did not perform', async () => {
+    // assign_to_me quietly no-ops for callers with no technician record —
+    // the response (assigned_to: null) is the truth the toast must follow.
+    apiPost.mockResolvedValue({ id: 'job-d', assigned_to: null });
+    const wrapper = mountDialog();
+    await flushPromises();
+
+    await setInput(wrapper, 'mjn-job-title', 'No tech row');
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'success',
+      detail: expect.stringContaining('until dispatch assigns it'),
+    }));
   });
 });
