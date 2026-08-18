@@ -275,6 +275,29 @@ def _actor_id(user: dict) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("id") or "system")
 
 
+def _emit_estimate_decision(db: Session, estimate: Estimate, event: str) -> None:
+    """Stage an estimate.accepted / estimate.declined webhook. Staged before the
+    caller's commit so it dispatches with the business transaction; guarded so it
+    can never fail the decision write."""
+    from gdx_dispatch.core.webhooks.emit import emit_domain_event
+
+    tid = str(getattr(estimate, "company_id", "") or "")
+    cid = getattr(estimate, "customer_id", None)
+    emit_domain_event(
+        db,
+        event,
+        str(estimate.id),
+        {
+            "estimate_id": str(estimate.id),
+            "estimate_number": getattr(estimate, "estimate_number", None),
+            "status": estimate.status,
+            "customer_id": str(cid) if cid else None,
+            "company_id": tid,
+        },
+        tenant_id=tid,
+    )
+
+
 # ── Sprint 1.0.5 — pricing engine integration ────────────────────────────────
 
 def _resolve_customer_for_engine(estimate: Estimate, db: Session):
@@ -2013,6 +2036,7 @@ def accept_estimate(
     estimate.status = "accepted"
     estimate.accepted_at = utcnow()
     estimate.updated_at = utcnow()
+    _emit_estimate_decision(db, estimate, "estimate.accepted")
     db.commit()
     db.refresh(estimate)
     actor = _actor_id(_)
@@ -2118,6 +2142,7 @@ def decline_estimate(
     # Validator guarantees a non-empty, stripped reason — no None fallback.
     estimate.declined_reason = payload.reason
     estimate.updated_at = utcnow()
+    _emit_estimate_decision(db, estimate, "estimate.declined")
     db.commit()
     db.refresh(estimate)
     log_audit_event_sync(

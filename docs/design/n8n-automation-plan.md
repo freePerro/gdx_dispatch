@@ -193,6 +193,22 @@ fields).
 **Sprint 1 is useful standalone:** the moment it lands, any Zapier/Make/curl
 receiver gets real signed events — no n8n required.
 
+**Sprint 1b build status (2026-08-17).** All six events now fire from their
+primary sites, guarded (`emit_domain_event` never raises into the business
+write) and suppressible (`suppress_domain_events()` contextvar for backfills):
+- ✅ `invoice.paid` — `transition_invoice_status` (`modules/ledger/service.py`),
+  the single choke point covering office record-payment, Stripe, mobile,
+  deposits; QB sync bypasses it (free suppression).
+- ✅ `estimate.accepted` / `.declined` — office (`routers/estimates.py`).
+- ✅ `customer.created` — `routers/customers.py` (PII-minimized: id+name+type).
+- ✅ `job.created` / `job.completed` — `routers/jobs.py` create + `/complete`.
+- **Remaining entry points (same proven pattern, follow-up):** estimate
+  decisions via portal (`routers/portal.py`), public proposals
+  (`modules/proposals/router.py`), mobile (`routers/mobile_quoting.py`);
+  `customer.created` via lead-promote (`routers/leads.py`) and public API
+  (`api/public_router.py`); secondary `job.created`/`job.completed` producers
+  (service calls, recurring, closeout, mobile, the generic status PATCH).
+
 ## Sprint 2 — platform (Gaps 1+2) with the security model fixed
 
 The three BLOCKERs here share one root cause (security-F1/F3/F4): **the plugin

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -131,6 +132,102 @@ def test_suppress_and_no_tenant_emit_nothing():
     assert emit_domain_event(db, "invoice.paid", "x", {}, tenant_id=TENANT, suppress=True) == 0
     assert emit_domain_event(db, "invoice.paid", "x", {}, tenant_id=None) == 0
     assert db.execute(select(WebhookDelivery)).scalars().all() == []
+
+
+def test_suppress_domain_events_contextvar_silences():
+    from gdx_dispatch.core.webhooks.emit import suppress_domain_events
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    _sub(db, ["invoice.paid"])
+    with patch.object(tasks_mod.deliver_webhook_task, "delay"):
+        with suppress_domain_events():
+            assert emit_domain_event(db, "invoice.paid", "x", {}, tenant_id=TENANT) == 0
+        # outside the block it emits normally
+        assert emit_domain_event(db, "invoice.paid", "x", {}, tenant_id=TENANT) == 1
+        db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1b — choke-point wiring (invoice.paid at transition_invoice_status)
+# ---------------------------------------------------------------------------
+
+def test_transition_to_paid_emits_invoice_paid():
+    from gdx_dispatch.modules.ledger import service as ledger_service
+
+    inv = SimpleNamespace(id="inv-1", company_id="t1", status="sent", total=100.0, invoice_number="INV-1")
+    fake_session = SimpleNamespace(info={})
+    calls = []
+    with patch.object(ledger_service, "ledger_posting_enabled", return_value=False), \
+         patch("gdx_dispatch.core.webhooks.emit.emit_domain_event",
+               side_effect=lambda *a, **k: calls.append((a, k)) or 0):
+        old = ledger_service.transition_invoice_status(fake_session, inv, "paid")
+    assert old == "sent"
+    assert len(calls) == 1
+    assert calls[0][0][1] == "invoice.paid"      # event_type (positional)
+    assert calls[0][1]["tenant_id"] == "t1"
+
+
+def test_transition_to_sent_does_not_emit():
+    from gdx_dispatch.modules.ledger import service as ledger_service
+
+    inv = SimpleNamespace(id="inv-2", company_id="t1", status="draft", total=100.0, invoice_number="INV-2")
+    fake_session = SimpleNamespace(info={})
+    calls = []
+    with patch.object(ledger_service, "ledger_posting_enabled", return_value=False), \
+         patch("gdx_dispatch.core.webhooks.emit.emit_domain_event",
+               side_effect=lambda *a, **k: calls.append(1)):
+        ledger_service.transition_invoice_status(fake_session, inv, "sent")
+    assert calls == []  # only the paid transition emits
+
+
+def test_transition_paid_to_paid_is_noop():
+    from gdx_dispatch.modules.ledger import service as ledger_service
+
+    inv = SimpleNamespace(id="inv-3", company_id="t1", status="paid", total=1.0, invoice_number="INV-3")
+    fake_session = SimpleNamespace(info={})
+    calls = []
+    with patch.object(ledger_service, "ledger_posting_enabled", return_value=False), \
+         patch("gdx_dispatch.core.webhooks.emit.emit_domain_event",
+               side_effect=lambda *a, **k: calls.append(1)):
+        ledger_service.transition_invoice_status(fake_session, inv, "paid")
+    assert calls == []  # already paid → no re-emit
+
+
+def test_transition_to_paid_stages_real_delivery_unmocked():
+    # The mocked tests above prove the choke point CALLS emit; this one runs the
+    # REAL emit on a REAL session with a live subscription — exercising the
+    # select, the SAVEPOINT, and after_commit dispatch (audit: "tests are theater"
+    # otherwise). Only emit_domain_event is unmocked; ledger flag + Celery delay
+    # are stubbed (no gl_settings table / no broker in the unit harness).
+    from gdx_dispatch.modules.ledger import service as ledger_service
+
+    db = _session()
+    install_webhook_dispatch_hook()
+    _sub(db, ["invoice.paid"])
+    inv = SimpleNamespace(
+        id=str(uuid4()), company_id=TENANT, status="sent",
+        total=250.0, invoice_number="INV-77", billing_type="standard",
+    )
+    with patch.object(ledger_service, "ledger_posting_enabled", return_value=False), \
+         patch.object(tasks_mod.deliver_webhook_task, "delay") as delay:
+        ledger_service.transition_invoice_status(db, inv, "paid")
+        db.commit()
+    rows = db.execute(select(WebhookDelivery)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].event_type == "invoice.paid"
+    assert rows[0].payload["data"]["invoice_id"] == inv.id
+    assert rows[0].payload["data"]["billing_type"] == "standard"
+    assert delay.call_count == 1  # dispatched on the business commit
+
+
+def test_customer_id_is_flush_time_default():
+    # Documents the BLOCKER root cause + why create_customer must flush before
+    # emitting: Customer.id is a flush-time uuid4 default, None at construction.
+    from gdx_dispatch.models.tenant_models import Customer
+
+    c = Customer(name="Acme", company_id=TENANT)
+    assert c.id is None  # → emit before flush would ship customer_id="None"
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,8 @@ just-committed session.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -46,6 +48,27 @@ log = logging.getLogger(__name__)
 _PENDING_KEY = "_gdx_pending_webhook_dispatch"
 
 _hook_installed = False
+
+# Backfill/importer suppression. A programmatic paid-status backfill that routes
+# through the choke points (transition_invoice_status) can wrap its loop in
+# `with suppress_domain_events():` to avoid firing an invoice.paid per years-old
+# invoice. QB *sync* already bypasses the choke points entirely (writes status
+# directly). NOTE: this only silences IN-PROCESS callers — a manual backfill
+# driven through the record_payment HTTP endpoint cannot wrap the handler, so
+# those emits still fire; suppressing them needs a request-level opt-out (future).
+_suppress_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "gdx_suppress_domain_events", default=False
+)
+
+
+@contextlib.contextmanager
+def suppress_domain_events():
+    """Silence domain-event emission for the duration of the block (nestable)."""
+    token = _suppress_var.set(True)
+    try:
+        yield
+    finally:
+        _suppress_var.reset(token)
 
 
 def build_envelope(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -78,10 +101,21 @@ def emit_domain_event(
     backfill routes through the same choke points as live payments, and must not
     fire an ``invoice.paid`` per years-old invoice.
     """
-    if suppress or not tenant_id:
+    if suppress or _suppress_var.get() or not tenant_id:
         return 0
 
-    tenant_id = str(tenant_id)
+    # A choke point that emits sits in the middle of a business write (invoicing,
+    # job creation). Webhook fan-out must NEVER break that write — the entire
+    # body is guarded, and per-row staging is isolated by a SAVEPOINT, so any
+    # emit failure degrades to "no webhook" rather than a failed payment.
+    try:
+        return _emit(db, str(tenant_id), event_type, entity_id, data)
+    except Exception:
+        log.exception("emit_domain_event_failed event=%s entity=%s", event_type, entity_id)
+        return 0
+
+
+def _emit(db: Session, tenant_id: str, event_type: str, entity_id: str, data: dict[str, Any]) -> int:
     envelope = build_envelope(event_type, data)
     staged: list[str] = []
 
@@ -112,6 +146,10 @@ def emit_domain_event(
         # prevent (and the SAVEPOINT would then silently swallow the 2nd). The
         # 64-char digest is stable per (tenant, event, entity, subscription) and
         # always fits. It also travels back to the receiver as X-Idempotency-Key.
+        # Known edge (at-least-once tradeoff): a genuine re-event for the same
+        # (entity, event, subscription) — e.g. an invoice reopened then re-paid —
+        # reuses this key and the 2nd delivery is deduped away. Acceptable for
+        # v1; callers needing every occurrence pass a distinct entity_id.
         idem = hashlib.sha256(
             f"{tenant_id}:{event_type}:{entity_id}:{sub.id}".encode()
         ).hexdigest()
@@ -126,9 +164,9 @@ def emit_domain_event(
             status="pending",
         )
         # SAVEPOINT: a duplicate idempotency_key (legitimate re-emit of the same
-        # event for the same entity+subscription) raises IntegrityError here;
-        # swallow it so the dup degrades to a no-op and the caller's transaction
-        # is untouched. Receiver-side dedupe already covered the first delivery.
+        # event for the same entity+subscription) raises IntegrityError; any
+        # other per-row error is likewise isolated here. Either way the dup/error
+        # degrades to a no-op and the caller's transaction is untouched.
         try:
             with db.begin_nested():
                 db.add(row)
@@ -138,6 +176,9 @@ def emit_domain_event(
                 "webhook_delivery_duplicate_skipped event=%s entity=%s sub=%s",
                 event_type, entity_id, sub.id,
             )
+            continue
+        except Exception:
+            log.exception("webhook_delivery_stage_failed event=%s sub=%s", event_type, sub.id)
             continue
         staged.append(str(row.id))
 
