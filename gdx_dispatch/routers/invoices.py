@@ -2214,10 +2214,54 @@ def add_invoice_line(
             Decimal(str(payload.margin_pct_override))
             if payload.margin_pct_override is not None else None
         ),
+        # 2026-08-19: this handler dropped BOTH of these on the floor.
+        # part_id is the linkage the create path has always stored, so a line
+        # added here could never release its part on delete; includes_labor
+        # was accepted by the contract and then ignored, which is a control
+        # that silently no-ops.
+        part_id=payload.part_id,
+        includes_labor=bool(getattr(payload, "includes_labor", False)),
         sort_order=sort_order,
     )
     db.add(line)
     db.flush()
+
+    # Claim the part this line bills, with the SAME two guards the create
+    # path earned the hard way (invoices.py:1364 — "the operator's payload
+    # STILL carried those lines, so the amounts double-billed while the stamp
+    # no-opped"). Both matter:
+    #
+    #   job_id scope — a part belongs to a job, so a line on a counter sale or
+    #   on a different job's invoice must never claim it.
+    #
+    #   409 when nothing was stamped — a part already billed elsewhere would
+    #   otherwise be CHARGED here while its stamp stays on the other invoice.
+    #   Billing the customer twice and silencing the unbilled-parts banner in
+    #   the same request is the worst possible failure of this feature.
+    #
+    # Without the claim the part stays "unbilled" forever: the money is
+    # charged and every unbilled surface keeps reporting it as missing — a
+    # warning that doing the right thing cannot clear, which is how a
+    # checklist becomes wallpaper.
+    if payload.part_id:
+        claimed = db.execute(
+            update(JobPartNeeded)
+            .where(
+                JobPartNeeded.id == payload.part_id,
+                JobPartNeeded.job_id == str(invoice.job_id or ""),
+                JobPartNeeded.billed_invoice_id.is_(None),
+            )
+            .values(billed_invoice_id=invoice.id)
+        ).rowcount
+        if not claimed:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "part not billable — already billed on another invoice, "
+                    f"or not on this invoice's job: {payload.part_id}"
+                ),
+            )
 
     _recalculate_invoice(invoice, db)
     db.commit()

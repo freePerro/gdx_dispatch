@@ -164,3 +164,64 @@ def test_patch_contract_can_flip_the_flag() -> None:
     assert flipped["includes_labor"] is True
     cleared = InvoiceLinePatchIn(includes_labor=False).model_dump(exclude_unset=True)
     assert cleared["includes_labor"] is False
+
+
+# ---------------------------------------------------------------------------
+# add_invoice_line: the part must be CLAIMED, not just billed.
+#
+# The office adds a recorded part to a draft, the money is charged -- and if
+# the part row is never stamped, every unbilled-parts surface keeps reporting
+# it as missing. A warning that doing the right thing cannot clear is how a
+# checklist becomes wallpaper.
+# ---------------------------------------------------------------------------
+def test_add_line_contract_accepts_part_id_and_includes_labor() -> None:
+    from gdx_dispatch.routers.invoices import InvoiceLineCreateIn
+
+    payload = InvoiceLineCreateIn(
+        description="2220L chain (7ft door)",
+        quantity=1,
+        unit_price=536.00,
+        part_id="a" * 36,
+        includes_labor=True,
+    )
+    assert payload.part_id == "a" * 36
+    assert payload.includes_labor is True
+
+
+def test_add_line_handler_stores_part_id_and_claims_the_part() -> None:
+    """Pins the two fields the handler silently dropped.
+
+    Source-level because the handler needs the full request stack; the
+    round-trip itself was walked in a browser (banner -> edit -> save ->
+    reload -> banner gone).
+    """
+    import inspect
+
+    from gdx_dispatch.routers import invoices
+
+    src = inspect.getsource(invoices.add_invoice_line)
+    assert "part_id=payload.part_id" in src, "line loses its part linkage"
+    assert "includes_labor" in src, "contract field ignored by the handler"
+    # The claim must be guarded on still-unbilled, or a concurrent create
+    # could double-bill the same part.
+    assert "billed_invoice_id.is_(None)" in src, "unguarded claim"
+    assert "billed_invoice_id=invoice.id" in src, "part never claimed"
+
+
+def test_add_line_claim_is_job_scoped_and_409s_when_it_cannot_claim() -> None:
+    """Audit round 2: the create path earned both guards the hard way.
+
+    Without the job scope a line on a counter sale or another job's invoice
+    claims a part it has no business claiming. Without the 409, a part
+    already billed elsewhere is CHARGED here while its stamp stays on the
+    other invoice -- billing the customer twice and silencing the
+    unbilled-parts banner in the same request.
+    """
+    import inspect
+
+    from gdx_dispatch.routers import invoices
+
+    src = inspect.getsource(invoices.add_invoice_line)
+    assert "JobPartNeeded.job_id ==" in src, "claim is not job-scoped"
+    assert "status_code=409" in src, "a failed claim must not bill silently"
+    assert "db.rollback()" in src, "a refused claim must not leave the line"

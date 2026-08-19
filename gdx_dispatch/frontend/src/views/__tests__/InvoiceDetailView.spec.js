@@ -498,3 +498,85 @@ describe('InvoiceDetailView — includes_labor survives a save', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Unbilled-parts banner (2026-08-19).
+//
+// job-closeout-billing-visibility-plan §8 decided in 2026-07: build the
+// invoice from everything priced, leave the rest on the checklist, and MARK
+// THE INVOICE. Only the mobile lane ever got the mark, so the office verified
+// labor-only drafts with nothing saying attested parts had been dropped --
+// the rubber-stamp failure that plan predicted at its own line 913.
+// ---------------------------------------------------------------------------
+describe('InvoiceDetailView — unbilled parts banner', () => {
+  const { readFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const SRC = readFileSync(join(__dirname, '..', 'InvoiceDetailView.vue'), 'utf8');
+
+  it('asks the unbilled-parts endpoint on load', () => {
+    const i = SRC.indexOf('async function fetchUnbilledJobParts');
+    expect(i).toBeGreaterThan(-1);
+    const span = SRC.slice(i, i + 900);
+    expect(span).toMatch(/parts-needed\?status=ordered,received,used&unbilled=true/);
+    expect(span).toMatch(/suppressErrorToast/);
+  });
+
+  it('only fires for a DRAFT invoice that has a job', () => {
+    const i = SRC.indexOf('async function fetchUnbilledJobParts');
+    const span = SRC.slice(i, i + 700);
+    expect(span).toMatch(/invoice\.value\?\.job_id/);
+    expect(span).toMatch(/=== "draft"/);
+    expect(span).toMatch(/if \(!jobId \|\| !isDraft\) return;/);
+  });
+
+  it('a failed read never blocks the page', () => {
+    const i = SRC.indexOf('async function fetchUnbilledJobParts');
+    const span = SRC.slice(i, i + 2200);
+    expect(span).toMatch(/catch \(e\) \{[\s\S]{0,120}unbilledJobParts\.value = \[\];/);
+  });
+
+  it('renders the banner with a count and a way to act on it', () => {
+    const i = SRC.indexOf('data-testid="unbilled-parts-banner"');
+    expect(i).toBeGreaterThan(-1);
+    const block = SRC.slice(i, i + 1200);
+    expect(SRC).toMatch(/v-else-if="unbilledJobParts\.length"/);
+    expect(block).toMatch(/data-testid="unbilled-parts-edit"/);
+    expect(block).toMatch(/enterEditMode/);
+  });
+
+  it('verify is NOT gated behind a confirm — useDestructiveConfirm auto-accepts (#215)', () => {
+    const i = SRC.indexOf('async function verifyInvoice');
+    const span = SRC.slice(i, i + 900);
+    expect(span).not.toMatch(/confirmAsync/);
+    expect(span).toMatch(/#215/);
+  });
+
+  it('banner styling uses theme tokens, not hardcoded light colours', () => {
+    const style = SRC.slice(SRC.indexOf('.unbilled-parts-banner'), SRC.indexOf('.unbilled-parts-banner') + 500);
+    expect(style).toMatch(/var\(--/);
+    expect(style).not.toMatch(/background:\s*#fff/i);
+  });
+
+  // Audit round 2: 403 is not "nothing missing". The accounting role has
+  // invoices.write but NOT inventory.read, so the user who verifies drafts
+  // gets a permission error here -- and an empty banner reads as an
+  // all-clear on a money screen.
+  it('distinguishes no-permission from nothing-missing', () => {
+    const i = SRC.indexOf('async function fetchUnbilledJobParts');
+    const span = SRC.slice(i, i + 1800);
+    expect(span).toMatch(/e\?\.status === 403/);
+    expect(span).toMatch(/unbilledPartsError\.value = "forbidden"/);
+    expect(SRC).toMatch(/data-testid="unbilled-parts-forbidden"/);
+  });
+
+  // Audit round 2: "unbilled" is job-wide; the banner claims something
+  // narrower. Reporting a part that IS already on this invoice sends the
+  // office to add a second line for a part already charged.
+  it('excludes parts already lined on THIS invoice', () => {
+    const i = SRC.indexOf('async function fetchUnbilledJobParts');
+    const span = SRC.slice(i, i + 1800);
+    expect(span).toMatch(/linedPartIds/);
+    expect(span).toMatch(/line_items \|\| \[\]/);
+    expect(span).toMatch(/!linedPartIds\.has\(String\(p\.id\)\)/);
+  });
+});
+
