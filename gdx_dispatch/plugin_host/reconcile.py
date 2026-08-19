@@ -223,6 +223,145 @@ def prune_other_versions(distribution: str | None, keep_version: str | None,
     return removed
 
 
+#: Where a version-changing install is built before it replaces the live one.
+_STAGING = "_staging"
+
+
+def _within(target_real: str, path: str) -> bool:
+    """True if `path` really resolves inside `target_real` (symlinks included).
+
+    Never raises: a crafted RECORD entry (an embedded NUL makes realpath raise
+    ValueError, not OSError) must be refused, not allowed to abort a reconcile
+    halfway through and take the rest of the boot's plugins with it.
+    """
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return False
+    return real == target_real or real.startswith(target_real + os.sep)
+
+
+def _shared_top_levels(exclude: list[str], target: str = INSTALL_DIR) -> set[str]:
+    """Top-level names claimed by installed dist-infos OTHER than `exclude`."""
+    shared: set[str] = set()
+    try:
+        entries = os.listdir(target)
+    except OSError:
+        return shared
+    for entry in entries:
+        if entry.endswith(".dist-info") and entry not in exclude:
+            shared |= _record_top_levels(entry, target)
+    return shared
+
+
+def _dist_info_dirs(distribution: str | None, target: str = INSTALL_DIR) -> list[str]:
+    """dist-info directory names in `target` belonging to `distribution`."""
+    if not distribution:
+        return []
+    want = _canon(distribution)
+    try:
+        entries = os.listdir(target)
+    except OSError:
+        return []
+    out = []
+    for entry in entries:
+        if not entry.endswith(".dist-info"):
+            continue
+        name, _ = artifact_name_version(entry[: -len(".dist-info")] + ".whl")
+        if name and _canon(name) == want:
+            out.append(entry)
+    return out
+
+
+def _record_top_levels(dist_info: str, target: str = INSTALL_DIR) -> set[str]:
+    """The top-level names a dist-info's RECORD claims it installed.
+
+    RECORD lists every installed file relative to the target dir, so the first
+    path component of each line is a top-level file or package directory.
+    Entries that are absolute or try to escape the target are ignored — a
+    malicious wheel must not be able to point our own cleanup at /etc.
+    """
+    names: set[str] = set()
+    record = os.path.join(target, dist_info, "RECORD")
+    try:
+        with open(record, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return names
+    for line in lines:
+        path = line.split(",", 1)[0].strip()
+        if not path or "\x00" in path or os.path.isabs(path) or path.startswith(("/", "\\")):
+            continue
+        head = path.replace("\\", "/").split("/", 1)[0]
+        if not head or head in (".", "..", "_artifacts", _STAGING):
+            continue
+        names.add(head)
+    return names
+
+
+def remove_installed_dist(distribution: str | None, target: str = INSTALL_DIR) -> list[str]:
+    """Delete a distribution's installed CODE (and metadata) from the volume.
+
+    This exists because `pip install --target` does NOT replace an existing
+    package directory: it logs "Target directory ... already exists. Specify
+    --upgrade to force replacement.", **skips the code**, installs the new
+    dist-info anyway, and exits 0. The volume is then a lie — metadata says the
+    new version, the importable code is the old one — and every downstream
+    check believes the metadata (`effective_version` reads dist-info, so
+    `is_installed` and `detect_stale` both pass, and /ready goes green over
+    stale code). Proven on prod 2026-08-07 upgrading a pricing plugin, and
+    reproduced with real pip while writing this. `--upgrade` is not the fix: it
+    forces an index check the egress-less host cannot satisfy.
+
+    Only removes top-level entries this distribution owns EXCLUSIVELY — a name
+    another installed dist-info also claims (a shared dependency) is left
+    alone, so cleaning up plugin A cannot break plugin B.
+    """
+    removed: list[str] = []
+    mine = _dist_info_dirs(distribution, target)
+    if not mine:
+        return removed
+
+    owned: set[str] = set()
+    for d in mine:
+        owned |= _record_top_levels(d, target)
+    shared: set[str] = set()
+    for entry in os.listdir(target):
+        if entry.endswith(".dist-info") and entry not in mine:
+            shared |= _record_top_levels(entry, target)
+
+    target_real = os.path.realpath(target)
+    for name in sorted((owned - shared) | set(mine)):
+        if name in ("_artifacts", _STAGING):
+            continue
+        path = os.path.join(target, name)
+        # Containment check: never follow a symlink or a crafted name out of
+        # the install dir.
+        if not _within(target_real, path):
+            log.error("refusing to remove %r — outside the install dir", name)
+            continue
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.exists(path) or os.path.islink(path):
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+        else:
+            continue
+        # Only claim what actually went: rmtree(ignore_errors=True) can leave
+        # the directory behind, and a removal list that overstates itself is a
+        # small lie in exactly the place we are trying to stop lying.
+        if not os.path.exists(path) and not os.path.islink(path):
+            removed.append(name)
+    if removed:
+        log.info("removed installed %s from the volume: %s", distribution, ", ".join(removed))
+    skipped = owned & shared
+    if skipped:
+        log.info("kept shared paths another plugin also installs: %s", ", ".join(sorted(skipped)))
+    return removed
+
+
 def ensure_registry_table(db: Session) -> None:
     """Idempotently create plugin_registry. Kept as raw DDL (no Alembic) because
     it's a tiny aux table both core and plugin-host touch; a migration would just
@@ -243,20 +382,41 @@ def ensure_artifact_table(db: Session) -> None:
     db.commit()
 
 
+def _artifact_sort_key(filename: str) -> tuple:
+    """Sort artifacts by (distribution, PEP 440 version) — never by filename.
+
+    `ORDER BY filename` is lexicographic, so `…-0.10.0-…whl` sorts BEFORE
+    `…-0.9.0-…whl`. Since the last install of a distribution is the one whose
+    code ends up on the volume (and `desired_versions` is likewise last-wins),
+    a plugin that reached a two-digit minor would install 0.10.0 and then
+    silently reinstall 0.9.0 over it — a self-consistent downgrade, with
+    stale-detection agreeing everything was fine.
+    """
+    dist, ver = artifact_name_version(filename)
+    key = _canon(dist or filename)
+    try:
+        from packaging.version import Version
+        return (key, 0, Version(ver or "0"), filename)
+    except Exception:
+        # Unparseable version sorts first so a real version always wins the
+        # last-write, rather than an unorderable name deciding it.
+        return (key, -1, ver or "", filename)
+
+
 def desired_artifacts(db: Session) -> list[tuple[str, str, bytes]]:
-    """(filename, sha256, content) for every uploaded plugin artifact."""
+    """(filename, sha256, content) for every uploaded plugin artifact, oldest
+    version first per distribution so the newest is the one that lands."""
     rows = db.execute(
-        text("SELECT filename, sha256, content FROM plugin_artifact ORDER BY filename")
+        text("SELECT filename, sha256, content FROM plugin_artifact")
     ).fetchall()
+    rows = sorted(rows, key=lambda r: _artifact_sort_key(r[0]))
     return [(r[0], r[1], bytes(r[2])) for r in rows]
 
 
 def desired_artifact_names(db: Session) -> list[str]:
     """Just the filenames (no blobs) — for cheap desired-version lookups."""
-    rows = db.execute(
-        text("SELECT filename FROM plugin_artifact ORDER BY filename")
-    ).fetchall()
-    return [r[0] for r in rows]
+    rows = db.execute(text("SELECT filename FROM plugin_artifact")).fetchall()
+    return [r[0] for r in sorted(rows, key=lambda r: _artifact_sort_key(r[0]))]
 
 
 def desired_versions(db: Session) -> dict[str, str]:
@@ -334,12 +494,92 @@ def install_artifact(
     path = os.path.join(staged_dir, safe)
     with open(path, "wb") as fh:
         fh.write(content)
+
+    # A DIFFERENT version of this distribution is already on the volume. pip
+    # --target will not overwrite its package directory — it warns, skips the
+    # code, still writes the new dist-info, and exits 0 — so installing straight
+    # in leaves stale code under fresh metadata. Build the replacement in a
+    # staging dir first and swap it in only once pip has actually succeeded.
+    present = effective_version(dist, target)
+    if dist and present and ver and not _versions_equal(present, ver):
+        return _install_replacing(path, dist, ver, target, present)
+
     ok = pip_install(path, target=target)
     if ok:
         # Only prune AFTER a successful install — never delete a working version's
         # metadata because a new install failed (offline host).
         prune_other_versions(dist, ver, target)
     return ok
+
+
+def _install_replacing(spec: str, dist: str, ver: str, target: str,
+                       present: str) -> bool:
+    """Swap an installed distribution to a different version, atomically enough.
+
+    The destructive part of a replace — clearing the old code — happens ONLY
+    after pip has produced a complete new install in a staging directory. That
+    ordering is the whole point: plugin-host has no network egress, so a wheel
+    whose dependencies aren't vendored simply cannot install here. Clearing
+    first and then discovering that would turn a plugin that merely *couldn't
+    upgrade* into one that no longer exists — a degraded state promoted to an
+    outage, repeated on every boot because the artifact row persists.
+
+    On failure the live install is untouched and we return False, which
+    reconcile() reports as a failed spec (loud, /ready 503) exactly as before.
+    """
+    staging = os.path.join(target, _STAGING)
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging, exist_ok=True)
+    try:
+        if not pip_install(spec, target=staging):
+            log.error(
+                "install of %s %s failed — keeping the working %s install in place",
+                dist, ver, present,
+            )
+            return False
+
+        produced = sorted(os.listdir(staging))
+        if not produced:
+            log.error("staged install of %s %s produced nothing — keeping %s",
+                      dist, ver, present)
+            return False
+
+        log.info("replacing %s %s with %s", dist, present, ver)
+        # What another installed plugin also claims — computed BEFORE we remove
+        # anything, and left alone below. pip's skip-existing behaviour used to
+        # protect shared dependency directories; clobbering them here would
+        # break plugin B as a side effect of upgrading plugin A.
+        shared = _shared_top_levels(_dist_info_dirs(dist, target), target)
+        # Safe now: the new install is complete and on disk. This clears files
+        # the old version had that the new one dropped, which a plain overwrite
+        # would leave behind as importable stale modules.
+        remove_installed_dist(dist, target)
+
+        # Code first, metadata LAST. If a move fails partway, the volume must
+        # not be left holding the new dist-info over missing code — that reads
+        # as "correct version installed" to effective_version/is_installed, so
+        # the next boot would skip the install and serve a plugin that cannot
+        # import, with /ready green. Without the new dist-info the version reads
+        # absent and the next boot reinstalls: a broken swap self-heals.
+        code_first = sorted(produced, key=lambda n: (n.endswith(".dist-info"), n))
+        target_real = os.path.realpath(target)
+        for name in code_first:
+            dest = os.path.join(target, name)
+            if not _within(target_real, dest):
+                log.error("refusing to install %r — outside the install dir", name)
+                continue
+            if name in shared and (os.path.exists(dest) or os.path.islink(dest)):
+                log.info("keeping existing %r — another installed plugin claims it", name)
+                continue
+            if os.path.isdir(dest) and not os.path.islink(dest):
+                shutil.rmtree(dest, ignore_errors=True)
+            elif os.path.exists(dest) or os.path.islink(dest):
+                os.remove(dest)
+            shutil.move(os.path.join(staging, name), dest)
+        prune_other_versions(dist, ver, target)
+        return True
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def pip_install(spec: str, target: str = INSTALL_DIR) -> bool:
@@ -418,15 +658,40 @@ def reconcile(db: Session | None = None) -> ReconcileResult:
                 log.info("registry package %s already installed — skipping", spec)
                 prune_other_versions(package, version, target=INSTALL_DIR)
                 continue
-            if pip_install(spec):
-                installed.append(spec)
-                if version:
+            # Same stale-code trap as the artifact path: pip --target won't
+            # overwrite an existing package dir, so a version bump on an
+            # already-installed distribution has to go through the staged
+            # replace rather than a bare install.
+            present = effective_version(package, INSTALL_DIR) if version else None
+            if version and present and not _versions_equal(present, version):
+                ok = _install_replacing(spec, package, version, INSTALL_DIR, present)
+            else:
+                ok = pip_install(spec)
+                if ok and version:
                     prune_other_versions(package, version, target=INSTALL_DIR)
+            if ok:
+                installed.append(spec)
             else:
                 failed.append(spec)
         # Uploaded private plugins (not on any index). Verify the stored digest
         # before installing — a corrupted/tampered row won't be executed.
-        for filename, sha256, content in desired_artifacts(db):
+        # Only the newest artifact per distribution is installed. Uploads never
+        # delete older rows, so a plugin that has been updated a few times has
+        # several; installing each in turn would clear and re-pip the same
+        # distribution once per row on every boot — wasted work, and a fresh
+        # chance for a mid-sequence failure each time. desired_artifacts is
+        # sorted oldest-first per distribution, so the last row for a
+        # distribution is the one to install.
+        artifacts = desired_artifacts(db)
+        newest = {}
+        for filename, sha256, content in artifacts:
+            adist, _ = artifact_name_version(filename)
+            newest[_canon(adist or filename)] = (filename, sha256, content)
+        superseded = len(artifacts) - len(newest)
+        if superseded:
+            log.info("skipping %d superseded artifact row(s) — installing the "
+                     "newest version of each plugin only", superseded)
+        for filename, sha256, content in newest.values():
             if install_artifact(filename, content, expected_sha256=sha256):
                 installed.append(filename)
             else:
