@@ -191,23 +191,43 @@ the id; POST failure blocks submit. pytest — none needed (endpoints exist).
 **The users:** the office estimator writing the quote; the customer opening the
 proposal on their phone; downstream, the tech who inherits the converted job.
 
-**EstimateView.vue:**
-- Replace the passive textarea + "Use as jobsite" button with the same ask:
-  **"Jobsite same as customer address?"** default **Yes**. Yes → `jobsite_address`
-  is set to the customer's address at save (D4 freeze). No → the textarea, required
-  non-empty. Seed the toggle on load: existing estimate whose `jobsite_address`
-  matches the customer address (normalized) → Yes; differs → No; blank (legacy) → Yes.
-- Mobile quote dialogs (`MobileQuoteBuilderDialog`, `MobileCustomerQuoteDialog`):
-  same ask, minimal form (a "Different address" disclosure with one field). Verify
-  their create endpoints (`routers/mobile_quoting.py`) accept/persist
-  `jobsite_address`; add if missing.
+**D4 REVISED (pre-code audit PR 3 §2/§3/§5): "Yes, same as customer" = NULL,
+not a frozen copy.** The freeze forced conversion to decode intent by
+normalizing against the customer's CURRENT address — a moving target: fix a
+customer typo between save and accept and every pending "same" estimate
+mints a junk stale location row. Null carries the intent directly, legacy
+blanks already mean "same" everywhere today, and the three autosave write
+sites all inherit one form field with no re-freeze races.
 
-**Conversion** (`routers/estimates.py:1861` `_create_job_from_estimate`):
-- If `estimate.jobsite_address` is set and normalized-differs from
-  `customer.address`: find a non-deleted `customer_locations` row for that customer
-  with a normalized-equal address; else create one (label `"Jobsite (EST-xxxxxx)"`,
-  address = the estimate text). Set `new_job.location_id`.
-- Same-or-blank → leave `location_id` NULL (customer-address fallback is correct).
+**EstimateView.vue:**
+- Replace the passive textarea + "Use as jobsite" button with the ask:
+  **"Jobsite same as customer address?"** default **Yes** (= `jobsite_address:
+  null`). No → the textarea, required non-empty for manual save (autosave may
+  transiently send null while typing — harmless: conversion runs only at
+  accept, and the estimate locks after). Seed on load: non-blank → No;
+  blank → Yes. All three write sites (draft-create, autosave flush, manual
+  save) inherit the one form field; `estimateLocked` must be verified to
+  gate the autosave flush post-accept.
+- **Mobile quote dialogs get NO ask** (audit §1): mobile quotes are born
+  job-linked, so the conversion bridge never runs for them — and
+  `MobileCustomerQuoteDialog` is the customer-facing accept surface, where an
+  address write would hand the customer what trap 7 forbids on the public
+  link. Instead `mobile_quoting.py`'s create seeds `jobsite_address`
+  server-side from `resolve_job_site(job)` so the PDF shows the real site
+  with zero new UI. This RESOLVES §7's open question.
+
+**Conversion** (`routers/estimates.py` `_create_job_from_estimate`):
+- Runs AFTER the function's existing mid-commit, internally guarded (audit
+  §3b: placed before it, a bind failure poisons the session and the whole
+  conversion raises — no job at all, strictly worse than an unbound job).
+- If `estimate.jobsite_address` is non-blank: find a non-deleted
+  `customer_locations` row for the customer with a normalized-equal address,
+  else create one (`is_primary: false` — inert for other jobs under rule 2;
+  label `"Jobsite (EST-xxxxxx)"`). Set `new_job.location_id`. A cheap
+  skip-guard when the text normalized-equals the customer's current address
+  avoids a redundant row for a typed-but-identical address.
+- NULL/blank (= same as customer) → `location_id` stays NULL. No
+  normalize-against-customer decoding — null IS the intent.
 - Normalization: casefold + collapse whitespace/commas. Find-or-create makes
   re-accepts and repeat estimates at the same site converge on ONE location row
   instead of minting duplicates.
@@ -367,6 +387,16 @@ Per PR, in order:
   the client-side create-then-bind chain + retry memos (PR 2 audit §2).
 - Orphaned location rows (site created, job never landed) have no cleanup
   surface — fold into PR 4's edit scope.
+- Concurrent double-accept can duplicate jobsite location rows (PR 3 audit
+  §3) — same read-then-write accept race that already duplicates jobs;
+  accept-level idempotency fixes both.
+- Commit-on-blur for the estimate jobsite draft (PR 3 audit §5): the
+  autosave flush can persist a half-typed abandoned address that a later
+  accept binds.
+- Legacy `jobsite_address` verbatim copies (from the removed copy button)
+  whose customer address was later edited: accept binds the document's
+  address — a one-time cleanup migration NULLing normalized-equal copies is
+  possible but destructive; Doug decides.
 
 (Tech-side address correction was originally filed here as a follow-up; Doug pulled
 it into scope 2026-08-18 — it is now **PR 4**.)

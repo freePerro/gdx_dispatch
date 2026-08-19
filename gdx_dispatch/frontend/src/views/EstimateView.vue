@@ -248,10 +248,6 @@
                 <div v-if="selectedCustomer.address" class="contact-row">
                   <i class="pi pi-map-marker" />
                   <span style="white-space: pre-line">{{ selectedCustomer.address }}</span>
-                  <Button label="Use as jobsite" text size="small"
-                    style="margin-left: auto" :disabled="estimateLocked"
-                    data-testid="copy-customer-address-to-jobsite"
-                    @click="form.jobsite_address = selectedCustomer.address" />
                 </div>
               </div>
             </div>
@@ -295,10 +291,28 @@
               <DatePicker id="est-valid-until" v-model="form.valid_until" dateFormat="yy-mm-dd"
                 :showIcon="true" class="w-full" :disabled="estimateLocked" data-testid="estimate-valid-until" />
             </div>
+            <!-- The jobsite ask (jobsite plan PR 3, D4-revised): blank/NULL
+                 means "same as the customer's address" everywhere (PDF,
+                 portal, conversion) — the toggle makes that explicit instead
+                 of a maybe-blank textarea. A non-blank value is an EXPLICIT
+                 different address; on accept, conversion binds it to the new
+                 job as a real customer_locations row. -->
             <div class="form-field">
-              <label for="est-jobsite">Jobsite Address</label>
-              <Textarea id="est-jobsite" v-model="form.jobsite_address" rows="2" class="w-full"
-                placeholder="Address where the work will be performed (if different from billing address)"
+              <label>Jobsite</label>
+              <div class="jobsite-ask" data-testid="estimate-jobsite-ask">
+                <label class="jobsite-option">
+                  <RadioButton v-model="jobsiteDiffers" :value="false" :disabled="estimateLocked"
+                    data-testid="estimate-jobsite-same" />
+                  <span>Same as customer address</span>
+                </label>
+                <label class="jobsite-option">
+                  <RadioButton v-model="jobsiteDiffers" :value="true" :disabled="estimateLocked"
+                    data-testid="estimate-jobsite-differs" />
+                  <span>Different address</span>
+                </label>
+              </div>
+              <Textarea v-if="jobsiteDiffers" id="est-jobsite" v-model="form.jobsite_address" rows="2" class="w-full"
+                placeholder="Address where the work will be performed *"
                 :disabled="estimateLocked" data-testid="estimate-jobsite-address" />
             </div>
 
@@ -1064,6 +1078,7 @@ import Card from "primevue/card";
 import Column from "primevue/column";
 import DataTable from "primevue/datatable";
 import DatePicker from "primevue/datepicker";
+import RadioButton from "primevue/radiobutton";
 import Dialog from "primevue/dialog";
 import Divider from "primevue/divider";
 import InputNumber from "primevue/inputnumber";
@@ -2083,6 +2098,9 @@ async function fetchEstimate() {
         : [defaultLineItem()],
     };
     proposalMode.value = Boolean(data.proposal_mode);
+    // Seed the jobsite ask: a non-blank stored address is an explicit
+    // different-address answer; blank/NULL means "same as customer".
+    jobsiteDiffers.value = Boolean((data.jobsite_address || "").trim());
     acceptedTierId.value = data.accepted_tier_id ?? null;
     await loadAttachments();
     if (proposalMode.value) await loadTiers();
@@ -2476,6 +2494,15 @@ const FINALIZED = new Set(["accepted", "declined", "Accepted", "Declined"]);
 // dropped is worse than a locked one (lines "added" here rendered, never
 // persisted, and vanished on reload).
 const estimateLocked = computed(() => isExisting.value && FINALIZED.has(estimate.value.status));
+// The jobsite ask (PR 3, D4-revised): false = "same as customer address",
+// which IS jobsite_address null — all three write sites (draft-create,
+// autosave flush, manual save) send `form.jobsite_address || null`, so one
+// form field carries the answer with no freeze/decode step. Flipping back
+// to "same" clears the text so stale drafts can't ride along.
+const jobsiteDiffers = ref(false);
+watch(jobsiteDiffers, (v) => {
+  if (!v) form.value.jobsite_address = "";
+});
 // Exposed to the template for the Slice 3 status pill — Vue's <template>
 // can't reach a const declared in <script setup> unless we re-declare it.
 const FINALIZED_STATUSES = FINALIZED;
@@ -2726,6 +2753,11 @@ watch(
 
 // --- Save (create) ---
 async function createEstimate() {
+  if (jobsiteDiffers.value && !(form.value.jobsite_address || "").trim()) {
+    toast.add({ severity: "warn", summary: "Jobsite address required",
+      detail: "You marked the jobsite as a different address — enter it, or switch back to 'Same as customer address'.", life: 5000 });
+    return;
+  }
   saving.value = true;
   try {
     let customerId = form.value.customer_id;
@@ -2791,6 +2823,14 @@ async function createEstimate() {
 // delete-and-re-post path — it raced with autosave and would nuke
 // autosave-created line ids mid-flight.
 async function saveExistingEstimate() {
+  // Same gate as create (post-code audit §2b): "different address" with no
+  // address would flush null — which now MEANS "same as customer" — while
+  // the toast says "Saved". Block it here too.
+  if (jobsiteDiffers.value && !(form.value.jobsite_address || "").trim()) {
+    toast.add({ severity: "warn", summary: "Jobsite address required",
+      detail: "You marked the jobsite as a different address — enter it, or switch back to 'Same as customer address'.", life: 5000 });
+    return;
+  }
   saving.value = true;
   try {
     await forceFlush();
@@ -3614,7 +3654,9 @@ onUnmounted(() => {
   gap: 0.35rem;
   font-size: 0.85rem;
 }
-.customer-contact .contact-row {
+.customer-contact .jobsite-ask { display: flex; gap: 2rem; flex-wrap: wrap; margin: 0.15rem 0 0.4rem; }
+.jobsite-option { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.92rem; }
+.contact-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
