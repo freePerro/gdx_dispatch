@@ -144,6 +144,29 @@ def _serialize(p: JobPartNeeded) -> dict[str, Any]:
     }
 
 
+def _resolved_unit_price(db: Session, job_id: str, payload) -> Any:
+    """The sell price to store for an office-added part.
+
+    A caller-supplied price is honoured ONLY when it is a price the catalog
+    itself would stand behind. The job screen's catalog picker sends the raw
+    `custom_catalog_items.price` column, which for QuickBooks-imported rows
+    equals cost — storing that bills the customer at cost and, because these
+    rows are the "office's number" tier in core.part_pricing, teaches the
+    resolver that cost is the agreed price for that SKU.
+
+    So: resolve from the SKU. If the resolver agrees a price exists, use it.
+    If the caller sent a price the resolver cannot corroborate and no SKU
+    resolves, keep the caller's number -- a human typing a price by hand is
+    still authoritative, and refusing it would break manual entry.
+    """
+    from gdx_dispatch.core.part_pricing import resolve_sell_price
+
+    resolved = resolve_sell_price(db, job_id=job_id, sku=payload.sku or None)
+    if resolved is not None:
+        return resolved
+    return payload.unit_price
+
+
 @router.post(
     "/jobs/{job_id}/parts-needed",
     status_code=201,
@@ -172,7 +195,15 @@ def add_part_needed(
         notes=payload.notes,
         sku=payload.sku or None,
         photo_url=payload.photo_url or None,
-        unit_price=payload.unit_price,
+        # 2026-08-19: a client-supplied price is re-derived, never trusted
+        # verbatim. The job screen's Add-from-Catalog posts the raw
+        # custom_catalog_items.price column — and 1,493 of 1,843 priced rows
+        # there carry price == cost (QuickBooks imports), so trusting it wrote
+        # COST into a sell-price field. Rows written here are also the tier-1
+        # input core.part_pricing treats as "the office's number for this
+        # job", so a bad value laundered itself into authority on the next
+        # capture. Resolving server-side keeps one pricing rule.
+        unit_price=_resolved_unit_price(db, job_id, payload),
         requested_by_user_id=uid,
         created_at=now,
         updated_at=now,
@@ -537,6 +568,30 @@ def dispatch_config(
     return {"audible_critical": bool(audible)}
 
 
+def _suggest_price(db: Session, price, cost, pricing_category, job_id=None) -> float | None:
+    """Sell price for one suggestion row, or None to leave it for the office.
+
+    Delegates to ``core.part_pricing`` so a suggestion offers the SAME number
+    the capture path would stamp — one implementation of the money decision,
+    not two that drift. Never raises: a suggest dropdown must not 500 because
+    a catalog row has odd numbers in it.
+    """
+    from gdx_dispatch.core.part_pricing import sell_price_for_row
+
+    try:
+        resolved = sell_price_for_row(
+            db,
+            price=price,
+            cost=cost,
+            pricing_category=pricing_category,
+            job_id=job_id,
+        )
+        return float(resolved) if resolved is not None else None
+    except Exception:  # pragma: no cover - defensive
+        log.exception("sku_suggest price resolution failed")
+        return None
+
+
 @router.get(
     "/parts-needed/sku-suggest",
     dependencies=[Depends(require_permission("inventory.read"))],
@@ -549,6 +604,12 @@ def sku_suggest(
         default=None,
         description="Restrict to one catalog. Accepts a custom catalog's id or "
         "a virtual CHI catalog id. Omit to search them all.",
+    ),
+    job_id: str | None = Query(
+        default=None,
+        description="Job the suggestion is for. Only affects `price`: it "
+        "resolves the customer's pricing class, so a contractor or wholesale "
+        "customer is not quoted a retail margin. Omit for a retail price.",
     ),
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -696,6 +757,11 @@ def sku_suggest(
                 "vendor": p.vendor_name,
                 "vendor_sku": p.vendor_sku,
                 "qty_on_hand": p.qty_on_hand,
+                # Sell price (2026-08-19). LineItemEditor.addSelectedParts has
+                # always read `hit.price` to fill an unpriced part pulled onto
+                # an invoice — this endpoint never returned the field, so that
+                # fallback was dead code and every such pull landed at $0.
+                "price": float(p.unit_price) if p.unit_price else None,
             }
         )
 
@@ -758,6 +824,11 @@ def sku_suggest(
                     "vendor": cci.vendor,
                     "category": cci.category,
                     "qty_on_hand": None,
+                    # Priced through core.part_pricing, NOT raw cci.price:
+                    # 1,493 of 1,843 priced rows carry price == cost (QB
+                    # imports), so the raw column would offer the office a
+                    # zero-margin sale.
+                    "price": _suggest_price(db, cci.price, cci.cost, cci.pricing_category, job_id),
                 }
             )
 
@@ -791,6 +862,7 @@ def sku_suggest(
                     "vendor": cp.brand or cp.manufacturer,
                     "category": cp.part_type,
                     "qty_on_hand": None,
+                    "price": _suggest_price(db, cp.sell_price, cp.cost, cp.pricing_category, job_id),
                 }
             )
 
@@ -833,6 +905,7 @@ def sku_suggest(
                     "vendor": d.brand or d.manufacturer,
                     "model_number": d.model_number,
                     "qty_on_hand": None,
+                    "price": _suggest_price(db, d.sell_price, d.cost, "doors", job_id),
                 }
             )
 
@@ -872,6 +945,7 @@ def sku_suggest(
                     "vendor": (ds.manufacturer if ds else None),
                     "model_number": (ds.model_number if ds else None),
                     "qty_on_hand": None,
+                    "price": _suggest_price(db, cci.price, cci.cost, cci.pricing_category or "doors", job_id),
                 }
             )
 

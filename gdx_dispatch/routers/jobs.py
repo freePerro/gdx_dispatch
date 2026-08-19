@@ -22,6 +22,7 @@ from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.part_pricing import duplicate_capture_groups, resolve_sell_price
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -2139,6 +2140,12 @@ def closeout_job(
             # same-sku lines stay two rows. unit_price = catalog SELL price
             # when the part resolved (NOT the closeout unit_cost); NULL means
             # the office prices it at invoicing.
+            #
+            # 2026-08-19: resolution moved to core.part_pricing. Reading only
+            # `part_row.unit_price` made this unreachable for catalog-picked
+            # parts, which never carry a part_id by design — the tech attested
+            # a part the office had already priced on this very job and it was
+            # captured NULL, then dropped from the draft.
             db.add(JobPartNeeded(
                 id=str(uuid.uuid4()),
                 company_id=tenant_id,
@@ -2148,8 +2155,12 @@ def closeout_job(
                 quantity=int(p.qty),
                 status="used",
                 source="closeout",
-                unit_price=(
-                    part_row.unit_price if part_exists and part_row.unit_price else None
+                unit_price=resolve_sell_price(
+                    db,
+                    job_id=str(job.id),
+                    sku=p.sku,
+                    part_id=part_uuid if part_exists else None,
+                    customer_id=job.customer_id,
                 ),
                 # PR5: the tech's free-text explanation (a part not in the
                 # system) leads; the cost breadcrumb follows.
@@ -2754,6 +2765,11 @@ def closeout_billing_suggestion(
             "estimate_exists": estimate_exists,
             "closeout": None,
             "labor_line": None,
+            # Mobile and van captures happen on jobs that never get a
+            # closeout, and van rows are exactly what started billing in
+            # v1.69. Omitting the key here made the warning unreachable for
+            # them.
+            "duplicate_part_warnings": duplicate_capture_groups(db, str(jid)),
         })
 
     labor: dict[str, Any] | None = None
@@ -2817,6 +2833,12 @@ def closeout_billing_suggestion(
         },
         "job_notes": job_notes,
         "labor_line": labor,
+        # Parts this job captured more than once and that are still unbilled
+        # (2026-08-19). Capture rows are never machine-merged — AUDIT-R1 ruled
+        # any automatic dedup either undercounts or double-counts — so the
+        # office is told instead, before it verifies a draft. Empty list is the
+        # normal case.
+        "duplicate_part_warnings": duplicate_capture_groups(db, str(jid)),
     })
 
 

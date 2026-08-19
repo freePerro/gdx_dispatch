@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.part_pricing import resolve_sell_price
 from gdx_dispatch.models.tenant_models import VanInventoryItem, VanInventoryLog
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -176,7 +177,12 @@ def use_van_item(
         # PR4-billing-capture: van usage decremented truck stock but the part
         # NEVER reached billing. When the usage is job-linked, add one
         # source-tagged billable checklist row per event (events accumulate).
-        # Van items carry no sell price — the office prices it at invoicing.
+        # The van is a LOCATION, not a pricing lane (Doug 2026-08-19: "van
+        # stock is the same price as the catalog price, it is just inventory
+        # tracking"). Until 2026-08-19 these rows were written with no price
+        # at all, and the line builder skips unpriced rows — so every van part
+        # silently failed to bill. van_inventory carries no price column of
+        # its own; the sku is what prices it.
         if _job_key:
             from gdx_dispatch.models.tenant_models import JobPartNeeded
             db.add(JobPartNeeded(
@@ -188,6 +194,7 @@ def use_van_item(
                 quantity=int(payload.quantity),
                 status="used",
                 source="van",
+                unit_price=resolve_sell_price(db, job_id=_job_key, sku=item.sku),
                 notes=(f"van stock ({payload.reason})" if payload.reason else "van stock"),
                 requested_by_user_id=uid,
                 created_at=now,

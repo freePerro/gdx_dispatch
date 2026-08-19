@@ -172,6 +172,35 @@
             </div>
           </div>
 
+          <!-- The same part recorded more than once on this job, still
+               unbilled (2026-08-19). Capture rows are never machine-merged —
+               any automatic dedup undercounts or double-counts — so the
+               office is told before it prices anything. Deliberately a
+               SIBLING of the closeout card, not a child: mobile and van
+               captures happen on jobs with no closeout at all. -->
+          <div
+            v-if="closeoutSuggestion?.duplicate_part_warnings?.length"
+            class="form-field full-width closeout-dupe-warning"
+            data-testid="duplicate-part-warnings"
+          >
+            <div class="closeout-context-head">
+              <strong>Recorded more than once — check before billing</strong>
+            </div>
+            <p
+              v-for="(d, idx) in closeoutSuggestion.duplicate_part_warnings"
+              :key="idx"
+              class="closeout-context-notes"
+              :data-testid="`duplicate-part-warning-${idx}`"
+            >
+              {{ d.part }}<template v-if="d.sku"> ({{ d.sku }})</template>
+              — logged {{ d.times_captured }}× at qty {{ d.quantity }}
+              <span class="muted">via {{ d.sources.join(' + ') }}</span>
+            </p>
+            <p class="muted closeout-context-notes">
+              These are separate records, not one part counted twice by the
+              system. Bill whichever reflects the work actually done.
+            </p>
+          </div>
           <div class="form-field full-width">
             <label>Line Items</label>
             <LineItemEditor
@@ -602,8 +631,12 @@ async function prefillFromJobCloseout(jobId) {
       `/api/jobs/${jobId}/closeout-billing-suggestion`,
       { suppressErrorToast: true },
     );
-    if (!s?.has_closeout) return;
+    // Store BEFORE the has_closeout gate: duplicate_part_warnings covers
+    // mobile and van captures, which happen on jobs that never get a
+    // closeout. Gating the whole payload on has_closeout made the warning
+    // dead for the exact rows this release started pricing.
     closeoutSuggestion.value = s;
+    if (!s?.has_closeout) return;
     // Round 2 (Doug 2026-08-07): the closeout's own note now moves onto the
     // invoice automatically — it was attested at billing time and the
     // operator can edit or clear it before saving. Job notes stay opt-in
@@ -863,6 +896,15 @@ watch(() => form.value.customer_id, () => onCustomerChange());
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
+}
+/* Theme tokens only — this has to stay legible in dark mode, where a
+   hardcoded warning colour on a dark card goes unreadable. */
+.closeout-dupe-warning {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
 }
 .closeout-context-row {
   margin-top: 0.25rem;

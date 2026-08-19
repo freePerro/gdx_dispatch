@@ -33,6 +33,7 @@ from gdx_dispatch.core.job_site import (
     resolve_job_sites,
 )
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.part_pricing import resolve_sell_price
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -4268,9 +4269,16 @@ def mobile_job_parts_used(
                 quantity=int(part.qty),
                 status="used",
                 source="mobile",
-                # NULL price: the office prices a free-text part at invoicing
-                # (same rule as closeout — never invent a sell price).
-                unit_price=None,
+                # A free-text part still carries a sku often enough to price
+                # from the job's own scoped rows or the catalog (2026-08-19).
+                # Unresolvable stays NULL — the office prices it at invoicing,
+                # same rule as closeout: never invent a sell price.
+                unit_price=resolve_sell_price(
+                    db,
+                    job_id=str(_job_uuid_parts),
+                    sku=part.sku,
+                    part_id=None,
+                ),
                 requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
                 created_at=_fx_now,
                 updated_at=_fx_now,
@@ -4330,7 +4338,14 @@ def mobile_job_parts_used(
             quantity=int(part.qty),
             status="used",
             source="mobile",
-            unit_price=part_obj.unit_price if part_obj.unit_price else None,
+            # Inventory price still wins via part_id (tier 2); the resolver
+            # adds the job's own scoped price and the catalog behind it.
+            unit_price=resolve_sell_price(
+                db,
+                job_id=str(_job_uuid_parts),
+                sku=part_obj.sku,
+                part_id=_part_uuid,
+            ),
             requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
             created_at=_pn_now,
             updated_at=_pn_now,
