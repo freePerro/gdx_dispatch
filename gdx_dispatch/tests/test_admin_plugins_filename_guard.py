@@ -30,10 +30,17 @@ class _DB:
     def commit(self):
         pass
 
+    def rollback(self):
+        pass
+
 
 def _no_tables(monkeypatch):
     monkeypatch.setattr(ap, "ensure_registry_table", lambda db: None)
     monkeypatch.setattr(ap, "ensure_artifact_table", lambda db: None)
+    # The audit write is exercised against a real session in
+    # test_plugin_admin_audit.py; here it would just add executes and blur the
+    # "did the guard write a row?" assertions.
+    monkeypatch.setattr(ap, "_audit", lambda *a, **k: None)
 
 
 def test_filename_not_uploaded_is_rejected_without_writing_a_row(monkeypatch):
@@ -41,7 +48,7 @@ def test_filename_not_uploaded_is_rejected_without_writing_a_row(monkeypatch):
     monkeypatch.setattr(ap, "desired_artifact_names", lambda db: [])
     db = _DB()
     with pytest.raises(ap.HTTPException) as e:
-        ap.add_plugin(ap.PluginInstall(package=_WHEEL), user={"role": "owner"}, db=db)
+        ap.add_plugin(ap.PluginInstall(package=_WHEEL), request=None, user={"role": "owner"}, db=db)
     assert e.value.status_code == 400
     assert db.executed == []  # never inserted the bogus registry row
 
@@ -50,7 +57,7 @@ def test_filename_already_uploaded_is_noop_success(monkeypatch):
     _no_tables(monkeypatch)
     monkeypatch.setattr(ap, "desired_artifact_names", lambda db: [_WHEEL])
     db = _DB()
-    out = ap.add_plugin(ap.PluginInstall(package=_WHEEL), user={"role": "owner"}, db=db)
+    out = ap.add_plugin(ap.PluginInstall(package=_WHEEL), request=None, user={"role": "owner"}, db=db)
     assert out["status"] == "already-uploaded"
     assert out["version"] == "0.1.2"  # parsed from the filename
     assert db.executed == []  # no INSERT — the artifact already installs it
@@ -64,7 +71,7 @@ def test_filename_bypass_variants_are_rejected(monkeypatch, bad):
     monkeypatch.setattr(ap, "desired_artifact_names", lambda db: [])
     db = _DB()
     with pytest.raises(ap.HTTPException) as e:
-        ap.add_plugin(ap.PluginInstall(package=bad), user={"role": "owner"}, db=db)
+        ap.add_plugin(ap.PluginInstall(package=bad), request=None, user={"role": "owner"}, db=db)
     assert e.value.status_code == 400
     assert db.executed == []
 
@@ -75,6 +82,7 @@ def test_real_package_name_still_inserts(monkeypatch):
     db = _DB()
     out = ap.add_plugin(
         ap.PluginInstall(package="gdx-plugin-example", version="1.0"),
+        request=None,
         user={"role": "owner", "sub": "u1"},
         db=db,
     )

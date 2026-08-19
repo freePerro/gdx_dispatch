@@ -27,12 +27,20 @@ from urllib.parse import quote
 import httpx
 import jwt
 import websockets
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from jwt.exceptions import InvalidTokenError as JWTError
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db
 from gdx_dispatch.core.plugin_consent import fetch_permissions, has_permission_consent
 from gdx_dispatch.plugin_host.browser_stream import host_allowed
 from gdx_dispatch.routers.auth import get_current_user
@@ -72,8 +80,9 @@ def _gate_browser(user: dict, db: Session, key: str) -> None:
 @router.post("/api/plugins/_browser/ticket")
 def issue_ticket(
     body: TicketReq,
+    request: Request,
     user: dict = Depends(get_current_user),  # full gate stack runs here
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     _gate_browser(user, db, body.key)
     if not host_allowed(body.url):
@@ -93,6 +102,20 @@ def issue_ticket(
         SIGN_KEY,
         algorithm=ALG,
     )
+    # Audited after the mint, so "issued" is literally true, and before the
+    # return, so a ticket the trail could not record never reaches the caller.
+    # A ticket is a capability to drive a browser as the tenant against that
+    # host — which owner opened what, and when, is the only record of it.
+    audit_or_rollback(
+        db,
+        action="plugin.browser_ticket_issued",
+        entity_type="plugin",
+        entity_id=body.key,
+        actor=user,
+        request=request,
+        details={"key": body.key, "url": body.url},
+    )
+    db.commit()
     return {"ticket": ticket}
 
 
@@ -123,8 +146,9 @@ async def _creds_call(method: str, **kwargs) -> dict:
 @router.post("/api/plugins/_browser/credentials")
 async def save_browser_credentials(
     body: CredsReq,
+    request: Request,
     user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """Remember the sign-in for a plugin's browser workspace. Same gate stack
     as the stream ticket; stored encrypted on the plugin-host (never in core),
@@ -132,6 +156,22 @@ async def save_browser_credentials(
     _gate_browser(user, db, body.key)
     if not (body.username or body.password):
         raise HTTPException(400, "provide a username and/or password")
+    # Audited before the remote store, and named for what is actually known at
+    # this point: the credential lands on the plugin-host, which core cannot roll
+    # back, so recording intent first is the only ordering that can never lose
+    # the trail — but the store can still fail, so this is a REQUEST, not a fact.
+    # Never record the password itself.
+    audit_or_rollback(
+        db,
+        action="plugin.browser_credentials_save_requested",
+        entity_type="plugin",
+        entity_id=body.key,
+        actor=user,
+        request=request,
+        details={"key": body.key, "username": body.username or None,
+                 "password_set": bool(body.password)},
+    )
+    db.commit()
     return await _creds_call(
         "POST",
         json={"key": body.key, "username": body.username, "password": body.password},
@@ -142,7 +182,7 @@ async def save_browser_credentials(
 async def browser_credentials_status(
     key: str = Query(min_length=1, max_length=64),
     user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """Whether a remembered login exists (username + has_password flag only —
     the password itself never leaves the plugin-host)."""
@@ -152,12 +192,26 @@ async def browser_credentials_status(
 
 @router.delete("/api/plugins/_browser/credentials")
 async def forget_browser_credentials(
+    request: Request,
     key: str = Query(min_length=1, max_length=64),
     user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """Forget a plugin's remembered sign-in."""
     _gate_browser(user, db, key)
+    # "requested", not "forgotten": _creds_call can still fail against the
+    # plugin-host, and a trail claiming a revocation that did not happen is
+    # worse than one that records the attempt.
+    audit_or_rollback(
+        db,
+        action="plugin.browser_credentials_forget_requested",
+        entity_type="plugin",
+        entity_id=key,
+        actor=user,
+        request=request,
+        details={"key": key},
+    )
+    db.commit()
     return await _creds_call("DELETE", params={"key": key})
 
 

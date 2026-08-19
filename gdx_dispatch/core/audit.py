@@ -9,9 +9,19 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from fastapi import Depends
 from sqlalchemy import JSON, DateTime, String, event, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import Uuid
+
+
+def _get_db_dep(db: Any = None) -> Any:  # pragma: no cover - replaced below
+    """Placeholder so ``audit_ready_db`` can declare its dependency without
+    importing core.database at module scope (core.database is imported by
+    almost everything; audit.py is imported by it in some app wirings)."""
+    from gdx_dispatch.core.database import get_db
+
+    yield from get_db()
 
 
 class TenantBase(DeclarativeBase):
@@ -493,6 +503,68 @@ async def log_audit_event(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
 
 def log_audit_event_sync(db: Any, *args: Any, **kwargs: Any) -> AuditLog:
     return _log_audit_event_impl(db, *args, **kwargs)
+
+
+def audit_ready_db(db: Any = Depends(_get_db_dep)) -> Any:
+    """A session whose audit table is already initialized, for use as a FastAPI
+    dependency: ``db: Session = Depends(audit_ready_db)``.
+
+    ``ensure_audit_table`` commits (SQLite) — or, on a Postgres missing the
+    bootstrap guard function, rolls back — the **first** time it runs for an
+    engine. `_log_audit_event_impl` calls it on the way in, so a handler that has
+    already staged its mutation gets that transaction control applied to its own
+    pending work: the change is hardened just before its audit row fails, or
+    discarded while the audit row survives. Either way the pair stops being
+    atomic, and `audit_or_rollback`'s promise becomes a lie.
+
+    Running it as a dependency moves the initialization *before* the handler
+    stages anything, where committing has nothing to disturb. Every subsequent
+    call for that engine is a no-op (see ``_AUDIT_GUARD_INITIALIZED``).
+    """
+    ensure_audit_table(db)
+    return db
+
+
+def audit_or_rollback(
+    db: Any,
+    *,
+    action: str,
+    entity_type: str,
+    entity_id: str | None = None,
+    actor: Any = None,
+    request: Any = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Record a mutation, or take the mutation down with it.
+
+    For surfaces where an unaudited change is worse than a failed one — plugin
+    installs, credential stores, anything that grants or executes code. Call it
+    BEFORE ``db.commit()``: the audit row is flushed into the caller's
+    transaction, so the change and its trail commit together or not at all.
+
+    Callers whose write already committed (a helper that commits internally)
+    must audit *before* that helper instead — after the fact this rollback
+    cannot undo the change, and the 500 would be a lie.
+    """
+    from fastapi import HTTPException
+
+    try:
+        log_audit_event_sync(
+            db,
+            user_id=_actor_id_of(actor),
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details or {},
+            request=request,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("audit_write_failed action=%s", action)
+        try:
+            db.rollback()
+        except Exception:
+            logging.getLogger(__name__).exception("audit_rollback_failed action=%s", action)
+        raise HTTPException(status_code=500, detail="audit failure — change rolled back") from None
 
 
 def verify_audit_chain(db: Any, entity_type: str | None = None, entity_id: str | None = None) -> bool:

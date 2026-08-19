@@ -13,7 +13,11 @@ import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core.audit import AuditLog, TenantBase
 from gdx_dispatch.plugin_host.app import create_plugin_host
 from gdx_dispatch.routers import browser_proxy
 from gdx_dispatch.routers.auth import get_current_user
@@ -103,8 +107,21 @@ def _core_client(monkeypatch, *, role="owner", permissions=("browser",), consent
     app = FastAPI()
     app.include_router(browser_proxy.router)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": 1, "role": role}
-    app.dependency_overrides[browser_proxy.get_db] = lambda: iter([None])
-    return TestClient(app)
+    # A real session, not iter([None]): these endpoints record who asked for a
+    # credential change, so the audit write is part of the contract now and a
+    # stub session would hide whether it lands.
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    TenantBase.metadata.create_all(engine, checkfirst=True)
+    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    app.dependency_overrides[browser_proxy.audit_ready_db] = lambda: session
+    client = TestClient(app)
+    client.audit_session = session  # so tests can assert on the trail
+    return client
+
+
+def _audit_actions(client) -> list[str]:
+    return [r.action for r in client.audit_session.execute(select(AuditLog)).scalars().all()]
 
 
 def test_core_creds_forwarded_for_owner(monkeypatch):
@@ -119,6 +136,15 @@ def test_core_creds_forwarded_for_owner(monkeypatch):
                  params={"key": "chipricing"}).status_code == 200
     assert c.delete("/api/plugins/_browser/credentials",
                     params={"key": "chipricing"}).status_code == 200
+
+    # Storing and revoking a remembered login are recorded — named for what is
+    # known at write time (a request), since the plugin-host store can still fail.
+    actions = _audit_actions(c)
+    assert "plugin.browser_credentials_save_requested" in actions
+    assert "plugin.browser_credentials_forget_requested" in actions
+    # The password must never reach the audit trail.
+    details = [r.details for r in c.audit_session.execute(select(AuditLog)).scalars().all()]
+    assert not any("pw-1" in json.dumps(d or {}) for d in details)
 
 
 def test_core_creds_gates_block(monkeypatch):
@@ -140,3 +166,14 @@ def test_ticket_still_issued_after_gate_refactor(monkeypatch):
     r = c.post("/api/plugins/_browser/ticket",
                json={"key": "chipricing", "url": "https://orderentry.chiohd.com/"})
     assert r.status_code == 200 and r.json()["ticket"]
+    # Issuing a browser capability is recorded with the URL it was scoped to.
+    assert "plugin.browser_ticket_issued" in _audit_actions(c)
+
+
+def test_blocked_ticket_records_nothing(monkeypatch):
+    """A refused request changed nothing, so it must not appear as an action."""
+    c = _core_client(monkeypatch)
+    r = c.post("/api/plugins/_browser/ticket",
+               json={"key": "chipricing", "url": "https://evil.example.com/"})
+    assert r.status_code == 400
+    assert _audit_actions(c) == []
