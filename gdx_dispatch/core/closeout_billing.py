@@ -193,6 +193,13 @@ def build_closeout_lines(
     # so this builder skipped them and the unpriced-parts warning counted zero.
     # If a row is good enough to satisfy the completion gate it is good enough
     # to bill, and the claim-then-copy below is still the double-bill guard.
+    #
+    # ``wont_bill`` is excluded (2026-08-19): it is the office's dismiss verb
+    # for warranty / goodwill / already-flat-priced parts
+    # (``routers/parts_needed.py`` PartStatusUpdate). Billing a part the office
+    # explicitly declined is the one direction this builder must never take,
+    # and the query had no status filter at all — a priced ``mobile`` row
+    # dismissed before the tech closed out was billed anyway.
     candidate_rows = db.execute(
         select(JobPartNeeded).where(
             JobPartNeeded.job_id == str(job_id),
@@ -200,6 +207,10 @@ def build_closeout_lines(
             JobPartNeeded.billed_invoice_id.is_(None),
             JobPartNeeded.unit_price.is_not(None),
             JobPartNeeded.unit_price > 0,
+            or_(
+                JobPartNeeded.status.is_(None),
+                JobPartNeeded.status != "wont_bill",
+            ),
         )
     ).scalars().all()
     for part_row in candidate_rows:
@@ -224,6 +235,11 @@ def build_closeout_lines(
             line_total=_money(float(unit) * qty),
             taxable=True,
             category="Parts",
+            # Stamp the source row (2026-08-19). The office pull has always set
+            # this so deleting a line releases the part (D-S122-line-removal-
+            # unbill); the autodraft never did, so its lines claimed parts that
+            # deleting the line could not give back.
+            part_id=part_row.id,
             sort_order=sort,
             company_id=str(tenant_id),
         ))
