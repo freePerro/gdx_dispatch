@@ -2193,33 +2193,15 @@ def _bind_estimate_jobsite(estimate, new_job, db: Session, actor: str) -> None:
         if customer is not None and normalize_address(customer.address) == want:
             # Typed-but-identical: the customer address already covers it.
             return
-        # ORM, not raw SQL (post-code audit §2): CustomerLocation carries the
-        # defaults and type adaptation (PG boolean, id format) that raw
-        # params had to hand-carry.
-        from gdx_dispatch.models.tenant_models import CustomerLocation  # noqa: PLC0415
+        # Shared find-or-create (core/job_site.py) — one convergence rule for
+        # the conversion bind AND the tech's fix-address endpoint (PR 4).
+        from gdx_dispatch.core.job_site import find_or_create_customer_location  # noqa: PLC0415
 
-        rows = db.execute(
-            select(CustomerLocation).where(
-                CustomerLocation.customer_id == str(estimate.customer_id),
-                CustomerLocation.deleted_at.is_(None),
-            )
-        ).scalars().all()
-        loc_id = next(
-            (str(r.id) for r in rows if normalize_address(r.address) == want),
-            None,
+        loc_id, created = find_or_create_customer_location(
+            db, estimate.customer_id, raw,
+            label=f"Jobsite ({estimate.estimate_number})",
+            company_id=estimate.company_id or "",
         )
-        created = loc_id is None
-        if created:
-            loc = CustomerLocation(
-                customer_id=str(estimate.customer_id),
-                company_id=estimate.company_id or "",
-                label=f"Jobsite ({estimate.estimate_number})",
-                address=raw,
-                is_primary=False,
-            )
-            db.add(loc)
-            db.flush()
-            loc_id = str(loc.id)
         new_job.location_id = loc_id
         db.commit()
         # Invariant #1: the auto-created row is a mutation with no router of

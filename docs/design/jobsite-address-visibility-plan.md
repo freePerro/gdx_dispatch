@@ -393,6 +393,10 @@ Per PR, in order:
 - Commit-on-blur for the estimate jobsite draft (PR 3 audit §5): the
   autosave flush can persist a half-typed abandoned address that a later
   accept binds.
+- No re-geocode path for a fixed site: PR 4 NULLs stale coords on address
+  change (correctly), so the map pin is absent until something geocodes the
+  new address — wire dispatch/appointment geocoding to refresh
+  customer_locations.lat/lng.
 - Legacy `jobsite_address` verbatim copies (from the removed copy button)
   whose customer address was later edited: accept binds the document's
   address — a one-time cleanup migration NULLing normalized-equal copies is

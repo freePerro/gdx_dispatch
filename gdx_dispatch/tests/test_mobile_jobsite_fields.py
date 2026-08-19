@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from gdx_dispatch.core.database import get_db
@@ -62,7 +63,9 @@ def app_and_db(monkeypatch):
     async def _stamp(request, call_next):
         request.state.tenant = {"id": TENANT, "slug": "test"}
         request.state.tenant_id = TENANT
-        request.state.user = {"user_id": USER, "tenant_id": TENANT}
+        # role rides along: require_permission resolves the builtin
+        # technician set (which includes customers.contact_write) from it.
+        request.state.user = {"user_id": USER, "tenant_id": TENANT, "role": "technician"}
         return await call_next(request)
 
     client = TestClient(app)
@@ -369,3 +372,137 @@ class TestLocationsListNullableAddress:
         by_label = {x["label"]: x for x in rows}
         assert by_label["North Yard"]["address"] is None
         assert by_label["Warehouse 3"]["address"] == "9 Dock St"
+
+
+# ── PATCH /api/mobile/jobs/{id}/site — the driveway address fix (PR 4) ──
+
+
+class TestFixJobSite:
+    """Source-routed: the fix lands on the row that PRODUCED the displayed
+    address (bound location / explicit primary / customer record), resolved
+    server-side with the same rule that renders it."""
+
+    def _patch(self, client, job, body):
+        return client.patch(f"/api/mobile/jobs/{job.id.hex}/site", json=body)
+
+    def test_fix_bound_location_updates_that_row_and_nulls_coords(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St", lat=44.9, lng=-93.1)
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "11 Dock St", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["target"] == "location"
+        assert body["site_address"] == "11 Dock St"
+        db.expire_all()
+        row = db.execute(text(
+            "SELECT address, lat, lng FROM customer_locations WHERE id = :i"
+        ), {"i": loc.id}).first()
+        assert row[0] == "11 Dock St"
+        # Stale coords would keep serving as the AUTHORITATIVE pin.
+        assert row[1] is None and row[2] is None
+
+    def test_fix_routes_to_the_explicit_primary_when_unbound(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db, customer_address="100 Billing Rd")
+        prim = _location(db, c, label="HQ", address="200 Primary Ave")
+        db.execute(text("UPDATE customer_locations SET is_primary = 1 WHERE id = :i"), {"i": prim.id})
+        db.commit()
+        j = _job(db, c.id)  # unbound: renders the primary under rule 2
+        r = self._patch(client, j, {"address": "201 Primary Ave"})
+        assert r.status_code == 200, r.text
+        assert r.json()["target"] == "customer_location"
+        db.expire_all()
+        row = db.execute(text(
+            "SELECT address FROM customer_locations WHERE id = :i"), {"i": prim.id}).first()
+        assert row[0] == "201 Primary Ave"
+
+    def test_fix_customer_address_when_no_locations(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db, customer_address="100 Billing Rd")
+        j = _job(db, c.id)
+        r = self._patch(client, j, {"address": "102 Billing Rd", "expected_address": "100 Billing Rd"})
+        assert r.status_code == 200, r.text
+        assert r.json()["target"] == "customer"
+        db.expire_all()
+        cust = db.get(Customer, c.id)
+        # ORM read decrypts — the write went through the EncryptedString mapper.
+        assert cust.address == "102 Billing Rd"
+
+    def test_new_site_rebinds_only_this_job_and_converges(self, app_and_db):
+        client, db = app_and_db
+        c = _seed(db, customer_address="100 Billing Rd")
+        j1 = _job(db, c.id)
+        j2 = _job(db, c.id)
+        for j in (j1, j2):
+            r = self._patch(client, j, {"address": "9 Dock St", "apply_to": "new_site"})
+            assert r.status_code == 200, r.text
+            assert r.json()["target"] == "new_site"
+        db.expire_all()
+        rows = db.execute(text(
+            "SELECT id, is_primary FROM customer_locations WHERE deleted_at IS NULL"
+        )).all()
+        assert len(rows) == 1  # shared convergence helper: ONE row for one address
+        assert not rows[0][1]
+        # Customer record untouched.
+        assert db.get(Customer, c.id).address == "100 Billing Rd"
+
+    def test_stale_replay_is_refused_not_last_writer_wins(self, app_and_db):
+        """Offline drain replays hours later; if dispatch fixed the address
+        in between, the tech's stale queued write must 422 (NEVER 409 — the
+        drain files unflagged 409s as synced), not silently revert."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="CORRECTED BY DISPATCH")
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "stale fix", "expected_address": "9 Dock St"})
+        assert r.status_code == 422
+        db.expire_all()
+        row = db.execute(text(
+            "SELECT address FROM customer_locations WHERE id = :i"), {"i": loc.id}).first()
+        assert row[0] == "CORRECTED BY DISPATCH"
+
+    def test_unedited_save_keeps_the_geocode(self, app_and_db):
+        """The sheet prefills the current address — Save without editing (or
+        a case-only fix) must NOT destroy a correct pin (audit §1: no
+        re-geocode path exists, so nulling would be permanent)."""
+        client, db = app_and_db
+        c = _seed(db)
+        loc = _location(db, c, address="9 Dock St", lat=44.9, lng=-93.1)
+        j = _job(db, c.id, location_id=loc.id)
+        r = self._patch(client, j, {"address": "9  dock st.", "expected_address": "9 Dock St"})
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        row = db.execute(text(
+            "SELECT address, lat, lng FROM customer_locations WHERE id = :i"), {"i": loc.id}).first()
+        assert row[0] == "9  dock st."   # text saved as typed
+        assert row[1] is not None and row[2] is not None  # pin kept
+
+    def test_source_shift_is_refused(self, app_and_db):
+        """Equal text must not route the fix to a row the tech was never
+        shown — the target is pinned too (audit §3 binding shift)."""
+        client, db = app_and_db
+        c = _seed(db, customer_address="9 Dock St")
+        loc = _location(db, c, address="9 Dock St")
+        j = _job(db, c.id, location_id=loc.id)  # source NOW: location
+        r = self._patch(client, j, {
+            "address": "11 Dock St",
+            "expected_address": "9 Dock St",
+            "expected_source": "customer",   # what the tech was shown
+        })
+        assert r.status_code == 422
+        db.expire_all()
+        assert db.execute(text(
+            "SELECT address FROM customer_locations WHERE id = :i"), {"i": loc.id}).first()[0] == "9 Dock St"
+
+    def test_unassigned_tech_gets_404_by_contract(self, app_and_db):
+        """_assert_job_access 404s (anti-probing) — NOT 403; pinning the
+        contract so nobody 'fixes' it later (pre-code audit §4)."""
+        client, db = app_and_db
+        c = _seed(db)
+        j = _job(db, c.id)
+        j.assigned_to = "someone-else"
+        db.commit()
+        r = self._patch(client, j, {"address": "9 Dock St"})
+        assert r.status_code == 404
