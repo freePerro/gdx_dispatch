@@ -2160,6 +2160,125 @@ def _copy_estimate_lines_to_job(estimate, new_job, db: Session) -> int:
     return copied
 
 
+def _bind_estimate_jobsite(estimate, new_job, db: Session, actor: str) -> None:
+    """Best-effort, POST-commit: a non-blank ``jobsite_address`` becomes a
+    real ``customer_locations`` binding on the new job.
+
+    Semantics (jobsite plan PR 3, D4-revised): NULL/blank means "same as the
+    customer's address" — nothing to do. Non-blank is an EXPLICIT different
+    address the office wrote on the estimate; it find-or-creates a location
+    row (``is_primary: false`` — inert for the customer's other jobs under
+    resolver rule 2) and binds ``job.location_id`` so the tech's phone shows
+    the sold jobsite, not the HQ.
+
+    Runs strictly AFTER the conversion's own commit and is internally
+    guarded (pre-code audit §3b): a failure here must never sink the accept
+    — but it is never silent either (log + audit event + the raw address
+    appended to the job's notes so what the customer approved isn't lost).
+    Reads ONLY the stored estimate field — never anything client-supplied at
+    accept time (trap 7: the public token-holder gains no address write).
+    """
+    from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
+
+    raw = (getattr(estimate, "jobsite_address", None) or "").strip()
+    if not raw or not estimate.customer_id:
+        return
+    try:
+        # Inside the guard — EVERY failure from here down must degrade to
+        # the notes-append path, never escape to the caller.
+        want = normalize_address(raw)
+        customer = db.execute(
+            select(Customer).where(Customer.id == estimate.customer_id)
+        ).scalar_one_or_none()
+        if customer is not None and normalize_address(customer.address) == want:
+            # Typed-but-identical: the customer address already covers it.
+            return
+        # ORM, not raw SQL (post-code audit §2): CustomerLocation carries the
+        # defaults and type adaptation (PG boolean, id format) that raw
+        # params had to hand-carry.
+        from gdx_dispatch.models.tenant_models import CustomerLocation  # noqa: PLC0415
+
+        rows = db.execute(
+            select(CustomerLocation).where(
+                CustomerLocation.customer_id == str(estimate.customer_id),
+                CustomerLocation.deleted_at.is_(None),
+            )
+        ).scalars().all()
+        loc_id = next(
+            (str(r.id) for r in rows if normalize_address(r.address) == want),
+            None,
+        )
+        created = loc_id is None
+        if created:
+            loc = CustomerLocation(
+                customer_id=str(estimate.customer_id),
+                company_id=estimate.company_id or "",
+                label=f"Jobsite ({estimate.estimate_number})",
+                address=raw,
+                is_primary=False,
+            )
+            db.add(loc)
+            db.flush()
+            loc_id = str(loc.id)
+        new_job.location_id = loc_id
+        db.commit()
+        # Invariant #1: the auto-created row is a mutation with no router of
+        # its own — it writes its own audit trail, attributed to the acting
+        # user (or the public-accept actor).
+        if created:
+            log_audit_event_sync(
+                db=db, tenant_id=None, user_id=actor,
+                action="create_customer_location",
+                entity_type="customer_location",
+                entity_id=loc_id,
+                details={
+                    "source": "estimate_conversion",
+                    "estimate_id": str(estimate.id),
+                    "customer_id": str(estimate.customer_id),
+                },
+            )
+        log_audit_event_sync(
+            db=db, tenant_id=None, user_id=actor,
+            action="estimate_jobsite_bound",
+            entity_type="job",
+            entity_id=str(new_job.id),
+            details={
+                "estimate_id": str(estimate.id),
+                "location_id": loc_id,
+                "location_created": created,
+            },
+        )
+        db.commit()  # one commit carries both audit rows
+    except Exception:  # noqa: BLE001 — the accept must survive ANY bind failure
+        db.rollback()
+        logging.getLogger(__name__).exception(
+            "estimate_jobsite_bind_failed estimate=%s job=%s", estimate.id, new_job.id
+        )
+        # Never silent (CLAUDE.md no-silent-writes): preserve the address the
+        # customer approved on the job itself, and leave an audit trail.
+        try:
+            # ORM, not raw SQL: a dashed-UUID param silently matches zero
+            # rows on SQLite (the id is stored undashed) — the append would
+            # "succeed" while writing nothing.
+            new_job.notes = (new_job.notes or "") + (
+                f"\n[jobsite from estimate {estimate.estimate_number}: {raw}]"
+            )
+            db.commit()
+            log_audit_event_sync(
+                db=db, tenant_id=None, user_id=actor,
+                action="estimate_jobsite_bind_failed",
+                entity_type="job",
+                entity_id=str(new_job.id),
+                details={"estimate_id": str(estimate.id)},
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logging.getLogger(__name__).exception(
+                "estimate_jobsite_bind_failure_note_failed job=%s", new_job.id
+            )
+
+
 def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     """Create a Job linked to this estimate. Idempotent — caller guards.
 
@@ -2201,6 +2320,11 @@ def _create_job_from_estimate(estimate, db: Session, actor: str) -> object:
     adopt_orphan_deposit_invoices(db, estimate, new_job.id)
     db.commit()
     db.refresh(new_job)
+
+    # The sold jobsite rides the conversion (jobsite plan PR 3). AFTER the
+    # commit above, internally guarded — a bind failure must degrade to an
+    # unbound job, never to no job at all.
+    _bind_estimate_jobsite(estimate, new_job, db, actor)
 
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=actor,

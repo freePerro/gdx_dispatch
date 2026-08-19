@@ -416,12 +416,33 @@ def build_quote(
     now = datetime.now(UTC)
     valid_until = now + timedelta(days=validity_days)
 
+    # Jobsite plan PR 3: mobile quotes are born job-linked, so there is no
+    # ask here (and no conversion later) — the quote's jobsite IS the job's
+    # effective site, seeded server-side so the customer PDF shows where the
+    # work is. NULL when the site is just the customer's address (the
+    # everywhere-else meaning of a blank jobsite_address).
+    quote_jobsite = None
+    try:
+        from gdx_dispatch.core.job_site import resolve_job_site  # noqa: PLC0415
+
+        _jrow = db.execute(
+            _text("SELECT location_id, customer_id FROM jobs WHERE id = :jid"),
+            {"jid": job_id},
+        ).first()
+        if _jrow is not None and _jrow[0] is not None:
+            _site = resolve_job_site(db, job_id, _jrow[0], _jrow[1])
+            if _site.source == "location":
+                quote_jobsite = _site.address
+    except Exception:  # noqa: BLE001 — a seed miss must not block quoting
+        log.exception("mobile_quote_jobsite_seed_failed job=%s", job_id)
+
     estimate = Estimate(
         id=uuid4(),
         job_id=_UUID(job_id),
         customer_id=_UUID(customer_id) if customer_id else None,
         estimate_number=_next_estimate_number(db),
         label=payload.label or (payload.service or "Quote"),
+        jobsite_address=quote_jobsite,
         notes=payload.notes,
         proposal_mode=True,
         status="draft",

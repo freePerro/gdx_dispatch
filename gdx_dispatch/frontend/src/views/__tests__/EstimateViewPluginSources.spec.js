@@ -123,12 +123,17 @@ describe('EstimateView — finalized estimates lock the whole editor', () => {
     }
   });
 
-  it('disables Save Changes and the jobsite-copy button when finalized', () => {
+  it('disables Save Changes and the jobsite ask when finalized', () => {
     // forceFlush refuses to run then — the "Saved" toast would be a lie.
     const save = SRC.slice(SRC.indexOf('label="Save Changes"'), SRC.indexOf('@click="saveExistingEstimate"'));
     expect(save).toMatch(/:disabled="estimateLocked"/);
-    const copy = SRC.slice(SRC.indexOf('label="Use as jobsite"'), SRC.indexOf('copy-customer-address-to-jobsite'));
-    expect(copy).toMatch(/:disabled="estimateLocked"/);
+    // PR 3 (jobsite plan): the copy button is gone — "same as customer" is
+    // the default answer of the ask. Both radios and the differs-textarea
+    // must lock after accept: conversion already bound a location, and a
+    // rewritten jobsite_address would silently disagree with it.
+    const ask = SRC.slice(SRC.indexOf('data-testid="estimate-jobsite-ask"'), SRC.indexOf('data-testid="estimate-description"'));
+    const radioLocks = ask.match(/:disabled="estimateLocked"/g) || [];
+    expect(radioLocks.length).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -225,5 +230,42 @@ describe('EstimateView — Phase 3 capture → auto-insert (plan §Phase 3)', ()
     // The capture is safe in the plugin either way — the fallback is the
     // picker, and silence would read as data loss.
     expect(SRC).toMatch(/summary: "Captured, but not added"/);
+  });
+});
+
+
+describe('EstimateView — the jobsite ask (PR 3, jobsite plan)', () => {
+  // House-style source pins (this spec file's convention): prove the wiring
+  // exists; behavior is covered by the backend bind tests + browser walk.
+  it('replaces the passive textarea with the same/different ask', () => {
+    expect(SRC).toMatch(/data-testid="estimate-jobsite-ask"/);
+    expect(SRC).toMatch(/data-testid="estimate-jobsite-same"/);
+    expect(SRC).toMatch(/data-testid="estimate-jobsite-differs"/);
+    // The old copy button is gone — same-as is the DEFAULT, not a paste.
+    expect(SRC).not.toMatch(/copy-customer-address-to-jobsite/);
+  });
+
+  it('"same as customer" clears the field so every writer sends null', () => {
+    // D4-revised: blank/NULL means same-as-customer; flipping back must not
+    // let a stale draft ride along into the next autosave flush.
+    // (Whitespace-insensitive pins — post-code audit §4: a formatting pass
+    // must not break them; a real removal must.)
+    expect(SRC).toMatch(/watch\(jobsiteDiffers,[\s\S]{0,80}?jobsite_address = ""/);
+  });
+
+  it('BOTH save paths gate on a non-empty address when "different" is chosen', () => {
+    const gate = SRC.match(/jobsiteDiffers\.value && !\(form\.value\.jobsite_address \|\| ""\)\.trim\(\)/g) || [];
+    expect(gate.length).toBeGreaterThanOrEqual(2); // createEstimate + saveExistingEstimate
+  });
+
+  it('loading an estimate seeds the ask from the stored field', () => {
+    expect(SRC).toMatch(/jobsiteDiffers\.value = Boolean\(\(data\.jobsite_address/);
+  });
+
+  it('autosave flush stays dead post-accept (conversion already bound)', () => {
+    // _scheduleFlush bails on FINALIZED — a reopened accepted estimate must
+    // not rewrite jobsite_address after the job was bound from it.
+    const fn = SRC.slice(SRC.indexOf('function _scheduleFlush'), SRC.indexOf('function _scheduleFlush') + 300);
+    expect(fn).toMatch(/FINALIZED\.has\(estimate\.value\.status\)/);
   });
 });

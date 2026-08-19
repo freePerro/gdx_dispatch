@@ -412,3 +412,74 @@ def test_list_job_quotes_returns_built_quote(session_factory):
         assert body["quotes"][0]["status"] == "sent"
     finally:
         db.close()
+
+
+
+# ---------------------------------------------------------------------------
+# Jobsite seeding (PR 3, jobsite-address plan): mobile quotes are born
+# job-linked — no ask, no conversion. The quote's jobsite_address is seeded
+# server-side from the JOB's bound location so the customer PDF shows where
+# the work is; NULL when the job just uses the customer's address.
+# ---------------------------------------------------------------------------
+
+
+def test_quote_seeds_jobsite_from_bound_location(session_factory):
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        loc_id = str(uuid4())
+        db.execute(
+            text(
+                "INSERT INTO customer_locations (id, company_id, customer_id, label, address, is_primary) "
+                "VALUES (:id, 'tenant-a', :cid, 'Warehouse 3', '9 Dock Street', 0)"
+            ),
+            {"id": loc_id, "cid": seed["customer_id"]},
+        )
+        db.execute(
+            text("UPDATE jobs SET location_id = :lid WHERE id = :jid"),
+            {"lid": loc_id, "jid": seed["job_id"]},
+        )
+        db.commit()
+        resp = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        row = db.execute(
+            text("SELECT jobsite_address FROM estimates WHERE id = :eid"),
+            {"eid": body["id"].replace("-", "")},
+        ).first() or db.execute(
+            text("SELECT jobsite_address FROM estimates WHERE id = :eid"),
+            {"eid": body["id"]},
+        ).first()
+        assert row is not None
+        assert row[0] == "9 Dock Street"
+    finally:
+        db.close()
+
+
+def test_quote_without_bound_location_leaves_jobsite_null(session_factory):
+    seed = _seed(session_factory)
+    db = session_factory()
+    try:
+        resp = mobile_quoting.build_quote(
+            job_id=seed["job_id"],
+            payload=mobile_quoting.BuildQuoteIn(service="spring_replacement"),
+            request=_request(),
+            current_user=_TEST_USER,
+            db=db,
+        )
+        assert resp.status_code == 201, resp.body
+        body = _as_json(resp)
+        row = db.execute(
+            text("SELECT jobsite_address FROM estimates WHERE id IN (:a, :b)"),
+            {"a": body["id"], "b": body["id"].replace("-", "")},
+        ).first()
+        assert row is not None
+        assert row[0] is None
+    finally:
+        db.close()
