@@ -71,7 +71,18 @@ _cache: dict = {"at": 0.0, "url": None, "catalog": None}
 
 
 class StorefrontError(Exception):
-    """A storefront operation failed in a way the owner should see verbatim."""
+    """A storefront failure whose message is written FOR the owner.
+
+    `owner_message` is what the Browse tab renders. Every message raised in this
+    module is composed deliberately for that audience — it never carries an
+    upstream response body, a traceback, or the catalog URL. Callers surface
+    `owner_message` rather than `str(exc)` so that stays a conscious decision
+    rather than an accident of exception formatting.
+    """
+
+    def __init__(self, owner_message: str):
+        super().__init__(owner_message)
+        self.owner_message = owner_message
 
 
 def catalog_url() -> str:

@@ -211,7 +211,7 @@ def test_a_redirect_to_an_internal_address_is_never_REQUESTED(monkeypatch):
 
     def _redirect_inward(request):
         import httpx as _h
-        if "169.254" in str(request.url):
+        if request.url.host == "169.254.169.254":
             return _h.Response(200, content=b"SECRET")
         return _h.Response(302, headers={"location": internal})
 
@@ -237,7 +237,7 @@ def test_the_filename_comes_from_the_catalog_not_the_redirect_target(monkeypatch
 
     def _redirect_to_uuid(request):
         import httpx as _h
-        if "objects.githubusercontent.com" in str(request.url):
+        if request.url.host == "objects.githubusercontent.com":
             return _h.Response(200, content=WHEEL)
         return _h.Response(302, headers={"location": opaque})
 
@@ -255,7 +255,7 @@ def test_a_redirect_within_the_allowlist_is_followed(monkeypatch):
 
     def _redirect_to_cdn(request):
         import httpx as _h
-        if "objects.githubusercontent.com" in str(request.url):
+        if request.url.host == "objects.githubusercontent.com":
             return _h.Response(200, content=WHEEL)
         return _h.Response(302, headers={"location": final})
 

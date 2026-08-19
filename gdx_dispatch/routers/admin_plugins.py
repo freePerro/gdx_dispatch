@@ -273,7 +273,7 @@ def browse_storefront(
     try:
         entries = store.fetch_catalog()
     except store.StorefrontError as exc:
-        return {"plugins": [], "error": str(exc), "catalog_url": store.catalog_url()}
+        return {"plugins": [], "error": exc.owner_message, "catalog_url": store.catalog_url()}
 
     return {
         "plugins": store.merge_install_state(entries, _desired_versions(db), _running_versions()),
@@ -303,7 +303,7 @@ def install_from_storefront(
         entry = store.find_entry(body.key, body.version)
         filename, content = store.download_wheel(entry)
     except store.StorefrontError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        raise HTTPException(status_code=502, detail=exc.owner_message) from None
 
     name = safe_artifact_name(filename)
     if name is None:
