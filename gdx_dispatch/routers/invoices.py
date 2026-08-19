@@ -113,6 +113,10 @@ def _serialize_line(line: InvoiceLine) -> dict[str, object]:
         # S122-b — invoice/estimate parity fields. Same shape EstimateLine
         # serializer uses, so the same frontend component can render either.
         "category": getattr(line, "category", None),
+        # Whether this line's price already covers the install. False for
+        # every pre-2026-08-19 row (server_default), so older invoices read
+        # exactly as they always did.
+        "includes_labor": bool(getattr(line, "includes_labor", False) or False),
         "cost_snapshot": _to_float(line.cost_snapshot) if getattr(line, "cost_snapshot", None) is not None else None,
         "margin_pct_snapshot": _to_float(line.margin_pct_snapshot) if getattr(line, "margin_pct_snapshot", None) is not None else None,
         "margin_pct_override": _to_float(line.margin_pct_override) if getattr(line, "margin_pct_override", None) is not None else None,
@@ -468,6 +472,11 @@ class InvoiceLineCreateIn(BaseModel):
     # can release the part atomically. Optional; legal value is the part's
     # string-form ID (matches JobPartNeeded.id String(36)).
     part_id: str | None = Field(default=None, max_length=36)
+    # This line's price already covers the installation (Doug 2026-08-19:
+    # "sometimes the install price is in the part price"). Set at billing by
+    # the office; drives the double-bill warning when a labor line is also
+    # present. Default False = today's behaviour for every existing caller.
+    includes_labor: bool = Field(default=False)
 
     @field_validator("description")
     @classmethod
@@ -489,6 +498,7 @@ class InvoiceLinePatchIn(BaseModel):
     category: str | None = Field(default=None, max_length=80)
     cost: float | None = Field(default=None, ge=0, le=999999.99)
     margin_pct_override: float | None = Field(default=None, ge=0, lt=1)
+    includes_labor: bool | None = None
 
 
 class InvoiceCreateIn(BaseModel):
@@ -1201,6 +1211,7 @@ def create_invoice(
                     unit_price=_money(line.unit_price),
                     line_total=_money(float(line.unit_price) * int(line.quantity)),
                     taxable=bool(line.taxable),
+                    includes_labor=bool(getattr(line, "includes_labor", False)),
                     # S122-b — persist the new estimate-parity fields when set.
                     category=line.category,
                     cost_snapshot=(
@@ -2302,6 +2313,8 @@ def patch_invoice_line(
             Decimal(str(updates["margin_pct_override"]))
             if updates["margin_pct_override"] is not None else None
         )
+    if "includes_labor" in updates:
+        line.includes_labor = bool(updates["includes_labor"])
 
     # Recompute line_total from the post-patch quantity × unit_price so a
     # qty edit doesn't leave the stored line_total stale.

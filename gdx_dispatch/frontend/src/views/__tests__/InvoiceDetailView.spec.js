@@ -449,3 +449,52 @@ describe('InvoiceDetailView — the invoice keeps its job link', () => {
     expect(w.find('[data-testid="invoice-job-photos"]').exists()).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// includes_labor round-trip (2026-08-19).
+//
+// This is where billing actually happens: a closeout autodraft lands here and
+// the office opens Edit. An adversarial review caught the checkbox rendering,
+// accepting a tick, showing a success toast, and silently discarding it --
+// the normalizer dropped the field, the dirty-check ignored it, and the PATCH
+// body omitted it. Same class of bug S122-b already fixed once for
+// category/cost/margin. These pin the whole chain.
+// ---------------------------------------------------------------------------
+describe('InvoiceDetailView — includes_labor survives a save', () => {
+  const { readFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const SRC = readFileSync(join(__dirname, '..', 'InvoiceDetailView.vue'), 'utf8');
+
+  it('the normalizer carries includes_labor off the wire', () => {
+    const i = SRC.indexOf('const lineItems = (payload.lines');
+    expect(i).toBeGreaterThan(-1);
+    expect(SRC.slice(i, i + 1400)).toMatch(/includes_labor:\s*Boolean\(item\.includes_labor\)/);
+  });
+
+  it('edit mode snapshots it, so a ticked line renders ticked', () => {
+    const i = SRC.indexOf('editLines.value = invoice.value.line_items.map');
+    expect(i).toBeGreaterThan(-1);
+    expect(SRC.slice(i, i + 900)).toMatch(/includes_labor:\s*Boolean\(ln\.includes_labor\)/);
+  });
+
+  it('the dirty-check notices it — ticking ONLY the box must still save', () => {
+    const i = SRC.indexOf('const changed =');
+    expect(i).toBeGreaterThan(-1);
+    expect(SRC.slice(i, i + 700)).toMatch(
+      /Boolean\(orig\.includes_labor\)\s*!==\s*Boolean\(ln\.includes_labor\)/,
+    );
+  });
+
+  it('the PATCH body carries it, so the endpoint has a real caller', () => {
+    const i = SRC.indexOf('const patch = {');
+    expect(i).toBeGreaterThan(-1);
+    expect(SRC.slice(i, i + 900)).toMatch(/patch\.includes_labor\s*=/);
+  });
+
+  it('a brand-new line POSTs it too', () => {
+    const i = SRC.indexOf('const body = {');
+    expect(i).toBeGreaterThan(-1);
+    expect(SRC.slice(i, i + 700)).toMatch(/body\.includes_labor\s*=\s*true/);
+  });
+});
+

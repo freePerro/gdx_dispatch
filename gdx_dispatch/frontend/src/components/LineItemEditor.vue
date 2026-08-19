@@ -105,6 +105,25 @@
       </div>
     </div>
 
+    <!-- The install, billed twice: a part whose price already covers it
+         sitting alongside a labor line. Nothing in the data marks a bundled
+         part, so this fires off the office's own tick. Advisory only --
+         billing both is legitimate when the job ran past what the bundle
+         covers, and the office is the one who knows. -->
+    <div
+      v-if="doubleBilledInstall"
+      class="install-double-bill"
+      data-testid="install-double-bill-warning"
+    >
+      <strong>The install may be on this invoice twice.</strong>
+      <span>
+        {{ doubleBilledInstall.bundled.join(', ') }}
+        {{ doubleBilledInstall.bundled.length === 1 ? 'is priced' : 'are priced' }}
+        with the installation included, and this invoice also charges
+        {{ doubleBilledInstall.labor.join(', ') }}.
+      </span>
+    </div>
+
     <!-- Line items table -->
     <div class="line-items-editor" data-testid="line-items-editor">
       <div class="line-item-header" :style="gridStyle">
@@ -115,6 +134,11 @@
         <span v-if="showCost" class="col-cost">Cost</span>
         <span class="col-price">Unit Price</span>
         <span v-if="showTaxable" class="col-taxable">Taxable</span>
+        <span
+          v-if="showTaxable"
+          class="col-taxable"
+          title="Tick when this part's price already covers the installation. Billing it alongside a labor line charges the install twice."
+        >Incl. install</span>
         <span v-if="showMargin" class="col-margin">Margin</span>
         <span class="col-total">Total</span>
         <span class="col-action"></span>
@@ -141,6 +165,9 @@
           <span class="col-price locked-cell">{{ currency(toNum(item.unit_price)) }}</span>
           <span v-if="showTaxable" class="col-taxable locked-cell">
             <input type="checkbox" :checked="item.taxable !== false" disabled />
+          </span>
+          <span v-if="showTaxable" class="col-taxable locked-cell">
+            <input type="checkbox" :checked="!!item.includes_labor" disabled />
           </span>
           <span v-if="showMargin" class="col-margin locked-cell"></span>
           <span class="col-total line-total-display" :data-testid="`line-total-${idx}`">
@@ -219,6 +246,18 @@
             :checked="item.taxable !== false"
             :data-testid="`line-taxable-${idx}`"
             @change="setTaxable(idx, $event.target.checked)"
+          />
+        </span>
+        <span
+          v-if="showTaxable"
+          class="col-taxable"
+        >
+          <input
+            type="checkbox"
+            :checked="!!item.includes_labor"
+            :data-testid="`line-includes-labor-${idx}`"
+            aria-label="Price includes installation labor"
+            @change="setIncludesLabor(idx, $event.target.checked)"
           />
         </span>
         <InputNumber
@@ -372,6 +411,32 @@ function setTaxable(idx, value) {
   localLines.value[idx] = { ...localLines.value[idx], taxable: !!value };
   emitLines();
 }
+
+// Doug 2026-08-19: "sometimes the install price is in the part price", and
+// the answer is a checkbox at billing time. Nothing in the catalog marks a
+// bundled item -- only the words in its name -- so a human decides and the
+// invoice records it.
+function setIncludesLabor(idx, value) {
+  localLines.value[idx] = { ...localLines.value[idx], includes_labor: !!value };
+  emitLines();
+}
+
+// A line whose price already covers the install, sitting on the same invoice
+// as a labor line, charges the customer for the install twice. Warn only --
+// the office decides (there are real reasons to bill both, e.g. extra hours
+// beyond what the bundle covers).
+const doubleBilledInstall = computed(() => {
+  const bundled = localLines.value.filter((l) => l && l.includes_labor);
+  if (!bundled.length) return null;
+  const labor = localLines.value.filter(
+    (l) => l && !l.includes_labor && String(l.category || '').toLowerCase() === 'labor',
+  );
+  if (!labor.length) return null;
+  return {
+    bundled: bundled.map((l) => l.description || 'part').filter(Boolean),
+    labor: labor.map((l) => l.description || 'labor').filter(Boolean),
+  };
+});
 
 // Pricing tiers — retail-only by design, matching EstimateView.vue:737. When
 // pricing_class differentiation lands across the app, drop the retail filter
@@ -601,6 +666,10 @@ const gridStyle = computed(() => {
   if (props.showCost) cols.push('110px');         // cost
   cols.push('110px');                              // unit price
   if (props.showTaxable) cols.push('70px');       // taxable
+  // "Incl. install" rides with the taxable flag: both are invoice-mode-only
+  // per-line money flags, and the grid track list must match the cells the
+  // template actually renders (2026-05-11 browser-walk fix).
+  if (props.showTaxable) cols.push('76px');       // includes_labor
   if (props.showMargin) cols.push('90px');        // margin override
   cols.push('100px');                              // total
   cols.push('36px');                               // right action (copy)
@@ -902,5 +971,19 @@ function addFromCatalog(items) {
 }
 .w-full {
   width: 100%;
+}
+/* Theme tokens only -- a hardcoded warning colour goes unreadable on the
+   dark card, and this repo's memory records that jsdom proves nothing about
+   contrast. Verified in a real browser in both themes. */
+.install-double-bill {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  font-size: 0.9rem;
 }
 </style>
