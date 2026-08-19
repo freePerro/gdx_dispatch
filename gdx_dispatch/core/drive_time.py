@@ -120,12 +120,6 @@ async def compute_drive_times(
     if len(addresses) < 2:
         return _empty_legs(addresses)
 
-    # Drop blanks: Google rejects empty strings; if any address is blank,
-    # we fall back to all-None so a single missing address doesn't sink
-    # the whole route.
-    if any(not (a or "").strip() for a in addresses):
-        return _empty_legs(addresses)
-
     if provider == PROVIDER_OFF:
         return _empty_legs(addresses)
 
@@ -140,7 +134,29 @@ async def compute_drive_times(
     cache_key = _route_cache_key(addresses, provider)
 
     def _fetcher() -> Any:
-        return _google_distance_matrix(addresses)
+        # Google rejects empty strings. The old behavior returned all-None
+        # when ANY address was blank — one address-less stop (now a
+        # first-class state: a bound site whose address isn't typed yet)
+        # nuked the drive-time chips for the tech's entire day (post-code
+        # audit 2026-08-18 §3). Instead: split into runs of consecutive
+        # non-blank stops, query each run, and None only the legs that
+        # touch a blank stop.
+        if all((a or "").strip() for a in addresses):
+            return _google_distance_matrix(addresses)
+        legs: list[int | None] = [None] * len(addresses)
+        i = 0
+        while i < len(addresses):
+            if not (addresses[i] or "").strip():
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(addresses) and (addresses[j + 1] or "").strip():
+                j += 1
+            if j > i:
+                seg = _google_distance_matrix(addresses[i : j + 1])
+                legs[i + 1 : j + 1] = seg[1:]
+            i = j + 1
+        return legs
 
     try:
         # cached() awaits the fetcher if it returns an awaitable; the sync

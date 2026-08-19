@@ -19,6 +19,7 @@ from uuid import UUID as _UUID
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import text as _text
 
+from gdx_dispatch.core.job_site import resolve_job_site
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
@@ -200,17 +201,23 @@ def day_summary(
         except Exception: pass
 
     # Tomorrow's first stop (peek-ahead — small affordance).
-    tomorrow_start = day_start + timedelta(days=1)
-    tomorrow_end = tomorrow_start + timedelta(days=1)
+    # DATE(...) = :tomorrow, not a datetime-range compare: SQLAlchemy binds
+    # tz-aware datetimes to SQLite as ISO-'T' strings while stored rows use
+    # a space separator, so `scheduled_at >= :start` never matched there —
+    # this window was dead on the test dialect (found 2026-08-18 writing the
+    # first tests this endpoint ever had). Same portable pattern as the
+    # mobile /today fallback query. PG semantics unchanged (session TZ=UTC).
+    tomorrow_date = (target + timedelta(days=1)).isoformat()
     next_first = db.execute(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
             SELECT j.id, j.title, j.scheduled_at,
-                   c.name AS customer_name, c.address AS customer_address
+                   c.name AS customer_name, c.address AS customer_address,
+                   j.location_id, j.customer_id
             FROM jobs j
             LEFT JOIN customers c ON c.id = j.customer_id
             WHERE j.deleted_at IS NULL
-              AND j.scheduled_at >= :start AND j.scheduled_at < :end
+              AND DATE(j.scheduled_at) = :tomorrow
               AND (
                 j.assigned_to = :uid
                 OR EXISTS (
@@ -223,8 +230,18 @@ def day_summary(
             LIMIT 1
             """
         ),
-        {"uid": user_id, "start": tomorrow_start, "end": tomorrow_end},
+        {"uid": user_id, "tomorrow": tomorrow_date},
     ).first()
+
+    # Effective jobsite for tomorrow's first stop — resolved once, outside
+    # the response literal. site_address_missing must ride along or the
+    # client falls back to the HQ for a bound-but-address-less site — the
+    # exact D2 bug the Jobs tab had (post-code audit 2026-08-18 §5).
+    next_site = (
+        resolve_job_site(db, next_first[0], next_first[5], next_first[6])
+        if next_first
+        else None
+    )
 
     return JSONResponse({
         "date": target.isoformat(),
@@ -248,9 +265,21 @@ def day_summary(
             {
                 "id": str(next_first[0]),
                 "title": next_first[1],
-                "scheduled_at": next_first[2].isoformat() if next_first[2] else None,
+                # SQLite raw-text rows hand datetimes back as strings; PG
+                # returns datetime. Both must serialize (latent crash found
+                # by the first tests this endpoint ever had, 2026-08-18).
+                "scheduled_at": (
+                    next_first[2].isoformat()
+                    if hasattr(next_first[2], "isoformat")
+                    else str(next_first[2])
+                ) if next_first[2] else None,
                 "customer_name": next_first[3],
                 "customer_address": decrypt_if_ciphertext(next_first[4]),
+                # Tomorrow's first stop is NAVIGATION, not recap — it must
+                # point at the work, not the HQ. (The jobs_completed recap
+                # above deliberately stays customer-address: history.)
+                "site_address": next_site.address if next_site else None,
+                "site_address_missing": bool(next_site.address_missing) if next_site else False,
             }
             if next_first else None
         ),

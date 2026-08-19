@@ -19,6 +19,7 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, get_db
 from gdx_dispatch.core.job_display_state import derive_job_display_state
+from gdx_dispatch.core.job_site import resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.models.tenant_models import (
@@ -827,9 +828,22 @@ def list_jobs(
     # hasn't put a number on this yet", which is the signal the drop
     # prompt + create dialog are built to capture. /audit 2026-05-21 — N+1.
 
+    # Effective jobsite per row (core/job_site.py, one batch — no N+1 on
+    # the dispatch-board hot path). The raw SELECT's location_label/
+    # location_address only cover the BOUND case; the helper adds the
+    # primary-location and customer fallbacks, ORM-decrypted, so this
+    # endpoint never selects encrypted c.address raw (RAW_ENC gate).
+    _sites = resolve_job_sites(
+        db, [(r.get("id"), r.get("location_id"), r.get("customer_id")) for r in rows]
+    )
+
     items = []
     for r in rows:
         d = dict(r)
+        _site = _sites.get(str(d.get("id")))
+        d["site_label"] = _site.label if _site else None
+        d["site_address"] = _site.address if _site else None
+        d["site_address_missing"] = bool(_site.address_missing) if _site else False
         d["status_raw"] = d.get("status")
         d["lifecycle_stage_raw"] = d.get("lifecycle_stage")
         canon = _canon_status(d.get("lifecycle_stage"), d.get("status"))

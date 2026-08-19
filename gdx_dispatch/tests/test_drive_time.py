@@ -217,3 +217,38 @@ class TestCacheKey:
         k1 = dt._route_cache_key(["A", "B"], "google")
         k2 = dt._route_cache_key(["A", "B", "C"], "google")
         assert k1 != k2
+
+
+class TestBlankRunSplitting:
+    """One address-less stop must not nuke the whole day's chips.
+
+    Bound sites without a typed address are a first-class state now
+    (jobsite plan D2), so `["A", "B", "", "C", "D"]` has to keep the
+    A->B and C->D legs and None only what touches the blank
+    (post-code audit 2026-08-18 §3 — the old any-blank -> all-None
+    behavior regressed every leg).
+    """
+
+    def test_runs_query_separately_and_keep_their_legs(self):
+        calls = []
+
+        def fake_dm(addresses):
+            calls.append(list(addresses))
+            return [None] + [600] * (len(addresses) - 1)
+
+        with patch.object(dt, "_google_distance_matrix", side_effect=fake_dm):
+            result = _run(
+                dt.compute_drive_times(
+                    "t", ["A", "B", "", "C", "D"], provider="google"
+                )
+            )
+        assert result == [None, 600, None, None, 600]
+        assert calls == [["A", "B"], ["C", "D"]]
+
+    def test_all_blank_never_calls_google(self):
+        with patch.object(dt, "_google_distance_matrix") as mock_dm:
+            result = _run(
+                dt.compute_drive_times("t", ["", "", ""], provider="google")
+            )
+        assert result == [None, None, None]
+        mock_dm.assert_not_called()

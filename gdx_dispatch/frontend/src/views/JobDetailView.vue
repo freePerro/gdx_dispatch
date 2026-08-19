@@ -1538,17 +1538,17 @@ const customerAddress = computed(() => {
     // HQ fallback. NULL/empty surfaces as missing in the template.
     return pickedLocation.value.address || null;
   }
-  if (customerLocations.value.length) {
-    return customerLocations.value.find((loc) => loc.is_primary)?.address || customerLocations.value[0].address;
-  }
+  // Null-location jobs: only an EXPLICIT primary overrides the customer's
+  // address. The old first-created-row fallback meant the first saved
+  // jobsite re-addressed every unbound job for the customer (jobsite plan,
+  // post-code audit PR 2 §1 — matches core/job_site.py rule 2).
+  const primary = customerLocations.value.find((loc) => loc.is_primary);
+  if (primary) return primary.address || null;
   return customerDetail.value?.address;
 });
 const accessNotes = computed(() => {
   if (pickedLocation.value) return pickedLocation.value.access_notes || "";
-  if (customerLocations.value.length) {
-    return customerLocations.value.find((loc) => loc.is_primary)?.access_notes || customerLocations.value[0].access_notes;
-  }
-  return "";
+  return customerLocations.value.find((loc) => loc.is_primary)?.access_notes || "";
 });
 const pickedLocationLabel = computed(() => pickedLocation.value?.label || null);
 const pickedLocationAddressMissing = computed(
