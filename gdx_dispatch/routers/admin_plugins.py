@@ -218,6 +218,136 @@ def add_plugin(
     }
 
 
+class StorefrontInstall(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    version: str = Field(min_length=1, max_length=50)
+
+
+def _running_versions() -> dict[str, str]:
+    """{canonical distribution: version} plugin-host reports as LOADED.
+
+    The catalog is the only honest source for "what is running" — install
+    metadata says what was *meant* to be installed, which can differ from the
+    code on disk. Best-effort: plugin-host may be restarting, and the store must
+    still render.
+    """
+    from gdx_dispatch.plugin_host.reconcile import _canon
+
+    url = os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
+    try:
+        from gdx_dispatch.core.plugin_consent import internal_auth_headers
+
+        r = httpx.get(f"{url}/api/plugins", timeout=5.0, headers=internal_auth_headers())
+        r.raise_for_status()
+        return {
+            _canon(p["distribution"]): p["version"]
+            for p in r.json()
+            if p.get("distribution") and p.get("version")
+        }
+    except Exception:
+        log.warning("plugin-host catalog unavailable — storefront omits running versions")
+        return {}
+
+
+def _desired_versions(db: Session) -> dict[str, str]:
+    from gdx_dispatch.plugin_host.reconcile import desired_versions
+
+    ensure_registry_table(db)
+    ensure_artifact_table(db)
+    return desired_versions(db)
+
+
+@router.get("/storefront")
+def browse_storefront(
+    _: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
+) -> dict:
+    """The curated plugin catalog, annotated with what this instance has.
+
+    Returns an error string rather than an empty list when the catalog can't be
+    read: an empty store would read as "there are no plugins", which is a
+    different and wrong statement.
+    """
+    from gdx_dispatch.core import plugin_storefront as store
+
+    try:
+        entries = store.fetch_catalog()
+    except store.StorefrontError as exc:
+        return {"plugins": [], "error": str(exc), "catalog_url": store.catalog_url()}
+
+    return {
+        "plugins": store.merge_install_state(entries, _desired_versions(db), _running_versions()),
+        "error": None,
+        "catalog_url": store.catalog_url(),
+    }
+
+
+@router.post("/storefront/install", status_code=201)
+def install_from_storefront(
+    body: StorefrontInstall,
+    request: Request,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
+) -> dict:
+    """Install a catalog plugin: fetch its wheel here, verify it, record it.
+
+    The app does the downloading because plugin-host has no egress. Only the
+    plugin KEY and VERSION come from the caller — the URL is resolved from the
+    catalog, so this cannot be aimed at an arbitrary host. From the
+    plugin_artifact row onward this is the ordinary upload path, which is why
+    the response says "restart to apply" rather than claiming it is running.
+    """
+    from gdx_dispatch.core import plugin_storefront as store
+
+    try:
+        entry = store.find_entry(body.key, body.version)
+        filename, content = store.download_wheel(entry)
+    except store.StorefrontError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+    name = safe_artifact_name(filename)
+    if name is None:
+        raise HTTPException(502, f"catalog wheel has an unusable filename: {filename!r}")
+
+    ensure_artifact_table(db)
+    digest = hashlib.sha256(content).hexdigest()
+    db.execute(
+        text(
+            """
+            INSERT INTO plugin_artifact (filename, sha256, content, uploaded_by)
+            VALUES (:f, :h, :c, :by)
+            ON CONFLICT (filename) DO UPDATE
+              SET sha256 = EXCLUDED.sha256, content = EXCLUDED.content,
+                  uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
+            """
+        ),
+        {"f": name, "h": digest, "c": content,
+         "by": f"storefront:{user.get('sub') or ''}"},
+    )
+    # Deliberately NOT a plugin_registry row: that would make plugin-host try to
+    # pip-install the package from an index it cannot reach, failing every boot.
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.storefront_installed",
+        entity_type="plugin",
+        entity_id=entry["key"],
+        details={"key": entry["key"], "distribution": entry["distribution"],
+                 "version": entry["version"], "filename": name, "sha256": digest,
+                 "permissions": entry["permissions"]},
+    )
+    db.commit()
+    return {
+        "key": entry["key"],
+        "version": entry["version"],
+        "filename": name,
+        "sha256": digest,
+        "status": "pending_restart",
+        "note": "recorded — restart plugin-host to load it",
+    }
+
+
 @router.get("/{key}/permissions")
 def plugin_permissions(
     key: str,

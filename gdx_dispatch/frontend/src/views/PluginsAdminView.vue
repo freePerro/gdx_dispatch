@@ -22,7 +22,90 @@
         plugin-host cycles (~10s).
       </Message>
 
+      <!-- Browse the curated catalog -->
+      <h3 class="section-title">Browse plugins</h3>
+      <Message v-if="store.error" severity="warn" :closable="false" data-testid="store-error">
+        The plugin catalog is unreachable, so there's nothing to browse right now.
+        Installing by package name or file below still works.
+        <br><small>{{ store.error }}</small>
+      </Message>
+      <div v-else-if="store.loading" class="store-empty">Loading the catalog…</div>
+      <div v-else-if="!store.plugins.length" class="store-empty">
+        The catalog has no plugins listed yet.
+      </div>
+      <div v-else class="store-grid" data-testid="store-grid">
+        <div v-for="p in store.plugins" :key="p.key" class="store-card" :data-plugin="p.key">
+          <div class="store-card-head">
+            <span class="store-name">{{ p.name }}</span>
+            <Tag :value="p.tier" severity="secondary" rounded />
+          </div>
+          <p class="store-desc">{{ p.description }}</p>
+          <!-- Permissions are shown BEFORE install, not after: an owner should
+               know what a plugin will be able to do before its code is on the
+               box, not at first use. -->
+          <div class="store-perms">
+            <template v-if="p.permissions?.length">
+              <Tag v-for="perm in p.permissions" :key="perm" :value="perm"
+                   severity="warn" rounded class="perm-chip" />
+              <small class="perm-note">asks for elevated access</small>
+            </template>
+            <small v-else class="perm-note">no elevated permissions</small>
+          </div>
+          <div class="store-card-foot">
+            <span class="store-state">
+              <template v-if="p.state === 'running'">
+                <i class="pi pi-check-circle" /> Running v{{ p.running_version }}
+              </template>
+              <template v-else-if="p.state === 'pending_restart'">
+                <i class="pi pi-clock" /> v{{ p.installed_version }} — restart to load
+              </template>
+              <template v-else>v{{ p.version }}</template>
+            </span>
+            <span class="store-actions">
+              <!-- No dead end: once it's loaded, there's a way into it. -->
+              <Button v-if="p.state === 'running'" label="Open" icon="pi pi-arrow-right"
+                      size="small" text @click="openPlugin(p)" />
+              <Button v-if="p.state === 'pending_restart'" label="Restart now"
+                      icon="pi pi-refresh" size="small" severity="secondary"
+                      :loading="restarting" @click="restartHost" />
+              <Button v-if="p.update_available" :label="`Update to ${p.version}`"
+                      icon="pi pi-arrow-up" size="small" @click="askInstall(p)" />
+              <Button v-else-if="p.state === 'available'" label="Install"
+                      icon="pi pi-download" size="small" @click="askInstall(p)" />
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Install confirmation. A real modal on purpose: useDestructiveConfirm
+           auto-accepts silently (issue #215), which here would turn Install into
+           unconfirmed code execution AND skip the permission review. -->
+      <Dialog v-model:visible="storeConfirm.show" modal :style="{ width: '34rem' }"
+              :header="`Install ${storeConfirm.plugin?.name || ''}?`">
+        <p>
+          This installs <strong>{{ storeConfirm.plugin?.distribution }}</strong>
+          v{{ storeConfirm.plugin?.version }} from the GDX plugin catalog.
+        </p>
+        <p v-if="storeConfirm.plugin?.permissions?.length">
+          It asks for:
+          <Tag v-for="perm in storeConfirm.plugin.permissions" :key="perm" :value="perm"
+               severity="warn" rounded class="perm-chip" />
+          You'll be asked to consent before those can be used.
+        </p>
+        <Message severity="warn" :closable="false">
+          Installing runs the plugin's code on your plugin-host. Only install
+          plugins you trust.
+        </Message>
+        <template #footer>
+          <Button label="Cancel" text @click="storeConfirm.show = false" />
+          <Button :label="storeConfirm.plugin?.installed_version ? 'Update' : 'Install'"
+                  icon="pi pi-download" :loading="storeConfirm.saving"
+                  data-testid="confirm-install" @click="confirmInstall" />
+        </template>
+      </Dialog>
+
       <!-- Add a plugin package -->
+      <h3 class="section-title">Install by package name or file</h3>
       <form class="install-form" @submit.prevent="install">
         <div class="form-field">
           <label for="pkg" class="form-label">Package *</label>
@@ -143,6 +226,7 @@
 // on restart. "Running now" reads the live catalog so the operator can see the
 // gap between what's registered and what's actually loaded.
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import Toolbar from 'primevue/toolbar';
 import Message from 'primevue/message';
 import InputText from 'primevue/inputtext';
@@ -150,6 +234,7 @@ import Button from 'primevue/button';
 import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import Dialog from 'primevue/dialog';
+import Tag from 'primevue/tag';
 import { useToast } from 'primevue/usetoast';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
@@ -160,6 +245,7 @@ const api = useApiWithToast();
 const toast = useToast();
 const { confirmAsync } = useDestructiveConfirm();
 const auth = useAuthStore();
+const router = useRouter();
 
 // Match the backend gate exactly (_OWNER_ROLES = {owner, superadmin}); `admin`
 // is intentionally excluded — an admin would see the form but 403 on submit.
@@ -176,6 +262,48 @@ const form = reactive({ package: '', version: '' });
 const fileInput = ref(null);
 const picked = ref(null);
 const consent = reactive({ show: false, key: '', name: '', items: [], allConsented: false, saving: false });
+const store = reactive({ plugins: [], error: null, loading: false });
+const storeConfirm = reactive({ show: false, plugin: null, saving: false });
+
+async function loadStore() {
+  store.loading = true;
+  try {
+    const r = await api.get('/api/admin/plugins/storefront');
+    store.plugins = r?.plugins || [];
+    store.error = r?.error || null;
+  } catch (e) {
+    // Say the catalog is unreachable rather than rendering an empty store —
+    // "no plugins listed" and "we couldn't ask" are different statements.
+    store.plugins = [];
+    store.error = e?.message || 'the catalog could not be read';
+  } finally {
+    store.loading = false;
+  }
+}
+
+function askInstall(plugin) {
+  storeConfirm.plugin = plugin;
+  storeConfirm.show = true;
+}
+
+async function confirmInstall() {
+  const p = storeConfirm.plugin;
+  if (!p) return;
+  storeConfirm.saving = true;
+  try {
+    await api.post('/api/admin/plugins/storefront/install',
+      { key: p.key, version: p.version },
+      { successMessage: `${p.name} recorded — restart plugin-host to load it` });
+    storeConfirm.show = false;
+    await Promise.all([loadStore(), loadArtifacts()]);
+  } finally {
+    storeConfirm.saving = false;
+  }
+}
+
+function openPlugin(plugin) {
+  router.push(`/plugins/${encodeURIComponent(plugin.key)}`);
+}
 
 async function loadRegistry() {
   registry.value = (await api.get('/api/admin/plugins')) || [];
@@ -217,6 +345,7 @@ async function load() {
   try {
     await loadRegistry();
     await loadArtifacts();
+    await loadStore();
     // Best-effort: plugin-host may not be up yet. A failure just means none.
     try { running.value = (await api.get('/api/plugins')) || []; }
     catch (_e) { running.value = []; }
@@ -336,4 +465,51 @@ onMounted(load);
 /* PrimeVue v4 token, not the v3 `--text-color-secondary` (undefined here, so
    the text would render un-muted). Guarded by no_legacy_css_tokens.spec.js. */
 .muted { color: var(--p-text-muted-color); }
+
+/* Storefront. All colours are theme tokens — this grid is read in dark mode
+   as often as light, and a hardcoded card background is the classic way that
+   breaks. */
+.store-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.store-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: var(--p-content-border-radius, 6px);
+  background: var(--p-content-background);
+}
+.store-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.store-name { font-weight: 600; }
+.store-desc {
+  margin: 0;
+  color: var(--p-text-muted-color);
+  font-size: 0.9rem;
+  /* Descriptions vary in length; the cards should still line up. */
+  min-height: 2.6rem;
+}
+.store-perms { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.perm-chip { margin-right: 0.25rem; }
+.perm-note { color: var(--p-text-muted-color); }
+.store-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+.store-state { color: var(--p-text-muted-color); font-size: 0.9rem; }
+.store-actions { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.store-empty { color: var(--p-text-muted-color); margin-bottom: 1rem; }
 </style>
