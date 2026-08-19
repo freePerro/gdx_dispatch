@@ -90,6 +90,10 @@ services:
       CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
       VPS_IP: ${VPS_IP:-}
       GDX_E2E_BYPASS: ${GDX_E2E_BYPASS:-0}
+      # Where the in-app plugin storefront reads its curated catalog. Empty
+      # falls back to the built-in default, so an operator only sets this to
+      # point at a different catalog host.
+      GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
       GDX_BASE_URL: ${GDX_BASE_URL:-http://localhost:8001}
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
