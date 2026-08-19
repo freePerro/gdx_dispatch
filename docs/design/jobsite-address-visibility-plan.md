@@ -157,23 +157,31 @@ view renders label + missing state; card fallback.
 from the phone.
 
 `JobsView.vue` create/edit dialog + `MobileJobNewDialog.vue`:
-- Once a customer is picked, always render the ask:
-  **"Jobsite same as customer address?" [Yes] [No]** — default **Yes** (ships
-  `location_id: null`, which already means "customer's primary/address").
-- **No →**
-  - customer has locations: today's picker (now always reachable, not gated on 2+),
-    plus a "New address…" option;
-  - "New address…" (or zero locations): inline address field (+ optional label).
-    On submit: `POST /api/customers/{id}/locations` → bind the returned id as
-    `location_id`. Failure of the location POST blocks job submit with a visible
-    error (never silently create the job at the wrong address).
-  - Reusing that POST is deliberate (invariant #1): it already writes the
-    `create_customer_location` audit event (`routers/customers.py:741`), so the new
-    row carries who/what/when for free. No new mutation endpoint is created.
-- Edit dialog gets the same ask seeded from the job's current `location_id`.
-- New-customer path in `MobileJobNewDialog` already captures one address — that stays
-  the customer address; the ask still applies after (rare, but a new customer can have
-  a different jobsite on day one).
+- **Stacked on PR 1** (pre-code audit §1: binding jobsites that mobile doesn't
+  render yet would send the tech to the HQ with more confidence, not less —
+  merge order is a production concern, bottom-up).
+- The ask is ONE always-visible "Jobsite" select once a customer is picked
+  (pre-code audit §2 simplification — no Yes/No toggle duplicating the
+  select's state): first option **"Same as customer address"** (= null,
+  default), then the customer's existing locations, then **"New address…"**
+  (inline address + optional label). Edit mode seeds the select directly from
+  `location_id` — no toggle/state ambiguity.
+- "New address…" on submit: `POST /api/customers/{id}/locations` with
+  **`is_primary: false` always** (audit §5: a true would retroactively
+  re-address every historical null-location job for the customer — pinned in
+  a test) → bind returned id as `location_id`. Location POST failure blocks
+  job submit with a visible error (never create the job at the wrong address).
+- Reusing that POST is deliberate (invariant #1): it already writes the
+  `create_customer_location` audit event (`routers/customers.py:741`), so the new
+  row carries who/what/when for free. No new mutation endpoint is created.
+- **Retry-safe chain** (audit §3): after a successful inline customer create,
+  the form flips to that customer as SELECTED (retry reuses, never re-POSTs);
+  a created location id is memoized per (customer, normalized address) and
+  reused on retry — a job-POST failure (e.g. tenant's require-tech gate)
+  followed by Save again must not mint duplicate customers/locations.
+- Mobile dialog: the new fields join `useDirtyDialog`'s getter and
+  `_resetForm` in the documented order (audit §5 runner-up — else the dialog
+  is born dirty or leaks the previous open's address).
 
 **Tests:** vitest — default Yes ships null; No+new address chains the POSTs and binds
 the id; POST failure blocks submit. pytest — none needed (endpoints exist).
@@ -348,6 +356,17 @@ Per PR, in order:
   SQLite ISO-'T'-vs-space datetime-compare bug found (and fixed for
   `next_first_stop`) in PR 1 — sweep the file's remaining raw datetime ranges.
 - MobileDispatchView `job.address` dead-field cleanup lands with PR 1.
+
+- PG-dialect test harness: the `is_primary` int-into-boolean bind (every
+  location create 500'd on prod Postgres) and the day-summary datetime-compare
+  bug were both invisible to the SQLite suite — a PG-backed test lane would
+  catch this class (found during PR 2's walk).
+- Response-model vs nullable-column mismatch sweep (`CustomerLocationOut.address`
+  pattern): other routers' Out-models unchecked.
+- Server-side inline `new_site` on POST /api/jobs (one transaction) to replace
+  the client-side create-then-bind chain + retry memos (PR 2 audit §2).
+- Orphaned location rows (site created, job never landed) have no cleanup
+  surface — fold into PR 4's edit scope.
 
 (Tech-side address correction was originally filed here as a follow-up; Doug pulled
 it into scope 2026-08-18 — it is now **PR 4**.)

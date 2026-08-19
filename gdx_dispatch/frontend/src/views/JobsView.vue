@@ -275,25 +275,47 @@
           </div>
 
           <!--
-            Sprint customer-multi-location (2026-05-21) — only render when
-            the picked customer has more than one site. Defaults to the
-            primary (or first) location; the user can clear it to fall
-            back to the customer's address.
+            The jobsite ask (PR 2, jobsite-address plan) — always visible
+            once a customer is in play (was gated on 2+ locations, which
+            left a single-site customer with a different jobsite no way to
+            say so). "Same as customer address" (null) is the default;
+            "New address…" creates a real customer_locations row at save.
           -->
-          <div v-if="customerLocations.length > 1" class="form-field" data-testid="job-location-field">
-            <label for="job-location">Service location</label>
+          <div v-if="jobForm.customer_id || jobForm.new_customer" class="form-field" data-testid="job-location-field">
+            <label for="job-location">Jobsite</label>
             <Select
               id="job-location"
               v-model="jobForm.location_id"
-              :options="locationOptions"
+              :options="siteOptions"
               optionLabel="label"
               optionValue="value"
-              placeholder="Use customer's primary"
-              showClear
               data-testid="job-location-dropdown"
               class="w-full"
             />
-            <small class="form-hint">{{ customerLocations.length }} sites on file. Leave blank to use the customer's primary.</small>
+            <div v-if="jobForm.location_id === NEW_SITE" class="form-row" data-testid="job-new-site-fields">
+              <div class="form-field">
+                <label for="job-new-site-address">Jobsite address *</label>
+                <Textarea
+                  id="job-new-site-address"
+                  v-model="jobForm.new_site_address"
+                  rows="2"
+                  placeholder="123 Main St, City, ST"
+                  class="w-full"
+                  data-testid="job-new-site-address-input"
+                />
+              </div>
+              <div class="form-field">
+                <label for="job-new-site-label">Site label (optional)</label>
+                <InputText
+                  id="job-new-site-label"
+                  v-model="jobForm.new_site_label"
+                  placeholder="e.g. Warehouse 3"
+                  class="w-full"
+                  data-testid="job-new-site-label-input"
+                />
+              </div>
+            </div>
+            <small class="form-hint">Where the work actually happens. Saved sites follow the customer to future jobs.</small>
           </div>
 
           <div class="form-row">
@@ -651,6 +673,8 @@ function emptyForm() {
     new_cust_phone: "",
     new_cust_email: "",
     new_cust_address: "",
+    new_site_address: "",
+    new_site_label: "",
     appt_schedule: false,
     appt_date: null,
     appt_time: "",
@@ -715,6 +739,33 @@ const locationOptions = computed(() =>
   }))
 );
 
+// The jobsite ask (PR 2) — one select, three kinds of answer: null (same
+// as the customer's address — the default and existing semantics), an
+// existing location id, or the NEW_SITE sentinel that reveals the inline
+// address fields. A sentinel in the same v-model keeps edit-seeding
+// unambiguous (a real id seeds as itself; no separate toggle to sync).
+const NEW_SITE = "__new__";
+const siteOptions = computed(() => [
+  { label: "Same as customer address", value: null },
+  ...locationOptions.value,
+  { label: "New address…", value: NEW_SITE },
+]);
+// Retry-safety memos (pre-code audit §3): a job-POST failure (e.g. the
+// tenant's require-tech gate) leaves the dialog open; Save again must
+// reuse the customer/location rows that already exist, not mint duplicates.
+const _createdCustomerMemo = ref(null); // { key, id }
+const _createdSiteMemo = ref(null);     // { key, id }
+function _custMemoKey() {
+  const f = jobForm.value;
+  return [f.new_cust_name, f.new_cust_phone, f.new_cust_email, f.new_cust_address]
+    .map((v) => (v || "").trim().toLowerCase()).join("|");
+}
+function _siteMemoKey(customerId) {
+  const f = jobForm.value;
+  return [customerId, (f.new_site_address || "").trim().toLowerCase(),
+    (f.new_site_label || "").trim().toLowerCase()].join("|");
+}
+
 async function fetchCustomerLocations(customerId) {
   if (!customerId) {
     customerLocations.value = [];
@@ -752,8 +803,11 @@ watch(
     }
     // User genuinely switched the customer mid-dialog. Wipe the stale
     // location_id — it belongs to the old customer and the backend will 400.
+    // A drafted new-site address is the old customer's too.
     if (prev) {
       jobForm.value.location_id = null;
+      jobForm.value.new_site_address = "";
+      jobForm.value.new_site_label = "";
     }
   },
 );
@@ -876,6 +930,8 @@ function openCreateDialog() {
   formMode.value = "create";
   _seedingLocation.value = true;
   jobForm.value = emptyForm();
+  _createdCustomerMemo.value = null;
+  _createdSiteMemo.value = null;
   catalogParts.value = [];
   formError.value = "";
   showFormDialog.value = true;
@@ -911,11 +967,15 @@ async function openEditDialog(job) {
     new_cust_phone: "",
     new_cust_email: "",
     new_cust_address: "",
+    new_site_address: "",
+    new_site_label: "",
     appt_schedule: false,
     appt_date: null,
     appt_time: "",
     appt_notes: "",
   };
+  _createdCustomerMemo.value = null;
+  _createdSiteMemo.value = null;
   showFormDialog.value = true;
 
   // Load existing crew so the MultiSelect/Lead controls reflect reality.
@@ -1050,16 +1110,67 @@ async function submitForm() {
     let customerId = jobForm.value.customer_id;
 
     if (jobForm.value.new_customer) {
-      const newCustomerPayload = {
-        name: jobForm.value.new_cust_name.trim(),
-        phone: jobForm.value.new_cust_phone?.trim() || null,
-        email: jobForm.value.new_cust_email?.trim() || null,
-        address: jobForm.value.new_cust_address?.trim() || null,
-      };
-      const createdCustomer = await api.post("/api/customers", newCustomerPayload);
-      customerId = extractId(createdCustomer);
+      // Memoized across attempts: a later step failing (e.g. the tenant's
+      // require-tech gate 422) leaves the dialog open, and Save again must
+      // reuse the row that already exists, not mint a duplicate customer
+      // (pre-code audit 2026-08-18 §3).
+      if (_createdCustomerMemo.value?.key === _custMemoKey()) {
+        customerId = _createdCustomerMemo.value.id;
+      } else {
+        const newCustomerPayload = {
+          name: jobForm.value.new_cust_name.trim(),
+          phone: jobForm.value.new_cust_phone?.trim() || null,
+          email: jobForm.value.new_cust_email?.trim() || null,
+          address: jobForm.value.new_cust_address?.trim() || null,
+        };
+        const createdCustomer = await api.post("/api/customers", newCustomerPayload);
+        customerId = extractId(createdCustomer);
+        if (!customerId) {
+          throw new Error("Customer creation did not return an ID.");
+        }
+        _createdCustomerMemo.value = { key: _custMemoKey(), id: customerId };
+      }
+    }
+
+    // The jobsite: "New address…" binds a REAL customer_locations row (the
+    // endpoint audit-logs the create — invariant #1). Failure blocks the
+    // job: saving it anyway would point the tech at the customer's address,
+    // the exact error this field exists to prevent. is_primary is ALWAYS
+    // false — true would retroactively re-address every null-location job
+    // for this customer (audit §5). Memoized for retry like the customer.
+    let siteLocationId = jobForm.value.location_id === NEW_SITE
+      ? null
+      : (jobForm.value.location_id || null);
+    if (jobForm.value.location_id === NEW_SITE) {
+      const siteAddress = (jobForm.value.new_site_address || "").trim();
+      if (!siteAddress) {
+        formError.value = "Enter the jobsite address (or pick 'Same as customer address').";
+        isSaving.value = false;
+        return;
+      }
       if (!customerId) {
-        throw new Error("Customer creation did not return an ID.");
+        formError.value = "A jobsite address needs a customer to belong to.";
+        isSaving.value = false;
+        return;
+      }
+      if (_createdSiteMemo.value?.key === _siteMemoKey(customerId)) {
+        siteLocationId = _createdSiteMemo.value.id;
+      } else {
+        try {
+          const loc = await api.post(`/api/customers/${customerId}/locations`, {
+            label: (jobForm.value.new_site_label || "").trim() || null,
+            address: siteAddress,
+            is_primary: false,
+          });
+          siteLocationId = extractId(loc);
+          if (!siteLocationId) throw new Error("Location creation returned no id.");
+          _createdSiteMemo.value = { key: _siteMemoKey(customerId), id: String(siteLocationId) };
+          siteLocationId = String(siteLocationId);
+        } catch (err) {
+          formError.value = `Could not save the jobsite address — the job was NOT saved. ${err?.message || ""}`;
+          isSaving.value = false;
+          return;
+        }
       }
     }
 
@@ -1088,10 +1199,9 @@ async function submitForm() {
         const n = Number(raw);
         return Number.isFinite(n) ? n : null;
       })(),
-      // Sprint customer-multi-location — picker only renders at 2+
-      // locations, so single-site customers naturally send null and use
-      // the customer's primary address.
-      location_id: jobForm.value.location_id || null,
+      // The jobsite ask resolved above: null = customer's primary/address,
+      // else a real (possibly just-created) customer_locations id.
+      location_id: siteLocationId,
       assigned_tech_ids: techIds,
       lead_tech_id: leadTechId,
       // Legacy fields kept for any older read paths that still inspect them.

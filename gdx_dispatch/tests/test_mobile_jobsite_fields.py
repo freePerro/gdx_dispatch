@@ -329,3 +329,43 @@ class TestDaySummaryNextStop:
         # customer_address still present for the recap — the CLIENT gates on
         # the missing flag (MobileSummaryView renders ask-dispatch).
         assert stop["customer_address"] == "100 Billing Rd"
+
+
+# ── GET /api/customers/{id}/locations tolerates label-only rows ───────
+
+
+class TestLocationsListNullableAddress:
+    """One label-only row must not 400 the whole list endpoint — the site
+    pickers rendered EMPTY for exactly the customers that have sites
+    (CustomerLocationOut.address was `str`; found live in the PR 2 walk)."""
+
+    def test_label_only_row_lists_cleanly(self, app_and_db):
+        _, db = app_and_db
+        from gdx_dispatch.core.modules import require_module
+        from gdx_dispatch.routers import customers as customers_router
+
+        app = FastAPI()
+        app.include_router(customers_router.router)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: {
+            "user_id": USER, "tenant_id": TENANT, "role": "admin",
+        }
+        app.dependency_overrides[require_module("customers")] = lambda: True
+
+        @app.middleware("http")
+        async def _stamp(request, call_next):
+            request.state.tenant = {"id": TENANT, "slug": "test"}
+            request.state.user = {"user_id": USER, "tenant_id": TENANT}
+            return await call_next(request)
+
+        client = TestClient(app)
+        c = _seed(db)
+        _location(db, c, label="North Yard", address=None)
+        _location(db, c, label="Warehouse 3", address="9 Dock St")
+        r = client.get(f"/api/customers/{c.id}/locations")
+        assert r.status_code == 200, r.text
+        rows = r.json()
+        assert len(rows) == 2
+        by_label = {x["label"]: x for x in rows}
+        assert by_label["North Yard"]["address"] is None
+        assert by_label["Warehouse 3"]["address"] == "9 Dock St"

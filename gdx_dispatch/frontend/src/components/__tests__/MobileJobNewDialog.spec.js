@@ -562,3 +562,122 @@ describe('MobileJobNewDialog', () => {
     }));
   });
 });
+
+
+describe('MobileJobNewDialog — jobsite ask (PR 2, jobsite-address plan)', () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiPost.mockReset();
+    toastAdd.mockReset();
+    hasPermission.mockReturnValue(true);
+    mockAuthRole = 'technician';
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function newCustomerWithSite(wrapper, { address = '9 Dock St' } = {}) {
+    await setInput(wrapper, 'mjn-job-title', 'Install');
+    const toggle = wrapper.find('[data-testid="mjn-new-customer-toggle"]');
+    toggle.element.checked = true;
+    await toggle.trigger('change');
+    await setInput(wrapper, 'mjn-newcust-name', 'Acme Co');
+    await wrapper.find('[data-testid="mjn-site-new"]').trigger('click');
+    if (address) await setInput(wrapper, 'mjn-newsite-address', address);
+  }
+
+  it('site section hidden without a customer, shown for a new customer', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="mjn-site-section"]').exists()).toBe(false);
+    const toggle = wrapper.find('[data-testid="mjn-new-customer-toggle"]');
+    toggle.element.checked = true;
+    await toggle.trigger('change');
+    expect(wrapper.find('[data-testid="mjn-site-section"]').exists()).toBe(true);
+  });
+
+  it('"Different address…" without an address disables submit', async () => {
+    const wrapper = mountDialog();
+    await flushPromises();
+    await newCustomerWithSite(wrapper, { address: null });
+    expect(wrapper.find('[data-testid="mjn-submit"]').attributes('disabled')).toBeDefined();
+    await setInput(wrapper, 'mjn-newsite-address', '9 Dock St');
+    expect(wrapper.find('[data-testid="mjn-submit"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('posts the location with is_primary:false and binds it on the job', async () => {
+    apiPost.mockImplementation(async (url) => {
+      if (url === '/api/customers') return { id: 'cust-9' };
+      if (url.includes('/locations')) return { id: 'loc-5' };
+      return { id: 'job-1', assigned_to: 'tech-1' };
+    });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await newCustomerWithSite(wrapper);
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+    const locCall = apiPost.mock.calls.find(([u]) => u.includes('/locations'));
+    expect(locCall[0]).toBe('/api/customers/cust-9/locations');
+    expect(locCall[1]).toMatchObject({ address: '9 Dock St', is_primary: false });
+    const jobCall = apiPost.mock.calls.find(([u]) => u === '/api/jobs');
+    expect(jobCall[1].location_id).toBe('loc-5');
+  });
+
+  it('location POST failure blocks the job POST', async () => {
+    apiPost.mockImplementation(async (url) => {
+      if (url === '/api/customers') return { id: 'cust-9' };
+      if (url.includes('/locations')) throw new Error('boom');
+      return { id: 'job-1' };
+    });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await newCustomerWithSite(wrapper);
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls.some(([u]) => u === '/api/jobs')).toBe(false);
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error' }));
+  });
+
+it('flipping the new-customer toggle resets the jobsite ask (stale-site guard)', async () => {
+    // Post-code audit §3: a site picked for the searched customer must not
+    // survive a flip to "create new" — the backend would 400 the bind, after
+    // a real customer row had already been minted.
+    const wrapper = mountDialog();
+    await flushPromises();
+    const toggle = wrapper.find('[data-testid="mjn-new-customer-toggle"]');
+    toggle.element.checked = true;
+    await toggle.trigger('change');
+    await wrapper.find('[data-testid="mjn-site-new"]').trigger('click');
+    await setInput(wrapper, 'mjn-newsite-address', '9 Dock St');
+    // Flip back off — the drafted address and choice must clear.
+    toggle.element.checked = false;
+    await toggle.trigger('change');
+    toggle.element.checked = true;
+    await toggle.trigger('change');
+    await wrapper.vm.$nextTick();
+    const addr = wrapper.find('[data-testid="mjn-newsite-address"]');
+    // Section collapsed back to default: the address input is gone (choice
+    // reset to "same as customer") — no stale draft under the next customer.
+    expect(addr.exists()).toBe(false);
+  });
+
+  it('retry after job-POST failure reuses customer AND location (no duplicates)', async () => {
+    let jobAttempts = 0;
+    apiPost.mockImplementation(async (url) => {
+      if (url === '/api/customers') return { id: 'cust-9' };
+      if (url.includes('/locations')) return { id: 'loc-5' };
+      jobAttempts += 1;
+      if (jobAttempts === 1) throw new Error('422');
+      return { id: 'job-1', assigned_to: 'tech-1' };
+    });
+    const wrapper = mountDialog();
+    await flushPromises();
+    await newCustomerWithSite(wrapper);
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost.mock.calls.filter(([u]) => u === '/api/customers').length).toBe(1);
+    expect(apiPost.mock.calls.filter(([u]) => u.includes('/locations')).length).toBe(1);
+    expect(jobAttempts).toBe(2);
+  });
+});
