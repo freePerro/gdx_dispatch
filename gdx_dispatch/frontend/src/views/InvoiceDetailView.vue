@@ -1190,6 +1190,10 @@ function normalizeInvoice(payload) {
     // through to "—" even though the DB had real values. Forward as-is —
     // currency/percent formatting happens in the template.
     category: item.category ?? null,
+    // Same class of bug S122-b fixed for category/cost/margin four lines up:
+    // a field the normalizer drops is written to the DB and then invisible
+    // forever, so the office re-ticks a box that is already true.
+    includes_labor: Boolean(item.includes_labor),
     cost_snapshot: item.cost_snapshot ?? null,
     margin_pct_snapshot: item.margin_pct_snapshot ?? null,
     margin_pct_override: item.margin_pct_override ?? null,
@@ -1656,6 +1660,7 @@ function enterEditMode() {
     taxable: ln.taxable !== false,
     // D-S122b-detail-view-columns — snapshot the new fields too.
     category: ln.category || null,
+    includes_labor: Boolean(ln.includes_labor),
     cost: ln.cost_snapshot != null ? toNum(ln.cost_snapshot) : null,
     // Form shows percent (e.g. 35); backend stores decimal (0.35). Round-
     // trip via *100 on entry and /100 on save.
@@ -1728,6 +1733,7 @@ async function saveEdit() {
           toNum(orig.unit_price) !== price ||
           (orig.taxable !== false) !== Boolean(ln.taxable) ||
           (orig.category || null) !== category ||
+          Boolean(orig.includes_labor) !== Boolean(ln.includes_labor) ||
           origCost !== cost ||
           origMargin !== marginOverrideDec;
         if (changed) {
@@ -1742,6 +1748,9 @@ async function saveEdit() {
           // mean omitted fields stay unchanged, so clearing a cost requires
           // an explicit `cost: null`.
           if (!orig || category !== (orig.category || null)) patch.category = category;
+          if (!orig || Boolean(orig.includes_labor) !== Boolean(ln.includes_labor)) {
+            patch.includes_labor = Boolean(ln.includes_labor);
+          }
           if (!orig || cost !== origCost) patch.cost = cost;
           if (!orig || marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
           await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
@@ -1754,6 +1763,7 @@ async function saveEdit() {
           taxable: Boolean(ln.taxable),
         };
         if (category) body.category = category;
+        if (ln.includes_labor) body.includes_labor = true;
         if (cost != null) body.cost = cost;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
         const lineResp = await api.post(`/api/invoices/${id}/lines`, body);

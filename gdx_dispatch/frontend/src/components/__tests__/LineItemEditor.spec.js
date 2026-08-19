@@ -759,3 +759,90 @@ describe('LineItemEditor — parts-from-job panel', () => {
     expect(lastIds).toEqual(['p1-prior', 'p2']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// "Sometimes the install price is in the part price" (Doug 2026-08-19).
+//
+// Nothing in the catalog marks a bundled item -- only the words in its name
+// -- so the office ticks a box at billing and the invoice records it. Billing
+// a ticked line next to a labor line charges the install twice; we warn, and
+// deliberately do not block, because the office is the one who knows.
+// ---------------------------------------------------------------------------
+describe('LineItemEditor — install-included flag', () => {
+  it('renders the checkbox only in invoice mode (showTaxable)', () => {
+    const withFlag = mountEditor({
+      showTaxable: true,
+      lines: [{ description: 'Opener', quantity: 1, unit_price: 602 }],
+    });
+    expect(withFlag.find('[data-testid="line-includes-labor-0"]').exists()).toBe(true);
+
+    const estimateMode = mountEditor({
+      lines: [{ description: 'Opener', quantity: 1, unit_price: 602 }],
+    });
+    expect(estimateMode.find('[data-testid="line-includes-labor-0"]').exists()).toBe(false);
+  });
+
+  it('defaults to unticked and emits includes_labor when ticked', async () => {
+    const wrapper = mountEditor({
+      showTaxable: true,
+      lines: [{ description: 'Opener with install', quantity: 1, unit_price: 602 }],
+    });
+    const box = wrapper.find('[data-testid="line-includes-labor-0"]');
+    expect(box.element.checked).toBe(false);
+
+    await box.setValue(true);
+    const emitted = wrapper.emitted('update:lines').slice(-1)[0][0];
+    expect(emitted[0].includes_labor).toBe(true);
+  });
+
+  it('warns when a bundled part shares the invoice with a labor line', () => {
+    const wrapper = mountEditor({
+      showTaxable: true,
+      categories: [{ label: 'Labor', value: 'Labor' }, { label: 'Parts', value: 'Parts' }],
+      lines: [
+        { description: 'Opener with install', quantity: 1, unit_price: 602, category: 'Parts', includes_labor: true },
+        { description: 'Service labor', quantity: 1, unit_price: 200, category: 'Labor' },
+      ],
+    });
+    const warn = wrapper.find('[data-testid="install-double-bill-warning"]');
+    expect(warn.exists()).toBe(true);
+    expect(warn.text()).toContain('Opener with install');
+    expect(warn.text()).toContain('Service labor');
+  });
+
+  it('stays silent when nothing is ticked', () => {
+    const wrapper = mountEditor({
+      showTaxable: true,
+      categories: [{ label: 'Labor', value: 'Labor' }],
+      lines: [
+        { description: 'Opener', quantity: 1, unit_price: 536, category: 'Parts' },
+        { description: 'Service labor', quantity: 1, unit_price: 200, category: 'Labor' },
+      ],
+    });
+    expect(wrapper.find('[data-testid="install-double-bill-warning"]').exists()).toBe(false);
+  });
+
+  it('stays silent when a bundled part is billed with no labor line', () => {
+    const wrapper = mountEditor({
+      showTaxable: true,
+      categories: [{ label: 'Labor', value: 'Labor' }],
+      lines: [
+        { description: 'Opener with install', quantity: 1, unit_price: 602, category: 'Parts', includes_labor: true },
+      ],
+    });
+    expect(wrapper.find('[data-testid="install-double-bill-warning"]').exists()).toBe(false);
+  });
+
+  it('warns but never blocks — no disabled state is introduced', () => {
+    const wrapper = mountEditor({
+      showTaxable: true,
+      categories: [{ label: 'Labor', value: 'Labor' }],
+      lines: [
+        { description: 'Opener with install', quantity: 1, unit_price: 602, category: 'Parts', includes_labor: true },
+        { description: 'Service labor', quantity: 1, unit_price: 200, category: 'Labor' },
+      ],
+    });
+    expect(wrapper.find('[data-testid="install-double-bill-warning"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="line-desc-0"]').attributes('disabled')).toBeUndefined();
+  });
+});

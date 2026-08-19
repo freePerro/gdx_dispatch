@@ -731,6 +731,10 @@ async function createInvoice() {
         // D-S122-line-removal-unbill — forward the part_id so the backend
         // can store the linkage and release the part on line-delete.
         if (l.part_id) out.part_id = l.part_id;
+        // Only forward when ticked: the contract defaults it False, and
+        // sending it unconditionally would put a flag on every historical-
+        // shaped payload for no reason.
+        if (l.includes_labor) out.includes_labor = true;
         return out;
       });
 

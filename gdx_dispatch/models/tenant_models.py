@@ -590,6 +590,17 @@ class InvoiceLine(Base):
         nullable=True,
         index=True,
     )
+    # This line's price already covers the installation (Doug 2026-08-19:
+    # "sometimes the install price is in the part price"). Nothing in the
+    # catalog distinguishes a bundled item from a bare one except the words
+    # in its name, and money code may not guess from prose -- so the office
+    # ticks a box at billing and the invoice records the answer. Billing a
+    # ticked line alongside a labor line charges the install twice; the UI
+    # warns, and deliberately does not block, because the office decides.
+    # Default false: every existing line keeps today's behaviour.
+    includes_labor: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # Soft-delete so a removed line never re-appears on a re-load while
