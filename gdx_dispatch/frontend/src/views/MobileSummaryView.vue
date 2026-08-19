@@ -92,7 +92,9 @@ onMounted(load)
           <div class="next-stop-card">
             <Tag value="UP NEXT" severity="info" />
             <strong>{{ summary.next_first_stop.title }}</strong>
-            <span class="muted">{{ summary.next_first_stop.customer_name }} · {{ summary.next_first_stop.customer_address }}</span>
+            <!-- Jobsite, not the HQ; a bound site with no address must say so,
+                 never silently show the customer address (D2). -->
+            <span class="muted">{{ summary.next_first_stop.customer_name }} · {{ summary.next_first_stop.site_address || (summary.next_first_stop.site_address_missing ? 'No address — ask dispatch' : summary.next_first_stop.customer_address) }}</span>
           </div>
         </div>
       </div>

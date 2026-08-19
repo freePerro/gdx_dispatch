@@ -547,7 +547,9 @@ onUnmounted(() => {
                 <div class="job-meta">
                   <span v-if="job.job_type" class="meta-item"><i class="pi pi-briefcase" /> {{ job.job_type }}</span>
                   <span v-if="timeWindow(job)" class="meta-item"><i class="pi pi-clock" /> {{ timeWindow(job) }}</span>
-                  <span v-if="job.address" class="meta-item"><i class="pi pi-map-marker" /> {{ job.address }}</span>
+                  <!-- site_address is the /api/jobs effective jobsite; the old
+                       job.address key was never in that payload (always blank). -->
+                  <span v-if="job.site_address" class="meta-item"><i class="pi pi-map-marker" /> {{ job.site_address }}</span>
                 </div>
                 <Button
                   label="Assign tech"

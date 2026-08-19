@@ -66,8 +66,13 @@
           <i class="pi pi-phone" />
           <span>{{ customer.phone }}</span>
         </a>
+        <!-- The JOBSITE, not necessarily the customer's address: a job bound
+             to a customer_locations row is somewhere else, and this row is
+             what the tech navigates from. site_address is server-resolved
+             (core/job_site.py); a bound site with no address says so instead
+             of silently pointing at the HQ. -->
         <a
-          v-if="customer?.address"
+          v-if="displaySiteAddress"
           class="contact-row"
           :href="navigationLink"
           target="_blank"
@@ -75,8 +80,40 @@
           data-testid="mobile-job-detail-address"
         >
           <i class="pi pi-map-marker" />
-          <span>{{ customer.address }}</span>
+          <span>
+            <span v-if="job.site_label" class="site-label" data-testid="mjd-site-label">{{ job.site_label }}</span>
+            {{ displaySiteAddress }}
+          </span>
         </a>
+        <div
+          v-else-if="job?.site_address_missing"
+          class="contact-row site-missing"
+          data-testid="mjd-site-address-missing"
+        >
+          <i class="pi pi-map-marker" />
+          <span>
+            <span v-if="job.site_label" class="site-label">{{ job.site_label }}</span>
+            No address on this site — ask dispatch
+          </span>
+        </div>
+        <div
+          v-if="job?.site_access_notes"
+          class="contact-row site-access-notes"
+          data-testid="mjd-site-access-notes"
+        >
+          <i class="pi pi-key" />
+          <span>{{ job.site_access_notes }}</span>
+        </div>
+        <!-- When the jobsite differs from the customer record, keep the
+             customer's own address visible but clearly secondary. -->
+        <div
+          v-if="customerAddressDiffers"
+          class="contact-row contact-row-sub site-customer-address"
+          data-testid="mjd-customer-address-secondary"
+        >
+          <i class="pi pi-home" />
+          <span>Customer address: {{ customer.address }}</span>
+        </div>
         <a
           v-if="customer?.email"
           class="contact-row"
@@ -107,7 +144,7 @@
           </li>
         </ul>
 
-        <div v-if="!customer?.phone && !customer?.address" class="detail-meta detail-meta-muted">
+        <div v-if="!customer?.phone && !displaySiteAddress && !job?.site_address_missing" class="detail-meta detail-meta-muted">
           No contact info on file — you're the one who can fix that.
         </div>
 
@@ -846,6 +883,24 @@ async function withStillQueued(serverRows, currentRows) {
 }
 
 const navigationLink = computed(() => job.value?.navigation_link || null)
+// Effective site to display. Server payloads always carry site_address now,
+// but a payload cached OFFLINE before this field existed has neither
+// site_address nor site_address_missing — degrade to the customer address
+// there (the pre-field behavior) rather than blanking the row in a dead zone.
+const displaySiteAddress = computed(() => {
+  if (job.value?.site_address) return job.value.site_address
+  if (job.value?.site_address_missing) return null
+  return customer.value?.address || null
+})
+// The customer's own address is worth a secondary line ONLY when the job's
+// site is somewhere else — same address twice is noise in a driveway.
+const customerAddressDiffers = computed(() => {
+  const cust = (customer.value?.address || '').trim()
+  if (!cust) return false
+  const site = (job.value?.site_address || '').trim()
+  if (!site) return Boolean(job.value?.site_address_missing)
+  return site !== cust
+})
 
 const canGoEnRoute = computed(() => {
   const s = job.value?.dispatch_status
@@ -1333,6 +1388,15 @@ onMounted(() => {
   color: var(--p-text-muted-color, #9ca3af);
 }
 .contact-row-sub { min-height: 40px; }
+.site-label {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.02em; margin-right: 0.35rem;
+  color: var(--p-primary-color, #2563eb);
+  border: 1px solid currentColor; border-radius: 4px; padding: 0.05rem 0.3rem;
+}
+.site-missing { color: var(--p-orange-500, #f59e0b); font-style: italic; }
+.site-access-notes { color: var(--p-text-color, #374151); }
+.site-customer-address { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 .contact-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
 .contact-actions :deep(.p-button) { min-height: 44px; }
 .contact-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }

@@ -103,10 +103,10 @@
             </div>
             <div
               class="job-address"
-              :class="{ 'job-address-missing': !job.customer_address }"
+              :class="{ 'job-address-missing': !job.display_address }"
             >
               <i class="pi pi-map-marker" />
-              <span>{{ job.customer_address || 'No address — ask dispatch' }}</span>
+              <span>{{ job.display_address || 'No address — ask dispatch' }}</span>
             </div>
             <div class="job-row job-row-bottom">
               <div v-if="job.title" class="job-title">{{ job.title }}</div>
@@ -181,6 +181,12 @@ async function load() {
       ...j,
       customer_name: j.customer_name || j.customer?.name || '',
       customer_address: j.customer_address || j.customer?.address || '',
+      // The JOBSITE (server-resolved, core/job_site.py); customer address
+      // is only the fallback for payloads predating the field. A bound site
+      // WITHOUT an address must show the ask-dispatch empty state, never the
+      // customer HQ (D2 — caught live in the 2026-08-18 browser walk).
+      display_address: j.site_address
+        || (j.site_address_missing ? '' : (j.customer_address || j.customer?.address || '')),
     }))
   } catch (err) {
     error.value = err?.message || 'Could not load jobs'

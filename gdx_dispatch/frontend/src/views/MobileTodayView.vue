@@ -1232,13 +1232,16 @@ function replayTour() {
             <i class="pi pi-users" />
             <span>{{ multiTechLabel(job) }}</span>
           </div>
+          <!-- site_address = the JOBSITE (server-resolved; falls back to the
+               customer address for unbound jobs). navigation_link matches it. -->
           <div
             class="job-address"
-            :class="{ 'job-address-missing': !job.customer?.address }"
+            :class="{ 'job-address-missing': !job.site_address }"
             @click="openMaps(job)"
           >
             <i class="pi pi-map-marker" />
-            {{ job.customer?.address || 'No address — ask dispatch' }}
+            <span v-if="job.site_label" class="job-site-label">{{ job.site_label }}</span>
+            {{ job.site_address || 'No address — ask dispatch' }}
           </div>
           <div class="job-service">
             {{ job.service_type }} · {{ job.title }}
@@ -1470,9 +1473,9 @@ function replayTour() {
                 <div class="area-customer">{{ job.customer?.name || '—' }}</div>
                 <i class="pi pi-chevron-right area-chevron" />
               </div>
-              <div v-if="job.customer?.address" class="area-address">
+              <div v-if="job.site_address" class="area-address">
                 <i class="pi pi-map-marker" />
-                <span>{{ job.customer.address }}</span>
+                <span>{{ job.site_address }}</span>
               </div>
               <div v-if="job.title" class="area-title">{{ job.title }}</div>
             </router-link>
@@ -1791,6 +1794,11 @@ function replayTour() {
   color: var(--p-text-muted-color, #9ca3af);
   cursor: default;
   font-style: italic;
+}
+.job-site-label {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.02em; border: 1px solid currentColor;
+  border-radius: 4px; padding: 0.05rem 0.3rem; flex-shrink: 0;
 }
 .job-address.job-address-missing i {
   color: var(--p-text-muted-color, #9ca3af);

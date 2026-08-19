@@ -151,3 +151,47 @@ const scopeStubs = {
     </div>`,
   },
 };
+
+describe('jobsite address on cards (PR 1, jobsite-address plan)', () => {
+  beforeEach(() => {
+    apiGet.mockReset();
+    hasPermission.mockReturnValue(true);
+  });
+
+  it('prefers site_address over the customer address', async () => {
+    apiGet.mockResolvedValue({ jobs: [{
+      id: 'j1', title: 'Install', customer_name: 'Acme',
+      customer_address: '100 Billing Rd', site_address: '9 Dock St',
+      site_address_missing: false,
+    }] });
+    const wrapper = mount(MobileJobsView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('9 Dock St');
+    expect(wrapper.text()).not.toContain('100 Billing Rd');
+  });
+
+  it('bound site with NO address shows ask-dispatch, never the customer HQ (D2)', async () => {
+    // Caught live in the 2026-08-18 throwaway walk: the mapping fell back to
+    // customer_address when site_address was empty, showing the HQ for a
+    // label-only site. site_address_missing must block that fallback.
+    apiGet.mockResolvedValue({ jobs: [{
+      id: 'j2', title: 'Install', customer_name: 'Acme',
+      customer_address: '100 Billing Rd', site_address: '',
+      site_address_missing: true,
+    }] });
+    const wrapper = mount(MobileJobsView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('No address — ask dispatch');
+    expect(wrapper.text()).not.toContain('100 Billing Rd');
+  });
+
+  it('payloads predating the field still show the customer address', async () => {
+    apiGet.mockResolvedValue({ jobs: [{
+      id: 'j3', title: 'Install', customer_name: 'Acme',
+      customer_address: '100 Billing Rd',
+    }] });
+    const wrapper = mount(MobileJobsView, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('100 Billing Rd');
+  });
+});

@@ -25,6 +25,12 @@ from starlette.responses import JSONResponse
 from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job
+from gdx_dispatch.core.job_site import (
+    JobSite,
+    normalize_address,
+    resolve_job_site,
+    resolve_job_sites,
+)
 from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
@@ -279,7 +285,7 @@ def _get_job(db: Session, tenant_id: str, job_id: str) -> dict[str, Any] | None:
     row = db.execute(
         _text(
             """
-            SELECT id, customer_id, title, description, dispatch_status,
+            SELECT id, customer_id, location_id, title, description, dispatch_status,
                    scheduled_at, arrived_at, completed_at, signature_data,
                    signed_by, signed_at, created_at
             FROM jobs
@@ -946,14 +952,22 @@ def _job_card(
     customer: Customer | None,
     appointment: Appointment | None,
     tags: list[dict[str, str]],
+    site: JobSite | None = None,
 ) -> dict[str, Any]:
     """Assemble one today's-route card from ORM rows.
 
     ORM-routed so customer fields land via the SQLAlchemy mapper and any
     future column-level processors (validators, TypeDecorators) fire
-    consistently. Raw-SQL paths in /schedule and /my-jobs skip the mapper;
-    cosmetic today (post-S122-1c name/phone/address are plain Text) but
-    revisit if encryption-at-rest returns to those columns.
+    consistently — Customer.address IS EncryptedString again (S122-9
+    slice 3), so the mapper is load-bearing here, not cosmetic. Raw-SQL
+    paths in /jobs and /my-jobs skip the mapper and wrap with
+    decrypt_if_ciphertext instead.
+
+    ``site`` is the effective-jobsite resolution (core/job_site.py) — the
+    caller batch-resolves per page. The card's address text, the
+    navigation_link, and the drive-time inputs must all come from IT, not
+    from customer.address: a multi-location customer's job card that
+    navigates to the HQ is the exact field error this exists to prevent.
     """
     customer_payload: dict[str, Any] = {
         "id": str(customer.id) if customer is not None else None,
@@ -984,7 +998,29 @@ def _job_card(
             location = {"lat": float(appointment.lat), "lng": float(appointment.lng)}
         except (TypeError, ValueError):
             location = None
+    # Map-pin provenance (both 2026-08-18 audits): for a BOUND site the pin
+    # must point at the site. In order of trust:
+    #   1. the location row's own stored lat/lng — re-pin from ground truth;
+    #   2. the appointment's pin, kept only when the appointment's OWN
+    #      address (what dispatch geocoded from) matches the site address;
+    #   3. otherwise suppress — a missing pin drops the stop from the map
+    #      view, a wrong pin drives the tech to the wrong building.
+    # Unbound jobs keep today's behavior untouched.
+    if site is not None and site.source == "location":
+        if site.lat is not None and site.lng is not None:
+            location = {"lat": site.lat, "lng": site.lng}
+        elif location is not None:
+            # Non-empty AND equal: blank==blank must not vacuously pass
+            # (a bound site with no address + an address-less appointment
+            # pin would re-leak D2 through the map channel — verify-pass
+            # audit 2026-08-18 concern 1).
+            appt_addr = normalize_address(getattr(appointment, "address", None))
+            if not appt_addr or appt_addr != normalize_address(site.address):
+                location = None
 
+    effective_address = site.address if site is not None else (
+        customer.address if customer is not None else None
+    )
     return {
         "id": str(job.id),
         "appointment_id": str(appointment.id) if appointment is not None else None,
@@ -1000,9 +1036,12 @@ def _job_card(
         "time_window": time_window,
         "customer": customer_payload,
         "alerts": alerts,
-        "navigation_link": _build_navigation_link(
-            customer.address if customer is not None else None
-        ),
+        # Effective jobsite (core/job_site.py) — additive; customer.address
+        # stays in the nested customer for anything still reading it.
+        "site_label": site.label if site is not None else None,
+        "site_address": effective_address,
+        "site_address_missing": bool(site.address_missing) if site is not None else False,
+        "navigation_link": _build_navigation_link(effective_address),
         "location": location,
     }
 
@@ -1225,6 +1264,14 @@ async def get_mobile_today(
     # 3) Tags per customer (alerts feed).
     tag_map = _customer_tags_map(db, tenant_id, customer_ids)
 
+    # 3b) Effective jobsites — ONE batch for the whole page (route cards +
+    #     area cards). Per-card resolution would be the N+1 this helper's
+    #     batch API exists to prevent.
+    all_page_jobs = list(jobs_by_id.values()) + area_jobs
+    sites = resolve_job_sites(
+        db, [(j.id, j.location_id, j.customer_id) for j in all_page_jobs]
+    )
+
     # 4) Assemble cards: appointment stops first (route order), then
     #    scheduled-but-appointmentless jobs by scheduled time.
     cards: list[dict[str, Any]] = []
@@ -1234,17 +1281,17 @@ async def get_mobile_today(
             continue
         customer = customers_by_id.get(job.customer_id) if job.customer_id else None
         tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
-        cards.append(_job_card(job, customer, a, tags))
+        cards.append(_job_card(job, customer, a, tags, site=sites.get(str(job.id))))
     for job in scheduled_jobs:
         customer = customers_by_id.get(job.customer_id) if job.customer_id else None
         tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
-        cards.append(_job_card(job, customer, None, tags))
+        cards.append(_job_card(job, customer, None, tags, site=sites.get(str(job.id))))
 
     area_cards: list[dict[str, Any]] = []
     for job in area_jobs:
         customer = customers_by_id.get(job.customer_id) if job.customer_id else None
         tags = tag_map.get(str(job.customer_id), []) if job.customer_id else []
-        area_cards.append(_job_card(job, customer, None, tags))
+        area_cards.append(_job_card(job, customer, None, tags, site=sites.get(str(job.id))))
 
     # Phase 1.4 D1+D2 — multi-tech card decoration. For every card,
     # surface the full assignment list with per-tech state stamps so the
@@ -1314,7 +1361,11 @@ async def get_mobile_today(
     provider = get_tenant_mobile_setting(
         db, "tech_mobile.drive_time_provider", request=request
     )
-    addresses = [(c.get("customer") or {}).get("address") or "" for c in cards]
+    # Effective SITE addresses, not customer HQ — otherwise the card text
+    # says jobsite while the drive-time math routes to the billing address
+    # (pre-code audit 2026-08-18 §3). site_address already carries the
+    # customer fallback for unbound jobs.
+    addresses = [c.get("site_address") or "" for c in cards]
     legs = await compute_drive_times(tenant_id, addresses, provider=provider)
     # legs[i] is the time FROM addresses[i-1] TO addresses[i]; we want
     # each card to know its drive-time to the NEXT stop, so shift by one
@@ -1572,6 +1623,7 @@ def mobile_all_my_jobs(
             f"""
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
                    j.priority, j.job_type, j.created_at,
+                   j.location_id, j.customer_id,
                    c.name AS customer_name,
                    COALESCE(c.address, '') AS customer_address,
                    t.name AS assigned_tech_name
@@ -1588,12 +1640,19 @@ def mobile_all_my_jobs(
         params,
     ).mappings().all()
 
+    # Effective jobsites — one batch for the page. The card text and any
+    # future tap-to-navigate must show where the WORK is, not the HQ.
+    sites = resolve_job_sites(
+        db, [(r["id"], r.get("location_id"), r.get("customer_id")) for r in rows]
+    )
+
     jobs = []
     for r in rows:
         scheduled = r.get("scheduled_at")
         scheduled_iso = scheduled.isoformat() if isinstance(scheduled, datetime) else (
             _parse_datetime(str(scheduled)).isoformat() if scheduled else None
         )
+        site = sites.get(str(r["id"]))
         jobs.append({
             "id": str(r["id"]),
             "title": r.get("title") or "Service",
@@ -1604,6 +1663,9 @@ def mobile_all_my_jobs(
             # Raw-SQL read bypasses the EncryptedString mapper — decrypt here
             # (the 2026-07-16 Jobs-tab "gAAAA… where the address should be" bug).
             "customer_address": decrypt_if_ciphertext(r.get("customer_address")) or "",
+            "site_label": site.label if site else None,
+            "site_address": (site.address if site else None) or "",
+            "site_address_missing": bool(site.address_missing) if site else False,
             "scheduled_at": scheduled_iso,
             # Lead tech (jobs.assigned_to) — lets the company-wide list show
             # whose job it is. NULL for unassigned; crews show the lead only.
@@ -1640,7 +1702,7 @@ def mobile_my_jobs(
     rows = db.execute(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             """
-            SELECT j.id, j.status, j.priority,
+            SELECT j.id, j.status, j.priority, j.location_id, j.customer_id,
                    c.name AS customer_name, COALESCE(c.address, '') AS address,
                    a.start_at
             FROM appointments a
@@ -1662,6 +1724,10 @@ def mobile_my_jobs(
         },
     ).mappings().all()
 
+    _sites = resolve_job_sites(
+        db, [(r["id"], r.get("location_id"), r.get("customer_id")) for r in rows]
+    )
+
     jobs_list: list[dict[str, Any]] = []
     for row in rows:
         scheduled = row.get("start_at")
@@ -1670,12 +1736,15 @@ def mobile_my_jobs(
         else:
             parsed = _parse_datetime(str(scheduled) if scheduled is not None else None)
             scheduled_time = parsed.isoformat() if parsed else None
+        _site = _sites.get(str(row.get("id")))
         jobs_list.append(
             {
                 "id": row.get("id"),
                 "customer_name": row.get("customer_name"),
                 # Raw-SQL read bypasses the EncryptedString mapper — decrypt here.
                 "address": decrypt_if_ciphertext(row.get("address")),
+                "site_address": _site.address if _site else None,
+                "site_label": _site.label if _site else None,
                 "scheduled_time": scheduled_time,
                 "status": row.get("status"),
                 "priority": row.get("priority"),
@@ -1735,6 +1804,13 @@ def mobile_my_job_detail(
                     "email": c_obj.email,
                     "address": c_obj.address,
                 }
+
+    # Effective jobsite — same additive fields as /job/{id} so any consumer
+    # of this legacy detail shape gets the real site, not the HQ.
+    _site = resolve_job_site(db, job.get("id"), job.get("location_id"), job.get("customer_id"))
+    job["site_label"] = _site.label
+    job["site_address"] = _site.address
+    job["site_address_missing"] = _site.address_missing
 
     checklists_data: list[dict[str, Any]] = []
     checklist_rows = db.execute(
@@ -2164,11 +2240,20 @@ def get_mobile_job_detail(
     # copies of one customer in one payload is a divergence trap, and there is
     # exactly one consumer of this endpoint to keep in step.
     job["customer"] = customer
+    # Effective jobsite (core/job_site.py): bound location → primary/first
+    # location → customer.address. THE address surface for the tech — the
+    # detail screen is what they navigate from. _get_job selects location_id
+    # (pre-code audit 2026-08-18 §5: without it every bound job silently
+    # resolved to the customer fallback).
+    site = resolve_job_site(db, job.get("id"), job.get("location_id"), job.get("customer_id"))
+    job["site_label"] = site.label
+    job["site_address"] = site.address
+    job["site_address_missing"] = site.address_missing
+    job["site_access_notes"] = site.access_notes
+    job["site_source"] = site.source
     # Built server-side so both surfaces navigate identically — the client used
     # to hand-build a different Google Maps URL format from the sibling address.
-    job["navigation_link"] = _build_navigation_link(
-        customer.get("address") if customer else None
-    )
+    job["navigation_link"] = _build_navigation_link(site.address)
     # Derived, never cached. `Job.billing_status` looks like the answer and is a
     # dead column — nothing has ever written anything but "unbilled", so every
     # reader that trusted it counted paid jobs as unbilled
