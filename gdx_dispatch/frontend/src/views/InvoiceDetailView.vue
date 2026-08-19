@@ -2,6 +2,53 @@
     <section class="invoice-detail view-card">
       <div v-if="loading" class="loading-spinner"><p>Loading invoice...</p></div>
       <template v-else>
+        <!-- Parts the tech recorded that this invoice does not bill
+             (2026-08-19). The §8 policy decided in 2026-07 was: build from
+             everything priced, leave the rest on the checklist, and MARK THE
+             INVOICE. Only the mobile lane got the mark, so the office
+             verified labor-only drafts with nothing saying two attested
+             parts had been dropped. Advisory -- Edit is one click away, and
+             plenty of parts legitimately go unbilled (warranty, goodwill,
+             covered by a flat price). -->
+        <div
+          v-if="unbilledPartsError === 'forbidden'"
+          class="unbilled-parts-banner"
+          data-testid="unbilled-parts-forbidden"
+        >
+          <div>
+            <strong>Can't check this job's recorded parts.</strong>
+            <span class="unbilled-parts-list">
+              Your role can't read inventory, so this invoice may be missing
+              parts the tech recorded. Ask someone with inventory access
+              before verifying.
+            </span>
+          </div>
+        </div>
+        <div
+          v-else-if="unbilledJobParts.length"
+          class="unbilled-parts-banner"
+          data-testid="unbilled-parts-banner"
+        >
+          <div>
+            <strong>
+              {{ unbilledJobParts.length }}
+              recorded part{{ unbilledJobParts.length === 1 ? '' : 's' }}
+              from this job {{ unbilledJobParts.length === 1 ? 'is' : 'are' }}
+              not on this invoice.
+            </strong>
+            <span class="unbilled-parts-list">
+              {{ unbilledJobParts.map((p) => p.part_name).filter(Boolean).join(', ') }}
+            </span>
+          </div>
+          <Button
+            label="Edit to add them"
+            size="small"
+            outlined
+            data-testid="unbilled-parts-edit"
+            @click="enterEditMode"
+          />
+        </div>
+
         <!-- Header -->
         <header class="detail-header">
           <div>
@@ -994,6 +1041,14 @@ const tenantDefaultRatePct = computed(() => taxRate.value * 100);
 
 const verifying = ref(false);
 async function verifyInvoice() {
+  // Deliberately NOT gated behind a confirm dialog. The §11 gate asks "has a
+  // human signed off on these numbers" and never "is anything missing",
+  // which is what let a labor-only draft sail through -- but
+  // useDestructiveConfirm auto-accepts silently (issue #215), so a confirm
+  // here would LOOK like a second gate while stopping nothing. A control
+  // that no-ops is the defect class this whole stack exists to remove. The
+  // banner above the fold is the real surfacing, and it renders before the
+  // Verify button is ever reached. Revisit once #215 is fixed.
   verifying.value = true;
   try {
     const r = await api.post(`/api/invoices/${route.params.id}/verify`, {});
@@ -1318,12 +1373,62 @@ async function onCustomerSaved() {
   await fetchInvoice();
 }
 
+// Parts the tech recorded on this job that are NOT on this invoice
+// (2026-08-19). job-closeout-billing-visibility-plan §8 decided this in
+// 2026-07: build the invoice from everything priced, leave the rest on the
+// checklist, and MARK THE INVOICE so the office knows. Only the mobile lane
+// ever got that mark; the desktop lane surfaced nothing, so
+// require_deliverable asked "did a human sign off" and never "is anything
+// missing" -- the rubber-stamp failure that plan predicted at its line 913.
+//
+// Draft-only and job-only: a sent invoice is history, and a counter sale has
+// no job whose parts could be missing. Best-effort -- a failed read must
+// never block the page.
+const unbilledJobParts = ref([]);
+// 403 is NOT "nothing missing". The accounting role carries invoices.write
+// and billing.read but NOT inventory.read, so the very user who verifies
+// drafts gets a permission error here -- and a silent empty banner reads to
+// them as an all-clear on a money screen. LineItemEditor learned this once
+// already (D-S122-parts-panel-silent-hide); the URL was copied from it, the
+// lesson was not.
+const unbilledPartsError = ref(null); // null | 'forbidden'
+async function fetchUnbilledJobParts() {
+  unbilledJobParts.value = [];
+  unbilledPartsError.value = null;
+  const jobId = invoice.value?.job_id;
+  const isDraft = String(invoice.value?.status || "").toLowerCase() === "draft";
+  if (!jobId || !isDraft) return;
+  try {
+    const r = await api.get(
+      `/api/jobs/${encodeURIComponent(jobId)}/parts-needed?status=ordered,received,used&unbilled=true`,
+      { suppressErrorToast: true },
+    );
+    const rows = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
+    // "Unbilled" is job-wide; this banner claims something narrower — not on
+    // THIS invoice. A line already billing the part (part_id linkage) must
+    // not be reported as missing, or the office follows the button, adds a
+    // second line for a part already charged, and the new claim silences the
+    // banner: a false alarm laundering itself into a double charge.
+    const linedPartIds = new Set(
+      (invoice.value?.line_items || [])
+        .map((l) => l.part_id)
+        .filter(Boolean)
+        .map(String),
+    );
+    unbilledJobParts.value = rows.filter((p) => !linedPartIds.has(String(p.id)));
+  } catch (e) {
+    unbilledJobParts.value = [];
+    if (e?.status === 403) unbilledPartsError.value = "forbidden";
+  }
+}
+
 async function fetchInvoice() {
   loading.value = true;
   try {
     const result = await api.get(`/api/invoices/${route.params.id}`);
     normalizeInvoice(result?.data || result || {});
     fetchJobPhotos(); // fire-and-forget — the picker card fills in when it lands
+    fetchUnbilledJobParts(); // fire-and-forget — banner fills in when it lands
   } catch {
     toast.add({ severity: "warn", summary: "Offline", detail: "Using placeholder data", life: 3000 });
     normalizeInvoice({
@@ -1661,6 +1766,7 @@ function enterEditMode() {
     // D-S122b-detail-view-columns — snapshot the new fields too.
     category: ln.category || null,
     includes_labor: Boolean(ln.includes_labor),
+    part_id: ln.part_id || null,
     cost: ln.cost_snapshot != null ? toNum(ln.cost_snapshot) : null,
     // Form shows percent (e.g. 35); backend stores decimal (0.35). Round-
     // trip via *100 on entry and /100 on save.
@@ -1763,6 +1869,11 @@ async function saveEdit() {
           taxable: Boolean(ln.taxable),
         };
         if (category) body.category = category;
+        // Carry the part linkage so the backend can claim the part as billed.
+        // Without it the office adds a recorded part to the invoice, the money
+        // is charged, and every unbilled-parts surface keeps reporting it as
+        // missing -- a warning that doing the right thing cannot clear.
+        if (ln.part_id) body.part_id = ln.part_id;
         if (ln.includes_labor) body.includes_labor = true;
         if (cost != null) body.cost = cost;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
@@ -2220,4 +2331,23 @@ onMounted(() => {
 .bill-to-row a { color: var(--p-primary-color, #3b82f6); text-decoration: none; }
 .bill-to-row a:hover { text-decoration: underline; }
 .bill-to-row .add-link { font-style: italic; }
+/* Theme tokens only — this sits above the fold on a money screen and has to
+   stay readable in dark mode. Walked in a real browser in both themes. */
+.unbilled-parts-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+}
+.unbilled-parts-list {
+  display: block;
+  color: var(--p-text-muted-color, #6b7280);
+  font-size: 0.9rem;
+}
 </style>

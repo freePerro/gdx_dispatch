@@ -1,8 +1,18 @@
 # Job parts and labor → invoice: making the office's numbers survive to billing
 
-**Status:** PLAN — nothing built. Investigated 2026-08-18 against prod v1.68.2
-(read-only queries) and `main` at `ec2e14a`. Design corrected three times by
-Doug on 2026-08-18; see § The model.
+**Status:** MERGED #360, #362, #363 — the pricing path is built and on main.
+Banner PR open. **Not built:** provenance on a stored price (no source column,
+no audit event — "who priced this and why" is unanswerable, invariant #1 on
+money code); a server-side unbilled-parts gate on `verify_invoice`, which is
+the only surfacing that binds the mobile lane, the API, and the accounting
+role that cannot read inventory; `release_untouched_autodraft` still deletes
+office-added lines on a re-closeout; and `void_invoice` never releases part
+claims. Each is filed in § Follow-ups, not silently dropped.
+
+Investigated 2026-08-18 against prod v1.68.2 (read-only queries). Design
+corrected three times by Doug on 2026-08-18; see § The model. Five adversarial
+reviews ran across the build and every one found a real defect — the audit
+trail is in § Adversarial audit.
 **Trigger:** an opener-install job closed out 2026-08-18 with two attested
 parts; the auto-drafted invoice carried labor only. The office had already put
 both parts on the job, priced, six hours earlier.
@@ -327,3 +337,48 @@ re-closeout; the office can add its two lines by hand today.
 | `invoicing-gap-fixes-2026-08-08.md` | shipped v1.46.0 | Adjacent — the draft→verify→send rails PR 3 hooks into. No conflict. |
 
 No plan in the corpus reaches a decision opposite to this one.
+
+## Follow-ups — filed, not dropped
+
+Each of these was found during the build and deliberately left out of it.
+
+1. **A stored price carries no provenance.** Office number, bench inventory,
+   catalog price, and tier-engine markup all land in the same
+   `Numeric(10,2)` with no source column and no audit event. "Who priced this
+   part and why" cannot be answered from the records — invariant #1, on money
+   code. The fix is a `price_source` column written at capture plus an audit
+   event, and it is the largest remaining gap in this work.
+
+2. **The durable unbilled-parts gate belongs on the server.** The banner is
+   client-side, so it cannot help the accounting role (no `inventory.read`,
+   gets a 403), the mobile lane, or any API caller. A 409 from
+   `verify_invoice` listing unbilled parts unless explicitly acknowledged
+   binds every caller. Raised by the round-5 audit; correct, and not built.
+
+3. **`release_untouched_autodraft` deletes office-added lines.** A re-closeout
+   wipes every line on an untouched draft, including parts the office added by
+   hand — exactly what the new banner tells them to do. Needs a marker
+   distinguishing machine lines from human ones before the rebuild can be
+   selective.
+
+4. **`void_invoice` never releases part claims.** A part claimed onto an
+   invoice that is later voided is billed to nothing: it disappears from the
+   checklist, the banner, and the consumed-but-not-billed report.
+   `delete_invoice` already does this correctly; void does not.
+
+5. **Estimate→job copy strips prices into free-text notes**
+   (`routers/estimates.py:2117`) — writes `"$X ea"` into `notes` and leaves
+   `unit_price` NULL. No prod row shows it today, so the path is cold, but it
+   is the same defect class and will bite when estimate-converted jobs bill.
+
+6. **`from_part_ids` can retire a part at $0** — `POST /api/invoices` stamps
+   `billed_invoice_id` without requiring a matching line. The Vue client
+   always pairs them, so it is a contract hole rather than a live bug.
+
+7. **Office estimate-derived invoices drop the estimate discount** —
+   `InvoiceCreateView` never sends `estimate_id`, so the server's discount
+   materialization is dead on that path.
+
+8. **61 rows stuck in `needed`.** Status is created and never advanced;
+   whether the workflow still needs `ordered`/`received` at all is a separate
+   product question.
