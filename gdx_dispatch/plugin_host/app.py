@@ -45,7 +45,7 @@ import threading
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
-from gdx_dispatch.plugin_api.discovery import discover_plugins
+from gdx_dispatch.plugin_api.discovery import discover_with_dists
 from gdx_dispatch.plugin_api.events import PluginEvent, event_matches
 
 log = logging.getLogger(__name__)
@@ -56,18 +56,28 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 INTERNAL_TOKEN_HEADER = "x-gdx-internal-token"
 
 
-def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
+def create_plugin_host(plugins=None, degraded=None, stale=None, dists=None) -> FastAPI:
     """Build the plugin-host app. `plugins` is injectable for tests; in
     production it defaults to live entry-point discovery.
 
     `degraded` — desired specs that failed to install this boot (from reconcile).
     `stale`    — {plugin_key: {installed, desired}} for plugins loaded at the
                  wrong version; these are WITHHELD (fail closed), not served.
-    Either being non-empty makes /ready report 503."""
+    `dists`    — {plugin_key: (distribution_name, version)} for the catalog.
+                 The pairing exists inside discovery but was never published,
+                 so nothing outside this process could say WHICH version of a
+                 plugin was actually running, or map a plugin key to the
+                 package that provides it. Defaults to live discovery.
+    Either `degraded` or `stale` being non-empty makes /ready report 503."""
     if plugins is None:
-        plugins = discover_plugins()
+        from gdx_dispatch.plugin_host.reconcile import running_dists
+
+        discovered = discover_with_dists()
+        plugins = [m for m, _n, _v in discovered]
+        dists = dists or running_dists(discovered)
     degraded = list(degraded or [])
     stale = dict(stale or {})
+    dists = dict(dists or {})
     # Only NON-stale plugins are served; a stale plugin is withheld so it can't
     # emit possibly-wrong data (pricing!) under an authoritative 200.
     catalog = {p.key: p for p in plugins if p.key not in stale}
@@ -116,6 +126,15 @@ def create_plugin_host(plugins=None, degraded=None, stale=None) -> FastAPI:
         # unavailable rather than offering a possibly-stale plugin.
         return [
             {"key": p.key, "name": p.name, "tier": p.tier, "ui": p.ui,
+             # The version whose code is actually loaded in THIS process, and
+             # the package that provides it. Without these, "which version is
+             # running?" had no answer outside plugin-host, and a plugin key
+             # (manifest-defined, e.g. "n8n") could not be matched to the
+             # distribution the install tables key on (e.g. "gdx-plugin-n8n").
+             # Anything claiming a running version from install metadata instead
+             # would be repeating the stale-code lie, not reporting a fact.
+             "version": (dists.get(p.key) or (None, None))[1],
+             "distribution": (dists.get(p.key) or (None, None))[0],
              "permissions": list(getattr(p, "permissions", ())),
              # ADR-015 Catalog Pack contributions — DATA the core catalog reads.
              "catalog_types": list(getattr(p, "catalog_types", ())),

@@ -89,6 +89,16 @@
         <template #empty>No plugins loaded by plugin-host.</template>
         <Column field="key" header="Key" />
         <Column field="name" header="Name" />
+        <!-- The version actually loaded in the plugin-host process. Deliberately
+             NOT the version the install tables say should be there: those can
+             disagree, and this column is the one that reports what is really
+             running. -->
+        <Column header="Version">
+          <template #body="{ data }">
+            <span v-if="data.version">{{ data.version }}</span>
+            <span v-else class="muted" title="This plugin was not installed from a package">unknown</span>
+          </template>
+        </Column>
         <Column field="tier" header="Tier" />
         <Column header="Permissions">
           <template #body="{ data }">
@@ -323,4 +333,7 @@ onMounted(load);
 .form-label { display: block; margin-bottom: 0.25rem; font-weight: 600; }
 .section-title { margin: 1.5rem 0 0.5rem; }
 .restart-note { margin-bottom: 0.5rem; }
+/* PrimeVue v4 token, not the v3 `--text-color-secondary` (undefined here, so
+   the text would render un-muted). Guarded by no_legacy_css_tokens.spec.js. */
+.muted { color: var(--p-text-muted-color); }
 </style>
