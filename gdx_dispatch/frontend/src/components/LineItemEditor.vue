@@ -682,7 +682,10 @@ async function addSelectedParts() {
     let unitPrice = Number(p.unit_price) > 0 ? Number(p.unit_price) : 0;
     if (!unitPrice && p.sku) {
       try {
-        const url = `/api/parts-needed/sku-suggest?q=${encodeURIComponent(p.sku)}&limit=4`;
+        // job_id resolves the customer's pricing class server-side, so a
+        // contractor or wholesale customer isn't quoted a retail margin.
+        const jobQ = props.jobId ? `&job_id=${encodeURIComponent(props.jobId)}` : '';
+        const url = `/api/parts-needed/sku-suggest?q=${encodeURIComponent(p.sku)}&limit=4${jobQ}`;
         const sug = await api.get(url, { suppressErrorToast: true });
         const matches = Array.isArray(sug) ? sug : Array.isArray(sug?.data) ? sug.data : [];
         const hit = matches.find((m) => (m.sku || '').toLowerCase() === p.sku.toLowerCase());
