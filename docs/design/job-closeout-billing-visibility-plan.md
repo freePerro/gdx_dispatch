@@ -1,5 +1,16 @@
 # Closeout → billing visibility: plan
 
+**Status:** PARTIALLY BUILT — shipped v1.32.0+ (status line added 2026-08-18;
+this doc had none, and the corpus audit `design-doc-corpus-audit-2026-08-18.md`
+marked it STALE). **Not built:** the §8 unpriced-item policy at line 469 is
+half-shipped — the priced-only draft exists, but "mark the invoice needs
+pricing and block send until resolved" was built on the mobile lane only
+(`routers/mobile_invoicing.py:838-846`). The office lane surfaces nothing, so
+`require_deliverable` verifies a draft with attested parts missing and no
+indication — the rubber-stamp failure §10 predicted at line 913. Fix planned in
+`closeout-parts-autopricing-plan.md` PR 3, which builds this doc's decision
+rather than making a new one.
+
 **Filed** 2026-07-29. **Trigger:** a tech finished JOB-2026-006 and neither he nor
 the office could see the hours or anything else about the work in a form usable
 for billing. Follow-on reports in the same conversation: "sometimes we do

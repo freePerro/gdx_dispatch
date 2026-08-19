@@ -1,6 +1,21 @@
-# Billing Capture Hardening — Implementation Plan (DRAFT, awaiting Doug approval)
+# Billing Capture Hardening — Implementation Plan
 
-**Date:** 2026-07-07 · **Status:** v3 — audit round 1 folded in, all 5 open decisions resolved with Doug (see § Decisions). Awaiting final go-ahead to implement.
+**Status:** RELEASED v1.10.0 — all six PRs merged (#110–#114; PR 4 is `1584f2d`,
+merged as #112). Header corrected 2026-08-18: this doc read "DRAFT, awaiting
+Doug approval" for six weeks after it shipped, and the corpus audit
+(`design-doc-corpus-audit-2026-08-18.md`) flagged it WRONG — a reader would
+have rebuilt shipped work. The planning content below is preserved as written.
+
+**Known gap in PR 4 as built:** step 2 specifies `unit_price` from the
+**catalog sell price**, but the shipped code resolves only inventory
+`Part.unit_price` via `part_id` — and catalog-picked parts are structurally
+guaranteed to have no `part_id` (FK to `parts.id`), so the pricing path is
+unreachable for exactly those rows. Traced on prod 2026-08-18; fix planned in
+`closeout-parts-autopricing-plan.md`, which completes this line rather than
+revising it. The AUDIT-R1 no-fuzzy-matching ruling below still stands and is
+honored there.
+
+**Date:** 2026-07-07 · **Plan revision:** v3 — audit round 1 folded in, all 5 open decisions resolved with Doug (see § Decisions).
 **Audit round 1 [AUDIT-R1]:** adversarial reviewer verified plan claims against code. Confirmed PR 1 wholesale. Four substantive corrections folded in: (a) canonical "billed" predicate — $0-draft invoices must not count as billed, RFB endpoints must align (they don't exclude void today); (b) forecasting + next_action `billing_status` clauses are dead tautologies — fix is deletion (zero behavior change), not a semantic swap; the deposit-subtraction forecasting improvement is a separate /audit-gated follow-up; (c) PR 3 stamp must GATE the line copy (UPDATE…RETURNING) or COs double-bill — same latent flaw retrofitted for the S122 parts path; CO tax semantics made an explicit Doug decision; (d) PR 4 fuzzy upsert-match replaced with per-event rows + `source` column + operator-reviewed checklist (undercount generator eliminated); PR 6 idempotency keyed on stored `threshold_days`, and recurring billing uses an extracted `create_invoice_core` (router handler isn't Celery-callable).
 **Trigger:** Doug: "make sure every part gets captured, every job has a good workflow, and we get billing done."
 **Basis:** three-agent code audit 2026-07-07 (job lifecycle / parts capture / billing-AR). Full leak map in session + memory `cashflow-leak-audit-2026-07-07`.

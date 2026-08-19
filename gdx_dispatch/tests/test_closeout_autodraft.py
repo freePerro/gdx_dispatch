@@ -524,3 +524,103 @@ def test_not_billable_still_409s_on_finalized_invoice(db) -> None:
     assert resp.status_code == 409
     db.refresh(job)
     assert job.not_billable_at is None
+
+
+# ---------------------------------------------------------------------------
+# 7. A dismissed part never bills, and the builder's lines are releasable.
+#
+# Added 2026-08-19. The candidate query had no status filter at all, so a part
+# the office dismissed as warranty/goodwill was still billable. Part identity
+# (one physical part -> one line) is a separate, durable change and lands in
+# its own PR -- a filter computed over unbilled rows cannot hold that
+# invariant, because it evaporates the moment the winning row is stamped.
+# ---------------------------------------------------------------------------
+def _seed_capture_row(db, job, *, sku, name, source, price, status="used", qty=1):
+    """A billable capture row as mobile/van/closeout capture writes them."""
+    row = JobPartNeeded(
+        id=str(uuid4()),
+        company_id=TENANT,
+        job_id=str(job.id),
+        part_name=name,
+        sku=sku,
+        quantity=qty,
+        status=status,
+        source=source,
+        unit_price=Decimal(str(price)) if price is not None else None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_wont_bill_part_never_reaches_the_autodraft(db) -> None:
+    """The office's dismiss verb outranks the tech's attestation.
+
+    A priced mobile row the office marked wont_bill (warranty / goodwill)
+    must not be billed when the tech later closes the job out.
+    """
+    job = _seed_job(db)
+    _seed_capture_row(
+        db, job, sku="SPRING-9", name="Torsion spring",
+        source="mobile", price=120.00, status="wont_bill",
+    )
+
+    _closeout(db, job, hours=2.0, no_parts_used=True)
+
+    invs = _invoices(db, job)
+    assert len(invs) == 1
+    descriptions = [line.description for line in _lines(db, invs[0])]
+    assert not any("Torsion spring" in d for d in descriptions), (
+        f"a wont_bill part was billed: {descriptions}"
+    )
+
+
+def test_two_distinct_parts_both_still_bill(db) -> None:
+    """Regression guard on the collapse: different parts must not merge."""
+    job = _seed_job(db)
+    _seed_capture_row(db, job, sku="SPRING-9", name="Torsion spring",
+                      source="mobile", price=120.00)
+    _seed_capture_row(db, job, sku="ROLLER-2", name="Nylon roller",
+                      source="mobile", price=18.00)
+
+    _closeout(db, job, hours=1.0, no_parts_used=True)
+
+    lines = _lines(db, _invoices(db, job)[0])
+    assert sum("Torsion spring" in (line.description or "") for line in lines) == 1
+    assert sum("Nylon roller" in (line.description or "") for line in lines) == 1
+
+
+def test_mobile_part_with_no_closeout_twin_still_bills(db) -> None:
+    """Regression guard on the 2026-08-13 widening.
+
+    A part logged mid-job and NOT re-listed at closeout is still real work.
+    The collapse must only suppress rows an attested closeout row covers.
+    """
+    job = _seed_job(db)
+    _seed_capture_row(db, job, sku="CABLE-4", name="Lift cable",
+                      source="mobile", price=64.00)
+
+    _closeout(db, job, hours=1.0, no_parts_used=True)
+
+    lines = _lines(db, _invoices(db, job)[0])
+    assert sum("Lift cable" in (line.description or "") for line in lines) == 1
+
+
+def test_autodraft_part_line_carries_part_id(db) -> None:
+    """The autodraft's lines must be releasable.
+
+    The office pull has always stamped part_id so deleting a line releases
+    the part; the autodraft did not, so its claims could not be given back.
+    """
+    job = _seed_job(db)
+    row = _seed_capture_row(db, job, sku="HINGE-3", name="No 3 hinge",
+                            source="mobile", price=12.00)
+
+    _closeout(db, job, hours=1.0, no_parts_used=True)
+
+    lines = _lines(db, _invoices(db, job)[0])
+    hinge = [line for line in lines if "hinge" in (line.description or "").lower()]
+    assert len(hinge) == 1
+    assert hinge[0].part_id == row.id
