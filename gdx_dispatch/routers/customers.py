@@ -145,7 +145,12 @@ class CustomerLocationOut(BaseModel):
     id: str
     customer_id: str
     label: str | None = None
-    address: str
+    # Nullable to match the column: label-only rows are legal (a site whose
+    # address isn't known yet). `address: str` made ONE such row 400 the
+    # whole list endpoint for that customer — the desktop/mobile site
+    # pickers rendered empty exactly for the customers that have sites
+    # (found live in the PR 2 browser walk, 2026-08-18).
+    address: str | None = None
     access_notes: str | None = None
     is_primary: bool
     created_at: str | None = None
@@ -711,11 +716,11 @@ async def create_customer_location(
                 text(
                     """
                     UPDATE customer_locations
-                    SET is_primary = 0
+                    SET is_primary = :off
                     WHERE customer_id = :customer_id AND deleted_at IS NULL
                     """
                 ),
-                {"customer_id": customer_id},
+                {"customer_id": customer_id, "off": False},
             )
 
         db.execute(
@@ -734,7 +739,10 @@ async def create_customer_location(
                 "label": payload.label or "Service Address",
                 "address": payload.address,
                 "access_notes": payload.access_notes,
-                "is_primary": 1 if payload.is_primary else 0,
+                # Python bool, NOT int: psycopg2 adapts bool->boolean; the old
+                # int literal 500'd every location create on prod Postgres
+                # (DatatypeMismatch; found live in the PR 2 walk 2026-08-18).
+                "is_primary": bool(payload.is_primary),
                 "created_at": now,
             },
         )
@@ -822,10 +830,10 @@ async def update_customer_location(
         if data.get("is_primary") is True:
             db.execute(
                 text(
-                    "UPDATE customer_locations SET is_primary = 0 "
+                    "UPDATE customer_locations SET is_primary = :off "
                     "WHERE customer_id = :customer_id AND deleted_at IS NULL AND id != :location_id"
                 ),
-                {"customer_id": customer_id, "location_id": location_id},
+                {"customer_id": customer_id, "location_id": location_id, "off": False},
             )
 
         set_parts = []
@@ -836,7 +844,7 @@ async def update_customer_location(
                 params[col] = data[col]
         if "is_primary" in data:
             set_parts.append("is_primary = :is_primary")
-            params["is_primary"] = 1 if data["is_primary"] else 0
+            params["is_primary"] = bool(data["is_primary"])
         if not set_parts:
             raise HTTPException(status_code=400, detail="no fields to update")
         set_sql = ", ".join(set_parts)

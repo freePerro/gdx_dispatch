@@ -246,6 +246,140 @@ describe("JobsView — location_id picker", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// JobsView — the jobsite ask (PR 2, jobsite-address plan)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("JobsView — jobsite ask (New address…)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    getMock.mockReset();
+    postMock.mockReset();
+    patchMock.mockReset();
+    delMock.mockReset();
+    patchMock.mockResolvedValue({ ok: true });
+    getMock.mockImplementation(async (url) => {
+      if (url.includes("/locations")) return [];
+      if (url === "/api/dispatch-settings") return {};
+      return [];
+    });
+  });
+
+  async function openCreateWith(wrapper, fields) {
+    wrapper.vm.openCreateDialog();
+    await vtuFlushPromises();
+    Object.assign(wrapper.vm.jobForm, fields);
+    await vtuFlushPromises();
+  }
+
+  it("NEW_SITE posts the location with is_primary:false and binds the id", async () => {
+    postMock.mockImplementation(async (url) => {
+      if (url.includes("/locations")) return { id: "loc-new-1" };
+      return { id: "job-77" };
+    });
+    const wrapper = mount(JobsView, { global: { stubs: baseStubs } });
+    await vtuFlushPromises();
+    await openCreateWith(wrapper, {
+      title: "Install",
+      customer_id: "cust-1",
+      location_id: "__new__",
+      new_site_address: "9 Dock St",
+      new_site_label: "Warehouse 3",
+    });
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    const locCall = postMock.mock.calls.find(([u]) => u.includes("/locations"));
+    expect(locCall).toBeTruthy();
+    expect(locCall[0]).toBe("/api/customers/cust-1/locations");
+    // is_primary must be EXPLICITLY false: true would retroactively
+    // re-address every null-location job for the customer.
+    expect(locCall[1]).toMatchObject({
+      address: "9 Dock St", label: "Warehouse 3", is_primary: false,
+    });
+    const jobCall = postMock.mock.calls.find(([u]) => u === "/api/jobs");
+    expect(jobCall[1].location_id).toBe("loc-new-1");
+  });
+
+  it("location POST failure blocks the job POST entirely", async () => {
+    postMock.mockImplementation(async (url) => {
+      if (url.includes("/locations")) throw new Error("boom");
+      return { id: "job-77" };
+    });
+    const wrapper = mount(JobsView, { global: { stubs: baseStubs } });
+    await vtuFlushPromises();
+    await openCreateWith(wrapper, {
+      title: "Install",
+      customer_id: "cust-1",
+      location_id: "__new__",
+      new_site_address: "9 Dock St",
+    });
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    expect(postMock.mock.calls.some(([u]) => u === "/api/jobs")).toBe(false);
+    expect(wrapper.vm.formError).toContain("NOT saved");
+  });
+
+  it("retry after a job-POST failure reuses the created location (no duplicate rows)", async () => {
+    let jobAttempts = 0;
+    postMock.mockImplementation(async (url) => {
+      if (url.includes("/locations")) return { id: "loc-new-1" };
+      jobAttempts += 1;
+      if (jobAttempts === 1) throw new Error("422 tech required");
+      return { id: "job-77" };
+    });
+    const wrapper = mount(JobsView, { global: { stubs: baseStubs } });
+    await vtuFlushPromises();
+    await openCreateWith(wrapper, {
+      title: "Install",
+      customer_id: "cust-1",
+      location_id: "__new__",
+      new_site_address: "9 Dock St",
+    });
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    const locCalls = postMock.mock.calls.filter(([u]) => u.includes("/locations"));
+    expect(locCalls.length).toBe(1);
+    expect(jobAttempts).toBe(2);
+  });
+
+  it("new-customer retry reuses the created customer (no duplicate rows)", async () => {
+    let jobAttempts = 0;
+    postMock.mockImplementation(async (url) => {
+      if (url === "/api/customers") return { id: "cust-9" };
+      jobAttempts += 1;
+      if (jobAttempts === 1) throw new Error("422 tech required");
+      return { id: "job-77" };
+    });
+    const wrapper = mount(JobsView, { global: { stubs: baseStubs } });
+    await vtuFlushPromises();
+    await openCreateWith(wrapper, {
+      title: "Install",
+      new_customer: true,
+      new_cust_name: "Acme",
+    });
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    const custCalls = postMock.mock.calls.filter(([u]) => u === "/api/customers");
+    expect(custCalls.length).toBe(1);
+    expect(jobAttempts).toBe(2);
+  });
+
+  it("default (null) still ships location_id null", async () => {
+    postMock.mockResolvedValue({ id: "job-77" });
+    const wrapper = mount(JobsView, { global: { stubs: baseStubs } });
+    await vtuFlushPromises();
+    await openCreateWith(wrapper, { title: "Install", customer_id: "cust-1" });
+    await wrapper.vm.submitForm();
+    await vtuFlushPromises();
+    const jobCall = postMock.mock.calls.find(([u]) => u === "/api/jobs");
+    expect(jobCall[1].location_id).toBe(null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // CustomersView — "N sites" badge
 // ─────────────────────────────────────────────────────────────────────
 

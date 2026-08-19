@@ -78,6 +78,15 @@ const canAddParts = computed(() => hasPermission('inventory.write'))
 
 // ─── Customer state ──────────────────────────────────────────────────
 const newCustomer = ref(false)
+// Flipping between "existing" and "new" customer invalidates the jobsite
+// ask: a picked location belongs to the OLD customer (the backend would 400
+// "does not belong"), and a drafted address was typed for someone else
+// (post-code audit PR 2 §3).
+watch(newCustomer, () => {
+  siteChoice.value = null
+  newSite.address = ''
+  newSite.label = ''
+})
 const customerSearch = ref('')
 const customerOptions = ref([])
 const selectedCustomer = ref(null)
@@ -182,16 +191,37 @@ const job = reactive({
   // (decimal, e.g. 1.5). Optional; dispatch falls back to the estimate
   // calc, then to "?h" if nothing's known.
   scheduled_duration_hours: null,
-  // Sprint customer-multi-location (2026-05-21) — null = use the
-  // customer's primary location (JobDetailView fallback).
-  location_id: null,
 })
 
+// ─── Jobsite ask (PR 2, jobsite-address plan) ────────────────────────
+// null = same as customer address (ships location_id: null — the existing
+// "customer's primary" semantics); a location id string; or NEW_SITE for
+// the inline different-address form.
+const NEW_SITE = '__new__'
+const siteChoice = ref(null)
+const newSite = reactive({ address: '', label: '' })
+// Retry-safety memos (pre-code audit §3): a job-POST failure leaves the
+// dialog open; Save again must REUSE what already succeeded, never mint a
+// duplicate customer or location row. Keyed on the exact user input so an
+// edited form correctly creates fresh rows.
+const createdCustomerMemo = ref(null) // { key, id }
+const createdSiteMemo = ref(null)     // { key, id }
+function _custKey() {
+  return [newCust.name, newCust.phone, newCust.email, newCust.address]
+    .map((v) => (v || '').trim().toLowerCase()).join('|')
+}
+function _siteKey(customerId) {
+  return [customerId, (newSite.address || '').trim().toLowerCase(),
+    (newSite.label || '').trim().toLowerCase()].join('|')
+}
+
 // Sprint customer-multi-location — locations for the picked customer.
-// Re-fetched whenever selectedCustomer changes. Picker hidden at ≤1.
+// Re-fetched whenever selectedCustomer changes.
 const customerLocations = ref([])
 watch(selectedCustomer, async (c) => {
-  job.location_id = null
+  siteChoice.value = null
+  newSite.address = ''
+  newSite.label = ''
   if (!c?.id) {
     customerLocations.value = []
     return
@@ -264,6 +294,8 @@ const canSubmit = computed(() => {
   if (newCustomer.value) {
     if (!newCust.name.trim()) return false
   }
+  // "Different address…" without an address is a job nobody can find.
+  if (siteChoice.value === NEW_SITE && !newSite.address.trim()) return false
   // Existing-customer path is allowed to be empty (a tech might want a
   // bare job with no customer attached — backend permits customer_id=null).
   for (const p of parts.value) {
@@ -278,26 +310,75 @@ async function submit() {
   try {
     let customerId = selectedCustomer.value?.id || null
 
-    // Step 1 — create customer if requested.
+    // Step 1 — create customer if requested. Memoized across attempts: a
+    // later step failing leaves the dialog open, and Save again must reuse
+    // the row that already exists, not mint a duplicate (audit §3).
     if (newCustomer.value) {
-      const payload = {
-        name: newCust.name.trim(),
-        phone: newCust.phone.trim() || null,
-        email: newCust.email.trim() || null,
-        address: newCust.address.trim() || null,
+      if (createdCustomerMemo.value?.key === _custKey()) {
+        customerId = createdCustomerMemo.value.id
+      } else {
+        const payload = {
+          name: newCust.name.trim(),
+          phone: newCust.phone.trim() || null,
+          email: newCust.email.trim() || null,
+          address: newCust.address.trim() || null,
+        }
+        try {
+          const created = await api.post('/api/customers', payload)
+          customerId = created?.id || created?.customer?.id || null
+          if (!customerId) throw new Error('Customer creation returned no id')
+          createdCustomerMemo.value = { key: _custKey(), id: customerId }
+        } catch (e) {
+          toast.add({
+            severity: 'error',
+            summary: 'Could not create customer',
+            detail: e?.message || 'Try again or pick an existing customer.',
+            life: 5000,
+          })
+          return
+        }
       }
-      try {
-        const created = await api.post('/api/customers', payload)
-        customerId = created?.id || created?.customer?.id || null
-        if (!customerId) throw new Error('Customer creation returned no id')
-      } catch (e) {
+    }
+
+    // Step 1b — the jobsite. A different-address job binds a REAL
+    // customer_locations row (the endpoint audit-logs the create;
+    // invariant #1). Failure BLOCKS the job: creating it anyway would
+    // point the tech at the customer's address — the exact error this
+    // feature exists to prevent. is_primary is ALWAYS false: true would
+    // retroactively re-address every null-location job for the customer
+    // (audit §5). Memoized like the customer for retry-safety.
+    let siteLocationId = siteChoice.value === NEW_SITE ? null : (siteChoice.value || null)
+    if (siteChoice.value === NEW_SITE) {
+      if (!customerId) {
         toast.add({
-          severity: 'error',
-          summary: 'Could not create customer',
-          detail: e?.message || 'Try again or pick an existing customer.',
-          life: 5000,
+          severity: 'warn',
+          summary: 'Pick a customer first',
+          detail: 'A jobsite address needs a customer to belong to.',
+          life: 4000,
         })
         return
+      }
+      if (createdSiteMemo.value?.key === _siteKey(customerId)) {
+        siteLocationId = createdSiteMemo.value.id
+      } else {
+        try {
+          const loc = await api.post(`/api/customers/${customerId}/locations`, {
+            label: newSite.label.trim() || null,
+            address: newSite.address.trim(),
+            is_primary: false,
+          })
+          siteLocationId = loc?.id || null
+          if (!siteLocationId) throw new Error('Location creation returned no id')
+          createdSiteMemo.value = { key: _siteKey(customerId), id: siteLocationId }
+        } catch (e) {
+          toast.add({
+            severity: 'error',
+            summary: 'Could not save the jobsite address',
+            detail: e?.message || 'The job was NOT created — fix the address and try again.',
+            life: 5000,
+          })
+          return
+        }
       }
     }
 
@@ -313,7 +394,7 @@ async function submit() {
           job.scheduled_duration_hours != null && job.scheduled_duration_hours !== ''
             ? Number(job.scheduled_duration_hours)
             : null,
-        location_id: job.location_id || null,
+        location_id: siteLocationId,
         // Backend resolves this against the CALLER's technician record —
         // never a client-supplied tech id. False for non-tech roles (the
         // toggle isn't rendered for them, so its default must not leak).
@@ -413,7 +494,11 @@ function _resetForm() {
   job.description = ''
   job.job_type = DEFAULT_JOB_TYPE
   job.scheduled_duration_hours = null
-  job.location_id = null
+  siteChoice.value = null
+  newSite.address = ''
+  newSite.label = ''
+  createdCustomerMemo.value = null
+  createdSiteMemo.value = null
   customerLocations.value = []
   parts.value = []
   assignToMe.value = true
@@ -431,6 +516,10 @@ const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(
     selectedCustomerId: selectedCustomer.value?.id ?? null,
     newCust: { ...newCust },
     job: { ...job },
+    // Jobsite ask — user-editable, so part of the pristine snapshot; the
+    // retry memos are machine state and deliberately excluded.
+    siteChoice: siteChoice.value,
+    newSite: { ...newSite },
     assignToMe: assignToMe.value,
     parts: parts.value.map((p) => ({
       part_name: p.part_name,
@@ -576,29 +665,65 @@ watch(open, async (v) => {
           />
         </div>
         <!--
-          Sprint customer-multi-location (2026-05-21) — only render at
-          2+ sites. Defaults to primary; tech can switch by tapping a row.
+          The jobsite ask (PR 2, jobsite-address plan) — ONE always-visible
+          select once a customer is in play, replacing the old 2+-locations-
+          only picker. "Same as customer address" (null) is the default; a
+          tech standing at a different address can say so right here instead
+          of the job silently pointing at the HQ.
         -->
         <div
-          v-if="!newCustomer && customerLocations.length > 1"
+          v-if="selectedCustomer || newCustomer"
           class="loc-picker"
-          data-testid="mjn-location-picker"
+          data-testid="mjn-site-section"
         >
-          <div class="loc-picker-head">Which site?</div>
+          <div class="loc-picker-head">Where's the job?</div>
           <ul class="loc-list">
             <li
-              v-for="loc in customerLocations"
+              class="loc-item"
+              :class="{ active: siteChoice === null }"
+              data-testid="mjn-site-same"
+              @click="siteChoice = null"
+            >
+              <strong>Same as customer address</strong>
+              <span v-if="selectedCustomer?.address || newCust.address" class="muted">
+                · {{ selectedCustomer?.address || newCust.address }}
+              </span>
+            </li>
+            <li
+              v-for="loc in (newCustomer ? [] : customerLocations)"
               :key="loc.id"
               class="loc-item"
-              :class="{ active: String(job.location_id) === String(loc.id) || (!job.location_id && loc.is_primary) }"
+              :class="{ active: String(siteChoice) === String(loc.id) }"
               data-testid="mjn-location-option"
-              @click="job.location_id = String(loc.id)"
+              @click="siteChoice = String(loc.id)"
             >
               <strong>{{ loc.label || '(unlabeled)' }}</strong>
               <span v-if="loc.address" class="muted"> · {{ loc.address }}</span>
               <span v-if="loc.is_primary" class="badge-primary">primary</span>
             </li>
+            <li
+              class="loc-item"
+              :class="{ active: siteChoice === NEW_SITE }"
+              data-testid="mjn-site-new"
+              @click="siteChoice = NEW_SITE"
+            >
+              <strong>Different address…</strong>
+            </li>
           </ul>
+          <div v-if="siteChoice === NEW_SITE" class="form-field">
+            <label>Jobsite address *</label>
+            <InputText
+              v-model="newSite.address"
+              placeholder="Street, city"
+              data-testid="mjn-newsite-address"
+            />
+            <label>Label (optional)</label>
+            <InputText
+              v-model="newSite.label"
+              placeholder="e.g. Warehouse, North yard"
+              data-testid="mjn-newsite-label"
+            />
+          </div>
         </div>
       </section>
 
