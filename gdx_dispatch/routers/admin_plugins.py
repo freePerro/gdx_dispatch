@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db
+from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db, resolve_audit_actor
 from gdx_dispatch.core.plugin_consent import (
     consented_permissions,
     fetch_permissions,
@@ -62,6 +62,19 @@ def _audit(db: Session, request: Request, user: dict, action: str, **kw: object)
     exactly the trace we would need and not have.
     """
     audit_or_rollback(db, action=action, actor=user, request=request, **kw)  # type: ignore[arg-type]
+
+
+def _actor(user: dict) -> str:
+    """Who to record as having done this, for the plugin tables' own
+    provenance columns (`uploaded_by`, `added_by`, `consented_by`).
+
+    These used `user.get("sub")`, which is blank for a token that carries the
+    principal as `user_id` instead — so on a real owner session the columns
+    recorded nothing while the audit row (which resolves sub/user_id/id) named
+    the right person. Two records of the same action disagreeing is worse than
+    either alone, so both now go through the same resolver.
+    """
+    return resolve_audit_actor(user)
 
 
 class PluginInstall(BaseModel):
@@ -108,7 +121,7 @@ async def upload_artifact(
                   uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()
             """
         ),
-        {"f": name, "h": digest, "c": content, "by": str(user.get("sub") or "")},
+        {"f": name, "h": digest, "c": content, "by": _actor(user)},
     )
     _audit(
         db,
@@ -198,7 +211,7 @@ def add_plugin(
             ON CONFLICT (package) DO UPDATE SET version = EXCLUDED.version
             """
         ),
-        {"p": body.package, "v": body.version, "by": str(user.get("sub") or "")},
+        {"p": body.package, "v": body.version, "by": _actor(user)},
     )
     _audit(
         db,
@@ -322,7 +335,7 @@ def install_from_storefront(
             """
         ),
         {"f": name, "h": digest, "c": content,
-         "by": f"storefront:{user.get('sub') or ''}"},
+         "by": f"storefront:{_actor(user)}"},
     )
     # Deliberately NOT a plugin_registry row: that would make plugin-host try to
     # pip-install the package from an index it cannot reach, failing every boot.
@@ -386,7 +399,7 @@ def consent_plugin(
     # would not work: record_consent's ensure_consent_table commits its DDL
     # before the INSERT, which would harden the audit row on its own and leave a
     # record of a grant that never happened if the INSERT then failed.
-    record_consent(db, key, declared, str(user.get("sub") or ""), commit=False)
+    record_consent(db, key, declared, _actor(user), commit=False)
     _audit(
         db,
         request,
