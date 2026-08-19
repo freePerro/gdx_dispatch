@@ -160,6 +160,10 @@ services:
       <<: *app-env
       APP_VERSION: ${APP_VERSION:-latest}
       GDX_ADMIN_EMAIL: ${GDX_ADMIN_EMAIL:-admin@example.com}
+      # Where the in-app plugin storefront reads its curated catalog. Empty
+      # falls back to the built-in default, so an operator only sets this to
+      # point at a different catalog host.
+      GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
       GDX_ADMIN_PASSWORD: ${GDX_ADMIN_PASSWORD:-}
     volumes:
       - gdx_uploads:/app/uploads
