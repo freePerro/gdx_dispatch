@@ -842,6 +842,24 @@ async def update_customer_location(
             if col in data:
                 set_parts.append(f"{col} = :{col}")
                 params[col] = data[col]
+        # An address CHANGE invalidates everything geocoded from the OLD
+        # text — stale lat/lng would keep serving as the AUTHORITATIVE map
+        # pin (core/job_site.py) for the new address. Guarded on a REAL
+        # change: the edit dialog sends the full object on every save
+        # (CustomerDetailView.saveLocation), so keying on mere presence
+        # would destroy the geocode on every label/notes edit — permanent,
+        # since no re-geocode path exists (PR 4 post-code audit §1).
+        if "address" in data:
+            from gdx_dispatch.core.job_site import normalize_address  # noqa: PLC0415
+
+            current = db.execute(
+                text("SELECT address FROM customer_locations WHERE id = :location_id"),
+                {"location_id": location_id},
+            ).scalar()
+            if normalize_address(data["address"]) != normalize_address(current):
+                for col in ("lat", "lng", "city", "state", "zip"):
+                    set_parts.append(f"{col} = :{col}")
+                    params[col] = None
         if "is_primary" in data:
             set_parts.append("is_primary = :is_primary")
             params["is_primary"] = bool(data["is_primary"])

@@ -8,7 +8,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote_plus
 from uuid import UUID as _UUID
 from zoneinfo import ZoneInfo
@@ -27,6 +27,7 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.door_specs import door_specs_for_job
 from gdx_dispatch.core.job_site import (
     JobSite,
+    find_or_create_customer_location,
     normalize_address,
     resolve_job_site,
     resolve_job_sites,
@@ -91,6 +92,33 @@ class CustomerContactBody(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     email: str | None = Field(default=None, max_length=254)
     label: str | None = Field(default=None, max_length=120)
+
+
+class MobileJobSitePatch(BaseModel):
+    """The tech's driveway address fix (jobsite plan PR 4).
+
+    ``apply_to="source"`` corrects the row the displayed address actually
+    CAME from (bound location / the customer's explicit primary / the
+    customer record) — resolved server-side with the same rule that renders
+    it, so the fix can never land on a row the screen wasn't showing.
+    ``apply_to="new_site"`` says "this job is somewhere else": find-or-create
+    a location (shared convergence helper) and rebind only this job.
+
+    ``expected_address`` is what the tech was LOOKING AT when they queued
+    the fix. The offline queue replays hours later; if the source row moved
+    on (dispatch fixed it properly at noon), last-writer-wins would silently
+    revert that — a normalized mismatch 422s instead (never 409: the drain
+    files unflagged 409s as synced).
+    """
+
+    address: str = Field(..., min_length=1, max_length=500)
+    apply_to: Literal["source", "new_site"] = "source"
+    expected_address: str | None = Field(default=None, max_length=500)
+    # The site_source the client rendered — pins the TARGET as well as the
+    # text: if the binding shifted during the offline gap (e.g. PR 3's bind
+    # attached a location carrying the same text), equal text alone would
+    # route the fix to a row the tech was never shown (post-code audit §3).
+    expected_source: Literal["location", "customer_location", "customer", "none"] | None = None
 
 
 class CustomerContactPatch(BaseModel):
@@ -3908,6 +3936,144 @@ def update_mobile_job_customer(
             },
         }
     )
+
+
+@router.patch(
+    "/jobs/{job_id}/site",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+def update_mobile_job_site(
+    job_id: str,
+    payload: MobileJobSitePatch,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fix the jobsite address from the driveway (jobsite plan PR 4).
+
+    WRITE-gated (_assert_job_access — 404 by contract on no claim, same
+    anti-probing rule as every mutating route here). Same trust level as
+    fixing the customer's phone (customers.contact_write). Responses are
+    400/422 on refusal, NEVER 409 — the offline drain files unflagged 409s
+    as synced and the tech would see "saved" for a rejected write.
+    """
+    tenant_id = _tenant_id(request)
+    _assert_job_access(db, request, current_user, job_id)
+    job = _get_job(db, tenant_id, job_id)
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    from gdx_dispatch.models.tenant_models import CustomerLocation  # noqa: PLC0415
+
+    address = payload.address.strip()
+    site = resolve_job_site(db, job.get("id"), job.get("location_id"), job.get("customer_id"))
+
+    # Optimistic guard against stale offline replays: if the source row moved
+    # on since the tech looked at it, refuse rather than silently revert the
+    # newer fix (pre-code audit §3).
+    if payload.expected_address is not None and (
+        normalize_address(payload.expected_address) != normalize_address(site.address)
+    ):
+        return jsonable_response(
+            {"detail": "The address changed since you loaded this job — refresh and try again."},
+            422,
+        )
+    if payload.expected_source is not None and payload.expected_source != site.source:
+        return jsonable_response(
+            {"detail": "This job's site changed since you loaded it — refresh and try again."},
+            422,
+        )
+
+    if payload.apply_to == "new_site":
+        if not job.get("customer_id"):
+            return jsonable_response({"detail": "job has no customer to attach a site to"}, 400)
+        loc_id, created = find_or_create_customer_location(
+            db, job["customer_id"], address, company_id=tenant_id,
+        )
+        orm_job = db.get(Job, _UUID(str(job["id"])))
+        if orm_job is None:
+            db.rollback()
+            return jsonable_response({"detail": "job not found"}, 404)
+        orm_job.location_id = loc_id
+        db.commit()
+        _audit_mobile(
+            db, request, current_user,
+            action="mobile_job_site_rebound",
+            entity_id=str(job["id"]),
+            details={"location_id": loc_id, "location_created": created},
+        )
+        target = "new_site"
+    elif site.source in ("location", "customer_location"):
+        # The displayed address came from a location row — the bound one, or
+        # the customer's explicit primary. Fix THAT row; every job showing it
+        # updates (the sheet's microcopy says so — no confirm dialog:
+        # useDestructiveConfirm auto-accepts, issue #215). Coordinates and
+        # the city/state/zip split were geocoded from the OLD text — NULL
+        # them or PR 1's authoritative-pin rule maps the old building
+        # (pre-code audit §5).
+        # The resolver already identified the row that supplied the display —
+        # fix exactly that one (no re-derivation, no id-format trap).
+        loc_key = site.location_row_id
+        loc = db.get(CustomerLocation, str(loc_key)) if loc_key else None
+        if loc is None:
+            return jsonable_response({"detail": "site row not found — refresh and try again"}, 422)
+        # Coords are nulled only on a REAL (normalized) change — the sheet
+        # prefills the current address, so an unedited Save must not destroy
+        # a correct geocode (post-code audit §1); a case/spacing-only fix
+        # keeps the pin too (same place).
+        really_moved = normalize_address(address) != normalize_address(loc.address)
+        loc.address = address
+        if really_moved:
+            loc.lat = None
+            loc.lng = None
+            loc.city = None
+            loc.state = None
+            loc.zip = None
+        db.commit()
+        _audit_mobile(
+            db, request, current_user,
+            action="mobile_job_site_updated",
+            entity_id=str(job["id"]),
+            details={"target": site.source, "location_id": str(loc.id)},
+        )
+        target = site.source
+    else:
+        # The screen showed the customer's own address (or nothing) — fix the
+        # customer record. ORM attribute set ONLY: Customer.address is
+        # EncryptedString and the mapper is the encryption path.
+        cust_id = job.get("customer_id")
+        if not cust_id:
+            return jsonable_response({"detail": "job has no customer"}, 400)
+        customer = db.execute(
+            select(Customer).where(Customer.id == _UUID(str(cust_id)))
+        ).scalar_one_or_none()
+        if customer is None:
+            return jsonable_response({"detail": "customer not found"}, 400)
+        customer.address = address
+        db.commit()
+        _audit_mobile(
+            db, request, current_user,
+            action="mobile_job_site_updated",
+            entity_id=str(job["id"]),
+            # Field names/targets only — the address itself is PII and the
+            # audit row is not the place to republish it.
+            details={"target": "customer"},
+        )
+        target = "customer"
+
+    fresh_location_id = (
+        loc_id if payload.apply_to == "new_site" else job.get("location_id")
+    )
+    fresh = resolve_job_site(db, job.get("id"), fresh_location_id, job.get("customer_id"))
+    return jsonable_response({
+        "ok": True,
+        "target": target,
+        "site_label": fresh.label,
+        "site_address": fresh.address,
+        "site_address_missing": fresh.address_missing,
+        "navigation_link": _build_navigation_link(fresh.address),
+    })
 
 
 @router.get("/jobs/{job_id}/customer/contacts", response_model=None)

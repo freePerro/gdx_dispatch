@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import bindparam
+from sqlalchemy import bindparam, select
 from sqlalchemy import text as _text
 
 
@@ -62,6 +62,11 @@ class JobSite:
     source: str = "none"
     lat: float | None = None
     lng: float | None = None
+    # The id of the location row that SUPPLIED the data (bound row, or the
+    # explicit primary in fallback) — None for customer/none sources. Lets a
+    # writer fix exactly the row the display came from without re-deriving
+    # it (and re-tripping the dashed/undashed id trap).
+    location_row_id: str | None = None
 
 
 def normalize_address(value: str | None) -> str:
@@ -141,7 +146,7 @@ def resolve_job_sites(
     locs_by_customer: dict[str, list[dict[str, Any]]] = {}
     if fallback_customers:
         stmt = _text(
-            "SELECT customer_id, label, address, access_notes, is_primary "
+            "SELECT id, customer_id, label, address, access_notes, is_primary "
             "FROM customer_locations "
             "WHERE customer_id IN :cids AND deleted_at IS NULL "
             "ORDER BY created_at ASC"
@@ -201,6 +206,7 @@ def resolve_job_sites(
                 source="location",
                 lat=lat,
                 lng=lng,
+                location_row_id=loc_id,
             )
             continue
         locs = locs_by_customer.get(cust_id or "", [])
@@ -213,6 +219,7 @@ def resolve_job_sites(
                 address_missing=addr is None,
                 access_notes=primary.get("access_notes") or None,
                 source="customer_location",
+                location_row_id=str(primary["id"]),
             )
             continue
         if cust_id:
@@ -228,3 +235,42 @@ def resolve_job_site(db: Any, job_id: Any, location_id: Any, customer_id: Any) -
     return resolve_job_sites(db, [(job_id, location_id, customer_id)]).get(
         _s(job_id) or "", _EMPTY
     )
+
+
+def find_or_create_customer_location(
+    db: Any,
+    customer_id: Any,
+    address: str,
+    *,
+    label: str | None = None,
+    company_id: str = "",
+) -> tuple[str, bool]:
+    """Find a non-deleted location of the customer whose address
+    normalized-matches ``address``, else create one (``is_primary`` False —
+    inert for the customer's other jobs under rule 2). Returns
+    ``(location_id, created)``. Shared by the estimate-conversion bind and
+    the tech's fix-address endpoint so the convergence rule cannot drift.
+    """
+    from gdx_dispatch.models.tenant_models import CustomerLocation  # noqa: PLC0415
+
+    want = normalize_address(address)
+    rows = db.execute(
+        # ORM select keeps id/typing dialect-safe.
+        select(CustomerLocation).where(
+            CustomerLocation.customer_id == str(customer_id),
+            CustomerLocation.deleted_at.is_(None),
+        )
+    ).scalars().all()
+    for r in rows:
+        if normalize_address(r.address) == want:
+            return str(r.id), False
+    loc = CustomerLocation(
+        customer_id=str(customer_id),
+        company_id=company_id or "",
+        label=label,
+        address=address,
+        is_primary=False,
+    )
+    db.add(loc)
+    db.flush()
+    return str(loc.id), True

@@ -114,6 +114,60 @@
           <i class="pi pi-home" />
           <span>Customer address: {{ customer.address }}</span>
         </div>
+
+        <!-- The tech is the one standing at the real address (jobsite plan
+             PR 4) — same driveway-fix philosophy as the email/contact
+             buttons below. Hidden on read-only grants: write access rides
+             the job. -->
+        <div v-if="!readOnly && !fixSiteOpen" class="contact-actions">
+          <Button
+            :label="displaySiteAddress ? 'Fix address' : 'Add address'"
+            icon="pi pi-pencil"
+            size="small"
+            text
+            data-testid="mjd-fix-address"
+            @click="openFixSite"
+          />
+        </div>
+        <div v-if="fixSiteOpen" class="contact-form" data-testid="mjd-fix-address-form">
+          <!-- No confirm dialog on the updates-every-job option:
+               useDestructiveConfirm auto-accepts silently (issue #215), so
+               the honest label IS the guard. -->
+          <label class="fix-site-option">
+            <input
+              type="radio"
+              value="source"
+              v-model="fixSite.applyTo"
+              data-testid="mjd-fix-source"
+            />
+            <span>{{ fixSourceLabel }}</span>
+          </label>
+          <label class="fix-site-option">
+            <input
+              type="radio"
+              value="new_site"
+              v-model="fixSite.applyTo"
+              data-testid="mjd-fix-new-site"
+            />
+            <span>This job is at a different place — save as a new site for this job only</span>
+          </label>
+          <InputText
+            v-model="fixSite.address"
+            placeholder="Street, city"
+            data-testid="mjd-fix-address-input"
+          />
+          <div class="contact-form-actions">
+            <Button label="Cancel" text size="small" @click="fixSiteOpen = false" />
+            <Button
+              label="Save address"
+              size="small"
+              :disabled="!fixSite.address.trim() || fixSiteBusy"
+              :loading="fixSiteBusy"
+              data-testid="mjd-fix-address-save"
+              @click="saveFixSite"
+            />
+          </div>
+        </div>
         <a
           v-if="customer?.email"
           class="contact-row"
@@ -635,7 +689,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -694,6 +748,65 @@ const invoiceOpen = ref(false)
 
 const noteDraft = ref('')
 const noteBusy = ref(false)
+
+// ─── Fix the jobsite address (PR 4) ─────────────────────────────────
+const fixSiteOpen = ref(false)
+const fixSiteBusy = ref(false)
+const fixSite = reactive({ address: '', applyTo: 'source' })
+// Where "fix it" lands, in the tech's words — routed server-side to the row
+// the displayed address actually came from.
+const fixSourceLabel = computed(() => {
+  const src = job.value?.site_source
+  if (src === 'location') {
+    return `Fix this site's address${job.value?.site_label ? ` (${job.value.site_label})` : ''} — updates this site for all its jobs`
+  }
+  if (src === 'customer_location') {
+    return "Fix the primary site's address — updates every job using it"
+  }
+  return "Fix the customer's address"
+})
+
+function openFixSite() {
+  fixSite.address = displaySiteAddress.value || ''
+  fixSite.applyTo = 'source'
+  fixSiteOpen.value = true
+}
+
+async function saveFixSite() {
+  if (!fixSite.address.trim() || fixSiteBusy.value) return
+  fixSiteBusy.value = true
+  try {
+    const r = await api.patchQueued(
+      `/api/mobile/jobs/${job.value.id}/site`,
+      {
+        address: fixSite.address.trim(),
+        apply_to: fixSite.applyTo,
+        // What the tech was LOOKING AT — text AND target. A stale offline
+        // replay must not clobber a newer fix, and equal text must not
+        // route to a row the tech was never shown (server 422s on either).
+        expected_address: displaySiteAddress.value || null,
+        expected_source: job.value?.site_source || null,
+      },
+      { actionType: 'job.site_fix', resourceId: String(job.value.id) },
+    )
+    fixSiteOpen.value = false
+    if (r?.queued) {
+      // Show the tech's OWN input as pending rather than re-rendering the
+      // stale server state — a screen that still says the old address reads
+      // as "didn't take" and invites a second, self-conflicting queue entry
+      // (post-code audit §5). Reconciles on the post-drain refresh.
+      job.value.site_address = fixSite.address.trim()
+      toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Will apply when you have signal — the address shown is your pending fix.', life: 4000 })
+    } else {
+      toast.add({ severity: 'success', summary: 'Address updated', life: 2500 })
+      await refresh()
+    }
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Could not update the address', detail: err?.message || '', life: 4000 })
+  } finally {
+    fixSiteBusy.value = false
+  }
+}
 
 const contactFormOpen = ref(false)
 const contactFormMode = ref('contact')
@@ -1397,6 +1510,8 @@ onMounted(() => {
 .site-missing { color: var(--p-orange-500, #f59e0b); font-style: italic; }
 .site-access-notes { color: var(--p-text-color, #374151); }
 .site-customer-address { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
+.fix-site-option { display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; }
+.fix-site-option input { margin-top: 0.2rem; }
 .contact-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
 .contact-actions :deep(.p-button) { min-height: 44px; }
 .contact-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
