@@ -104,34 +104,40 @@ def test_primary_location_beats_customer_address(db):
     assert site.address == "2 Primary Ave"
 
 
-def test_no_primary_uses_first_created(db):
-    """is_primary is nullable/default-false; 'none primary' is a normal state."""
+def test_no_primary_falls_to_customer_address(db):
+    """Non-primary rows are OTHER jobs' sites, never authority for a
+    null-location job — the old first-created fallback meant the first
+    "New address…" save re-addressed every existing job for the customer
+    (post-code audit PR 2 §1)."""
     c = _customer(db, address="100 Billing Rd")
     _location(db, c, address="1 First St", created_offset_s=0)
     _location(db, c, address="2 Second St", created_offset_s=1)
     site = resolve_job_site(db, "j1", None, c.id)
-    assert site.address == "1 First St"
+    assert site.source == "customer"
+    assert site.address == "100 Billing Rd"
 
 
-def test_primary_without_address_falls_to_first_created(db):
-    """Desktop's `find(primary)?.address || [0].address` chain, exactly."""
-    c = _customer(db)
+def test_primary_without_address_is_missing(db):
+    """An explicitly-primary site with no address is MISSING — same D2
+    honesty as a bound row; never another row's or the HQ's address."""
+    c = _customer(db, address="100 Billing Rd")
     _location(db, c, address="1 First St", access_notes=None, created_offset_s=0)
     _location(db, c, address=None, access_notes="ring twice", is_primary=True, created_offset_s=1)
-    site = resolve_job_site(db, "j1", None, c.id)
-    assert site.address == "1 First St"
-    # Access-notes chain is independent: the primary still supplies them.
-    assert site.access_notes == "ring twice"
-
-
-def test_locations_exist_but_no_address_does_not_use_customer(db):
-    """Desktop parity: customer.address is only reached at ZERO locations."""
-    c = _customer(db, address="100 Billing Rd")
-    _location(db, c, label="Site A", address=None)
     site = resolve_job_site(db, "j1", None, c.id)
     assert site.source == "customer_location"
     assert site.address is None
     assert site.address_missing is True
+    assert site.access_notes == "ring twice"
+
+
+def test_nonprimary_label_only_row_does_not_block_customer_address(db):
+    """A non-primary row (even address-less) never affects null-location
+    jobs — they keep the customer's address."""
+    c = _customer(db, address="100 Billing Rd")
+    _location(db, c, label="Site A", address=None)
+    site = resolve_job_site(db, "j1", None, c.id)
+    assert site.source == "customer"
+    assert site.address == "100 Billing Rd"
 
 
 def test_zero_locations_uses_customer_address(db):
@@ -186,6 +192,6 @@ def test_undashed_hex_customer_id_still_resolves(db):
     c = _customer(db, address="100 Billing Rd")
     site = resolve_job_site(db, "j1", None, c.id.hex)
     assert site.address == "100 Billing Rd"
-    _location(db, c, address="9 Dock St")
+    _location(db, c, address="9 Dock St", is_primary=True)
     site2 = resolve_job_site(db, "j2", None, c.id.hex)
     assert site2.address == "9 Dock St"

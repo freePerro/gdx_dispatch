@@ -9,15 +9,15 @@ drift from the office screen:
    ``address_missing=True`` and NEVER falls through to the customer — the
    tech would see "Warehouse #3" on the label and drive to the HQ (the
    desktop /audit 2026-05-21 rule).
-2. No binding (or the bound row is soft-deleted): the customer's locations,
-   ordered ``created_at ASC`` (the order the office list endpoint serves,
-   which desktop indexes as ``[0]``). Address = the primary row's address if
-   a primary has one, else the first-created row's. ``customer.address`` is
-   NOT consulted when any location rows exist — locations are the site
-   authority (desktop parity: pre-code audit 2026-08-18 §1).
-   Access notes follow the same primary-else-first chain *independently* of
-   the address (a primary may supply the gate code while the first-created
-   row supplies the address — that is what desktop renders).
+2. No binding (or the bound row is soft-deleted): the customer's
+   EXPLICITLY-PRIMARY location, if one exists. A primary with no address is
+   MISSING (same D2 honesty as a bound row). Non-primary rows are jobsites
+   of OTHER jobs — never authority for a null-location job: the earlier
+   first-created-row fallback (desktop parity) meant the first "New
+   address…" save re-addressed every existing null-location job for that
+   customer (post-code audit PR 2 §1 — the rule had never met real rows
+   because the create endpoint was broken on Postgres until PR 2).
+   Access notes likewise come only from the explicit primary.
 3. Zero location rows: ``customer.address`` (fetched via the ORM so
    ``EncryptedString`` decrypts — never add a raw-SQL read here).
 
@@ -152,7 +152,12 @@ def resolve_job_sites(
     # customer.address only for customers with ZERO location rows — via the
     # ORM so EncryptedString decrypts (raw SQL here would resurrect the
     # 2026-07-16 "gAAAA… where the address should be" bug class).
-    bare_customers = [c for c in fallback_customers if c not in locs_by_customer]
+    # customer.address is needed for zero-location customers AND for
+    # customers whose rows have no explicit primary (rule 2).
+    bare_customers = [
+        c for c in fallback_customers
+        if not any(r.get("is_primary") for r in locs_by_customer.get(c, []))
+    ]
     customer_addr: dict[str, str | None] = {}
     if bare_customers:
         from uuid import UUID  # noqa: PLC0415
@@ -199,22 +204,14 @@ def resolve_job_sites(
             )
             continue
         locs = locs_by_customer.get(cust_id or "", [])
-        if locs:
-            primary = next((r for r in locs if r.get("is_primary")), None)
-            # Two independent primary-else-first chains, matching desktop's
-            # `find(is_primary)?.address || [0].address` exactly.
-            addr_row = primary if primary and (primary.get("address") or "").strip() else locs[0]
-            addr = (addr_row.get("address") or "").strip() or None
-            notes = (
-                (primary.get("access_notes") if primary else None)
-                or locs[0].get("access_notes")
-                or None
-            )
+        primary = next((r for r in locs if r.get("is_primary")), None)
+        if primary is not None:
+            addr = (primary.get("address") or "").strip() or None
             out[job_id] = JobSite(
-                label=addr_row.get("label"),
+                label=primary.get("label"),
                 address=addr,
                 address_missing=addr is None,
-                access_notes=notes,
+                access_notes=primary.get("access_notes") or None,
                 source="customer_location",
             )
             continue
