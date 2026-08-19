@@ -35,6 +35,7 @@ from gdx_dispatch.plugin_host.reconcile import (
     detect_stale,
     desired_versions,
     reconcile,
+    running_dists,
 )
 from gdx_dispatch.plugin_host.schema_reconcile import reconcile_plugin_columns
 
@@ -100,7 +101,12 @@ def build_app():
 
     # 3. build the app. Anything incomplete reads as degraded on /ready so the
     #    Docker healthcheck flips unhealthy instead of serving a partial catalog.
-    return create_plugin_host(plugins=plugins, degraded=degraded, stale=stale)
+    return create_plugin_host(
+        plugins=plugins,
+        degraded=degraded,
+        stale=stale,
+        dists=running_dists(discovered),
+    )
 
 
 app = build_app()

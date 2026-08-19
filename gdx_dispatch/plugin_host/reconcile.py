@@ -182,6 +182,25 @@ def effective_version(distribution: str | None, target: str = INSTALL_DIR) -> st
         return max(vers)
 
 
+def running_dists(discovered, target: str = INSTALL_DIR) -> dict:
+    """{plugin key: (distribution, running version)} for the catalog.
+
+    Deliberately NOT the entry point's own `dist.version`. `pip install --target`
+    leaves every past version's dist-info behind, so the dist an entry point
+    resolves from can be any of them — prod once had three side by side, and
+    reading the wrong one is what caused the v1.5.1 false-stale. `detect_stale`
+    refuses that value for the same reason and compares `effective_version`;
+    publishing a different number than the one the staleness check trusts would
+    put a contradiction on the admin screen. Falls back to the entry-point
+    version only when nothing is installed under `target` (a plugin on the
+    image's own path rather than the volume).
+    """
+    out: dict = {}
+    for manifest, dist_name, ep_version in discovered:
+        out[manifest.key] = (dist_name, effective_version(dist_name, target) or ep_version)
+    return out
+
+
 def is_installed(distribution: str | None, version: str | None,
                  target: str = INSTALL_DIR) -> bool:
     """True if the running (effective) version of `distribution` equals `version`.
