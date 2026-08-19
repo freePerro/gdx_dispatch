@@ -104,9 +104,17 @@ def live_fingerprint(entry: dict) -> str:
     )
 
 
-def record_consent(db: Session, key: str, permissions: list[str], by: str) -> dict:
+def record_consent(db: Session, key: str, permissions: list[str], by: str,
+                   commit: bool = True) -> dict:
     """Record consent for a plugin's currently-declared permissions AND pin its
-    declared event surface (preimage + fingerprint) from the live catalog."""
+    declared event surface (preimage + fingerprint) from the live catalog.
+
+    Pass ``commit=False`` to leave the INSERT pending so the caller can commit it
+    together with something else — the consent audit row, in particular. Note
+    ``ensure_consent_table`` commits its DDL, so anything the caller has already
+    flushed is committed before this INSERT runs: stage the row first, audit
+    after, commit once.
+    """
     ensure_consent_table(db)
     entry = _live_entry(key) or {}
     declared_events = list(entry.get("events") or [])
@@ -128,7 +136,8 @@ def record_consent(db: Session, key: str, permissions: list[str], by: str) -> di
         {"k": key, "p": ",".join(permissions), "by": by,
          "ev": json.dumps(declared_events), "fp": fingerprint},
     )
-    db.commit()
+    if commit:
+        db.commit()
     return {"declared_events": declared_events, "declared_fingerprint": fingerprint}
 
 

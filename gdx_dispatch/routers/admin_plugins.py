@@ -13,12 +13,12 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.audit import audit_or_rollback, audit_ready_db
 from gdx_dispatch.core.plugin_consent import (
     consented_permissions,
     fetch_permissions,
@@ -42,6 +42,8 @@ _MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
 
 router = APIRouter(prefix="/api/admin/plugins", tags=["admin-plugins"])
 
+log = logging.getLogger(__name__)
+
 _OWNER_ROLES = {"owner", "superadmin"}
 
 
@@ -51,22 +53,34 @@ def _require_owner(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+def _audit(db: Session, request: Request, user: dict, action: str, **kw: object) -> None:
+    """Record a plugin-surface mutation, or roll the mutation back.
+
+    Installing a plugin is code execution with backend access, so "who did it,
+    what changed, when" is not optional here (invariant #1). An audit write that
+    fails must take the change down with it — a silently unaudited install is
+    exactly the trace we would need and not have.
+    """
+    audit_or_rollback(db, action=action, actor=user, request=request, **kw)  # type: ignore[arg-type]
+
+
 class PluginInstall(BaseModel):
     package: str = Field(min_length=1, max_length=200)
     version: str | None = Field(default=None, max_length=50)
 
 
 @router.get("")
-def list_registry(_: dict = Depends(_require_owner), db: Session = Depends(get_db)) -> list[dict]:
+def list_registry(_: dict = Depends(_require_owner), db: Session = Depends(audit_ready_db)) -> list[dict]:
     ensure_registry_table(db)
     return [{"package": p, "version": v} for p, v in desired_packages(db)]
 
 
 @router.post("/upload", status_code=201)
 async def upload_artifact(
+    request: Request,
     file: UploadFile = File(...),
     user: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """Upload a private plugin wheel/sdist (not on a pip index, e.g. an internal
     plugin). Stored in plugin_artifact; plugin-host installs it on restart.
@@ -96,13 +110,22 @@ async def upload_artifact(
         ),
         {"f": name, "h": digest, "c": content, "by": str(user.get("sub") or "")},
     )
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.artifact_uploaded",
+        entity_type="plugin_artifact",
+        entity_id=name,
+        details={"filename": name, "sha256": digest, "size": len(content)},
+    )
     db.commit()
     return {"filename": name, "sha256": digest, "size": len(content),
             "note": "restart plugin-host to install"}
 
 
 @router.get("/artifacts")
-def list_artifacts(_: dict = Depends(_require_owner), db: Session = Depends(get_db)) -> list[dict]:
+def list_artifacts(_: dict = Depends(_require_owner), db: Session = Depends(audit_ready_db)) -> list[dict]:
     """Uploaded artifacts (metadata only — never the bytes)."""
     ensure_artifact_table(db)
     rows = db.execute(
@@ -115,11 +138,21 @@ def list_artifacts(_: dict = Depends(_require_owner), db: Session = Depends(get_
 @router.delete("/artifacts/{filename}")
 def delete_artifact(
     filename: str,
-    _: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    request: Request,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     ensure_artifact_table(db)
     db.execute(text("DELETE FROM plugin_artifact WHERE filename = :f"), {"f": filename})
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.artifact_deleted",
+        entity_type="plugin_artifact",
+        entity_id=filename,
+        details={"filename": filename},
+    )
     db.commit()
     return {"filename": filename, "status": "removed",
             "note": "already-installed copy stays until plugin-host restarts"}
@@ -128,8 +161,9 @@ def delete_artifact(
 @router.post("", status_code=201)
 def add_plugin(
     body: PluginInstall,
+    request: Request,
     user: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     ensure_registry_table(db)
     # Guard the free-text package field against a wheel/sdist *filename* (issue
@@ -166,6 +200,15 @@ def add_plugin(
         ),
         {"p": body.package, "v": body.version, "by": str(user.get("sub") or "")},
     )
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.registered",
+        entity_type="plugin",
+        entity_id=body.package,
+        details={"package": body.package, "version": body.version},
+    )
     db.commit()
     return {
         "package": body.package,
@@ -179,7 +222,7 @@ def add_plugin(
 def plugin_permissions(
     key: str,
     _: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """The elevated permissions a plugin declares, each with its risk text and
     whether an owner has already consented (ADR-014). Drives the consent dialog."""
@@ -198,8 +241,9 @@ def plugin_permissions(
 @router.post("/{key}/consent", status_code=201)
 def consent_plugin(
     key: str,
+    request: Request,
     user: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     """Owner grants consent for the plugin's currently-declared permissions.
     Records exactly what was declared now, so a later-added permission isn't
@@ -207,24 +251,47 @@ def consent_plugin(
     declared = fetch_permissions(key)
     if not declared:
         raise HTTPException(status_code=400, detail="plugin declares no permissions")
-    record_consent(db, key, declared, str(user.get("sub") or ""))
+    # Stage the grant first (commit=False), audit second, commit once — so the
+    # consent row and its audit row land in the same transaction. Auditing first
+    # would not work: record_consent's ensure_consent_table commits its DDL
+    # before the INSERT, which would harden the audit row on its own and leave a
+    # record of a grant that never happened if the INSERT then failed.
+    record_consent(db, key, declared, str(user.get("sub") or ""), commit=False)
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.consent_granted",
+        entity_type="plugin",
+        entity_id=key,
+        details={"key": key, "permissions": list(declared)},
+    )
+    db.commit()
     return {"key": key, "consented": declared}
 
 
 @router.post("/restart", status_code=202)
-def restart_plugin_host(_: dict = Depends(_require_owner)) -> dict:
+def restart_plugin_host(
+    request: Request,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
+) -> dict:
     """Trigger a plugin-host restart so pending installs/removals take effect.
     Safe from inside the app: plugin-host is a separate container, so the core
     app keeps serving while it cycles (unlike app self-update). Best-effort —
     plugin-host may already be cycling or not deployed; the UI polls
     /api/plugins to confirm it comes back."""
+    # Audited before the trigger fires: a restart is what makes pending plugin
+    # code go live, and an unrecordable restart must not happen at all.
+    _audit(db, request, user, "plugin_host.restart_requested", entity_type="plugin_host")
+    db.commit()
     url = os.getenv("PLUGIN_HOST_URL", "http://plugin-host:8000").rstrip("/")
     try:
         from gdx_dispatch.core.plugin_consent import internal_auth_headers
 
         httpx.post(f"{url}/internal/restart", timeout=5.0, headers=internal_auth_headers())
     except Exception:
-        logging.getLogger(__name__).warning("plugin-host restart trigger failed (may be cycling)")
+        log.warning("plugin-host restart trigger failed (may be cycling)")
     # The permission catalog caches the installed-plugin list; a restart is
     # exactly when that list changes, so drop it rather than making the owner
     # wait out the TTL to see the new plugin's permission checkboxes.
@@ -237,10 +304,20 @@ def restart_plugin_host(_: dict = Depends(_require_owner)) -> dict:
 @router.delete("/{package}")
 def remove_plugin(
     package: str,
-    _: dict = Depends(_require_owner),
-    db: Session = Depends(get_db),
+    request: Request,
+    user: dict = Depends(_require_owner),
+    db: Session = Depends(audit_ready_db),
 ) -> dict:
     ensure_registry_table(db)
     db.execute(text("DELETE FROM plugin_registry WHERE package = :p"), {"p": package})
+    _audit(
+        db,
+        request,
+        user,
+        "plugin.unregistered",
+        entity_type="plugin",
+        entity_id=package,
+        details={"package": package},
+    )
     db.commit()
     return {"package": package, "status": "unregistered"}
