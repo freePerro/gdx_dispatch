@@ -16,6 +16,7 @@ vi.mock('../../composables/useApi', () => ({
 }));
 
 import LineItemEditor from '../LineItemEditor.vue';
+import { VALID_BUCKETS } from '../../composables/useLineCategories';
 
 const stubs = {
   Button: {
@@ -71,9 +72,18 @@ function mountEditor(props = {}) {
   });
 }
 
+// VALID_BUCKETS is module-level and widened at runtime by design — in the app
+// that persistence is the point (additive, single-tenant-forever). Across TESTS
+// it leaks: one spec seeding `gates` changes what the next spec's dropdown
+// offers. Reset to the base five between tests.
+const BASE_BUCKETS = ['doors', 'openers', 'parts', 'labor', 'other'];
+
 beforeEach(() => {
   apiGet.mockReset();
   apiPost.mockReset();
+  for (const b of [...VALID_BUCKETS]) {
+    if (!BASE_BUCKETS.includes(b)) VALID_BUCKETS.delete(b);
+  }
 });
 
 describe('LineItemEditor — line table mechanics', () => {
@@ -1267,5 +1277,102 @@ describe('LineItemEditor — catalog adds follow the tenant tax_labor flag (D6)'
     ]);
     await flushPromises();
     expect(lastLines(w)[0].taxable).toBe(true);
+  });
+});
+
+describe('LineItemEditor — an admin-seeded bucket reaches BOTH the dropdown and the resolver (p5)', () => {
+  // The p5 audit found widening reached the dropdown only: the resolver was
+  // still handed `props.categories` (the frozen six), so a `gates` item
+  // displayed as "Other" on the invoice path and "Gates" on the estimate path.
+  // `other` is this tenant's RICHEST tier, so that divergence is a price
+  // difference, not a label difference.
+  function mockWithSeededBucket() {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('pricing-categories')) {
+        return Promise.resolve(['doors', 'openers', 'parts', 'labor', 'other', 'gates']);
+      }
+      if (String(url).includes('tier-sets')) return Promise.resolve([]);
+      if (String(url).includes('tax/config')) return Promise.resolve({ tax_labor: false });
+      return Promise.resolve({ estimates_allow_line_margin_override: true });
+    });
+  }
+
+  async function mountWidened() {
+    mockWithSeededBucket();
+    const w = mount(LineItemEditor, {
+      props: {
+        lines: [{ description: '', quantity: 1, unit_price: 0 }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true, showCost: true, showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+    return w;
+  }
+
+  it('offers the seeded bucket in the dropdown', async () => {
+    const w = await mountWidened();
+    const opts = w.find('[data-testid="line-cat-0"]').findAll('option').map((o) => o.text());
+    expect(opts).toContain('Gates');
+  });
+
+  it('RESOLVES a seeded-bucket catalog item to it, not to Other', async () => {
+    const w = await mountWidened();
+    w.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', [
+      { name: 'Sliding gate', category: 'Gate Openers', pricing_category: 'gates', price: 900, cost: 0 },
+    ]);
+    await flushPromises();
+    // Pre-fix this was "Other" — the richest tier on this tenant.
+    expect(lastLines(w)[0].category).toBe('Gates');
+  });
+
+  it('still resolves the known buckets exactly as before', async () => {
+    const w = await mountWidened();
+    w.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', [
+      { name: 'Roller', category: 'Rollers', pricing_category: 'parts', price: 100, cost: 0 },
+    ]);
+    await flushPromises();
+    expect(lastLines(w)[0].category).toBe('Parts');
+  });
+
+  it('adds NOTHING when the endpoint is unavailable', async () => {
+    // The previous version asserted the six ARE offered — which they are
+    // unconditionally, straight from props.categories, so it survived deleting
+    // loadServerCategories entirely. Replacing a tautological test with
+    // another tautology is a way of feeling covered while covering nothing.
+    //
+    // The real property: a failed fetch must add no options and must not
+    // change how an item resolves.
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('pricing-categories')) return Promise.reject(new Error('404'));
+      if (String(url).includes('tier-sets')) return Promise.resolve([]);
+      if (String(url).includes('tax/config')) return Promise.resolve({ tax_labor: false });
+      return Promise.resolve({ estimates_allow_line_margin_override: true });
+    });
+    const w = mount(LineItemEditor, {
+      props: {
+        lines: [{ description: '', quantity: 1, unit_price: 0 }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true, showCost: true, showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+
+    const opts = w.find('[data-testid="line-cat-0"]').findAll('option').map((o) => o.text());
+    // EXACTLY the six the parent passed — no more.
+    expect(opts).toHaveLength(LINE_CATS.length);
+    expect(opts).not.toContain('Gates');
+
+    // And an item whose bucket the server would have taught us still resolves
+    // through the fallback rather than silently becoming something else.
+    w.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', [
+      { name: 'Sliding gate', category: 'Gate Openers', pricing_category: 'gates', price: 900, cost: 0 },
+    ]);
+    await flushPromises();
+    expect(lastLines(w)[0].category).toBe('Other');
   });
 });

@@ -36,14 +36,85 @@ export const LINE_CATEGORY_OPTIONS = Object.freeze([
 
 // Engine buckets — the BASE set from routers/catalog.py:_VALID_PRICING_CATEGORIES.
 //
-// Deliberately narrower than the backend at runtime: `_valid_pricing_categories`
-// unions this base with any `pricing_category` that has an active tier set, so
-// an admin who seeds a "gates" tier makes `gates` valid server-side while this
-// list still says otherwise. A seeded bucket would fall through to `other` here.
-// That is a known gap, not an oversight — p5 replaces this constant with
-// GET /api/catalogs/pricing-categories, which is the endpoint that exists
-// precisely so a new type "surfaces everywhere with no code change".
-export const VALID_BUCKETS = new Set(['doors', 'openers', 'parts', 'labor', 'other']);
+// This is the OFFLINE FALLBACK, not the authority. `_valid_pricing_categories`
+// unions this base with every `pricing_category` that has an active tier set,
+// so an admin who seeds a "gates" tier makes `gates` valid server-side. Call
+// `loadPricingCategories()` once at mount to widen the client to match; until
+// it resolves (or if it fails) these five keep every existing behaviour intact.
+const BASE_BUCKETS = ['doors', 'openers', 'parts', 'labor', 'other'];
+
+export const VALID_BUCKETS = new Set(BASE_BUCKETS);
+
+/**
+ * Widen the client's bucket set from the server.
+ *
+ * The endpoint exists precisely so a new type "surfaces everywhere with no code
+ * change" — three hardcoded copies of the six options is what it was meant to
+ * prevent, and this module was the fourth until now.
+ *
+ * Deliberately ADDITIVE: the server's list is unioned in rather than replacing
+ * the base. A transient empty/short response must not be able to shrink the
+ * client's vocabulary and start bucketing live catalog rows to `other`, which
+ * is the 10-point overcharge this whole plan started from.
+ */
+export async function loadPricingCategories(api) {
+  try {
+    const rows = await api.get('/api/catalogs/pricing-categories', {
+      suppressErrorToast: true,
+    });
+    if (!Array.isArray(rows) || !rows.length) return VALID_BUCKETS;
+    for (const r of rows) {
+      const b = String(r || '').trim().toLowerCase();
+      if (!b) continue;
+      // Never admit a name the SYNONYM TABLE already settles.
+      //
+      // `normalizeToBucket` checks VALID_BUCKETS *before* PRICING_SYNONYMS, so
+      // admitting one of these flips its mapping. `springs` is the obvious
+      // case — 77 live catalog rows are labelled Springs and price off `parts`;
+      // admitting it would reprice all 77 from a GET response. But it is a
+      // CLASS, not an instance: `accessories`, `hardware`, `operators`,
+      // `tracks`, `cables`, `remotes` and `keypads` all collide the same way,
+      // and `Accessories` and `Operators` are live values in prod
+      // `invoice_lines` today.
+      //
+      // A genuinely new type (`gates`) still surfaces with no code change,
+      // which is the endpoint's purpose. Only already-settled names are held,
+      // and changing one should be a deliberate edit here rather than a
+      // payload silently repricing existing rows.
+      if (PRICING_SYNONYMS[b]) continue;
+      VALID_BUCKETS.add(b);
+    }
+  } catch {
+    // Offline fallback is the base set — the behaviour that shipped in p1.
+  }
+  return VALID_BUCKETS;
+}
+
+/**
+ * Display options for the Category select, derived from the buckets.
+ *
+ * "Springs" is display-only and has no bucket of its own (springs price as
+ * `parts`), so it is kept explicitly. Everything else is title-cased from a
+ * real bucket, which is what makes an admin-seeded type appear in the dropdown
+ * without a code change.
+ */
+export function lineCategoryOptions() {
+  // Springs and Other are appended explicitly, so exclude them from the bucket
+  // sweep or the list ships duplicates.
+  const seen = new Set(['springs', 'other']);
+  const opts = [];
+  for (const b of VALID_BUCKETS) {
+    if (seen.has(b)) continue;
+    seen.add(b);
+    const label = b.charAt(0).toUpperCase() + b.slice(1);
+    opts.push({ label, value: label });
+  }
+  opts.push({ label: 'Springs', value: 'Springs' });
+  // Other sorts last: it is the fallback, not something anyone picks first.
+  opts.sort((a, b) => a.value.localeCompare(b.value));
+  opts.push({ label: 'Other', value: 'Other' });
+  return opts;
+}
 
 // Free-form word → bucket, for words that are not simply a singular of the
 // bucket. Mirrors routers/catalog.py:_PRICING_SYNONYMS exactly.
@@ -84,7 +155,7 @@ export function bucketToOption(bucket) {
  * Accepts both option shapes: LineItemEditor passes {label,value} objects,
  * EstimateView passes a plain string array.
  */
-export function isRenderableOption(value, options = LINE_CATEGORY_OPTIONS) {
+export function isRenderableOption(value, options = lineCategoryOptions()) {
   if (value == null || value === '') return false;
   return options.some((o) => (o.value ?? o) === value);
 }
@@ -112,7 +183,7 @@ export function isRenderableOption(value, options = LINE_CATEGORY_OPTIONS) {
  * end — but it is only correct while no live catalog row needs it. All 300
  * currently carry a usable pricing_category, and the spec pins that.
  */
-export function displayCategoryFor(item, options = LINE_CATEGORY_OPTIONS) {
+export function displayCategoryFor(item, options = lineCategoryOptions()) {
   const raw = String(item?.category || '').trim();
   if (raw) {
     const titled = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();

@@ -9,7 +9,7 @@
  * exercised "Springs" — the 25.7% that already worked. A guard that samples the
  * happy value proves nothing about the 74.3% that rendered blank.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   LINE_CATEGORY_OPTIONS,
   normalizeToBucket,
@@ -17,6 +17,9 @@ import {
   isRenderableOption,
   displayCategoryFor,
   categoryToPricingCategory,
+  loadPricingCategories,
+  lineCategoryOptions,
+  VALID_BUCKETS,
 } from '../useLineCategories';
 
 // [free-form category, pricing_category, expected display]
@@ -162,5 +165,100 @@ describe('useLineCategories — helpers', () => {
     }
     expect(isRenderableOption('Accessories')).toBe(false);
     expect(isRenderableOption(null)).toBe(false);
+  });
+});
+
+
+describe('loadPricingCategories — widening from the server (F9 / p5)', () => {
+  // `/api/catalogs/pricing-categories` exists so an admin-seeded margin tier
+  // ("gates") "surfaces everywhere with no code change". Three hardcoded copies
+  // of the six options are what it was meant to prevent.
+  const BASE = ['doors', 'openers', 'parts', 'labor', 'other'];
+
+  beforeEach(() => {
+    // The set is module state; put it back so tests do not leak into each other.
+    for (const b of [...VALID_BUCKETS]) {
+      if (!BASE.includes(b)) VALID_BUCKETS.delete(b);
+    }
+  });
+
+  it('adds a seeded bucket the client did not know about', async () => {
+    const api = { get: vi.fn().mockResolvedValue([...BASE, 'gates']) };
+    await loadPricingCategories(api);
+    expect(VALID_BUCKETS.has('gates')).toBe(true);
+    // And it becomes a real display option, which is the point.
+    expect(displayCategoryFor({ category: 'Gates', pricing_category: 'gates' }))
+      .toBe('Gates');
+  });
+
+  it('is ADDITIVE — a short response cannot shrink the vocabulary', async () => {
+    // The failure that matters. If the server briefly returns a truncated list
+    // and the client REPLACED its set, live catalog rows would start bucketing
+    // to `other` — the 10-point overcharge this whole plan began with.
+    const api = { get: vi.fn().mockResolvedValue(['doors']) };
+    await loadPricingCategories(api);
+    for (const b of BASE) expect(VALID_BUCKETS.has(b)).toBe(true);
+  });
+
+  it('keeps the base set when the call fails', async () => {
+    const api = { get: vi.fn().mockRejectedValue(new Error('offline')) };
+    await loadPricingCategories(api);
+    for (const b of BASE) expect(VALID_BUCKETS.has(b)).toBe(true);
+    // 'Hardware' is in the synonym table; 'Rollers' is NOT and relies on the
+    // item's pricing_category instead — picking it here was my mistake, not a
+    // defect.
+    expect(categoryToPricingCategory('Hardware')).toBe('parts');
+  });
+
+  it.each(['springs', 'accessories', 'hardware', 'operators', 'tracks', 'cables'])(
+    'never admits %p as a bucket — the synonym table already settles it',
+    async (word) => {
+      // A CLASS, not just springs. `normalizeToBucket` checks VALID_BUCKETS
+      // before PRICING_SYNONYMS, so admitting any settled name flips its
+      // mapping from a GET response. `Accessories` and `Operators` are live
+      // values in prod invoice_lines TODAY.
+      const before = categoryToPricingCategory(word);
+      const api = { get: vi.fn().mockResolvedValue([...BASE, word]) };
+      await loadPricingCategories(api);
+      expect(VALID_BUCKETS.has(word)).toBe(false);
+      expect(categoryToPricingCategory(word)).toBe(before);
+    },
+  );
+
+  it('still admits a genuinely new type — the endpoint keeps its purpose', async () => {
+    const api = { get: vi.fn().mockResolvedValue([...BASE, 'gates']) };
+    await loadPricingCategories(api);
+    expect(VALID_BUCKETS.has('gates')).toBe(true);
+  });
+
+  it('keeps the Springs display mapping intact', async () => {
+    // Springs is DISPLAY-ONLY: 77 live catalog rows are labelled Springs and
+    // price off the `parts` tier. Admitting it would flip that mapping from a
+    // GET response and silently reprice all 77.
+    const api = { get: vi.fn().mockResolvedValue([...BASE, 'springs']) };
+    await loadPricingCategories(api);
+    expect(VALID_BUCKETS.has('springs')).toBe(false);
+    expect(categoryToPricingCategory('Springs')).toBe('parts');
+    expect(normalizeToBucket('springs')).toBe('parts');
+  });
+
+  it('offers each category once, never a duplicate Springs', async () => {
+    const api = { get: vi.fn().mockResolvedValue([...BASE, 'springs', 'gates']) };
+    await loadPricingCategories(api);
+    const values = lineCategoryOptions().map((o) => o.value);
+    expect(new Set(values).size).toBe(values.length);
+    expect(values.filter((v) => v === 'Springs')).toHaveLength(1);
+    expect(values).toContain('Gates');
+    // Other is the fallback and sorts last.
+    expect(values[values.length - 1]).toBe('Other');
+  });
+
+  it('suppresses its own error toast — a missing endpoint is not the operator\'s problem', async () => {
+    const api = { get: vi.fn().mockResolvedValue([]) };
+    await loadPricingCategories(api);
+    expect(api.get).toHaveBeenCalledWith(
+      '/api/catalogs/pricing-categories',
+      expect.objectContaining({ suppressErrorToast: true }),
+    );
   });
 });

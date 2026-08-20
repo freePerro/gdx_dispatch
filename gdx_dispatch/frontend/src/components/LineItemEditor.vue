@@ -359,6 +359,7 @@ import {
   categoryToPricingCategory,
   displayCategoryFor,
   isRenderableOption,
+  loadPricingCategories,
 } from '../composables/useLineCategories';
 
 const props = defineProps({
@@ -453,10 +454,38 @@ function isLocked(item) {
  * `Seals`, and the 2026-08-19 decision was to normalize at add-time and leave
  * existing rows alone — so unmatched values are permanent and have to render.
  */
+// Buckets the SERVER knows about beyond the six the parent passes — an
+// admin-seeded margin tier (e.g. "gates") is valid server-side the moment it
+// exists, and /api/catalogs/pricing-categories exists precisely so it "surfaces
+// everywhere with no code change". Additive only: a short or failed response
+// can never shrink the list.
+const serverCategories = ref([]);
+
+async function loadServerCategories() {
+  if (!props.categories.length) return;
+  await loadPricingCategories(api);
+  const known = new Set(props.categories.map((o) => String(o.value ?? o).toLowerCase()));
+  serverCategories.value = [...VALID_BUCKETS]
+    .filter((b) => b !== 'labor' && !known.has(b))
+    .map((b) => {
+      const label = b.charAt(0).toUpperCase() + b.slice(1);
+      return { label, value: label };
+    });
+}
+
+// What the Select actually offers: the parent's list plus anything the server
+// knows that the parent did not.
+const effectiveCategories = computed(() =>
+  serverCategories.value.length
+    ? [...props.categories, ...serverCategories.value]
+    : props.categories,
+);
+
 function optionsForLine(item) {
+  const base = effectiveCategories.value;
   const stored = item?.category;
-  if (!stored || isRenderableOption(stored, props.categories)) return props.categories;
-  return [...props.categories, { label: `${stored} (as stored)`, value: stored }];
+  if (!stored || isRenderableOption(stored, base)) return base;
+  return [...base, { label: `${stored} (as stored)`, value: stored }];
 }
 
 function removeLineAt(idx) {
@@ -925,6 +954,7 @@ onMounted(() => {
   loadPricingTiers();
   loadEditorFeatures();
   loadTaxLabor();
+  loadServerCategories();
 });
 
 const anySelected = computed(() => selectedPartIds.value.length > 0);
@@ -1050,13 +1080,13 @@ function addFromCatalog(items) {
       // costs no grid column. Never sent to the API.
       ...(item._catalogName ? { _catalogName: item._catalogName } : {}),
       ...(props.showTaxable
-        ? { taxable: defaultTaxableFor(displayCategoryFor(item, props.categories)) }
+        ? { taxable: defaultTaxableFor(displayCategoryFor(item, effectiveCategories.value)) }
         : {}),
       // Display category resolved from the item's own pricing_category first,
       // NOT its free-form string — 223 of 300 live catalog rows carry words
       // like `3" Struts` that match no option and rendered the cell blank.
       ...(props.categories.length
-        ? { category: displayCategoryFor(item, props.categories) }
+        ? { category: displayCategoryFor(item, effectiveCategories.value) }
         : {}),
       // Carry the catalog item's cost + its canonical pricing bucket. The
       // bucket is read by `bucketForLine` for the CLIENT-side tier lookup —
