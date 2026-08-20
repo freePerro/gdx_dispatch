@@ -3915,6 +3915,13 @@ def update_mobile_job_customer(
         changed.append(key)
 
     if changed:
+        # The tech standing in the driveway is a human editing this customer,
+        # same as the office: QB stops overwriting these FIELDS from here.
+        # `changed` already holds only fields whose value actually moved.
+        customer.local_edit_at = datetime.now(UTC)
+        customer.local_edit_fields = sorted(
+            set(customer.local_edit_fields or []) | set(changed)
+        )
         db.commit()
         # WHICH fields, never the values: an audit row is not the place to
         # re-publish a customer's phone number and email in the clear.

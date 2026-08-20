@@ -381,9 +381,18 @@ def pull_customers(tenant_id: str, db: Session) -> dict[str, int]:
                 customer = db.get(Customer, UUID(mapping.local_id))
                 if customer is None:
                     continue
-                customer.name = name
-                customer.email = email
-                customer.phone = phone
+                # Same two rules as the live puller
+                # (modules/quickbooks/sync.py `_apply_qb_identity`): a field a
+                # human owns is not QB's to write, and a value QB does not
+                # have never blanks one GDX does. This module is the older
+                # duplicate of that pull and is not on any schedule, but an
+                # unguarded copy of a fixed bug is just the bug with a longer
+                # fuse.
+                owned = {str(f) for f in (customer.local_edit_fields or [])}
+                for field, value in (("name", name), ("email", email), ("phone", phone)):
+                    if not value or field in owned:
+                        continue
+                    setattr(customer, field, value)
                 mapping.synced_at = datetime.now(UTC)
                 updated += 1
                 continue

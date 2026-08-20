@@ -718,15 +718,84 @@ def _upsert_subcustomer_location(
     # Invariant #1: this creates or mutates a customer-owned row, so it leaves
     # a trail of its own. The run-level qb_pull_customers counts are a summary,
     # not an audit — they cannot answer "which site, whose account, when".
-    _audit(db, "qb_subcustomer_site_created" if created else "qb_subcustomer_site_updated",
-           str(location.id), {
-               "tenant_id": tenant_id,
-               "qb_id": qb_id,
-               "customer_id": str(parent_customer_id),
-               "label": label,
-               "has_address": bool(parts.get("address")),
-           })
+    # entity_type="customer_location", not "quickbooks": the QB sync log
+    # renders every quickbooks-typed row, and one pull can write hundreds of
+    # these. The trail belongs on the site, not in the sync feed.
+    log_audit_event_sync(
+        db,
+        tenant_id=tenant_id,
+        user_id=SYSTEM_ACTOR,
+        action="qb_subcustomer_site_created" if created else "qb_subcustomer_site_updated",
+        entity_type="customer_location",
+        entity_id=str(location.id),
+        details={
+            "qb_id": qb_id,
+            "customer_id": str(parent_customer_id),
+            "label": label,
+            "has_address": bool(parts.get("address")),
+        },
+    )
     return "created" if created else "updated"
+
+
+def _apply_qb_identity(
+    db: Session, customer: Customer, *, tenant_id: str, qb_id: str,
+    name: str, email: str | None, phone: str | None,
+) -> bool:
+    """Write QB's name/email/phone onto a mapped customer — under two rules.
+
+    1. **A field a human edited belongs to GDX.** ``local_edit_fields`` lists
+       which of name/email/phone the office owns; QB may not write those at
+       all, empty or not. Per-field, because a single flag cannot tell "GDX
+       never had an email" from "a human deleted the wrong email".
+    2. **QB never blanks.** ``customer.email = email`` with an empty
+       ``PrimaryEmailAddr`` used to wipe a good address. A missing value in QB
+       means "QB doesn't know", not "the customer has no email".
+
+    Returns True when anything changed. Audits the field NAMES that changed —
+    never the values; an audit row is not the place to re-publish a customer's
+    phone number and email in the clear.
+    """
+    owned = {str(f) for f in (customer.local_edit_fields or [])}
+    incoming = {"name": name, "email": email, "phone": phone}
+    changed: list[str] = []
+
+    for field, value in incoming.items():
+        if not value:
+            continue  # rule 2: QB never blanks
+        if field in owned:
+            # Rule 1, per FIELD. Deliberately not "owned AND currently
+            # non-empty": a human who DELETED a wrong email leaves the field
+            # empty, and treating empty as unowned hands it straight back to
+            # QB, which writes the wrong address in again. Ownership survives
+            # the value being blank — that is the whole point of it.
+            continue
+        current = getattr(customer, field, None)
+        if (current or "") == value:
+            continue
+        # Plain attribute set, deliberately: Customer's @validates hooks
+        # recompute name_hash/email_hash/phone_hash, and those are what the
+        # email poller and the Phone.com resolver match inbound mail and calls
+        # against. A raw UPDATE would store the value and skip the hash.
+        setattr(customer, field, value)
+        changed.append(field)
+
+    if changed:
+        # entity_type="customer", NOT the module's _audit helper. That helper
+        # stamps entity_type="quickbooks", and the QB sync log
+        # (modules/quickbooks/router.py:407) renders every such row — one pull
+        # touching 260 customers would bury the run summary under 260 rows on
+        # a 50-row page. This belongs on the customer anyway.
+        log_audit_event_sync(
+            db,
+            tenant_id=tenant_id,
+            user_id=SYSTEM_ACTOR,
+            action="qb_customer_identity_overwritten",
+            entity_type="customer",
+            entity_id=str(customer.id),
+            details={"qb_id": qb_id, "fields": changed, "owned_fields": sorted(owned)},
+        )
+    return bool(changed)
 
 
 async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str, int]:
@@ -791,11 +860,12 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                         customer = db.get(Customer, UUID(mapping.local_id))
                         if customer is None:
                             continue
-                        customer.name = name
-                        customer.email = email
-                        customer.phone = phone
+                        if _apply_qb_identity(
+                            db, customer, tenant_id=tenant_id, qb_id=qb_id,
+                            name=name, email=email, phone=phone,
+                        ):
+                            updated += 1
                         mapping.synced_at = datetime.now(UTC)
-                        updated += 1
                         continue
 
                     # No QB map yet — try to adopt an existing local customer.
@@ -818,11 +888,14 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                     )
                     if adopted_hit is not None:
                         adopted_customer, ambiguous = adopted_hit
-                        adopted_customer.name = name  # QB version wins on displayable name
-                        if email and not adopted_customer.email:
-                            adopted_customer.email = email
-                        if phone and not adopted_customer.phone:
-                            adopted_customer.phone = phone
+                        # Adoption links an EXISTING local customer to a QB id
+                        # for the first time. It already refused to blank, but
+                        # it overwrote the name outright — on a row a human had
+                        # named, that is the same loss by a different door.
+                        _apply_qb_identity(
+                            db, adopted_customer, tenant_id=tenant_id, qb_id=qb_id,
+                            name=name, email=email, phone=phone,
+                        )
                         adopted_customer.source = adopted_customer.source or "quickbooks"
                         _upsert_map(tenant_id, "customer", str(adopted_customer.id), qb_id, db)
                         adopted += 1
@@ -875,14 +948,14 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                     ).scalar_one_or_none()
                     if legacy is not None:
                         legacy_customer = db.get(Customer, UUID(legacy.local_id))
-                        if legacy_customer is not None:
-                            legacy_customer.name = humanize_name(name) or name
-                            legacy_customer.email = (
-                                (raw.get("PrimaryEmailAddr") or {}).get("Address") or ""
-                            ).strip() or None
-                            legacy_customer.phone = (
-                                (raw.get("PrimaryPhone") or {}).get("FreeFormNumber") or ""
-                            ).strip() or None
+                        if legacy_customer is not None and _apply_qb_identity(
+                            db, legacy_customer, tenant_id=tenant_id, qb_id=qb_id,
+                            name=humanize_name(name) or name,
+                            email=((raw.get("PrimaryEmailAddr") or {})
+                                   .get("Address") or "").strip() or None,
+                            phone=((raw.get("PrimaryPhone") or {})
+                                   .get("FreeFormNumber") or "").strip() or None,
+                        ):
                             updated += 1
                         legacy.synced_at = datetime.now(UTC)
                         legacy_subs += 1

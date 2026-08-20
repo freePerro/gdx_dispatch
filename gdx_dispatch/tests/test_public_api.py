@@ -141,6 +141,12 @@ def _make_tenant_engine():
                 notes TEXT,
                 notes_appended TEXT,
                 source TEXT,
+                -- Added with migration 070. This file hand-rolls its own
+                -- customers DDL, so every ORM column has to be mirrored here
+                -- by hand or the SELECT 500s. (One more entry for the
+                -- create_app()-fixture debt in the CI/test assessment.)
+                local_edit_at TEXT,
+                local_edit_fields TEXT,
                 customer_type TEXT,
                 can_submit_listings INTEGER DEFAULT 0,
                 pricing_class TEXT,
