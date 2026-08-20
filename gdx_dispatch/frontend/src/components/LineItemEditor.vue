@@ -190,7 +190,7 @@
         <Select
           v-if="categories.length"
           v-model="item.category"
-          :options="categories"
+          :options="optionsForLine(item)"
           optionLabel="label"
           optionValue="value"
           placeholder="Category"
@@ -198,13 +198,23 @@
           :data-testid="`line-cat-${idx}`"
           @change="onCategoryChange(item)"
         />
-        <InputText
-          v-model="item.description"
-          placeholder="Description"
-          class="col-desc"
-          :data-testid="`line-desc-${idx}`"
-          @update:modelValue="emitLines"
-        />
+        <!-- Description + its catalog-source pill share ONE grid cell. A
+             sibling span here would become a 12th column and desync the
+             gridTemplateColumns track list below. -->
+        <span class="col-desc line-desc-cell">
+          <InputText
+            v-model="item.description"
+            placeholder="Description"
+            :data-testid="`line-desc-${idx}`"
+            @update:modelValue="emitLines"
+          />
+          <span
+            v-if="item._catalogName"
+            class="status-pill catalog-source-pill"
+            :title="`Added from the ${item._catalogName} catalog`"
+            :data-testid="`line-source-${idx}`"
+          >{{ item._catalogName }}</span>
+        </span>
         <InputNumber
           v-model="item.quantity"
           :min="1"
@@ -325,6 +335,12 @@ import InputNumber from 'primevue/inputnumber';
 import Select from 'primevue/select';
 import CatalogPickerDialog from './CatalogPickerDialog.vue';
 import { useApi } from '../composables/useApi';
+import {
+  VALID_BUCKETS,
+  categoryToPricingCategory,
+  displayCategoryFor,
+  isRenderableOption,
+} from '../composables/useLineCategories';
 
 const props = defineProps({
   lines: { type: Array, default: () => [] },
@@ -371,6 +387,7 @@ function defaultLine() {
     base.margin_pct_override = null;
     base._priceOverridden = false;
     base._marginUserEdited = false;
+    base._marginPersisted = false;
     base._autoMargin = null;
   }
   return base;
@@ -383,6 +400,23 @@ function addLine() {
 
 function isLocked(item) {
   return typeof props.lockedPredicate === 'function' && Boolean(props.lockedPredicate(item));
+}
+
+/**
+ * Options for ONE row's Category select.
+ *
+ * A PrimeVue Select whose model value matches no option renders its
+ * placeholder, so a line already carrying a free-form category showed an empty
+ * cell — the operator could not tell "no category" from "a category you can't
+ * see", and picking anything silently discarded the stored value. Prod
+ * `invoice_lines` really does hold `Accessories`, `Inventory`, `Operators` and
+ * `Seals`, and the 2026-08-19 decision was to normalize at add-time and leave
+ * existing rows alone — so unmatched values are permanent and have to render.
+ */
+function optionsForLine(item) {
+  const stored = item?.category;
+  if (!stored || isRenderableOption(stored, props.categories)) return props.categories;
+  return [...props.categories, { label: `${stored} (as stored)`, value: stored }];
 }
 
 function removeLineAt(idx) {
@@ -402,7 +436,15 @@ function duplicateLineAt(idx) {
   // Shallow clone — strip any id-like fields so the copy is treated as a
   // new line by callers that key on id (estimate save path uses `id` to
   // distinguish updates from inserts).
-  const { id, _key, tempId, part_id, ...rest } = src;
+  // Strip transient recompute bookkeeping as well as identity. `_priceOverridden`
+  // is the killer: it permanently suppresses recomputeSell, so a duplicate of a
+  // price-overridden line would silently never re-price when its cost changed.
+  // `_autoMargin` is blur-echo state that means nothing on a fresh row. The
+  // margin VALUE and its persist flags are kept on purpose — a copy of an
+  // override line is still an override line.
+  const {
+    id, _key, tempId, part_id, _priceOverridden, _autoMargin, ...rest
+  } = src;
   localLines.value.splice(idx + 1, 0, { ...rest });
   emitLines();
 }
@@ -476,11 +518,30 @@ async function loadEditorFeatures() {
   } catch { /* default permissive */ }
 }
 
-function categoryToPricingCategory(cat) {
-  const c = (cat || '').toLowerCase();
-  if (c === 'springs') return 'parts';
-  if (['doors', 'openers', 'parts', 'labor', 'other'].includes(c)) return c;
-  return 'other';
+// categoryToPricingCategory now lives in composables/useLineCategories.js and
+// mirrors the backend's `_derive_pricing_category` for the buckets that exist
+// in code. The local copy that used to sit here only knew `springs→parts`, so
+// 142 live `parts` catalog rows (hinges, rollers, drums, struts, fixtures…)
+// fell through to the `other` tier and were over-priced by 10 points below
+// $500. See the module header.
+
+/**
+ * The pricing bucket to look tiers up in, for ONE line.
+ *
+ * The item's own `pricing_category` wins when it has one. That field is what
+ * the backend derived, what `pricing_tier_sets` is keyed on, and it is correct
+ * on all 300 live catalog rows — so using it means the tier lookup no longer
+ * depends on round-tripping through a human-facing display string.
+ *
+ * Mapping the display category is the FALLBACK, for hand-typed lines and
+ * legacy rows that never had a bucket. `onCategoryChange` clears
+ * `pricing_category` precisely so an operator who re-categorises a line gets
+ * the new category's tier instead of the catalog's stale bucket.
+ */
+function bucketForLine(item) {
+  const pc = String(item?.pricing_category || '').trim().toLowerCase();
+  if (pc && VALID_BUCKETS.has(pc)) return pc;
+  return categoryToPricingCategory(item?.category);
 }
 
 function findTierMargin(pricingCategory, cost) {
@@ -518,7 +579,7 @@ function recomputeSell(item) {
   ) {
     margin = override / 100;
   } else {
-    const pc = categoryToPricingCategory(item.category);
+    const pc = bucketForLine(item);
     margin = findTierMargin(pc, Number(item.cost));
     if (margin != null && margin < 1
         && editorFeatures.value.estimates_allow_line_margin_override) {
@@ -548,6 +609,15 @@ function onCategoryChange(item) {
   // a re-categorized line picks up the new category's tier instead of
   // sticking to a margin the operator last typed under the old category.
   item._marginUserEdited = false;
+  // A re-categorised line prices off the NEW tier, so any prior override no
+  // longer describes it. (markPriceOverride deliberately does NOT clear this —
+  // editing a price on an override line keeps it an override line.)
+  item._marginPersisted = false;
+  // The operator just chose a bucket by hand, so the catalog's own
+  // pricing_category is no longer what this line is. Without this, re-filing a
+  // hinge as "Doors" would keep pricing it off the `parts` tier and the change
+  // would look like it did nothing.
+  item.pricing_category = null;
   recomputeSell(item);
   emitLines();
 }
@@ -556,6 +626,8 @@ function onMarginOverrideChange(item) {
   const v = item.margin_pct_override;
   if (v == null || v === '') {
     item._marginUserEdited = false;
+    // Operator emptied the field — that IS a decision to drop the override.
+    item._marginPersisted = false;
     item._priceOverridden = false;
     item._autoMargin = null;
     recomputeSell(item);
@@ -573,6 +645,13 @@ function onMarginOverrideChange(item) {
     return;
   }
   item._marginUserEdited = true;
+  // Separate flag, deliberately. `_marginUserEdited` also drives the
+  // tier-vs-override RECOMPUTE, and `markPriceOverride` clears it whenever the
+  // operator retypes a price — correct for recompute, catastrophic for
+  // persistence, because it made "edit the price" silently erase a stored
+  // margin. `_marginPersisted` means only: this line's margin is a real
+  // override and must be saved.
+  item._marginPersisted = true;
   item._priceOverridden = false;
   item._autoMargin = null;
   recomputeSell(item);
@@ -583,7 +662,7 @@ function markPriceOverride(item) {
   // Operator typed a price directly. Decide whether to treat it as an
   // override vs the tier-implied price, and reflect the *actual* margin in
   // the Margin column so the operator sees what they'll really run at.
-  const pc = categoryToPricingCategory(item.category);
+  const pc = bucketForLine(item);
   const tierMargin = findTierMargin(pc, Number(item.cost));
   const cost = Number(item.cost);
   const sell = Number(item.unit_price);
@@ -812,19 +891,40 @@ function addFromCatalog(items) {
   const onlyEmpty = lines.length === 1 && !lines[0].description && !toNum(lines[0].unit_price);
   if (onlyEmpty) lines.splice(0, 1);
   for (const item of items) {
-    lines.push({
+    const cost = Number(item.cost) > 0 ? Number(item.cost) : null;
+    const line = {
       description: item.description || item.name,
       quantity: 1,
       unit_price: Number(item.price) || 0,
+      // Which catalog this came from — provenance the picker always knew and
+      // never put on the line (Doug 2026-08-19: "what catalog did it come
+      // from"). Display-only; rendered as a pill beside the description so it
+      // costs no grid column. Never sent to the API.
+      ...(item._catalogName ? { _catalogName: item._catalogName } : {}),
       ...(props.showTaxable ? { taxable: true } : {}),
-      ...(props.categories.length ? { category: item.category || null } : {}),
-      // Carry the catalog item's cost + pricing bucket so the backend tier
-      // engine computes the marked-up sell price. Without these the line was
-      // posted at the catalog price (= cost for imports → zero markup).
-      ...(props.showCost ? { cost: Number(item.cost) || null } : {}),
+      // Display category resolved from the item's own pricing_category first,
+      // NOT its free-form string — 223 of 300 live catalog rows carry words
+      // like `3" Struts` that match no option and rendered the cell blank.
+      ...(props.categories.length
+        ? { category: displayCategoryFor(item, props.categories) }
+        : {}),
+      // Carry the catalog item's cost + its canonical pricing bucket. The
+      // bucket is read by `bucketForLine` for the CLIENT-side tier lookup —
+      // it is deliberately NOT sent to the invoice API, whose line contract
+      // has no such field and forbids extras. For invoices the client is the
+      // pricing authority: routers/invoices.py stores unit_price verbatim and
+      // runs no engine, so getting this bucket right IS the billed number.
+      ...(props.showCost ? { cost } : {}),
       ...(item.pricing_category ? { pricing_category: item.pricing_category } : {}),
       ...(props.showMargin ? { margin_pct_override: null } : {}),
-    });
+    };
+    lines.push(line);
+    // Show the marked-up sell immediately, the way the estimate page always
+    // has. Verified a no-op against all 299 live costed catalog rows on
+    // 2026-08-19 — they already sit exactly on their tier price — so this is
+    // closing the hole for the next import or cost edit, not re-pricing the
+    // catalog today.
+    if (cost) recomputeSell(line);
   }
   emitLines();
 }
@@ -870,6 +970,31 @@ function addFromCatalog(items) {
   font-size: 0.75rem;
   padding: 0.125rem 0.5rem;
   border-radius: 999px;
+}
+/* Description cell holds the input AND the catalog-source pill in one grid
+   track. min-width:0 lets the input shrink instead of forcing the row wider —
+   the row is already ~1018px of fixed tracks at full flag count. */
+.line-desc-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.line-desc-cell :deep(.p-inputtext) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Theme variables only — this has to hold in dark mode, where a hardcoded
+   light background would paint invisible text. */
+.catalog-source-pill {
+  flex: 0 0 auto;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--p-content-hover-background);
+  color: var(--p-text-muted-color);
+  border: 1px solid var(--p-content-border-color);
 }
 .status-ordered {
   background: #fef3c7;

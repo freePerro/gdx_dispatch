@@ -342,6 +342,7 @@ import { useToast } from 'primevue/usetoast';
 import { useApi } from '../composables/useApi';
 import { formatMoney as currency } from '../composables/useFormatters';
 import LineItemEditor from '../components/LineItemEditor.vue';
+import { LINE_CATEGORY_OPTIONS } from '../composables/useLineCategories';
 import AuthedImage from '../components/AuthedImage.vue';
 
 const route = useRoute();
@@ -354,16 +355,12 @@ const creating = ref(false);
 const adjustsInvoiceId = ref('');
 const adjustsInvoiceNumber = ref('');
 
-// S122-b — same category set EstimateView uses (EstimateView.vue:563), so
-// the same Select options render on /billing/new and /estimates/new.
-const lineCategories = [
-  { label: 'Doors', value: 'Doors' },
-  { label: 'Openers', value: 'Openers' },
-  { label: 'Springs', value: 'Springs' },
-  { label: 'Labor', value: 'Labor' },
-  { label: 'Parts', value: 'Parts' },
-  { label: 'Other', value: 'Other' },
-];
+// One shared option list (composables/useLineCategories.js). Two of the three
+// hardcoded copies are gone — this one and InvoiceDetailView's. EstimateView
+// still has its own (a plain string array, different shape) and p5 replaces
+// all of them with GET /api/catalogs/pricing-categories, so an admin-seeded
+// bucket surfaces everywhere without a code change.
+const lineCategories = LINE_CATEGORY_OPTIONS;
 
 const form = ref({
   customer_id: null,
@@ -696,6 +693,19 @@ async function prefillFromJobEstimate(jobId) {
       cost: ln.cost_snapshot != null ? Number(ln.cost_snapshot) : null,
       margin_pct_override:
         ln.margin_pct_override != null ? Number(ln.margin_pct_override) * 100 : null,
+      // A margin persisted on an ESTIMATE line is already a human decision —
+      // EstimateView only writes that column when the operator set one. Stamp
+      // it so the POST gate below forwards it instead of dropping a real
+      // override on the estimate → invoice carry.
+      //
+      // `_marginPersisted`, not `_marginUserEdited`: the latter doubles as the
+      // recompute flag and is cleared by `markPriceOverride`, so gating on it
+      // meant a price edit erased the carried margin.
+      // Both flags — see InvoiceDetailView.enterEditMode for why. Stamping
+      // only _marginPersisted lets recomputeSell refill from the tier and then
+      // persist that fill over the estimate's real override.
+      _marginPersisted: ln.margin_pct_override != null,
+      _marginUserEdited: ln.margin_pct_override != null,
     }));
     if (!form.value.notes) form.value.notes = est.description || est.notes || '';
   } catch (e) {
@@ -724,7 +734,25 @@ async function createInvoice() {
         // contract's `extra="forbid"` validators don't choke on nulls.
         if (l.category) out.category = l.category;
         if (l.cost != null && toNum(l.cost) > 0) out.cost = toNum(l.cost);
-        if (l.margin_pct_override != null && toNum(l.margin_pct_override) > 0) {
+        // An OVERRIDE is a margin a human chose. The editor also AUTO-FILLS
+        // this column with the tier-implied margin so the operator can see
+        // what they're running at — that fill is not a choice, and posting it
+        // records "the operator set this margin" for a number nobody set.
+        // `routers/invoices.py` runs no pricing engine: it stores this value
+        // as a snapshot on the line, so the false override is not re-priced
+        // away later — it becomes the invoice's permanent record of a decision
+        // that never happened, and it is what the margin report reads back.
+        //
+        // `_marginUserEdited` is the editor's own flag for "a human committed
+        // a value here", and EstimateView has always gated on it
+        // (EstimateView.vue `_linePostPayload`). This surface did not — it
+        // leaked on every cost edit, and would now leak on every costed
+        // catalog add too, since those run the tier fill.
+        if (
+          (l._marginUserEdited || l._marginPersisted)
+          && l.margin_pct_override != null
+          && toNum(l.margin_pct_override) > 0
+        ) {
           // Form is in percent (e.g. 35), backend expects decimal (0.35).
           out.margin_pct_override = toNum(l.margin_pct_override) / 100;
         }

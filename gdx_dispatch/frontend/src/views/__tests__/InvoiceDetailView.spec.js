@@ -233,6 +233,78 @@ describe('InvoiceDetailView — Bill-To card', () => {
   });
 });
 
+describe('InvoiceDetailView — margin override persistence (2026-08-20 audit)', () => {
+  // The editor AUTO-FILLS the Margin column with the tier-implied margin so the
+  // operator can see what they're running at. That fill is not a decision.
+  // saveEdit must store a margin only when a human actually set one — and must
+  // NOT drop one that was already stored.
+  //
+  // LineItemEditor is stubbed in this spec, so these drive the exact line
+  // shapes the real editor emits and assert the PATCH body — which is where
+  // the defect lived, and where there was previously no coverage at all.
+  const LINE_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `
+      <div>
+        <button data-testid="emit-autofilled" @click="$emit('update:lines', [{
+          id: 'ln-1', description: 'Widget', quantity: 1, unit_price: 100,
+          taxable: true, category: 'Parts', cost: 50, margin_pct_override: 50,
+          _autoMargin: 50
+        }])">autofilled</button>
+        <button data-testid="emit-stored" @click="$emit('update:lines', [{
+          id: 'ln-1', description: 'Widget', quantity: 1, unit_price: 150,
+          taxable: true, category: 'Parts', cost: 87, margin_pct_override: 42,
+          _marginPersisted: true, _marginUserEdited: true
+        }])">stored</button>
+      </div>`,
+  };
+
+  function mountWithLineStub() {
+    return mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, LineItemEditor: LINE_STUB } },
+    });
+  }
+
+  it('does NOT store a tier-autofilled margin', async () => {
+    mockApi(buildInvoicePayload());
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountWithLineStub();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-autofilled"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    const lineCall = apiPatch.mock.calls.find(([url]) => url.includes('/lines/'));
+    // Assert unconditionally: `if (lineCall)` would let this pass by simply
+    // never saving, which is the failure mode it is supposed to detect.
+    expect(lineCall).toBeTruthy();
+    expect(lineCall[1].margin_pct_override).toBeNull();
+  });
+
+  it('KEEPS a margin the operator actually set', async () => {
+    // The mirror case, and the one two rounds of fixes kept breaking: gating
+    // too tightly silently cleared a real stored override.
+    mockApi(buildInvoicePayload());
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountWithLineStub();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-stored"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+
+    const lineCall = apiPatch.mock.calls.find(([url]) => url.includes('/lines/'));
+    expect(lineCall).toBeTruthy();
+    expect(lineCall[1].margin_pct_override).toBeCloseTo(0.42, 4);
+  });
+});
+
 describe('InvoiceDetailView — edit save tax rate', () => {
   it('PATCHes an EXPLICIT tax_rate of 0 when the rate is zeroed (null would preserve the old tax dollars)', async () => {
     mockApi(buildInvoicePayload());

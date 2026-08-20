@@ -893,6 +893,7 @@ import LineItemEditor from "../components/LineItemEditor.vue";
 import CustomerFormDialog from "../components/CustomerFormDialog.vue";
 import ComposerPdfPreview from "../components/ComposerPdfPreview.vue";
 import AuthedImage from "../components/AuthedImage.vue";
+import { LINE_CATEGORY_OPTIONS } from "../composables/useLineCategories";
 
 const api = useApi();
 const route = useRoute();
@@ -1015,14 +1016,11 @@ async function loadGlPosting() {
   }
 }
 // D-S122b-detail-view-columns — same category set as InvoiceCreateView.
-const lineCategoryOptions = [
-  { label: "Doors", value: "Doors" },
-  { label: "Openers", value: "Openers" },
-  { label: "Springs", value: "Springs" },
-  { label: "Labor", value: "Labor" },
-  { label: "Parts", value: "Parts" },
-  { label: "Other", value: "Other" },
-];
+// Shared with /billing/new via composables/useLineCategories.js — this was the
+// second of three hardcoded copies. EstimateView still holds the third (a plain
+// string array, different shape); p5 replaces all of them with
+// GET /api/catalogs/pricing-categories.
+const lineCategoryOptions = LINE_CATEGORY_OPTIONS;
 // Tenant-configured default rate (decimal fraction, e.g. 0.0738 == 7.38%).
 // Loaded once from /api/tax/config in fetchInvoice; used as the seed value
 // when entering edit mode on a legacy invoice that has no rate of its own.
@@ -1768,11 +1766,34 @@ function enterEditMode() {
     includes_labor: Boolean(ln.includes_labor),
     part_id: ln.part_id || null,
     cost: ln.cost_snapshot != null ? toNum(ln.cost_snapshot) : null,
+    // NB: invoice_lines has no pricing_category column, so a line loaded here
+    // never carries one and `bucketForLine` always falls through to mapping the
+    // display category. Create and edit therefore agree only while the display
+    // string and the item's bucket agree — true for every live catalog row, and
+    // pinned by the round-trip test in useLineCategories.spec.js.
     // Form shows percent (e.g. 35); backend stores decimal (0.35). Round-
     // trip via *100 on entry and /100 on save.
     margin_pct_override: ln.margin_pct_override != null
       ? Number((ln.margin_pct_override * 100).toFixed(2))
       : null,
+    // A margin already PERSISTED on the line was set by a human — nothing
+    // writes that column automatically. Stamp it so the save-side gate (which
+    // exists to stop the editor's tier auto-fill masquerading as an override)
+    // forwards it instead of silently clearing a real one.
+    //
+    // This is `_marginPersisted`, NOT `_marginUserEdited`: the latter is also
+    // the recompute flag and gets cleared by `markPriceOverride` on any price
+    // edit, so gating persistence on it meant retyping a price nulled a stored
+    // override while the cell still displayed a value.
+    // BOTH flags, deliberately. `_marginPersisted` makes saveEdit forward it;
+    // `_marginUserEdited` is what `recomputeSell` reads to take the override
+    // branch instead of refilling from the tier. Stamping only the first meant
+    // every loaded line was treated as tier-priced: typing a cost refilled the
+    // cell with the tier margin and the persist flag then SAVED that, turning a
+    // real 42% override into the tier's 50%. Both failure modes the gate exists
+    // to prevent, in one keystroke.
+    _marginPersisted: ln.margin_pct_override != null,
+    _marginUserEdited: ln.margin_pct_override != null,
   }));
   // Seed the rate input. Prefer the invoice's own rate; fall back to the
   // tenant default so legacy invoices get a sensible starting point on
@@ -1820,7 +1841,20 @@ async function saveEdit() {
       // D-S122b-detail-view-columns — forward category/cost/margin too.
       const category = ln.category || null;
       const cost = ln.cost != null && toNum(ln.cost) > 0 ? toNum(ln.cost) : null;
-      const marginOverrideDec = ln.margin_pct_override != null && toNum(ln.margin_pct_override) > 0
+      // An override is a margin a HUMAN chose. The shared editor also
+      // auto-fills this column with the tier-implied margin whenever a cost is
+      // typed, purely so the operator can see what they're running at — and
+      // this view mounts that editor with show-cost + show-margin, so the fill
+      // happens here too. Storing that would record a decision nobody made.
+      //
+      // Forward when EITHER the operator committed a margin this session
+      // (`_marginUserEdited`) or the line arrived already carrying one
+      // (`_marginPersisted`, stamped in enterEditMode). Whatever is displayed
+      // is what gets stored — a price edit recomputes the shown margin to the
+      // real one, and persisting that keeps the cell and the DB agreeing.
+      const marginOverrideDec = (ln._marginUserEdited || ln._marginPersisted)
+        && ln.margin_pct_override != null
+        && toNum(ln.margin_pct_override) > 0
         ? toNum(ln.margin_pct_override) / 100
         : null;
       if (ln.id) {

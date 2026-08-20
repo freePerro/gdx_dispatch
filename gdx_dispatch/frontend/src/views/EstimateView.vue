@@ -1089,6 +1089,10 @@ import Textarea from "primevue/textarea";
 import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
+import {
+  categoryToPricingCategory,
+  displayCategoryFor,
+} from '../composables/useLineCategories';
 const { confirmDestructive, confirmAsync } = useDestructiveConfirm();
 
 const router = useRouter();
@@ -1216,12 +1220,13 @@ async function loadEstimateFeatures() {
   } catch { /* default permissive */ }
 }
 
-function categoryToPricingCategory(cat) {
-  const c = (cat || "").toLowerCase();
-  if (c === "springs") return "parts";
-  if (["doors", "openers", "parts", "labor", "other"].includes(c)) return c;
-  return "other";
-}
+// categoryToPricingCategory is imported from composables/useLineCategories.js —
+// the estimate and invoice surfaces now share ONE mapper, mirroring the
+// backend's `_derive_pricing_category`. The local copy that used to sit here
+// only knew `springs→parts`, so free-form catalog words (`Accessories`,
+// `Operators`, `Hardware`) bucketed to `other` and priced off the wrong tier.
+// The six display options map identically under both versions; only free-form
+// leftovers change, and they change to the correct bucket.
 
 function findTierMargin(pricingCategory, cost) {
   const tiers = tierSetsByCategory.value[pricingCategory];
@@ -1937,12 +1942,13 @@ function addFromCatalog(items) {
   for (const item of items) {
     const cost = Number(item.cost) > 0 ? Number(item.cost) : null;
     const pc = cost ? (item.pricing_category || categoryToPricingCategory(item.category)) : null;
-    // Display category drives the dropdown; derive from the canonical pricing
-    // bucket (title-cased) so it always matches an option and reflects how the
-    // line is priced. Falls back to the item's free-form category otherwise.
-    const titleCased = pc ? pc.charAt(0).toUpperCase() + pc.slice(1) : null;
-    const displayCat = titleCased && lineCategories.includes(titleCased)
-      ? titleCased : (item.category || "Parts");
+    // Display category drives the dropdown. Shared with the invoice editor now:
+    // the item's own words win when they already ARE an option (so the 77
+    // `Springs` rows stay "Springs"), else the pricing bucket, else the synonym
+    // table. The old fallback here was `item.category || "Parts"`, which left
+    // unmatched words in the model — rendering a BLANK select — and guessed
+    // "Parts" for anything else, silently mis-bucketing a door.
+    const displayCat = displayCategoryFor(item, lineCategories);
     const line = {
       ...defaultLineItem(),
       category: displayCat,

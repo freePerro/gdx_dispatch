@@ -846,3 +846,226 @@ describe('LineItemEditor — install-included flag', () => {
     expect(wrapper.find('[data-testid="line-desc-0"]').attributes('disabled')).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Add-from-Catalog (2026-08-20). The category/tier work shipped with 141 lines
+// of tests for the pure resolver and NOTHING exercising the wiring that calls
+// it — the adversarial audit's fairest hit. These pin the wiring.
+// ---------------------------------------------------------------------------
+
+const catalogStub = {
+  name: 'CatalogPickerDialog',
+  props: ['visible'],
+  emits: ['update:visible', 'add'],
+  template: '<div data-testid="catalog-stub" />',
+};
+
+const LINE_CATS = [
+  { label: 'Doors', value: 'Doors' },
+  { label: 'Openers', value: 'Openers' },
+  { label: 'Springs', value: 'Springs' },
+  { label: 'Labor', value: 'Labor' },
+  { label: 'Parts', value: 'Parts' },
+  { label: 'Other', value: 'Other' },
+];
+
+// Real prod retail tiers for `parts`: 50/40/35/25 at $100/$500/$2000 breaks.
+function mockPricingApi() {
+  apiGet.mockImplementation((url) => {
+    if (String(url).includes('tier-sets')) {
+      return Promise.resolve([
+        {
+          pricing_class: 'retail',
+          pricing_category: 'parts',
+          tiers: [
+            { cost_min: 0, cost_max: 100, margin_pct: 0.5 },
+            { cost_min: 100, cost_max: 500, margin_pct: 0.4 },
+          ],
+        },
+        {
+          pricing_class: 'retail',
+          pricing_category: 'other',
+          tiers: [
+            { cost_min: 0, cost_max: 100, margin_pct: 0.6 },
+            { cost_min: 100, cost_max: 500, margin_pct: 0.5 },
+          ],
+        },
+      ]);
+    }
+    if (String(url).includes('estimates-features')) {
+      return Promise.resolve({ estimates_allow_line_margin_override: true });
+    }
+    return Promise.resolve([]);
+  });
+}
+
+async function addFromCatalog(items, props = {}) {
+  mockPricingApi();
+  const wrapper = mount(LineItemEditor, {
+    props: {
+      lines: [{ description: '', quantity: 1, unit_price: 0 }],
+      fromPartIds: [],
+      categories: LINE_CATS,
+      showTaxable: true,
+      showCost: true,
+      showMargin: true,
+      ...props,
+    },
+    global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+  });
+  await flushPromises();
+  wrapper.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', items);
+  await flushPromises();
+  return wrapper;
+}
+
+function lastLines(wrapper) {
+  return wrapper.emitted('update:lines').slice(-1)[0][0];
+}
+
+describe('LineItemEditor — add from catalog', () => {
+  it('resolves a free-form category to a renderable option', async () => {
+    // `3" Struts` matches no option; its pricing_category does.
+    const w = await addFromCatalog([
+      { name: '3in Strut 16ga', category: '3" Struts', pricing_category: 'parts', cost: 18.4, price: 30.67 },
+    ]);
+    expect(lastLines(w)[0].category).toBe('Parts');
+  });
+
+  it("keeps the item's own words when they already are an option", async () => {
+    const w = await addFromCatalog([
+      { name: 'Torsion Spring', category: 'Springs', pricing_category: 'parts', cost: 41, price: 63.23 },
+    ]);
+    expect(lastLines(w)[0].category).toBe('Springs');
+  });
+
+  it('stamps the source catalog on the line and renders it as a pill', async () => {
+    const w = await addFromCatalog([
+      { name: 'Hinge', category: 'Hinges', pricing_category: 'parts', cost: 4, price: 8, _catalogName: 'Hardware' },
+    ]);
+    expect(lastLines(w)[0]._catalogName).toBe('Hardware');
+    expect(w.find('[data-testid="line-source-0"]').text()).toBe('Hardware');
+  });
+
+  it('prices off the tier for the bucket, not the display string', async () => {
+    // cost 50 in `parts` → 50% → 100.00. If this bucketed to `other` it would
+    // be 60% → 125.00, which is the 142-row overcharge this work exists to fix.
+    const w = await addFromCatalog([
+      { name: 'Roller', category: 'Rollers', pricing_category: 'parts', cost: 50, price: 50 },
+    ]);
+    expect(lastLines(w)[0].unit_price).toBe(100);
+  });
+
+  it('does NOT record the tier-filled margin as an operator override', async () => {
+    // The margin column is auto-filled so the operator can SEE the tier. That
+    // is not a choice, and InvoiceCreateView only posts margin_pct_override
+    // when _marginUserEdited is set. If this ever flips true on a plain
+    // catalog add, every such line silently pins a margin nobody chose.
+    const w = await addFromCatalog([
+      { name: 'Roller', category: 'Rollers', pricing_category: 'parts', cost: 50, price: 50 },
+    ]);
+    const line = lastLines(w)[0];
+    expect(line.margin_pct_override).toBe(50);
+    expect(line._marginUserEdited).toBeFalsy();
+  });
+
+  it('leaves a zero-cost item at its catalog price', async () => {
+    // 194 live rows carry no cost; the tier lookup rejects cost<=0, so the
+    // catalog price is the only number and must survive untouched.
+    const w = await addFromCatalog([
+      { name: 'Residential Service', category: 'Service', pricing_category: 'parts', cost: 0, price: 100 },
+    ]);
+    expect(lastLines(w)[0].unit_price).toBe(100);
+  });
+
+  it('re-categorising a line drops the catalog bucket so the new tier applies', async () => {
+    const w = await addFromCatalog([
+      { name: 'Roller', category: 'Rollers', pricing_category: 'parts', cost: 50, price: 50 },
+    ]);
+    await w.find('[data-testid="line-cat-0"]').setValue('Other');
+    const line = lastLines(w)[0];
+    expect(line.pricing_category).toBeFalsy();
+    // `other` at cost 50 is 60% → 125.00, not the parts 50% → 100.00.
+    expect(line.unit_price).toBe(125);
+  });
+
+  it('renders an unmatched stored category instead of blanking the cell', async () => {
+    const w = await addFromCatalog([], {
+      lines: [{ description: 'Legacy', quantity: 1, unit_price: 5, category: 'Accessories' }],
+    });
+    const opts = w.find('[data-testid="line-cat-0"]').findAll('option').map((o) => o.text());
+    expect(opts).toContain('Accessories (as stored)');
+  });
+});
+
+describe('LineItemEditor — a stored margin override survives an unrelated edit', () => {
+  // 2026-08-20 audit, third pass. The gate that stops the tier auto-fill being
+  // saved as a fake override was first hung on `_marginUserEdited` — which
+  // `markPriceOverride` CLEARS on any price edit. Net effect: retyping a price
+  // on a line carrying a real stored override nulled it on save, while the
+  // Margin cell still displayed a number. Display said 44.4, the DB got null.
+  //
+  // `_marginPersisted` carries "this margin is real and must be saved" and is
+  // deliberately NOT cleared by a price edit.
+  it('does not let the tier overwrite a stored override when the cost is edited', async () => {
+    // SEQ-A, the regression the third and fourth audits both caught. A line
+    // loaded from a saved invoice carries a real 42% override. Editing the
+    // COST must not refill the cell from the tier — and must not then persist
+    // that fill over the operator's number.
+    //
+    // This is the shape `enterEditMode` produces: BOTH flags set, because a
+    // stored override is a human's margin from an earlier session.
+    // Pre-fix this returned the tier's 50 and saved it.
+    mockPricingApi();
+    const wrapper = mount(LineItemEditor, {
+      props: {
+        lines: [{
+          description: 'Opener', quantity: 1, unit_price: 150, cost: 87,
+          category: 'Parts', margin_pct_override: 42,
+          _marginPersisted: true, _marginUserEdited: true,
+        }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true,
+        showCost: true,
+        showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="line-cost-0"]').setValue('90');
+    await flushPromises();
+
+    const line = lastLines(wrapper)[0];
+    expect(line.margin_pct_override).toBe(42);
+    expect(line._marginPersisted).toBe(true);
+    // 90 / (1 - 0.42) = 155.17 — priced off the OVERRIDE, not the parts tier
+    // (which at cost 90 would be 50% → 180.00).
+    expect(line.unit_price).toBeCloseTo(155.17, 2);
+  });
+
+  it('drops persistence when the operator clears the margin field', async () => {
+    mockPricingApi();
+    const wrapper = mount(LineItemEditor, {
+      props: {
+        lines: [{
+          description: 'Opener', quantity: 1, unit_price: 150, cost: 87,
+          category: 'Openers', margin_pct_override: 42, _marginPersisted: true,
+        }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true,
+        showCost: true,
+        showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="line-margin-0"]').setValue('');
+    await flushPromises();
+
+    expect(lastLines(wrapper)[0]._marginPersisted).toBe(false);
+  });
+});
