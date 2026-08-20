@@ -278,6 +278,28 @@
             </small>
           </div>
 
+          <!-- D2 (Doug 2026-08-19: "whole invoice") — mirrors the estimate's
+               Discount field. Materialized server-side as the SAME negative
+               `category="discount"` line the estimate copy mints, so both
+               surfaces produce identical rows. Before this the office could
+               not enter a discount at all: the contract forbids a negative
+               unit_price, and the only discount row the system minted came
+               from a path /billing/new never triggers. -->
+          <div class="form-field">
+            <label for="inv-discount">Discount</label>
+            <InputNumber
+              id="inv-discount"
+              v-model="form.discount"
+              mode="currency"
+              currency="USD"
+              locale="en-US"
+              :min="0"
+              class="w-full"
+              data-testid="invoice-discount"
+            />
+            <small class="muted">Comes off the taxable total, like the estimate's.</small>
+          </div>
+
           <div class="form-field full-width">
             <label for="inv-notes">Notes</label>
             <Textarea
@@ -295,6 +317,12 @@
           <div class="totals-row">
             <span>Subtotal</span>
             <span data-testid="invoice-subtotal">{{ currency(subtotal) }}</span>
+          </div>
+          <div class="totals-row" v-if="toNum(form.discount) > 0">
+            <span>Discount</span>
+            <span class="discount-amount" data-testid="invoice-discount-amount">
+              -{{ currency(toNum(form.discount)) }}
+            </span>
           </div>
           <div class="totals-row" v-if="form.tax_rate_pct">
             <span>Tax ({{ form.tax_rate_pct }}%)</span>
@@ -372,6 +400,7 @@ const form = ref({
   // Stored as a percent integer in the form (8.25), converted to decimal
   // (0.0825) at POST time. Form-friendly; backend-canonical.
   tax_rate_pct: 0,
+  discount: null,
   notes: '',
   line_items: [{
     description: '',
@@ -475,11 +504,21 @@ const taxableSubtotal = computed(() =>
     .reduce((s, l) => s + toNum(l.quantity) * toNum(l.unit_price), 0),
 );
 
-const taxAmount = computed(() =>
-  Math.round(taxableSubtotal.value * (toNum(form.value.tax_rate_pct) / 100) * 100) / 100,
+// The discount comes off the TAXABLE base, floored at 0 — mirroring
+// `_recalculate_invoice`, which floors it server-side when the discount
+// exceeds the goods. Getting this wrong here would show the operator a total
+// the invoice does not have.
+const discountedTaxableBase = computed(() =>
+  Math.max(taxableSubtotal.value - toNum(form.value.discount), 0),
 );
 
-const total = computed(() => subtotal.value + taxAmount.value);
+const taxAmount = computed(() =>
+  Math.round(discountedTaxableBase.value * (toNum(form.value.tax_rate_pct) / 100) * 100) / 100,
+);
+
+const total = computed(() =>
+  Math.max(subtotal.value - toNum(form.value.discount), 0) + taxAmount.value,
+);
 
 const canCreate = computed(() => {
   // Customer is the AR target — always required. Job is optional so
@@ -852,6 +891,7 @@ async function createInvoice() {
       // job, and a counter sale has no job whose photos could print.
       attached_photo_ids: form.value.job_id ? (form.value.attached_photo_ids || []) : [],
     };
+    if (toNum(form.value.discount) > 0) payload.discount = toNum(form.value.discount);
     if (adjustsInvoiceId.value) payload.adjusts_invoice_id = adjustsInvoiceId.value;
     // Provenance only. NOT `estimate_id` — that tells the server to copy the
     // estimate's lines and ignore ours, which would discard whatever the

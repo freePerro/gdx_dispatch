@@ -533,6 +533,37 @@ const tierSetsByCategory = ref({});
 // estimates also disables it on invoices.
 const editorFeatures = ref({ estimates_allow_line_margin_override: true });
 
+// D6 — the tenant's "Tax labor lines" setting (Settings -> Tax), the same flag
+// the estimate copy, mobile tier, closeout autodraft and the labor picker all
+// resolve. Catalog adds were the last path hardcoding `taxable: true`, so a
+// Labor-category catalog item (the Built-in tab has four) landed taxed against
+// the tenant's own recorded choice. Default false = do not tax labor, matching
+// `_load_tax_labor_flag`'s own fallback; defaulting true re-introduces an
+// overbill.
+const taxLabor = ref(false);
+
+async function loadTaxLabor() {
+  if (!props.showTaxable) return;
+  try {
+    const cfg = await api.get('/api/tax/config', { suppressErrorToast: true });
+    taxLabor.value = Boolean(cfg?.tax_labor);
+  } catch {
+    taxLabor.value = false;
+  }
+}
+
+/**
+ * Is this line taxable when it arrives from a picker?
+ *
+ * Labor follows the tenant flag; everything else is taxable, which is the
+ * column's own server_default and how goods have always behaved. The operator
+ * still has the per-line checkbox.
+ */
+function defaultTaxableFor(category) {
+  if (String(category || '').trim().toLowerCase() === 'labor') return taxLabor.value;
+  return true;
+}
+
 async function loadPricingTiers() {
   if (!props.showCost || !props.showMargin) return;
   try {
@@ -893,6 +924,7 @@ watch(() => props.jobId, () => { loadPartsFromJob(); }, { immediate: true });
 onMounted(() => {
   loadPricingTiers();
   loadEditorFeatures();
+  loadTaxLabor();
 });
 
 const anySelected = computed(() => selectedPartIds.value.length > 0);
@@ -1017,7 +1049,9 @@ function addFromCatalog(items) {
       // from"). Display-only; rendered as a pill beside the description so it
       // costs no grid column. Never sent to the API.
       ...(item._catalogName ? { _catalogName: item._catalogName } : {}),
-      ...(props.showTaxable ? { taxable: true } : {}),
+      ...(props.showTaxable
+        ? { taxable: defaultTaxableFor(displayCategoryFor(item, props.categories)) }
+        : {}),
       // Display category resolved from the item's own pricing_category first,
       // NOT its free-form string — 223 of 300 live catalog rows carry words
       // like `3" Struts` that match no option and rendered the cell blank.
