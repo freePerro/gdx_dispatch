@@ -53,7 +53,10 @@ _SENSITIVE_KEY_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 # Values (regardless of key) that LOOK like secrets get redacted too.
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Same linear form as core/validation.py — see the note there. This copy
+# matters more, not less: it runs over arbitrary log VALUES, which carry no
+# length cap at all, where the API paths bound email input at 254 chars.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$")
 _JWT_RE = re.compile(r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
 _BEARER_RE = re.compile(r"^(?:Bearer\s+|sk-|pat_|svc_|ghp_)[A-Za-z0-9_.-]{20,}$", re.IGNORECASE)
 

@@ -74,3 +74,58 @@ def test_validate_email_good_and_bad():
     # Consecutive dots.
     with pytest.raises(HTTPException):
         validate_email("foo..bar@example.com")
+
+
+# ── ReDoS regression (CodeQL py/polynomial-redos, PR #372) ──────────────────
+
+
+def test_email_regex_stays_linear_on_a_pathological_input():
+    """`_EMAIL_RE` must not be quadratic in the number of dots.
+
+    The pattern used to spell the domain `[^@\\s]+\\.[^@\\s]+`. Both sides of
+    that literal dot could themselves match dots, so every dot in the input was
+    a candidate split point and a NON-matching string forced the engine through
+    all of them. The trailing space below can never satisfy the final `+`,
+    which is what makes the engine exhaust every position.
+
+    Measured on the old pattern: n=16000 → 2.1s, n=40000 → 13.0s (a 4x input
+    for 16x the time — textbook quadratic). The linear form does n=40000 in
+    ~0.003s. The 2-second budget here is ~600x the fixed cost and ~1/6th of the
+    old cost at this size, so it flags a regression without being timing-flaky
+    on a loaded CI box.
+    """
+    import time
+
+    from gdx_dispatch.core.validation import _EMAIL_RE
+
+    payload = "a@" + "b." * 40000 + " "
+    started = time.perf_counter()
+    assert _EMAIL_RE.match(payload) is None
+    elapsed = time.perf_counter() - started
+    assert elapsed < 2.0, (
+        f"_EMAIL_RE took {elapsed:.2f}s on {len(payload)} chars — the dot-split "
+        "ambiguity is back; keep the domain as dot-free labels joined by "
+        "explicit dots"
+    )
+
+
+def test_log_redact_email_regex_is_the_same_linear_pattern():
+    """log_redact keeps its own copy, and it runs over arbitrary log VALUES —
+    no length cap at all, where the API paths bound email input at 254 chars.
+    A fix applied to one copy and not the other is the worse outcome."""
+    from gdx_dispatch.core.log_redact import _EMAIL_RE as REDACT_RE
+    from gdx_dispatch.core.validation import _EMAIL_RE as VALIDATE_RE
+
+    assert REDACT_RE.pattern == VALIDATE_RE.pattern
+
+
+def test_email_regex_rejects_the_malformed_domains_it_used_to_accept():
+    """The linear form is stricter in exactly one direction: a leading or
+    trailing dot in the domain. The old pattern accepted `a@b.c.` because
+    `[^@\\s]+` happily swallowed the interior dot."""
+    from gdx_dispatch.core.validation import _EMAIL_RE
+
+    for good in ("a@b.c", "sue@acme.example", "first.last@sub.domain.co.uk"):
+        assert _EMAIL_RE.match(good), f"{good} must still be accepted"
+    for bad in ("a@b.c.", "a@.b", "a@b..c", "a@bc", "a b@c.d", "a@b c.d"):
+        assert _EMAIL_RE.match(bad) is None, f"{bad} must be rejected"
