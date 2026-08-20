@@ -1,13 +1,20 @@
 # QuickBooks Sub-Customers Flattened Into Customers
 
 **Date:** 2026-08-19
-**Status:** PARTIALLY BUILT — **PR 1 of 5 built** (office contacts CRUD +
-Contacts tab, §4 PR 1). **Not built:** PR 2 (ParentRef → saved sites),
-PR 3 (GDX-wins + per-row audit), PR 4 (duplicate detector by email/phone),
-PR 5 (the data cleanup). Adversarially audited twice on 2026-08-19 — once
-as a plan, once as a diff; findings folded into §4 and §5.
+**Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 built** (ParentRef →
+saved sites). **Not built:** PR 3 (GDX-wins + per-row audit), PR 4 (duplicate
+detector by email/phone), PR 5 (the data cleanup). Adversarially audited three
+times on 2026-08-19 (PR 1 as plan, PR 1 as diff, PR 2 as diff); findings folded
+into §4 and §5.
 **Ask (Doug):** "Somewhere along the way bob at riverbend lumber became jeff."
 Follow-up: "can we fix all of that. for riverbend lumber they are all job names."
+
+> **Read this before believing PR 2 fixed the account.** On production the six
+> real sub-customers all still carry `entity_type='customer'` maps, so a pull
+> takes the LEGACY branch for every one of them: `sites=0, legacy_subs=6`.
+> PR 2 stops NEW flattening and keeps the legacy rows correct; **PR 5 is what
+> actually consolidates the account.** The QB refresh token also expired
+> 2026-07-07, so no pull can run at all until someone reconnects.
 
 ---
 

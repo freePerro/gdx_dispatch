@@ -17,7 +17,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from gdx_dispatch.core.audit import SYSTEM_ACTOR, log_audit_event_sync
+from gdx_dispatch.core.audit import SYSTEM_ACTOR, ensure_audit_table, log_audit_event_sync
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.core.quickbooks import QBConnection, QBEntityMap, QBVendor
 from gdx_dispatch.models.tenant_models import (
@@ -540,6 +540,195 @@ def _audit(db: Session, event_type: str, entity_id: str, payload: dict[str, Any]
 # Pull operations (QB → GDX)
 # ---------------------------------------------------------------------------
 
+# ── QuickBooks sub-customers ("Jobs") ───────────────────────────────────────
+#
+# QB models a project as a sub-customer carrying a ParentRef; its UI calls
+# these "Jobs". Before 2026-08-19 this pull read only DisplayName, so every
+# sub-customer became a TOP-LEVEL GDX customer — 77 in one minute on
+# 2026-04-13, six of them under a single lumber-yard account, each inheriting
+# the parent's PrimaryEmailAddr. The account's history stayed on the parent
+# while new work was written against the fragments.
+#
+# The push side already had the rule (see push_invoice's PrivateNote note):
+# "one GDX customer <-> one QB customer; site differentiation lives in the
+# memo, not in sub-customers." The pull side never got that memo. It does now:
+# a sub-customer becomes a SAVED SITE (customer_locations) on the parent.
+#
+# See docs/design/qb-subcustomer-flattening-plan.md.
+
+
+def _parent_qb_id(raw: dict[str, Any]) -> str | None:
+    """The QB id of this row's parent, or None for a top-level customer."""
+    ref = raw.get("ParentRef") or {}
+    value = str(ref.get("value") or "").strip()
+    return value or None
+
+
+def _root_customer_qb_id(
+    raw: dict[str, Any], rows_by_id: dict[str, dict[str, Any]], max_depth: int = 12
+) -> tuple[str, list[dict[str, Any]]]:
+    """Walk ParentRef up to the row that is a real customer, not a Job.
+
+    QBO nests Jobs under Jobs. A depth-2 sub-customer's parent is ITSELF a
+    sub-customer, so it will never hold an `entity_type='customer'` map — a
+    one-level lookup would call every grandchild an orphan and raise on it on
+    every pull, forever. The GDX model is flat: one customer, many saved
+    sites, so the whole chain collapses onto the root.
+
+    Returns ``(root_qb_id, intermediate_rows)`` where the intermediates are
+    ordered outermost-first for labelling. Raises on a cycle or a chain deeper
+    than ``max_depth``.
+    """
+    chain: list[dict[str, Any]] = []
+    current = raw
+    seen: set[str] = set()
+    for _ in range(max_depth):
+        current_id = str(current.get("Id") or "")
+        if current_id in seen:
+            raise ValueError(f"ParentRef cycle at qb id {current_id}")
+        seen.add(current_id)
+        parent_id = _parent_qb_id(current)
+        if not parent_id:
+            return current_id, list(reversed(chain))
+        parent = rows_by_id.get(parent_id)
+        if parent is None:
+            # Parent absent from this pull (inactive, paginated out). Its map
+            # is the best available anchor; the caller reports it if missing.
+            return parent_id, list(reversed(chain))
+        chain.append(parent)
+        current = parent
+    raise ValueError("ParentRef chain deeper than %d — refusing to guess" % max_depth)
+
+
+def _leaf_name(raw: dict[str, Any], parent_name: str) -> str:
+    """The sub-customer's own name, without the parent prefix.
+
+    QB exposes both ``DisplayName`` and ``FullyQualifiedName``; which one
+    carries the ``Parent:Child`` form varies by how the row was created, so
+    neither can be trusted to be bare. Split on the LAST colon, and only when
+    the prefix actually names the parent — a customer legitimately called
+    "Smith: Auto Body" must not lose half its name to a blind split.
+    """
+    qualified = str(raw.get("FullyQualifiedName") or "").strip()
+    display = str(raw.get("DisplayName") or "").strip()
+    candidate = display or qualified
+    for source in (display, qualified):
+        if ":" not in source:
+            continue
+        prefix, _, leaf = source.rpartition(":")
+        if _normalize_name(prefix) == _normalize_name(parent_name) and leaf.strip():
+            candidate = leaf.strip()
+            break
+    return humanize_name(candidate) or candidate
+
+
+def _qb_address_parts(raw: dict[str, Any]) -> dict[str, str | None]:
+    """Street/city/state/zip off a QB row's BillAddr, falling back to ShipAddr.
+
+    Sub-customers frequently carry the jobsite address the parent doesn't have
+    — that is the whole reason a builder makes one per project. Reading it is
+    what turns a label-only site into a place a tech can navigate to.
+    """
+    addr = raw.get("BillAddr") or raw.get("ShipAddr") or {}
+    line = " ".join(
+        str(addr.get(k) or "").strip()
+        for k in ("Line1", "Line2", "Line3")
+        if str(addr.get(k) or "").strip()
+    ).strip()
+    return {
+        "address": line or None,
+        "city": (str(addr.get("City") or "").strip() or None),
+        "state": (str(addr.get("CountrySubDivisionCode") or "").strip() or None),
+        "zip": (str(addr.get("PostalCode") or "").strip() or None),
+    }
+
+
+def _upsert_subcustomer_location(
+    db: Session,
+    *,
+    tenant_id: str,
+    parent_customer_id: Any,
+    qb_id: str,
+    label: str,
+    parts: dict[str, str | None],
+) -> str:
+    """Create or refresh the saved site standing in for a QB sub-customer.
+
+    Returns the customer_locations id.
+
+    Returns ``"created"``, ``"updated"``, or ``None`` when the mapped site has
+    been soft-deleted by a human and is deliberately left alone.
+
+    ``is_primary`` is written False and never True. This is the single most
+    load-bearing line in the change: ``core/job_site.py`` reads
+    ``customer.address`` ONLY for customers with no primary location, and lets
+    a primary location replace the jobsite for every unbound job. Marking one
+    of these primary would silently repoint every existing job on the account
+    at a site that often has no address at all.
+
+    Deliberately NOT ``core/job_site.find_or_create_customer_location``: that
+    helper dedupes by normalized ADDRESS, which is right for a tech typing a
+    driveway but wrong here — these rows are identified by their QB id, and
+    most arrive with no address at all, so address-matching would collapse
+    every site on an account into one.
+    """
+    from gdx_dispatch.models.tenant_models import CustomerLocation
+
+    mapping = db.execute(
+        select(QBEntityMap).where(
+            QBEntityMap.tenant_id == tenant_id,
+            QBEntityMap.entity_type == "customer_location",
+            QBEntityMap.qb_id == qb_id,
+        )
+    ).scalar_one_or_none()
+
+    location = None
+    if mapping is not None:
+        location = db.execute(
+            select(CustomerLocation).where(CustomerLocation.id == str(mapping.local_id))
+        ).scalar_one_or_none()
+
+    if location is not None and location.deleted_at is not None:
+        # A human removed this site. QB still lists the Job, but resurrecting a
+        # row somebody deliberately deleted is not the sync's call to make —
+        # and writing into it would update a row nothing can see.
+        return None
+
+    created = location is None
+    if created:
+        location = CustomerLocation(
+            id=str(uuid4()),
+            company_id=tenant_id,
+            # customer_locations.customer_id is varchar while customers.id is
+            # uuid — the str() is required, not cosmetic.
+            customer_id=str(parent_customer_id),
+            is_primary=False,
+            created_at=datetime.now(UTC),
+        )
+        db.add(location)
+
+    location.label = label
+    # Never blank a known address with a QB row that simply has none.
+    for field in ("address", "city", "state", "zip"):
+        value = parts.get(field)
+        if value:
+            setattr(location, field, value)
+    db.flush()
+    _upsert_map(tenant_id, "customer_location", str(location.id), qb_id, db)
+    # Invariant #1: this creates or mutates a customer-owned row, so it leaves
+    # a trail of its own. The run-level qb_pull_customers counts are a summary,
+    # not an audit — they cannot answer "which site, whose account, when".
+    _audit(db, "qb_subcustomer_site_created" if created else "qb_subcustomer_site_updated",
+           str(location.id), {
+               "tenant_id": tenant_id,
+               "qb_id": qb_id,
+               "customer_id": str(parent_customer_id),
+               "label": label,
+               "has_address": bool(parts.get("address")),
+           })
+    return "created" if created else "updated"
+
+
 async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str, int]:
     """Pull all customers from QuickBooks into the local database.
 
@@ -550,12 +739,33 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
     created = 0
     updated = 0
     adopted = 0  # existing local records linked to a QB id for the first time
+    # Counted separately, because "sites: 1" on a no-op re-pull reads as work
+    # that did not happen — and that number goes into the audit event.
+    sites_created = 0
+    sites_updated = 0
+    sites_skipped_deleted = 0  # mapped site soft-deleted by a human; left alone
+    legacy_subs = 0  # sub-customers already flattened, left for the PR-5 cleanup
     errors: list[dict[str, str]] = []
     seen_qb_ids: set[str] = set()
     try:
+        # ensure_audit_table COMMITS on first use per engine (audit.py:320).
+        # Every per-row write here runs inside a db.begin_nested() SAVEPOINT,
+        # and a commit from underneath closes that context manager — the first
+        # audited site write died with "Can't operate on closed transaction".
+        # Install the guard once, up front, where committing disturbs nothing.
+        ensure_audit_table(db)
         rows = await qb.query("Customer")
 
-        for raw in rows:
+        # TWO PASSES, because a sub-customer needs its parent's GDX row to
+        # already be mapped and QB does not guarantee parents come first (in
+        # the account that prompted this, the parent is qb id 35 and its
+        # children are 121-140, but that ordering is incidental, not
+        # contractual). Pass 1 = every top-level customer. Pass 2 = the
+        # children, by which point every parent has a map.
+        top_level = [r for r in rows if not _parent_qb_id(r)]
+        sub_rows = [r for r in rows if _parent_qb_id(r)]
+
+        for raw in top_level:
             qb_id = str(raw.get("Id") or "")
             # humanize_name fixes the QB-source data hygiene ("mike wendt"
             # → "Mike Wendt") without mangling acronyms or already-titled
@@ -628,17 +838,120 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                 log.exception("qb_pull_customers_row_failed qb_id=%s", qb_id)
                 errors.append({"qb_id": qb_id, "name": name, "error": str(row_exc)[:200]})
 
+        # ── Pass 2: sub-customers become saved sites on the parent ──────────
+        rows_by_id = {str(r.get("Id") or ""): r for r in rows}
+        for raw in sub_rows:
+            qb_id = str(raw.get("Id") or "")
+            parent_qb_id = _parent_qb_id(raw)
+            if not qb_id or not parent_qb_id:
+                continue
+            # Sub-customer ids MUST stay in seen_qb_ids. _detect_qbo_merge_deletes
+            # (always-on, no feature flag) probes every customer map absent from
+            # this set with a live, metered GET — dropping them would fire one
+            # extra billed read per sub-customer on every pull, forever.
+            seen_qb_ids.add(qb_id)
+            name = str(raw.get("DisplayName") or "").strip()
+
+            try:
+                with db.begin_nested():
+                    # A sub-customer already flattened into a top-level
+                    # customer by the pre-fix pull keeps its `customer` map
+                    # until the PR-5 cleanup migrates it. It must keep getting
+                    # the SAME name/email/phone refresh every other mapped
+                    # customer gets — an earlier draft of this branch wrote
+                    # only synced_at, which silently froze those fields for
+                    # every already-flattened row while claiming parity in a
+                    # comment. On this tenant that is all six of them, so the
+                    # regression would have been the only thing this pass
+                    # actually did in production. Do NOT also mint a location:
+                    # the account would carry the same job twice, once as a
+                    # customer and once as a site.
+                    legacy = db.execute(
+                        select(QBEntityMap).where(
+                            QBEntityMap.tenant_id == tenant_id,
+                            QBEntityMap.entity_type == "customer",
+                            QBEntityMap.qb_id == qb_id,
+                        )
+                    ).scalar_one_or_none()
+                    if legacy is not None:
+                        legacy_customer = db.get(Customer, UUID(legacy.local_id))
+                        if legacy_customer is not None:
+                            legacy_customer.name = humanize_name(name) or name
+                            legacy_customer.email = (
+                                (raw.get("PrimaryEmailAddr") or {}).get("Address") or ""
+                            ).strip() or None
+                            legacy_customer.phone = (
+                                (raw.get("PrimaryPhone") or {}).get("FreeFormNumber") or ""
+                            ).strip() or None
+                            updated += 1
+                        legacy.synced_at = datetime.now(UTC)
+                        legacy_subs += 1
+                        continue
+
+                    root_qb_id, ancestors = _root_customer_qb_id(raw, rows_by_id)
+                    parent_map = db.execute(
+                        select(QBEntityMap).where(
+                            QBEntityMap.tenant_id == tenant_id,
+                            QBEntityMap.entity_type == "customer",
+                            QBEntityMap.qb_id == str(root_qb_id),
+                        )
+                    ).scalar_one_or_none()
+                    if parent_map is None:
+                        # Never silently promote an orphan to a top-level
+                        # customer — that is precisely the bug being fixed.
+                        raise ValueError(
+                            f"sub-customer {qb_id} has no mapped root customer {root_qb_id}"
+                        )
+                    parent = db.get(Customer, UUID(parent_map.local_id))
+                    if parent is None:
+                        raise ValueError(
+                            f"root map {root_qb_id} points at a missing customer"
+                        )
+
+                    # Nested Jobs flatten onto the root customer, so the label
+                    # keeps the path that made them distinguishable in QB.
+                    parts_of_label = [
+                        _leaf_name(a, "") for a in ancestors if _parent_qb_id(a)
+                    ]
+                    parts_of_label.append(_leaf_name(raw, parent.name or ""))
+                    label = " / ".join(p for p in parts_of_label if p)
+                    if not label:
+                        raise ValueError(f"sub-customer {qb_id} has no usable name")
+                    outcome = _upsert_subcustomer_location(
+                        db,
+                        tenant_id=tenant_id,
+                        parent_customer_id=parent.id,
+                        qb_id=qb_id,
+                        label=label,
+                        parts=_qb_address_parts(raw),
+                    )
+                    if outcome == "created":
+                        sites_created += 1
+                    elif outcome == "updated":
+                        sites_updated += 1
+                    else:
+                        sites_skipped_deleted += 1
+            except Exception as row_exc:
+                log.exception("qb_pull_subcustomer_row_failed qb_id=%s", qb_id)
+                errors.append({"qb_id": qb_id, "name": name, "error": str(row_exc)[:200]})
+
         merged_remote = await _detect_qbo_merge_deletes(tenant_id, "customer", seen_qb_ids, db, qb)
         deleted = _apply_qbo_deletes(tenant_id, "customer", seen_qb_ids, db)
         db.commit()
         _touch_sync_success(tenant_id, db)
         _audit(db, "qb_pull_customers", tenant_id, {
             "tenant_id": tenant_id, "created": created, "updated": updated,
-            "adopted": adopted, "merged_remote": merged_remote,
+            "adopted": adopted, "sites_created": sites_created,
+            "sites_updated": sites_updated,
+            "sites_skipped_deleted": sites_skipped_deleted,
+            "legacy_subs": legacy_subs, "merged_remote": merged_remote,
             "deleted": deleted, "errors": len(errors),
         })
         db.commit()
         return {"created": created, "updated": updated, "adopted": adopted,
+                "sites_created": sites_created, "sites_updated": sites_updated,
+                "sites_skipped_deleted": sites_skipped_deleted,
+                "legacy_subs": legacy_subs,
                 "merged_remote": merged_remote, "deleted": deleted, "errors": errors}
     except QBAPIError:
         db.rollback()
