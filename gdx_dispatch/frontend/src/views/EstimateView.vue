@@ -1090,8 +1090,14 @@ import Toast from "primevue/toast";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 import {
+  VALID_BUCKETS,
   categoryToPricingCategory,
   displayCategoryFor,
+  // Aliased: this file ALREADY has a local `loadPricingCategories()` that hits
+  // the same endpoint to fill the save-to-catalog dialog's bucket list. Two
+  // consumers, one endpoint — the collision is a naming clash, not a duplicate
+  // fetch worth eliminating here.
+  loadPricingCategories as widenSharedBuckets,
 } from '../composables/useLineCategories';
 const { confirmDestructive, confirmAsync } = useDestructiveConfirm();
 
@@ -1128,7 +1134,21 @@ function recipientDisplay(contactId) {
   const opt = composer.value.recipients.find((r) => r.contact_id === (contactId || ""));
   return opt ? `${opt.name} <${opt.email}>` : composer.value.to || "Choose a recipient";
 }
-const lineCategories = ["Doors", "Openers", "Springs", "Labor", "Parts", "Other"];
+// F9 — the third and last hardcoded copy. Kept as a ref seeded with the base
+// six so nothing changes before the fetch resolves (or if it fails), then
+// widened from /api/catalogs/pricing-categories so an admin-seeded margin tier
+// appears here too. This is a plain string array, not the {label,value} shape
+// the invoice editor uses; `displayCategoryFor` accepts both.
+const lineCategories = ref(["Doors", "Openers", "Springs", "Labor", "Parts", "Other"]);
+
+async function loadLineCategories() {
+  await widenSharedBuckets(api);
+  const known = new Set(lineCategories.value.map((c) => c.toLowerCase()));
+  for (const b of VALID_BUCKETS) {
+    if (b === "labor" || known.has(b)) continue;
+    lineCategories.value.push(b.charAt(0).toUpperCase() + b.slice(1));
+  }
+}
 
 const isExisting = computed(() => Boolean(route.params.id));
 
@@ -1948,7 +1968,7 @@ function addFromCatalog(items) {
     // table. The old fallback here was `item.category || "Parts"`, which left
     // unmatched words in the model — rendering a BLANK select — and guessed
     // "Parts" for anything else, silently mis-bucketing a door.
-    const displayCat = displayCategoryFor(item, lineCategories);
+    const displayCat = displayCategoryFor(item, lineCategories.value);
     const line = {
       ...defaultLineItem(),
       category: displayCat,
@@ -3431,6 +3451,7 @@ onMounted(async () => {
   await loadCustomers();
   loadPricingTiers();
   loadPricingSettings();
+  loadLineCategories();
   loadPricingCategories();
   loadEstimateFeatures();
   discoverEstimateSources();   // plugin hook (ADR-013) — no-op when none installed

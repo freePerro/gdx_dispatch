@@ -9,7 +9,8 @@ plus migration 071 (labor provenance on `invoice_lines`).
 (`source_estimate_id` provenance + audit trail).
 **p4** — `feat/invoice-line-editor-p4`, built: F6 + F7 closed (whole-invoice
 discount, and the last catalog-add path honouring `tax_labor`).
-**Not built:** p5 data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
+**p5** — `fix/invoice-line-editor-p5`, built: F9 closed (categories from
+`/api/catalogs/pricing-categories`). **All five built.** Decisions §5 D1–D8 all locked. Written from Doug's
 report
 ("after clicking create new invoice it is missing the option to add labor…
 and it does not carry category over when adding from the catalog… I am sure
@@ -393,7 +394,32 @@ Save-line-to-catalog (`EstimateView.vue:395`), AI Suggest (`:437`), and the
 plugin capture / in-context-pricing buttons (`:415-432`). Listed for
 completeness; not proposed for this slice.
 
-### F14 ⬜ Unverified — the 11-column grid on a laptop
+### F14 ✅ MEASURED 2026-08-20 — the grid does overflow, and it is handled
+
+Walked in a real browser at 1366×900. Measured rather than eyeballed:
+
+```
+grid tracks : 36 130 180 80 110 110 70 76 90 100 36  = 1018px
+editor       clientWidth 962   scrollWidth 1102      → overflows by 140px
+editor       overflow-x: auto                        → scrolls in its own box
+document     scrollWidth 1366  clientWidth 1366      → page does NOT scroll
+```
+
+So the row **does** overflow at a common laptop width, and it is contained
+correctly — the page never scrolls horizontally, which is this repo's stated
+rule. The cost is real though: the **Total column sits off-screen** and the
+operator must scroll inside the editor to see a line's total.
+
+**This stack did not cause it.** The track list on `origin/main` is
+byte-identical. It is also why the p1 catalog-source pill went *inside* the
+Description cell rather than becoming a 12th column — a 12th track would have
+pushed Margin off too.
+
+Filed as a follow-up, not fixed here: the honest fix is dropping or collapsing
+a column at narrow widths (Incl. install and Margin are the candidates), which
+is a design decision about what the office needs visible while billing.
+
+### F14 (original note, kept) — why it was unverifiable before
 
 With categories + cost + margin + taxable + incl-install the grid track list
 (`LineItemEditor.vue:661-679`) sums to ~1,018px minimum before padding, and
@@ -883,6 +909,32 @@ The Built-in tab's four `Labor` items landed taxed against the tenant's own
 recorded choice, while the estimate copy, mobile tier, closeout autodraft and
 (since p2) the labor picker all honoured `tax_config.tax_labor`. Now all five
 agree. Goods stay taxable regardless — only the labor bucket follows the flag.
+
+---
+
+## 3f. p5 as built (2026-08-20)
+
+`GET /api/catalogs/pricing-categories` exists so an admin-seeded margin tier
+("gates") *"surfaces everywhere with no code change"*. Three hardcoded copies
+of the six options were exactly what it was meant to prevent — and this work
+briefly made it four, by adding `VALID_BUCKETS` to the shared composable.
+
+All four now derive from the endpoint, with the base six as the offline
+fallback.
+
+**Additive, never replacing.** The server's list is unioned into the client's
+set rather than overwriting it. A truncated or empty response must not be able
+to *shrink* the vocabulary — if it did, live catalog rows would start bucketing
+to `other`, which is the 10-point overcharge this entire plan began with. Three
+tests pin that: short response, empty response, failed call.
+
+`displayCategoryFor` and `isRenderableOption` now default to options derived
+from the live bucket set rather than the frozen constant, so widening actually
+reaches the resolver instead of only the dropdown.
+
+`Springs` stays an explicit display option: it has no bucket of its own
+(springs price as `parts`), but 77 live catalog rows are labelled that way and
+the office thinks in springs.
 
 ---
 
