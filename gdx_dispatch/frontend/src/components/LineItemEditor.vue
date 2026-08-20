@@ -316,6 +316,16 @@
           data-testid="line-add-catalog-btn"
           @click="showCatalogPicker = true"
         />
+        <Button
+          v-if="showLabor"
+          label="Add Labor"
+          icon="pi pi-wrench"
+          text
+          size="small"
+          severity="info"
+          data-testid="line-add-labor-btn"
+          @click="showLaborPicker = true"
+        />
       </div>
       <div class="line-items-subtotal" data-testid="line-items-subtotal">
         Subtotal: <strong>{{ currency(subtotal) }}</strong>
@@ -324,6 +334,14 @@
 
     <!-- Shared catalog picker (one tab per real catalog) -->
     <CatalogPickerDialog v-model:visible="showCatalogPicker" @add="addFromCatalog" />
+
+    <!-- Two-lane labor picker: matrix flat price OR the tech's attested hours -->
+    <LaborPickerDialog
+      v-if="showLabor"
+      v-model:visible="showLaborPicker"
+      :closeout="closeout"
+      @add="addLaborLines"
+    />
   </div>
 </template>
 
@@ -334,6 +352,7 @@ import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
 import Select from 'primevue/select';
 import CatalogPickerDialog from './CatalogPickerDialog.vue';
+import LaborPickerDialog from './LaborPickerDialog.vue';
 import { useApi } from '../composables/useApi';
 import {
   VALID_BUCKETS,
@@ -348,6 +367,12 @@ const props = defineProps({
   categories: { type: Array, default: () => [] },
   jobId: { type: String, default: null },
   showTaxable: { type: Boolean, default: false },
+  // Render the Add Labor button + two-lane picker. Invoice surfaces only:
+  // EstimateView has its own long-standing matrix picker.
+  showLabor: { type: Boolean, default: false },
+  // Closeout-billing-suggestion payload, passed through to the picker so the
+  // attested-hours lane can offer the tech's signed-off numbers.
+  closeout: { type: Object, default: null },
   showCost: { type: Boolean, default: false },
   showMargin: { type: Boolean, default: false },
   catalogEndpoint: { type: String, default: '/api/catalogs' },
@@ -371,7 +396,22 @@ watch(() => props.lines, (next) => {
 }, { deep: false });
 
 function cloneLines(arr) {
-  return Array.isArray(arr) ? arr.map((l) => ({ ...l })) : [];
+  // Seed `_lastPrice` HERE — one ingest point, not per call site.
+  //
+  // It is the baseline `markPriceOverride` compares against to tell a real
+  // edit from PrimeVue's commit-on-every-blur echo. Setting it only inside
+  // markPriceOverride meant no line ever had one before its FIRST price
+  // commit, so the guard was skipped exactly when it was needed and the echo
+  // still cleared `_priceOverridden` on a flat-priced labor line — after
+  // which a cost edit rewrote the quoted price (650 -> 769.23, reproduced).
+  //
+  // Every line reaches the editor through here: v-model ingest, catalog and
+  // parts adds, the labor picker, the closeout prefill, enterEditMode
+  // snapshots and duplicates. Seeding at the source covers all of them and
+  // cannot be forgotten by a new call site.
+  return Array.isArray(arr)
+    ? arr.map((l) => ({ ...l, _lastPrice: l._lastPrice ?? toNum(l.unit_price) }))
+    : [];
 }
 
 function emitLines() {
@@ -394,7 +434,7 @@ function defaultLine() {
 }
 
 function addLine() {
-  localLines.value.push(defaultLine());
+  localLines.value.push({ ...defaultLine(), _lastPrice: 0 });
   emitLines();
 }
 
@@ -597,6 +637,10 @@ function recomputeSell(item) {
   if (margin == null || margin >= 1) return;
   const sell = cost / (1 - margin);
   item.unit_price = Math.round(sell * 100) / 100;
+  // Programmatic write. Without moving the baseline, the next blur of the
+  // (untouched) price field compares against a stale number and reads as a
+  // real edit — which would falsely downgrade a matrix line to manual.
+  item._lastPrice = item.unit_price;
 }
 
 function onCostChange(item) {
@@ -659,6 +703,47 @@ function onMarginOverrideChange(item) {
 }
 
 function markPriceOverride(item) {
+  // A repriced matrix line is no longer matrix-quoted. The matrix said $650;
+  // if a human typed $900, calling that "matrix quoted row X" credits the
+  // matrix for a number nobody quoted — the exact falsehood
+  // `_labor_provenance_for` guards against on the estimate-copy path. That
+  // guard existed on the old path and not on the one this feature ships, so
+  // it is applied here too. The row id is KEPT: "started from row X, then
+  // repriced" is the true statement, and the API accepts manual-with-an-id
+  // precisely so it can be said.
+  //
+  // Gated on the price ACTUALLY MOVING. PrimeVue's InputNumber commits
+  // update:modelValue on EVERY blur, changed or not — the same blur-echo trap
+  // `onMarginOverrideChange` documents below. Without this gate, tabbing
+  // across the price field of an untouched matrix line rewrote its provenance
+  // to "a human repriced this" and cleared `_priceOverridden`, which then let
+  // a later cost edit rewrite a quoted flat price.
+  // NOTHING below this line should run for a commit that did not change the
+  // price. PrimeVue's InputNumber fires update:modelValue on EVERY blur,
+  // changed or not — the blur-echo trap `onMarginOverrideChange` documents.
+  // Letting the rest of this function run on an echo cleared
+  // `_priceOverridden` on an untouched matrix labor line, and a later cost
+  // edit then rewrote the quoted flat price (650 -> 769.23, observed).
+  // Guarding only the downgrade fixed the label and left that live.
+  if (
+    item._lastPrice != null
+    && Math.abs(toNum(item.unit_price) - toNum(item._lastPrice)) <= 0.005
+  ) {
+    return;
+  }
+  item._lastPrice = toNum(item.unit_price);
+
+  // Same rule for BOTH priced lanes. A repriced attested line is no longer
+  // "the tech's hours x the rate" either — that number came from a human, and
+  // leaving it 'attested' dresses an office price up as tech-signed evidence,
+  // which is the more dangerous direction of the two.
+  if (
+    (item.labor_source === 'matrix' || item.labor_source === 'attested')
+    && item._provenancePrice != null
+    && Math.abs(toNum(item.unit_price) - toNum(item._provenancePrice)) > 0.005
+  ) {
+    item.labor_source = 'manual';
+  }
   // Operator typed a price directly. Decide whether to treat it as an
   // override vs the tier-implied price, and reflect the *actual* margin in
   // the Margin column so the operator sees what they'll really run at.
@@ -846,6 +931,7 @@ async function addSelectedParts() {
       description: p.part_name,
       quantity: Number(p.quantity) || 1,
       unit_price: unitPrice,
+      _lastPrice: unitPrice,
       // D-S122-line-removal-unbill: stamp the part's ID on the line so the
       // backend can release the part when this line is later deleted.
       part_id: p.id,
@@ -885,6 +971,36 @@ async function addSelectedParts() {
 // one tab per real catalog. We only own the open/close flag and turn the items
 // it emits into invoice line rows.
 const showCatalogPicker = ref(false);
+const showLaborPicker = ref(false);
+
+/**
+ * Labor lines from the two-lane picker.
+ *
+ * Deliberately NOT run through `recomputeSell`: both lanes produce a price that
+ * is already the answer — a quoted flat price, or attested hours x the rate —
+ * and the tier engine has no labor tier anyway (the `labor` tier sets are
+ * inactive on this tenant; labor prices from the matrix, not the engine).
+ *
+ * Taxability is resolved in the picker from the tenant's "Tax labor lines"
+ * setting — the same flag the estimate copy, mobile tier and closeout autodraft
+ * all honour — and arrives on the line already decided. The operator still has
+ * the per-line Taxable checkbox.
+ */
+function addLaborLines(newLines) {
+  if (!Array.isArray(newLines) || !newLines.length) return;
+  const lines = localLines.value;
+  const onlyEmpty = lines.length === 1 && !lines[0].description && !toNum(lines[0].unit_price);
+  if (onlyEmpty) lines.splice(0, 1);
+  for (const l of newLines) {
+    lines.push({
+      ...l,
+      _lastPrice: toNum(l.unit_price),
+      ...(props.showTaxable ? { taxable: l.taxable !== false } : {}),
+      ...(props.showMargin ? { margin_pct_override: null } : {}),
+    });
+  }
+  emitLines();
+}
 
 function addFromCatalog(items) {
   const lines = localLines.value;
@@ -918,6 +1034,7 @@ function addFromCatalog(items) {
       ...(item.pricing_category ? { pricing_category: item.pricing_category } : {}),
       ...(props.showMargin ? { margin_pct_override: null } : {}),
     };
+    line._lastPrice = toNum(line.unit_price);
     lines.push(line);
     // Show the marked-up sell immediately, the way the estimate page always
     // has. Verified a no-op against all 299 live costed catalog rows on

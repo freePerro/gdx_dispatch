@@ -602,6 +602,23 @@ class InvoiceLine(Base):
         nullable=True,
         index=True,
     )
+    # Labor provenance (migration 071). `estimate_lines` has carried the first
+    # two since S97; invoice lines never did, so the estimate -> invoice copy
+    # dropped them. Nullable: most lines are not labor.
+    #
+    # labor_source records WHICH lane priced this line -- "matrix" (a quoted
+    # flat contract price), "attested" (the tech's signed-off hours x the
+    # loaded rate) or "manual". Billed labor comes from attested hours only; a
+    # matrix flat price is a contract price, NOT a claim about hours, and this
+    # column is what lets a later reader tell them apart.
+    labor_price_item_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("labor_price_items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    estimated_man_hours: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    labor_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # This line's price already covers the installation (Doug 2026-08-19:
     # "sometimes the install price is in the part price"). Nothing in the
     # catalog distinguishes a bundled item from a bare one except the words

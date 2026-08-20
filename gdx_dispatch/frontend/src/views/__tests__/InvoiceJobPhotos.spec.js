@@ -65,7 +65,14 @@ describe('InvoiceDetailView — job photo picker', () => {
 
   it('normalizeInvoice carries attached_photo_ids', () => {
     const start = SRC.indexOf('function normalizeInvoice');
-    const span = SRC.slice(start, start + 6000);
+    expect(start).toBeGreaterThan(-1);
+    // Slice to the FUNCTION BOUNDARY, not a character count. The 6000-char
+    // window broke when normalizeInvoice grew a labor-provenance block —
+    // a guard that fails for reasons unrelated to what it protects trains
+    // people to widen it without reading, which is how it stops guarding.
+    const rest = SRC.slice(start);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/attached_photo_ids:\s*Array\.isArray\(payload\.attached_photo_ids\)/);
   });
 });

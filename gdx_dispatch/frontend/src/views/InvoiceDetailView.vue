@@ -269,9 +269,11 @@
           :job-id="invoice.job_id || null"
           :locked-predicate="isDepositNettingLine"
           locked-tooltip="Deposit netting line — it mirrors the deposit actually paid and can't be edited or deleted. Void the invoice and re-create it if the netting is wrong."
+          :closeout="closeoutSuggestion"
           show-taxable
           show-cost
           show-margin
+          show-labor
           data-testid="invoice-edit-line-items"
         />
         <!-- Editable tax rate + dates + notes when in edit mode -->
@@ -1030,6 +1032,24 @@ const taxRate = ref(0.0);
 const editing = ref(false);
 const savingEdit = ref(false);
 const editLines = ref([]);          // {_key, id?, description, quantity, unit_price, taxable}
+// Closeout billing suggestion for this invoice's job — feeds the Add Labor
+// picker's attested lane. Same endpoint /billing/new uses, fetched lazily on
+// entering edit mode so a read-only view costs nothing.
+const closeoutSuggestion = ref(null);
+
+async function loadCloseoutSuggestion() {
+  closeoutSuggestion.value = null;
+  const jobId = invoice.value?.job_id;
+  if (!jobId) return;
+  try {
+    closeoutSuggestion.value = await api.get(
+      `/api/jobs/${jobId}/closeout-billing-suggestion`,
+      { suppressErrorToast: true },
+    );
+  } catch {
+    // Best-effort: the matrix lane still works, lane 2 just stays hidden.
+  }
+}
 const editTaxRatePct = ref(0);      // displayed as percent (e.g., 7.38), not decimal
 const editInvoiceDate = ref("");    // ISO yyyy-mm-dd
 const editDueDate = ref("");
@@ -1251,6 +1271,15 @@ function normalizeInvoice(payload) {
     margin_pct_snapshot: item.margin_pct_snapshot ?? null,
     margin_pct_override: item.margin_pct_override ?? null,
     part_id: item.part_id ?? null,
+    // Labor provenance (071). THE SAME BUG THIS COMMENT BLOCK ALREADY NAMES
+    // TWICE: a field the normalizer drops is written to the DB and then
+    // invisible forever. Dropping these meant edit mode had no provenance, so
+    // repricing a $650 matrix-quoted labor line to $900 left the row still
+    // claiming the matrix quoted $900 — the exact falsehood migration 071 and
+    // the contract validator exist to prevent.
+    labor_source: item.labor_source ?? null,
+    labor_price_item_id: item.labor_price_item_id ?? null,
+    estimated_man_hours: item.estimated_man_hours ?? null,
   }));
 
   const payments = (payload.payments || payload.payment_history || []).map((p, i) => ({
@@ -1794,7 +1823,20 @@ function enterEditMode() {
     // to prevent, in one keystroke.
     _marginPersisted: ln.margin_pct_override != null,
     _marginUserEdited: ln.margin_pct_override != null,
+    // Provenance into the editor, plus the price it refers to — without
+    // `_provenancePrice` the matrix -> manual downgrade can never fire here,
+    // and a reprice would keep claiming the matrix quoted the new number.
+    labor_source: ln.labor_source ?? null,
+    labor_price_item_id: ln.labor_price_item_id ?? null,
+    estimated_man_hours: ln.estimated_man_hours ?? null,
+    ...(ln.labor_source === 'matrix'
+      ? { _provenancePrice: toNum(ln.unit_price) } : {}),
   }));
+  // Without this the Add Labor picker's attested lane is DEAD on this screen:
+  // it hides lane 2 when `closeout` is null and never fetches for itself. The
+  // office fixing a draft invoice would see "Bill these hours" on /billing/new
+  // and not here, for the same job.
+  loadCloseoutSuggestion();
   // Seed the rate input. Prefer the invoice's own rate; fall back to the
   // tenant default so legacy invoices get a sensible starting point on
   // first edit instead of showing 0%.
@@ -1840,6 +1882,24 @@ async function saveEdit() {
       const price = Math.max(0, toNum(ln.unit_price));
       // D-S122b-detail-view-columns — forward category/cost/margin too.
       const category = ln.category || null;
+      // Labor provenance (071). Sent together or not at all: the contract
+      // rejects a matrix id without labor_source='matrix', and hours without a
+      // lane. Without this the Add Labor button on THIS screen wrote rows that
+      // could not say what priced them.
+      const laborFields = ln.labor_source
+        ? {
+            labor_source: ln.labor_source,
+            // Forward the row id for anything EXCEPT attested. A line
+            // downgraded matrix -> manual by a reprice still came from that
+            // row, and dropping the id here made both the downgrade's promise
+            // ("the row id is KEPT") and the reason manual-with-an-id is legal
+            // false on the one screen carrying the Add Labor button.
+            ...(ln.labor_source !== 'attested' && ln.labor_price_item_id
+              ? { labor_price_item_id: ln.labor_price_item_id } : {}),
+            ...(ln.estimated_man_hours != null && toNum(ln.estimated_man_hours) > 0
+              ? { estimated_man_hours: toNum(ln.estimated_man_hours) } : {}),
+          }
+        : {};
       const cost = ln.cost != null && toNum(ln.cost) > 0 ? toNum(ln.cost) : null;
       // An override is a margin a HUMAN chose. The shared editor also
       // auto-fills this column with the tier-implied margin whenever a cost is
@@ -1875,7 +1935,8 @@ async function saveEdit() {
           (orig.category || null) !== category ||
           Boolean(orig.includes_labor) !== Boolean(ln.includes_labor) ||
           origCost !== cost ||
-          origMargin !== marginOverrideDec;
+          origMargin !== marginOverrideDec ||
+          (orig.labor_source ?? null) !== (ln.labor_source ?? null);
         if (changed) {
           const patch = {
             description: desc,
@@ -1893,6 +1954,11 @@ async function saveEdit() {
           }
           if (!orig || cost !== origCost) patch.cost = cost;
           if (!orig || marginOverrideDec !== origMargin) patch.margin_pct_override = marginOverrideDec;
+          // A reprice DOWNGRADES matrix -> manual. That has to reach the DB or
+          // the row keeps asserting a quote nobody made.
+          if ((orig?.labor_source ?? null) !== (ln.labor_source ?? null)) {
+            patch.labor_source = ln.labor_source ?? null;
+          }
           await api.patch(`/api/invoices/${id}/lines/${ln.id}`, patch);
         }
       } else {
@@ -1911,6 +1977,11 @@ async function saveEdit() {
         if (ln.includes_labor) body.includes_labor = true;
         if (cost != null) body.cost = cost;
         if (marginOverrideDec != null) body.margin_pct_override = marginOverrideDec;
+        // Labor provenance rides the CREATE only. Which lane priced a line is
+        // decided when it is added and does not change by editing its text or
+        // price, and InvoiceLinePatchIn deliberately does not accept these
+        // (it forbids extras, so sending them on a PATCH would 422).
+        Object.assign(body, laborFields);
         const lineResp = await api.post(`/api/invoices/${id}/lines`, body);
         // Record the server id on the edit row so a retry after a mid-save
         // failure PATCHes this line instead of POSTing a duplicate (the

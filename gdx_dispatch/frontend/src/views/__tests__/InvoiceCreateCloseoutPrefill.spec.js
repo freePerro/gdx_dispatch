@@ -21,10 +21,24 @@ describe('InvoiceCreateView — closeout prefill', () => {
   it('fetches the suggestion and fills only an empty starter editor', () => {
     const start = SRC.indexOf('async function prefillFromJobCloseout');
     expect(start).toBeGreaterThan(-1);
-    const span = SRC.slice(start, start + 1600);
+    // Slice to the FUNCTION BOUNDARY, not a character count. This guard was
+    // pinned to a fixed window twice (1600 then 2600 chars) and broke both
+    // times on unrelated growth inside the function — a guard that fails for
+    // reasons unrelated to what it protects trains people to widen it without
+    // reading, which is how it stops guarding anything.
+    const rest = SRC.slice(start);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/closeout-billing-suggestion/);
     expect(span).toMatch(/starterOnly/);
     expect(span).toMatch(/taxable:\s*false/);
+    // Provenance on the DOMINANT labor path: most invoices get their labor
+    // line here, not from the picker. NULL here would mean the column answers
+    // "how was this priced?" only for hand-added lines.
+    expect(span).toMatch(/labor_source/);
+    // Never claim 'matrix' without the row id — the API rejects that shape
+    // because it is an unverifiable claim.
+    expect(span).toMatch(/labor_line\.labor_price_item_id/);
     expect(span).toMatch(/category:\s*'Labor'/);
   });
 
