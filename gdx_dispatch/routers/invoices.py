@@ -687,6 +687,14 @@ class InvoiceCreateIn(BaseModel):
                 "source_estimate_id (provenance for lines you already have), "
                 "not both"
             )
+        if self.discount and self.estimate_id is not None:
+            # The estimate-copy path mints the discount line from the
+            # ESTIMATE's own discount field. Accepting one here too would bill
+            # the customer two discounts for one negotiation.
+            raise ValueError(
+                "discount cannot be combined with estimate_id — the copied "
+                "estimate carries its own discount"
+            )
         if self.source_estimate_id is not None and self.job_id is None:
             # Estimates are job-scoped, so a counter sale cannot have come from
             # one. Same rule the copy path already enforces.
@@ -778,6 +786,17 @@ class InvoiceCreateIn(BaseModel):
     # billing-real non-deposit invoice 409s unless the operator confirms
     # (the create page re-submits with force=true after a confirm dialog).
     force: bool = False
+    # D2 (2026-08-19): a whole-invoice discount, mirroring the estimate's own
+    # field rather than a discount LINE. The office could not enter one at all:
+    # `unit_price` is `ge=0` and `quantity` is `gt=0`, so a negative line is
+    # unrepresentable, and the only discount row the system mints comes from
+    # the estimate-copy path — which /billing/new never triggers.
+    #
+    # Materialized server-side as the SAME `category="discount"` negative line
+    # the estimate copy already mints, so both surfaces produce identical rows
+    # and `_recalculate_invoice` needs no special case.
+    discount: float | None = Field(default=None, ge=0, le=999999.99)
+
     # 2026-08-12 — job photos to print on this invoice's PDF, pickable at
     # CREATE time. The picker only existed on the invoice detail page, and
     # only once the invoice was already a draft, so the office building an
@@ -1463,6 +1482,53 @@ def create_invoice(
                     sort_order=idx,
                 )
             )
+
+    # D2 — materialize an operator-entered discount as the same negative line
+    # the estimate-copy path mints above. `sort_order` follows the operator's
+    # lines; it is NOT guaranteed last once change orders append their own (the
+    # CO block reads max(sort_order) on an autoflush=False session with no
+    # intervening flush, so it restarts at 1 — pre-existing, display-only, and
+    # not touched here). Ordering does not affect any total.
+    #
+    # It reduces the TAXABLE base exactly like its sibling (taxable=True).
+    # `_recalculate_invoice` floors that BASE at 0 — but not the total, which
+    # is why the explicit cap below exists rather than trusting a flooring that
+    # only half applies.
+    if payload.discount and payload.discount > 0 and not payload.estimate_id:
+        _op_discount = Decimal(str(payload.discount))
+        # A discount larger than the goods is not a discount, it is a refund,
+        # and this path must not mint one. `_recalculate_invoice` floors the
+        # TAXABLE BASE at zero but NOT the total, so an over-discount wrote a
+        # negative invoice: subtotal -500, total -500, posting negative revenue
+        # through repost_invoice_issuance -- while `balance_due` floored to 0,
+        # skipping the paid auto-flip so the row sat in AR forever. The client
+        # showed $0.00 for the same input, so nothing on screen revealed it.
+        _goods = sum(
+            (Decimal(str(li.unit_price)) * int(li.quantity) for li in payload.line_items),
+            Decimal("0"),
+        )
+        if _op_discount > _goods:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"discount ({_op_discount}) exceeds the invoice's line total "
+                    f"({_goods}) — a discount cannot make the invoice negative. "
+                    "Issue a credit memo instead."
+                ),
+            )
+        db.add(
+            InvoiceLine(
+                company_id=invoice.company_id,
+                invoice_id=invoice.id,
+                description="Discount",
+                quantity=1,
+                unit_price=_money(-_op_discount),
+                line_total=_money(-_op_discount),
+                taxable=True,
+                category="discount",
+                sort_order=len(payload.line_items) + 1,
+            )
+        )
 
     # PR3-billing-capture — pull approved change orders into this invoice.
     # The STAMP GATES THE COPY: UPDATE…RETURNING claims the COs first; only

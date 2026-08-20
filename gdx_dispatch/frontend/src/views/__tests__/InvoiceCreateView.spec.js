@@ -350,6 +350,83 @@ describe('InvoiceCreateView — provenance does not survive a customer switch', 
   });
 });
 
+describe('InvoiceCreateView — whole-invoice discount (D2)', () => {
+  // The previous version of this block read the .vue source and regex'd it.
+  // Review proved all three vacuous: setting `payload.discount = 0` and making
+  // the totals row `v-if="false"` kept every matched substring, so they passed
+  // against code that had removed the feature. Source greps cannot see
+  // behaviour — these mount the component.
+  function setupDiscount() {
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-d', invoice_number: 'INV-D' });
+  }
+
+  async function submitWithDiscount(amount) {
+    setupDiscount();
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    await flushPromises();
+    if (amount != null) {
+      const d = wrapper.find('[data-testid="invoice-discount"]');
+      d.element.value = String(amount);
+      await d.trigger('input');
+      await flushPromises();
+    }
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    return { wrapper, payload: apiPost.mock.calls[0]?.[1] };
+  }
+
+  it('sends the discount the operator entered', async () => {
+    const { payload } = await submitWithDiscount(15);
+    expect(payload.discount).toBe(15);
+  });
+
+  it('sends no discount field when none was entered', async () => {
+    const { payload } = await submitWithDiscount(null);
+    expect(payload.discount).toBeUndefined();
+  });
+
+  it('shows the discount in the totals before saving', async () => {
+    // A discount the operator cannot see before saving is a silent write.
+    setupDiscount();
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    const d = wrapper.find('[data-testid="invoice-discount"]');
+    d.element.value = '15';
+    await d.trigger('input');
+    await flushPromises();
+
+    const row = wrapper.find('[data-testid="invoice-discount-amount"]');
+    expect(row.exists()).toBe(true);
+    expect(row.text()).toContain('15');
+  });
+
+  it('never displays a negative total', async () => {
+    // The server refuses an over-discount with a 422; the screen must not have
+    // implied a different number in the meantime.
+    setupDiscount();
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    const d = wrapper.find('[data-testid="invoice-discount"]');
+    d.element.value = '99999';
+    await d.trigger('input');
+    await flushPromises();
+
+    const total = wrapper.find('[data-testid="invoice-total"]').text();
+    expect(total).not.toMatch(/-/);
+  });
+});
+
 describe('InvoiceCreateView — submit', () => {
   it('disables submit when customer or job is empty', async () => {
     const wrapper = mount(InvoiceCreateView, { global: { stubs } });

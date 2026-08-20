@@ -7,7 +7,9 @@ F3 closed as insurance.
 plus migration 071 (labor provenance on `invoice_lines`).
 **p3** — `fix/invoice-line-editor-p3`, built: F5 closed
 (`source_estimate_id` provenance + audit trail).
-**Not built:** p4 discount + labor taxability, p5 data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
+**p4** — `feat/invoice-line-editor-p4`, built: F6 + F7 closed (whole-invoice
+discount, and the last catalog-add path honouring `tax_labor`).
+**Not built:** p5 data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
 report
 ("after clicking create new invoice it is missing the option to add labor…
 and it does not carry category over when adding from the catalog… I am sure
@@ -851,6 +853,36 @@ guards trains people to widen the window without reading it, which is how it
 stops guarding anything. Converted to **function-boundary** slicing as each one broke. One more
 (`InvoiceCreateView.spec.js`, the job-change clear) still uses a fixed window
 and is noted here rather than claimed as done.
+
+---
+
+## 3e. p4 as built (2026-08-20)
+
+**Discount is a whole-invoice field (D2)**, mirroring the estimate's. It
+materializes server-side as the *same* `category="discount"` negative line the
+estimate-copy path already mints — one shape, one recalculation path, no
+special case in `_recalculate_invoice`.
+
+Before this the office could not enter a discount at all: `unit_price` is
+`ge=0` and `quantity` is `gt=0`, so a negative line is unrepresentable, and the
+only discount row the system minted came from a path `/billing/new` never
+triggers.
+
+Rejected in the contract: `discount` + `estimate_id`. The copied estimate
+carries its own discount, and accepting both would bill the customer two
+discounts for one negotiation. `discount` + `source_estimate_id` **is** allowed
+— a prefilled invoice's lines are the operator's, so its discount is too.
+
+The client mirrors the server's flooring (`Math.max(base - discount, 0)`) in
+both the taxable base and the total. Showing an operator a total the invoice
+will not have is worse than showing none, and the discount renders in the
+totals block rather than only in the payload.
+
+**D6 finished.** Catalog adds were the last path hardcoding `taxable: true`.
+The Built-in tab's four `Labor` items landed taxed against the tenant's own
+recorded choice, while the estimate copy, mobile tier, closeout autodraft and
+(since p2) the labor picker all honoured `tax_config.tax_labor`. Now all five
+agree. Goods stay taxable regardless — only the labor bucket follows the flag.
 
 ---
 

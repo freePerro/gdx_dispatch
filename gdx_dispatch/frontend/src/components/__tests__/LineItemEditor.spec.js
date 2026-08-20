@@ -903,6 +903,7 @@ function mockPricingApi() {
     if (String(url).includes('estimates-features')) {
       return Promise.resolve({ estimates_allow_line_margin_override: true });
     }
+    if (String(url).includes('tax/config')) return Promise.resolve({ tax_labor: false });
     return Promise.resolve([]);
   });
 }
@@ -1202,5 +1203,69 @@ describe('LineItemEditor — a blur echo must not touch a flat-priced labor line
     await w.find('[data-testid="line-cost-0"]').setValue('500');
     await flushPromises();
     expect(lastLines(w)[0].unit_price).toBe(650);
+  });
+});
+
+describe('LineItemEditor — catalog adds follow the tenant tax_labor flag (D6)', () => {
+  // The last path hardcoding `taxable: true`. The Built-in catalog tab carries
+  // four Labor items (Service Call $85, Tune-Up $95, Emergency Fee $150,
+  // Commercial Service $500); they landed taxed against the tenant's own
+  // recorded choice, while the estimate copy, mobile tier, closeout autodraft
+  // and the labor picker all honoured it.
+  async function addLabor(taxLabor) {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('tier-sets')) return Promise.resolve([]);
+      if (String(url).includes('estimates-features')) {
+        return Promise.resolve({ estimates_allow_line_margin_override: true });
+      }
+      if (String(url).includes('tax/config')) return Promise.resolve({ tax_labor: taxLabor });
+      return Promise.resolve([]);
+    });
+    const w = mount(LineItemEditor, {
+      props: {
+        lines: [{ description: '', quantity: 1, unit_price: 0 }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true, showCost: true, showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+    w.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', [
+      { name: 'Service Call / Diagnostic', category: 'Labor', price: 85, cost: 0 },
+    ]);
+    await flushPromises();
+    return lastLines(w)[0];
+  }
+
+  it('does not tax a Labor catalog item when the tenant says not to', async () => {
+    expect((await addLabor(false)).taxable).toBe(false);
+  });
+
+  it('taxes it when the tenant has turned that on', async () => {
+    expect((await addLabor(true)).taxable).toBe(true);
+  });
+
+  it('still taxes goods regardless of the labor flag', async () => {
+    apiGet.mockImplementation((url) => {
+      if (String(url).includes('tier-sets')) return Promise.resolve([]);
+      if (String(url).includes('tax/config')) return Promise.resolve({ tax_labor: false });
+      return Promise.resolve({ estimates_allow_line_margin_override: true });
+    });
+    const w = mount(LineItemEditor, {
+      props: {
+        lines: [{ description: '', quantity: 1, unit_price: 0 }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true, showCost: true, showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+    w.findComponent({ name: 'CatalogPickerDialog' }).vm.$emit('add', [
+      { name: 'Roller', category: 'Rollers', pricing_category: 'parts', price: 100, cost: 50 },
+    ]);
+    await flushPromises();
+    expect(lastLines(w)[0].taxable).toBe(true);
   });
 });
