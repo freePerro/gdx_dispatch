@@ -1,10 +1,13 @@
 # The invoice-create line editor: labor, categories, and what else fell out
 
-**Status:** **PARTIALLY BUILT** — p1 implemented on `fix/invoice-line-editor-p1`
-(2026-08-20): F2, F4, F8, F10 closed and F3 closed as insurance. **Not built:**
-p2 Add Labor + migration, p3 estimate provenance, p4 discount + labor
-taxability, p5 data-driven categories. Decisions §5 D1–D8 all locked. Written
-from Doug's report
+**Status:** **PARTIALLY BUILT** (2026-08-20).
+**p1** — `fix/invoice-line-editor-p1`, **PR #377 OPEN**: F2, F4, F8, F10 closed,
+F3 closed as insurance.
+**p2** — `feat/invoice-line-editor-p2`, built: F1 closed (Add Labor, two lanes)
+plus migration 071 (labor provenance on `invoice_lines`).
+**Not built:** p3 estimate provenance, p4 discount + labor taxability, p5
+data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
+report
 ("after clicking create new invoice it is missing the option to add labor…
 and it does not carry category over when adding from the catalog… I am sure
 there is other stuff missing"). Every claim below is backed by code at a
@@ -696,6 +699,94 @@ re-verified. That is the evidence the fix is a fix and not a coincidence.
   deferral indefensible: the Built-in tab's four `Labor` items land taxed
   against `tax_config.tax_labor = false`. It is **p4's** first-class scope
   (D6), not a doc line — p4 does not ship without it.
+
+---
+
+## 3c. p2 as built (2026-08-20)
+
+**Both lanes, per D1.** One `components/LaborPickerDialog.vue`:
+
+- **Matrix lane** — the 10 active rows. Emits a flat-price line at
+  `flat_price`, cost snapshotted from `loaded_labor_cost_per_hour ×
+  assumed_man_hours` ($65/h on prod), `_priceOverridden` so the tier engine
+  leaves it alone.
+- **Attested lane** — present only when the job has a closeout. Reuses the
+  `closeout-billing-suggestion` payload the create page **already fetches**, so
+  the dialog cannot disagree with the prefill about what the hours are worth.
+  No new endpoint, no second computation of the billing lanes.
+
+**The invariant, enforced and tested.** Billed labor comes from attested hours
+only. A matrix row is a *quoted contract price*, not a claim about duration, so
+the matrix lane **never writes an hours count into the description** —
+`assumed_man_hours` feeds the cost snapshot and the disagreement warning and
+nothing else. A test asserts the emitted description matches no
+`\d+\s*(h|hr|hour|man-hour)` pattern.
+
+**Disagreement is shown, not resolved.** Matrix assumes 6.5 h for a 16x7; the
+tech attested 9 h. Both numbers render side by side and the operator chooses.
+Silent below 0.5 h difference.
+
+**Migration 071** adds `labor_price_item_id` (FK, ON DELETE SET NULL),
+`estimated_man_hours`, `labor_source` (`matrix`|`attested`|`manual`) to
+`invoice_lines` — all nullable, no backfill. It also closes an asymmetry that
+predates this work: `estimate_lines` has carried the first two since S97, so
+the estimate → invoice copy was already dropping that provenance; it now
+forwards it.
+
+**Verified on both engines, not asserted:** SQLite lane applies and is a no-op
+on re-run; Postgres lane applies, and `ON DELETE SET NULL` was *exercised* —
+deleting the matrix row nulls the link while `estimated_man_hours 5.00` and
+`labor_source 'matrix'` survive on the line. Downgrade runs clean.
+
+**Contract guard:** `labor_source='matrix'` without a `labor_price_item_id` is
+rejected, and an id without a source is rejected — an unverifiable "matrix"
+claim is the exact provenance gap the column exists to close. `labor_source`
+is a `Literal`, not free text, because it is what separates quoted from
+attested.
+
+**Reachability (D1's other half):** the `starterOnly` gate meant the closeout
+labor prefill became unreachable the moment a catalog line was added. The Add
+Labor button makes the attested lane reachable at any time, which is the real
+fix for that.
+
+**Taxability, corrected mid-p2.** The plan said this was deferred to p4. The
+review showed deferring it was not defensible: the closeout **autodraft**
+already honours `tax_config.tax_labor`, so a picker that hardcoded a value
+would bill the same job's labor differently depending on which route created
+the line — the exact drift `invoices.py:1133` warns about by name and that
+money audit M24 has already been paid for once. All three lanes now resolve the
+same tenant flag, defaulting to *not* taxing labor when it cannot be read
+(defaulting the other way re-introduces an overbill). **p4 still owns the
+catalog-add path**, which is where D6's remaining work is.
+
+**Second review pass on p2 found three more, all fixed:**
+
+- **HIGH — the attested lane was dead on the invoice DETAIL screen.**
+  `show-labor` was added there without `:closeout`, and the dialog hides lane 2
+  when that is null rather than fetching for itself. The office fixing a draft
+  would see "Bill these hours" on `/billing/new` and not on the very next
+  screen, for the same job. It now loads the suggestion on entering edit mode.
+- **MEDIUM — the estimate→invoice copy wrote a shape the API rejects.** That
+  block builds `InvoiceLine` directly and so skips the validator: it could
+  write `estimated_man_hours` with no `labor_source`, and it stamped
+  `labor_source='matrix'` from id-presence alone — crediting the matrix for a
+  price a human overrode. `_labor_provenance_for()` now enforces the
+  validator's rules on that path, and records an overridden price as `manual`.
+- **MEDIUM — the persistence fix had no guard.** The 17 contract tests were
+  pure pydantic and passed unchanged against the code that dropped the fields
+  on the way to the database. Three real persistence tests now exist, and the
+  `POST /lines` one was **proven** by counterfactual: reverting the persistence
+  fails it, restoring passes all 20.
+
+**Also fixed:** the closeout prefill — the *dominant* labor path, since most
+invoices get their labor line there rather than from the picker — now carries
+provenance instead of leaving the column NULL for the majority of lines.
+
+**Filed, not fixed here:** `EstimateView.vue:1697` divides `width_ft` by 12 when
+the column is already feet, so every 16x7 row renders "1x1". The new dialog
+does not reproduce it; fixing the estimate copy is its own change. Autodraft
+and mobile invoicing still write labor lines with no provenance — a broader
+sweep than p2.
 
 ---
 

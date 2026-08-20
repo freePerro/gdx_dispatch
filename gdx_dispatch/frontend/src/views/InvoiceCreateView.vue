@@ -208,9 +208,11 @@
               v-model:fromPartIds="form.from_part_ids"
               :job-id="form.job_id || null"
               :categories="lineCategories"
+              :closeout="closeoutSuggestion"
               show-taxable
               show-cost
               show-margin
+              show-labor
               data-testid="invoice-line-editor"
             />
           </div>
@@ -646,6 +648,34 @@ async function prefillFromJobCloseout(jobId) {
       !form.value.line_items[0].description &&
       !toNum(form.value.line_items[0].unit_price);
     if (s.labor_line && starterOnly) {
+      // Provenance rides the prefill too. This is the DOMINANT path — most
+      // invoices get their labor line here, not from the picker — so leaving it
+      // NULL would mean the column answers "how was this priced?" only for the
+      // minority of lines somebody added by hand.
+      //
+      // The server says which lane it computed; trust that rather than
+      // re-deriving it, and never claim 'matrix' without the row id (the API
+      // rejects that shape, and it would be an unverifiable claim).
+      const src = s.labor_line.source;
+      const provenance = src === 'matrix' && s.labor_line.labor_price_item_id
+        ? {
+            labor_source: 'matrix',
+            labor_price_item_id: s.labor_line.labor_price_item_id,
+            // The price this provenance refers to, so a later reprice
+            // downgrades matrix -> manual. Without it the guard in
+            // markPriceOverride never fires and a repriced line keeps claiming
+            // the matrix quoted it — and THIS is the dominant path: most
+            // invoices get their labor line here, not from the picker.
+            _provenancePrice: Number(s.labor_line.unit_price || 0),
+          }
+        : src === 'attested'
+          ? {
+              labor_source: 'attested',
+              _provenancePrice: Number(s.labor_line.unit_price || 0),
+              ...(s.labor_line.man_hours != null
+                ? { estimated_man_hours: Number(s.labor_line.man_hours) } : {}),
+            }
+          : {};
       form.value.line_items = [{
         description: s.labor_line.description,
         quantity: Number(s.labor_line.quantity || 1) || 1,
@@ -655,6 +685,7 @@ async function prefillFromJobCloseout(jobId) {
         category: 'Labor',
         cost: null,
         margin_pct_override: null,
+        ...provenance,
       }];
     }
   } catch (e) {
@@ -763,6 +794,16 @@ async function createInvoice() {
         // sending it unconditionally would put a flag on every historical-
         // shaped payload for no reason.
         if (l.includes_labor) out.includes_labor = true;
+        // Labor provenance (migration 071) — WHICH lane priced this line.
+        // The contract rejects labor_source='matrix' without an id, and an id
+        // without a source, so send them together or not at all.
+        if (l.labor_source) {
+          out.labor_source = l.labor_source;
+          if (l.labor_price_item_id) out.labor_price_item_id = l.labor_price_item_id;
+          if (l.estimated_man_hours != null && toNum(l.estimated_man_hours) > 0) {
+            out.estimated_man_hours = toNum(l.estimated_man_hours);
+          }
+        }
         return out;
       });
 

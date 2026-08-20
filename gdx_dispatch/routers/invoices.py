@@ -98,6 +98,83 @@ def _effective_status(invoice: Invoice) -> str:
     return invoice.status
 
 
+def _labor_price_was_overridden(line: object, item_id: object, db: Session | None) -> bool:
+    """Did a human move this labor line's price off the matrix quote?
+
+    Compare against the MATRIX ROW'S OWN PRICE, not `margin_pct_override`.
+    That was the first implementation and it was wrong in a way no test caught:
+    for labor lines the override column is never populated — EstimateView sends
+    `cost: null` for anything with a `labor_price_item_id`, so the branch that
+    would set it cannot fire, and the estimate router's explicit-price path
+    keeps the id without setting one. Result: pick $650 from the matrix, type
+    $900, accept, convert — and the invoice asserted the matrix quoted $900.
+
+    Unresolvable row (archived, or no db handle) => treat as NOT overridden and
+    keep the line as matrix. Guessing "a human repriced this" from missing data
+    would invent provenance, which is the failure mode this whole column
+    exists to prevent.
+    """
+    if item_id is None or db is None:
+        return False
+    try:
+        from gdx_dispatch.models.labor_pricing import LaborPriceItem
+
+        row = db.get(LaborPriceItem, item_id)
+    except Exception:  # pragma: no cover - defensive
+        log.exception("labor_provenance_matrix_lookup_failed")
+        return False
+    if row is None:
+        return False
+    quoted = Decimal(str(getattr(row, "flat_price", 0) or 0))
+    actual = Decimal(str(getattr(line, "unit_price", 0) or 0))
+    return abs(actual - quoted) > Decimal("0.005")
+
+
+def _labor_provenance_for(line: object, db: Session | None = None) -> dict[str, object]:
+    """Coherent labor provenance for a line COPIED from an estimate.
+
+    The copy constructs InvoiceLine directly and so never runs
+    InvoiceLineCreateIn's validator. Two shapes the validator rejects were
+    reachable here, and both misrepresent how a line was priced:
+
+    * `estimated_man_hours` with no `labor_source` — an hours figure nobody can
+      attribute, which is the unanswerable provenance migration 071 exists to
+      close.
+    * `labor_source="matrix"` inferred from id-presence alone. An estimate line
+      can carry a matrix id AND a human override of the price; calling that
+      "matrix-quoted" credits the matrix for a number a person chose.
+
+    A price the operator overrode is recorded as "manual" — it is still their
+    number — and the matrix row it started from STAYS on the line as context.
+    ("manual" with an id reads: started from row X, then repriced by a human.)
+    """
+    item_id = getattr(line, "labor_price_item_id", None)
+    hours = getattr(line, "estimated_man_hours", None)
+    overridden = _labor_price_was_overridden(line, item_id, db)
+
+    if item_id is not None and not overridden:
+        return {
+            "labor_price_item_id": item_id,
+            "estimated_man_hours": hours,
+            "labor_source": "matrix",
+        }
+    if item_id is not None or hours is not None:
+        # Priced by a human. Not a matrix quote — but the row it came from is
+        # kept, because "manual, derived from row X" is the true statement and
+        # throwing the id away would lose the very linkage this column exists
+        # for.
+        return {
+            "labor_price_item_id": item_id,
+            "estimated_man_hours": hours,
+            "labor_source": "manual",
+        }
+    return {
+        "labor_price_item_id": None,
+        "estimated_man_hours": None,
+        "labor_source": None,
+    }
+
+
 def _serialize_line(line: InvoiceLine) -> dict[str, object]:
     return {
         "id": str(line.id),
@@ -123,6 +200,17 @@ def _serialize_line(line: InvoiceLine) -> dict[str, object]:
         # D-S122-line-removal-unbill: surface the part linkage for detail-view
         # badges + audit trail.
         "part_id": getattr(line, "part_id", None),
+        # Labor provenance (migration 071) — which lane priced this line.
+        # NULL on every pre-2026-08-20 row and on every non-labor line.
+        "labor_price_item_id": (
+            str(line.labor_price_item_id)
+            if getattr(line, "labor_price_item_id", None) else None
+        ),
+        "estimated_man_hours": (
+            _to_float(line.estimated_man_hours)
+            if getattr(line, "estimated_man_hours", None) is not None else None
+        ),
+        "labor_source": getattr(line, "labor_source", None),
         "sort_order": line.sort_order,
         "created_at": _iso_dt(line.created_at),
     }
@@ -477,6 +565,55 @@ class InvoiceLineCreateIn(BaseModel):
     # the office; drives the double-bill warning when a labor line is also
     # present. Default False = today's behaviour for every existing caller.
     includes_labor: bool = Field(default=False)
+    # Labor provenance (migration 071). Optional on every existing caller.
+    # `labor_source` is constrained because it is the field that distinguishes
+    # a QUOTED flat price from ATTESTED hours, and free text would make that
+    # distinction unreadable within a release.
+    labor_price_item_id: UUID | None = None
+    estimated_man_hours: float | None = Field(default=None, ge=0, le=999)
+    labor_source: Literal["matrix", "attested", "manual"] | None = None
+
+    @model_validator(mode="after")
+    def _labor_provenance_is_coherent(self) -> "InvoiceLineCreateIn":
+        """A matrix line must name the matrix row it came from.
+
+        Without this, `labor_source="matrix"` with no id is a claim that
+        cannot be checked — precisely the unanswerable provenance the column
+        was added to prevent.
+        """
+        if self.labor_source == "matrix" and self.labor_price_item_id is None:
+            raise ValueError(
+                "labor_source='matrix' requires labor_price_item_id — a quoted "
+                "flat price must name the matrix row that quoted it"
+            )
+        if self.labor_price_item_id is not None and self.labor_source is None:
+            # A row id with no lane says a matrix row is involved but not how —
+            # an unattributed linkage, which is the same unanswerable
+            # provenance as hours with no lane.
+            raise ValueError(
+                "labor_price_item_id requires labor_source"
+            )
+        if self.labor_price_item_id is not None and self.labor_source == "attested":
+            # Attested hours come from a tech's closeout. They have nothing to
+            # do with a matrix row, so carrying one claims a quoted price priced
+            # them — the lane confusion this field exists to prevent, and the
+            # bug the invoice picker shipped with on 2026-08-20.
+            #
+            # 'manual' WITH an id is legal and meaningful: "started from matrix
+            # row X, then a human repriced it". Forbidding that made the
+            # honest state inexpressible and forced the estimate-copy path to
+            # destroy the linkage migration 071 exists to preserve.
+            raise ValueError(
+                "labor_price_item_id is not valid with labor_source='attested'"
+            )
+        if self.estimated_man_hours is not None and self.labor_source is None:
+            # An hours figure with no lane is an unattributable claim about how
+            # long work took — the unanswerable provenance this column was
+            # added to close.
+            raise ValueError(
+                "estimated_man_hours requires labor_source"
+            )
+        return self
 
     @field_validator("description")
     @classmethod
@@ -499,6 +636,13 @@ class InvoiceLinePatchIn(BaseModel):
     cost: float | None = Field(default=None, ge=0, le=999999.99)
     margin_pct_override: float | None = Field(default=None, ge=0, lt=1)
     includes_labor: bool | None = None
+    # A reprice DOWNGRADES matrix -> manual: the matrix quoted $650, so a
+    # human-typed $900 is no longer matrix-quoted. Without this the row keeps
+    # asserting a quote nobody made. Only the downgrade direction is offered —
+    # `matrix` is not accepted here, because claiming a line became
+    # matrix-quoted by editing it would be the same falsehood in reverse, and a
+    # genuine matrix line is created through the picker, not a PATCH.
+    labor_source: Literal["manual", "attested"] | None = None
 
 
 class InvoiceCreateIn(BaseModel):
@@ -1170,6 +1314,19 @@ def create_invoice(
                     cost_snapshot=getattr(line, "cost_snapshot", None),
                     margin_pct_snapshot=getattr(line, "margin_pct_snapshot", None),
                     margin_pct_override=getattr(line, "margin_pct_override", None),
+                    # Migration 071 closes an asymmetry this copy has had since
+                    # S97: estimate_lines carried the matrix link and man-hours,
+                    # invoice_lines had nowhere to put them, so converting an
+                    # accepted estimate silently dropped "which matrix row
+                    # quoted this labor".
+                    #
+                    # This block writes InvoiceLine DIRECTLY, so it bypasses
+                    # InvoiceLineCreateIn's validator. It must therefore enforce
+                    # the same coherence by hand, or the copy lands rows the API
+                    # would 422 — hours with no lane, or a "matrix" claim on a
+                    # price a human overrode. `_labor_provenance_for` is that
+                    # enforcement, kept next to the validator's own rules.
+                    **_labor_provenance_for(line, db),
                     sort_order=line.sort_order,
                 )
             )
@@ -1224,6 +1381,13 @@ def create_invoice(
                     # D-S122-line-removal-unbill — line-level part_id so a
                     # later delete-line releases the part atomically.
                     part_id=line.part_id,
+                    # Labor provenance (071) — which lane priced this line.
+                    labor_price_item_id=line.labor_price_item_id,
+                    estimated_man_hours=(
+                        Decimal(str(line.estimated_man_hours))
+                        if line.estimated_man_hours is not None else None
+                    ),
+                    labor_source=line.labor_source,
                     sort_order=idx,
                 )
             )
@@ -2221,6 +2385,17 @@ def add_invoice_line(
         # that silently no-ops.
         part_id=payload.part_id,
         includes_labor=bool(getattr(payload, "includes_labor", False)),
+        # 2026-08-20, same class of bug caught by the same review: the labor
+        # provenance fields were added to the contract above and dropped here,
+        # so a line added from the invoice DETAIL screen's Add Labor button
+        # looked like it worked and wrote an unprovenanced row. A control that
+        # silently no-ops is the defect this handler has now had twice.
+        labor_price_item_id=payload.labor_price_item_id,
+        estimated_man_hours=(
+            Decimal(str(payload.estimated_man_hours))
+            if payload.estimated_man_hours is not None else None
+        ),
+        labor_source=payload.labor_source,
         sort_order=sort_order,
     )
     db.add(line)
@@ -2352,6 +2527,13 @@ def patch_invoice_line(
         line.cost_snapshot = (
             Decimal(str(updates["cost"])) if updates["cost"] is not None else None
         )
+    if "labor_source" in updates:
+        line.labor_source = updates["labor_source"]
+        # Dropping to attested means this is no longer priced off a matrix row,
+        # and the contract forbids an id on an attested line. Clear it rather
+        # than leave a linkage that contradicts the lane.
+        if updates["labor_source"] == "attested":
+            line.labor_price_item_id = None
     if "margin_pct_override" in updates:
         line.margin_pct_override = (
             Decimal(str(updates["margin_pct_override"]))

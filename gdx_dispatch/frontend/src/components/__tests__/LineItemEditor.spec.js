@@ -884,6 +884,14 @@ function mockPricingApi() {
         },
         {
           pricing_class: 'retail',
+          pricing_category: 'labor',
+          tiers: [
+            { cost_min: 0, cost_max: 100, margin_pct: 0.5 },
+            { cost_min: 100, cost_max: 2000, margin_pct: 0.35 },
+          ],
+        },
+        {
+          pricing_class: 'retail',
           pricing_category: 'other',
           tiers: [
             { cost_min: 0, cost_max: 100, margin_pct: 0.6 },
@@ -1067,5 +1075,132 @@ describe('LineItemEditor — a stored margin override survives an unrelated edit
     await flushPromises();
 
     expect(lastLines(wrapper)[0]._marginPersisted).toBe(false);
+  });
+});
+
+describe('LineItemEditor — a repriced matrix line stops claiming the matrix quoted it', () => {
+  // p2 audit pass 3, BLOCKER. The picker stamps labor_source:'matrix' plus the
+  // row id. Nothing cleared them when a human retyped the price, so a $900 line
+  // persisted as "matrix quoted row X" for a number the matrix never quoted —
+  // the identical falsehood `_labor_provenance_for` guards on the estimate-copy
+  // path. The guard existed on the old path and not on the shipped one.
+  it('downgrades matrix -> manual on a price edit, keeping the origin row', async () => {
+    mockPricingApi();
+    const wrapper = mount(LineItemEditor, {
+      props: {
+        lines: [{
+          description: '16x7 Sectional Install', quantity: 1, unit_price: 650,
+          category: 'Labor', cost: 422.5,
+          labor_source: 'matrix', labor_price_item_id: 'lpi-1',
+          estimated_man_hours: 6.5, _provenancePrice: 650,
+        }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true,
+        showCost: true,
+        showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-testid="line-price-0"]').setValue('900');
+    await flushPromises();
+
+    const line = lastLines(wrapper)[0];
+    expect(line.labor_source).toBe('manual');
+    // "Started from row X, then repriced" — the true statement. Dropping the id
+    // would lose the linkage migration 071 exists to preserve.
+    expect(line.labor_price_item_id).toBe('lpi-1');
+  });
+
+  it('does NOT downgrade when the price field is committed unchanged', async () => {
+    // The over-fire case. PrimeVue's InputNumber emits update:modelValue on
+    // EVERY blur, changed or not — the same blur-echo trap onMarginOverrideChange
+    // guards. Tabbing across the price field of an untouched matrix line used to
+    // rewrite its provenance to "a human repriced this" AND clear
+    // _priceOverridden, which then let a cost edit rewrite a quoted flat price.
+    //
+    // The previous version of this test edited the DESCRIPTION, which never
+    // reaches markPriceOverride — it passed with or without the fix and guarded
+    // nothing.
+    mockPricingApi();
+    const wrapper = mount(LineItemEditor, {
+      props: {
+        lines: [{
+          description: '16x7 Sectional Install', quantity: 1, unit_price: 650,
+          category: 'Labor', cost: 422.5, labor_source: 'matrix',
+          labor_price_item_id: 'lpi-1', _provenancePrice: 650,
+          _priceOverridden: true,
+        }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true,
+        showCost: true,
+        showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+
+    const before = (wrapper.emitted('update:lines') || []).length;
+    // Commit the SAME value, as a blur does.
+    await wrapper.find('[data-testid="line-price-0"]').setValue('650');
+    await flushPromises();
+
+    // An echo is not a change: nothing is emitted, so provenance cannot have
+    // been rewritten. (Asserting on the emitted line would require an emit to
+    // exist, which is precisely what must NOT happen here.)
+    expect((wrapper.emitted('update:lines') || []).length).toBe(before);
+  });
+});
+
+describe('LineItemEditor — a blur echo must not touch a flat-priced labor line', () => {
+  // p2 audit pass 5. Guarding only the provenance label left the REST of
+  // markPriceOverride running on a no-change blur, which cleared
+  // `_priceOverridden`. That flag is what stops recomputeSell rewriting a
+  // QUOTED flat price, so tab-through-then-edit-cost rewrote 650 -> 769.23.
+  async function mountFlatLabor() {
+    mockPricingApi();
+    const w = mount(LineItemEditor, {
+      props: {
+        lines: [{
+          description: '16x7 Sectional Install', quantity: 1, unit_price: 650,
+          category: 'Labor', cost: 422.5, labor_source: 'matrix',
+          labor_price_item_id: 'lpi-1', _provenancePrice: 650,
+          _priceOverridden: true,
+          // NOTE: deliberately NOT seeding _lastPrice. Production never does —
+          // the editor seeds it on ingest — and seeding it here is what made an
+          // earlier version of this guard test a fiction.
+        }],
+        fromPartIds: [],
+        categories: LINE_CATS,
+        showTaxable: true, showCost: true, showMargin: true,
+      },
+      global: { stubs: { ...stubs, CatalogPickerDialog: catalogStub } },
+    });
+    await flushPromises();
+    return w;
+  }
+
+  it('does not even emit for a no-change price commit', async () => {
+    // The stronger statement, and what the early-return actually does: an echo
+    // is not a change, so the parent is not told about one. Pre-fix this
+    // emitted a line with _priceOverridden flipped to false.
+    const w = await mountFlatLabor();
+    const before = (w.emitted('update:lines') || []).length;
+    await w.find('[data-testid="line-price-0"]').setValue('650');
+    await flushPromises();
+    expect((w.emitted('update:lines') || []).length).toBe(before);
+  });
+
+  it('so a later cost edit cannot rewrite the quoted flat price', async () => {
+    // The actual damage, end to end.
+    const w = await mountFlatLabor();
+    await w.find('[data-testid="line-price-0"]').setValue('650');
+    await flushPromises();
+    await w.find('[data-testid="line-cost-0"]').setValue('500');
+    await flushPromises();
+    expect(lastLines(w)[0].unit_price).toBe(650);
   });
 });

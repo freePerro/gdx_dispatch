@@ -2774,6 +2774,18 @@ def closeout_billing_suggestion(
 
     labor: dict[str, Any] | None = None
     lane = lane_for_job(job.job_type)
+    # `source` is NOT decoration. These two lanes produce numbers that mean
+    # different things, and callers were left to guess which they had:
+    #
+    #   install -> a QUOTED FLAT PRICE from a labor-matrix row. It is a
+    #              contract price and says nothing about how long the work took.
+    #   service -> the tech's ATTESTED hours x the rate. This is evidence.
+    #
+    # Billed labor comes from attested hours only, so a caller that labels a
+    # matrix flat price as "attested hours" records a quoted number as evidence
+    # — inverting the invariant. The invoice Add Labor picker consumed this
+    # field and did exactly that until 2026-08-20. Say which lane it is here,
+    # at the source, rather than making every consumer re-derive it.
     if lane == "install" and getattr(closeout, "labor_matrix_item_id", None):
         _install = install_labor_line(db, closeout.labor_matrix_item_id)
         if _install is not None:
@@ -2782,6 +2794,11 @@ def closeout_billing_suggestion(
                 "quantity": _install.quantity,
                 "unit_price": float(_install.unit_price),
                 "line_total": float(_install.line_total),
+                "source": "matrix",
+                # Which matrix row quoted it — the provenance an invoice line
+                # needs, and which this payload used to drop on the floor.
+                "labor_price_item_id": str(closeout.labor_matrix_item_id),
+                "man_hours": None,
             }
     if lane == "service" and float(closeout.hours_worked or 0) > 0:
         _svc = service_labor_line(
@@ -2794,6 +2811,9 @@ def closeout_billing_suggestion(
             "quantity": _svc.quantity,
             "unit_price": float(_svc.unit_price),
             "line_total": float(_svc.line_total),
+            "source": "attested",
+            "labor_price_item_id": None,
+            "man_hours": float(closeout.hours_worked or 0),
         }
 
     # The tech's JOB notes too (Doug 2026-08-07 round 2: "it is missing the
