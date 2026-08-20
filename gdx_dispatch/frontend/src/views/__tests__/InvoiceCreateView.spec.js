@@ -85,7 +85,8 @@ const stubs = {
         <span data-testid="le-show-margin">{{ showMargin ? 'yes' : 'no' }}</span>
         <span data-testid="le-cat-count">{{ (categories || []).length }}</span>
         <button data-testid="le-add-part" @click="$emit('update:fromPartIds', [...(fromPartIds||[]), 'p1'])">add part</button>
-        <button data-testid="le-set-line" @click="$emit('update:lines', [{ description: 'Spring', quantity: 1, unit_price: 50, taxable: true, category: 'Springs', cost: 28, margin_pct_override: 40 }])">set line</button>
+        <button data-testid="le-set-line" @click="$emit('update:lines', [{ description: 'Spring', quantity: 1, unit_price: 50, taxable: true, category: 'Springs', cost: 28, margin_pct_override: 40, _marginUserEdited: true }])">set line</button>
+        <button data-testid="le-set-line-autofilled" @click="$emit('update:lines', [{ description: 'Roller', quantity: 1, unit_price: 100, taxable: true, category: 'Parts', cost: 50, margin_pct_override: 50 }])">set autofilled line</button>
       </div>
     `,
   },
@@ -198,6 +199,38 @@ describe('InvoiceCreateView — query prefill', () => {
   });
 });
 
+describe('InvoiceCreateView — margin override is a human choice', () => {
+  // 2026-08-20 audit A1. The editor AUTO-FILLS the margin column with the
+  // tier-implied percentage so the operator can see what they're running at.
+  // That fill is not a decision. Posting it makes the backend record an
+  // operator override (top precedence in services/pricing_engine.py) for a
+  // number nobody chose, and it then outranks the tier forever.
+  it('does NOT post a tier-autofilled margin', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0825, rate_pct: 8.25 });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-2', invoice_number: 'INV-0002' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-testid="le-set-line-autofilled"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.line_items[0]).not.toHaveProperty('margin_pct_override');
+    // The rest of the line still posts normally.
+    expect(payload.line_items[0]).toMatchObject({
+      description: 'Roller', unit_price: 100, cost: 50, category: 'Parts',
+    });
+  });
+});
+
 describe('InvoiceCreateView — submit', () => {
   it('disables submit when customer or job is empty', async () => {
     const wrapper = mount(InvoiceCreateView, { global: { stubs } });
@@ -239,7 +272,9 @@ describe('InvoiceCreateView — submit', () => {
         // S122-b parity fields when set
         category: 'Springs',
         cost: 28,
-        margin_pct_override: 0.4,  // 40% → 0.40 decimal at POST boundary
+        // 40% → 0.40 decimal at POST boundary. Only reaches the payload
+        // because the fixture carries _marginUserEdited — a human chose it.
+        margin_pct_override: 0.4,
       }],
     }));
   });

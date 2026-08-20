@@ -289,7 +289,19 @@ watch(() => props.visible, (open) => {
 
 function confirmAdd() {
   if (!selectedCatalogItems.value.length) return;
-  emit('add', selectedCatalogItems.value.slice());
+  // Stamp the SOURCE CATALOG onto each item on the way out (Doug 2026-08-19:
+  // "what catalog did it come from"). The picker has always known this —
+  // `_group` is the catalog id and the tab carries its name — it just never
+  // reached the line. Consumers render it as provenance; it is display-only
+  // and every POST mapper is an allowlist, so it never reaches the API.
+  const nameByKey = new Map(catalogTabs.value.map((t) => [t.key, t.name]));
+  emit(
+    'add',
+    selectedCatalogItems.value.map((item) => ({
+      ...item,
+      _catalogName: nameByKey.get(item._group) || null,
+    })),
+  );
   emit('update:visible', false);
 }
 </script>
