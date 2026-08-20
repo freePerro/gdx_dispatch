@@ -450,6 +450,20 @@ class Invoice(Base):
     # _create_job_from_estimate backfills job_id through this link. No FK —
     # estimates lives on TenantBase metadata (migration 036 adds the column).
     estimate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    # Migration 072 — where the numbers CAME FROM, as distinct from
+    # `estimate_id` above, which means "the server copied this estimate's
+    # lines". Deposit netting (modules/deposits/service.py) and closeout
+    # reconciliation both key on `estimate_id` and read it the strong way;
+    # writing merely-prefilled invoices into it armed a dormant arm of the
+    # deposit matcher and netted a DIFFERENT job's paid deposit. Separate
+    # column, separate meaning.
+    #
+    # Declared without a ForeignKey to match `estimate_id` directly above —
+    # estimates live in another module's table and this plane has never
+    # constrained that reference.
+    source_estimate_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True, index=True
+    )
     invoice_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     billing_type: Mapped[str] = mapped_column(Enum("standard", "deposit", "progress", "final", name="invoice_billing_type"), nullable=False, default="standard")
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

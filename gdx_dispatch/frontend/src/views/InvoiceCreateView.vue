@@ -571,12 +571,21 @@ function onCustomerChange() {
     const j = jobs.value.find((row) => row.id === form.value.job_id);
     if (j && form.value.customer_id && j.customer_id !== form.value.customer_id) {
       form.value.job_id = null;
+      // Clearing job_id HERE is programmatic, so the Select's @change never
+      // fires and onJobChange's cleanup never runs. Without this line the
+      // estimate provenance survived a customer switch, and customer B's
+      // invoice shipped carrying customer A's estimate link — audited as
+      // "prefilled", which is a lie about whose numbers these are.
+      sourceEstimateId.value = null;
     }
   }
   resolveTaxRate();
 }
 
 function onJobChange() {
+  // Different job, different estimate. Stale provenance would link the invoice
+  // to an estimate for work it does not cover.
+  sourceEstimateId.value = null;
   // When job changes, derive customer if the picker is empty.
   if (form.value.job_id && !form.value.customer_id) {
     const j = jobs.value.find((row) => row.id === form.value.job_id);
@@ -603,6 +612,10 @@ function onJobChange() {
 // prefill and only fills a still-empty editor — an estimate outranks the
 // lanes (§15.1), and hand-typed lines are never clobbered.
 const closeoutSuggestion = ref(null);
+// The accepted estimate whose lines prefilled this editor, if any. Recorded on
+// the invoice as provenance — the operator may edit the lines afterwards, so
+// this says "the numbers started here", not "these are the estimate's lines".
+const sourceEstimateId = ref(null);
 
 function appendNoteToInvoiceNotes(note) {
   const body = (note?.body || '').trim();
@@ -707,7 +720,13 @@ async function prefillFromJobEstimate(jobId) {
     // the customer never agreed to (and blocking the closeout labor
     // prefill, which only fills an empty editor).
     const estimates = all.filter((e) => String(e.status || '').toLowerCase() === 'accepted');
-    if (!estimates.length) return;
+    if (!estimates.length) {
+      // A previously-picked job may have set this; clearing matters because
+      // job changes re-run the prefill and a stale id would credit the wrong
+      // estimate.
+      sourceEstimateId.value = null;
+      return;
+    }
     const latest = estimates[0];
     const detail = await api.get(`/api/estimates/${latest.id}`, { suppressErrorToast: true });
     const est = detail?.data || detail || {};
@@ -738,6 +757,9 @@ async function prefillFromJobEstimate(jobId) {
       _marginPersisted: ln.margin_pct_override != null,
       _marginUserEdited: ln.margin_pct_override != null,
     }));
+    // Only claim provenance once lines actually landed — an estimate that
+    // yielded no lines did not price this invoice.
+    sourceEstimateId.value = latest.id;
     if (!form.value.notes) form.value.notes = est.description || est.notes || '';
   } catch (e) {
     // estimate prefill is best-effort
@@ -831,6 +853,10 @@ async function createInvoice() {
       attached_photo_ids: form.value.job_id ? (form.value.attached_photo_ids || []) : [],
     };
     if (adjustsInvoiceId.value) payload.adjusts_invoice_id = adjustsInvoiceId.value;
+    // Provenance only. NOT `estimate_id` — that tells the server to copy the
+    // estimate's lines and ignore ours, which would discard whatever the
+    // operator just edited.
+    if (sourceEstimateId.value) payload.source_estimate_id = sourceEstimateId.value;
 
     let created;
     try {
