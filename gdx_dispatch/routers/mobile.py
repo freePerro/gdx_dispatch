@@ -4122,13 +4122,25 @@ def add_mobile_job_customer_contact(
     if not name:
         return jsonable_response({"detail": "name is required"}, 400)
 
+    email = (payload.email or "").strip() or None
+    if email:
+        # A tech typing "asdf" here used to persist. The office can then promote
+        # that contact to default recipient (the button only checks that an
+        # email is truthy), and every automated send for the account resolves
+        # to nothing — no bounce, no error, nothing on screen. Same check the
+        # office writer uses (`customers.py:_clean_contact_email`).
+        from gdx_dispatch.core.validation import _EMAIL_RE
+
+        if not _EMAIL_RE.match(email) or ".." in email:
+            return jsonable_response({"detail": "That email address doesn't look right."}, 422)
+
     contact = CustomerContact(
         id=str(uuid.uuid4()),
         company_id=tenant_id,
         customer_id=customer.id,
         name=name,
         phone=(payload.phone or "").strip() or None,
-        email=(payload.email or "").strip() or None,
+        email=email,
         label=(payload.label or "").strip() or None,
         created_by=user_id or None,
         created_at=datetime.now(UTC),
@@ -4179,6 +4191,13 @@ def delete_mobile_job_customer_contact(
         return jsonable_response({"detail": "contact not found"}, 404)
 
     contact.deleted_at = datetime.now(UTC)
+    # Drop the role with the person. A soft-deleted row that keeps is_primary
+    # lets the resolver's "at most one live primary" invariant read as
+    # satisfied while no LIVE contact holds it — and the office promote path
+    # (`customers.py:make_contact_primary`) only rewrites live rows, so the
+    # dead one stays flagged forever. Sibling of the office delete; found by
+    # the 2026-08-19 audit after the office fix landed first.
+    contact.is_primary = False
     db.commit()
     _audit_mobile(
         db, request, current_user,

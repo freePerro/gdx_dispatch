@@ -1,7 +1,17 @@
 # Jobsite Address: Mobile Visibility + "Same as customer?" Ask
 
 **Date:** 2026-08-18 (re-reviewed same day against CLAUDE.md working agreement)
-**Status:** PLAN — not built
+**Status:** MERGED #356 → #357 → #358 → #359 (all four, 2026-08-18; commits
+`8acc087`, `a8d9021`, `f70efdb`, `66ed758`). Mobile jobsite visibility, the
+job-create ask, the estimate ask + conversion bind, and the tech
+fix-this-address path are all built. **Not built:** §6 debt items are
+tracked in that section. Status corrected 2026-08-19 — the header said
+"PLAN — not built" for shipped work, the exact failure mode the
+2026-08-18 corpus audit catalogued.
+
+**Note (2026-08-19):** `customer_locations` still has **0 rows in
+production** — the table this plan wired up has never been used. See
+`qb-subcustomer-flattening-plan.md`, which fills it.
 **Ask (Doug):** "In mobile it shows the customer address for the job but it doesn't make
 the jobsite address visible. We should also have something that asks if it is the same
 as the customer address in jobs and estimates."

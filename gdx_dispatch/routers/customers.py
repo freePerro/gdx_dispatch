@@ -12,12 +12,18 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.tenant import company_id
-from gdx_dispatch.core.audit import log_audit_event, log_audit_event_sync, resolve_audit_actor
+from gdx_dispatch.core.audit import (
+    audit_or_rollback,
+    ensure_audit_table,
+    log_audit_event,
+    log_audit_event_sync,
+    resolve_audit_actor,
+)
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.cache import cached, invalidate_prefix, invalidate_prefix_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.log_redact import redact_email
-from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.modules import require_module, require_permission
 from gdx_dispatch.core.name_normalize import humanize_name
 from gdx_dispatch.models.tenant_models import Customer, Job
 
@@ -252,6 +258,30 @@ def _client_ip(request: Request | None) -> str | None:
     if xff:
         return str(xff).split(",", 1)[0].strip()
     return request.client.host if request.client else None
+
+
+def _assert_customer_exists(db: Session, customer_id: str) -> None:
+    """404 unless this customer id resolves to a live row.
+
+    Deliberately selects ONLY `customers.id` rather than reusing
+    `_ensure_customer_exists`, which loads the full ORM row. The contact
+    endpoints need existence, not the record — and a full-column load makes the
+    guard fail on any harness whose `customers` table is narrower than the ORM
+    (`test_outbound_email_log.py` builds exactly such a table, and a full load
+    here broke it with "no such column: customers.can_submit_listings").
+    Cheaper, and it doesn't couple a presence check to the whole column set.
+    """
+    import uuid as _uuid
+
+    try:
+        cid = _uuid.UUID(customer_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Customer not found") from None
+    row = db.execute(
+        select(Customer.id).where(Customer.id == cid, Customer.deleted_at.is_(None))
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
 
 
 def _ensure_customer_exists(db: Session, customer_id: str) -> Customer:
@@ -1296,23 +1326,16 @@ async def list_customer_contacts(
 ) -> list[dict]:
     from gdx_dispatch.models.tenant_models import CustomerContact
 
+    # A malformed customer_id used to reach UUID() raw and 500. Same 404 the
+    # rest of this router gives for an id that doesn't resolve.
+    _assert_customer_exists(db, customer_id)
     rows = db.execute(
         select(CustomerContact).where(
             CustomerContact.customer_id == UUID(customer_id),
             CustomerContact.deleted_at.is_(None),
         ).order_by(CustomerContact.created_at)
     ).scalars().all()
-    return [
-        {
-            "id": str(c.id),
-            "name": c.name,
-            "email": c.email,
-            "phone": c.phone,
-            "label": c.label,
-            "is_primary": bool(c.is_primary),
-        }
-        for c in rows
-    ]
+    return [_contact_dict(c) for c in rows]
 
 
 @router.post("/{customer_id}/contacts/{contact_id}/make-primary", response_model=None)
@@ -1327,6 +1350,18 @@ async def make_contact_primary(
     live primary per customer — enforced here, the single writer."""
     from gdx_dispatch.models.tenant_models import CustomerContact
 
+    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
+    # to run lazily from inside log_audit_event_sync it would harden this
+    # handler's staged row before the audit row is written, and
+    # audit_or_rollback would have nothing left to roll back. Run it here, where
+    # committing has nothing to disturb; every later call is a no-op.
+    #
+    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
+    # and would bypass every existing get_db override in the test suite —
+    # two tests in test_outbound_email_log.py went 404 that way, querying a
+    # different database than the one the test had seeded.
+    ensure_audit_table(db)
+    _assert_customer_exists(db, customer_id)
     target = db.execute(
         select(CustomerContact).where(
             CustomerContact.id == str(contact_id),
@@ -1350,16 +1385,17 @@ async def make_contact_primary(
     previous = next((c for c in others if c.is_primary and c.id != target.id), None)
     for c in others:
         c.is_primary = c.id == target.id
-    db.commit()
     # Invariant #1 (ARCHITECTURAL_INVARIANTS.md): every mutation carries an
     # audit row — this changes who automated emails address for the account.
-    log_audit_event_sync(
-        db=db,
-        tenant_id=None,
-        user_id=str(current_user.get("sub") or current_user.get("user_id") or "system"),
+    # Audited BEFORE the commit so the role change and its trail are one
+    # transaction; previously this committed first, so a failed audit left the
+    # recipient silently moved with nothing recording who moved it.
+    audit_or_rollback(
+        db,
         action="customer_primary_contact_set",
         entity_type="customer",
         entity_id=str(customer_id),
+        actor=current_user,
         details={
             "contact_id": str(target.id),
             "contact_name": target.name,
@@ -1368,6 +1404,330 @@ async def make_contact_primary(
     )
     db.commit()
     return {"ok": True, "primary_contact_id": str(target.id)}
+
+
+def _clean_contact_email(value: str | None) -> str | None:
+    """Reject a malformed address at the door.
+
+    The primary contact's email IS what automated sends resolve to
+    (`core/email_recipients.py:97`). Accepting "asdf" and then letting an
+    operator promote that contact sends every automated email for the account
+    into nothing, with a green toast and no error anywhere. Same regex the
+    recipient override validates with.
+    """
+    from gdx_dispatch.core.validation import _EMAIL_RE
+
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    if not _EMAIL_RE.match(cleaned) or ".." in cleaned:
+        raise HTTPException(status_code=422, detail="That email address doesn't look right.")
+    return cleaned
+
+
+class CustomerContactIn(BaseModel):
+    """Office-side contact write. `name` is the only required field — a tech
+    standing in a driveway often learns a name before anything else, and the
+    office should not be held to a higher bar than mobile (`mobile.py:84`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=254)
+    label: str | None = Field(default=None, max_length=120)
+
+
+class CustomerContactPatchIn(BaseModel):
+    """Partial edit. Every field optional; `exclude_unset` distinguishes
+    "not sent" from "sent empty", so clearing a phone stays possible."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=254)
+    label: str | None = Field(default=None, max_length=120)
+
+
+def _contact_dict(c: Any) -> dict:
+    return {
+        "id": str(c.id),
+        "name": c.name,
+        "email": c.email,
+        "phone": c.phone,
+        "label": c.label,
+        "is_primary": bool(c.is_primary),
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+def _load_contact(db: Session, customer_id: str, contact_id: str) -> Any:
+    """Fetch one live contact, scoped to its customer.
+
+    The customer scope is not decoration: a contact id on its own must never
+    be a key to any contact in the tenant. Same rule the mobile delete path
+    states at `mobile.py:4171`.
+    """
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    contact = db.execute(
+        select(CustomerContact).where(
+            CustomerContact.id == str(contact_id),
+            CustomerContact.customer_id == UUID(customer_id),
+            CustomerContact.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return contact
+
+
+@router.post(
+    "/{customer_id}/contacts",
+    status_code=201,
+    response_model=None,
+    # Same permission the mobile writer carries (`mobile.py:4098`). Technicians
+    # DO hold customers.contact_write (`permissions.py:207`) — that is the
+    # point, they meet these people. The gate excludes the office roles that
+    # don't own customer data (accounting, viewer); without it this endpoint
+    # would be a second, ungated door to a table mobile guards.
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+async def create_customer_contact(
+    customer_id: str,
+    payload: CustomerContactIn,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Add a person at this customer from the office.
+
+    Before this, the ONLY way to create a contact was a tech tapping through a
+    mobile job screen (`mobile.py:4096`) — which is why the table had zero rows
+    in production and why a second person at an account ended up as a
+    QuickBooks sub-customer instead.
+    """
+    from gdx_dispatch.models.tenant_models import CustomerContact
+
+    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
+    # to run lazily from inside log_audit_event_sync it would harden this
+    # handler's staged row before the audit row is written, and
+    # audit_or_rollback would have nothing left to roll back. Run it here, where
+    # committing has nothing to disturb; every later call is a no-op.
+    #
+    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
+    # and would bypass every existing get_db override in the test suite —
+    # two tests in test_outbound_email_log.py went 404 that way, querying a
+    # different database than the one the test had seeded.
+    ensure_audit_table(db)
+    _assert_customer_exists(db, customer_id)
+
+    contact = CustomerContact(
+        id=str(uuid4()),
+        company_id=company_id(),
+        customer_id=UUID(customer_id),
+        name=payload.name.strip(),
+        phone=(payload.phone or "").strip() or None,
+        email=_clean_contact_email(payload.email),
+        label=(payload.label or "").strip() or None,
+        is_primary=False,
+        created_by=_user_id(current_user),
+        created_at=datetime.now(timezone.utc),
+    )
+    try:
+        db.add(contact)
+        db.flush()
+        # Invariant #1, the strong form: audit BEFORE the commit so the row and
+        # its trail land in one transaction. Auditing after the commit means a
+        # failed audit returns 500 over a contact that exists — the operator
+        # retries and gets two of them. Field NAMES only; a contact's phone and
+        # email do not belong in the trail in the clear (`mobile.py:3925`).
+        audit_or_rollback(
+            db,
+            action="customer_contact_added",
+            entity_type="customer",
+            entity_id=str(customer_id),
+            actor=current_user,
+            request=request,
+            details={
+                "contact_id": str(contact.id),
+                "contact_name": contact.name,
+                "label": contact.label,
+                "has_email": bool(contact.email),
+                "has_phone": bool(contact.phone),
+            },
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("create_customer_contact_failed", extra={"customer_id": customer_id})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+
+    return _contact_dict(contact)
+
+
+@router.patch(
+    "/{customer_id}/contacts/{contact_id}",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+async def update_customer_contact(
+    customer_id: str,
+    contact_id: str,
+    payload: CustomerContactPatchIn,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Correct a contact in place.
+
+    No edit path existed anywhere before this — mobile can add and soft-delete,
+    and its PATCH (`mobile.py:3879`) edits the CUSTOMER's own name/phone/email,
+    not a contact row. A typo'd contact email meant delete and re-add, which
+    threw away the created_at and the audit thread with it.
+    """
+    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
+    # to run lazily from inside log_audit_event_sync it would harden this
+    # handler's staged row before the audit row is written, and
+    # audit_or_rollback would have nothing left to roll back. Run it here, where
+    # committing has nothing to disturb; every later call is a no-op.
+    #
+    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
+    # and would bypass every existing get_db override in the test suite —
+    # two tests in test_outbound_email_log.py went 404 that way, querying a
+    # different database than the one the test had seeded.
+    ensure_audit_table(db)
+    _assert_customer_exists(db, customer_id)
+    contact = _load_contact(db, customer_id, contact_id)
+
+    fields = payload.model_dump(exclude_unset=True)
+    changed: list[str] = []
+    for key in ("name", "phone", "email", "label"):
+        if key not in fields:
+            continue
+        value = (fields[key] or "").strip() or None
+        # name is NOT NULL — refuse to blank it rather than let the DB raise on
+        # flush and lose the rest of the patch with it (same reasoning as
+        # `mobile.py:3907`).
+        if key == "name" and not value:
+            raise HTTPException(status_code=422, detail="A contact needs a name.")
+        # The primary contact IS the address automated sends resolve to
+        # (`core/email_recipients.py:97`). Blanking their email would leave
+        # every automated email for this account resolving to an empty
+        # recipient with nothing on screen to explain it.
+        if key == "email" and not value and contact.is_primary:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "This is the default recipient for the account — give another "
+                    "contact that role before clearing this email address."
+                ),
+            )
+        # Refusing to BLANK the primary's email while accepting "asdf" as one
+        # would defend the rare case and wave through the common one.
+        if key == "email":
+            value = _clean_contact_email(value)
+        if getattr(contact, key) == value:
+            continue
+        setattr(contact, key, value)
+        changed.append(key)
+
+    if not changed:
+        return _contact_dict(contact)
+
+    try:
+        contact.updated_at = datetime.now(timezone.utc)
+        audit_or_rollback(
+            db,
+            action="customer_contact_updated",
+            entity_type="customer",
+            entity_id=str(customer_id),
+            actor=current_user,
+            request=request,
+            details={
+                "contact_id": str(contact.id),
+                "contact_name": contact.name,
+                # WHICH fields, never the values.
+                "fields": changed,
+            },
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("update_customer_contact_failed", extra={"customer_id": customer_id})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+
+    return _contact_dict(contact)
+
+
+@router.delete(
+    "/{customer_id}/contacts/{contact_id}",
+    response_model=None,
+    dependencies=[Depends(require_permission("customers.contact_write"))],
+)
+async def delete_customer_contact(
+    customer_id: str,
+    contact_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Soft-delete — invariant #2. The row carries `deleted_at`, so it stays
+    for the audit trail; a person who left the account should stop appearing in
+    recipient pickers, not vanish from the record of who was emailed."""
+    # ensure_audit_table COMMITS on first use per engine (`audit.py:320`). Left
+    # to run lazily from inside log_audit_event_sync it would harden this
+    # handler's staged row before the audit row is written, and
+    # audit_or_rollback would have nothing left to roll back. Run it here, where
+    # committing has nothing to disturb; every later call is a no-op.
+    #
+    # NOT `Depends(audit_ready_db)`: that dependency resolves its own session
+    # and would bypass every existing get_db override in the test suite —
+    # two tests in test_outbound_email_log.py went 404 that way, querying a
+    # different database than the one the test had seeded.
+    ensure_audit_table(db)
+    _assert_customer_exists(db, customer_id)
+    contact = _load_contact(db, customer_id, contact_id)
+
+    was_primary = bool(contact.is_primary)
+    try:
+        contact.deleted_at = datetime.now(timezone.utc)
+        # Drop the role with the person. Leaving is_primary set on a
+        # soft-deleted row would let the resolver's "at most one live primary"
+        # invariant read as satisfied while no live contact holds the role.
+        contact.is_primary = False
+        audit_or_rollback(
+            db,
+            action="customer_contact_deleted",
+            entity_type="customer",
+            entity_id=str(customer_id),
+            actor=current_user,
+            request=request,
+            details={
+                "contact_id": str(contact.id),
+                "contact_name": contact.name,
+                # Worth its own field: removing the primary silently moves every
+                # automated email for this account back to the account address.
+                "was_primary": was_primary,
+            },
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("delete_customer_contact_failed", extra={"customer_id": customer_id})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+
+    return {
+        "ok": True,
+        "was_primary": was_primary,
+        "fallback": "account_email" if was_primary else None,
+    }
 
 
 # ── Route-order fix ─────────────────────────────────────────────────────────
