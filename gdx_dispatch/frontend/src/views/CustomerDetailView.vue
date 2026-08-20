@@ -168,6 +168,54 @@
         </DataTable>
       </div>
 
+      <!-- Contacts tab -->
+      <div v-if="activeTab === 'Contacts'" class="tab-content" data-testid="tab-contacts-content">
+        <div class="locations-header">
+          <h3>People at this account</h3>
+          <Button v-if="canWriteContacts" label="+ Add Contact" icon="pi pi-plus" size="small" outlined data-testid="add-contact-btn" @click="openContactDialog" />
+        </div>
+
+        <p class="muted contacts-hint">
+          The account email is {{ customer.email || 'not set' }}. Automated emails go to
+          the default recipient below when one is set, otherwise to the account email.
+        </p>
+
+        <div v-if="contactsLoading" class="empty-message">Loading contacts…</div>
+        <div v-else-if="contactsError" class="inline-error" data-testid="contacts-error">
+          {{ contactsError }}
+        </div>
+        <div v-else-if="!contacts.length" class="empty-message" data-testid="contacts-empty">
+          No contacts on file. Add the person you actually deal with — a property
+          manager, a front desk, an on-site super.
+        </div>
+
+        <div v-for="c in contacts" :key="c.id" class="location-card" :data-testid="`contact-${c.id}`">
+          <div class="location-info">
+            <strong>
+              {{ c.name }}
+              <Tag v-if="c.is_primary" value="Default recipient" severity="success" class="contact-tag" :data-testid="`contact-primary-tag-${c.id}`" />
+            </strong>
+            <span v-if="c.label" class="muted">{{ c.label }}</span>
+            <a v-if="c.phone" :href="`tel:${c.phone}`" class="contact-link">{{ formatPhone(c.phone) }}</a>
+            <a v-if="c.email" :href="`mailto:${c.email}`" class="contact-link">{{ c.email }}</a>
+            <span v-if="!c.phone && !c.email" class="muted">No phone or email on file.</span>
+          </div>
+          <div class="location-actions">
+            <Button
+              v-if="canWriteContacts && !c.is_primary && c.email"
+              label="Make default"
+              size="small"
+              text
+              :loading="contactBusyId === c.id"
+              :data-testid="`make-primary-${c.id}`"
+              @click="makeContactPrimary(c)"
+            />
+            <Button v-if="canWriteContacts" v-tooltip="'Edit'" icon="pi pi-pencil" aria-label="Edit contact" text rounded size="small" :data-testid="`edit-contact-${c.id}`" @click="editContact(c)" />
+            <Button v-if="canWriteContacts" v-tooltip="'Remove'" icon="pi pi-trash" aria-label="Remove contact" text rounded size="small" severity="danger" :data-testid="`delete-contact-${c.id}`" @click="askRemoveContact(c)" />
+          </div>
+        </div>
+      </div>
+
       <!-- Locations tab -->
       <div v-if="activeTab === 'Locations'" class="tab-content" data-testid="tab-locations-content">
         <div class="locations-header">
@@ -415,6 +463,71 @@
         </form>
       </Dialog>
 
+      <!-- Add/Edit Contact Dialog -->
+      <Dialog
+        v-model:visible="showContactDialog"
+        :header="contactForm.id ? 'Edit Contact' : 'Add Contact'"
+        :style="{ width: '450px' }"
+        modal
+        data-testid="contact-dialog"
+      >
+        <form class="dialog-form" @submit.prevent="saveContact">
+          <div class="form-field">
+            <label for="contact-name">Name *</label>
+            <InputText id="contact-name" v-model="contactForm.name" data-testid="contact-name-input" class="w-full" autofocus />
+          </div>
+          <div class="form-field">
+            <label for="contact-label">Role</label>
+            <InputText id="contact-label" v-model="contactForm.label" placeholder="e.g. property manager, tenant, gate code" data-testid="contact-label-input" class="w-full" />
+          </div>
+          <div class="form-field">
+            <label for="contact-phone">Phone</label>
+            <PhoneInput id="contact-phone" v-model="contactForm.phone" data-testid="contact-phone-input" class="w-full" />
+          </div>
+          <div class="form-field">
+            <label for="contact-email">Email</label>
+            <InputText id="contact-email" v-model="contactForm.email" data-testid="contact-email-input" class="w-full" />
+          </div>
+          <div v-if="contactError" class="inline-error" data-testid="contact-error">{{ contactError }}</div>
+          <div class="form-actions">
+            <Button type="button" label="Cancel" text @click="showContactDialog = false" />
+            <Button type="submit" label="Save Contact" :loading="isSavingContact" data-testid="save-contact-btn" />
+          </div>
+        </form>
+      </Dialog>
+
+      <!-- Remove Contact confirm.
+           Deliberately a real Dialog, NOT useDestructiveConfirm: that composable
+           auto-accepts silently (issue #215), so a "confirm" built on it would
+           delete on the first click with no prompt at all. -->
+      <Dialog
+        v-model:visible="showRemoveContactDialog"
+        header="Remove contact?"
+        :style="{ width: '420px' }"
+        modal
+        data-testid="remove-contact-dialog"
+      >
+        <p>
+          Remove <strong>{{ contactPendingRemoval?.name }}</strong> from this account?
+        </p>
+        <p v-if="contactPendingRemoval?.is_primary" class="inline-error" data-testid="remove-primary-warning">
+          They are the default recipient. Automated emails for this account will go
+          to the account email ({{ customer.email || 'not set' }}) instead.
+        </p>
+        <p class="muted">They stay on past records — this only removes them going forward.</p>
+        <div class="form-actions">
+          <Button type="button" label="Cancel" text @click="showRemoveContactDialog = false" />
+          <Button
+            type="button"
+            label="Remove"
+            severity="danger"
+            :loading="isRemovingContact"
+            data-testid="confirm-remove-contact-btn"
+            @click="confirmRemoveContact"
+          />
+        </div>
+      </Dialog>
+
       <!-- Add/Edit Location Dialog -->
       <Dialog
         v-model:visible="showLocationDialog"
@@ -649,6 +762,7 @@ import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDate, formatDateTime, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { useTenantModules } from "../composables/useTenantModules";
+import { usePermission } from "../composables/usePermission";
 import { useAuthStore } from "../stores/auth";
 import Button from "primevue/button";
 import Card from "primevue/card";
@@ -681,6 +795,11 @@ const customerJobs = ref([]);
 // Tier 10 — per-record QuickBooks push state. Gated on the QB module so a
 // tenant that doesn't use QuickBooks never sees a "not synced" badge.
 const { isEnabled } = useTenantModules();
+// accounting and viewer do not hold customers.contact_write. Rendering the
+// write controls for them produced buttons whose only outcome was a
+// "Permission denied" toast — a dead end, which this repo counts as a defect.
+const { hasPermission } = usePermission();
+const canWriteContacts = computed(() => hasPermission("customers.contact_write"));
 const qbEnabled = computed(() => isEnabled("quickbooks"));
 const qbSync = computed(() => {
   // qb_in_quickbooks (from QBEntityMap) is the authoritative "in QB" signal;
@@ -745,7 +864,10 @@ function formatCurrency(v) {
 }
 // formatDateTime — declared further down in the existing util block, reused here.
 const activeTab = ref("Jobs");
-const tabs = ["Jobs", "Estimates", "Invoices", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Communications", "Portal"];
+// People before places: a second person at an account had nowhere to live
+// before this tab, which is how QuickBooks sub-customers became the
+// dumping ground for names. See qb-subcustomer-flattening-plan.md.
+const tabs = ["Jobs", "Estimates", "Invoices", "Contacts", "Locations", "Notes", "Equipment", "Recurring Jobs", "Email", "Communications", "Portal"];
 // Route param, not the loaded customer object — the tab must work while the
 // customer record is still in flight.
 const customerId = computed(() => route.params.id);
@@ -804,6 +926,25 @@ const editError = ref("");
 const isSaving = ref(false);
 
 // Location dialog state
+// ── Contacts (office) ──────────────────────────────────────────────────────
+// customer_contacts shipped with a model, a mobile writer and a recipient
+// picker — and no office UI, so it held zero rows in production.
+const contacts = ref([]);
+const contactsLoading = ref(false);
+const contactsError = ref("");
+const contactBusyId = ref(null);
+const showContactDialog = ref(false);
+const contactForm = ref(emptyContact());
+const contactError = ref("");
+const isSavingContact = ref(false);
+const showRemoveContactDialog = ref(false);
+const contactPendingRemoval = ref(null);
+const isRemovingContact = ref(false);
+
+function emptyContact() {
+  return { id: null, name: "", label: "", phone: "", email: "" };
+}
+
 const showLocationDialog = ref(false);
 const locationForm = ref(emptyLocation());
 const locationError = ref("");
@@ -1143,6 +1284,114 @@ async function saveLocation() {
   }
 }
 
+async function fetchContacts() {
+  contactsLoading.value = true;
+  contactsError.value = "";
+  try {
+    const data = await api.get(`/api/customers/${route.params.id}/contacts`);
+    contacts.value = Array.isArray(data) ? data : data?.items || [];
+  } catch (e) {
+    // "No contacts on file" is a claim about the account. On a 5xx it is a
+    // lie — say the load failed instead.
+    contacts.value = [];
+    contactsError.value = e?.message || "Couldn't load contacts.";
+  } finally {
+    contactsLoading.value = false;
+  }
+}
+
+function openContactDialog() {
+  contactError.value = "";
+  contactForm.value = emptyContact();
+  showContactDialog.value = true;
+}
+
+function editContact(c) {
+  contactError.value = "";
+  contactForm.value = {
+    id: c.id,
+    name: c.name || "",
+    label: c.label || "",
+    phone: c.phone || "",
+    email: c.email || "",
+  };
+  showContactDialog.value = true;
+}
+
+async function saveContact() {
+  contactError.value = "";
+  if (!contactForm.value.name.trim()) {
+    contactError.value = "A contact needs a name.";
+    return;
+  }
+  isSavingContact.value = true;
+  try {
+    const payload = {
+      name: contactForm.value.name.trim(),
+      label: contactForm.value.label || "",
+      phone: contactForm.value.phone || "",
+      email: contactForm.value.email || "",
+    };
+    if (contactForm.value.id) {
+      await api.patch(`/api/customers/${route.params.id}/contacts/${contactForm.value.id}`, payload);
+    } else {
+      await api.post(`/api/customers/${route.params.id}/contacts`, payload);
+    }
+    toast.add({ severity: "success", summary: "Saved", detail: "Contact saved.", life: 3000 });
+    showContactDialog.value = false;
+    await fetchContacts();
+  } catch (e) {
+    // Surface the server's reason inline — the 422 for stranding the default
+    // recipient without an email is the whole point of showing it here.
+    contactError.value = e?.message || "Failed to save contact.";
+  } finally {
+    isSavingContact.value = false;
+  }
+}
+
+function askRemoveContact(c) {
+  contactPendingRemoval.value = c;
+  showRemoveContactDialog.value = true;
+}
+
+async function confirmRemoveContact() {
+  const c = contactPendingRemoval.value;
+  if (!c) return;
+  isRemovingContact.value = true;
+  try {
+    const res = await api.delete(`/api/customers/${route.params.id}/contacts/${c.id}`);
+    // The server tells us whether that person held the default-recipient role.
+    // Saying so is the difference between "removed" and the operator finding
+    // out weeks later that automated email quietly changed address.
+    const detail = res?.was_primary
+      ? `${c.name} removed. Automated emails now go to the account email.`
+      : `${c.name} removed.`;
+    toast.add({ severity: "success", summary: "Removed", detail, life: res?.was_primary ? 6000 : 3000 });
+    showRemoveContactDialog.value = false;
+    contactPendingRemoval.value = null;
+    await fetchContacts();
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Error", detail: e?.message || "Failed to remove contact.", life: 5000 });
+  } finally {
+    isRemovingContact.value = false;
+  }
+}
+
+async function makeContactPrimary(c) {
+  contactBusyId.value = c.id;
+  try {
+    await api.post(
+      `/api/customers/${route.params.id}/contacts/${c.id}/make-primary`, {},
+      { successMessage: "Saved — automated emails for this account now go to this person." },
+    );
+    await fetchContacts();
+  } catch (e) {
+    toast.add({ severity: "error", summary: "Error", detail: e?.message || "Failed to set default recipient.", life: 5000 });
+  } finally {
+    contactBusyId.value = null;
+  }
+}
+
 async function fetchCustomer() {
   loading.value = true;
   try {
@@ -1183,6 +1432,7 @@ onMounted(async () => {
   await fetchCustomer();
   await Promise.all([
     fetchLocations(),
+    fetchContacts(),
     loadCustomerEstimates(),
     loadCustomerInvoices(),
     fetchEquipment(),
@@ -1357,6 +1607,25 @@ onMounted(async () => {
   align-items: center;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.contacts-hint {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+}
+
+.contact-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.contact-link {
+  color: var(--p-primary-color);
+  text-decoration: none;
+}
+
+.contact-link:hover {
+  text-decoration: underline;
 }
 
 .section-card {
