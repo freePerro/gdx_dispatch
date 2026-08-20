@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -1041,9 +1041,18 @@ class DuplicateMember(BaseModel):
 
 
 class DuplicateGroup(BaseModel):
+    # Kept as the group's stable KEY (the UI uses it to track per-group
+    # selections), not necessarily a name — for an email or phone group it
+    # holds "email:<value>" so keys stay unique across match types.
     normalized_name: str
     count: int
     members: list[DuplicateMember]
+    # What actually tied these records together. Without it a reviewer cannot
+    # tell a true duplicate ("Troy rubink" three times) from a QuickBooks
+    # sub-customer split (six different job names sharing one account email) —
+    # and those want opposite treatment.
+    match_on: Literal["name", "email", "phone"] = "name"
+    match_value: str = ""
 
 
 class DuplicateListOut(BaseModel):
@@ -1051,143 +1060,179 @@ class DuplicateListOut(BaseModel):
     total_groups: int
 
 
-@router.get("/duplicates", response_model=DuplicateListOut)
+@router.get(
+    "/duplicates",
+    response_model=DuplicateListOut,
+    # This returns every active customer's name, email, phone and decrypted
+    # address in one unpaginated response, and the merge below it destroys
+    # billing history. Both took a bare get_current_user, so any authenticated
+    # session — a technician's phone included — could read the whole book or
+    # merge two accounts. Gated on the same permission the customer write
+    # paths use.
+    dependencies=[Depends(require_permission("customers.write"))],
+)
 def list_duplicates(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(200, ge=1, le=1000),
 ) -> DuplicateListOut:
-    """Return groups of customers that share a normalized name.
+    """Groups of customers that share a normalized name, email, or phone.
 
-    Normalization: lowercased, whitespace-collapsed. Groups of size >= 2 only.
-    Per member we return job/invoice counts + QB link presence so the reviewer
-    has evidence for picking the keep candidate.
+    Name alone was not enough. QuickBooks sub-customers arrive as separate
+    top-level customers carrying the PARENT's email, so the six job names
+    under one lumber-yard account had six different names and one address —
+    invisible to a name-only detector, which is the screen that exists to
+    catch exactly this. On this tenant 29 of 306 active customers share an
+    email with another row and not one of them was surfaced.
+
+    Grouping runs in Python rather than SQL. The previous version normalized
+    with Postgres `REGEXP_REPLACE`, which is not portable, and phone
+    normalization (strip to digits) has no dialect-safe SQL form at all. At
+    ~300 customers the ORM load is nothing, and it decrypts `address`
+    (EncryptedString since S122-9 slice 3) on the way through.
+
+    Per member: job/invoice counts and QB-link presence, so the reviewer has
+    evidence for picking the keep candidate.
     """
-    # Find names that appear more than once (active customers only)
-    name_rows = db.execute(
-        text(
-            """
-            SELECT LOWER(TRIM(REGEXP_REPLACE(name, '\\s+', ' ', 'g'))) AS norm,
-                   COUNT(*) AS n
-            FROM customers
-            WHERE deleted_at IS NULL
-            GROUP BY norm
-            HAVING COUNT(*) > 1
-            ORDER BY n DESC, norm
-            LIMIT :limit
-            """
-        ),
-        {"limit": limit},
-    ).all()
+    import re as _re
 
-    if not name_rows:
-        return DuplicateListOut(groups=[], total_groups=0)
-
-    norms = [r[0] for r in name_rows]
-
-    # Pull every customer whose normalized name is in the duplicate
-    # set. Two-phase to keep the Postgres REGEXP_REPLACE normalization
-    # (the hard part) while ORM-loading the full row so `address`
-    # (EncryptedString since S122-9 slice 3) decrypts.
-    id_norm_rows = db.execute(
-        text(
-            """
-            SELECT id, LOWER(TRIM(REGEXP_REPLACE(name, '\\s+', ' ', 'g'))) AS norm
-            FROM customers
-            WHERE deleted_at IS NULL
-              AND LOWER(TRIM(REGEXP_REPLACE(name, '\\s+', ' ', 'g'))) = ANY(:norms)
-            ORDER BY created_at ASC NULLS LAST, id
-            """
-        ),
-        {"norms": norms},
-    ).mappings().all()
-    import uuid as _uuid  # noqa: PLC0415
-    norm_by_id: dict[str, str] = {str(r["id"]): r["norm"] for r in id_norm_rows}
-    customer_rows = (
+    customers = (
         db.query(Customer)
-        .filter(Customer.id.in_([_uuid.UUID(str(r["id"])) for r in id_norm_rows]))
+        .filter(Customer.deleted_at.is_(None))
+        .order_by(Customer.created_at.asc().nullslast(), Customer.id)
         .all()
     )
-    # Preserve the (created_at, id) ordering from the SQL above.
-    by_id = {str(c.id): c for c in customer_rows}
-    members = [
-        {
-            "id": r["id"],
-            "name": by_id[str(r["id"])].name if str(r["id"]) in by_id else None,
-            "phone": by_id[str(r["id"])].phone if str(r["id"]) in by_id else None,
-            "email": by_id[str(r["id"])].email if str(r["id"]) in by_id else None,
-            "address": by_id[str(r["id"])].address if str(r["id"]) in by_id else None,
-            "created_at": by_id[str(r["id"])].created_at if str(r["id"]) in by_id else None,
-            "norm": r["norm"],
-        }
-        for r in id_norm_rows
-    ]
+    if not customers:
+        return DuplicateListOut(groups=[], total_groups=0)
 
-    # Job counts per customer. CAST AS TEXT so the same SQL works on tenants
-    # where customer_id is UUID and tenants where it's TEXT (Flask-era schema).
-    cust_ids = [str(m["id"]) for m in members]
+    def _norm_name(value: str | None) -> str:
+        return _re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+    def _norm_email(value: str | None) -> str:
+        return (value or "").strip().lower()
+
+    def _norm_phone(value: str | None) -> str:
+        # Digits only. Last-4 was considered and rejected: on a 300-customer
+        # book it collides often enough to put strangers in the same group,
+        # and a reviewer who stops trusting the screen stops using it.
+        digits = _re.sub(r"\D", "", value or "")
+        return digits if len(digits) >= 7 else ""
+
+    buckets: dict[str, dict[str, list[Customer]]] = {"name": {}, "email": {}, "phone": {}}
+    for c in customers:
+        for kind, key in (
+            ("name", _norm_name(c.name)),
+            ("email", _norm_email(c.email)),
+            ("phone", _norm_phone(c.phone)),
+        ):
+            if key:
+                buckets[kind].setdefault(key, []).append(c)
+
+    # Job counts. CAST AS TEXT so the same SQL works on tenants where
+    # customer_id is UUID and tenants where it's TEXT (Flask-era schema).
+    cust_ids = [str(c.id) for c in customers]
     job_counts: dict[str, int] = {}
-    if cust_ids:
-        for row in db.execute(
-            text("SELECT CAST(customer_id AS TEXT), COUNT(*) FROM jobs WHERE CAST(customer_id AS TEXT) = ANY(:ids) GROUP BY customer_id"),
-            {"ids": cust_ids},
-        ).all():
-            job_counts[str(row[0])] = int(row[1])
-
-    # Invoice counts per customer (invoices table exists; guard with try)
     inv_counts: dict[str, int] = {}
-    try:
-        if cust_ids:
-            for row in db.execute(
-                text("SELECT CAST(customer_id AS TEXT), COUNT(*) FROM invoices WHERE CAST(customer_id AS TEXT) = ANY(:ids) GROUP BY customer_id"),
-                {"ids": cust_ids},
-            ).all():
-                inv_counts[str(row[0])] = int(row[1])
-    except SQLAlchemyError:
-        logging.getLogger(__name__).exception("list_duplicates caught exception")
-        db.rollback()
-
-    # QB entity map lookups
     qb_linked: set[str] = set()
-    try:
-        if cust_ids:
+    # `IN` with an expanding bindparam, NOT `= ANY(...)`. ANY is a Postgres
+    # array operator with no SQLite equivalent, so every one of these queries
+    # raised there and the except branch swallowed it — leaving job/invoice/QB
+    # columns silently reading zero on any non-Postgres tenant. Those numbers
+    # are the evidence a reviewer picks the keep candidate by; wrong-and-quiet
+    # is the worst way for them to be wrong.
+    def _canonical_customer_id(value: str) -> str:
+        """Both uuid spellings collapse to the dashed form the members use."""
+        try:
+            import uuid as _u
+
+            return str(_u.UUID(value))
+        except (ValueError, AttributeError, TypeError):
+            return value
+
+    # Match BOTH spellings of a uuid. Postgres renders `uuid::text` with
+    # dashes; SQLite stores a Uuid column as dash-less hex, so casting there
+    # yields "a1b2..." while these ids are "a1b2-...". The counts came back
+    # zero for every customer on that dialect — and these numbers are the
+    # evidence a reviewer picks the surviving record by.
+    id_variants = sorted({v for cid in cust_ids for v in (cid, cid.replace("-", ""))})
+    ids_param = bindparam("ids", expanding=True)
+    for target, sql in (
+        (job_counts, "SELECT CAST(customer_id AS TEXT) AS cid, COUNT(*) FROM jobs "
+                     "WHERE CAST(customer_id AS TEXT) IN :ids GROUP BY cid"),
+        (inv_counts, "SELECT CAST(customer_id AS TEXT) AS cid, COUNT(*) FROM invoices "
+                     "WHERE CAST(customer_id AS TEXT) IN :ids GROUP BY cid"),
+    ):
+        try:
             for row in db.execute(
-                text(
-                    "SELECT local_id FROM qb_entity_maps "
-                    "WHERE entity_type = 'customer' AND local_id = ANY(:ids)"
-                ),
-                {"ids": cust_ids},
+                text(sql).bindparams(ids_param), {"ids": id_variants}
             ).all():
-                qb_linked.add(str(row[0]))
+                target[_canonical_customer_id(str(row[0]))] = int(row[1])
+        except SQLAlchemyError:
+            logging.getLogger(__name__).exception("list_duplicates caught exception")
+            db.rollback()
+    try:
+        for row in db.execute(
+            text("SELECT local_id FROM qb_entity_maps "
+                 "WHERE entity_type = 'customer' AND local_id IN :ids")
+            .bindparams(ids_param),
+            {"ids": id_variants},
+        ).all():
+            qb_linked.add(_canonical_customer_id(str(row[0])))
     except SQLAlchemyError:
         logging.getLogger(__name__).exception("list_duplicates caught exception")
         db.rollback()
 
-    # Group by normalized name
-    groups_map: dict[str, list[DuplicateMember]] = {}
-    for m in members:
-        cid = str(m["id"])
-        dm = DuplicateMember(
+    def _member(c: Customer) -> DuplicateMember:
+        cid = str(c.id)
+        return DuplicateMember(
             id=cid,
-            name=m["name"],
-            phone=m.get("phone"),
-            email=m.get("email"),
-            address=m.get("address"),
-            created_at=_normalize_datetime(m.get("created_at")),
+            name=c.name,
+            phone=c.phone,
+            email=c.email,
+            address=c.address,
+            created_at=_normalize_datetime(c.created_at),
             job_count=job_counts.get(cid, 0),
             invoice_count=inv_counts.get(cid, 0),
             has_qb_link=cid in qb_linked,
         )
-        groups_map.setdefault(m["norm"], []).append(dm)
 
-    groups = [
-        DuplicateGroup(normalized_name=norm, count=len(mems), members=mems)
-        for norm, mems in groups_map.items()
-    ]
-    groups.sort(key=lambda g: (-g.count, g.normalized_name))
+    groups: list[DuplicateGroup] = []
+    already_grouped: set[str] = set()
+    # Name first: when a record is caught by more than one signal the reviewer
+    # should see it once, under the strongest one. Comparing whole member SETS
+    # was not enough — that only catches an EXACT repeat, so partial overlap
+    # (two records share a name, a third shares just their email) listed the
+    # same customer in two cards, where two keep/merge choices can disagree
+    # about where its invoices go.
+    for kind in ("name", "email", "phone"):
+        for key, members in sorted(buckets[kind].items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            if len(members) < 2:
+                continue
+            fresh = [c for c in members if str(c.id) not in already_grouped]
+            if len(fresh) < 2:
+                continue
+            members = fresh
+            already_grouped.update(str(c.id) for c in members)
+            groups.append(DuplicateGroup(
+                # Always prefixed. `key if kind == "name" else f"{kind}:{key}"`
+                # collides when a customer is literally NAMED "email:foo@bar" —
+                # contrived, but colliding keys share one selections entry AND
+                # one radio-button name in the UI, so a merge submitted from
+                # one card would carry the other card's ids.
+                normalized_name=f"{kind}:{key}",
+                count=len(members),
+                members=[_member(c) for c in members],
+                match_on=kind,
+                match_value=key,
+            ))
 
-    return DuplicateListOut(groups=groups, total_groups=len(groups))
+    groups.sort(key=lambda g: (-g.count, g.match_on, g.normalized_name))
+    total = len(groups)
+    # `limit` arrives as a Query() sentinel when this function is called
+    # directly rather than through FastAPI's dependency resolution.
+    cap = limit if isinstance(limit, int) else 200
+    return DuplicateListOut(groups=groups[:cap], total_groups=total)
 
 
 class MergeIn(BaseModel):
@@ -1231,7 +1276,11 @@ def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
     return tables
 
 
-@router.post("/merge", response_model=MergeOut)
+@router.post(
+    "/merge",
+    response_model=MergeOut,
+    dependencies=[Depends(require_permission("customers.write"))],
+)
 def merge_customers(
     payload: MergeIn,
     request: Request,
@@ -1260,8 +1309,14 @@ def merge_customers(
         raise HTTPException(status_code=404, detail="keep customer not found")
 
     # Verify merge customers exist
+    # Expanding bindparam, not `= ANY(:ids)`. ANY is a Postgres array operator
+    # with no SQLite equivalent — and unlike the read-only duplicate list,
+    # where the failure was swallowed and merely showed zeros, a raise HERE is
+    # in the middle of a destructive merge.
+    _ids = bindparam("ids", expanding=True)
     merge_rows = db.execute(
-        text("SELECT id, name FROM customers WHERE id = ANY(:ids) AND deleted_at IS NULL"),
+        text("SELECT id, name FROM customers WHERE id IN :ids AND deleted_at IS NULL")
+        .bindparams(_ids),
         {"ids": payload.merge_ids},
     ).all()
     if len(merge_rows) != len(payload.merge_ids):
@@ -1272,8 +1327,8 @@ def merge_customers(
         fk_tables = _discover_customer_fk_tables(db)
         for table, column in fk_tables:
             stmt = text(
-                f"UPDATE {table} SET {column} = :keep WHERE {column} = ANY(:ids)"
-            )
+                f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids"
+            ).bindparams(bindparam("ids", expanding=True))
             result = db.execute(stmt, {"keep": payload.keep_id, "ids": payload.merge_ids})
             if result.rowcount:
                 rows_updated[f"{table}.{column}"] = int(result.rowcount)
@@ -1282,8 +1337,8 @@ def merge_customers(
         result = db.execute(
             text(
                 "UPDATE customers SET deleted_at = :now, updated_at = :now "
-                "WHERE id = ANY(:ids) AND deleted_at IS NULL"
-            ),
+                "WHERE id IN :ids AND deleted_at IS NULL"
+            ).bindparams(bindparam("ids", expanding=True)),
             {"now": now, "ids": payload.merge_ids},
         )
         rows_updated["customers.soft_deleted"] = int(result.rowcount)
