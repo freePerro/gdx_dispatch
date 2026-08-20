@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-19
 **Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 MERGED #373**;
-**PR 3 built** (GDX-wins + per-row audit). **Not built:** PR 4 (duplicate
-detector by email/phone), PR 5 (the data cleanup). Adversarially audited three
+**PR 3 MERGED #374**; **PR 4 built** (duplicate detector by email/phone).
+**Not built:** PR 5 (the data cleanup). Adversarially audited three
 times on 2026-08-19 (PR 1 as plan, PR 1 as diff, PR 2 as diff); findings folded
 into §4 and §5.
 **Ask (Doug):** "Somewhere along the way bob at riverbend lumber became jeff."

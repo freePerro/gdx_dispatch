@@ -4,9 +4,11 @@
         <div>
           <h2>Customer Duplicates</h2>
           <p class="subtitle">
-            Groups of customers sharing the same name. Pick one to keep —
-            every job, invoice, and reference on the others will move to the
-            keeper. The merged-away records are soft-deleted (reversible).
+            Groups of customers that share a name, an email address, or a
+            phone number. Pick one to keep — every job, invoice, and reference
+            on the others moves to the keeper. The merged-away records are
+            soft-deleted, but there is <strong>no undo button</strong>:
+            reversing a merge means reading the audit trail by hand.
           </p>
         </div>
         <Button
@@ -32,8 +34,45 @@
           <template #title>
             <span class="group-title">{{ group.members[0].name }}</span>
             <Tag :value="`${group.count} records`" severity="warn" class="ml-2" />
+            <!-- What tied these together decides how to treat them: records
+                 sharing a NAME are usually the same account entered twice,
+                 while records sharing only an EMAIL are often one account's
+                 separate jobs (QuickBooks sub-customers) and must NOT be
+                 blindly merged. Saying which is the difference between a
+                 reviewer who can act and one who is guessing. -->
+            <Tag
+              :value="matchLabel(group)"
+              :severity="group.match_on === 'name' ? 'danger' : 'info'"
+              class="ml-2"
+              :data-testid="`match-on-${group.match_on}`"
+            />
           </template>
           <template #content>
+            <div
+              v-if="group.match_on === 'email' || group.match_on === 'phone'"
+              class="match-hint"
+              :data-testid="`match-hint-${group.match_on}`"
+            >
+              <p>
+                These share
+                {{ group.match_on === 'email' ? 'an email address' : 'a phone number' }}
+                but have <strong>different names</strong>. That is usually one
+                contact reached for several separate accounts — a builder, a
+                property manager — or one account's separate jobs. Merging them
+                moves real invoices onto the wrong customer, and there is no undo.
+              </p>
+              <div class="confirm-row">
+                <Checkbox
+                  v-model="selections[group.normalized_name].confirmed"
+                  :binary="true"
+                  :inputId="`confirm-${group.normalized_name}`"
+                  :data-testid="`confirm-same-customer-${group.match_on}`"
+                />
+                <label :for="`confirm-${group.normalized_name}`">
+                  I checked these records and they are the same customer.
+                </label>
+              </div>
+            </div>
             <DataTable
       responsiveLayout="scroll" :value="group.members" stripedRows class="member-table">
               <Column header="Keep" style="width: 70px">
@@ -167,10 +206,15 @@ async function loadGroups() {
   try {
     const data = await api.get("/api/customers/duplicates");
     groups.value = data?.groups || [];
+    // Rebuild selections from scratch. Keeping them across a reload left the
+    // just-merged (now soft-deleted) ids sitting in `.merge` under a group key
+    // that still exists — so the merge button re-enabled itself with no
+    // checkbox visibly ticked, and the next click 404'd on rows that were
+    // already gone. Rare with name-only groups; routine now that groups run
+    // to seven members.
+    for (const key of Object.keys(selections)) delete selections[key];
     for (const g of groups.value) {
-      if (!selections[g.normalized_name]) {
-        selections[g.normalized_name] = { keep: null, merge: [] };
-      }
+      selections[g.normalized_name] = { keep: null, merge: [], confirmed: false };
     }
   } finally {
     isLoading.value = false;
@@ -179,7 +223,14 @@ async function loadGroups() {
 
 function canMerge(group) {
   const sel = selections[group.normalized_name];
-  return !!sel.keep && sel.merge.length > 0;
+  if (!sel || !sel.keep || sel.merge.length === 0) return false;
+  // Records grouped only by a shared email or phone are NOT known to be the
+  // same customer. On this tenant the largest such group is seven separate
+  // accounts reached through one contact at a builder — merging any two of
+  // them destroys real billing history, and there is no unmerge. So the
+  // reviewer has to say out loud that they checked.
+  if (group.match_on !== "name" && !sel.confirmed) return false;
+  return true;
 }
 
 function keeperName(group) {
@@ -223,9 +274,35 @@ async function doMerge() {
 }
 
 onMounted(loadGroups);
+
+function matchLabel(group) {
+  // Explicit checks, not "anything that isn't name": an older cached response
+  // without match_on would otherwise be labelled a phone match.
+  if (group.match_on === "email") return `same email: ${group.match_value}`;
+  if (group.match_on === "phone") return "same phone number";
+  return "same name";
+}
 </script>
 
 <style scoped>
+.match-hint {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--p-yellow-500, #d4a017);
+  font-size: 0.9rem;
+}
+
+.match-hint p {
+  margin: 0 0 8px;
+}
+
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .duplicates-view {
   padding: 1.5rem;
 }
