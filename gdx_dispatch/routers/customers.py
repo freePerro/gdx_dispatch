@@ -1235,6 +1235,316 @@ def list_duplicates(
     return DuplicateListOut(groups=groups[:cap], total_groups=total)
 
 
+class AbsorbIn(BaseModel):
+    """Fold customers that are really JOBS into their parent as saved sites."""
+
+    model_config = ConfigDict(extra="forbid")
+    customer_ids: list[str] = Field(..., min_length=1)
+
+
+class AbsorbedSite(BaseModel):
+    customer_id: str
+    customer_name: str
+    location_id: str
+    label: str
+
+
+class AbsorbOut(BaseModel):
+    parent_id: str
+    sites: list[AbsorbedSite]
+    rows_updated: dict[str, int]
+
+
+@router.post(
+    "/{parent_id}/absorb",
+    response_model=AbsorbOut,
+    dependencies=[Depends(require_permission("customers.write"))],
+)
+def absorb_subcustomers(
+    parent_id: str,
+    payload: AbsorbIn,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AbsorbOut:
+    """Turn customers that were never customers into saved sites on a parent.
+
+    QuickBooks models a project as a sub-customer; the pull used to read only
+    DisplayName and so created each one as a TOP-LEVEL GDX customer. The
+    account's history stayed on the parent while new work accumulated on the
+    fragments. `pull_customers` no longer does that, but it does not undo it —
+    this does.
+
+    Different from `/merge` on purpose. A merge says "these two rows are the
+    same customer". This says "this row was never a customer, it was a job at
+    that customer" — so the name survives as a jobsite label instead of being
+    discarded, and estimates that carried no jobsite text inherit it.
+
+    Reversible: the audit row records, per absorbed customer, its id, name and
+    the location minted for it, plus every table and row count moved. Nothing
+    is hard-deleted.
+
+    **Deploy order matters.** `_adopt_existing_customer` in the QuickBooks pull
+    filters `deleted_at IS NULL`, so a soft-deleted sub-customer is invisible
+    to adoption: running this while production still serves a pull that
+    predates the ParentRef fix means the next sync re-creates every row this
+    just retired.
+    """
+    from gdx_dispatch.models.tenant_models import CustomerLocation
+
+    ensure_audit_table(db)
+    _assert_customer_exists(db, parent_id)
+    parent = _ensure_customer_exists(db, parent_id)
+
+    if parent_id in payload.customer_ids:
+        raise HTTPException(status_code=422, detail="A customer cannot absorb itself.")
+
+    subs: list[Customer] = []
+    for cid in payload.customer_ids:
+        sub = _ensure_customer_exists(db, cid)
+        subs.append(sub)
+
+    # A jobsite does not have its own invoices. If one of these rows carries
+    # billing history it is an ACCOUNT, whatever it is grouped with, and
+    # folding it into another account moves real money onto the wrong customer
+    # with no way back. The screen that offers this groups on a shared email —
+    # which on this tenant is seven separate builders' accounts reached
+    # through one contact, not one account's jobs. The operator picks the
+    # keeper from a radio button; nothing else stops them picking wrong.
+    for sub in subs:
+        counts = db.execute(
+            text(
+                # `payments` has no customer_id — it reaches a customer through
+                # its invoice, so the guard has to go the same way or it reads
+                # zero and waves money through.
+                "SELECT (SELECT COUNT(*) FROM invoices WHERE CAST(customer_id AS TEXT) IN :ids), "
+                "       (SELECT COUNT(*) FROM payments p JOIN invoices i ON p.invoice_id = i.id "
+                "        WHERE CAST(i.customer_id AS TEXT) IN :ids)"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"ids": _id_spellings([str(sub.id)])},
+        ).first()
+        n_inv, n_pay = int((counts or [0, 0])[0] or 0), int((counts or [0, 0])[1] or 0)
+        if n_inv or n_pay:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{sub.name}' has {n_inv} invoice(s) and {n_pay} payment(s) of its "
+                    "own, so it is an account, not a jobsite. Folding it would move "
+                    "billing history onto another customer and there is no undo."
+                ),
+            )
+
+    tenant_id = _tenant_id(request)
+    uid = _user_id(user)
+    now = datetime.now(timezone.utc)
+    sites: list[AbsorbedSite] = []
+    rows_updated: dict[str, int] = {}
+    pre_state: list[dict[str, Any]] = []
+
+    try:
+        fk_tables = _discover_customer_fk_tables(db)
+        for sub in subs:
+            label = (sub.name or "").strip() or "Jobsite"
+            location = CustomerLocation(
+                id=str(uuid4()),
+                company_id=company_id(),
+                # varchar column, uuid pk — the str() is required
+                customer_id=str(parent.id),
+                label=label,
+                address=sub.address,
+                # NEVER primary: core/job_site.py lets a primary location
+                # replace the jobsite for every unbound job on the account,
+                # and these sites frequently have no address at all.
+                is_primary=False,
+                created_at=now,
+            )
+            db.add(location)
+            db.flush()
+
+            pre_state.append({
+                "customer_id": str(sub.id),
+                "customer_name": sub.name,
+                "had_address": bool(sub.address),
+                "location_id": str(location.id),
+            })
+
+            # Estimates carry a free-text jobsite and no location_id
+            # (proposals/models.py). The job name IS the jobsite, so an
+            # estimate that never had one inherits it — and one that does
+            # keeps what a human typed.
+            try:
+                result = db.execute(
+                    text(
+                        "UPDATE estimates SET jobsite_address = :label "
+                        "WHERE CAST(customer_id AS TEXT) IN :ids "
+                        "AND (jobsite_address IS NULL OR TRIM(jobsite_address) = '' "
+                        "     OR TRIM(jobsite_address) = 'TBD')"
+                    ).bindparams(bindparam("ids", expanding=True)),
+                    {"label": label, "ids": _id_spellings([str(sub.id)])},
+                )
+                if result.rowcount:
+                    rows_updated["estimates.jobsite_address"] = (
+                        rows_updated.get("estimates.jobsite_address", 0) + int(result.rowcount)
+                    )
+            except SQLAlchemyError:
+                log.exception("absorb_estimate_jobsite_failed")
+                db.rollback()
+                raise
+
+            # Jobs get the real binding: a location_id on the parent.
+            try:
+                result = db.execute(
+                    text(
+                        "UPDATE jobs SET location_id = :loc "
+                        "WHERE CAST(customer_id AS TEXT) IN :ids"
+                    ).bindparams(bindparam("ids", expanding=True)),
+                    {"loc": str(location.id), "ids": _id_spellings([str(sub.id)])},
+                )
+                if result.rowcount:
+                    rows_updated["jobs.location_id"] = (
+                        rows_updated.get("jobs.location_id", 0) + int(result.rowcount)
+                    )
+            except SQLAlchemyError:
+                log.exception("absorb_job_location_failed")
+                db.rollback()
+                raise
+
+            sites.append(AbsorbedSite(
+                customer_id=str(sub.id), customer_name=sub.name or "",
+                location_id=str(location.id), label=label,
+            ))
+
+        # Move every FK to the parent — same discovery the merge path uses, so
+        # a table added later is covered by both or neither.
+        sub_ids = _id_spellings([str(s.id) for s in subs])
+        moved_rows: dict[str, list[str]] = {}
+        for table, column in fk_tables:
+            if table == "customer_locations":
+                continue  # the sites just minted belong to the parent already
+            # Capture WHICH rows move, not just how many. A count cannot be
+            # reversed: "invoices.customer_id: 15" does not say which fifteen
+            # of the parent's invoices arrived from the sub, so an audit row
+            # holding only counts cannot support the word "reversible" that
+            # the dialog puts in front of the operator.
+            try:
+                ids_moving = [
+                    str(r[0]) for r in db.execute(
+                        text(f"SELECT id FROM {table} WHERE {column} IN :ids")
+                        .bindparams(bindparam("ids", expanding=True)),
+                        {"ids": sub_ids},
+                    ).all()
+                ]
+            except SQLAlchemyError:
+                # No `id` column on that table — record the fact rather than
+                # pretending the move was captured.
+                db.rollback()
+                ids_moving = []
+            result = db.execute(
+                text(f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids")
+                .bindparams(bindparam("ids", expanding=True)),
+                {"keep": str(parent.id), "ids": sub_ids},
+            )
+            if result.rowcount:
+                rows_updated[f"{table}.{column}"] = int(result.rowcount)
+                moved_rows[f"{table}.{column}"] = ids_moving or ["<no id column — not captured>"]
+
+        # Retire the rows. Soft-delete — invariant #2.
+        # CAST(id AS TEXT) with BOTH uuid spellings. `id IN :ids` against a
+        # Uuid column with dashed strings matched nothing on SQLite and the
+        # statement reported success — the customers stayed live while their
+        # work had already moved to the parent. A destructive statement that
+        # silently affects zero rows is the worst kind of quiet.
+        result = db.execute(
+            text("UPDATE customers SET deleted_at = :now "
+                 "WHERE CAST(id AS TEXT) IN :ids AND deleted_at IS NULL")
+            .bindparams(bindparam("ids", expanding=True)),
+            {"now": now, "ids": _id_spellings([str(s.id) for s in subs])},
+        )
+        rows_updated["customers.soft_deleted"] = int(result.rowcount)
+        if result.rowcount != len(subs):
+            # Never report a partial retirement as done.
+            raise SQLAlchemyError(
+                f"expected to retire {len(subs)} customers, matched {result.rowcount}"
+            )
+
+        # Repoint the QuickBooks map so the next pull recognises these as
+        # sites, not as customers to re-create.
+        for entry in pre_state:
+            # The map carries a UNIQUE (tenant_id, entity_type, qb_id). The QB
+            # pull ALSO writes a `customer_location` map for a sub-customer's
+            # qb_id (modules/quickbooks/sync.py), so if a pull has already run
+            # since #373 shipped, that row exists — and re-pointing the old
+            # `customer` row onto the same qb_id violates the constraint,
+            # 500s, rolls back, and does so on every retry. The feature would
+            # be permanently dead on exactly the tenants that had synced.
+            #
+            # So: read the sub's qb_id, drop the stale `customer` mapping, and
+            # let the site's own mapping stand — creating it only if the pull
+            # has not already.
+            qb_rows = db.execute(
+                text(
+                    "SELECT qb_id FROM qb_entity_maps "
+                    "WHERE entity_type = 'customer' AND local_id IN :ids"
+                ).bindparams(bindparam("ids", expanding=True)),
+                {"ids": _id_spellings([entry["customer_id"]])},
+            ).scalars().all()
+            db.execute(
+                text(
+                    "DELETE FROM qb_entity_maps "
+                    "WHERE entity_type = 'customer' AND local_id IN :ids"
+                ).bindparams(bindparam("ids", expanding=True)),
+                {"ids": _id_spellings([entry["customer_id"]])},
+            )
+            for qb_id in qb_rows:
+                existing = db.execute(
+                    text(
+                        "SELECT local_id FROM qb_entity_maps "
+                        "WHERE entity_type = 'customer_location' AND qb_id = :q"
+                    ),
+                    {"q": str(qb_id)},
+                ).scalar()
+                if existing:
+                    entry["existing_site_map"] = str(existing)
+                    continue
+                db.execute(
+                    text(
+                        "INSERT INTO qb_entity_maps "
+                        "(id, tenant_id, entity_type, local_id, qb_id, synced_at) "
+                        "VALUES (:i, :t, 'customer_location', :l, :q, :ts)"
+                    ),
+                    {"i": uuid4().hex, "t": tenant_id or company_id(),
+                     "l": entry["location_id"], "q": str(qb_id), "ts": now},
+                )
+                entry["qb_id"] = str(qb_id)
+
+        audit_or_rollback(
+            db,
+            action="absorb_subcustomers_as_sites",
+            entity_type="customer",
+            entity_id=str(parent.id),
+            actor=user,
+            request=request,
+            details={
+                "tenant_id": tenant_id,
+                "parent_name": parent.name,
+                "absorbed": pre_state,
+                "rows_updated": rows_updated,
+                # The row ids are what makes this undoable by hand.
+                "moved_row_ids": moved_rows,
+            },
+        )
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        log.exception("absorb_subcustomers_failed", extra={"parent_id": parent_id})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
+
+    log.info("subcustomers_absorbed", extra={"parent_id": parent_id, "count": len(sites), "actor": uid})
+    return AbsorbOut(parent_id=str(parent.id), sites=sites, rows_updated=rows_updated)
+
+
 class MergeIn(BaseModel):
     keep_id: str = Field(..., min_length=1)
     merge_ids: list[str] = Field(..., min_length=1)
@@ -1251,6 +1561,16 @@ class MergeOut(BaseModel):
 _MERGE_TABLES_CACHE: dict[str, list[tuple[str, str]]] = {}
 
 
+def _id_spellings(ids: list[str]) -> list[str]:
+    """Every id in both uuid spellings.
+
+    Postgres renders `uuid::text` with dashes; SQLite stores a Uuid column as
+    dash-less hex. A list of one spelling silently matches nothing on the other
+    dialect — which, in a data-moving query, means rows quietly left behind.
+    """
+    return sorted({v for cid in ids for v in (str(cid), str(cid).replace("-", ""))})
+
+
 def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
     """Return [(table_name, column_name)] for every column that references
     a customer. Matches any column named customer_id, related_customer_id,
@@ -1259,19 +1579,74 @@ def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
     """
     if "tables" in _MERGE_TABLES_CACHE:
         return _MERGE_TABLES_CACHE["tables"]
-    rows = db.execute(
-        text(
-            """
-            SELECT table_name, column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND column_name IN ('customer_id', 'related_customer_id', 'converted_customer_id')
-              AND table_name NOT IN ('customers')
-            ORDER BY table_name, column_name
-            """
-        )
-    ).all()
-    tables = [(str(r[0]), str(r[1])) for r in rows]
+    wanted = ("customer_id", "related_customer_id", "converted_customer_id")
+    tables: list[tuple[str, str]] = []
+    try:
+        # Real FOREIGN KEYS first, then the name-matched columns as a union.
+        #
+        # Name-matching alone was both too narrow and too wide. It missed
+        # `outlook_messages.linked_customer_id` — a genuine FK to customers.id
+        # holding 405 rows on this tenant, 26 of them on the very account this
+        # feature was built for — which a merge or an absorb would strand on a
+        # soft-deleted customer where no screen would ever show them again.
+        # And it swept in columns that are NOT foreign keys at all.
+        rows = db.execute(
+            text(
+                """
+                SELECT tc.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                 AND ccu.table_schema = tc.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = 'public'
+                  AND ccu.table_name = 'customers'
+                  AND tc.table_name <> 'customers'
+                """
+            )
+        ).all()
+        tables = [(str(r[0]), str(r[1])) for r in rows]
+        # Union with the historical name match: some references predate a
+        # declared constraint, and dropping them now would silently narrow the
+        # merge path that has been relying on this list.
+        named = db.execute(
+            text(
+                """
+                SELECT table_name, column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND column_name IN ('customer_id', 'related_customer_id', 'converted_customer_id')
+                  AND table_name NOT IN ('customers')
+                """
+            )
+        ).all()
+        tables.extend((str(r[0]), str(r[1])) for r in named)
+        tables = sorted(set(tables))
+    except SQLAlchemyError:
+        # `information_schema` is Postgres/MySQL only. Every caller of this
+        # helper moves customer rows around, so a dialect where discovery
+        # silently returns nothing is a dialect where a merge or an absorb
+        # leaves the work behind on a soft-deleted customer — quietly. The
+        # SQLAlchemy inspector answers the same question everywhere.
+        db.rollback()
+        from sqlalchemy import inspect as _inspect  # noqa: PLC0415
+
+        inspector = _inspect(db.get_bind())
+        for table_name in inspector.get_table_names():
+            if table_name == "customers":
+                continue
+            for fk in inspector.get_foreign_keys(table_name):
+                if fk.get("referred_table") == "customers":
+                    tables.extend(
+                        (table_name, str(c)) for c in fk.get("constrained_columns") or []
+                    )
+            for col in inspector.get_columns(table_name):
+                if str(col.get("name")) in wanted:
+                    tables.append((table_name, str(col["name"])))
+        tables = sorted(set(tables))
     _MERGE_TABLES_CACHE["tables"] = tables
     return tables
 
