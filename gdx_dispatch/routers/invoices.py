@@ -268,6 +268,14 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
         # Deposit provenance (migration 036) — lets the detail view link back
         # to the source estimate.
         "estimate_id": str(invoice.estimate_id) if getattr(invoice, "estimate_id", None) else None,
+        # Migration 072 — "the numbers started from this estimate", as opposed
+        # to estimate_id's stronger "this invoice IS that estimate's bill".
+        # Kept distinct because deposit netting and closeout reconciliation
+        # both key on estimate_id and read it the strong way.
+        "source_estimate_id": (
+            str(invoice.source_estimate_id)
+            if getattr(invoice, "source_estimate_id", None) else None
+        ),
         "customer_id": str(invoice.customer_id) if getattr(invoice, 'customer_id', None) else None,
         "customer_name": getattr(invoice, 'customer_name', None) or "",
         "invoice_number": invoice.invoice_number,
@@ -658,6 +666,34 @@ class InvoiceCreateIn(BaseModel):
     # resolve from customer alone.
     job_id: UUID | None = None
     estimate_id: UUID | None = None
+    # PROVENANCE ONLY — deliberately separate from `estimate_id` above.
+    #
+    # `estimate_id` means "copy this estimate's lines and ignore mine". The
+    # office create page can't use it: it prefills the editor from an accepted
+    # estimate and then lets the operator EDIT those lines, so sending
+    # estimate_id would throw their edits away and re-copy the original.
+    #
+    # The result was that /billing/new recorded no link at all — 5 of 340 prod
+    # invoices have one, all from the mobile dialog — so the invoice detail
+    # page's "linked estimate" chip was dead for every office-created invoice.
+    # This field records where the numbers came from without touching them.
+    source_estimate_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _source_estimate_is_not_the_copy_field(self) -> "InvoiceCreateIn":
+        if self.source_estimate_id is not None and self.estimate_id is not None:
+            raise ValueError(
+                "send estimate_id (copy the estimate's lines) or "
+                "source_estimate_id (provenance for lines you already have), "
+                "not both"
+            )
+        if self.source_estimate_id is not None and self.job_id is None:
+            # Estimates are job-scoped, so a counter sale cannot have come from
+            # one. Same rule the copy path already enforces.
+            raise ValueError(
+                "source_estimate_id requires job_id — estimates are tied to a job"
+            )
+        return self
     # 2026-05-11 — required. The service layer used to fall back to
     # job.customer_id when this was None, but job.customer_id can itself be
     # None, so the row could land with customer_id=NULL silently. The
@@ -1051,6 +1087,31 @@ def create_invoice(
         if not estimate or estimate.job_id != payload.job_id:
             raise HTTPException(status_code=404, detail="estimate not found for this job")
 
+    # `source_estimate_id` gets the SAME existence + soft-delete + job-scope
+    # checks as the copy path above. It had none, so a counter sale could be
+    # linked to an estimate that never existed — the exact shape the contract
+    # calls incoherent for its sibling field. Provenance that cannot be
+    # resolved is not provenance.
+    if payload.source_estimate_id:
+        src_estimate = db.execute(
+            select(Estimate).where(
+                Estimate.id == payload.source_estimate_id,
+                Estimate.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if not src_estimate:
+            raise HTTPException(
+                status_code=404, detail="source estimate not found"
+            )
+        if payload.job_id is not None and src_estimate.job_id != payload.job_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "source estimate belongs to a different job — the numbers "
+                    "on this invoice did not come from it"
+                ),
+            )
+
     # D99 (an earlier session): invoice_date was never set on creation, so every
     # period-filtered metric (Dashboard Revenue, Reports, etc.) read $0
     # against $712k of underlying invoices. Default to today.
@@ -1189,7 +1250,18 @@ def create_invoice(
         attached_photo_ids=_json.dumps(attached_photo_ids) if attached_photo_ids else None,
         # Provenance thread for deposit netting + "deposit taken" surfaces:
         # which estimate this invoice was born from (2026-07-23).
+        #
+        # ONLY the copy path writes this. Deposit netting matches on
+        # or_(job_id, estimate_id) and closeout reconciliation skips rows that
+        # have it — both read it as "this invoice IS the estimate's bill", which
+        # is only true when the server built the lines.
         estimate_id=payload.estimate_id,
+        # SEPARATE column, deliberately. `estimate_id` means "the server copied
+        # this estimate's lines", and deposit netting + closeout reconciliation
+        # both read it that way. Writing merely-prefilled invoices into it
+        # armed a dormant arm of the deposit matcher (or_(job_id, estimate_id))
+        # and netted a DIFFERENT job's paid deposit into this invoice.
+        source_estimate_id=payload.source_estimate_id,
         invoice_number=_next_invoice_number(db),
         billing_type=payload.billing_type,
         # §12 supplemental provenance — the original invoice this one adjusts.
@@ -1574,7 +1646,26 @@ def create_invoice(
         action="invoice_created",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"invoice_number": invoice.invoice_number, "status": invoice.status},
+        details={
+            "invoice_number": invoice.invoice_number,
+            "status": invoice.status,
+            # Which estimate this came from, and HOW — "copied" means the
+            # server built the lines, "prefilled" means the operator arrived
+            # with them and may have edited them before saving. Those are
+            # different claims about who chose the numbers, so the audit trail
+            # records which one happened rather than just that a link exists.
+            **(
+                {"estimate_id": str(invoice.estimate_id), "estimate_link": "copied"}
+                if invoice.estimate_id else {}
+            ),
+            **(
+                {
+                    "source_estimate_id": str(invoice.source_estimate_id),
+                    "estimate_link": "prefilled",
+                }
+                if invoice.source_estimate_id else {}
+            ),
+        },
     )
     db.commit()
     resp = _serialize_invoice(invoice)

@@ -41,7 +41,13 @@ describe('InvoiceCreateView — change-order checklist', () => {
   it('job change resets the CO selection and reloads the checklist', () => {
     const fnIdx = CREATE_SRC.indexOf('function onJobChange');
     expect(fnIdx).toBeGreaterThan(-1);
-    const span = CREATE_SRC.slice(fnIdx, fnIdx + 600);
+    // Slice to the FUNCTION BOUNDARY, not a character count. This is the third
+    // guard in this suite to break on unrelated growth inside the function it
+    // watches; a guard that fails for reasons unrelated to what it protects
+    // teaches people to widen it without reading.
+    const rest = CREATE_SRC.slice(fnIdx);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/from_change_order_ids = \[\]/);
     expect(span).toMatch(/loadJobChangeOrders\(/);
   });

@@ -70,8 +70,8 @@
                 <i class="pi pi-briefcase" /> View Job
               </router-link>
               <router-link
-                v-if="invoice.estimate_id"
-                :to="`/estimates/${invoice.estimate_id}`"
+                v-if="invoice.estimate_id || invoice.source_estimate_id"
+                :to="`/estimates/${invoice.estimate_id || invoice.source_estimate_id}`"
                 class="link"
                 style="margin-left:1rem; font-size:0.85rem;"
                 data-testid="invoice-view-estimate-link"
@@ -1338,6 +1338,10 @@ function normalizeInvoice(payload) {
     // final on this page.
     billing_type: payload.billing_type || "standard",
     estimate_id: payload.estimate_id || null,
+    // Migration 072 — the chip renders for either link, so the normalizer has
+    // to carry both. Dropping it here is the same "written to the DB and then
+    // invisible forever" bug this file has now hit three times.
+    source_estimate_id: payload.source_estimate_id || null,
     adjustments: payload.adjustments || [],
     is_superseded_deposit: Boolean(payload.is_superseded_deposit),
     // PR6 — drives the Pause/Resume reminders toggle.

@@ -11,6 +11,8 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const apiGet = vi.fn();
 const apiPost = vi.fn();
@@ -228,6 +230,123 @@ describe('InvoiceCreateView — margin override is a human choice', () => {
     expect(payload.line_items[0]).toMatchObject({
       description: 'Roller', unit_price: 100, cost: 50, category: 'Parts',
     });
+  });
+});
+
+describe('InvoiceCreateView — estimate provenance', () => {
+  // The create page prefills from an accepted estimate and then lets the
+  // operator edit those lines, so it cannot send `estimate_id` (that means
+  // "copy the estimate's lines and ignore mine"). It therefore sent nothing,
+  // and the link was never recorded — 5 of 340 prod invoices had one, all from
+  // the mobile dialog, leaving the detail page's "linked estimate" chip dead
+  // for every office-created invoice.
+  const SRC = readFileSync(join(__dirname, '..', 'InvoiceCreateView.vue'), 'utf8');
+
+  it('sends source_estimate_id, never estimate_id', () => {
+    expect(SRC).toMatch(/payload\.source_estimate_id\s*=\s*sourceEstimateId\.value/);
+    // Sending estimate_id here would discard the operator's edits server-side.
+    expect(SRC).not.toMatch(/payload\.estimate_id\s*=/);
+  });
+
+  it('claims provenance only once estimate lines actually landed', () => {
+    const i = SRC.indexOf('async function prefillFromJobEstimate');
+    expect(i).toBeGreaterThan(-1);
+    const rest = SRC.slice(i);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
+    // Set after the lines are mapped, and cleared when there is no accepted
+    // estimate — a stale id would credit the wrong estimate.
+    expect(span).toMatch(/sourceEstimateId\.value\s*=\s*latest\.id/);
+    expect(span).toMatch(/sourceEstimateId\.value\s*=\s*null/);
+  });
+
+  it('clears provenance when the job changes', () => {
+    // Different job, different estimate: a stale link would tie the invoice to
+    // an estimate for work it does not cover.
+    const i = SRC.indexOf('function onJobChange');
+    expect(i).toBeGreaterThan(-1);
+    const rest = SRC.slice(i);
+    const nextFn = rest.slice(1).search(/\n(async )?function \w+\(/);
+    const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
+    expect(span).toMatch(/sourceEstimateId\.value\s*=\s*null/);
+  });
+});
+
+describe('InvoiceCreateView — provenance does not survive a customer switch', () => {
+  // The pass-1 blocker, and until now guarded only by source greps.
+  //
+  // `onCustomerChange` nulls `job_id` PROGRAMMATICALLY, so the job Select's
+  // @change never fires and onJobChange's cleanup never ran. Customer A's
+  // estimate link therefore rode along onto customer B's invoice, audited as
+  // "prefilled" — a lie about whose numbers those are, and the shape that let
+  // an out-of-scope estimate id reach the API from the real UI.
+  it('drops the estimate link when the customer changes', async () => {
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
+      // job-1 has an accepted estimate, so the prefill claims provenance.
+      if (url.startsWith('/api/estimates?')) {
+        return Promise.resolve([{ id: 'est-1', status: 'Accepted' }]);
+      }
+      if (url.startsWith('/api/estimates/est-1')) {
+        return Promise.resolve({
+          id: 'est-1',
+          lines: [{ description: 'From estimate', quantity: 1, unit_price: 500 }],
+        });
+      }
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-9', invoice_number: 'INV-0009' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+
+    // Switch to a customer the prefilled job does not belong to.
+    const custSelect = wrapper.find('[data-testid="invoice-customer-dropdown"]');
+    custSelect.element.value = 'cust-2';
+    await custSelect.trigger('change');
+    await flushPromises();
+
+    await wrapper.find('[data-testid="le-set-line"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalled();
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.source_estimate_id).toBeUndefined();
+  });
+
+  it('keeps the link when nothing about the job changed', async () => {
+    // The mirror case — the clear must not be so eager that provenance is
+    // never recorded at all, which would silently restore the original bug.
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0, rate_pct: 0 });
+      if (url.startsWith('/api/estimates?')) {
+        return Promise.resolve([{ id: 'est-1', status: 'Accepted' }]);
+      }
+      if (url.startsWith('/api/estimates/est-1')) {
+        return Promise.resolve({
+          id: 'est-1',
+          lines: [{ description: 'From estimate', quantity: 1, unit_price: 500 }],
+        });
+      }
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-10', invoice_number: 'INV-0010' });
+
+    const wrapper = mount(InvoiceCreateView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.source_estimate_id).toBe('est-1');
   });
 });
 

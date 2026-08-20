@@ -5,8 +5,9 @@
 F3 closed as insurance.
 **p2** — `feat/invoice-line-editor-p2`, built: F1 closed (Add Labor, two lanes)
 plus migration 071 (labor provenance on `invoice_lines`).
-**Not built:** p3 estimate provenance, p4 discount + labor taxability, p5
-data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
+**p3** — `fix/invoice-line-editor-p3`, built: F5 closed
+(`source_estimate_id` provenance + audit trail).
+**Not built:** p4 discount + labor taxability, p5 data-driven categories. Decisions §5 D1–D8 all locked. Written from Doug's
 report
 ("after clicking create new invoice it is missing the option to add labor…
 and it does not carry category over when adding from the catalog… I am sure
@@ -787,6 +788,69 @@ the column is already feet, so every 16x7 row renders "1x1". The new dialog
 does not reproduce it; fixing the estimate copy is its own change. Autodraft
 and mobile invoicing still write labor lines with no provenance — a broader
 sweep than p2.
+
+---
+
+## 3d. p3 as built (2026-08-20)
+
+`source_estimate_id` is a **new column** (migration 072), deliberately not a
+reuse of `estimate_id`. The
+existing one means *"copy this estimate's lines and ignore mine"*, so the
+create page could never send it: it prefills the editor and then lets the
+operator edit, and sending `estimate_id` would have thrown those edits away
+server-side. So it sent nothing, and the link went unrecorded — 5 of 340 prod
+invoices have one, all from the mobile dialog, leaving the detail page's
+"linked estimate" chip dead for every office-created invoice.
+
+**The first attempt reused `Invoice.estimate_id`, and that was wrong in a way
+that moved money.** Two consumers read that column as *"this invoice IS the
+estimate's bill"*:
+
+- `modules/deposits/service.py` matches deposits on
+  `or_(job_id == X, estimate_id == E)`. On office invoices `estimate_id` was
+  effectively always NULL (5 of 340 rows), so the estimate arm was **dormant**.
+  Populating it on the majority path **arms** it — the review reproduced a
+  $2,000 invoice coming out at $1,500 with a "Less deposit paid" line for a
+  **different job's** money. The double-application guard beside it is
+  job-scoped and does not cover that arm.
+- `core/closeout_reconciliation.py` skips invoices with an `estimate_id`
+  ("estimate-billed = agreed price, not a discrepancy"). Reuse would have
+  silently dropped most office invoices out of the discrepancy list — and the
+  premise is false for a prefilled invoice anyway, since the operator can edit
+  every line.
+
+So the two meanings get two columns. The audit event records which happened:
+`estimate_link: "copied"` vs `"prefilled"`. A trail that only says a link
+exists loses the distinction that matters.
+
+**This is the finding that most justifies the audit cadence.** A field I
+described in the plan as "provenance only, no line copy" turned out to change
+what customers get charged, because a dormant query arm woke up the moment the
+column stopped being NULL.
+
+The contract rejects sending both — the server would be told to copy AND told
+the client already has the lines.
+
+Provenance is claimed only once estimate lines actually landed, and cleared on
+job change **and on customer change** — `onCustomerChange` nulls `job_id`
+*programmatically*, so the Select's `@change` never fires and `onJobChange`'s
+cleanup never ran. Customer A → job with an estimate → switch to customer B
+shipped B's invoice carrying A's estimate link, audited as "prefilled". That
+was also how an out-of-scope estimate id could reach the API from the real UI.
+
+`source_estimate_id` is validated exactly like its sibling — existence,
+soft-delete, job scope, and `job_id` required (estimates are job-scoped, so a
+counter sale cannot have come from one). It had **none** of those checks in the
+first cut.
+
+**A test-quality note worth carrying forward.** Three source-text guards in
+this suite broke during p1–p3, none because the behaviour they protect
+changed — all three sliced a fixed character window from a function and failed
+when that function grew. A guard that fails for reasons unrelated to what it
+guards trains people to widen the window without reading it, which is how it
+stops guarding anything. Converted to **function-boundary** slicing as each one broke. One more
+(`InvoiceCreateView.spec.js`, the job-change clear) still uses a fixed window
+and is noted here rather than claimed as done.
 
 ---
 
