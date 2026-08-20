@@ -634,8 +634,24 @@ async def update_customer(
 
     if updates:
         try:
+            # Which identity fields this edit actually CHANGES. Both edit
+            # dialogs always send name/email/phone, so "is the key present"
+            # was true on every save — filing a pricing-class change as a
+            # claim of ownership over the customer's identity. Compare values.
+            identity_changed = [
+                k for k in ("name", "email", "phone")
+                if k in updates and (getattr(customer, k, None) or "") != (updates[k] or "")
+            ]
             for key, value in updates.items():
                 setattr(customer, key, value)
+            if identity_changed:
+                # A human now owns these FIELDS. From here the QuickBooks pull
+                # will not write them — including when the human cleared one,
+                # which is exactly when QB putting the old value back hurts.
+                customer.local_edit_at = datetime.now(timezone.utc)
+                customer.local_edit_fields = sorted(
+                    set(customer.local_edit_fields or []) | set(identity_changed)
+                )
             db.commit()
             db.refresh(customer)
         except SQLAlchemyError as exc:

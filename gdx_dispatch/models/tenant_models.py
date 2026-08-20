@@ -169,6 +169,18 @@ class Customer(Base):
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(50), nullable=True)
+    # When a human last changed one of this customer's identity fields in GDX.
+    # Informational — the authority lives in local_edit_fields below.
+    local_edit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # WHICH identity fields a human owns: ["name", "email", "phone"] subset.
+    # Per-field, not a single flag, because the two cases a flag cannot tell
+    # apart are the ones that matter: "GDX never had an email" (QB should fill
+    # it) versus "a human DELETED the wrong email" (QB must not put it back).
+    # A timestamp alone reads both as empty and hands the field to QB —
+    # failing on the single edit most worth protecting. See migration 070.
+    local_edit_fields: Mapped[list | None] = mapped_column(JSON, nullable=True)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
     customer_type: Mapped[str] = mapped_column(String(50), nullable=True, default="Retail")
     # Per-customer half of the customer-submitted-listings gate. Default OFF;

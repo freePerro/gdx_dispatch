@@ -397,15 +397,27 @@ async def import_customers(
             db.add(Customer(name=name, email=email, phone=phone, address=address, notes=notes, company_id=_["tenant_id"]))
             created += 1
         else:
-            existing.name = name
-            if email:
+            # A person uploading a corrected customer list is editing these
+            # fields as deliberately as one typing in the office dialog, so
+            # the same ownership applies — otherwise the next QuickBooks pull
+            # overwrites the import they just did.
+            claimed = set(existing.local_edit_fields or [])
+            if (existing.name or "") != (name or ""):
+                existing.name = name
+                claimed.add("name")
+            if email and (existing.email or "") != email:
                 existing.email = email
-            if phone:
+                claimed.add("email")
+            if phone and (existing.phone or "") != phone:
                 existing.phone = phone
+                claimed.add("phone")
             if address:
                 existing.address = address
             if notes:
                 existing.notes = notes
+            if claimed != set(existing.local_edit_fields or []):
+                existing.local_edit_at = datetime.now(UTC)
+                existing.local_edit_fields = sorted(claimed)
             updated += 1
 
     db.commit()

@@ -1,8 +1,8 @@
 # QuickBooks Sub-Customers Flattened Into Customers
 
 **Date:** 2026-08-19
-**Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 built** (ParentRef →
-saved sites). **Not built:** PR 3 (GDX-wins + per-row audit), PR 4 (duplicate
+**Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 MERGED #373**;
+**PR 3 built** (GDX-wins + per-row audit). **Not built:** PR 4 (duplicate
 detector by email/phone), PR 5 (the data cleanup). Adversarially audited three
 times on 2026-08-19 (PR 1 as plan, PR 1 as diff, PR 2 as diff); findings folded
 into §4 and §5.
