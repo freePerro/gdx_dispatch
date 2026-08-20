@@ -1,12 +1,11 @@
 # QuickBooks Sub-Customers Flattened Into Customers
 
 **Date:** 2026-08-19
-**Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 MERGED #373**;
-**PR 3 MERGED #374**; **PR 4 MERGED #375**; **PR 5 built** (absorb-as-jobsite
-tooling). **Not run:** the production cleanup itself, which must wait until
-PR 2 is DEPLOYED — see the box below. Adversarially audited three
-times on 2026-08-19 (PR 1 as plan, PR 1 as diff, PR 2 as diff); findings folded
-into §4 and §5.
+**Status:** RELEASED v1.71.0 — all 5 PRs MERGED (#372 → #376), **deployed to
+prod and demo 2026-08-20**, and **the production cleanup has been RUN**: the six
+sub-customer rows are now saved sites on the parent account (walk-verified in a
+real browser, on the real account). Nothing in §4 remains unbuilt. Adversarially
+audited five times; every pass found real defects, all fixed before merge.
 **Ask (Doug):** "Somewhere along the way bob at riverbend lumber became jeff."
 Follow-up: "can we fix all of that. for riverbend lumber they are all job names."
 
@@ -229,6 +228,18 @@ like "Site A" could land.
 - No money math changes. No invoice, payment, or total is touched.
 
 ## 7. Out of scope (filed, not bundled)
+
+- **`absorb-btn-<match_on>` is not unique per group.** The merge button keys its
+  testid on the group (`merge-btn-${normalized_name}`); the absorb button keys
+  on the match TYPE, so every email group renders `absorb-btn-email`. Harmless
+  to operators (only the armed card's button is enabled) but it makes the
+  control unaddressable in a test and forced a `.first()` in the prod walk.
+  Found in the 2026-08-20 browser walk.
+- **PrimeVue checkboxes ignore synthetic `dispatchEvent` clicks.** Driving the
+  merge column programmatically left the DOM showing six ticked boxes while
+  Vue's model held one — a UI/state desync that would have submitted the wrong
+  set. Only real (trusted) clicks update the model. Worth knowing before anyone
+  automates this screen.
 
 - The other 23 shared-email rows (Doug reviews in the UI after PR C).
 - Contact `*_hash` sidecars so an inbound email/call from a contact resolves to
