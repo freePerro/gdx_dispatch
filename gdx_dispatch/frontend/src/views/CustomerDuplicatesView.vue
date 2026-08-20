@@ -130,6 +130,22 @@
             </DataTable>
 
             <div class="group-actions">
+              <!-- The right answer for a QuickBooks sub-customer. A merge
+                   throws the losing row's NAME away; these names ARE the job
+                   ("Site A", "Volden Field Shop"), and losing them loses the
+                   only record of which job the work belonged to. This keeps
+                   each one as a saved site on the keeper instead. -->
+              <Button
+                v-if="group.match_on !== 'name'"
+                label="Make these jobsites of the keeper"
+                icon="pi pi-map-marker"
+                severity="secondary"
+                outlined
+                :disabled="!canMerge(group) || merging === group.normalized_name"
+                :loading="merging === group.normalized_name"
+                @click="confirmAbsorb(group)"
+                :data-testid="`absorb-btn-${group.match_on}`"
+              />
               <Button
                 label="Merge selected into keeper"
                 icon="pi pi-compress"
@@ -171,6 +187,34 @@
         </template>
       </Dialog>
 
+      <Dialog
+        v-model:visible="showAbsorbConfirm"
+        header="Keep these as jobsites?"
+        :style="{ width: '480px' }"
+        modal
+        data-testid="absorb-confirm-dialog"
+      >
+        <p>
+          <strong>{{ pendingAbsorb?.customer_ids?.length }}</strong> record(s)
+          become saved sites on <strong>{{ pendingAbsorb?.keeper }}</strong>.
+          Their jobs, estimates and invoices move to that account, and each
+          name is kept as the site label.
+        </p>
+        <p class="muted">
+          The records themselves are soft-deleted. There is no undo button —
+          reversing this means reading the audit trail by hand.
+        </p>
+        <div class="form-actions">
+          <Button label="Cancel" text @click="showAbsorbConfirm = false" />
+          <Button
+            label="Keep as jobsites"
+            icon="pi pi-map-marker"
+            data-testid="confirm-absorb-btn"
+            @click="doAbsorb"
+          />
+        </div>
+      </Dialog>
+
       <Toast />
     </section>
 </template>
@@ -198,6 +242,8 @@ const isLoading = ref(false);
 const groups = ref([]);
 const selections = reactive({});
 const merging = ref(null);
+const pendingAbsorb = ref(null);
+const showAbsorbConfirm = ref(false);
 const showConfirm = ref(false);
 const pendingMerge = ref(null);
 
@@ -270,6 +316,48 @@ async function doMerge() {
   } finally {
     merging.value = null;
     pendingMerge.value = null;
+  }
+}
+
+function confirmAbsorb(group) {
+  const sel = selections[group.normalized_name];
+  pendingAbsorb.value = {
+    group_key: group.normalized_name,
+    parent_id: sel.keep,
+    customer_ids: [...sel.merge],
+    keeper: keeperName(group),
+  };
+  showAbsorbConfirm.value = true;
+}
+
+async function doAbsorb() {
+  if (!pendingAbsorb.value) return;
+  const { group_key, parent_id, customer_ids } = pendingAbsorb.value;
+  merging.value = group_key;
+  showAbsorbConfirm.value = false;
+  try {
+    const result = await api.post(`/api/customers/${parent_id}/absorb`, { customer_ids });
+    toast.add({
+      severity: "success",
+      summary: "Kept as jobsites",
+      detail: `${result.sites.length} record(s) are now saved sites: ` +
+        result.sites.map((s) => s.label).join(", "),
+      life: 6000,
+    });
+    await loadGroups();
+  } catch (e) {
+    // try/finally with no catch showed the operator nothing on a 500 — and
+    // the server refuses this deliberately (a record with its own invoices is
+    // an account, not a jobsite), so the reason is the useful part.
+    toast.add({
+      severity: "error",
+      summary: "Not folded",
+      detail: e?.message || "Could not keep these as jobsites.",
+      life: 8000,
+    });
+  } finally {
+    merging.value = null;
+    pendingAbsorb.value = null;
   }
 }
 

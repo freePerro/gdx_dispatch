@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-19
 **Status:** PARTIALLY BUILT — **PR 1 MERGED #372**; **PR 2 MERGED #373**;
-**PR 3 MERGED #374**; **PR 4 built** (duplicate detector by email/phone).
-**Not built:** PR 5 (the data cleanup). Adversarially audited three
+**PR 3 MERGED #374**; **PR 4 MERGED #375**; **PR 5 built** (absorb-as-jobsite
+tooling). **Not run:** the production cleanup itself, which must wait until
+PR 2 is DEPLOYED — see the box below. Adversarially audited three
 times on 2026-08-19 (PR 1 as plan, PR 1 as diff, PR 2 as diff); findings folded
 into §4 and §5.
 **Ask (Doug):** "Somewhere along the way bob at riverbend lumber became jeff."
