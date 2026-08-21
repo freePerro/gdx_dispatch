@@ -8,11 +8,13 @@ M4, M5, M6, M7, M9, M10, M11, M14, M24, M26 and M37.
 frontend items in §7. The GL findings are no longer "gated on CPA review" in the
 sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
 — but the CPA questions themselves are still unanswered.
-⚠ **The regression net this audit built is switched off.**
-`tests/test_zz_money_correctness_probe.py` still carries
-`pytestmark = pytest.mark.health` and `pytest.ini` still runs
-`-m "not e2e and not load and not health"` — ten passing probes, none of them
-running. §0.6 said to drop the marker once they passed.
+✅ **The regression net this audit built now runs** (#390, merged 2026-08-21).
+`tests/test_zz_money_correctness_probe.py` no longer carries
+`pytestmark = pytest.mark.health`, so its ten probes execute on every merge
+instead of sitting green and unrun — the condition §0.6 set for itself, met on
+2026-08-04 and acted on two weeks late. Counterfactually verified before the
+marker came off: reverting `Invoice.tax_rate` to the pre-fix `Numeric(6,4)`
+turns the m9 probe red. A failure here is a proven money defect, not a flake.
 
 Deep audit of every code path that touches money: invoices, payments, Stripe, the
 GL, sales tax, reports, estimates/pricing, bank feeds, QuickBooks, vendor bills,
