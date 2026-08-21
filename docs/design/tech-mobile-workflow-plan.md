@@ -94,7 +94,9 @@ Three options. **None is free.**
 
 **~~Recommendation: Option 3~~ — WITHDRAWN. [AR1] measured the duplication at ≈270 lines, not ~40.** That number was the whole argument, and it was a 6× understatement: `onMyWay`+`imHere` = 86, quote/invoice/CO/chat handlers = 73, `.job-actions` template = 78, dialog refs/mounts ≈ 30.
 
-**Recommendation: `useJobActions(job, {onUpdated})` composable for the logic + `<MobileJobActionBar>` for the markup.**
+**~~Recommendation: `useJobActions(job, {onUpdated})` composable for the logic + `<MobileJobActionBar>` for the markup.~~ — SUPERSEDED 2026-08-21.** See `mobile-one-job-card-plan.md`. Doug decided **one compact job card on all three mobile surfaces, with the actions on the job detail screen only**. That dissolves this whole question rather than answering it: with no action row on Today's Route there is no duplication to share, so neither the composable nor the action bar is needed. The measured ~270 duplicated lines get **deleted**, not extracted. The reasoning below is kept because it is why the naive "just extract it" answer was wrong, and because trap list and obligations still apply.
+
+~~Recommendation: `useJobActions(job, {onUpdated})` composable for the logic + `<MobileJobActionBar>` for the markup.~~ (original recommendation, for the record):
 
 **[v3 correction] A composable alone only halves the duplication.** It shares the handlers (86 + 73 = 159 lines), but the 78-line `.job-actions` template and ~30 lines of dialog mounts **cannot live in a composable** — so ~108 lines would still fork. v2 pushed from Option 3 → Option 2 on a line count and didn't finish the arithmetic. The markup needs a component too; the composable is what lets that component stay thin and lets each view opt out of the bits it doesn't want.
 
