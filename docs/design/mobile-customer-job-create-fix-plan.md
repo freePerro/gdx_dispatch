@@ -1,5 +1,14 @@
 # Mobile: customer add/search pain + job create "doesn't save" — fix plan
 
+**Status:** **BUILT** — all nine numbered items are on main (verified
+2026-08-21): `jobs.py:66` `description` + nullable `status`; migration
+`035_job_created_by`; `mobile.py:361 _creator_can_read` (read-only,
+creator-while-unassigned, write gate untouched); `customers.py:493`
+search with the >=7-digit stripped-phone clause; `core/cache.py:85/105`
+`invalidate_prefix` + sync wrapper; `AppBottomNav.vue:212/219` Customers tab in
+both role rows; `MobileJobNewDialog.vue:611` add-as-new-customer row and `:47`
+the `customer` prop; and an honest post-create toast at `:467`.
+
 _Drafted 2026-07-22. Doug's report: "(1) in mobile it is a pain to add a new
 customer / search customers, (2) creating a new job does not work correctly
 or save."_

@@ -1,6 +1,15 @@
 # Dashboard "Recent Activity" — who did it, and to what
 
-**Status:** plan, not started
+**Status:** **RELEASED** — all five phases merged: #221 (P1 show the actor),
+#222 (P2 name the subject), #223 (P3 fix the actor at the source), #224
+(P4 feed noise), #225 (P5b customer-opened). Verified on main 2026-08-21:
+`core/audit_labels.py` (actor_type staff|customer|system|api_key + the 5a
+CustomerUser resolution), `core/activity_feed.py` (feed_filter +
+collapse_runs), `payments.py:653` invoice_viewed_by_customer,
+`ActivityView.vue:79` customer tag. The module-global `_user_cache` is gone.
+**Not built, and never adopted:** Phase 5c (pixel open-tracking) was an open
+question for Doug, not scope — `campaign_sends.opened_at` still has no writer.
+_This header read "plan, not started" over five merged PRs until 2026-08-21._
 **Filed:** 2026-07-28
 **Trigger:** prod dashboard shows rows like `Data Accessed (customer)` with no
 customer and no user.

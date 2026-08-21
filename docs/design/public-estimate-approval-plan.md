@@ -1,6 +1,6 @@
 # Public Estimate Approval Page (QuickBooks-style) — Plan
 
-**Date:** 2026-08-13 · **Status:** AUDITED — adversarial critique applied, see §7
+**Date:** 2026-08-13 · **Status:** RELEASED v1.57.0 — and **proven by real customers on prod**, which closes §5's walk. Verified 2026-08-21: `proposals/router.py:403` GET, `:438` accept, `:610` decline; `estimates.py:1328` builds an absolute proposal_url in `/send` and `:1645` puts `estimate_link` in the compose ctx; `ProposalPublicView.vue:122/131`. Prod audit log shows 4 × `public_estimate_accepted` (latest 2026-08-19), 1 × `public_estimate_declined`, and 5 × `estimate_viewed_by_customer` (latest 2026-08-20) — customers received the link, opened it, and decided through it.
 **Branch:** `feat/public-estimate-approval` off `main` (PR #317 merged)
 
 ## 1. Problem

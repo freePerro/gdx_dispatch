@@ -4,8 +4,17 @@
 against main @ `335b38d`; v3 = Decision 0 resolved by Doug; built + a
 second adversarial audit of the code diff the same day)
 **Branch:** `feat/payment-date-recording`
-**Status:** BUILT — see "Build outcomes" at the end for what the code
-audit changed vs. this plan.
+**Status:** **MERGED #249 — and the rollout has RUN on prod.** Verified by
+read-only prod query 2026-08-21: `tenant_settings.qb_money_pull_paused = true`
+for the GDX tenant, so no QB webhook or manual sync can overwrite or duplicate
+GDX payment rows; live payments now carry dates across 2024 (98), 2025 (184)
+and 2026 (58), which is the backfill this plan's Decision 0 called for.
+Code on main: `invoices.py:827 PaymentCreateIn` with the `_no_future_dates`
+validator, date pickers at `PaymentCaptureForm.vue:204` and
+`BillingView.vue:474/529`, migration 049, and `sync.py:92
+_assert_money_pull_allowed` reading the flag fail-closed.
+**Adjacent and still open:** `qb-import-paid-status-repair-plan.md` Phase 2,
+the office-side mark-paid backfill.
 
 ---
 

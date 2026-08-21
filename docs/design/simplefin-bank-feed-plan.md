@@ -1,7 +1,13 @@
 # SimpleFIN Bank Feed — Build Plan
 
-Status: **built** (branch `feat/simplefin-bank-feed`; §3 scope complete, adversarially
-audited; remaining user-side step = §7)
+Status: **RELEASED v1.56.0 — and LIVE ON PROD.** §3 scope is complete on main
+and §7's user-side step is **done**: verified by read-only prod query
+2026-08-21, the bridge is connected with 5 SimpleFIN accounts, 211
+transactions (latest posted 2026-08-19) and a scheduled sync that last ran
+2026-08-20 22:55 UTC. Code: `simplefin_{client,router,service}.py`,
+`SimpleFINCard.vue` (quota ledger, fetch window `:79-80`, backfill progress
+`:60/302`), `DAILY_FETCH_CAP_MAX = 20`, posted-only ingest, and the reconnect
+re-point at `simplefin_router.py:353`.
 Date: 2026-08-13
 
 ## 1. Context

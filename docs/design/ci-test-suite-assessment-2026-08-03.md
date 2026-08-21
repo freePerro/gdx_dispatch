@@ -1,5 +1,11 @@
 # CI & Test Suite Deep Assessment — 2026-08-03
 
+**Status:** **PARTIALLY ACTIONED** — see the status update below, still
+accurate as re-verified 2026-08-21. §7 items 1, 2 (#264) and 6 (#265) are done.
+**Still open:** item 3 (`.test_durations` is still checked in),
+item 4, item 5, and item 7 — `gdx_dispatch/tests/_adversarial/` and
+`gdx_dispatch/tests/_reproductions/` are both still present on main.
+
 Read-only assessment of whether the CI workflows and test suite are still relevant after the
 last ~7 weeks of heavy feature work, or whether they're accumulating tech debt. Produced from
 three parallel deep sweeps (backend suite relevance, test infrastructure, coverage-vs-recent-work)

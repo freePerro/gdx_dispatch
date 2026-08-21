@@ -1,6 +1,6 @@
 # Vendor Invoice Intake — Design (DRAFT v4, awaiting Doug approval)
 
-**Date:** 2026-07-07 · **Status:** DRAFT v4 — two audit rounds folded in, no code written
+**Date:** 2026-07-07 · **Status:** PARTIALLY BUILT (verified on main 2026-08-21). Phase 1 shipped — `modules/vendor_invoices/` (models, `parsers/midwest_invoice.py`, `matching.py`, `service.py`, `confirm.py`), `vendors.name_aliases` (`tenant_models.py:1369`), `Expense.source`, and the VendorBills review queue. Phase 2 shipped — `llm_extract.py` + `modules/outlook/vendor_bill_ingest.py`. **Not built: Phase 3.** The statement and invoice modules still never reference each other, and there is no QB `BillPayment` → open-bill paid-detection assist (§5.5). See `vendor-payment-visibility-plan.md`, which designs that half.
 **Trigger:** Doug: vendor invoices (e.g. Midwest Wholesale Doors retail-sale PDFs) arrive by email; they need to be imported, pointed at the correct job, **and** be able to receive parts into inventory — not only attach to jobs. OCR requested for scanned documents.
 **Basis:** codebase survey 2026-07-07 + a real sample Midwest retail-sale invoice (kept OUT of the repo per Doug): a PO# carrying a customer/job name, door lines under a generic "Garage Door Material" label with the real product in the Notes row, a shipping line, a Net-30 term. All example values in this doc are schematic — no real bill data is committed.
 

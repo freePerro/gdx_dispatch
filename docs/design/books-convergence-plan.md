@@ -1,7 +1,13 @@
 # Books Convergence — from bank evidence to actual books
 
-Status: DRAFT (sequencing plan; builds on `gl-phase2-reconciliation.md` v4.1, does not
-replace it)
+Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Track 1 shipped as
+#321: migration 065 `vendor_bill_payments`, `modules/vendor_invoices/payments.py`
+with `effective_expense_date` + `sync_expense_dates`, and the confirm-effects
+in `statement_matching.py`.
+**Not built:** Track 2 item 4 (match status on the feed — no
+"statement-verified"/"feed-only" anywhere) and item 5 (QB mirror rows as
+transition-mode match candidates). Tracks 3 and 4 are not complete either;
+see `gl-phase1-core-ledger.md` for what the GL side actually did ship.
 Date: 2026-08-14
 
 > Repo hygiene: no institution, supplier, or processor names in this doc or any

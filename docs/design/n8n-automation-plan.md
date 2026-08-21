@@ -1,7 +1,15 @@
 # The n8n Plugin & the Plugin Event Platform (the WordPress model)
 
-**Status:** Plan v6 — audit-hardened, re-audited, QC-passed, then BUILT
-(2026-08-17). Branch `feat/n8n-event-platform` (unpushed, not merged).
+**Status:** **MERGED #343 · RELEASED v1.66.0** — Sprints 1a, 1b, 2, 3, 4a and
+4b are on main and VPS-proven (verified 2026-08-21).
+**Not built:** Sprint 2b — there is no `/internal/schedule/{key}/{name}` route
+and no `schedules` beat driver anywhere on main, and no frontend consent UI
+for `events`/`schedules` or re-consent-on-drift banner (v1's drift signal is
+still an ERROR log plus a `plugin_consent_drift` record that nothing renders).
+Gap 3 (the `gdx-agent` supervisor, the `n8n-nodes-gdxdispatch` npm node) is
+traction-gated and also unbuilt. The manifest hooks themselves DO exist
+(`plugin_api/manifest.py:32`, `plugin_api/events.py:64`) — it is the driver
+and the consent surface that are missing.
 
 ## Implementation status (2026-08-17)
 

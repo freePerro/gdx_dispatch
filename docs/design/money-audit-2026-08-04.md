@@ -1,5 +1,19 @@
 # Money Audit — 2026-08-04
 
+**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, which is
+still accurate as re-verified 2026-08-21. Fixed: the `core/invoice_invariants.py`
+enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
+M4, M5, M6, M7, M9, M10, M11, M14, M24, M26 and M37.
+**Not fixed:** everything in §3 (reporting), the rest of §4, §5 and §6, and the
+frontend items in §7. The GL findings are no longer "gated on CPA review" in the
+sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
+— but the CPA questions themselves are still unanswered.
+⚠ **The regression net this audit built is switched off.**
+`tests/test_zz_money_correctness_probe.py` still carries
+`pytestmark = pytest.mark.health` and `pytest.ini` still runs
+`-m "not e2e and not load and not health"` — ten passing probes, none of them
+running. §0.6 said to drop the marker once they passed.
+
 Deep audit of every code path that touches money: invoices, payments, Stripe, the
 GL, sales tax, reports, estimates/pricing, bank feeds, QuickBooks, vendor bills,
 payroll/commission, and the frontend.

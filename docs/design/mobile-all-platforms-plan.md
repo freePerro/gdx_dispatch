@@ -1,6 +1,15 @@
 # Making mobile work on all platforms
 
-Status: **REVISED AFTER ADVERSARIAL REVIEW.** 2026-08-12.
+Status: **BUILT** — both adopted items are on main (verified 2026-08-21).
+The adversarial review overturned two of the three proposals, so the shipped
+scope is deliberately small: auth-form inputs raised to 1rem, and
+`responsive.css:39` `.p-dialog { height: 100svh }` with a `vh` fallback — both
+pinned by the guard test at
+`assets/__tests__/primevue-cta-contrast.spec.js:185` ("mobile viewport units
+and input zoom"). Item 1 (`viewport-fit=cover`) was **DROPPED** and item 4
+(card-stacking the five wide tables) deferred as separate work — neither is a
+gap. The "Found but NOT in scope" list below is reported-not-fixed by design.
+**Never verified on iOS**, as this document says throughout.
 
 The review overturned two of the three proposed changes. Both original readings
 are kept below, struck through, because the *way* they were wrong is the useful

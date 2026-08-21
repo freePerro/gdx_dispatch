@@ -1,6 +1,13 @@
 # Bank Statement Import + Verification — Plan
 
-**Status:** IN PROGRESS — PR 1 (evidence layer) = #254; PR 2 (import UI + images) = #255; PR 3 (matcher + Reconcile tab + the four verification reports) built on `feat/bank-statement-reconcile`, browser-verified with a live reconciliation run against real statements + real payments
+**Status:** **RELEASED** — all three delivery slices are on main (verified
+2026-08-21). PR 1 = #254 (MERGED), PR 2 = #255 (MERGED); PR 3's branch was
+closed as #256 but **its content did land** — migration 052,
+`statement_matching.py` (R5 → R2 → R3), the suggest/confirm/reject/unconfirm/
+manual endpoints, the Reconcile tab and all four reports are on main.
+Slice 4 (GL Phase 2 proper) is explicitly a separate later effort.
+**Never exercised on prod:** `bank_matches` has 0 rows — the statement
+evidence is there (9 imports, 388 lines) but nobody has run a reconcile.
 **Date:** 2026-07-31 (revised same day after adversarial audit — see §11)
 **Purpose:** Import monthly bank statements (PDF) into GDX as an evidence layer, and use them to *verify that recorded information is correct* — payments, expenses, vendor bill payments — against what actually hit the bank.
 

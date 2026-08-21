@@ -1,12 +1,15 @@
 # Job parts and labor → invoice: making the office's numbers survive to billing
 
-**Status:** MERGED #360, #362, #363 — the pricing path is built and on main.
-Banner PR open. **Not built:** provenance on a stored price (no source column,
-no audit event — "who priced this and why" is unanswerable, invariant #1 on
-money code); a server-side unbilled-parts gate on `verify_invoice`, which is
-the only surfacing that binds the mobile lane, the API, and the accounting
-role that cannot read inventory; `release_untouched_autodraft` still deletes
-office-added lines on a re-closeout; and `void_invoice` never releases part
+**Status:** **RELEASED v1.69.0** — MERGED #360, #362, #363, #364; deployed to
+prod and demo 2026-08-19 and walked there on a real invoice. The pricing path
+is built and on main.
+**Still not built (re-verified 2026-08-21):** provenance on a stored price
+(no source column, no audit event — "who priced this and why" is still
+unanswerable, invariant #1 on money code); a server-side unbilled-parts gate
+on `verify_invoice` (`invoices.py:3182`), the only surfacing that binds the
+mobile lane, the API and the accounting role that cannot read inventory;
+`release_untouched_autodraft` still deletes office-added lines on a
+re-closeout; and `void_invoice` (`invoices.py:3078`) never releases part
 claims. Each is filed in § Follow-ups, not silently dropped.
 
 Investigated 2026-08-18 against prod v1.68.2 (read-only queries). Design

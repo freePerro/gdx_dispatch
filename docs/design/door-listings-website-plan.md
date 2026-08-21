@@ -9,8 +9,17 @@ that feature is switched on for the company **and** for that customer (default o
 both). Nothing a tech or customer submits reaches the public site until the office
 authorizes it.
 
-Status: **plan only**, nothing built. Written 2026-07-28, revised after Doug's direction on
-field submission + customer submission.
+Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Phase 1 shipped
+(migration 040, `modules/door_listings/`, `routers/door_listings.py`,
+`DoorListingsView.vue`); Phase 2 shipped (`listings:read` scope at
+`core/api_keys.py:165`, `api/public_router.py:720 GET /listings`); Phase 3
+shipped (`MobileDoorListingsView`); Phase 4 shipped
+(`app_settings.customer_listings_enabled` + `portal.py:844` customer
+submission behind `customer_may_submit`).
+**Not built: Phase 5.** No per-door public detail endpoint (only the list),
+no `Product`/`Offer` JSON-LD, no "I'm interested" → `/api/lead` wiring, and
+no auto-hide-sold-after-N-days (`sold_at` exists; nothing reads it to hide).
+Part of Phase 5 lives in the separate website repo, not here.
 
 ---
 

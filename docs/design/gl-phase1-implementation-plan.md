@@ -1,5 +1,17 @@
 # GL Phase 1 — Implementation Plan (slice breakdown)
 
+**Status:** **BUILT AND CUT OVER** — all eleven slices S1-S11 are on main, and
+the rollout has run on prod (verified 2026-08-21). S1 migration `012_gl_core`;
+S2 `modules/ledger/coa.py`; S3 `engine.py` + `rules.py`; S4 `guard.py`; S4.5
+`AccountingSettingsView.vue`; S5-S7 posting rules + `Payment.voided_at`
+(`tenant_models.py:694`) + `InvoiceAdjustment`; S8 `post_expense_recorded`
+(`rules.py:963`) + `expense_receipts`; S9 `quickbooks/sync.py:68-85` gates the
+money pulls on the flag; S10 `opening.py` + `backfill.py`; S11 `reports.py`
+(trial_balance / pnl_accrual / pnl_cash / balance_sheet) + `AccountingLedgerView.vue`.
+Prod: flag ON, July cutover, 188 posted entries, trial balance imbalance = 0.
+**Open:** §Rollout step 4 — exposing reports + receipts UI is gated on the
+monthly trial-balance hand-check against QBO, and that decision is unrecorded.
+
 **Purpose:** turn `gl-phase1-core-ledger.md` (v3 FINAL-DRAFT spec) into a sequence of
 small, independently-testable slices. The spec says *what* and *why*; this doc says
 *in what order* so we never have a huge un-mergeable branch and every step has a green

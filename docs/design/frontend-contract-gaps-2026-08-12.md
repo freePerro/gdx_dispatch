@@ -1,5 +1,16 @@
 # Frontend ↔ backend contract gaps — 2026-08-12
 
+**Status:** **PARTIALLY FIXED** (verified 2026-08-21). C2's method mismatches
+are resolved (e.g. `equipment_tracking.py:215` now serves PATCH), and most of
+C6 — the fake-success class — was converted to a logged 501 via
+`ui_compat._not_implemented`.
+**Still open:** three C6 handlers still answer a bare `return _ok()` —
+`PATCH /api/onboarding/checklist` (`ui_compat.py:327`) and
+`PUT /api/campaigns/{id}/activate` / `/deactivate` (`:941`, `:946`) — and the
+C5 permanent blanks remain (`onboarding_checklist`, `preview_campaign`,
+`campaign_send_history`). The build/remove/leave decisions live in
+`unimplemented-endpoints-decision-list.md` and are still untaken.
+
 First run of `gdx_dispatch/tools/frontend_contract_scan.py`, checked against the
 **live** route table (1,444 routes) rather than static parsing.
 

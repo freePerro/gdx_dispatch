@@ -1,9 +1,16 @@
 # Per-plugin authorization + a mobile estimate editor
 
-Status: **BUILT** 2026-08-11. Two corrections the adversarial audit forced, both
-recorded below where they bit: the proxy gate was fake (§ "The choke point"),
-and the mobile editor plan was wrong about how estimate lines persist
-(§ "Part 2").
+Status: **BUILT** 2026-08-11, and the one open verification is now **done**.
+Part 1 on main: `plugins_proxy.py:62 _clean_subpath` (traversal) and `:133`
+the per-plugin `plugin.{key}.{action}` gate. Part 2 on main:
+`EstimateView.vue:3736` restacks `.line-item-row` below 768px and
+`MobileEstimatesView.vue:113` is the way in.
+**Phone-viewport walk, 2026-08-21** (390x844, real Chrome, built dist, real
+estimate with 9 lines): the nine-track desktop grid collapses to the two-track
+mobile card (`grid-template-columns: 88px 162.95px`), all 16 cells sit inside
+the viewport with **zero** off-screen, and `document.scrollWidth` equals
+`clientWidth` at 390 — no horizontal page scroll. Two corrections the
+adversarial audit forced are recorded below where they bit.
 
 Two asks, one loop: a tenant needs to say who may use each plugin, and a tech
 needs somewhere on a phone to put what a plugin captured.

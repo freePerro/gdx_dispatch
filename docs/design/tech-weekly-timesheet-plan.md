@@ -1,6 +1,6 @@
 # Tech weekly timesheet — self-service week view + own-entry corrections
 
-**Date:** 2026-08-13 · **Status:** PLAN — nothing built
+**Date:** 2026-08-13 · **Status:** RELEASED v1.54.0 — G1 through G5 all on main (verified 2026-08-21): `timeclock.py:691` `include_breaks`; `:35 SELF_SERVICE_EDIT_WINDOW_DAYS = 14` + `:166 _enforce_self_service_limits` (422 without a note, two-sided window, dispatch/admin exempt); the shared `useWeeklyTimesheet` + `TimeEntryDialog.vue`; `TimeclockView.vue:184` My Timesheet; `MobileTimeclockView.vue:167` week section. _This header read "PLAN — nothing built" for shipped work until 2026-08-21._
 **Ask (Doug):** "For each user … on the time clock area a time sheet for each week and a
 way to edit the hours if need be like they forgot to clock in or out … have a week total
 for them to see. The base for this should be there."

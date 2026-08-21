@@ -1,5 +1,13 @@
 # Unimplemented endpoints — build, remove, or leave?
 
+**Status:** **DECISIONS STILL OPEN** — re-checked 2026-08-21. The 501
+conversion that produced this list is done (`ui_compat.py` now calls
+`_not_implemented(...)` rather than answering `{"ok": true}`), but none of the
+seventeen build/remove/leave decisions below has been taken.
+Three fake-success handlers also survive the conversion and still answer a bare
+`return _ok()`: `PATCH /api/onboarding/checklist` (`ui_compat.py:327`) and
+`PUT /api/campaigns/{id}/activate` / `/deactivate` (`:941`, `:946`).
+
 Created 2026-08-12 from the C6 fix. These endpoints used to answer `{"ok": true}`
 to a write they never performed; the Vue showed "Saved" and discarded the user's
 edit. They now log at WARNING and return **501**.

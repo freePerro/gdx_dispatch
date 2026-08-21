@@ -1,6 +1,17 @@
 # GL Phase 1 — Core Ledger Design
 
-**Status:** v3 FINAL-DRAFT — survived 3 adversarial audit rounds (R1: not ready → rewritten; R2: not ready → machinery fixed; R3 delta check: READY-WITH-CONDITIONS, all three conditions applied in §5.2/§5.3/§5.6/§5.7). Blocked only on CPA sign-off (§12) before implementation.
+**Status:** **IMPLEMENTED AND LIVE ON PROD** — this header said "blocked on
+CPA sign-off before implementation" long after the ledger was posting.
+Verified by read-only prod query 2026-08-21: `gl_settings.ledger_posting_enabled
+= true`, cutover month 2026-07-01, opening balances attested 2026-08-17, a
+cutover period lock at 2026-06-30, 188 posted entries + 2 reversed across 437
+lines, and **the trial balance nets to exactly zero with no unbalanced entry**.
+The slice-by-slice build record is `gl-phase1-implementation-plan.md`.
+**Still open:** §12's CPA questions — `gl_settings.cpa_review` is still `{}`,
+and question 1 (expense parts at purchase vs capitalize) is marked BLOCKING
+for §7. §11 step 4 (expose reports + receipts UI after the monthly
+trial-balance hand-check against QBO) is a judgement call that has not been
+recorded either way. The v3 design content below is unchanged.
 **Date:** 2026-07-01
 **Depends on:** nothing (additive). **Followed by:** Phase 2 (bank feeds + QBO verification loop), Phase 3 (parallel run + trust switch).
 **Provenance:** load-bearing choices are backed by (a) adversarially-verified research (two deep-research passes, 2026-07-01, ~35 claims confirmed 3-0 against primary sources), (b) direct code reading, or (c) audit findings (**[AUDIT-R1]** / **[AUDIT-R2]**). Judgment calls: **[JUDGMENT]**. CPA items: **[CPA]**.
