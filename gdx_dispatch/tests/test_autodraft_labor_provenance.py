@@ -14,12 +14,143 @@ The two lanes mean different things and must not be conflated:
                   one.
   service lane -> the tech's ATTESTED hours. Records the hours, names no row.
 """
+import datetime as _dt
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.billing_lanes import InstallLaborLine, ServiceLaborLine
+from gdx_dispatch.core.closeout_billing import build_closeout_lines
+from gdx_dispatch.core.job_taxonomy import INSTALLATION, SERVICE_CALL
+from gdx_dispatch.models.labor_pricing import LaborPriceItem
+from gdx_dispatch.models.pricing_engine import PricingSettings
+from gdx_dispatch.models.tenant_models import (
+    Invoice,
+    InvoiceLine,
+    JobCloseout,
+    JobPartNeeded,
+)
+
+TENANT = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+@pytest.fixture
+def db():
+    """In-memory SQLite — deliberately NOT Postgres.
+
+    The str/UUID crash this file now guards against is invisible on Postgres
+    (psycopg casts the string) and fatal on SQLite. Prod is Postgres, but CI
+    runs SQLite, and the repo rule is that every path must work on both.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    for tbl in (
+        Invoice.__table__,
+        InvoiceLine.__table__,
+        JobCloseout.__table__,
+        JobPartNeeded.__table__,
+        LaborPriceItem.__table__,
+        PricingSettings.__table__,
+    ):
+        tbl.create(bind=engine, checkfirst=True)
+    TenantBase.metadata.create_all(bind=engine, checkfirst=True)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def _invoice(db) -> Invoice:
+    inv = Invoice(
+        id=uuid4(),
+        job_id=uuid4(),
+        customer_id=uuid4(),
+        invoice_number=f"INV-{uuid4().hex[:6]}",
+        # NOT NULL on the model — the pay-link token every invoice carries.
+        public_token=uuid4().hex,
+        status="draft",
+        company_id=TENANT,
+    )
+    db.add(inv)
+    db.flush()
+    return inv
+
+
+def _install_closeout(db, *, flat_price="650.00"):
+    """A matrix row + an install-lane closeout that picked it.
+
+    `labor_matrix_item_id` is stored as a STRING, because
+    `job_closeouts.labor_matrix_item_id` is varchar(36) — that mismatch against
+    the UUID invoice column is the whole point of this fixture.
+    """
+    item = LaborPriceItem(
+        id=uuid4(),
+        sku="INST-16x7",
+        description="16x7 door install",
+        service_type="install",
+        width_ft=16,
+        height_ft=7,
+        flat_price=Decimal(flat_price),
+        assumed_man_hours=Decimal("3.5"),
+        active=True,
+    )
+    db.add(item)
+    db.flush()
+    inv = _invoice(db)
+    closeout = JobCloseout(
+        id=uuid4(),
+        job_id=inv.job_id,
+        hours_worked=0,
+        labor_matrix_item_id=str(item.id),
+        closed_by_user_id=str(uuid4()),
+        closed_at=_dt.datetime.now(_dt.UTC),
+    )
+    db.add(closeout)
+    db.flush()
+    return item, closeout, inv
+
+
+def _service_closeout(db, *, hours: float):
+    inv = _invoice(db)
+    closeout = JobCloseout(
+        id=uuid4(),
+        job_id=inv.job_id,
+        hours_worked=hours,
+        techs_on_site=1,
+        closed_by_user_id=str(uuid4()),
+        closed_at=_dt.datetime.now(_dt.UTC),
+    )
+    db.add(closeout)
+    db.flush()
+    return closeout, inv
+
+
+def _labor_line(db, invoice) -> InvoiceLine:
+    # The fixture session is autoflush=False (matching the app's), so the lines
+    # build_closeout_lines just db.add()ed are still pending. Flushing is also
+    # what makes this a real guard: the str/UUID crash happens AT the flush.
+    db.flush()
+    rows = list(
+        db.execute(
+            select(InvoiceLine).where(
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.category == "Labor",
+            )
+        ).scalars()
+    )
+    assert len(rows) == 1, f"expected exactly one labor line, got {len(rows)}"
+    return rows[0]
 
 
 class TestLanesCarryWhatProvenanceNeeds:
@@ -49,42 +180,104 @@ def mobile_src():
     return Path(m.__file__).read_text()
 
 
-class TestAutodraftSource:
-    """Pins the SOURCE STRINGS the autodraft writes, at the call sites.
+class TestAutodraftWritesProvenance:
+    """Runs the autodraft and reads the row it wrote.
 
-    Read from the module text rather than executing a full closeout: the point
-    is that each lane writes the value that matches what it actually knows, and
-    a future edit that swaps them (or drops one) should fail loudly.
+    This class replaces four source-text assertions (`assert
+    'labor_source="matrix"' in src[i:i+1800]`). They were worse than useless
+    twice over:
+
+      1. They **passed while the code was broken.** One of them asserted
+         `labor_price_item_id=_install.matrix_item_id` was present — and it was,
+         and it crashed on SQLite, because `matrix_item_id` is a `str` and the
+         column is a UUID. CI shard 4 caught what this file was supposed to.
+      2. They broke on a **comment**. Adding nine lines of explanation above the
+         call pushed the string past the 1800-character window and the suite
+         went red for a cosmetic edit.
+
+    A test that reads source text asserts that someone typed something. These
+    assert that the autodraft wrote it.
     """
 
-    def test_install_lane_claims_matrix_and_names_the_row(self, src):
-        i = src.index('lane == "install"')
-        span = src[i:i + 1800]
-        assert 'labor_source="matrix"' in span
-        assert "labor_price_item_id=_install.matrix_item_id" in span
-
-    def test_install_lane_makes_no_hours_claim(self, src):
-        """A quoted flat price is not a statement about duration."""
-        i = src.index('lane == "install"')
-        span = src[i:src.index('lane == "service"')]
-        assert "estimated_man_hours" not in span, (
-            "the install lane recorded an hours figure — the matrix's assumed "
-            "hours are an assumption about a job of that shape, not evidence "
-            "about this one"
+    def test_install_lane_claims_matrix_and_names_the_row(self, db):
+        item, closeout, invoice = _install_closeout(db)
+        added, _total, _taxable = build_closeout_lines(
+            db,
+            tenant_id=TENANT,
+            invoice=invoice,
+            closeout=closeout,
+            job_type=INSTALLATION,
+            job_id=str(closeout.job_id),
         )
+        assert added == 1
+        line = _labor_line(db, invoice)
+        assert line.labor_source == "matrix"
+        # Names the ACTUAL row, as a UUID. Asserting the id round-trips is what
+        # would have caught the str/UUID crash: on SQLite the flush raises,
+        # on Postgres the string is cast silently.
+        assert line.labor_price_item_id == item.id
 
-    def test_service_lane_claims_attested_and_records_the_hours(self, src):
-        i = src.index('lane == "service"')
-        span = src[i:i + 1800]
-        assert 'labor_source="attested"' in span
-        assert "estimated_man_hours=Decimal(str(labor.attested_hours))" in span
+    def test_install_lane_makes_no_hours_claim(self, db):
+        """A quoted flat price is not a statement about duration.
 
-    def test_service_lane_names_no_matrix_row(self, src):
+        The matrix row carries `assumed_man_hours=3.5` — an assumption about a
+        job of that shape, not evidence about this one. It must not be copied
+        onto the customer's line.
+        """
+        _item, closeout, invoice = _install_closeout(db)
+        build_closeout_lines(
+            db,
+            tenant_id=TENANT,
+            invoice=invoice,
+            closeout=closeout,
+            job_type=INSTALLATION,
+            job_id=str(closeout.job_id),
+        )
+        assert _labor_line(db, invoice).estimated_man_hours is None
+
+    def test_service_lane_claims_attested_and_records_the_hours(self, db):
+        closeout, invoice = _service_closeout(db, hours=2.0)
+        build_closeout_lines(
+            db,
+            tenant_id=TENANT,
+            invoice=invoice,
+            closeout=closeout,
+            job_type=SERVICE_CALL,
+            job_id=str(closeout.job_id),
+        )
+        line = _labor_line(db, invoice)
+        assert line.labor_source == "attested"
+        assert line.estimated_man_hours is not None
+        assert Decimal(str(line.estimated_man_hours)) > 0
+
+    def test_service_lane_names_no_matrix_row(self, db):
         """Nothing quoted attested hours; claiming a row would be the lane
         confusion the column exists to prevent."""
-        i = src.index('lane == "service"')
-        span = src[i:i + 1800]
-        assert "labor_price_item_id" not in span
+        closeout, invoice = _service_closeout(db, hours=2.0)
+        build_closeout_lines(
+            db,
+            tenant_id=TENANT,
+            invoice=invoice,
+            closeout=closeout,
+            job_type=SERVICE_CALL,
+            job_id=str(closeout.job_id),
+        )
+        assert _labor_line(db, invoice).labor_price_item_id is None
+
+    def test_the_two_lanes_never_agree_on_source(self, db):
+        """The whole point of the column: one invoice cannot claim both."""
+        _item, i_closeout, i_invoice = _install_closeout(db)
+        build_closeout_lines(
+            db, tenant_id=TENANT, invoice=i_invoice, closeout=i_closeout,
+            job_type=INSTALLATION, job_id=str(i_closeout.job_id),
+        )
+        s_closeout, s_invoice = _service_closeout(db, hours=2.0)
+        build_closeout_lines(
+            db, tenant_id=TENANT, invoice=s_invoice, closeout=s_closeout,
+            job_type=SERVICE_CALL, job_id=str(s_closeout.job_id),
+        )
+        assert _labor_line(db, i_invoice).labor_source == "matrix"
+        assert _labor_line(db, s_invoice).labor_source == "attested"
 
 
 class TestMobileTierCopy:

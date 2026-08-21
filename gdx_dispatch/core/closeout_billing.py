@@ -116,6 +116,7 @@ def build_closeout_lines(
     left unstamped: they stay on the office checklist.
     """
     from gdx_dispatch.core.billing_lanes import (
+        _as_uuid,
         install_labor_line,
         lane_for_job,
         service_labor_line,
@@ -161,7 +162,16 @@ def build_closeout_lines(
                 # A matrix row is a QUOTED FLAT PRICE, so no hours claim rides
                 # along: `assumed_man_hours` is the matrix's assumption about a
                 # job of that shape, not a record of this one.
-                labor_price_item_id=_install.matrix_item_id,
+                # COERCE. `matrix_item_id` is a str (it comes from
+                # `job_closeouts.labor_matrix_item_id`, a varchar(36)) but
+                # `invoice_lines.labor_price_item_id` is a UUID column. Postgres
+                # casts the string silently; SQLite's UUID adapter calls .hex on
+                # it and raises. Caught by CI shard 4, not by local Postgres.
+                #
+                # Safe unconditionally: `install_labor_line` only returns after
+                # loading the row, and sets `matrix_item_id=str(item.id)`, so
+                # the value is always a real UUID's string form.
+                labor_price_item_id=_as_uuid(_install.matrix_item_id),
                 labor_source="matrix",
                 sort_order=sort,
                 company_id=str(tenant_id),
