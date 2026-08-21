@@ -1,5 +1,11 @@
 # Email Inbox — Improvement & Feature Plan
 
+**Status:** **PARTIALLY BUILT** — Phases 0, 1 and 2 shipped (see the Build
+status table below). **Still open, re-verified 2026-08-21:** D6, the auto-email
+automations — `modules/outlook/automations.py:73 dispatch_trigger` still has
+zero production callers anywhere on main. It needs Doug's revive-or-delete
+call (open decision 6).
+
 ## Build status (2026-07-27)
 
 | Phase | State |

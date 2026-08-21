@@ -1,7 +1,14 @@
 # Accepting an estimate: no way to take a check or cash for the downpayment
 
-Status: **PLAN — nothing built yet.** Written 2026-08-12. **Revised the same day
-after an adversarial audit killed the first draft's headline** (§0.1).
+Status: **MERGED #309** — P1 through P5 are all on main (verified 2026-08-21).
+`components/PaymentCaptureForm.vue` is the shared form, used by
+`MobileEstimatesView.vue:260` (P1), `MobileCustomerQuoteDialog.vue:303` (P2),
+`EstimateView.vue:75` + `:174` (P3, both the accept and Request-Deposit
+dialogs), and `MobileBillingView.vue:120` (P4). P3b prefills `balance_due` at
+`InvoiceDetailView.vue:992` and `BillingView.vue:1459`; P4 shipped as option
+(a), the tech-scoped list at `mobile_invoicing.py:1105`, not the blanket
+`invoices.read_all` grant. P5 is `CustomerPortalView.vue:264`.
+_This header read "PLAN — nothing built yet" for shipped work until 2026-08-21._
 
 Doug: *"when accepting an estimate there is no way to accept a check or cash for
 a downpayment"*

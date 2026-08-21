@@ -1,14 +1,18 @@
 # Customer email overhaul — readability, missing features, silent non-delivery
 
-Status: BUILT on `feat/email-overhaul` (2026-08-18) — all six phases
-implemented with tests, PG-validated migrations (066-068), and a live
-browser walk (light + dark). Deviations from plan, both logged in
-[email-overhaul-tech-debt.md](email-overhaul-tech-debt.md): invoice/receipt
-tenant template columns deferred (estimate templates ARE honored end-to-end,
-the locked decision); bounce rung-1 hardening limited to accepting both
-subject forms. Bonus fixes found during build: hide_line_prices now honored
-by email, mobile receipt payment lookup raw-SQL→ORM, mark-sent channel
-stamping, migration guards for boot-created tables.
+Status: **MERGED #348 · RELEASED v1.68.0 · DEPLOYED to prod** — all six
+phases built, with migrations 066-068 live. Verified on main 2026-08-21:
+`core/email_layout.py` (P1), the single server-rendered send pipeline with a
+`body_text` override (P2, `estimates.py:1583`), migration 067 +
+`automation_emails_enabled` (P4a), migration 066 `outbound_emails` +
+`routers/outbound_emails.py` + the Email Log screen (P5.1), `Estimate.sent_via`
+(P5.4), `validate_email` wired at `customers.py:61/95` (P5.6), Reply-To at
+`email_sender.py:86` (P5.7), `decrypt_secret` on `password_enc` (P5.8), and
+migration 068 + `tasks/plugin_email_outbox.py` (P6).
+**One item short:** Phase 4b's third bullet — `gdx_dispatch/core/email.py` was
+never deleted. It survives as dead code with a single commented-out import.
+Phase 4b's other two bullets (supplier_invite docstring, `/settings/email/test`
+returning Not-implemented) are done.
 
 Locked decisions (Doug, 2026-08-18):
 

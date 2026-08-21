@@ -1,7 +1,16 @@
 # Job photos: the office can't see them, and can't put them on an invoice
 
-Status: **PLAN — nothing built yet.** Written 2026-08-12, revised same day after
-an adversarial audit + production evidence.
+Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Built: S1
+(`JobDetailView.vue:1836` reads `/api/jobs/{id}/photos`), S2 (`uploads.py:211-257`
+writes `documents.job_id`), S3 (`InvoiceCreateView.vue:264` checkboxes,
+`InvoiceDetailView.vue:589`, `MobileInvoiceDialog.vue:187`), S5
+(`photos.py:159` `_PHOTO_READ_KEYS = ("jobs.read_all", "invoices.read_all")`),
+S7 (migration 063), and the `AuthedImage` fallback.
+**Not built:** S4 — both "dead mobile writer" routes still exist
+(`mobile.py:3452-3453`, `POST /jobs/{id}/photos` + the `/job/{id}/photo`
+alias) and `docs/tech_mobile.md` still advertises them. Note they are no
+longer dead: the handler is a live multipart upload with EXIF, so deleting
+them is now a decision, not a cleanup. S6 was **dropped** by Doug — not a gap.
 
 Doug: *"a tech adds a photo to a job and can see it in mobile and the office
 cannot see it in photos for the job. We are also supposed to be able to add the

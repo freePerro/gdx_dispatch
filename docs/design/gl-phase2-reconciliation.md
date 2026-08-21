@@ -1,6 +1,13 @@
 # GL Phase 2 — Bank Reconciliation, Stripe Reconciliation & the QBO Verification Loop
 
-**Status:** v4.1 FINAL-DRAFT (v4.1: added §5.5 payment-backfill runbook step, required by Phase 3's audit) — survived 3 adversarial audit rounds (R1 NOT READY → architecture rewrite; R2 delta → push/hash/seam fixes; R3 mini-delta READY-WITH-CONDITIONS → per-payout catch-up + repair era-restriction applied). Blocked on: §9.1 re-verification of [SOURCED] claims + CPA items before implementation. Non-blocking R3 note adopted: reopening month M flags later tied-out months for re-assertion.
+**Status:** **PARTIALLY REALIZED ELSEWHERE, not built as specified** (verified
+2026-08-21). The bank-evidence layer and the R5/R2/R3 matcher this document
+designs did ship — but under `bank-statement-import-plan.md`, whose own slice 4
+explicitly leaves "GL Phase 2 proper" as a separate later effort. Still
+unbuilt here: the matcher has never been re-targeted to GL lines, there is no
+tie-out-to-GL assertion, no §4 processor/payout clearing, no §5 QBO push
+completion, and no §6.2 monthly QBO diff. The v4.1 planning content below
+stands; only this header's "blocked before implementation" framing was stale.
 **Date:** 2026-07-02
 **Depends on:** Phase 1 (`gl-phase1-core-ledger.md`, v3). **Followed by:** Phase 3 (parallel run + trust switch).
 **Provenance labels:** **[VERIFIED]** adversarially verified 3-0 (research runs 2026-07-01/02) · **[SOURCED]** primary-source quotes, verification pass killed by spend limit — re-verify before implementation · **[CODE]** direct code reading, auditor-checked · **[AUDIT-R1]** audit finding · **[JUDGMENT]** / **[CPA]** as in Phase 1.

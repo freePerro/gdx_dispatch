@@ -1,5 +1,12 @@
 # Invoicing Gap Fixes — 2026-08-08
 
+**Status:** **COMPLETE** — #293, #294, #295 and #296 are all MERGED and PR 5's
+work is on main (verified 2026-08-21): `core/invoice_delivery.py`
+`require_deliverable`, the overpayment banner at `InvoiceDetailView.vue:535`,
+typed-$0 lines surviving at `InvoiceCreateView.vue:814`, and
+`invoices.py:1223 zero_price_warnings`. The "Still open" list at the end is
+other documents' work, not this one's.
+
 Final report for the invoicing-gaps sweep Doug requested ("make a todo list
 of all of these gaps, start a clean update new branch and stack the PRs as
 you go; fix other gaps as you find them; give a final report in a file").

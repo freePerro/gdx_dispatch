@@ -1,6 +1,6 @@
 # Tier Accept Fix + Line-Built Tiers — Plan
 
-**Date:** 2026-08-14 · **Status:** AUDITED — adversarial critique applied, see §7
+**Date:** 2026-08-14 · **Status:** RELEASED v1.58.0 — both phases on main (verified 2026-08-21). Phase A: `proposals/service.py:22/31` `tier_contract_lines` + `tier_contract_subtotal`, tier-aware recalc, `invoices.py:1329` accepted-tier copy/synthesize. Phase B: `proposals/models.py:91 ProposalTierLine`, `router.py:111/121/126` tier-line CRUD, `service.py:217 _resync_tier_price`, `EstimateView.vue:609-620` per-tier grid with the price read-only once lines exist, `ProposalPublicView.vue:77` included-lines list. Items 7-8 and §5 are declared out of scope and stay that way.
 **Branch:** `feat/tier-lines-accept-fix` off `main` (v1.57.0 tip)
 **Doug's ask:** "fix the tier accept" + "tiers should be able to be built like the estimates that we have now"
 

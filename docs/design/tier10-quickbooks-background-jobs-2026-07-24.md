@@ -1,5 +1,15 @@
 # Tier 10 — Invisible state: QuickBooks sync + background jobs
 
+**Status:** **SHIPPED AS SCOPED** — both items this PR claimed are on main
+(verified 2026-08-21): `quickbooks/router.py:283` returns
+`auth_state`/`needs_reconnect` and `QbOverviewPanel.vue:14` renders the
+Reconnect banner; `qb_dirty`/`qb_synced_at` are serialized by
+`_serialize_invoice` and `customers.py:206` and rendered at
+`InvoiceDetailView.vue:1165` / `CustomerDetailView.vue:809`;
+`tests/test_tier10_qb_visibility.py` exists.
+The "Deliberately not done" table below is decision-gated deferral, not
+unfinished scope — and **all eleven rows are still open**, re-checked 2026-08-21.
+
 Companion to `backend-vue-contract-gaps-2026-07-24.md` Tier 10. This tier is
 different from Tiers 1–9/11: most items are **not mechanical contract
 mismatches**, they are product decisions ("pick the QB story") or behavior

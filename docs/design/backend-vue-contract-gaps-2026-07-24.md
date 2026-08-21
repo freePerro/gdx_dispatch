@@ -1,5 +1,20 @@
 # Backend ↔ Vue Contract Gaps — Full Sweep, 2026-07-24
 
+**Status:** **MOSTLY FIXED** — re-verified against main 2026-08-21. Tiers 1-9
+and 11 are substantially closed: the `api.delete` alias (`useApi.js:183/313`),
+the onboarding import, `PUT /commissions/rules/{id}`, `POST /settings/branding/logo`,
+the A/R UI doors (credit-memo, apply-credit, warranties, job dependencies,
+reminders, finalize), `is_return_visit` badges, PO `received_date`, every
+invalid `'warning'` severity, the Tier-6 write-path drops, the forecasting
+authorization hole, the dead `AdminSettingsView`, and the mobile invoice email.
+**Still open:** Tier 10 — `tasks/reminders.py::_find_upcoming_appointment_ids`
+still returns `[]`, `quickbooks/sync.py` still has zero `ItemRef`, per-record QB
+sync state is still unrendered in lists; plus the Tier-3 latent item
+(`amount_paid` absent from `_serialize_invoice`).
+_See § Score below. The line "Everything below is UNFIXED" was true the day it
+was written and has been misleading ever since — it cost a full re-verification
+pass on 2026-08-21 to discover most of it had shipped._
+
 Two-direction audit of the entire backend↔frontend contract, run after the
 deposit-invoice gap fixes shipped in PR #197 (`fix/deposit-gaps-notify-sms`).
 Method: enumerate the API surface (~1,006 endpoints across ~115 routers + ~40
@@ -7,14 +22,44 @@ module routers), match against every `api.get/post/patch/del`/fetch call in
 `frontend/src`, then sweep the reverse direction (frontend calls, field reads,
 status maps, error handling, client-side money math). The five highest-impact
 claims were independently re-verified against the code before this document was
-written. **Everything below is UNFIXED as of 2026-07-24.** Line numbers will
-drift — re-verify before editing.
+written. **Everything below was UNFIXED on 2026-07-24, the day this was written.
+Most of it has since shipped — read § Score, not this sentence.** Line numbers
+will drift — re-verify before editing.
 
 Deliberately excluded (have external/non-UI callers, not gaps): webhooks,
 `/pwa`, booking/branding_public/instant_estimate/well_known, telemetry sinks
 (`ux_telemetry`, `error_sink`, `api_metadata`), cron endpoints
 (`estimates expire-stale`), and `tasks/{id}/reopen` (reachable via status
 PATCH from TasksView instead).
+
+---
+
+## Score — what has since been fixed (re-verified against `main` 2026-08-21)
+
+This section exists because its absence made this document a trap. For thirteen
+months of repo time the intro said "everything below is UNFIXED", and a reader
+had no way to learn otherwise without hand-checking ~50 items across eleven
+tiers — which is exactly what the 2026-08-21 sweep had to do, only to find most
+of it had shipped. **Update this table in the PR that fixes the item.** The
+sibling `money-audit-2026-08-04.md` §0.6 is the pattern being copied.
+
+| Tier | State | Evidence on `main` |
+|---|---|---|
+| 1 — broken today (5) | ✅ all fixed | `useApi.js:183/313` exports a `delete` alias with a distinct signature; OnboardingView posts through the shared client; `commission.py:140 PUT /rules/{rule_id}`; `settings.py:754 POST /branding/logo`; the `total_amount` fallback is gone from DashboardView |
+| 2 — built, no UI door (7) | ✅ doors exist | credit-memo + apply-credit on `InvoiceDetailView.vue:474/483`; `WarrantiesView.vue`; job dependencies at `JobDetailView.vue:403/2102`; receipt→expense on the bank-feeds line path; per-invoice reminders in `CollectionsView.vue:383-423`; finalize at `InvoiceDetailView.vue:1745`. **2.7 (mobile batch sync) is still undecided** — the endpoint remains, replay still goes per-URL |
+| 3 — serialized, never rendered | 🟡 mostly | `is_return_visit` renders on DispatchView + TechTimelineColumn; PO `received_date` is a column; budget seed returns its result. **Open:** `amount_paid` is still absent from `_serialize_invoice` (latent, all fallbacks still guarded by `balance_due ??`) |
+| 4 — status-map divergence | ✅ fixed | zero invalid `'warning'` severities remain in any `.vue` file |
+| 5 — swallowed server detail | ✅ fixed | the Tier-1.2 onboarding raw fetch was the only real swallow |
+| 6 — write-path data loss (12) | ✅ fixed | technician name/email/phone on both models (`technicians.py`); `expenses.py:54/68` accepts `status`; `customers.py:146` `access_notes`; `jobs.py:629` honours `date=` |
+| 7 — permission / module gating | ✅ fixed | forecasting GETs carry `require_permission("accounting.read")`; nav entries key on real modules via `requires:` (`modules.js:46/59/61/160`) |
+| 8 — dead frontend surface | ✅ fixed | `AdminSettingsView.vue` deleted |
+| 9 — customer-facing documents | ✅ headline fixed | `mobile_invoicing.py:969` now passes `subtotal`/`tax_amount`/`balance_due`, so truck "Generate & email" actually sends |
+| 10 — invisible background state | 🔴 **still open** | `tasks/reminders.py::_find_upcoming_appointment_ids` still `return []`; **zero** `ItemRef` in `quickbooks/sync.py`; per-record QB state is serialized and rendered on detail views (see `tier10-quickbooks-background-jobs-2026-07-24.md`) but not in lists, and push failures still surface nowhere |
+| 11 — dark mode + dead tail | 🟡 partly | scheduling has a real UI (`SchedulingView.vue`); the dark-mode items were not individually re-checked in the 2026-08-21 sweep |
+
+Two tiers were **not** re-verified item-by-item on 2026-08-21 and should not be
+read as clean: Tier 11's dark-mode list, and the long dead-endpoint tail. Saying
+so is the point of keeping score.
 
 ---
 

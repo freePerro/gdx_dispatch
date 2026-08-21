@@ -1,5 +1,14 @@
 # Comment accuracy audit — 2026-08-12
 
+**Status:** **SWEEP COMPLETE, NEXT PASS OPEN** (verified 2026-08-21). The
+audit's own fixes landed: `gdx_dispatch/tools/comment_drift_scan.py` and
+`tests/test_comment_drift_scan.py` are on main, and
+`core/job_display_state.py:247` now logs before returning Unknown, honouring
+the contract its docstring promised.
+**Open:** the 26 residual hits described below are still untriaged, and the
+scanner is still **not** wired into CI — nothing in `.github/` runs it, so the
+count is free to climb back toward 171.
+
 Goal: verify that code comments say what the code actually does, and fix
 whichever side is wrong.
 

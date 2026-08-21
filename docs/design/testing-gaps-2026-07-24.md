@@ -1,5 +1,13 @@
 # Testing Gaps Assessment — 2026-07-24
 
+**Status:** **PARTIALLY ADDRESSED** (verified 2026-08-21). Gap 1, the biggest —
+the frontend<->backend contract-parity scan — shipped as
+`gdx_dispatch/tools/frontend_contract_scan.py`.
+**Still open:** Gap 2 (no ESLint config exists anywhere in `frontend/`), Gap 3
+(no CI-gated browser smoke — `ci.yml` still runs `--ignore=tests/e2e`), Gap 4
+(no upgrade-with-data migration harness), Gap 5 (no coverage measurement in CI),
+Gap 6 (no response-shape ratchet), and every visual rung.
+
 What kinds of testing the project is missing, ranked by which classes of
 production bugs they would have caught. Method: inventoried every test
 surface (backend pytest, frontend vitest, Playwright, schemathesis, locust,

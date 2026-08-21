@@ -1,6 +1,13 @@
 # Deposit ask + online-pay-to-count + job "Paid" display fix
 
-Status: PLAN (locked with Doug 2026-08-18). Not built yet.
+Status: **MERGED #346** — Phases 1 and 2 are on main (verified 2026-08-21).
+P1: `job_display_state.py:156/162` partitions deposit invoices out of the
+money axis, `:89` adds `deposit_paid`, `JobStateChip.vue:48` renders the
+badge. P2: `deposit_ask` on the public + portal payloads and the twin
+`POST /api/proposals/{token}/deposit/pay` / `/portal/estimates/{id}/deposit/pay`.
+**Phase 3 is outstanding and is a PROD DATA action, not code:** void the
+phantom unpaid deposit invoices, Doug deciding per invoice (000338 may be a
+genuinely chased balance — ask before voiding it).
 
 ## The two reported problems
 
