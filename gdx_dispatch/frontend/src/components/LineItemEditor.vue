@@ -883,19 +883,28 @@ const subtotal = computed(() =>
 // the conditional <span>/<input> order in the template (left action + cat? +
 // desc + qty + cost? + price + taxable? + margin? + total + right action).
 const gridStyle = computed(() => {
+  // Widths trimmed 2026-08-20 so all 11 tracks FIT at 1366px, the common
+  // office laptop. They summed to 1018px in a 962px box, so the row scrolled
+  // inside its own container and the TOTAL column sat off-screen -- the one
+  // number an operator most wants while billing.
+  //
+  // Deliberately a trim, not a column drop. The overflow was only 56px, so
+  // reclaiming it costs nobody a control: nothing is hidden, collapsed or
+  // moved behind a toggle. Qty holds 3 digits, the category Select holds
+  // "Openers", and the money columns hold "$12,345.67".
   const cols = ['36px'];                         // left action (delete)
-  if (props.categories.length) cols.push('130px');  // category select
-  cols.push('minmax(180px, 1fr)');               // description
-  cols.push('80px');                              // qty
-  if (props.showCost) cols.push('110px');         // cost
-  cols.push('110px');                              // unit price
+  if (props.categories.length) cols.push('110px');  // category select
+  cols.push('minmax(150px, 1fr)');               // description
+  cols.push('60px');                              // qty
+  if (props.showCost) cols.push('100px');         // cost
+  cols.push('100px');                              // unit price
   if (props.showTaxable) cols.push('70px');       // taxable
   // "Incl. install" rides with the taxable flag: both are invoice-mode-only
   // per-line money flags, and the grid track list must match the cells the
   // template actually renders (2026-05-11 browser-walk fix).
   if (props.showTaxable) cols.push('76px');       // includes_labor
-  if (props.showMargin) cols.push('90px');        // margin override
-  cols.push('100px');                              // total
+  if (props.showMargin) cols.push('72px');        // margin override
+  cols.push('90px');                               // total
   cols.push('36px');                               // right action (copy)
   return { gridTemplateColumns: cols.join(' ') };
 });
@@ -1208,7 +1217,10 @@ function addFromCatalog(items) {
 .line-item-row {
   display: grid;
   /* grid-template-columns set inline via :style="gridStyle" (computed). */
-  gap: 0.5rem;
+  /* 0.25rem, not 0.5rem: this gap applies TEN times across an 11-column row,
+     so it cost 80px -- more than any single track. Halving it reclaims 40px,
+     which is most of what kept the Total column off-screen at 1366px. */
+  gap: 0.25rem;
   align-items: center;
   padding: 0.25rem 0;
 }

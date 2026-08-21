@@ -138,3 +138,30 @@ test.describe('F14 — the 11-column grid at a real laptop width', () => {
     await page.screenshot({ path: 'test-results/invoice-editor-1366.png', fullPage: false });
   });
 });
+
+test.describe('F14 — no horizontal page scroll at any realistic width', () => {
+  // The rule this repo states outright: wide content scrolls inside its own
+  // container, the page body never scrolls sideways. Pin it across the widths
+  // the office actually uses, not just the one I happened to fix.
+  for (const [label, width] of [['13in laptop', 1280], ['common laptop', 1366], ['1080p', 1920]]) {
+    test(`${label} (${width}px): page does not scroll sideways`, async ({ page, baseURL }) => {
+      await signIn(page, baseURL);
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('/billing/new');
+      await expect(page.locator('[data-testid="line-items-editor"]')).toBeVisible({ timeout: 20000 });
+
+      const m = await page.locator('[data-testid="line-items-editor"]').evaluate((el) => ({
+        editorClientW: el.clientWidth,
+        editorScrollW: el.scrollWidth,
+        bodyScrollW: document.body.scrollWidth,
+        bodyClientW: document.body.clientWidth,
+      }));
+      expect(m.bodyScrollW, 'the PAGE scrolls horizontally').toBeLessThanOrEqual(m.bodyClientW + 1);
+      if (width >= 1366) {
+        // At 1366+ the row must FIT, not merely scroll -- the Total column
+        // being off-screen is what made this worth fixing.
+        expect(m.editorScrollW, `row overflows at ${width}px`).toBeLessThanOrEqual(m.editorClientW + 1);
+      }
+    });
+  }
+});
