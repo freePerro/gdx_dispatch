@@ -77,8 +77,11 @@ def _empty_list() -> dict[str, Any]:
     return {"items": [], "total": 0}
 
 
-def _ok() -> dict[str, Any]:
-    return {"ok": True}
+# `_ok()` — which returned a bare {"ok": True} — is deliberately gone. It was
+# the vehicle for the fake-success class: a mutation handler whose whole body
+# returned it did no work while the frontend read success and popped a toast.
+# Its last three callers became `_not_implemented(...)` on 2026-08-21. Do not
+# reintroduce it; if a handler genuinely has nothing to do, say so loudly.
 
 
 def _ok_with_id() -> dict[str, Any]:
@@ -323,8 +326,23 @@ def onboarding_checklist(_: dict = Depends(get_current_user)) -> dict:
 
 
 @router.patch("/api/onboarding/checklist", response_model=None)
-def update_onboarding_checklist(payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def update_onboarding_checklist(
+    payload: _GenericPayload,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    # Normally unreachable: routers/onboarding.py::patch_checklist wins this
+    # path at runtime (verified live 2026-08-21 — a PATCH here 422s demanding
+    # `step`/`completed`, which is that handler's ChecklistPatchIn, not this
+    # shim's permissive _GenericPayload).
+    #
+    # It stops being unreachable in one case, and it is the worst one: app.py
+    # wraps every router import in try/except and substitutes an EMPTY
+    # APIRouter on failure. If onboarding.py ever fails to import, this shim
+    # becomes the live handler. `return _ok()` would then fake a successful
+    # write on a degraded system — the exact silent-success class this file
+    # was cleaned up to remove. Refuse loudly instead.
+    _not_implemented("Updating the onboarding checklist", request, user)
 
 
 @router.post("/api/onboarding/seed-catalog", response_model=None)
@@ -936,14 +954,31 @@ def campaign_send_history(campaign_id: str, _: dict = Depends(get_current_user))
     return _empty_list()
 
 
+# Both of these are shadowed at runtime by routers/campaigns.py, which serves
+# the real activate/deactivate (verified live 2026-08-21: a PUT against a
+# non-existent id returns 404 "Campaign not found", which this shim could never
+# produce — it answered {"ok": true} for any id). They survive only for the
+# import-failure case described on update_onboarding_checklist above: if
+# campaigns.py fails to import, app.py mounts an empty router in its place and
+# these become live. Faking success on a campaign state change at that moment
+# is worse than refusing it.
+
 @router.put("/api/campaigns/{campaign_id}/activate", response_model=None)
-def activate_campaign(campaign_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def activate_campaign(
+    campaign_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Activating a campaign", request, user)
 
 
 @router.put("/api/campaigns/{campaign_id}/deactivate", response_model=None)
-def deactivate_campaign(campaign_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return _ok()
+def deactivate_campaign(
+    campaign_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    _not_implemented("Deactivating a campaign", request, user)
 
 
 # ── Customer opt-out ──────────────────────────────────────────────────────
