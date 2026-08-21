@@ -319,6 +319,22 @@ Added here:
 
 ---
 
+## Browser-walk seed recipe (e2e/job-card-pr-a.spec.js needs it)
+
+The walk refuses to run without `E2E_JOB_ID`. Seed, against the throwaway:
+
+- a customer with `notes` and a `dog_warning` **customer tag** (alerts derive
+  from tag names);
+- a job on that customer: `dispatch_status='on_site'`, `priority='Emergency'`,
+  `is_return_visit=True`, assigned to an active technician;
+- two rows in **`customer_equipments`** — NOT `equipment_assets`. Those are two
+  different tables behind two different endpoints, and the one the mobile card
+  reads (`/api/customers/{id}/equipment`, `modules/equipment/router.py:102`) is
+  `customer_equipments`. Seeding the wrong one returns a cheerful `200 []`.
+  Import `gdx_dispatch.models.tenant_models` first or the FK to `customers`
+  will not resolve; `created_at`/`updated_at` are NOT NULL in the DB with no
+  model default.
+
 ## Open items
 
 - ~~Re-measure the field counts before building.~~ **DONE 2026-08-21** —

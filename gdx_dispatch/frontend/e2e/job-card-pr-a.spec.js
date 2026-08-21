@@ -26,6 +26,16 @@ async function auth(page, baseURL) {
 
 test.use({ viewport: { width: 375, height: 812 } });
 
+// This walk needs a seeded job (on_site, Emergency, return visit, a tagged
+// customer with notes, and rows in customer_equipments -- NOT equipment_assets,
+// which is a different table behind a different endpoint). Without it the
+// navigations would 404 and several assertions would pass vacuously, so refuse
+// to run rather than report a green nobody earned. Seed recipe lives in
+// docs/design/mobile-one-job-card-plan.md.
+test.beforeEach(() => {
+  test.skip(!JOB, 'E2E_JOB_ID not set — see the seed recipe in the one-job-card plan');
+});
+
 test('the three new actions render and are thumb-sized', async ({ page, baseURL }) => {
   await auth(page, baseURL);
   await page.goto(`/mobile/jobs/${JOB}`);
