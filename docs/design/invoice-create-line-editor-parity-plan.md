@@ -1,17 +1,29 @@
 # The invoice-create line editor: labor, categories, and what else fell out
 
-**Status:** **PARTIALLY BUILT** (2026-08-20).
-**p1** — `fix/invoice-line-editor-p1`, **PR #377 OPEN**: F2, F4, F8, F10 closed,
-F3 closed as insurance.
-**p2** — `feat/invoice-line-editor-p2`, built: F1 closed (Add Labor, two lanes)
-plus migration 071 (labor provenance on `invoice_lines`).
-**p3** — `fix/invoice-line-editor-p3`, built: F5 closed
-(`source_estimate_id` provenance + audit trail).
-**p4** — `feat/invoice-line-editor-p4`, built: F6 + F7 closed (whole-invoice
-discount, and the last catalog-add path honouring `tax_labor`).
-**p5** — `fix/invoice-line-editor-p5`, built: F9 closed (categories from
-`/api/catalogs/pricing-categories`). **All five built.** Decisions §5 D1–D8 all locked. Written from Doug's
-report
+**Status:** **RELEASED v1.72.0** (2026-08-19) — p1–p5 merged as **#377, #378,
+#379, #380, #381**, deployed to prod and demo, and walked on prod. Decisions
+§5 D1–D8 all locked. F1–F10 closed: Add Labor with two lanes, category
+resolution off `pricing_category`, estimate provenance (migration 072), a
+whole-invoice discount, tenant-flag taxability, and one shared category
+resolver replacing four hardcoded copies. Migrations **071** and **072** are
+both live.
+
+**Follow-ups from the p1–p5 build — four, all built, stacked on each other and
+merging bottom-up:**
+- **#383** `fix/labor-provenance-autodraft-mobile` — the autodraft and mobile
+  invoicing paths were writing labor lines with no provenance at all, which is
+  the path most invoices actually take. **OPEN.**
+- **#384** `fix/estimate-labor-size-label` — `EstimateView` divided `width_ft`
+  by 12 when the column has been feet since 2026-05-07, so ten of eleven matrix
+  rows rendered "1x1" and were indistinguishable in the picker. **OPEN.**
+- **#385** `fix/line-editor-grid-width` — the 11-column line row needed 1018px
+  in a 962px box at 1366px, putting the **Total** column off-screen. No column
+  was dropped; the overflow was 56px. **OPEN.**
+- **q4** `fix/pricing-bucket-mirror` — p5 deliberately refused to adopt any
+  server bucket name the synonym table already settled. §8 below records why
+  that was the wrong call and what replaced it. **OPEN.**
+
+Written from Doug's report
 ("after clicking create new invoice it is missing the option to add labor…
 and it does not carry category over when adding from the catalog… I am sure
 there is other stuff missing"). Every claim below is backed by code at a
@@ -1192,3 +1204,100 @@ Retail margin tiers (`margin_tiers` ⋈ `pricing_tier_sets`, active, retail):
 doors 60/30/30/25 · openers 60/50/35/25 · parts 50/40/35/25 · other
 60/50/35/25, at cost breaks $100 / $500 / $2,000. `labor` tier sets exist but
 are **inactive** — labor prices from the matrix, not the engine.
+
+---
+
+## 8. q4 — reversing p5's client/server divergence (2026-08-20)
+
+p5 shipped a deliberate divergence, and it was the wrong call. This section
+records the reasoning on both sides, because the rejected alternative is the
+part that cannot be recovered from the code.
+
+### What p5 did
+
+`loadPricingCategories()` widens the client's bucket set from
+`/api/catalogs/pricing-categories`, so an admin-seeded margin tier surfaces with
+no code change. p5 added one exception:
+
+```js
+if (PRICING_SYNONYMS[b]) continue;   // never admit a settled name
+```
+
+The stated reason: `normalizeToBucket` checks `VALID_BUCKETS` before
+`PRICING_SYNONYMS`, so admitting `springs` would flip its mapping and "reprice
+78 live catalog rows from a GET response." The same argument covered
+`accessories`, `hardware`, `operators`, `tracks`, `cables`, `remotes`, `keypads`.
+
+### Why it was wrong
+
+**1. The backend has no such guard.** `routers/catalog.py:_normalize_to_bucket`
+checks the valid set first and the synonym table second — the exact order p5
+called dangerous. The moment a tier is seeded, the server re-points the name.
+Refusing client-side did not prevent a repricing; it only made the two sides
+choose **different tiers for the same line**.
+
+**2. The client's number is the one that ships.** `add_invoice_line`
+(`routers/invoices.py`) stores `payload.unit_price` verbatim — there is no
+server-side repricing on invoice line create. So when the two sides disagree,
+the client wins, and the customer is billed off a tier the server does not
+believe in. A silent, permanent, per-line mispricing.
+
+The size of it, **measured** rather than reasoned. Seed an `accessories` retail
+tier at 10% alongside `parts` at 35%, then price a $100-cost line the backend
+classified as `accessories`:
+
+| | bucket used | unit price |
+| --- | --- | --- |
+| p5 (refusing the name) | `parts` | **$153.85** |
+| q4 (mirroring the server) | `accessories` | **$111.11** |
+
+`bucketForLine` gates on `VALID_BUCKETS.has(pc)`; with the name refused it falls
+through to the display category, which the synonym table sends to `parts`.
+**$42.74 overcharged on a single $100 line**, and nothing on screen says so.
+
+**3. The 78 Springs rows were never at risk.** Prod, 2026-08-19: all 300 live
+catalog items carry an explicit `pricing_category` (219 `parts`, 81 `openers`,
+zero null), and every springs-labelled row among them carries `parts`. Both
+sides honour an explicit value ahead of any free-form word, so **widening cannot
+move a row that states its own bucket**. The guard protected against something
+that could not happen, at the cost of something that could.
+
+**4. It re-opened the exact drift the module exists to close.** The header of
+`useLineCategories.js` warns that a second copy of the category convention "is
+exactly how the two drifted apart the first time." p5 was that second copy.
+
+### What replaced it
+
+- Every bucket the server declares is adopted, synonym-table name or not. The
+  mirror is restored.
+- `seededBuckets` records what was adopted beyond the base five, so a seeded
+  tier is inspectable rather than folklore.
+- The additive property p5 got right is kept: a short or failed response can
+  never shrink the client's vocabulary.
+- Seeded types sort **ahead of** the `Other` catch-all in the line editor's
+  dropdown. They were previously appended past the end — below the fallback,
+  and below the visible edge of the overlay's internal scroll.
+
+### The guard that would have caught it
+
+`src/composables/__tests__/pricingBucketParity.spec.js` asserts the client
+against `routers/catalog.py` itself: identical synonym tables key-for-key,
+identical base bucket sets, and the same valid-before-synonyms lookup order.
+Every earlier test asserted the client against **itself**, which is why nothing
+failed when p5 broke the mirror.
+
+Counterfactually verified: re-introducing the `continue` fails the parity spec,
+the two mounted `LineItemEditor` guards, and the browser spec (which reports
+`server offers "accessories" but the dropdown does not`).
+
+### Residual, named rather than hidden
+
+- Editing a **legacy invoice line** whose free-form category matches a
+  newly-seeded name will now price it off that tier. That is the seed's intent
+  and matches the server, but it is a behaviour change on edit. It cannot fire
+  by merely opening an invoice: all five `recomputeSell` call sites are explicit
+  operator actions (cost, category, margin, margin-override, catalog add), and
+  `cloneLines` — the single ingest point — does not recompute.
+- `VALID_BUCKETS` never shrinks within a page session, so un-seeding a tier
+  leaves the name offered until reload. Deliberate: the additive rule is what
+  stops a transient short response bucketing live rows to `other`.

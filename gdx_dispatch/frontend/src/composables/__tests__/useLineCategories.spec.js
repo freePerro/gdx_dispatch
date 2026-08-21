@@ -20,6 +20,7 @@ import {
   loadPricingCategories,
   lineCategoryOptions,
   VALID_BUCKETS,
+  seededBuckets,
 } from '../useLineCategories';
 
 // [free-form category, pricing_category, expected display]
@@ -180,6 +181,7 @@ describe('loadPricingCategories — widening from the server (F9 / p5)', () => {
     for (const b of [...VALID_BUCKETS]) {
       if (!BASE.includes(b)) VALID_BUCKETS.delete(b);
     }
+    seededBuckets.clear();
   });
 
   it('adds a seeded bucket the client did not know about', async () => {
@@ -211,14 +213,32 @@ describe('loadPricingCategories — widening from the server (F9 / p5)', () => {
   });
 
   it.each(['springs', 'accessories', 'hardware', 'operators', 'tracks', 'cables'])(
-    'never admits %p as a bucket — the synonym table already settles it',
+    'ADOPTS %p once a tier is seeded, because the backend does',
     async (word) => {
-      // A CLASS, not just springs. `normalizeToBucket` checks VALID_BUCKETS
-      // before PRICING_SYNONYMS, so admitting any settled name flips its
-      // mapping from a GET response. `Accessories` and `Operators` are live
-      // values in prod invoice_lines TODAY.
-      const before = categoryToPricingCategory(word);
+      // p5 refused these, to stop a GET response repricing the live rows
+      // labelled with them. The refusal did not achieve that. The backend's
+      // `_normalize_to_bucket` checks the valid set BEFORE `_PRICING_SYNONYMS`,
+      // so the server re-points the name the moment a tier is seeded — with no
+      // guard at all. Refusing here only made the two sides pick DIFFERENT
+      // tiers for the same line, and `add_invoice_line` stores the client's
+      // number verbatim. Mirroring the backend is the safe behaviour, not the
+      // risky one.
       const api = { get: vi.fn().mockResolvedValue([...BASE, word]) };
+      await loadPricingCategories(api);
+      expect(VALID_BUCKETS.has(word)).toBe(true);
+      expect(normalizeToBucket(word)).toBe(word);
+      expect(categoryToPricingCategory(word)).toBe(word);
+    },
+  );
+
+  it.each(['springs', 'accessories', 'hardware', 'operators', 'tracks', 'cables'])(
+    'leaves %p mapped by the synonym table until a tier IS seeded',
+    async (word) => {
+      // Nothing moves on a tenant that has seeded nothing — which is every
+      // tenant today: prod has active tier sets for doors/openers/other/parts
+      // and nothing else.
+      const before = categoryToPricingCategory(word);
+      const api = { get: vi.fn().mockResolvedValue([...BASE]) };
       await loadPricingCategories(api);
       expect(VALID_BUCKETS.has(word)).toBe(false);
       expect(categoryToPricingCategory(word)).toBe(before);
@@ -231,15 +251,28 @@ describe('loadPricingCategories — widening from the server (F9 / p5)', () => {
     expect(VALID_BUCKETS.has('gates')).toBe(true);
   });
 
-  it('keeps the Springs display mapping intact', async () => {
-    // Springs is DISPLAY-ONLY: 77 live catalog rows are labelled Springs and
-    // price off the `parts` tier. Admitting it would flip that mapping from a
-    // GET response and silently reprice all 77.
+  it('cannot move a row that states its own pricing_category', async () => {
+    // THE safety claim, and the reason adopting `springs` is not a repricing.
+    // All 78 live Springs-labelled catalog rows carry an explicit
+    // pricing_category of `parts` (prod, 2026-08-19), and both sides honour an
+    // explicit value ahead of any free-form word. Seed a springs tier and those
+    // rows still price as parts.
     const api = { get: vi.fn().mockResolvedValue([...BASE, 'springs']) };
     await loadPricingCategories(api);
-    expect(VALID_BUCKETS.has('springs')).toBe(false);
-    expect(categoryToPricingCategory('Springs')).toBe('parts');
-    expect(normalizeToBucket('springs')).toBe('parts');
+    expect(VALID_BUCKETS.has('springs')).toBe(true);
+
+    const liveSpringRow = { category: '2.25" x .250 x 32" Springs', pricing_category: 'parts' };
+    expect(categoryToPricingCategory(displayCategoryFor(liveSpringRow))).toBe('parts');
+    // And it still READS as Springs to the office, which is why the option exists.
+    expect(displayCategoryFor({ category: 'Springs', pricing_category: 'parts' })).toBe('Springs');
+  });
+
+  it('records what it adopted, so a seeded tier is inspectable', async () => {
+    const api = { get: vi.fn().mockResolvedValue([...BASE, 'gates']) };
+    await loadPricingCategories(api);
+    expect([...seededBuckets]).toContain('gates');
+    // Base buckets are not "seeded" — they were always there.
+    for (const b of BASE) expect(seededBuckets.has(b)).toBe(false);
   });
 
   it('offers each category once, never a duplicate Springs', async () => {
