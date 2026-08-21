@@ -1713,10 +1713,18 @@ async function openLaborPicker() {
 }
 
 function laborSizeLabel(item) {
+  // width_ft / height_ft are FEET, and have been since 2026-05-07 --
+  // `_validate_size_pair` locks the units and caps them at 40ft, so an inches
+  // value cannot exist any more. The `/ 12` here was left over from the era
+  // when the same columns mixed feet and inches (108x84 vs 10x8).
+  //
+  // It rendered EVERY sized row as "1x1": prod's rows are 8x7, 9x7, 10x8,
+  // 12x12, 16x7, 16x16, 20x14 -- all of which floor to 1 when divided by 12.
+  // Ten of eleven labor-matrix rows were indistinguishable in the picker.
+  // The descriptions carry the same numbers ("16x7 Sectional Install" has
+  // width_ft 16, height_ft 7), which is what makes this unambiguous.
   if (item.width_ft && item.height_ft) {
-    const w = Math.round(item.width_ft / 12);
-    const h = Math.round(item.height_ft / 12);
-    return `${w}x${h}`;
+    return `${Math.round(item.width_ft)}x${Math.round(item.height_ft)}`;
   }
   return item.sku || "—";
 }
