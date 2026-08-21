@@ -5,9 +5,14 @@ P1: `job_display_state.py:156/162` partitions deposit invoices out of the
 money axis, `:89` adds `deposit_paid`, `JobStateChip.vue:48` renders the
 badge. P2: `deposit_ask` on the public + portal payloads and the twin
 `POST /api/proposals/{token}/deposit/pay` / `/portal/estimates/{id}/deposit/pay`.
-**Phase 3 is outstanding and is a PROD DATA action, not code:** void the
-phantom unpaid deposit invoices, Doug deciding per invoice (000338 may be a
-genuinely chased balance — ask before voiding it).
+**Phase 3 is CLOSED — nothing needed voiding.** Re-examined against the prod
+audit trail 2026-08-21: two of the four listed "phantoms" were never phantoms
+(INV-000338 was created by the owner four days before the auto-mint bug;
+INV-000345 was minted 17.3s after its accept, i.e. by a customer clicking
+"Pay deposit"), and the other two are already closed (INV-000340 credit-memo'd,
+INV-000341 void). **Voiding to the original list would have destroyed two live
+receivables.** Full reasoning in § Phase 3. One unrelated finding surfaced:
+prod has zero `invoice_voided` audit rows despite a voided invoice — see there.
 
 ## The two reported problems
 
@@ -84,13 +89,43 @@ genuinely chased balance — ask before voiding it).
 - `apply_deposits_to_final` netting: unchanged; with lazy mint there are
   simply fewer unpaid deposit rows to net around.
 
-## Phase 3 — prod cleanup (after deploy, Doug decides per invoice)
+## Phase 3 — prod cleanup — **RESOLVED 2026-08-21: nothing to void**
 
-Void the phantom unpaid deposit invoices: INV-000340 ($0.54, looks like a
-test), INV-000341 ($2,291.89, EST-000024), INV-000338 ($3,226.70 — may still
-be genuinely chased), + the 4th $0-paid row. Voiding keeps audit history and
-`find_deposit_invoice_for_estimate` ignores voids, so a fresh ask can mint a
-new one later.
+Original instruction, kept for the record: *"Void the phantom unpaid deposit
+invoices: INV-000340 ($0.54, looks like a test), INV-000341 ($2,291.89,
+EST-000024), INV-000338 ($3,226.70 — may still be genuinely chased), + the 4th
+$0-paid row."*
+
+Re-examined against the prod audit trail 2026-08-21 before voiding anything.
+**Two of the four were never phantoms, and the other two are already closed.**
+Voiding to the original list would have destroyed two live receivables.
+
+| Invoice | Amount | Verdict |
+|---|---|---|
+| INV-000340 | $0.54 | **Closed** — credit memo issued 2026-08-18 (audited). Exactly the "penny residue → credit adjustment, not a payment" treatment. |
+| INV-000341 | $2,291.89 | **Already void.** ⚠ See the audit gap below. |
+| INV-000338 | $3,226.70 | **NOT a phantom — do not void.** `deposit_invoice_created` by the owner account on 2026-08-13, four days before the auto-mint bug produced its first row. A deliberate office deposit request. Chase it. |
+| INV-000339 | $6,793.04 | The "4th $0-paid row" — also office-created, now **fully paid**. |
+| INV-000345 | $2,232.03 | **NOT a phantom — do not void.** See below. |
+
+**Why INV-000345 is not a phantom, and why that also proves Phase 2 works.**
+The auto-mint bug created the deposit invoice *inside the accept transaction*:
+on 2026-08-17 the public accepts at 13:00:03.719 and 16:34:19.533 minted
+INV-000340 and INV-000341 at 13:00:04.138 and 16:34:19.676 — **0.42s and 0.14s
+later, same request**. After Phase 2 shipped (#346, v1.67.0, 2026-08-18), the
+2026-08-19 accept at 13:41:17.603 minted nothing; INV-000345 appeared at
+13:41:34.869 — **17.3 seconds later, a separate request** — and was viewed by
+the customer 0.13s after that. That is the customer tapping "Pay deposit" and
+landing on the pay page, then not finishing. It is a live intent-to-pay, not
+an artefact. The timestamp gap is the cleanest available proof that
+mint-at-pay-click is working in production.
+
+**Audit gap found while doing this (unrelated to this plan, worth its own fix):**
+`void_invoice` (`routers/invoices.py`) does write `action="invoice_voided"` —
+but prod has **zero** `invoice_voided` rows in `audit_logs`, while INV-000341
+sits at `status = 'void'`. Something voided a $2,291.89 invoice outside the
+endpoint, so the record cannot answer who did it or why. The code honours
+invariant #1; this particular mutation bypassed the code.
 
 ## Traps
 
