@@ -475,11 +475,20 @@ async function loadServerCategories() {
 
 // What the Select actually offers: the parent's list plus anything the server
 // knows that the parent did not.
-const effectiveCategories = computed(() =>
-  serverCategories.value.length
-    ? [...props.categories, ...serverCategories.value]
-    : props.categories,
-);
+//
+// Seeded types are spliced in BEFORE a trailing "Other", not appended after it.
+// "Other" is the fallback nobody picks first, and `lineCategoryOptions()` already
+// sorts it last for the same reason; appending past it put a real category below
+// the catch-all — and, on a short viewport, below the panel's visible edge.
+const effectiveCategories = computed(() => {
+  // No extras: hand back the parent's list untouched, order and all.
+  if (!serverCategories.value.length) return props.categories;
+  const merged = [...props.categories, ...serverCategories.value];
+  // "Other" last, wherever it came from — the parent's list or the server's.
+  // Matching `lineCategoryOptions()`, which sorts it last for the same reason.
+  const isOther = (o) => String(o.value ?? o).toLowerCase() === 'other';
+  return [...merged.filter((o) => !isOther(o)), ...merged.filter(isOther)];
+});
 
 function optionsForLine(item) {
   const base = effectiveCategories.value;

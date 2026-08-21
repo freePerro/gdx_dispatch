@@ -46,6 +46,15 @@ const BASE_BUCKETS = ['doors', 'openers', 'parts', 'labor', 'other'];
 export const VALID_BUCKETS = new Set(BASE_BUCKETS);
 
 /**
+ * Buckets adopted from the server BEYOND the base five — i.e. the tenant has an
+ * active tier set for them. Empty on a tenant that has seeded nothing.
+ *
+ * Exported so a seeded type is inspectable rather than folklore: if someone
+ * wonders why lines started pricing off a new tier, this names it.
+ */
+export const seededBuckets = new Set();
+
+/**
  * Widen the client's bucket set from the server.
  *
  * The endpoint exists precisely so a new type "surfaces everywhere with no code
@@ -65,23 +74,25 @@ export async function loadPricingCategories(api) {
     if (!Array.isArray(rows) || !rows.length) return VALID_BUCKETS;
     for (const r of rows) {
       const b = String(r || '').trim().toLowerCase();
-      if (!b) continue;
-      // Never admit a name the SYNONYM TABLE already settles.
+      if (!b || VALID_BUCKETS.has(b)) continue;
+      // Adopt it, INCLUDING a name the synonym table also knows.
       //
-      // `normalizeToBucket` checks VALID_BUCKETS *before* PRICING_SYNONYMS, so
-      // admitting one of these flips its mapping. `springs` is the obvious
-      // case — 77 live catalog rows are labelled Springs and price off `parts`;
-      // admitting it would reprice all 77 from a GET response. But it is a
-      // CLASS, not an instance: `accessories`, `hardware`, `operators`,
-      // `tracks`, `cables`, `remotes` and `keypads` all collide the same way,
-      // and `Accessories` and `Operators` are live values in prod
-      // `invoice_lines` today.
+      // p5 deliberately refused those, reasoning that admitting `springs` would
+      // reprice the 78 live catalog rows labelled Springs. That reasoning does
+      // not survive contact with the backend: `_normalize_to_bucket` checks the
+      // valid set BEFORE `_PRICING_SYNONYMS`, so the server re-points the name
+      // the instant a tier is seeded, with no guard of any kind. Refusing here
+      // did not prevent a repricing — it only made the two sides disagree about
+      // which tier a line uses, and the invoice stores the CLIENT's number
+      // verbatim (`routers/invoices.py` add_invoice_line). A client that quietly
+      // prices off a different tier than the server believes in is the exact
+      // drift this module's header warns about.
       //
-      // A genuinely new type (`gates`) still surfaces with no code change,
-      // which is the endpoint's purpose. Only already-settled names are held,
-      // and changing one should be a deliberate edit here rather than a
-      // payload silently repricing existing rows.
-      if (PRICING_SYNONYMS[b]) continue;
+      // The 78 Springs rows are safe by construction, not by refusal: every one
+      // carries an explicit `pricing_category` of `parts`, and both sides honour
+      // an explicit value ahead of any free-form word. Widening cannot move a
+      // row that already states its own bucket.
+      seededBuckets.add(b);
       VALID_BUCKETS.add(b);
     }
   } catch {

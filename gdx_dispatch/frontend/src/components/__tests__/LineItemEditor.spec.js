@@ -1376,3 +1376,153 @@ describe('LineItemEditor — an admin-seeded bucket reaches BOTH the dropdown an
     expect(lastLines(w)[0].category).toBe('Other');
   });
 });
+
+describe('LineItemEditor — a seeded pricing tier reaches the dropdown (q4)', () => {
+  // The six the parent passes, in the order BillingCreateView passes them.
+  const PARENT = [
+    { label: 'Doors', value: 'Doors' },
+    { label: 'Openers', value: 'Openers' },
+    { label: 'Springs', value: 'Springs' },
+    { label: 'Labor', value: 'Labor' },
+    { label: 'Parts', value: 'Parts' },
+    { label: 'Other', value: 'Other' },
+  ];
+
+  function optionsAfterLoad(serverCats) {
+    apiGet.mockResolvedValue(serverCats);
+    return mountEditor({ categories: PARENT });
+  }
+
+  it('offers a seeded bucket the parent never passed', async () => {
+    // p5 refused any name the synonym table already knew, so an admin-seeded
+    // `accessories` tier was honoured by the server and invisible here — and
+    // `add_invoice_line` stores the CLIENT's price, so the line then billed off
+    // the wrong tier with nothing to show for it.
+    const wrapper = optionsAfterLoad([...BASE_BUCKETS, 'accessories']);
+    await flushPromises();
+    const labels = wrapper.find('[data-testid="line-cat-0"]').findAll('option')
+      .map((o) => o.text());
+    expect(labels).toContain('Accessories');
+  });
+
+  it('sorts a seeded bucket ahead of the "Other" catch-all', async () => {
+    // It used to be appended past the end, which put a real category below the
+    // fallback — and below the visible edge of the scrolling overlay.
+    const wrapper = optionsAfterLoad([...BASE_BUCKETS, 'accessories']);
+    await flushPromises();
+    const labels = wrapper.find('[data-testid="line-cat-0"]').findAll('option')
+      .map((o) => o.text());
+    // Assert PRESENCE first: indexOf returns -1 when missing, which would
+    // satisfy "before Other" trivially and let a regression pass.
+    expect(labels).toContain('Accessories');
+    expect(labels).toContain('Other');
+    expect(labels.indexOf('Accessories')).toBeLessThan(labels.indexOf('Other'));
+  });
+
+  it('sorts "Other" last even when it arrives from the SERVER list', async () => {
+    apiGet.mockResolvedValue([...BASE_BUCKETS, 'gates']);
+    const wrapper = mountEditor({ categories: [{ label: 'Parts', value: 'Parts' }] });
+    await flushPromises();
+    const labels = wrapper.find('[data-testid="line-cat-0"]').findAll('option')
+      .map((o) => o.text());
+    // The parent passed only "Parts", so Doors/Openers/Other/Gates all arrive
+    // as server extras — the catch-all still has to land last.
+    expect(labels).toEqual(['Parts', 'Doors', 'Openers', 'Gates', 'Other']);
+  });
+
+  it('offers nothing extra when the tenant has seeded nothing', async () => {
+    // Every tenant today: prod carries active tier sets for
+    // doors/openers/other/parts and nothing else.
+    const wrapper = optionsAfterLoad([...BASE_BUCKETS]);
+    await flushPromises();
+    const labels = wrapper.find('[data-testid="line-cat-0"]').findAll('option')
+      .map((o) => o.text());
+    expect(labels).toEqual(PARENT.map((o) => o.label));
+  });
+
+  it('never offers Labor twice, and never adds it from the server list', async () => {
+    // `labor` is a valid server bucket but prices off the LaborPriceItem matrix.
+    const wrapper = optionsAfterLoad([...BASE_BUCKETS, 'accessories']);
+    await flushPromises();
+    const labels = wrapper.find('[data-testid="line-cat-0"]').findAll('option')
+      .map((o) => o.text());
+    expect(labels.filter((l) => l === 'Labor')).toHaveLength(1);
+  });
+});
+
+describe('LineItemEditor — a seeded tier changes the PRICE, not just the dropdown (q4)', () => {
+  // Two retail tiers with deliberately far-apart margins, so the assertion
+  // cannot pass by rounding luck: parts 35%, accessories 10%.
+  const TIERS = [
+    {
+      pricing_class: 'retail',
+      pricing_category: 'parts',
+      tiers: [{ cost_min: 0, cost_max: null, margin_pct: 0.35 }],
+    },
+    {
+      pricing_class: 'retail',
+      pricing_category: 'accessories',
+      tiers: [{ cost_min: 0, cost_max: null, margin_pct: 0.1 }],
+    },
+  ];
+
+  // Keyed by URL rather than call order: the component fetches BOTH tier-sets
+  // and pricing-categories on mount, and `mockResolvedValueOnce` silently
+  // depends on which lands first.
+  function stubApi({ seeded }) {
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/pricing-engine/tier-sets') return Promise.resolve(TIERS);
+      if (url === '/api/catalogs/pricing-categories') {
+        return Promise.resolve(seeded ? [...BASE_BUCKETS, 'accessories'] : [...BASE_BUCKETS]);
+      }
+      return Promise.resolve([]);
+    });
+  }
+
+  async function priceAfterCost(cost, { seeded }) {
+    stubApi({ seeded });
+    const wrapper = mountEditor({
+      // What a catalog add produces once an `accessories` tier exists: the
+      // backend's `_derive_pricing_category` stores the seeded bucket on the row.
+      lines: [{
+        description: 'Weather seal kit',
+        quantity: 1,
+        unit_price: 0,
+        cost: null,
+        margin_pct_override: null,
+        category: 'Accessories',
+        pricing_category: 'accessories',
+      }],
+      categories: [{ label: 'Parts', value: 'Parts' }, { label: 'Other', value: 'Other' }],
+      showCost: true,
+      showMargin: true,
+    });
+    await flushPromises();
+    const costInput = wrapper.find('[data-testid="line-cost-0"]');
+    costInput.element.value = String(cost);
+    await costInput.trigger('input');
+    await flushPromises();
+    // Read the EMITTED lines: the component edits its own clone and emits it.
+    const last = wrapper.emitted('update:lines').slice(-1)[0][0];
+    return last[0].unit_price;
+  }
+
+  it('prices a seeded-bucket line off the SEEDED tier', async () => {
+    // 100 / (1 - 0.10) = 111.11.
+    //
+    // THE money assertion. Restore p5's `if (PRICING_SYNONYMS[b]) continue;`
+    // and this line prices at 153.85 instead — measured, not reasoned.
+    // `bucketForLine` fails its `VALID_BUCKETS.has('accessories')` check, falls
+    // back to the display category, and the synonym table sends it to `parts`
+    // at 35%. A $42.74 overcharge on one $100-cost line, stored verbatim by
+    // `add_invoice_line`, with nothing on screen to show for it.
+    expect(await priceAfterCost(100, { seeded: true })).toBeCloseTo(111.11, 2);
+  });
+
+  it('leaves the line on the parts tier while no accessories tier exists', async () => {
+    // The unseeded baseline — every tenant today. Nothing moves: prod carries
+    // active retail tier sets for doors/openers/other/parts and nothing else.
+    // 100 / (1 - 0.35) = 153.85.
+    expect(await priceAfterCost(100, { seeded: false })).toBeCloseTo(153.85, 2);
+  });
+});
