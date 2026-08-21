@@ -1562,13 +1562,49 @@ _MERGE_TABLES_CACHE: dict[str, list[tuple[str, str]]] = {}
 
 
 def _id_spellings(ids: list[str]) -> list[str]:
-    """Every id in both uuid spellings.
+    """Every id in both uuid spellings, CANONICALISED.
 
-    Postgres renders `uuid::text` with dashes; SQLite stores a Uuid column as
-    dash-less hex. A list of one spelling silently matches nothing on the other
-    dialect — which, in a data-moving query, means rows quietly left behind.
+    Postgres renders `uuid::text` lowercase-with-dashes; SQLite stores a Uuid
+    column as dash-less hex. A list of one spelling silently matches nothing on
+    the other dialect — which, in a data-moving query, means rows quietly left
+    behind.
+
+    Parsing through `uuid.UUID` first is not decoration. `CAST(id AS TEXT)`
+    always yields lowercase, so passing an id through verbatim made an
+    UPPERCASE uuid — which the old `id = :id::uuid` comparison matched fine —
+    suddenly resolve to zero rows and 404. The raw value is kept too, so a
+    non-uuid identifier still compares as itself.
     """
-    return sorted({v for cid in ids for v in (str(cid), str(cid).replace("-", ""))})
+    import uuid as _uuid
+
+    out: set[str] = set()
+    for cid in ids:
+        raw = str(cid)
+        out.add(raw)
+        try:
+            canonical = _uuid.UUID(raw)
+        except (ValueError, AttributeError, TypeError):
+            out.add(raw.replace("-", ""))
+            continue
+        out.add(str(canonical))
+        out.add(canonical.hex)
+    return sorted(out)
+
+
+def _canonical_id(value: str) -> str:
+    """The lowercase-dashed form, so a WRITE stores what reads look for.
+
+    The FK sweep writes `SET {column} = :keep` into nine varchar columns. An
+    UPPERCASE or dash-less keep_id from the client would land verbatim and
+    those rows would then be invisible to every `customer_id = '<dashed>'`
+    query in the app.
+    """
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return str(value)
 
 
 def _discover_customer_fk_tables(db: Session) -> list[tuple[str, str]]:
@@ -1675,10 +1711,23 @@ def merge_customers(
     uid = _user_id(user)
     now = datetime.now(timezone.utc)
 
-    # Verify keep customer exists
+    # ensure_audit_table COMMITS on first use per engine (audit.py:320) — or,
+    # on a Postgres without the guard function, ROLLS BACK. `audit_or_rollback`
+    # calls it lazily on the way in, which means it fires AFTER the FK sweep
+    # and soft-delete are staged: it would commit a half-done merge before the
+    # audit row exists, and the rollback below would roll back nothing.
+    # Every other audited handler in this file hoists it for exactly this
+    # reason; this one copied the pattern and left its prerequisite behind.
+    ensure_audit_table(db)
+
+    # Verify keep customer exists. CAST + both uuid spellings: Postgres renders
+    # `uuid::text` with dashes, SQLite stores a Uuid column as dash-less hex, so
+    # a single spelling silently matches nothing on one of them.
     keep_row = db.execute(
-        text("SELECT id, name FROM customers WHERE id = :id AND deleted_at IS NULL"),
-        {"id": payload.keep_id},
+        text("SELECT id, name FROM customers "
+             "WHERE CAST(id AS TEXT) IN :ids AND deleted_at IS NULL")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"ids": _id_spellings([payload.keep_id])},
     ).first()
     if keep_row is None:
         raise HTTPException(status_code=404, detail="keep customer not found")
@@ -1688,11 +1737,11 @@ def merge_customers(
     # with no SQLite equivalent — and unlike the read-only duplicate list,
     # where the failure was swallowed and merely showed zeros, a raise HERE is
     # in the middle of a destructive merge.
-    _ids = bindparam("ids", expanding=True)
     merge_rows = db.execute(
-        text("SELECT id, name FROM customers WHERE id IN :ids AND deleted_at IS NULL")
-        .bindparams(_ids),
-        {"ids": payload.merge_ids},
+        text("SELECT id, name FROM customers "
+             "WHERE CAST(id AS TEXT) IN :ids AND deleted_at IS NULL")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"ids": _id_spellings(list(payload.merge_ids))},
     ).all()
     if len(merge_rows) != len(payload.merge_ids):
         raise HTTPException(status_code=404, detail="one or more merge customers not found")
@@ -1704,46 +1753,72 @@ def merge_customers(
             stmt = text(
                 f"UPDATE {table} SET {column} = :keep WHERE {column} IN :ids"
             ).bindparams(bindparam("ids", expanding=True))
-            result = db.execute(stmt, {"keep": payload.keep_id, "ids": payload.merge_ids})
+            result = db.execute(
+                stmt,
+                {"keep": _canonical_id(payload.keep_id),
+                 "ids": _id_spellings(list(payload.merge_ids))},
+            )
             if result.rowcount:
                 rows_updated[f"{table}.{column}"] = int(result.rowcount)
 
-        # Soft-delete the merged customers
+        # Soft-delete the merged customers.
+        #
+        # NO `updated_at` here: `customers` has never had that column — not in
+        # the ORM model, not in the Postgres schema. The statement carried it
+        # from the initial public release, so on Postgres every merge raised
+        # UndefinedColumn, rolled back, and returned "A database error
+        # occurred". Zero `merge_customers` audit rows exist on the live
+        # tenant: this button has never worked, and nothing noticed because
+        # the duplicate screen only ever surfaced a handful of name-matched
+        # groups and the failure looked like a generic 500.
+        #
+        # CAST(id AS TEXT) with both uuid spellings for the same reason the
+        # absorb path does it: `id IN :ids` against a Uuid column with dashed
+        # strings matches nothing on SQLite, and a destructive statement that
+        # silently affects zero rows is worse than one that errors.
         result = db.execute(
             text(
-                "UPDATE customers SET deleted_at = :now, updated_at = :now "
-                "WHERE id IN :ids AND deleted_at IS NULL"
+                "UPDATE customers SET deleted_at = :now "
+                "WHERE CAST(id AS TEXT) IN :ids AND deleted_at IS NULL"
             ).bindparams(bindparam("ids", expanding=True)),
-            {"now": now, "ids": payload.merge_ids},
+            {"now": now, "ids": _id_spellings(list(payload.merge_ids))},
         )
         rows_updated["customers.soft_deleted"] = int(result.rowcount)
+        if result.rowcount != len(payload.merge_ids):
+            # Never report a partial merge as done: the FK moves above have
+            # already run, so a customer left live here owns nothing.
+            raise SQLAlchemyError(
+                f"expected to retire {len(payload.merge_ids)} customers, "
+                f"matched {result.rowcount}"
+            )
 
-        db.commit()
-    except SQLAlchemyError as exc:
-        db.rollback()
-        log.exception("merge_customers_failed", extra={"keep_id": payload.keep_id, "merge_ids": payload.merge_ids})
-        raise HTTPException(status_code=500, detail="A database error occurred") from None
-
-    try:
-        log_audit_event_sync(
+        # Invariant #1, inside the transaction. This used to run AFTER the
+        # commit inside its own try/except that logged and swallowed — so a
+        # merge could move a customer's whole history and leave no record of
+        # who did it. For a destructive, un-undoable operation the audit row
+        # is not a nice-to-have; it is the only thing a reversal could be
+        # reconstructed from.
+        audit_or_rollback(
             db,
-            tenant_id=tenant_id,
-            user_id=uid,
             action="merge_customers",
             entity_type="customer",
             entity_id=str(payload.keep_id),
+            actor=user,
+            request=request,
             details={
+                "tenant_id": tenant_id,
                 "keep_id": payload.keep_id,
                 "merged_ids": payload.merge_ids,
                 "rows_updated": rows_updated,
                 "keep_name": keep_row[1],
                 "merged_names": [r[1] for r in merge_rows],
             },
-            request=request,
         )
         db.commit()
-    except Exception:
-        log.exception("merge_customers_audit_failed")
+    except SQLAlchemyError as exc:
+        db.rollback()
+        log.exception("merge_customers_failed", extra={"keep_id": payload.keep_id, "merge_ids": payload.merge_ids})
+        raise HTTPException(status_code=500, detail="A database error occurred") from None
 
     log.info(
         "customers_merged",
