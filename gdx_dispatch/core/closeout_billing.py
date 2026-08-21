@@ -116,6 +116,7 @@ def build_closeout_lines(
     left unstamped: they stay on the office checklist.
     """
     from gdx_dispatch.core.billing_lanes import (
+        _as_uuid,
         install_labor_line,
         lane_for_job,
         service_labor_line,
@@ -152,6 +153,26 @@ def build_closeout_lines(
                 line_total=_install.line_total,
                 taxable=labor_taxable,
                 category="Labor",
+                # Migration 071 provenance. This is the DOMINANT path -- prod
+                # had 29 labor lines with a NULL source against 1 'matrix',
+                # because only the hand-add picker set it. A column that
+                # answers "how was this priced?" for 3% of rows answers
+                # nothing.
+                #
+                # A matrix row is a QUOTED FLAT PRICE, so no hours claim rides
+                # along: `assumed_man_hours` is the matrix's assumption about a
+                # job of that shape, not a record of this one.
+                # COERCE. `matrix_item_id` is a str (it comes from
+                # `job_closeouts.labor_matrix_item_id`, a varchar(36)) but
+                # `invoice_lines.labor_price_item_id` is a UUID column. Postgres
+                # casts the string silently; SQLite's UUID adapter calls .hex on
+                # it and raises. Caught by CI shard 4, not by local Postgres.
+                #
+                # Safe unconditionally: `install_labor_line` only returns after
+                # loading the row, and sets `matrix_item_id=str(item.id)`, so
+                # the value is always a real UUID's string form.
+                labor_price_item_id=_as_uuid(_install.matrix_item_id),
+                labor_source="matrix",
                 sort_order=sort,
                 company_id=str(tenant_id),
             ))
@@ -175,6 +196,11 @@ def build_closeout_lines(
             line_total=labor.line_total,
             taxable=labor_taxable,
             category="Labor",
+            # Attested hours are EVIDENCE -- the tech signed them off -- so
+            # this lane is the one allowed to record an hours figure. No matrix
+            # row: nothing quoted this.
+            estimated_man_hours=Decimal(str(labor.attested_hours)),
+            labor_source="attested",
             sort_order=sort,
             company_id=str(tenant_id),
         ))
