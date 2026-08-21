@@ -674,6 +674,51 @@
         </div>
       </div>
 
+      <!-- PR A. These live INLINE, not in the sticky bar, and the browser walk
+           is why. Adding three buttons to the floating bar pushed it to three
+           rows: it then covered the equipment list, and the FAB sat on top of
+           Chat so the button could not be tapped at all. The bar's own comment
+           already records it covering four of six part suggestions — it is a
+           narrow budget and status actions own it. Quote / change order / chat
+           are deliberate, not thumb-urgent, so they sit in the page flow, which
+           is also exactly where Today's card puts them. -->
+      <div
+        v-if="!readOnly"
+        class="detail-card secondary-actions"
+        data-testid="mjd-secondary-actions"
+      >
+        <h2>More actions</h2>
+        <div class="secondary-actions-row">
+          <Button
+            v-if="['en_route','on_site','done'].includes(job.dispatch_status)"
+            :label="latestActiveQuote ? 'Show quote' : 'Build quote'"
+            :icon="latestActiveQuote ? 'pi pi-file' : 'pi pi-pencil'"
+            severity="secondary"
+            outlined
+            :loading="quotesLoading"
+            data-testid="mjd-quote"
+            @click="openQuote"
+          />
+          <Button
+            v-if="['on_site','done'].includes(job.dispatch_status)"
+            label="Change order"
+            icon="pi pi-file-plus"
+            severity="secondary"
+            outlined
+            data-testid="mjd-change-order"
+            @click="changeOrderOpen = true"
+          />
+          <Button
+            label="Chat"
+            icon="pi pi-comment"
+            severity="secondary"
+            outlined
+            data-testid="mjd-chat"
+            @click="chatOpen = true"
+          />
+        </div>
+      </div>
+
       <!-- Sticky so the tech can act without scrolling a long job.
            Hidden for as long as the part composer is open — while suggestions
            show AND while a picked/typed name is pending submit. This bar
@@ -731,38 +776,6 @@
           outlined
           data-testid="mjd-navigate"
           @click="openMaps"
-        />
-        <!-- PR A. Guards mirror Today's card exactly, so the same job offers
-             the same actions whichever way the tech reached it. Quote waits
-             for en-route so nobody builds speculative quotes from the shop;
-             change orders wait for on-site, which is when extra scope is
-             actually discovered. -->
-        <Button
-          v-if="['en_route','on_site','done'].includes(job.dispatch_status)"
-          :label="latestActiveQuote ? 'Show quote' : 'Build quote'"
-          :icon="latestActiveQuote ? 'pi pi-file' : 'pi pi-pencil'"
-          severity="secondary"
-          outlined
-          :loading="quotesLoading"
-          data-testid="mjd-quote"
-          @click="openQuote"
-        />
-        <Button
-          v-if="['on_site','done'].includes(job.dispatch_status)"
-          label="Change order"
-          icon="pi pi-file-plus"
-          severity="secondary"
-          outlined
-          data-testid="mjd-change-order"
-          @click="changeOrderOpen = true"
-        />
-        <Button
-          label="Chat"
-          icon="pi pi-comment"
-          severity="secondary"
-          outlined
-          data-testid="mjd-chat"
-          @click="chatOpen = true"
         />
       </div>
 
@@ -1969,4 +1982,6 @@ onMounted(() => {
 }
 .equip-notes { font-size: 0.83rem; margin-top: 0.2rem; color: var(--p-text-color, #111827); }
 .muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.87rem; }
+.secondary-actions-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.secondary-actions-row > * { flex: 1 1 auto; min-height: 44px; }
 </style>
