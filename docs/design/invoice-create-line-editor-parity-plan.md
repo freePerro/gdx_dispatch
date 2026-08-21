@@ -1,27 +1,30 @@
 # The invoice-create line editor: labor, categories, and what else fell out
 
-**Status:** **RELEASED v1.72.0** (2026-08-19) — p1–p5 merged as **#377, #378,
-#379, #380, #381**, deployed to prod and demo, and walked on prod. Decisions
+**Status:** **RELEASED v1.73.0** (2026-08-21) — everything in this plan is
+built, merged, released, deployed to prod and demo, and walked on prod.
+v1.72.0 shipped p1–p5 as **#377, #378, #379, #380, #381**. Decisions
 §5 D1–D8 all locked. F1–F10 closed: Add Labor with two lanes, category
 resolution off `pricing_category`, estimate provenance (migration 072), a
 whole-invoice discount, tenant-flag taxability, and one shared category
 resolver replacing four hardcoded copies. Migrations **071** and **072** are
 both live.
 
-**Follow-ups from the p1–p5 build — four, all built, stacked on each other and
-merging bottom-up:**
-- **#383** `fix/labor-provenance-autodraft-mobile` — the autodraft and mobile
-  invoicing paths were writing labor lines with no provenance at all, which is
-  the path most invoices actually take. **OPEN.**
-- **#384** `fix/estimate-labor-size-label` — `EstimateView` divided `width_ft`
-  by 12 when the column has been feet since 2026-05-07, so ten of eleven matrix
-  rows rendered "1x1" and were indistinguishable in the picker. **OPEN.**
-- **#385** `fix/line-editor-grid-width` — the 11-column line row needed 1018px
-  in a 962px box at 1366px, putting the **Total** column off-screen. No column
-  was dropped; the overflow was 56px. **OPEN.**
-- **q4** `fix/pricing-bucket-mirror` — p5 deliberately refused to adopt any
-  server bucket name the synonym table already settled. §8 below records why
-  that was the wrong call and what replaced it. **OPEN.**
+**v1.73.0 — the four follow-ups from the p1–p5 build.** All built, merged,
+released, and prod-walked 2026-08-21:
+- **#383** — the autodraft and mobile invoicing paths were writing labor lines
+  with no provenance, which is the path most invoices actually take. Prod had 29
+  NULL-source labor lines against 1 `matrix`. **MERGED.**
+- **#384** — `EstimateView` divided `width_ft` by 12 when the column has been
+  feet since 2026-05-07, so ten of eleven matrix rows rendered "1x1".
+  **MERGED.**
+- **#385** — the 11-column line row needed 1018px in a 962px box at 1366px,
+  putting the **Total** column off-screen. No column dropped; the overflow was
+  56px, half of it the gap applied ten times. **MERGED.**
+- **#386** — reverses p5's client/server divergence on settled bucket names.
+  §8 records why that call was wrong and what replaced it. **MERGED.**
+
+v1.73.0 is **code-only — no migrations**, so its rollback is an `APP_VERSION`
+pin alone. (v1.72.0's 071/072 still require the DB snapshot to roll back past.)
 
 Written from Doug's report
 ("after clicking create new invoice it is missing the option to add labor…
