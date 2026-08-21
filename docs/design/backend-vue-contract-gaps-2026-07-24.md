@@ -7,10 +7,14 @@ the A/R UI doors (credit-memo, apply-credit, warranties, job dependencies,
 reminders, finalize), `is_return_visit` badges, PO `received_date`, every
 invalid `'warning'` severity, the Tier-6 write-path drops, the forecasting
 authorization hole, the dead `AdminSettingsView`, and the mobile invoice email.
-**Still open:** Tier 10 — `tasks/reminders.py::_find_upcoming_appointment_ids`
-still returns `[]`, `quickbooks/sync.py` still has zero `ItemRef`, per-record QB
-sync state is still unrendered in lists; plus the Tier-3 latent item
-(`amount_paid` absent from `_serialize_invoice`).
+**Still open:** Tier 10's non-QuickBooks half —
+`tasks/reminders.py::_find_upcoming_appointment_ids` still returns `[]` — plus
+the Tier-3 latent item (`amount_paid` absent from `_serialize_invoice`).
+**⛔ Tier 10's QuickBooks half is WON'T FIX** as of the 2026-08-21 phase-out:
+the missing `ItemRef` and the unrendered per-record push state were only ever
+about *writing to* QuickBooks, and we no longer do. Prod:
+`auth_state = needs_reconnect` since 2026-08-18, pulls paused, maps frozen
+since May, GL live as the book of record.
 _See § Score below. The line "Everything below is UNFIXED" was true the day it
 was written and has been misleading ever since — it cost a full re-verification
 pass on 2026-08-21 to discover most of it had shipped._
@@ -54,7 +58,7 @@ sibling `money-audit-2026-08-04.md` §0.6 is the pattern being copied.
 | 7 — permission / module gating | ✅ fixed | forecasting GETs carry `require_permission("accounting.read")`; nav entries key on real modules via `requires:` (`modules.js:46/59/61/160`) |
 | 8 — dead frontend surface | ✅ fixed | `AdminSettingsView.vue` deleted |
 | 9 — customer-facing documents | ✅ headline fixed | `mobile_invoicing.py:969` now passes `subtotal`/`tax_amount`/`balance_due`, so truck "Generate & email" actually sends |
-| 10 — invisible background state | 🔴 **still open** | `tasks/reminders.py::_find_upcoming_appointment_ids` still `return []`; **zero** `ItemRef` in `quickbooks/sync.py`; per-record QB state is serialized and rendered on detail views (see `tier10-quickbooks-background-jobs-2026-07-24.md`) but not in lists, and push failures still surface nowhere |
+| 10 — invisible background state | 🟡 split | **Still open (not QB):** `tasks/reminders.py::_find_upcoming_appointment_ids` still `return []`. **⛔ Won't fix (QB phase-out 2026-08-21):** the zero `ItemRef` in `quickbooks/sync.py`, per-record push state missing from lists, and push failures surfacing nowhere — all push-side work for a book we no longer write to |
 | 11 — dark mode + dead tail | 🟡 partly | scheduling has a real UI (`SchedulingView.vue`); the dark-mode items were not individually re-checked in the 2026-08-21 sweep |
 
 Two tiers were **not** re-verified item-by-item on 2026-08-21 and should not be

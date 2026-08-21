@@ -8,7 +8,16 @@ Reconnect banner; `qb_dirty`/`qb_synced_at` are serialized by
 `InvoiceDetailView.vue:1165` / `CustomerDetailView.vue:809`;
 `tests/test_tier10_qb_visibility.py` exists.
 The "Deliberately not done" table below is decision-gated deferral, not
-unfinished scope — and **all eleven rows are still open**, re-checked 2026-08-21.
+unfinished scope. Re-checked 2026-08-21 against the QuickBooks phase-out:
+**four of the eleven rows are now WON'T FIX** — they are push-side or
+pull-side work for a book we no longer write to. Prod evidence:
+`qb_token_store.auth_state = needs_reconnect` since 2026-08-18,
+`qb_money_pull_paused = true`, entity maps frozen since May 2026, and the GL
+is the book of record (live since the July cutover).
+**The remaining seven have nothing to do with QuickBooks** and are still open:
+the NextAction renderer, the appointment-reminders stub, estimate_followup,
+estimate auto-expire, circuit breakers, failed-task visibility, and recurring
+run history. Do not let the QB-flavoured table heading bury them.
 
 Companion to `backend-vue-contract-gaps-2026-07-24.md` Tier 10. This tier is
 different from Tiers 1–9/11: most items are **not mechanical contract
@@ -61,16 +70,16 @@ never pushed.
 
 | Item | Why deferred | Decision needed |
 |---|---|---|
-| **Invoice mapper: missing `ItemRef`, deposit-lifecycle blind** (`sync.py`) | Changes what we **write** to QuickBooks. Lines push as `SalesItemLineDetail` with no `ItemRef` (Intuit-required → create likely 400s); `billing_type` ignored so a deposit invoice would push as a full standalone unpaid invoice; no push for payments/credit-memos/adjustments. High blast radius while QB books are behind. | Design the QB write contract (item mapping, deposit → QB deposit/credit) and validate against a QB sandbox before enabling. A build, not a sweep fix. |
-| **Push failures surface nowhere** (`tasks.py:120-131` `failed_permanent` list nothing reads; `_touch_sync_error` is pull-only) | The error model itself is incomplete — background push failures aren't recorded anywhere a status endpoint can read. `_touch_sync_error` even no-ops when there's no legacy `QBConnection` row. | Decide where push errors are recorded (extend token store? per-record last_push_error?) then surface. The connection-health banner above covers the auth-failure case today. |
-| **`last_error: None` hardcode on the modern `/status` path** (`router.py`) | Left as-is: the modern path's real error signal is `auth_state` (now surfaced). Reading `QBConnection.last_error` there would show a stale/absent legacy value — a worse lie than the honest blank. | Same decision as "push failures surface nowhere". |
+| ⛔ **WON'T FIX** — **Invoice mapper: missing `ItemRef`, deposit-lifecycle blind** (`sync.py`) | Changes what we **write** to QuickBooks. Lines push as `SalesItemLineDetail` with no `ItemRef` (Intuit-required → create likely 400s); `billing_type` ignored so a deposit invoice would push as a full standalone unpaid invoice; no push for payments/credit-memos/adjustments. High blast radius while QB books are behind. | ~~Design the QB write contract (item mapping, deposit → QB deposit/credit) and validate against a QB sandbox before enabling. A build, not a sweep fix.~~ **Closed by the QuickBooks phase-out 2026-08-21:** the invoice mapper only matters if we push, and we never will. |
+| ⛔ **WON'T FIX** — **Push failures surface nowhere** (`tasks.py:120-131` `failed_permanent` list nothing reads; `_touch_sync_error` is pull-only) | The error model itself is incomplete — background push failures aren't recorded anywhere a status endpoint can read. `_touch_sync_error` even no-ops when there's no legacy `QBConnection` row. | ~~Decide where push errors are recorded (extend token store? per-record last_push_error?) then surface. The connection-health banner above covers the auth-failure case today.~~ **Closed by the QuickBooks phase-out 2026-08-21:** no pushes, therefore no push failures. |
+| ⛔ **WON'T FIX** — **`last_error: None` hardcode on the modern `/status` path** (`router.py`) | Left as-is: the modern path's real error signal is `auth_state` (now surfaced). Reading `QBConnection.last_error` there would show a stale/absent legacy value — a worse lie than the honest blank. | ~~Same decision as "push failures surface nowhere".~~ **Closed by the QuickBooks phase-out 2026-08-21:** the modern path's real signal is `auth_state`, which is surfaced and now permanently reads needs_reconnect. |
 | **NextAction renderer** (zero frontend refs; `billing_followup.py` + weekly nudge write NextActions nothing shows) | A whole new SPA surface. | Build a NextActions inbox, **or** stop writing them (`timeclock.py:961-963` already flags the dead loop). |
 | **Appointment reminders stub** (`reminders.py:55-64` returns `[]`; hourly task has sent zero) | Making it real = starting **outbound** SMS/email to customers. | Product go/no-go on automated reminders + copy + opt-out, then implement `_find_upcoming_appointment_ids`. |
 | **estimate_followup stub** (`estimate_followup.py:46-50`, unscheduled, would stamp `reminder_sent_at` without sending) | Outbound behavior + scheduling. | Same as reminders. |
 | **Estimate auto-expire** (`estimates.py:2107-2110`, user-auth endpoint, unscheduled/uncalled) | Auto-mutates estimate state (sent → expired) with no one watching. | Decide the expiry policy + whether to schedule it. |
 | **Circuit breakers** (`circuit_breaker.py:180`, `app.py:1094`; `qb_circuit` not wired into QB calls) | Redis-only, no endpoint/view; wiring it changes call behavior. | Decide whether to wire + expose. |
 | **Failed-task visibility** (legacy `/admin/tasks` HTML only; `task_monitor.py:122-137` records unhealthy-skips/partial-failures as success) | New SPA surface + a correctness fix to result recording. | Build a jobs-health page; fix partial-success-records-as-ok. |
-| **QB banking sync partial-failure records "ok"** (`tasks.py:378-405`) | Correctness fix in task-result recording; entangled with the failed-task surface. | Same as above. |
+| ⛔ **WON'T FIX** — **QB banking sync partial-failure records "ok"** (`tasks.py:378-405`) | Correctness fix in task-result recording; entangled with the failed-task surface. | ~~Same as above.~~ **Closed by the QuickBooks phase-out 2026-08-21:** pulls are paused and the connection is dead. |
 | **Recurring generation run history** (`recurring.py:16-28`) | New surface. | Build a run-history view if needed. |
 
 ## Verification (shipped items)

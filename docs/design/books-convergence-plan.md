@@ -4,10 +4,16 @@ Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Track 1 shipped as
 #321: migration 065 `vendor_bill_payments`, `modules/vendor_invoices/payments.py`
 with `effective_expense_date` + `sync_expense_dates`, and the confirm-effects
 in `statement_matching.py`.
-**Not built:** Track 2 item 4 (match status on the feed — no
-"statement-verified"/"feed-only" anywhere) and item 5 (QB mirror rows as
-transition-mode match candidates). Tracks 3 and 4 are not complete either;
-see `gl-phase1-core-ledger.md` for what the GL side actually did ship.
+**Not built:** Track 2 item 4 — match status on the feed, no
+"statement-verified"/"feed-only" anywhere. Still worth building; it does not
+depend on QuickBooks.
+**⛔ Won't build (QB phase-out 2026-08-21):** Track 2 item 5, QB mirror rows as
+transition-mode match candidates. The mirror stopped growing in May 2026 and
+the connection is dead, so matching against it has a shrinking floor. Track 4
+("QBO stays in sync") goes the same way — §5's decision that QBO is the tax
+book *this year* is about filing, not about keeping a synced second ledger.
+Track 3 is not complete; see `gl-phase1-core-ledger.md` for what the GL side
+actually did ship.
 Date: 2026-08-14
 
 > Repo hygiene: no institution, supplier, or processor names in this doc or any

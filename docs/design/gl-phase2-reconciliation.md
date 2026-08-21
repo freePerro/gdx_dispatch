@@ -8,6 +8,15 @@ unbuilt here: the matcher has never been re-targeted to GL lines, there is no
 tie-out-to-GL assertion, no §4 processor/payout clearing, no §5 QBO push
 completion, and no §6.2 monthly QBO diff. The v4.1 planning content below
 stands; only this header's "blocked before implementation" framing was stale.
+**⛔ Revised again 2026-08-21 — the QBO half is WON'T BUILD.** §5 (QBO push
+completion) and §6.2 (the monthly QBO diff) both assume QuickBooks stays a
+*maintained* second book to reconcile against. It does not: the connection has
+read `needs_reconnect` since 2026-08-18, pulls are paused, and the mirror
+stopped growing in May 2026. What survives is the bank-anchored half — and its
+evidence layer already shipped. Note the live gap that creates: GL Phase 1 §11
+step 4 gates exposing the ledger reports on a monthly trial-balance hand-check
+*against QBO*, which is no longer possible. That gate needs replacing, most
+obviously with the statement tie-out — see `gl-phase1-core-ledger.md`.
 **Date:** 2026-07-02
 **Depends on:** Phase 1 (`gl-phase1-core-ledger.md`, v3). **Followed by:** Phase 3 (parallel run + trust switch).
 **Provenance labels:** **[VERIFIED]** adversarially verified 3-0 (research runs 2026-07-01/02) · **[SOURCED]** primary-source quotes, verification pass killed by spend limit — re-verify before implementation · **[CODE]** direct code reading, auditor-checked · **[AUDIT-R1]** audit finding · **[JUDGMENT]** / **[CPA]** as in Phase 1.

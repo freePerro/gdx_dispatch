@@ -7,6 +7,14 @@ Verified by read-only prod query 2026-08-21: `gl_settings.ledger_posting_enabled
 cutover period lock at 2026-06-30, 188 posted entries + 2 reversed across 437
 lines, and **the trial balance nets to exactly zero with no unbalanced entry**.
 The slice-by-slice build record is `gl-phase1-implementation-plan.md`.
+⚠ **§11 step 4's gate is now unsatisfiable as written** (flagged 2026-08-21).
+It gates exposing reports + receipts UI on "the trial balance passing the
+monthly hand-check against QBO" — but the QB connection has read
+`needs_reconnect` since 2026-08-18 and the mirror froze in May, so that
+comparison cannot be run. A replacement gate is a decision, not a bug: the
+bank-statement tie-out is the obvious candidate and its evidence exists on prod
+(9 statement imports, 388 lines) — but `bank_matches` is still **0 rows**, so
+the Reconcile flow has shipped and never been exercised.
 **Still open:** §12's CPA questions — `gl_settings.cpa_review` is still `{}`,
 and question 1 (expense parts at purchase vs capitalize) is marked BLOCKING
 for §7. §11 step 4 (expose reports + receipts UI after the monthly
