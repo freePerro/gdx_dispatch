@@ -7,18 +7,19 @@ the difference between "I read the code and think X" and evidence.
 Companion to docs/design/money-audit-2026-08-04.md — each test names the finding
 it decides (M1, M7, …).
 
-These are DIAGNOSTIC probes, not a regression suite: 9 of the 10 fail today by
-design. They therefore carry the `health` marker, which pytest.ini already
-excludes from the default suite (`-m "not e2e and not load and not health"`) —
-so adding this file does NOT turn CI red.
+These began as DIAGNOSTIC probes — 9 of the 10 failed by design when this file
+was written, so it carried the `health` marker that pytest.ini excludes from
+the default suite (`-m "not e2e and not load and not health"`), and adding it
+did not turn CI red.
 
-Run them explicitly:
-
-    pytest gdx_dispatch/tests/test_zz_money_correctness_probe.py -m health -v
-
-As each finding is fixed, its probe flips to green. When all ten pass, drop the
-`health` marker and let them join the default gate as the regression net that
-keeps the invariants from rotting again.
+**All ten now pass, so the marker is gone and these run on every merge.** That
+was the condition this docstring set for itself, and it was met on 2026-08-04
+when the last finding was fixed — the marker then sat here for another two
+weeks, which meant ten green probes guarding the money invariants and not one
+of them executing. A test excluded from the default gate is not a regression
+net; it is a file. Do not re-add the marker to quiet a failure: a red probe
+here is a proven money defect, and that is exactly the signal this file exists
+to raise.
 """
 from __future__ import annotations
 
@@ -49,9 +50,8 @@ from gdx_dispatch.routers.invoices import (
     record_payment,
 )
 
-# Opt-in only — see the module docstring. Keeps a deliberately-red diagnostic
-# file out of the default suite.
-pytestmark = pytest.mark.health
+# No module-level marker: these run in the default suite. See the docstring for
+# why the `health` marker was here and why removing it was the whole point.
 
 TENANT = "tenant-test"
 
