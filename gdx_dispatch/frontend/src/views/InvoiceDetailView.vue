@@ -873,6 +873,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast as useApi } from "../composables/useApiWithToast";
+import { qbSyncLabel } from "../composables/qbSyncLabel";
 import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTime } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
@@ -1155,26 +1156,7 @@ const customerForEdit = ref(null);
 // is technically true but pure noise for a tenant that doesn't use QB).
 const { isEnabled } = useTenantModules();
 const qbEnabled = computed(() => isEnabled("quickbooks"));
-const qbSync = computed(() => {
-  // qb_in_quickbooks (from QBEntityMap) is the authoritative "in QB" signal.
-  // qb_synced_at is only stamped by the selective-push path and is un-backfilled,
-  // so it can't be used to claim "not in QB" — a legacy/imported/manual record
-  // is in QB with a NULL timestamp.
-  const inQb = invoice.value.qb_in_quickbooks === true;
-  const syncedAt = invoice.value.qb_synced_at;
-  const dirty = invoice.value.qb_dirty !== false; // default-true if absent
-  if (!inQb && !syncedAt) {
-    return { label: "Not synced", severity: "secondary" };
-  }
-  if (syncedAt) {
-    const when = formatStampDateTime(syncedAt);
-    return dirty
-      ? { label: `Synced ${when} · changes pending`, severity: "warn" }
-      : { label: `Synced ${when}`, severity: "success" };
-  }
-  // In QB but no local push timestamp (legacy sync / import / manual entry).
-  return { label: "Synced", severity: "success" };
-});
+const qbSync = computed(() => qbSyncLabel(invoice.value, formatStampDateTime));
 
 // --- Computed ---
 const subtotal = computed(() =>
