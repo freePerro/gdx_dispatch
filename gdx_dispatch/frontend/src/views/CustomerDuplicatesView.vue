@@ -313,6 +313,17 @@ async function doMerge() {
       life: 4000,
     });
     await loadGroups();
+  } catch (e) {
+    // try/finally with NO catch is why a merge that 500'd read as "nothing
+    // happened" instead of "it failed and here's why". This endpoint refuses
+    // deliberately now (a partial retirement, a missing record), so the reason
+    // is the useful half.
+    toast.add({
+      severity: "error",
+      summary: "Not merged",
+      detail: e?.message || "Could not merge these records.",
+      life: 8000,
+    });
   } finally {
     merging.value = null;
     pendingMerge.value = null;
