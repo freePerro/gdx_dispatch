@@ -612,6 +612,18 @@ def mobile_create_invoice(
                         line_total=lt,
                         taxable=True if _tax_labor else not _is_labor_line(tl),
                         category=tl.category,
+                        # Migration 071 provenance, as far as this path can
+                        # honestly go. A tier line came from an ACCEPTED
+                        # proposal: a human priced it and the customer agreed.
+                        #
+                        # Not "matrix" -- ProposalTierLine carries no
+                        # labor_price_item_id, so there is no row to name, and
+                        # the contract rejects a matrix claim without one.
+                        # Not "attested" -- no hours evidence exists here.
+                        # "manual" is the true statement: a person set this
+                        # price. That beats NULL, which says only that nobody
+                        # recorded an answer.
+                        labor_source="manual" if _is_labor_line(tl) else None,
                         sort_order=tl.sort_order,
                         company_id=str(tenant_id),
                     ))

@@ -152,6 +152,17 @@ def build_closeout_lines(
                 line_total=_install.line_total,
                 taxable=labor_taxable,
                 category="Labor",
+                # Migration 071 provenance. This is the DOMINANT path -- prod
+                # had 29 labor lines with a NULL source against 1 'matrix',
+                # because only the hand-add picker set it. A column that
+                # answers "how was this priced?" for 3% of rows answers
+                # nothing.
+                #
+                # A matrix row is a QUOTED FLAT PRICE, so no hours claim rides
+                # along: `assumed_man_hours` is the matrix's assumption about a
+                # job of that shape, not a record of this one.
+                labor_price_item_id=_install.matrix_item_id,
+                labor_source="matrix",
                 sort_order=sort,
                 company_id=str(tenant_id),
             ))
@@ -175,6 +186,11 @@ def build_closeout_lines(
             line_total=labor.line_total,
             taxable=labor_taxable,
             category="Labor",
+            # Attested hours are EVIDENCE -- the tech signed them off -- so
+            # this lane is the one allowed to record an hours figure. No matrix
+            # row: nothing quoted this.
+            estimated_man_hours=Decimal(str(labor.attested_hours)),
+            labor_source="attested",
             sort_order=sort,
             company_id=str(tenant_id),
         ))
