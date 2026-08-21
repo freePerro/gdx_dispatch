@@ -29,8 +29,10 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 3
+      # See docker-compose.yml: /health does not answer until alembic finishes.
+      start_period: 180s
 
   # Reuse existing infra containers from the main compose
   control-db:

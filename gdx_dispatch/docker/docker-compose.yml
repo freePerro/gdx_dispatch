@@ -121,8 +121,17 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s
-      timeout: 5s
+      # 5s was not enough for a COLD probe: /health does a DB round-trip, and the
+      # first one after a recreate measured 5.28s on the demo stack.
+      timeout: 10s
       retries: 5
+      # THE load-bearing line. entrypoint.sh runs create_all + `alembic upgrade
+      # head` (72 revisions) and only THEN execs uvicorn, so /health cannot answer
+      # until migrations finish. With no start_period the probe starts immediately
+      # and burns all 5 retries in ~50s, marking the app unhealthy while it is
+      # merely still migrating -- and every service gated on `app:
+      # service_healthy` then refuses to start.
+      start_period: 180s
     restart: unless-stopped
 
   # ── Plugin Host ──────────────────────────────────────────────────────────────
@@ -166,8 +175,12 @@ services:
       # for a deterministic missing-dependency on a no-egress host.)
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/ready || exit 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
+      # Shorter than the app's: plugin-host runs no migrations, and its known
+      # failure mode is a boot HANG in reconcile on a no-egress host -- which
+      # should surface promptly, not be masked by a long grace period.
+      start_period: 60s
     restart: unless-stopped
 
   # ── Celery Worker — priority:high ────────────────────────────────────────────
