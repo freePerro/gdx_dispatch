@@ -9,10 +9,19 @@ phases built, with migrations 066-068 live. Verified on main 2026-08-21:
 (P5.4), `validate_email` wired at `customers.py:61/95` (P5.6), Reply-To at
 `email_sender.py:86` (P5.7), `decrypt_secret` on `password_enc` (P5.8), and
 migration 068 + `tasks/plugin_email_outbox.py` (P6).
-**One item short:** Phase 4b's third bullet — `gdx_dispatch/core/email.py` was
-never deleted. It survives as dead code with a single commented-out import.
-Phase 4b's other two bullets (supplier_invite docstring, `/settings/email/test`
-returning Not-implemented) are done.
+**Phase 4b's third bullet is BLOCKED, not pending — and its premise is wrong.**
+`gdx_dispatch/core/email.py` is **not dead code**. Re-verified 2026-08-21:
+`routers/communications.py:15` imports it (`from gdx_dispatch.core import email
+as email_service`) and injects it via `get_email_sender` into two mounted,
+live endpoints — `POST /api/email/send` (:370) and `POST /api/communications/send`
+(:597). `core/email.py::send_email` is a real SMTP/SES sender, not a stub.
+`tests/test_email_sms.py` imports it too. Deleting it breaks both endpoints.
+The finding at §6 below ("zero live references") was wrong when written.
+Deletion is blocked behind migrating the communications screens off the legacy
+sender and the in-memory `_EMAILS_BY_TENANT` dict — rows 1 and 3 of
+[email-overhaul-tech-debt.md](email-overhaul-tech-debt.md), both deferred there
+as "a UI project of its own". Phase 4b's other two bullets (supplier_invite
+docstring, `/settings/email/test` returning Not-implemented) are done.
 
 Locked decisions (Doug, 2026-08-18):
 
@@ -153,8 +162,13 @@ copy-paste the same wrapper with the same defects:
    feed only the composer preview; `send_estimate` ignores them and uses the
    hardcoded builder. Only the reminder template is genuinely tenant-editable
    end-to-end.
-6. Dead code: [core/email.py](../../gdx_dispatch/core/email.py) (SES sender,
-   zero live references).
+6. ~~Dead code: [core/email.py](../../gdx_dispatch/core/email.py) (SES sender,
+   zero live references).~~ **WRONG — corrected 2026-08-21.** It has live
+   references: `routers/communications.py` injects it into `POST /api/email/send`
+   and `POST /api/communications/send`. Struck rather than deleted because the
+   mistake is the useful part — "zero live references" was asserted from a grep
+   that missed the `from gdx_dispatch.core import email as email_service` form,
+   and it survived into two later status lines before anyone tried the deletion.
 
 ### E. Delivery-lifecycle gaps (second-pass audit, 2026-08-18)
 
@@ -429,7 +443,9 @@ to `send_transactional_email`, on the Phase 1 shell. Design points:
 
 - Fix supplier_invite docstring or implement the send.
 - Make admin_settings `/settings/email/test` actually send (or return 501).
-- Delete dead `core/email.py`.
+- ~~Delete dead `core/email.py`.~~ **Not actionable — it is not dead** (see
+  § Findings 6). Blocked on migrating the communications screens; tracked in
+  email-overhaul-tech-debt.md rows 1 and 3.
 
 ### Phase 5 — delivery lifecycle hardening (from the section E audit)
 
