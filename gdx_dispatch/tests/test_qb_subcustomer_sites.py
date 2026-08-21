@@ -70,9 +70,10 @@ class _FakeQB:
         return list(self._rows)
 
     async def read(self, entity, qb_id, *a, **k):
-        # _detect_qbo_merge_deletes probes here — a live, METERED GET. Record
-        # every one so a test can prove sub-customer ids never fall out of
-        # seen_qb_ids. Reporting Active keeps the probe a no-op otherwise.
+        # Nothing in the pull path calls this any more —
+        # `_detect_qbo_merge_deletes` was removed 2026-08-21 in the QuickBooks
+        # phase-out. Kept as a tripwire: if a per-row METERED GET ever returns
+        # to the pull, `gets` records it and the test below fails.
         self.gets.append(f"{entity}/{qb_id}")
         self.read_count += 1
         return {"Active": True}
@@ -272,16 +273,27 @@ def test_an_already_flattened_subcustomer_is_left_for_the_cleanup(db):
 
 
 def test_a_legacy_subcustomer_id_stays_in_the_seen_set(db):
-    """_detect_qbo_merge_deletes is always-on with no feature flag: it probes
-    every entity_type='customer' map missing from seen_qb_ids with a live,
-    METERED read. A sub-customer that is still flattened HAS such a map, so
-    dropping its id from the seen set bills an extra read on every pull —
-    and, with delete-sync enabled, would soft-delete the row.
+    """A sub-customer present in QB must stay in `seen_qb_ids`.
 
-    This has to be set up as a LEGACY row: once a sub-customer is a saved site
-    its map is entity_type='customer_location', which this probe never looks
-    at, so a version of this test without the legacy map passes either way and
-    proves nothing. It did, until a mutation run caught it.
+    ORIGINAL REASON (2026-08-19, now historical): `_detect_qbo_merge_deletes`
+    was always-on and probed every entity_type='customer' map missing from
+    seen_qb_ids with a live, METERED read — so dropping a sub-customer's id
+    billed an extra read per pull and, with delete-sync on, would soft-delete
+    the row. That probe was removed 2026-08-21 in the QuickBooks phase-out
+    (see modules/quickbooks/sync.py), which means **this test no longer fails
+    for the reason it was written**.
+
+    Kept deliberately, with the weakening stated rather than hidden: the
+    seen-set contract still matters for `_apply_qbo_deletes` (flag-gated, OFF)
+    and for any future consumer of that set, and `gets` is now a tripwire for
+    a metered per-row probe returning to the pull at all. The stronger guard
+    now lives in test_qb_full_sync.py::
+    test_pull_customers_never_issues_a_metered_per_row_probe.
+
+    Set up as a LEGACY row on purpose: once a sub-customer is a saved site its
+    map is entity_type='customer_location', which the old probe never looked
+    at — so a version without the legacy map passed either way and proved
+    nothing. It did, until a mutation run caught it.
     """
     _seed_legacy_flattened(db)
     _, qb = _run(db, [_parent(), _child("140", "Site A")])
