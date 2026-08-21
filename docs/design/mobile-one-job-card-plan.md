@@ -174,6 +174,102 @@ in place and is exactly what PR A's nested-customer decision rejected.
 
 ---
 
+## Adversarial audit, 2026-08-21 — PR B is GATED, not cleared
+
+Pre-code audit against the plan commit `7e6926f`. Five findings, **all five
+independently re-verified against source by the author before acceptance.**
+The audit's verdict: *do PR A; do not do PR B as written.* Accepted.
+
+### A1 — The foundational lie: "the detail screen is a complete substitute"
+
+It is a complete substitute **online only.** Two structural facts, neither
+fixed by porting buttons:
+
+- `MobileJobDetailView.vue:1047-1070` — `advance()` deliberately does **not**
+  flip status locally; it `await refresh()`es. Its own comment says why:
+  *"Refetch rather than guess the new state locally — Today flips the status
+  before checking the result and never rolls it back on failure… Don't copy
+  that."* Offline the refetch throws into the outer `catch`, so the tech sees
+  **"Saved offline" and "Could not save" together**, and the button still
+  reads "On my way". Status never advances.
+- `MobileTodayView.vue:248-258` / `:303-312` flips `job.dispatch_status`
+  unconditionally, so offline progression works **there and only there**.
+- `load()` (`:96`) has no cache. Offline, a tap-back remount leaves
+  `jobs.value = []` → the route reads "Nothing scheduled today." **The tech
+  loses the route mid-day.**
+
+Neither surface is correct today: Today flips without rollback, detail does
+not flip at all. **The right fix is flip + roll back on throw** — the July
+plan's trap #1 — and it belongs to *both*.
+
+### A2 — Multi-job state is unportable
+
+The route card holds **N jobs**. `refreshAllUnseenCounts()` (`:736`) computes
+dispatch's part answers across *all* stops and toasts "tap the parts row" — a
+row PR B deletes. `advancing` is per-job (`advancing[job.id]`); detail's is a
+single boolean, so a tech cannot start stop #4 while #3 syncs.
+
+### A3 — The key-parity test is theater (author's own)
+
+`_job_card`'s nested customer carries `notes`+`tags` and **no `email`**
+(`routers/mobile.py:1002-1007`). Detail's hand-built customer carries `email`
+and no notes (`:2251-2263`). `MobileJobDetailView.vue:921` reads
+`job.value?.customer`; `:172-178` renders `customer.email` as a `mailto:` row
+and `:210` offers "Add email" when it is missing — beside a comment noting
+**219 of 382 customers have no email at all.** Swapping detail onto
+`_job_card` deletes that row, and a top-level key-parity assertion **goes
+green on the exact swap that breaks the screen.** July caught this; this
+plan's "re-verified" list dropped it. Any parity test must descend into
+`customer`, or unify the sub-dict first.
+
+### A4 — The blind spot: tap-to-navigate
+
+`MobileTodayView.vue:1238-1240` — `.job-address` carries
+`@click="openMaps(job)"`. **Tap the address, maps opens.** That is the gesture
+used between every pair of stops. `MobileJobsView.vue:104-110` has no such
+handler *precisely because* it already sits inside a `router-link`. Making the
+route card a link forces the same removal — or nests an `@click` inside an
+`<a>` and fires both. `openMaps` appeared nowhere in this plan.
+
+### A5 — Trap #5 was stale in this doc
+
+Detail **does** offline-queue part requests (`:1282`, `postQueued`). Only
+Today's parts path does not. The trap list below is corrected.
+
+### What this changes
+
+**PR A proceeds as planned** — additive, no removals, endorsed by the audit.
+
+**PR B is gated.** It may not ship until all four are true:
+
+1. The detail screen advances status **offline** — optimistic flip **with
+   rollback on throw**, on both surfaces. This is a **live bug today**,
+   independent of this plan: any tech opening a job from the Jobs list in a
+   dead zone hits it right now. Filed as its own PR, never bundled.
+2. Today's list survives a cold remount with no network (cache the route, or
+   do not navigate away for status).
+3. Tap-to-navigate survives, by design and by test.
+4. The customer sub-dict is unified **before** any endpoint swap, and the
+   parity test descends into it.
+
+**The two-PR split protects code, not techs.** There is no gate, metric, or
+flag between A and B, and B is a ~270-line deletion of working field code.
+Real safety: ship A, deploy, confirm closeouts and part requests keep flowing
+from the detail screen, *then* revisit B.
+
+**On the evidence used to justify B:** 51 photos prove techs reach detail
+*for photos* — the only place photos exist. That cannot prove they would
+accept losing in-card actions. The 73 part requests are `source='request'`
+from **both** surfaces and are unattributable; this plan used them as consent.
+They are not.
+
+**Honest answer to "is the tech better off?"** After PR B as written:
+**worse.** One thumb-tap to go en route becomes tap → GET → tap → tap back →
+GET, and in a dead zone it does not advance at all and empties the route on
+the way back.
+
+---
+
 ## Known traps (re-verified 2026-08-21)
 
 Carried from `tech-mobile-workflow-plan.md` §"Known traps", re-checked:
@@ -188,8 +284,9 @@ Carried from `tech-mobile-workflow-plan.md` §"Known traps", re-checked:
    `mockResolvedValueOnce`** — exactly once. Any extra mount-time GET resolves
    `undefined` and throws. Lazy-load on demand.
 4. ~~No `useToast` in the detail view~~ — **stale, closed.**
-5. **Parts create/edit is not offline-queued** while en-route/arrived/closeout
-   are. In a dead zone a part request just errors.
+5. ~~Parts create/edit is not offline-queued~~ — **stale for the detail
+   view**, which queues at `MobileJobDetailView.vue:1282`. Still true of
+   **Today's** parts path only. Corrected by audit finding A5.
 6. ~~Offline banner is Today-only~~ — **stale, closed.**
 7. **`MobileInvoiceDialog`'s header is "Close out"**, the same wording as the
    closeout trigger. Today's trigger says "Close out"; detail's says "Bill /
