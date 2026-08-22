@@ -73,46 +73,7 @@
         </p>
         <ol class="job-list">
         <li v-for="job in visibleJobs" :key="job.id">
-          <!-- 2026-07-16: cards used to be display-only — a tech had NO path
-               from this list to notes/phone/description. The whole card is
-               now a link into the mobile job detail view. -->
-          <router-link
-            :to="`/mobile/jobs/${job.id}`"
-            class="job-card"
-            :data-testid="`mobile-job-card-${job.id}`"
-          >
-            <div class="job-row job-row-top">
-              <div class="job-customer">{{ job.customer_name || '—' }}</div>
-              <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ','_')}`]">
-                <i :class="statusIcon(job.dispatch_status)" />
-                {{ statusLabel(job.dispatch_status) }}
-              </span>
-            </div>
-            <div v-if="job.scheduled_at" class="job-when">
-              <i class="pi pi-calendar" />
-              {{ formatScheduled(job.scheduled_at) }}
-            </div>
-            <!-- Whose job? Only meaningful company-wide; in "mine" it's you. -->
-            <div
-              v-if="scope === 'company' && job.assigned_tech_name"
-              class="job-tech"
-              data-testid="mobile-job-tech"
-            >
-              <i class="pi pi-user" />
-              {{ job.assigned_tech_name }}
-            </div>
-            <div
-              class="job-address"
-              :class="{ 'job-address-missing': !job.display_address }"
-            >
-              <i class="pi pi-map-marker" />
-              <span>{{ job.display_address || 'No address — ask dispatch' }}</span>
-            </div>
-            <div class="job-row job-row-bottom">
-              <div v-if="job.title" class="job-title">{{ job.title }}</div>
-              <i class="pi pi-chevron-right job-chevron" />
-            </div>
-          </router-link>
+          <MobileJobCard :job="job" @navigate="openMaps" />
         </li>
       </ol>
       </template>
@@ -122,6 +83,14 @@
 </template>
 
 <script setup>
+import MobileJobCard from '../components/MobileJobCard.vue'
+
+// The card emits navigate rather than opening maps itself: the card's link and
+// the map deep-link are two different destinations, and only the parent should
+// decide whether this surface leaves the app.
+function openMaps(job) {
+  if (job.navigation_link) window.open(job.navigation_link, '_blank', 'noopener')
+}
 import { ref, computed, onMounted } from 'vue'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'

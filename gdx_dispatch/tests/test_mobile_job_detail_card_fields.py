@@ -229,6 +229,64 @@ class TestCustomerShapeParity:
         assert not missing, f"detail customer is missing route-card keys: {sorted(missing)}"
         assert "email" in detail_keys, "detail lost customer.email"
 
+    def test_all_three_surfaces_agree_on_the_customer_shape(self, app_and_db):
+        """PR B: the jobs LIST was the third shape and the odd one out.
+
+        It emitted flat customer_name/customer_address while /today and
+        /job/{id} nested under _job_card, so one shared card component had to
+        read both spellings to render either. All three now answer with the
+        same nested customer, and email survives on every one of them.
+        """
+        client, db = app_and_db
+        c = _seed_customer(db, notes="Beware of dog")
+        _tag(db, c, "dog_warning")
+        j = _job(db, c.id)
+
+        detail = _detail(client, j)["customer"]
+        cards = client.get("/api/mobile/today").json().get("jobs") or []
+        assert cards, "today's route returned no card"
+        today = cards[0]["customer"]
+        listing = client.get("/api/mobile/jobs").json().get("jobs") or []
+        assert listing, "jobs list returned nothing"
+        listed = listing[0]["customer"]
+
+        # The list must no longer answer in the old flat spelling at all —
+        # leaving both is the divergence trap this exists to close.
+        assert "customer_name" not in listing[0]
+        assert "customer_address" not in listing[0]
+
+        # Same key SPELLING everywhere — that is what the shared card needs.
+        for shape in (detail, today, listed):
+            assert shape["id"] == str(c.id)
+            assert shape["name"] == "Acme"
+            assert [t["name"] for t in shape["tags"]] == ["dog_warning"]
+
+        # Content is deliberately NOT uniform, and this pins the asymmetry so
+        # nobody "fixes" it later. The DETAIL screen is one job and carries the
+        # contact record. The LIST runs to 500 rows and under scope=company
+        # spans the whole customer book, so it ships identity + location only:
+        # handing a tech every customer's phone, email and private notes to
+        # render a card that displays none of them is a PII expansion with no
+        # consumer. (Audit finding, 2026-08-22.)
+        assert detail["email"] == "ops@example.test"
+        assert detail["notes"] == "Beware of dog"
+        assert "email" not in listed
+        assert "phone" not in listed
+        assert "notes" not in listed
+
+    def test_list_carries_the_card_fields_a_shared_card_renders(self, app_and_db):
+        client, db = app_and_db
+        c = _seed_customer(db)
+        _tag(db, c, "gate_code")
+        j = _job(db, c.id, priority="Emergency", is_return_visit=True)
+        row = (client.get("/api/mobile/jobs").json().get("jobs") or [None])[0]
+        assert row is not None
+        assert row["priority"] == "Emergency"
+        assert row["is_return_visit"] is True
+        assert row["alerts"] == ["gate_code"]
+        assert "navigation_link" in row
+        _ = j
+
     def test_top_level_card_keys_reach_the_detail_payload(self, app_and_db):
         client, db = app_and_db
         c = _seed_customer(db)

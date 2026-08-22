@@ -33,6 +33,9 @@ vi.mock("../../composables/useApi", () => ({
 }));
 
 const stubs = {
+  // The route card is a <router-link> now; without this the card fails to
+  // resolve and every route assertion below dies for the wrong reason.
+  RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
   Button: { props: ["label", "icon"], emits: ["click"], template: '<button @click="$emit(\'click\')">{{ label }}</button>' },
   Tag: { props: ["value"], template: "<span>{{ value }}</span>" },
   Message: { template: "<div class='msg'><slot /></div>" },
@@ -139,6 +142,43 @@ describe("the route survives losing signal", () => {
     const w = await mountView();
     expect(w.find('[data-testid="mt-cached-route"]').exists()).toBe(false);
     expect(w.text()).toContain("Failed to fetch");
+  });
+
+  it("expires rather than resurfacing days later as if current", async () => {
+    // A cached route stands in for signal, not for an archive. Dispatch has had
+    // a working day to move things; showing a two-day-old route as though it
+    // were live is worse than showing nothing.
+    getMock.mockResolvedValue(route());
+    await mountView();
+    const key = Object.keys(localStorage).find((k) => k.startsWith("gdx_today_route_cache"));
+    const stale = JSON.parse(localStorage.getItem(key));
+    stale.cached_at = new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString();
+    localStorage.setItem(key, JSON.stringify(stale));
+
+    getMock.mockRejectedValue(new Error("Failed to fetch"));
+    const w = await mountView();
+    expect(w.find('[data-testid="mt-cached-route"]').exists()).toBe(false);
+    expect(w.text()).toContain("Failed to fetch");
+    expect(localStorage.getItem(key), "the expired entry is dropped, not kept").toBeNull();
+  });
+
+  it("is wiped on logout — it holds the customer book, not session state", async () => {
+    // _clearSession cleared sessionStorage only. This cache carries customer
+    // name, address, notes and tags for a whole day of stops, so on a shared or
+    // handed-on phone it outlived the session that was allowed to see it.
+    getMock.mockResolvedValue(route());
+    await mountView();
+    expect(Object.keys(localStorage).some((k) => k.startsWith("gdx_today_route_cache"))).toBe(true);
+
+    const { useAuthStore } = await import("../../stores/auth");
+    const { createPinia, setActivePinia } = await import("pinia");
+    setActivePinia(createPinia());
+    const auth = useAuthStore();
+    // logout() is fire-and-forget by design (see the store's comment about the
+    // 2026-05-14 refloods) — it is not awaitable.
+    auth.logout();
+    await flushPromises();
+    expect(Object.keys(localStorage).some((k) => k.startsWith("gdx_today_route_cache"))).toBe(false);
   });
 
   it("never shows one day's route in place of another's", async () => {

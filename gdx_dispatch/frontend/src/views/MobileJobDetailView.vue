@@ -844,6 +844,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { markJobSeen } from '../composables/usePartsSeenCutoff'
 import { queuedWriteStatus, useOfflineSync } from '../composables/useOfflineSync'
 import { usePhotoQueue } from '../composables/usePhotoQueue'
 import AuthedImage from '../components/AuthedImage.vue'
@@ -1109,6 +1110,18 @@ async function load() {
     readOnly.value = Boolean(r?.read_only)
     accessGrant.value = r?.access_grant || ''
     if (!job.value) error.value = 'Job not found'
+    // Opening the job IS seeing the parts — this screen lists them. Closes the
+    // loop for the route card's "N part updates from dispatch" badge, which
+    // otherwise latches on forever: PR B removed the parts row that used to be
+    // the only thing that ever marked a job seen, leaving the badge with a
+    // reader and no writer and an every-mount toast pointing at nothing.
+    if (job.value?.id) {
+      try {
+        markJobSeen(String(job.value.id))
+      } catch {
+        // Storage blocked; a stale badge is not worth failing the screen for.
+      }
+    }
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.
     error.value = err?.status === 404 ? 'Job not found' : (err?.message || 'Could not load job')

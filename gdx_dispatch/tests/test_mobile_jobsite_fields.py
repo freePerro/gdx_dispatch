@@ -272,8 +272,13 @@ class TestJobsList:
         job = r["jobs"][0]
         assert job["site_address"] == "9 Dock St"
         assert job["site_label"] == "Warehouse 3"
-        # customer_address unchanged — additive contract.
-        assert job["customer_address"] == "100 Billing Rd"
+        # The billing address is still reachable and still distinct from the
+        # jobsite — that is the point this test has always made. It moved from a
+        # flat `customer_address` into the nested customer when PR B of the
+        # one-job-card plan unified the three mobile payload shapes; the flat
+        # key is gone on purpose, because keeping both is the divergence trap.
+        assert job["customer"]["address"] == "100 Billing Rd"
+        assert "customer_address" not in job
 
 
 # ── /api/mobile/day-summary next_first_stop ───────────────────────

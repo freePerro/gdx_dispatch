@@ -4,12 +4,20 @@
 **Status:** PARTIALLY BUILT. Decision locked (Doug, 2026-08-21): one card
 component, always compact, on all three mobile surfaces; the job actions live
 on the job detail screen only.
-**Built:** PR A — the detail screen gained quote / change order / chat /
-install-equipment / job context, plus the backend card fields and a customer
-sub-dict parity test. **Not built:** the offline-advance fix (PR A2) and PR B
-itself — one shared `MobileJobCard`, the three surfaces adopting it, and the
-jobs-list endpoint moving onto `_job_card`. Today's route card is unchanged and
-still not tappable.
+**Built:** all three PRs. PR A — the detail screen gained quote / change order /
+chat / install-equipment / job context plus the backend card fields. PR A2 —
+the offline gate: the detail screen advances a job on a queued write, and the
+route survives a cold remount with no signal behind a "no signal" banner. PR B —
+one `MobileJobCard` on all three surfaces, the route card finally a link, the
+navigate control kept as a sibling button, and the jobs-list endpoint emitting
+the same nested customer as the other two.
+**Status stays PARTIALLY BUILT until a human walks it.** Every walk so far was
+headless, driven by an admin account, against a one-stop route. The 2026-08-18
+corpus audit recorded that this repo's docs have only ever *undersold* what
+exists; "RELEASED" here before anyone has looked at it on a phone would be the
+first overclaim in the corpus. Not built / not verified: reorder mode with the
+new card, drive-time legs between stops, the map view, and any route longer
+than one stop.
 
 **Related plan — read it first:** `tech-mobile-workflow-plan.md` (v3,
 2026-07-17), whose status line was corrected to PARTIALLY BUILT by **#389**

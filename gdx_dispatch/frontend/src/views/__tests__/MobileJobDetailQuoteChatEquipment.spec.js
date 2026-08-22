@@ -37,6 +37,11 @@ vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
 vi.mock("../../composables/useApi", () => ({
   useApi: () => ({ get: getMock, post: vi.fn(), patch: vi.fn(), postQueued: postQueuedMock }),
 }));
+const markJobSeenMock = vi.fn();
+vi.mock("../../composables/usePartsSeenCutoff", () => ({
+  markJobSeen: (...a) => markJobSeenMock(...a),
+  countUnseenForJob: () => 0,
+}));
 vi.mock("../../composables/usePhotoQueue", () => ({
   usePhotoQueue: () => ({
     pendingPhotos: ref(0),
@@ -183,6 +188,66 @@ describe("nothing new is fetched until the tech asks (trap #3)", () => {
     await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
     await flushPromises();
     expect(urlsFetched().some((u) => u.includes("/equipment"))).toBe(true);
+  });
+});
+
+describe("opening a job clears its parts badge", () => {
+  // The loop this closes: PR B deleted Today's parts row, which was the only
+  // thing that ever marked a job seen. The route card's "N part updates from
+  // dispatch" badge was left with a reader and no writer — it would latch on
+  // permanently and re-toast on every single mount, on the screen a tech looks
+  // at all day, with no way to dismiss it. This screen lists the parts, so
+  // reaching it IS seeing them.
+  it("marks the job seen once loaded", async () => {
+    await mountWith({ job: { dispatch_status: "on_site" } });
+    expect(markJobSeenMock).toHaveBeenCalledWith("job-123");
+  });
+
+  it("does not mark a job seen that failed to load", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    getMock.mockImplementation(async () => { throw new Error("404"); });
+    mount(View, { global: { stubs } });
+    await flushPromises();
+    expect(markJobSeenMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("equipment degrades quietly when the module is off", () => {
+  // Carried over from MobileTodayInstallEquipment.spec.js, which asserted this
+  // by grepping the .vue source for the function names. equipment_tracking is
+  // an optional module: when it is off the endpoint errors, and the tech must
+  // see "none on file" rather than a red toast about a module they have never
+  // heard of.
+  it("shows 'none on file' and raises no toast when the endpoint fails", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    getMock.mockImplementation(async (url) => {
+      if (String(url).includes("/equipment")) throw new Error("404 module disabled");
+      return jobPayload({ dispatch_status: "on_site" });
+    });
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
+    await flushPromises();
+
+    expect(w.find('[data-testid="mjd-equipment-list"]').exists()).toBe(false);
+    expect(w.text()).toContain("No install/equipment on file");
+    const summaries = toastAdd.mock.calls.map((c) => c[0].summary);
+    expect(summaries.some((s) => /equipment/i.test(String(s)))).toBe(false);
+  });
+
+  it("labels a garage door and an opener distinctly", async () => {
+    const w = await mountWith({
+      job: { dispatch_status: "on_site" },
+      equipment: [
+        { id: "e1", equipment_type: "garage_door", manufacturer: "CHI", model: "5250" },
+        { id: "e2", equipment_type: "opener", manufacturer: "LiftMaster", model: "8500W" },
+      ],
+    });
+    await w.find('[data-testid="mjd-equipment-toggle"]').trigger("click");
+    await flushPromises();
+    const list = w.find('[data-testid="mjd-equipment-list"]');
+    expect(list.text()).toContain("Door");
+    expect(list.text()).toContain("Opener");
   });
 });
 

@@ -1652,7 +1652,7 @@ def mobile_all_my_jobs(
         _text(  # noqa: RAW_ENC — c.address decrypted via decrypt_if_ciphertext below
             f"""
             SELECT DISTINCT j.id, j.title, j.dispatch_status, j.scheduled_at,
-                   j.priority, j.job_type, j.created_at,
+                   j.priority, j.job_type, j.created_at, j.is_return_visit,
                    j.location_id, j.customer_id,
                    c.name AS customer_name,
                    COALESCE(c.address, '') AS customer_address,
@@ -1676,6 +1676,25 @@ def mobile_all_my_jobs(
         db, [(r["id"], r.get("location_id"), r.get("customer_id")) for r in rows]
     )
 
+    # Customer tags for the whole page in one query — alerts ("dog_warning",
+    # "gate_code") are derived from tag names exactly as _job_card does it.
+    # Batched deliberately: this list runs at LIMIT 200-500 and a per-row tag
+    # lookup would be the N+1 the pre-code audit warned about.
+    # Canonical dashed form on BOTH sides of the lookup. These ids come from a
+    # raw SELECT and arrive as a UUID object or 32-char hex depending on the
+    # driver, while TagAssignment.entity_id is a str column holding the dashed
+    # form. Second instance of this exact bug on this branch — the first,
+    # parts_summary on the detail endpoint, silently reported "no parts".
+    def _cid(v):
+        try:
+            return str(_UUID(str(v)))
+        except (ValueError, AttributeError, TypeError):
+            return str(v) if v is not None else None
+
+    _tags_by_customer = _customer_tags_map(
+        db, tenant_id, [_cid(r.get("customer_id")) for r in rows if r.get("customer_id")]
+    )
+
     jobs = []
     for r in rows:
         scheduled = r.get("scheduled_at")
@@ -1689,10 +1708,36 @@ def mobile_all_my_jobs(
             "dispatch_status": r.get("dispatch_status") or "assigned",
             "priority": r.get("priority") or "Normal",
             "service_type": r.get("job_type") or "Service",
-            "customer_name": r.get("customer_name") or "—",
-            # Raw-SQL read bypasses the EncryptedString mapper — decrypt here
-            # (the 2026-07-16 Jobs-tab "gAAAA… where the address should be" bug).
-            "customer_address": decrypt_if_ciphertext(r.get("customer_address")) or "",
+            # ONE customer shape across every mobile surface. This list used to
+            # emit flat customer_name/customer_address while /today and
+            # /job/{id} nested it under _job_card — three surfaces, two shapes,
+            # and a shared card component had to read both to render either.
+            # Same key set as the detail endpoint, email included: the pre-code
+            # audit showed that converging on _job_card's customer (which has no
+            # email) silently deletes a rendered mailto row.
+            # Identity + location only. The DETAIL endpoint is where the
+            # contact record lives; this is a LIST that runs to 500 rows, and
+            # under scope=company it spans every customer in the book. Shipping
+            # phone/email/notes here would hand a tech the whole contact list in
+            # one response to render a card that shows none of it — a PII
+            # surface expansion with no consumer. Deliberate asymmetry, not
+            # drift: same key SPELLING as the other surfaces, narrower content.
+            "customer": {
+                "id": _cid(r.get("customer_id")),
+                "name": r.get("customer_name"),
+                # Raw-SQL read bypasses the EncryptedString mapper — decrypt here
+                # (the 2026-07-16 Jobs-tab "gAAAA… where the address should be" bug).
+                # Only Customer.address is EncryptedString; name/phone/email/notes
+                # are not, so they need no unwrapping.
+                "address": decrypt_if_ciphertext(r.get("customer_address")) or "",
+                "tags": _tags_by_customer.get(_cid(r.get("customer_id")), []),
+            },
+            "is_return_visit": bool(r.get("is_return_visit")),
+            "alerts": sorted({
+                t["name"] for t in _tags_by_customer.get(_cid(r.get("customer_id")), [])
+            }),
+            # Server-built so every surface navigates to the same place.
+            "navigation_link": _build_navigation_link(site.address if site else None),
             "site_label": site.label if site else None,
             "site_address": (site.address if site else None) or "",
             "site_address_missing": bool(site.address_missing) if site else False,
