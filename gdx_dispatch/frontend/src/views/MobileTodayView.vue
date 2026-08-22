@@ -1,27 +1,15 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useGpsBreadcrumb } from '@/composables/useGpsBreadcrumb'
-import MobileQuoteBuilderDialog from '../components/MobileQuoteBuilderDialog.vue'
-import MobileCustomerQuoteDialog from '../components/MobileCustomerQuoteDialog.vue'
-import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
-import MobileChatDialog from '../components/MobileChatDialog.vue'
-import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
-import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
+import MobileJobCard from '../components/MobileJobCard.vue'
 import MobileReceiptCapture from '../components/MobileReceiptCapture.vue'
-import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import SelectButton from 'primevue/selectbutton'
-import Dialog from 'primevue/dialog'
-import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
-import Textarea from 'primevue/textarea'
-import AutoComplete from 'primevue/autocomplete'
 import Select from 'primevue/select'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
 import {
-  markJobSeen as _markJobSeen,
   countUnseenForJob,
 } from '../composables/usePartsSeenCutoff'
 import {
@@ -55,7 +43,6 @@ const jobs = ref([])
 const areaJobs = ref([])
 const tech = ref(null)
 const date = ref(null)
-const advancing = ref({})
 const reorderMode = ref(false)
 const reorderSaving = ref(false)
 let originalOrder = []
@@ -93,33 +80,98 @@ function localDayParams() {
   return params
 }
 
+// The route survives a cold remount with no signal.
+//
+// This screen held the day's route in memory only. That was survivable while a
+// tech never left it — but every tap-through to a job and back is a remount,
+// and with no signal `load()` threw, `jobs` stayed [], and the screen said
+// "Nothing scheduled today". The tech loses the route mid-day, in the exact
+// dead zone the offline queue exists for.
+//
+// Cached per tech+day so a stale route can never be shown as if it were
+// another tech's or another day's. Writes are best-effort: a full or blocked
+// localStorage must never break the load path.
+// True while the screen is showing a cached route because the live fetch
+// failed. Drives the "no signal" banner.
+const fromCache = ref(false)
+
+const ROUTE_CACHE_KEY = 'gdx_today_route_cache'
+
+function cacheKeyFor(dayParams) {
+  return `${ROUTE_CACHE_KEY}:${dayParams}`
+}
+
+// A cached route is a stand-in for signal, not an archive. Past this it is
+// more likely to mislead than help — dispatch has had a working day to move
+// things — so it expires rather than resurfacing days later as if current.
+const ROUTE_CACHE_TTL_MS = 12 * 60 * 60 * 1000
+
+function readRouteCache(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.jobs)) return null
+    const at = Date.parse(parsed.cached_at || '')
+    if (!Number.isNaN(at) && Date.now() - at > ROUTE_CACHE_TTL_MS) {
+      localStorage.removeItem(key)
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeRouteCache(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      jobs: data.jobs || [],
+      area_jobs: data.area_jobs || [],
+      tech_id: data.tech_id,
+      date: data.date,
+      cached_at: new Date().toISOString(),
+    }))
+  } catch {
+    // Quota or private mode. A cache miss is a worse day, not a broken one.
+  }
+}
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   refreshing.value = silent
   error.value = null
+  const params = localDayParams().toString()
+  const key = cacheKeyFor(params)
   try {
-    const data = await api.get(`/api/mobile/today?${localDayParams().toString()}`)
+    const data = await api.get(`/api/mobile/today?${params}`)
     jobs.value = data.jobs || []
     areaJobs.value = data.area_jobs || []
     tech.value = data.tech_id
     date.value = data.date
+    fromCache.value = false
+    writeRouteCache(key, data)
   } catch (err) {
-    error.value = err?.message || "Couldn't load today's route"
+    const cached = readRouteCache(key)
+    if (cached) {
+      // Show the route we last saw rather than an empty day. Labelled, because
+      // a tech acting on a stale route must know it is stale.
+      jobs.value = cached.jobs || []
+      areaJobs.value = cached.area_jobs || []
+      tech.value = cached.tech_id
+      date.value = cached.date
+      fromCache.value = true
+      error.value = null
+    } else {
+      fromCache.value = false
+      error.value = err?.message || "Couldn't load today's route"
+    }
   } finally {
     loading.value = false
     refreshing.value = false
   }
 }
 
-function formatTime(iso) {
-  if (!iso) return ''
-  try {
-    const d = new Date(iso)
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  } catch (e) {
-    return ''
-  }
-}
 
 function formatDriveTime(seconds) {
   if (seconds === null || seconds === undefined) return null
@@ -144,33 +196,7 @@ function statusSeverity(status) {
   }
 }
 
-// Status pill icon + label (paired so the meaning survives sunlight glare
-// and red/green colorblindness — never color alone, always icon + text).
-function statusIcon(s) {
-  return ({
-    en_route: 'pi pi-send',
-    on_site: 'pi pi-map-marker',
-    done: 'pi pi-check',
-    unassigned: 'pi pi-circle',
-    assigned: 'pi pi-circle-fill',
-  })[s] || 'pi pi-circle-fill'
-}
-function statusLabel(s) {
-  return ({
-    en_route: 'En route',
-    on_site: 'On site',
-    done: 'Done',
-    unassigned: 'Unassigned',
-    assigned: 'Assigned',
-  })[s] || s || 'Assigned'
-}
 
-function prioritySeverity(priority) {
-  const p = (priority || '').toLowerCase()
-  if (p === 'urgent') return 'danger'
-  if (p === 'high') return 'warn'
-  return 'secondary'
-}
 
 // S1-A3 — open in user's preferred maps app.
 function openMaps(job) {
@@ -240,127 +266,19 @@ async function saveReorder() {
   }
 }
 
-// S1-A4 — "On my way" → flips dispatch_status to en_route.
-// 2026-07-01 UX audit: status flips go through the offline queue
-// (postQueued) — in a dead zone the tap is persisted to IndexedDB and
-// replayed (Idempotency-Key dedup) instead of erroring into a toast.
-async function onMyWay(job) {
-  advancing.value = { ...advancing.value, [job.id]: true }
-  try {
-    const r = await api.postQueued(`/api/mobile/jobs/${job.id}/en-route`, {}, {
-      actionType: 'job.en_route', resourceId: String(job.id),
-    })
-    job.dispatch_status = 'en_route'
-    if (r?.queued) {
-      toast.add({
-        severity: 'warn',
-        summary: 'Saved offline',
-        detail: 'No signal — dispatch will be notified when you reconnect.',
-        life: 4000,
-      })
-    } else {
-      toast.add({
-        severity: 'success',
-        summary: 'On my way',
-        detail: `Dispatch notified — ${job.customer?.name || 'job'}`,
-        life: 2500,
-      })
-      // Refresh quietly to pick up any state dispatch changed.
-      load(true)
-    }
-  } catch (err) {
-    toast.add({
-      severity: 'error',
-      summary: 'Could not update',
-      detail: err?.message || 'Unknown error',
-      life: 4000,
-    })
-  } finally {
-    advancing.value = { ...advancing.value, [job.id]: false }
-  }
-}
 
-// Phase 1.2 B1 — "I'm here" → flips dispatch_status to on_site,
-// stamps Job + JobAssignment.arrived_at, auto-clocks-in the tech.
-// Sends optional geo if the browser will give it (best-effort, never block).
-async function imHere(job) {
-  advancing.value = { ...advancing.value, [job.id]: true }
-  let geo = {}
-  try {
-    if (navigator.geolocation) {
-      geo = await new Promise((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => resolve({
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            accuracy: pos.coords.accuracy,
-          }),
-          () => resolve({}),
-          { timeout: 3000, maximumAge: 60000 },
-        )
-      })
-    }
-  } catch { /* swallow */ }
-  try {
-    const r = await api.postQueued(`/api/mobile/jobs/${job.id}/arrived`, geo, {
-      actionType: 'job.arrived', resourceId: String(job.id),
-    })
-    job.dispatch_status = 'on_site'
-    if (r?.queued) {
-      toast.add({
-        severity: 'warn',
-        summary: 'Saved offline',
-        detail: 'No signal — your arrival will sync when you reconnect.',
-        life: 4000,
-      })
-    } else {
-      toast.add({
-        severity: 'success',
-        summary: "I'm here",
-        detail: `Clocked in at ${job.customer?.name || 'job'}`,
-        life: 2500,
-      })
-      load(true)
-    }
-  } catch (err) {
-    toast.add({
-      severity: 'error',
-      summary: 'Could not check in',
-      detail: err?.message || 'Unknown error',
-      life: 4000,
-    })
-  } finally {
-    advancing.value = { ...advancing.value, [job.id]: false }
-  }
-}
 
-// Phase 2 / C3.5 (Doug 2026-05-10) — replaced the inline sigDialog +
-// /api/mobile/jobs/{id}/complete flow with the unified
-// MobileJobCloseoutDialog. The new dialog collects parts + hours +
-// signature + notes and POSTs /api/jobs/{id}/closeout — same path
-// dispatchers use, single transaction, JobCloseout snapshot row
-// written. The legacy /api/mobile/jobs/{id}/complete route stays alive
-// for backwards compatibility but isn't reached from this view anymore.
-//
-// Why unify: techs were filling a thin sig-only form that didn't
-// capture parts or labor; office had to chase those down later.
+// Closeout is not on this screen any more. PR B moved every job action to the
+// job detail screen; this view is the ROUTE — which stops, in what order, and
+// how far apart. The closeout history that used to be recorded here now lives
+// with the code that owns it, in MobileJobDetailView, and the guard that the
+// legacy /api/mobile/jobs/{id}/complete endpoint stays unreachable moved with
+// it (see MobileCloseoutOwnership.spec.js).
 // One closeout path, one rule: capture-or-default at submit time.
 const closeoutOpen = ref(false)
 const closeoutJob = ref(null)
 
-function openComplete(job) {
-  closeoutJob.value = job
-  closeoutOpen.value = true
-}
 
-function onCloseoutDone() {
-  // Dialog already fired the success toast. Mark the job done locally
-  // so the card shows "done" immediately, then refresh.
-  if (closeoutJob.value) {
-    closeoutJob.value.dispatch_status = 'done'
-  }
-  closeoutOpen.value = false
-}
 
 // Refetch when the dialog closes for any reason (submit OR cancel).
 // On submit: ensures the local job list reflects the new lifecycle.
@@ -374,83 +292,18 @@ watch(closeoutOpen, async (v) => {
 
 const emptyState = computed(() => !loading.value && jobs.value.length === 0)
 
-// Phase 1.4 D1+D2 — multi-tech card decoration. Resolve the calling
-// tech's row from the assignments array (it's the row whose user_id
-// matches the JWT sub) so we can list ONLY the OTHER assignees.
-function _myTechId() {
-  try {
-    const u = JSON.parse(sessionStorage.getItem('gdx_user') || 'null')
-    return u?.id || null
-  } catch {
-    return null
-  }
-}
-function otherTechs(job) {
-  const list = Array.isArray(job?.assignments) ? job.assignments : []
-  if (list.length <= 1) return []
-  const myId = _myTechId()
-  // assignment.tech_id is technicians.id; sessionStorage user.id is users.id.
-  // The two don't match directly, so we treat any tech whose state-machine
-  // stamps differ from the page's most-recent activity as "the other tech."
-  // Simpler rule: if there are >1 assignments, every row except the lead
-  // (or the row we currently see actively progressing) is "other."
-  // Practical approach: list everyone EXCEPT the assignment whose
-  // completed_at OR arrived_at OR en_route_at is the most recent — that's
-  // most likely "us". This is best-effort UX, not a security boundary.
-  const ranked = [...list].sort((a, b) => {
-    const ax = a.completed_at || a.arrived_at || a.en_route_at || ''
-    const bx = b.completed_at || b.arrived_at || b.en_route_at || ''
-    return bx.localeCompare(ax)
-  })
-  // If our row matched myId via user_id later, prefer that — for now,
-  // assume the "self" row is the one with the most-recent stamp.
-  const selfId = ranked[0]?.tech_id
-  return list.filter((r) => r.tech_id !== selfId)
-}
 function _stateOf(a) {
   if (a.completed_at) return 'done'
   if (a.arrived_at) return 'on_site'
   if (a.en_route_at) return 'en_route'
   return 'assigned'
 }
-function multiTechLabel(job) {
-  const others = otherTechs(job)
-  if (others.length === 0) return ''
-  const lead = others.find((o) => o.is_lead)
-  const subj = others.length === 1 ? (others[0].tech_name || 'another tech') : `${others.length} others`
-  if (lead && others.length === 1) return `Lead: ${lead.tech_name || 'lead tech'}`
-  return `with ${subj}`
-}
-function multiTechTooltip(job) {
-  const others = otherTechs(job)
-  return others
-    .map((o) => `${o.tech_name || 'tech'}${o.is_lead ? ' (lead)' : ''} — ${_stateOf(o)}`)
-    .join('\n')
-}
 
 // ── Phase 1.3 parts (C1-C3, C6, C7) ──────────────────────────────────
 
-const expandedJobId = ref(null)
 const partsByJob = ref({})         // job_id -> array of parts
 const partsLoading = ref({})        // job_id -> bool
 
-// ── Install / equipment at the site (read-only) ──────────────────────
-// Surfaces the customer's installed equipment (door + opener specs) on the
-// job card so a tech on an install/service call sees the unit details. Reuses
-// GET /api/customers/{id}/equipment (gated on the equipment_tracking module).
-const equipExpandedJobId = ref(null)
-const equipByCustomer = ref({})     // customer_id -> array of equipment
-const equipLoading = ref({})        // customer_id -> bool
-const partsModalOpen = ref(false)
-const partsModalJobId = ref(null)
-const partsModalEditingId = ref(null)  // when set, modal is in "edit" mode
-const skuSuggestions = ref([])
-const skuLoading = ref(false)
-const URGENCY_OPTIONS = [
-  { label: 'Normal', value: 'normal' },
-  { label: 'Urgent', value: 'urgent' },
-  { label: 'Critical', value: 'critical' },
-]
 const blankPartsForm = () => ({
   sku: null,
   part_name: '',
@@ -468,100 +321,13 @@ const partsForm = ref(blankPartsForm())
 // has_accepted_quote / latest_quote derived from this.
 const quoteByJob = ref({})
 
-const quoteBuilderOpen = ref(false)
-const quoteBuilderJob = ref(null)
 
-const customerQuoteOpen = ref(false)
-const customerQuote = ref(null)
 
-const invoiceDialogOpen = ref(false)
-const invoiceDialogJob = ref(null)
 
-async function ensureJobQuotesLoaded(job) {
-  if (!job?.id) return
-  if (quoteByJob.value[job.id]) return
-  try {
-    const data = await api.get(`/api/mobile/jobs/${job.id}/quote`)
-    quoteByJob.value[job.id] = { quotes: data.quotes || [] }
-  } catch (e) {
-    quoteByJob.value[job.id] = { quotes: [], error: e.message }
-  }
-}
-function jobQuotes(job) {
-  return quoteByJob.value[job?.id]?.quotes || []
-}
-function jobAcceptedQuote(job) {
-  return jobQuotes(job).find(q => q.status === 'accepted') || null
-}
-function jobLatestActiveQuote(job) {
-  // Active = not declined.
-  return jobQuotes(job).find(q => q.status !== 'declined') || null
-}
 
-function openQuoteBuilder(job) {
-  quoteBuilderJob.value = job
-  quoteBuilderOpen.value = true
-}
-function onQuoteBuilt(quote) {
-  if (quoteBuilderJob.value?.id) {
-    const list = jobQuotes(quoteBuilderJob.value)
-    list.unshift(quote)
-    quoteByJob.value[quoteBuilderJob.value.id] = { quotes: list }
-  }
-}
-function presentQuote(quote) {
-  customerQuote.value = quote
-  customerQuoteOpen.value = true
-}
-function onQuoteAccepted(updated) {
-  // Patch the in-memory list with the new status.
-  for (const jid of Object.keys(quoteByJob.value)) {
-    const list = quoteByJob.value[jid].quotes || []
-    const i = list.findIndex(q => q.id === updated.id)
-    if (i >= 0) list[i] = { ...list[i], ...updated }
-  }
-  toast.add({ severity: 'success', summary: 'Customer accepted', life: 2500 })
-}
-function onQuoteDeclined(updated) {
-  for (const jid of Object.keys(quoteByJob.value)) {
-    const list = quoteByJob.value[jid].quotes || []
-    const i = list.findIndex(q => q.id === updated.id)
-    if (i >= 0) list[i] = { ...list[i], ...updated }
-  }
-}
-function openInvoice(job) {
-  invoiceDialogJob.value = job
-  invoiceDialogOpen.value = true
-}
-function onInvoiced(_inv) {
-  // No-op for now; the dialog re-loads its own summary.
-}
 
-// Phase 4.1 — per-job dispatch chat.
-const chatDialogOpen = ref(false)
-const chatDialogJob = ref(null)
-function openChat(job) {
-  chatDialogJob.value = job
-  chatDialogOpen.value = true
-}
 
-// 2026-07-01 UX audit — field change orders (see MobileChangeOrderDialog).
-const changeOrderOpen = ref(false)
-const changeOrderJob = ref(null)
-function openChangeOrder(job) {
-  changeOrderJob.value = job
-  changeOrderOpen.value = true
-}
-const partsSubmitting = ref(false)
 
-function summaryLabel(s) {
-  if (!s || !s.total) return null
-  const parts = []
-  if (s.needed) parts.push(`${s.needed} needed`)
-  if (s.ordered) parts.push(`${s.ordered} ordered`)
-  if (s.received) parts.push(`${s.received} received`)
-  return `${s.total} part${s.total === 1 ? '' : 's'} (${parts.join(', ')})`
-}
 
 // Phase 1.3 C4 (in-app fallback) — surface dispatch status changes
 // (ordered/received) since the tech's last view. Push lands in Sprint 1.5;
@@ -649,26 +415,11 @@ function dismissPushCta() {
   refreshPushCta()
 }
 
-function markJobSeen(jobId) {
-  _markJobSeen(jobId)
-  partsUnseenByJob.value = { ...partsUnseenByJob.value, [jobId]: 0 }
-}
 
 function recomputeUnseen(jobId, partsList) {
   return countUnseenForJob(jobId, partsList)
 }
 
-async function toggleParts(job) {
-  if (expandedJobId.value === job.id) {
-    expandedJobId.value = null
-    return
-  }
-  expandedJobId.value = job.id
-  if (!partsByJob.value[job.id]) {
-    await loadParts(job.id)
-  }
-  markJobSeen(job.id)
-}
 
 async function loadParts(jobId) {
   partsLoading.value = { ...partsLoading.value, [jobId]: true }
@@ -692,112 +443,12 @@ async function loadParts(jobId) {
   }
 }
 
-const EQUIP_TYPE_LABELS = {
-  garage_door: 'Garage door',
-  opener: 'Opener',
-  gate: 'Gate',
-  other: 'Equipment',
-}
-function equipTypeLabel(t) {
-  return EQUIP_TYPE_LABELS[t] || 'Equipment'
-}
-function equipTitle(e) {
-  const parts = [e.manufacturer, e.model].filter(Boolean).join(' ')
-  return parts || equipTypeLabel(e.equipment_type)
-}
 
-async function toggleEquipment(job) {
-  const cid = job.customer?.id
-  if (!cid) return
-  if (equipExpandedJobId.value === job.id) {
-    equipExpandedJobId.value = null
-    return
-  }
-  equipExpandedJobId.value = job.id
-  if (!equipByCustomer.value[cid]) {
-    await loadEquipment(cid)
-  }
-}
 
-async function loadEquipment(customerId) {
-  equipLoading.value = { ...equipLoading.value, [customerId]: true }
-  try {
-    const r = await api.get(`/api/customers/${customerId}/equipment`)
-    const list = Array.isArray(r) ? r : r?.items || r?.data || []
-    equipByCustomer.value = { ...equipByCustomer.value, [customerId]: list }
-  } catch {
-    // Equipment tracking is an optional module — fail quietly (show "none").
-    equipByCustomer.value = { ...equipByCustomer.value, [customerId]: [] }
-  } finally {
-    equipLoading.value = { ...equipLoading.value, [customerId]: false }
-  }
-}
 
-async function refreshAllUnseenCounts() {
-  // C4 fallback: when the today's-route loads, walk every job that has
-  // recorded parts and recompute its unseen-update badge. Cheap because
-  // parts_summary already tells us which jobs to bother fetching.
-  const targets = jobs.value.filter((j) => (j.parts_summary?.total || 0) > 0)
-  await Promise.all(targets.map((j) => loadParts(j.id)))
-  let total = 0
-  for (const j of targets) {
-    total += partsUnseenByJob.value[j.id] || 0
-  }
-  if (total > 0) {
-    toast.add({
-      severity: 'info',
-      summary: total === 1 ? 'Dispatch updated 1 part' : `Dispatch updated ${total} parts`,
-      detail: 'Tap the parts row on a job to see what changed.',
-      life: 5000,
-    })
-  }
-}
 
-function openRequestParts(job) {
-  partsModalJobId.value = job.id
-  partsModalEditingId.value = null
-  partsForm.value = blankPartsForm()
-  skuSuggestions.value = []
-  partsModalOpen.value = true
-}
 
-function openEditPart(job, part) {
-  partsModalJobId.value = job.id
-  partsModalEditingId.value = part.id
-  // Always feed the AutoComplete a string so the prefill is visible —
-  // the user can clear it and pick a catalog hit, in which case the
-  // payload helper coerces back to {sku, name}. If we passed an object
-  // here the AutoComplete would render the object's optionLabel only
-  // when it matches a current suggestion, leaving the field looking
-  // empty.
-  partsForm.value = {
-    sku: part.sku || '',
-    part_name: part.part_name,
-    quantity: part.quantity || 1,
-    supplier: part.supplier || '',
-    urgency: part.urgency || 'normal',
-    notes: part.notes || '',
-    photo_url: part.photo_url || null,
-  }
-  partsModalOpen.value = true
-}
 
-async function searchSku(event) {
-  const q = (event?.query || '').trim()
-  if (!q) {
-    skuSuggestions.value = []
-    return
-  }
-  skuLoading.value = true
-  try {
-    const r = await api.get(`/api/parts-needed/sku-suggest?q=${encodeURIComponent(q)}`)
-    skuSuggestions.value = Array.isArray(r) ? r : []
-  } catch {
-    skuSuggestions.value = []
-  } finally {
-    skuLoading.value = false
-  }
-}
 
 function pickSuggestion(s) {
   // Hydrate the rest of the form when the tech picks a catalog hit.
@@ -837,48 +488,8 @@ function partsFormPayload() {
   }
 }
 
-async function submitPartsForm() {
-  const payload = partsFormPayload()
-  if (!payload.part_name) {
-    toast.add({ severity: 'warn', summary: 'Part name required', life: 3000 })
-    return
-  }
-  partsSubmitting.value = true
-  try {
-    if (partsModalEditingId.value) {
-      await api.patch(`/api/parts-needed/${partsModalEditingId.value}`, payload)
-      toast.add({ severity: 'success', summary: 'Part updated', life: 2500 })
-    } else {
-      await api.post(`/api/jobs/${partsModalJobId.value}/parts-needed`, payload)
-      toast.add({ severity: 'success', summary: 'Part requested', life: 2500 })
-    }
-    partsModalOpen.value = false
-    await loadParts(partsModalJobId.value)
-    await load(true)  // refresh parts_summary on the cards
-  } catch (err) {
-    toast.add({
-      severity: 'error',
-      summary: 'Could not save',
-      detail: err?.message || 'Unknown error',
-      life: 4000,
-    })
-  } finally {
-    partsSubmitting.value = false
-  }
-}
 
-function partStatusSeverity(s) {
-  return s === 'received' ? 'success' : s === 'ordered' ? 'info' : 'warn'
-}
 
-function formatEta(iso) {
-  if (!iso) return null
-  try {
-    return new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
-  } catch {
-    return null
-  }
-}
 
 // ── Map view (S1-A5) ─────────────────────────────────────────────────
 
@@ -999,9 +610,28 @@ watch(jobs, () => {
 // "while clocked in" privacy boundary; sampler stops on 403.
 const gps = useGpsBreadcrumb({ intervalMs: 30_000 })
 
+// C4 fallback: on load, recompute the "dispatch answered your parts request"
+// badge for every stop that has parts. The signal used to end in a toast saying
+// "tap the parts row" — PR B removed that row, so the count now rides on the
+// card itself and the toast points at the job instead. Losing the signal
+// entirely was the alternative, and a tech who never learns dispatch ordered
+// the spring is the reason it exists.
+async function refreshAllUnseenCounts() {
+  const targets = jobs.value.filter((j) => (j.parts_summary?.total || 0) > 0)
+  await Promise.all(targets.map((j) => loadParts(j.id)))
+  const total = targets.reduce((n, j) => n + (partsUnseenByJob.value[j.id] || 0), 0)
+  if (total > 0) {
+    toast.add({
+      severity: 'info',
+      summary: total === 1 ? 'Dispatch updated 1 part' : `Dispatch updated ${total} parts`,
+      detail: 'Open the job to see what changed.',
+      life: 5000,
+    })
+  }
+}
+
 onMounted(async () => {
   await load()
-  // C4 fallback: surface dispatch updates the tech missed since last view.
   refreshAllUnseenCounts()
   // E2: gate the "Enable notifications" CTA on browser support + perm.
   // 2026-08-04: two hard-won additions —
@@ -1152,6 +782,14 @@ function replayTour() {
 
       <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
 
+      <!-- No signal, showing the last route we saw. Says so plainly: a tech
+           acting on a stale route must know it is stale. Without this the
+           screen would be indistinguishable from a live one. -->
+      <div v-if="fromCache" class="cached-banner" data-testid="mt-cached-route">
+        <i class="pi pi-wifi" />
+        <span>No signal — showing your last saved route. Pull refresh when you're back in range.</span>
+      </div>
+
       <div v-if="loading && !refreshing" class="loading">Loading…</div>
 
       <div v-else-if="emptyState" class="empty">
@@ -1183,266 +821,35 @@ function replayTour() {
           <i class="pi pi-car" />
           {{ formatDriveTime(jobs[idx - 1].drive_time_to_next_seconds) }} drive
         </div>
-        <li class="job-card">
-          <div class="job-row job-row-top">
-            <div class="job-time">{{ formatTime(job.time_window?.start) }}</div>
-            <div class="job-pills">
-              <Tag
-                v-if="job.priority && job.priority !== 'Normal'"
-                :value="job.priority"
-                :severity="prioritySeverity(job.priority)"
-              />
-              <span :class="['status-pill', `status-${(job.dispatch_status || 'assigned').replace(' ','_')}`]">
-                <i :class="statusIcon(job.dispatch_status)" />
-                {{ statusLabel(job.dispatch_status) }}
-              </span>
-            </div>
-            <div v-if="reorderMode" class="reorder-controls">
-              <Button
-                v-tooltip="'Move up'"
-                icon="pi pi-arrow-up"
-                text
-                rounded
-                size="small"
-                :disabled="idx === 0"
-                aria-label="Move up"
-                @click="moveJob(idx, -1)"
-              />
-              <Button
-                v-tooltip="'Move down'"
-                icon="pi pi-arrow-down"
-                text
-                rounded
-                size="small"
-                :disabled="idx === jobs.length - 1"
-                aria-label="Move down"
-                @click="moveJob(idx, 1)"
-              />
-            </div>
-            <div v-else class="job-stop-num">#{{ idx + 1 }}</div>
-          </div>
-
-          <div class="job-customer">{{ job.customer?.name || '—' }}</div>
-
-          <div
-            v-if="otherTechs(job).length > 0"
-            class="job-multitech"
-            :title="multiTechTooltip(job)"
+        <li>
+          <MobileJobCard
+            :job="job"
+            testid="mobile-route-job"
+            :unseen-parts="partsUnseenByJob[job.id] || 0"
+            @navigate="openMaps"
           >
-            <i class="pi pi-users" />
-            <span>{{ multiTechLabel(job) }}</span>
-          </div>
-          <!-- site_address = the JOBSITE (server-resolved; falls back to the
-               customer address for unbound jobs). navigation_link matches it. -->
-          <div
-            class="job-address"
-            :class="{ 'job-address-missing': !job.site_address }"
-            @click="openMaps(job)"
-          >
-            <i class="pi pi-map-marker" />
-            <span v-if="job.site_label" class="job-site-label">{{ job.site_label }}</span>
-            {{ job.site_address || 'No address — ask dispatch' }}
-          </div>
-          <div class="job-service">
-            {{ job.service_type }} · {{ job.title }}
-            <Tag v-if="job.is_return_visit" value="Return visit" severity="warn" class="return-visit-tag" data-test="mt-return-visit-tag" />
-          </div>
-
-          <div v-if="job.alerts?.length" class="job-alerts">
-            <Tag
-              v-for="alert in job.alerts"
-              :key="alert"
-              :value="alert.replace(/_/g, ' ')"
-              severity="warn"
-            />
-          </div>
-
-          <div v-if="job.customer?.notes" class="job-notes">
-            <i class="pi pi-info-circle" />
-            <span>{{ job.customer.notes }}</span>
-          </div>
-
-          <div
-            v-if="summaryLabel(job.parts_summary) || true"
-            class="job-parts-row"
-            @click="toggleParts(job)"
-            :data-testid="`parts-summary-${job.id}`"
-          >
-            <i class="pi pi-wrench" />
-            <span>{{ summaryLabel(job.parts_summary) || 'No parts requested' }}</span>
-            <span
-              v-if="(partsUnseenByJob[job.id] || 0) > 0"
-              class="parts-unseen-badge"
-              :title="`${partsUnseenByJob[job.id]} update(s) from dispatch`"
-            >
-              {{ partsUnseenByJob[job.id] }}
-            </span>
-            <i :class="['pi', expandedJobId === job.id ? 'pi-chevron-up' : 'pi-chevron-down']" />
-          </div>
-
-          <div v-if="expandedJobId === job.id" class="job-parts-panel">
-            <div class="job-parts-head">
-              <Button
-                label="Request part"
-                icon="pi pi-plus"
-                size="small"
-                @click.stop="openRequestParts(job)"
-              />
-            </div>
-            <div v-if="partsLoading[job.id]" class="muted">Loading…</div>
-            <ul v-else-if="(partsByJob[job.id] || []).length" class="job-parts-list">
-              <li
-                v-for="p in partsByJob[job.id]"
-                :key="p.id"
-                class="job-parts-item"
-              >
-                <div class="job-parts-line">
-                  <Tag :value="p.status" :severity="partStatusSeverity(p.status)" />
-                  <Tag
-                    v-if="p.urgency && p.urgency !== 'normal'"
-                    :value="p.urgency"
-                    :severity="p.urgency === 'critical' ? 'danger' : 'warn'"
-                  />
-                  <strong>{{ p.part_name }}</strong>
-                  <span class="muted">×{{ p.quantity || 1 }}</span>
-                </div>
-                <div v-if="p.sku || p.eta_at" class="job-parts-meta">
-                  <span v-if="p.sku">SKU {{ p.sku }}</span>
-                  <span v-if="p.eta_at">ETA {{ formatEta(p.eta_at) }}</span>
-                </div>
-                <div v-if="p.status === 'needed'" class="job-parts-actions">
-                  <Button
-                    label="Edit"
-                    icon="pi pi-pencil"
-                    text
-                    size="small"
-                    @click.stop="openEditPart(job, p)"
-                  />
-                </div>
-              </li>
-            </ul>
-            <div v-else class="muted">No parts requested for this job yet.</div>
-          </div>
-
-          <div
-            class="job-parts-row"
-            @click="toggleEquipment(job)"
-            :data-testid="`equipment-summary-${job.id}`"
-          >
-            <i class="pi pi-box" />
-            <span>Install &amp; equipment</span>
-            <i :class="['pi', equipExpandedJobId === job.id ? 'pi-chevron-up' : 'pi-chevron-down']" />
-          </div>
-
-          <div
-            v-if="equipExpandedJobId === job.id"
-            class="job-parts-panel"
-            :data-testid="`equipment-panel-${job.id}`"
-          >
-            <div v-if="equipLoading[job.customer?.id]" class="muted">Loading…</div>
-            <ul v-else-if="(equipByCustomer[job.customer?.id] || []).length" class="job-parts-list">
-              <li
-                v-for="e in equipByCustomer[job.customer?.id]"
-                :key="e.id"
-                class="job-parts-item"
-              >
-                <div class="job-parts-line">
-                  <Tag
-                    :value="equipTypeLabel(e.equipment_type)"
-                    :severity="e.equipment_type === 'garage_door' ? 'info' : 'secondary'"
-                  />
-                  <strong>{{ equipTitle(e) }}</strong>
-                </div>
-                <div
-                  v-if="e.serial_number || e.installation_date || e.warranty_expires_on"
-                  class="job-parts-meta"
-                >
-                  <span v-if="e.serial_number">S/N {{ e.serial_number }}</span>
-                  <span v-if="e.installation_date">Installed {{ e.installation_date }}</span>
-                  <span v-if="e.warranty_expires_on">Warranty → {{ e.warranty_expires_on }}</span>
-                </div>
-                <div v-if="e.notes" class="job-equip-notes">{{ e.notes }}</div>
-              </li>
-            </ul>
-            <div v-else class="muted">No install/equipment on file for this site.</div>
-          </div>
-
-          <div class="job-actions">
+            <!-- Route chrome stays with the route: the Jobs list has no stop
+                 #4, and reorder is a property of the day, not of the job. -->
+            <template #lead>
+              <span v-if="!reorderMode" class="stop-num">{{ idx + 1 }}</span>
+            </template>
+          </MobileJobCard>
+          <div v-if="reorderMode" class="reorder-controls">
             <Button
-              v-if="job.dispatch_status === 'assigned' || job.dispatch_status === 'unassigned' || !job.dispatch_status"
-              label="On my way"
-              icon="pi pi-send"
-              :loading="advancing[job.id]"
-              @click="onMyWay(job)"
+              v-tooltip="'Move up'"
+              icon="pi pi-arrow-up"
+              text rounded size="small"
+              :disabled="idx === 0"
+              aria-label="Move up"
+              @click="moveJob(idx, -1)"
             />
             <Button
-              v-else-if="job.dispatch_status === 'en_route'"
-              label="I'm here"
-              icon="pi pi-map-marker"
-              :loading="advancing[job.id]"
-              @click="imHere(job)"
-            />
-            <Button
-              v-else-if="job.dispatch_status === 'on_site'"
-              label="Complete"
-              icon="pi pi-check"
-              severity="success"
-              :loading="advancing[job.id]"
-              @click="openComplete(job)"
-            />
-            <Button
-              v-if="job.dispatch_status !== 'done'"
-              label="Navigate"
-              icon="pi pi-directions"
-              severity="secondary"
-              outlined
-              :disabled="!job.navigation_link"
-              @click="openMaps(job)"
-            />
-            <!-- Phase 2.1 — Quote action. Visible while the job is active
-                 (not assigned-only — wait until the tech is at least en
-                 route so they're not building speculative quotes). -->
-            <Button
-              v-if="['en_route','on_site','done'].includes(job.dispatch_status)"
-              :label="jobLatestActiveQuote(job) ? 'Show quote' : 'Build quote'"
-              :icon="jobLatestActiveQuote(job) ? 'pi pi-file' : 'pi pi-pencil'"
-              severity="secondary"
-              outlined
-              @click="ensureJobQuotesLoaded(job).then(() => {
-                const q = jobLatestActiveQuote(job)
-                if (q) presentQuote(q)
-                else openQuoteBuilder(job)
-              })"
-            />
-            <!-- Phase 2.2 — Invoice action. Visible after job is done OR
-                 once we've got an accepted quote on the job. -->
-            <Button
-              v-if="job.dispatch_status === 'done' || jobAcceptedQuote(job)"
-              label="Close out"
-              icon="pi pi-receipt"
-              severity="success"
-              @click="ensureJobQuotesLoaded(job).then(() => openInvoice(job))"
-            />
-            <!-- 2026-07-01 UX audit — field change orders. Visible once the
-                 tech is on site (that's when extra scope gets discovered);
-                 posts the office's normal CO pipeline as pending_approval. -->
-            <Button
-              v-if="['on_site','done'].includes(job.dispatch_status)"
-              label="Change order"
-              icon="pi pi-file-plus"
-              severity="secondary"
-              outlined
-              data-testid="mtv-change-order-btn"
-              @click="openChangeOrder(job)"
-            />
-            <!-- Phase 4.1 — Per-job chat with dispatch. Available any time
-                 the job has any active state (assigned through done). -->
-            <Button
-              label="Chat"
-              icon="pi pi-comment"
-              severity="secondary"
-              outlined
-              @click="openChat(job)"
+              v-tooltip="'Move down'"
+              icon="pi pi-arrow-down"
+              text rounded size="small"
+              :disabled="idx === jobs.length - 1"
+              aria-label="Move down"
+              @click="moveJob(idx, 1)"
             />
           </div>
         </li>
@@ -1464,145 +871,11 @@ function replayTour() {
         </h2>
         <ol class="job-list">
           <li v-for="job in areaJobs" :key="job.id">
-            <router-link
-              :to="`/mobile/jobs/${job.id}`"
-              class="area-card"
-              :data-testid="`mobile-area-job-${job.id}`"
-            >
-              <div class="job-row job-row-top">
-                <div class="area-customer">{{ job.customer?.name || '—' }}</div>
-                <i class="pi pi-chevron-right area-chevron" />
-              </div>
-              <div v-if="job.site_address" class="area-address">
-                <i class="pi pi-map-marker" />
-                <span>{{ job.site_address }}</span>
-              </div>
-              <div v-if="job.title" class="area-title">{{ job.title }}</div>
-            </router-link>
+            <MobileJobCard :job="job" testid="mobile-area-job" @navigate="openMaps" />
           </li>
         </ol>
       </div>
     </section>
-
-    <!-- Phase 2 / C3.5 — unified closeout sheet (Doug 2026-05-10).
-         Replaces the prior thin sig-only complete dialog. See
-         components/MobileJobCloseoutDialog.vue. -->
-    <MobileJobCloseoutDialog
-      v-model:visible="closeoutOpen"
-      :job-id="closeoutJob?.id || ''"
-      :job-title="closeoutJob?.title || closeoutJob?.customer?.name || ''"
-      :job-type="closeoutJob?.job_type || ''"
-      :customer-name="closeoutJob?.customer?.name || ''"
-      @closed-out="onCloseoutDone"
-    />
-
-    <!-- 2026-07-01 UX audit — field change-order request (tech → office
-         pending_approval pipeline). See components/MobileChangeOrderDialog. -->
-    <MobileChangeOrderDialog
-      v-model:visible="changeOrderOpen"
-      :job-id="changeOrderJob?.id || ''"
-      :job-title="changeOrderJob?.title || changeOrderJob?.customer?.name || ''"
-      :customer-id="changeOrderJob?.customer?.id || null"
-      :customer-name="changeOrderJob?.customer?.name || ''"
-    />
-
-    <Dialog
-      v-model:visible="partsModalOpen"
-      :header="partsModalEditingId ? 'Edit part request' : 'Request part'"
-      modal
-      :style="{ width: '92vw', maxWidth: '480px' }"
-    >
-      <div class="parts-form">
-        <div class="form-field">
-          <label>Part / SKU</label>
-          <AutoComplete
-            v-model="partsForm.sku"
-            :suggestions="skuSuggestions"
-            optionLabel="sku"
-            placeholder="Type SKU or part name"
-            :loading="skuLoading"
-            forceSelection="false"
-            completeOnFocus
-            @complete="searchSku"
-            @item-select="(e) => pickSuggestion(e.value)"
-          >
-            <template #option="slotProps">
-              <div class="sku-option">
-                <strong>{{ slotProps.option.sku || slotProps.option.name }}</strong>
-                <span class="muted">{{ slotProps.option.name }}</span>
-                <span v-if="slotProps.option.qty_on_hand != null" class="muted">
-                  · on hand: {{ slotProps.option.qty_on_hand }}
-                </span>
-                <span v-if="slotProps.option.source === 'door_catalog'" class="muted">
-                  · door catalog
-                </span>
-              </div>
-            </template>
-          </AutoComplete>
-        </div>
-        <div class="form-field">
-          <label>Description</label>
-          <InputText v-model="partsForm.part_name" placeholder="What is this part?" />
-        </div>
-        <div class="form-row">
-          <div class="form-field">
-            <label>Qty</label>
-            <InputNumber v-model="partsForm.quantity" :min="1" :max="999" showButtons />
-          </div>
-          <div class="form-field">
-            <label>Urgency</label>
-            <Select
-              v-model="partsForm.urgency"
-              :options="URGENCY_OPTIONS"
-              optionLabel="label"
-              optionValue="value"
-            />
-          </div>
-        </div>
-        <div class="form-field">
-          <label>Supplier (optional)</label>
-          <InputText v-model="partsForm.supplier" />
-        </div>
-        <div class="form-field">
-          <label>Notes</label>
-          <Textarea v-model="partsForm.notes" rows="2" autoResize />
-        </div>
-      </div>
-      <template #footer>
-        <Button label="Cancel" text @click="partsModalOpen = false" />
-        <Button
-          :label="partsModalEditingId ? 'Save' : 'Request'"
-          icon="pi pi-check"
-          :loading="partsSubmitting"
-          @click="submitPartsForm"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Phase 2.1 + 2.2 — Quote builder, customer-facing presentation,
-         and close-out invoice dialog. All three are inert until opened
-         via job-card actions. -->
-    <MobileQuoteBuilderDialog
-      v-model:visible="quoteBuilderOpen"
-      :job="quoteBuilderJob"
-      @saved="onQuoteBuilt"
-      @present="presentQuote"
-    />
-    <MobileCustomerQuoteDialog
-      v-model:visible="customerQuoteOpen"
-      :quote="customerQuote"
-      @accepted="onQuoteAccepted"
-      @declined="onQuoteDeclined"
-    />
-    <MobileInvoiceDialog
-      v-model:visible="invoiceDialogOpen"
-      :job="invoiceDialogJob"
-      @invoiced="onInvoiced"
-    />
-    <MobileChatDialog
-      v-model:visible="chatDialogOpen"
-      :job="chatDialogJob"
-    />
 </template>
 
 <style scoped>
@@ -1724,6 +997,16 @@ function replayTour() {
   display: flex;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+/* The route's stop badge, rendered into the card's `lead` slot. Named
+   .stop-num when the card was extracted; the old .job-stop-num rule below
+   belonged to the deleted markup and matched nothing, so every stop number
+   rendered unstyled. */
+.stop-num {
+  flex: 0 0 auto;
+  min-width: 1.35rem; text-align: center;
+  font-size: 0.8rem; font-weight: 700;
+  color: var(--p-text-muted-color, #6b7280);
 }
 .job-stop-num {
   font-size: 0.8rem;
@@ -2050,9 +1333,9 @@ function replayTour() {
   font-size: 0.95rem;
   margin-bottom: 0.1rem;
 }
-/* Phase 2 / C3.5 — removed .sig-form / .sig-canvas / .sig-clear; the
-   inline complete-and-sign dialog they styled is gone, replaced by
-   MobileJobCloseoutDialog which carries its own scoped styles. */
+/* The inline complete-and-sign styles (.sig-form / .sig-canvas / .sig-clear)
+   went with the dialog they styled; the whole action surface now lives on the
+   job detail screen. */
 
 /* 2026-07-16 — "when you're in the area" section (undated assigned jobs). */
 .area-section { margin-top: 1.25rem; }
@@ -2084,4 +1367,12 @@ function replayTour() {
 .area-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .area-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 .return-visit-tag { margin-left: 0.4rem; font-size: 0.65rem; vertical-align: middle; }
+.cached-banner {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.55rem 0.75rem; border-radius: 0.5rem;
+  font-size: 0.85rem; line-height: 1.35;
+  color: var(--p-text-color, #111827);
+  background: var(--p-content-hover-background, #f3f4f6);
+  border-left: 3px solid var(--p-orange-500, #f97316);
+}
 </style>

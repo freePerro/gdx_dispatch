@@ -128,6 +128,18 @@ export const useAuthStore = defineStore('auth', () => {
     sessionStorage.removeItem('gdx_access_token');
     sessionStorage.removeItem('gdx_tenant_slug');
     sessionStorage.removeItem('gdx_user');
+    // localStorage too, for anything holding CUSTOMER data rather than session
+    // data. The offline route cache keeps a full day of stops — customer name,
+    // phone, address, notes and tags — so a shared or handed-on phone would
+    // otherwise keep the customer book readable after logout. Same shared-kiosk
+    // scenario as the 2026-05-09 incident above, one storage tier down.
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('gdx_today_route_cache')) localStorage.removeItem(k);
+      }
+    } catch {
+      // Private mode / quota-blocked storage: nothing to clear.
+    }
   }
 
   // Server-side logout: revokes the refresh cookie so a re-auth can't

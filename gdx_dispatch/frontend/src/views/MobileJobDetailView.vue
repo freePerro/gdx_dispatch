@@ -55,8 +55,45 @@
         <span v-else>View only — this job isn't assigned to you.</span>
       </div>
 
+      <!-- PR A: job context the Today card always showed and this screen never
+           did. A tech reaching a job from the Jobs list saw no priority, no
+           dog-in-the-yard alert, and no note that this is a second trip. -->
+      <div
+        v-if="job.priority && job.priority !== 'Normal' || job.is_return_visit || (job.alerts && job.alerts.length)"
+        class="job-context"
+        data-testid="mjd-job-context"
+      >
+        <Tag
+          v-if="job.priority && job.priority !== 'Normal'"
+          :value="job.priority"
+          :severity="job.priority === 'Emergency' || job.priority === 'High' ? 'danger' : 'warn'"
+        />
+        <Tag
+          v-if="job.is_return_visit"
+          value="Return visit"
+          severity="warn"
+          data-testid="mjd-return-visit"
+        />
+        <Tag
+          v-for="alert in job.alerts || []"
+          :key="alert"
+          :value="alert.replace(/_/g, ' ')"
+          severity="warn"
+        />
+      </div>
+
       <div class="detail-card">
         <h2>Customer</h2>
+        <!-- Customer-level warnings (dog, gate code, call-ahead). Carried on
+             the nested customer, same as Today's card reads it. -->
+        <div
+          v-if="customer?.notes"
+          class="customer-notes"
+          data-testid="mjd-customer-notes"
+        >
+          <i class="pi pi-info-circle" />
+          <span>{{ customer.notes }}</span>
+        </div>
         <a
           v-if="customer?.phone"
           class="contact-row"
@@ -268,6 +305,46 @@
       <div v-if="doorSpecs.length" class="detail-card" data-testid="mjd-door-specs">
         <h2>Install Specs</h2>
         <DoorSpecList :doors="doorSpecs" />
+      </div>
+
+      <!-- PR A: the customer's installed equipment (door + opener specs).
+           Collapsed by default and fetched on first expand — an install/service
+           tech wants the unit details, but not at the cost of a GET on every
+           job open. Gated on the customer being known, same as Today's card. -->
+      <div v-if="customer?.id" class="detail-card">
+        <h2
+          class="equip-head"
+          data-testid="mjd-equipment-toggle"
+          @click="toggleEquipment"
+        >
+          <i class="pi pi-box" />
+          Install &amp; equipment
+          <i :class="['pi', equipOpen ? 'pi-chevron-up' : 'pi-chevron-down', 'equip-chevron']" />
+        </h2>
+        <template v-if="equipOpen">
+          <div v-if="equipLoading" class="muted">Loading…</div>
+          <ul v-else-if="(equipment || []).length" class="equip-list" data-testid="mjd-equipment-list">
+            <li v-for="e in equipment" :key="e.id" class="equip-item">
+              <div class="equip-line">
+                <Tag
+                  :value="equipTypeLabel(e.equipment_type)"
+                  :severity="e.equipment_type === 'garage_door' ? 'info' : 'secondary'"
+                />
+                <strong>{{ equipTitle(e) }}</strong>
+              </div>
+              <div
+                v-if="e.serial_number || e.installation_date || e.warranty_expires_on"
+                class="equip-meta"
+              >
+                <span v-if="e.serial_number">S/N {{ e.serial_number }}</span>
+                <span v-if="e.installation_date">Installed {{ e.installation_date }}</span>
+                <span v-if="e.warranty_expires_on">Warranty → {{ e.warranty_expires_on }}</span>
+              </div>
+              <div v-if="e.notes" class="equip-notes">{{ e.notes }}</div>
+            </li>
+          </ul>
+          <div v-else class="muted">No install/equipment on file for this site.</div>
+        </template>
       </div>
 
       <!-- Always rendered, never `v-if="notes.length"`: the tech with nothing
@@ -597,6 +674,51 @@
         </div>
       </div>
 
+      <!-- PR A. These live INLINE, not in the sticky bar, and the browser walk
+           is why. Adding three buttons to the floating bar pushed it to three
+           rows: it then covered the equipment list, and the FAB sat on top of
+           Chat so the button could not be tapped at all. The bar's own comment
+           already records it covering four of six part suggestions — it is a
+           narrow budget and status actions own it. Quote / change order / chat
+           are deliberate, not thumb-urgent, so they sit in the page flow, which
+           is also exactly where Today's card puts them. -->
+      <div
+        v-if="!readOnly"
+        class="detail-card secondary-actions"
+        data-testid="mjd-secondary-actions"
+      >
+        <h2>More actions</h2>
+        <div class="secondary-actions-row">
+          <Button
+            v-if="['en_route','on_site','done'].includes(job.dispatch_status)"
+            :label="latestActiveQuote ? 'Show quote' : 'Build quote'"
+            :icon="latestActiveQuote ? 'pi pi-file' : 'pi pi-pencil'"
+            severity="secondary"
+            outlined
+            :loading="quotesLoading"
+            data-testid="mjd-quote"
+            @click="openQuote"
+          />
+          <Button
+            v-if="['on_site','done'].includes(job.dispatch_status)"
+            label="Change order"
+            icon="pi pi-file-plus"
+            severity="secondary"
+            outlined
+            data-testid="mjd-change-order"
+            @click="changeOrderOpen = true"
+          />
+          <Button
+            label="Chat"
+            icon="pi pi-comment"
+            severity="secondary"
+            outlined
+            data-testid="mjd-chat"
+            @click="chatOpen = true"
+          />
+        </div>
+      </div>
+
       <!-- Sticky so the tech can act without scrolling a long job.
            Hidden for as long as the part composer is open — while suggestions
            show AND while a picked/typed name is pending submit. This bar
@@ -684,6 +806,29 @@
         :job="job"
         @invoiced="refresh"
       />
+      <MobileQuoteBuilderDialog
+        v-model:visible="quoteBuilderOpen"
+        :job="job"
+        @saved="onQuoteBuilt"
+        @present="presentQuote"
+      />
+      <MobileCustomerQuoteDialog
+        v-model:visible="customerQuoteOpen"
+        :quote="customerQuote"
+        @accepted="onQuoteAccepted"
+        @declined="onQuoteDeclined"
+      />
+      <MobileChangeOrderDialog
+        v-model:visible="changeOrderOpen"
+        :job-id="String(job.id)"
+        :job-title="job.title || customer?.name || ''"
+        :customer-id="customer?.id || null"
+        :customer-name="customer?.name || ''"
+      />
+      <MobileChatDialog
+        v-model:visible="chatOpen"
+        :job="job"
+      />
     </template>
   </section>
 </template>
@@ -695,15 +840,25 @@ import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import { useApi } from '../composables/useApi'
+import { markJobSeen } from '../composables/usePartsSeenCutoff'
 import { queuedWriteStatus, useOfflineSync } from '../composables/useOfflineSync'
 import { usePhotoQueue } from '../composables/usePhotoQueue'
 import AuthedImage from '../components/AuthedImage.vue'
 import DoorSpecList from '../components/DoorSpecList.vue'
 import MobileJobCloseoutDialog from '../components/MobileJobCloseoutDialog.vue'
 import MobileInvoiceDialog from '../components/MobileInvoiceDialog.vue'
+// PR A (one-job-card plan): the quote / change-order / chat / equipment
+// surfaces existed ONLY on Today's route card. A tech reaching a job any other
+// way — the Jobs list, a notification, an unscheduled "in the area" job — could
+// not build a quote, raise a change order, or message dispatch about it at all.
+import MobileQuoteBuilderDialog from '../components/MobileQuoteBuilderDialog.vue'
+import MobileCustomerQuoteDialog from '../components/MobileCustomerQuoteDialog.vue'
+import MobileChangeOrderDialog from '../components/MobileChangeOrderDialog.vue'
+import MobileChatDialog from '../components/MobileChatDialog.vue'
 
 const api = useApi()
 const toast = useToast()
@@ -745,6 +900,21 @@ const accessGrant = ref('')
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 const invoiceOpen = ref(false)
+
+// ─── PR A: quote / change order / chat / equipment ──────────────────
+// Every one of these loads ON DEMAND, never at mount. test_mobile_job_cards
+// mocks api.get with mockResolvedValueOnce — exactly once — so an extra
+// mount-time GET resolves undefined and throws (July plan, trap #3).
+const quoteBuilderOpen = ref(false)
+const customerQuoteOpen = ref(false)
+const customerQuote = ref(null)
+const quotes = ref(null)          // null = never fetched, [] = fetched, empty
+const quotesLoading = ref(false)
+const changeOrderOpen = ref(false)
+const chatOpen = ref(false)
+const equipOpen = ref(false)
+const equipment = ref(null)       // null = never fetched
+const equipLoading = ref(false)
 
 const noteDraft = ref('')
 const noteBusy = ref(false)
@@ -940,6 +1110,18 @@ async function load() {
     readOnly.value = Boolean(r?.read_only)
     accessGrant.value = r?.access_grant || ''
     if (!job.value) error.value = 'Job not found'
+    // Opening the job IS seeing the parts — this screen lists them. Closes the
+    // loop for the route card's "N part updates from dispatch" badge, which
+    // otherwise latches on forever: PR B removed the parts row that used to be
+    // the only thing that ever marked a job seen, leaving the badge with a
+    // reader and no writer and an every-mount toast pointing at nothing.
+    if (job.value?.id) {
+      try {
+        markJobSeen(String(job.value.id))
+      } catch {
+        // Storage blocked; a stale badge is not worth failing the screen for.
+      }
+    }
   } catch (err) {
     // The ownership gate 404s jobs that aren't yours — same message either way.
     error.value = err?.status === 404 ? 'Job not found' : (err?.message || 'Could not load job')
@@ -1041,24 +1223,130 @@ function openMaps() {
   if (navigationLink.value) window.open(navigationLink.value, '_blank', 'noopener')
 }
 
+// ─── PR A: quotes ───────────────────────────────────────────────────
+// Same contract as Today's card: fetch on first tap, then either present the
+// live quote to the customer or open the builder. Nothing is fetched until the
+// tech asks, so this adds no mount-time GET.
+async function ensureQuotesLoaded() {
+  if (quotes.value !== null) return
+  if (!job.value?.id) return
+  quotesLoading.value = true
+  try {
+    const data = await api.get(`/api/mobile/jobs/${job.value.id}/quote`)
+    quotes.value = data.quotes || []
+  } catch (err) {
+    // Leave quotes null so the next tap retries rather than silently
+    // insisting there are none — "no quote" and "couldn't ask" are different
+    // answers and the tech is standing in front of the customer.
+    quotes.value = null
+    toast.add({ severity: 'error', summary: 'Could not load quotes', detail: err?.message || '', life: 4000 })
+  } finally {
+    quotesLoading.value = false
+  }
+}
+const latestActiveQuote = computed(() => (quotes.value || []).find(q => q.status !== 'declined') || null)
+const acceptedQuote = computed(() => (quotes.value || []).find(q => q.status === 'accepted') || null)
+
+async function openQuote() {
+  await ensureQuotesLoaded()
+  if (quotes.value === null) return   // load failed; toast already shown
+  const q = latestActiveQuote.value
+  if (q) presentQuote(q)
+  else quoteBuilderOpen.value = true
+}
+function presentQuote(quote) {
+  customerQuote.value = quote
+  customerQuoteOpen.value = true
+}
+function onQuoteBuilt(quote) {
+  quotes.value = [quote, ...(quotes.value || [])]
+}
+function patchQuote(updated) {
+  const list = quotes.value || []
+  const i = list.findIndex(q => q.id === updated.id)
+  if (i >= 0) quotes.value = list.map((q, n) => (n === i ? { ...q, ...updated } : q))
+}
+function onQuoteAccepted(updated) {
+  patchQuote(updated)
+  toast.add({ severity: 'success', summary: 'Customer accepted', life: 2500 })
+  // Acceptance can make the job billable — re-read rather than infer.
+  refresh()
+}
+function onQuoteDeclined(updated) {
+  patchQuote(updated)
+}
+
+// ─── PR A: installed equipment ──────────────────────────────────────
+const EQUIP_TYPE_LABELS = {
+  garage_door: 'Door',
+  opener: 'Opener',
+  gate: 'Gate',
+  other: 'Equipment',
+}
+function equipTypeLabel(t) {
+  return EQUIP_TYPE_LABELS[t] || 'Equipment'
+}
+function equipTitle(e) {
+  const parts = [e.manufacturer, e.model].filter(Boolean).join(' ')
+  return parts || equipTypeLabel(e.equipment_type)
+}
+async function toggleEquipment() {
+  equipOpen.value = !equipOpen.value
+  if (!equipOpen.value) return
+  const cid = customer.value?.id
+  if (!cid || equipment.value !== null) return
+  equipLoading.value = true
+  try {
+    const r = await api.get(`/api/customers/${cid}/equipment`)
+    equipment.value = Array.isArray(r) ? r : r?.items || r?.data || []
+  } catch {
+    // equipment_tracking is an optional module — fail quiet, show "none".
+    equipment.value = []
+  } finally {
+    equipLoading.value = false
+  }
+}
+
 // Queued, not posted: a tech taps these in driveways and dead zones. postQueued
 // lands the row locally and drains on reconnect; a 4xx still throws (a real
 // answer is not an outage).
-async function advance(path, body, actionType, okMsg) {
+// The status flip happens AFTER the queued write resolves and BEFORE the
+// refetch, and that ordering is the whole fix.
+//
+// This used to refetch instead of flipping, on the stated grounds that "Today
+// flips the status before checking the result and never rolls it back". That
+// premise is false: MobileTodayView's onMyWay/imHere both assign
+// dispatch_status *after* their `await postQueued(...)`, inside the try, so a
+// throw skips the flip. Today never had the bug this was avoiding — and
+// avoiding it cost the tech the one thing that actually matters in a garage.
+//
+// What it cost: offline, postQueued QUEUES the write and resolves {queued:true}
+// — the tap is durably recorded. Then refresh() threw into the outer catch, so
+// the tech got "Saved offline" AND "Could not save" together and the button
+// still read "On my way". Today, which flips, worked. Same job, two answers,
+// depending only on which screen you opened it from.
+//
+// So: a real 4xx still throws before the flip (no false advance). A queued
+// write flips. The refetch is best-effort and cannot undo a durable write or
+// contradict the toast the tech just read.
+async function advance(path, body, actionType, okMsg, nextStatus) {
   advancing.value = true
   try {
     const r = await api.postQueued(`/api/mobile/jobs/${job.value.id}/${path}`, body, {
       actionType, resourceId: String(job.value.id),
     })
+    if (job.value && nextStatus) job.value.dispatch_status = nextStatus
     if (r?.queued) {
       toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
     } else {
       toast.add({ severity: 'success', summary: okMsg, life: 2000 })
     }
-    // Refetch rather than guess the new state locally — Today flips the status
-    // before checking the result and never rolls it back on failure, so its
-    // card can show "en route" while an error toast fires. Don't copy that.
-    await refresh()
+    try {
+      await refresh()
+    } catch {
+      // No signal. The write is queued and the local flip already reflects it;
+      // a second error toast here would just contradict "Saved offline".
+    }
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Could not save', detail: err?.message || '', life: 4000 })
   } finally {
@@ -1067,11 +1355,11 @@ async function advance(path, body, actionType, okMsg) {
 }
 
 function onMyWay() {
-  return advance('en-route', {}, 'job.en_route', 'On my way')
+  return advance('en-route', {}, 'job.en_route', 'On my way', 'en_route')
 }
 
 async function imHere() {
-  return advance('arrived', await currentPosition(), 'job.arrived', "You're here")
+  return advance('arrived', await currentPosition(), 'job.arrived', "You're here", 'on_site')
 }
 
 // Best-effort: a tech in a metal building may never get a fix, and arriving
@@ -1694,4 +1982,41 @@ onMounted(() => {
   color: var(--p-text-muted-color, #6b7280);
 }
 .readonly-banner .pi { margin-top: 0.1rem; }
+
+/* ── PR A: job context, customer warnings, installed equipment ────────
+   Theme tokens throughout, never literal colors: this screen is used in a
+   dark garage and in a bright driveway, and jsdom applies no media queries
+   so only a real browser proves either one. */
+.job-context {
+  display: flex; flex-wrap: wrap; gap: 0.35rem;
+  padding: 0 0.1rem;
+}
+.customer-notes {
+  display: flex; align-items: flex-start; gap: 0.45rem;
+  font-size: 0.87rem; line-height: 1.35;
+  color: var(--p-text-color, #111827);
+  background: var(--p-content-hover-background, #f3f4f6);
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  border-radius: 0.35rem; padding: 0.45rem 0.6rem;
+}
+.equip-head {
+  display: flex; align-items: center; gap: 0.45rem;
+  cursor: pointer; min-height: 44px;
+}
+.equip-chevron { margin-left: auto; font-size: 0.75rem; }
+.equip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.equip-item {
+  border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+  padding-top: 0.5rem;
+}
+.equip-item:first-child { border-top: 0; padding-top: 0; }
+.equip-line { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.equip-meta {
+  display: flex; flex-wrap: wrap; gap: 0.6rem;
+  font-size: 0.8rem; color: var(--p-text-muted-color, #6b7280); margin-top: 0.2rem;
+}
+.equip-notes { font-size: 0.83rem; margin-top: 0.2rem; color: var(--p-text-color, #111827); }
+.muted { color: var(--p-text-muted-color, #6b7280); font-size: 0.87rem; }
+.secondary-actions-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.secondary-actions-row > * { flex: 1 1 auto; min-height: 44px; }
 </style>

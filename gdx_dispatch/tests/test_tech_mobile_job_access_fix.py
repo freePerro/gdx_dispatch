@@ -127,7 +127,13 @@ def test_mobile_jobs_list_decrypts_address_at_rest(db, monkeypatch):
     client = _build_app(db)
     body = client.get("/api/mobile/jobs").json()
     assert body["count"] == 1
-    assert body["jobs"][0]["customer_address"] == "789 Pine Rd"
+    # The billing address moved from a flat `customer_address` into the nested
+    # customer when the three mobile payload shapes were unified (PR B of the
+    # one-job-card plan). What this test guards is unchanged: the raw-SQL read
+    # bypasses the EncryptedString mapper, so it must be decrypted explicitly or
+    # the tech sees "gAAAA…" where the address should be.
+    assert body["jobs"][0]["customer"]["address"] == "789 Pine Rd"
+    assert "customer_address" not in body["jobs"][0]
 
 
 def test_mobile_jobs_list_plaintext_rows_pass_through(db, monkeypatch):
@@ -138,7 +144,7 @@ def test_mobile_jobs_list_plaintext_rows_pass_through(db, monkeypatch):
     monkeypatch.setattr(pii, "_FERNET", Fernet(Fernet.generate_key()))  # read w/ key
     client = _build_app(db)
     body = client.get("/api/mobile/jobs").json()
-    assert body["jobs"][0]["customer_address"] == "12 Elm St"
+    assert body["jobs"][0]["customer"]["address"] == "12 Elm St"
 
 
 # ── 2. photo_type → kind ─────────────────────────────────────────────
