@@ -178,8 +178,13 @@ like "Site A" could land.
    (`DispatchView.vue:1262`). Accepted and expected — but PR 2 must also read
    `BillAddr`/`ShipAddr` off the sub-customer when QB has one, and PR 5 must not
    collapse six NULL-address rows into one via a normalized-address match.
-3. **`_detect_qbo_merge_deletes` (`sync.py:256`) is always-on — no feature
-   flag.** It probes any `entity_type='customer'` map missing from `seen_qb_ids`
+3. ~~**`_detect_qbo_merge_deletes` (`sync.py:256`) is always-on — no feature
+   flag.**~~ **RESOLVED 2026-08-21 — the probe was deleted (#393).** The
+   phase-out made the answer simpler than flagging it: with GDX as the book of
+   record and the connection dead, the only reason left to reconnect is
+   exporting history for the CPA, and this probe would have turned that
+   read-only export into a delete against a months-stale map set. Original
+   text kept below because the failure mode is the useful part. It probes any `entity_type='customer'` map missing from `seen_qb_ids`
    with a live `GET Customer/{id}` and soft-deletes the local Customer on
    `Active=false`. **Live risk today, unrelated to this plan:** a QBO user
    marking a finished job inactive — the normal thing to do — soft-deletes the
