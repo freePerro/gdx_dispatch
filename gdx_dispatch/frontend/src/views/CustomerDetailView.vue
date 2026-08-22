@@ -760,6 +760,7 @@ import { computed, ref, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { qbSyncLabel } from "../composables/qbSyncLabel";
 import { formatDate, formatDateTime, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
 import { useTenantModules } from "../composables/useTenantModules";
 import { usePermission } from "../composables/usePermission";
@@ -801,24 +802,7 @@ const { isEnabled } = useTenantModules();
 const { hasPermission } = usePermission();
 const canWriteContacts = computed(() => hasPermission("customers.contact_write"));
 const qbEnabled = computed(() => isEnabled("quickbooks"));
-const qbSync = computed(() => {
-  // qb_in_quickbooks (from QBEntityMap) is the authoritative "in QB" signal;
-  // qb_synced_at is un-backfilled and can't be read as "not in QB".
-  const inQb = customer.value.qb_in_quickbooks === true;
-  const syncedAt = customer.value.qb_synced_at;
-  const dirty = customer.value.qb_dirty !== false; // default-true if absent
-  if (!inQb && !syncedAt) {
-    return { label: "Not synced", severity: "secondary" };
-  }
-  if (syncedAt) {
-    const when = formatDateTime(syncedAt);
-    return dirty
-      ? { label: `Synced ${when} · changes pending`, severity: "warn" }
-      : { label: `Synced ${when}`, severity: "success" };
-  }
-  // In QB but no local push timestamp (legacy sync / import / manual entry).
-  return { label: "Synced", severity: "success" };
-});
+const qbSync = computed(() => qbSyncLabel(customer.value, formatDateTime));
 const locations = ref([]);
 const loading = ref(true);
 const error = ref("");
