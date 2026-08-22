@@ -4,7 +4,25 @@
 against main @ `335b38d`; v3 = Decision 0 resolved by Doug; built + a
 second adversarial audit of the code diff the same day)
 **Branch:** `feat/payment-date-recording`
-**Status:** **MERGED #249 — and the rollout has RUN on prod.** Verified by
+**Status:** **MERGED #249 · rollout RUN on prod · CONTRADICTION DIAGNOSED
+2026-08-22, NOT YET RESOLVED.** This plan's Decision 0 made `payment_date` the
+**bank deposit date**. `deposit-cash-check-capture-plan.md` — shipped six weeks
+earlier as #309, never cited here and never citing this — argued the same field
+must be when the money **changed hands in the field**. A cheque taken on the
+3rd and banked on the 8th had two canonical answers in one column, and
+month-end reporting keys off it.
+
+Both were right about their own fact and wrong that one column could hold both.
+**No fix is built.** Migration 073 was drafted and dropped — prod is on 072 and `payments.received_at` does not exist. The two facts are still carried by one column. See `undeposited-funds-clearing-plan.md`: the banked date should come from the bank line at match time rather than a new column, and the larger finding there (nothing ever clears 1050) has to land first.
+
+⚠ **The resolution described just above changed shape on 2026-08-22.** The
+split still stands as a statement of the two facts, but the mechanism does not:
+the banked date is not typed by anyone and `payment_date` does not become
+nullable — it comes from the bank line when a deposit is matched. See
+`undeposited-funds-clearing-plan.md`, which also found that no payment has
+reached the bank account in the ledger since the July cutover.
+
+**Original status, still true:** Verified by
 read-only prod query 2026-08-21: `tenant_settings.qb_money_pull_paused = true`
 for the GDX tenant, so no QB webhook or manual sync can overwrite or duplicate
 GDX payment rows; live payments now carry dates across 2024 (98), 2025 (184)

@@ -15,6 +15,20 @@ comparison cannot be run. A replacement gate is a decision, not a bug: the
 bank-statement tie-out is the obvious candidate and its evidence exists on prod
 (9 statement imports, 388 lines) — but `bank_matches` is still **0 rows**, so
 the Reconcile flow has shipped and never been exercised.
+✅ **DECIDED (Doug, 2026-08-22): the GL posts on the BANKED date, not the
+date money changed hands.** Raised while designing a split of `payment_date`
+(banked) from a field date — a split that was **drafted and dropped**, so no
+migration exists; the decision below stands on its own — under cash basis a CPA could
+argue recognition belongs on receipt. It does not, here: banked is what the
+bank statement says, what the 188 already-posted entries were computed from,
+and what the statement tie-out reconciles against. Moving it would re-date live
+entries.
+
+⚠ Caveat recorded the same day: `bank_matches` is **0 rows**, so **no
+`payment_date` on prod has ever actually been corroborated against a bank
+statement.** "Banked is what the bank statement says" is the intended meaning,
+not a verified property of the existing 340 rows.
+
 **Still open:** §12's CPA questions — `gl_settings.cpa_review` is still `{}`,
 and question 1 (expense parts at purchase vs capitalize) is marked BLOCKING
 for §7. §11 step 4 (expose reports + receipts UI after the monthly
@@ -139,6 +153,14 @@ CoA composition is convention — Doug + CPA review before seeding. **[JUDGMENT]
 ### 5.3 Payments
 
 - **P3:** debit 1000 (card/ACH) or 1050 (cash/check) **[JUDGMENT]**; credit 1200. Key per §5.6.
+  ⚠ **As BUILT this diverges from the spec, and the other half was never
+  written** (found 2026-08-22). `modules/ledger/service.py:43-50` maps **card**
+  to `ROLE_UNDEPOSITED`, not 1000 — so card never reaches the bank either. And
+  nothing anywhere credits 1050: the clearing counterpart to P3 does not exist
+  in code. Live symptom on prod: **$80,291.99 stranded in 1050** while the GL
+  shows $5,882.15 of bank cash against ~$11,967.80 actually in the accounts.
+  Revenue and the trial balance are unaffected — it is an asset
+  misallocation. Fix: `undeposited-funds-clearing-plan.md`.
 - **Overpayment:** rejected unless caller opts into excess→2300 (debit cash, credit 2300; proration ratio capped at 1.0).
 - **P9 — apply customer credit (new, [AUDIT-R2] relief path):** `POST /invoices/{id}/apply-credit` consumes 2300 balance against an open invoice — debit 2300, credit 1200. Without this, credits accumulate forever. **Caps (**[AUDIT-R3]**):** the applied amount may exceed neither the customer's 2300 balance (checked under `SELECT FOR UPDATE` on the customer's credit rows — the one place Phase 1 does need a balance precondition) nor the invoice's remaining balance.
 - **P4 — payment void:** `POST /payments/{id}/void` sets `voided_at`, posts reversal; `_recalculate_invoice` skips voided payments; the void pushes to QBO so pull can never resurrect it.
@@ -220,7 +242,10 @@ As v2: trial balance (rendered zero-proof; Phase 2 reconciliation anchor), P&L w
 3. **[Phase 3 — §446(a) books-conformity]** Once GDX is the book of record, does an accrual internal book pressure the cash-basis return under §446(a)? Asked now so the answer exists before cutover. **[AUDIT-R1]**
 4. MN sales-tax filing basis (what 2100 must tie to).
 5. 4900/4910 contra-revenue split and credit-memo reason taxonomy. **[AUDIT-R2]**
-6. Payment-method→account mapping (1000/1050); Stripe fees stay gross-until-Phase-2 (~2.9% of card volume unexpensed interim — confirm acceptable).
+6. ⚠ **No longer theoretical — has a live symptom.** Payment-method→account
+   mapping (1000/1050): the code maps card to 1050 while §5.3 P3 specifies
+   1000, and card settles as its own processor payout rather than on a deposit
+   slip, so those payments can never clear by deposit matching. Stripe fees stay gross-until-Phase-2 (~2.9% of card volume unexpensed interim — confirm acceptable).
 
 ## 13. Sources
 
