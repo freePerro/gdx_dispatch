@@ -11,7 +11,18 @@ route survives a cold remount with no signal behind a "no signal" banner. PR B �
 one `MobileJobCard` on all three surfaces, the route card finally a link, the
 navigate control kept as a sibling button, and the jobs-list endpoint emitting
 the same nested customer as the other two.
-**Status stays PARTIALLY BUILT until a human walks it.** Every walk so far was
+**RELEASED v1.74.0** — merged #396 (`957142e`), deployed to prod and demo
+2026-08-22, walked on the demo as a technician against a **6-stop** route:
+all six cards rendered as links, stop badges `["1".."6"]` with the `.stop-num`
+rule matching (computed `font-weight: 700`), no JS errors, light and dark. The
+multi-stop gap that hid the unstyled stop badge is closed.
+
+**Still owed: a HUMAN walk.** Every walk was headless — the headed browser
+profile was locked for the entire session — and prod's own audit account owns no
+jobs, so the card was exercised on the demo, not on prod's real route. Reorder
+mode and the map view remain unwalked.
+
+**Superseded note (was: PARTIALLY BUILT until a human walks it).** Every walk so far was
 headless, driven by an admin account, against a one-stop route. The 2026-08-18
 corpus audit recorded that this repo's docs have only ever *undersold* what
 exists; "RELEASED" here before anyone has looked at it on a phone would be the
