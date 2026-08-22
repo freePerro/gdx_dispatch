@@ -240,6 +240,70 @@ describe("the quote action does the right thing with what it finds", () => {
   });
 });
 
+describe("offline: the tech in a dead zone still advances the job", () => {
+  // The bug this pins: postQueued QUEUES the write and resolves {queued:true},
+  // then the follow-up refresh() throws because there is no signal. The screen
+  // used to let that throw reach the outer catch, so the tech saw "Saved
+  // offline" AND "Could not save" and the button never changed. Today's card
+  // flipped and worked. Same job, two answers, depending on which screen you
+  // opened it from.
+  it("flips to en route on a queued write even when the refetch fails", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    let loaded = false;
+    getMock.mockImplementation(async () => {
+      if (loaded) throw new Error("offline");   // every refetch fails
+      loaded = true;
+      return jobPayload({ dispatch_status: "assigned" });
+    });
+    postQueuedMock.mockResolvedValue({ queued: true });
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+
+    await w.find('[data-testid="mjd-en-route"]').trigger("click");
+    await flushPromises();
+
+    // The action the tech now expects to see is the NEXT one.
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-en-route"]').exists()).toBe(false);
+
+    const summaries = toastAdd.mock.calls.map((c) => c[0].summary);
+    expect(summaries).toContain("Saved offline");
+    // The contradiction is the defect, not the offline-ness.
+    expect(summaries).not.toContain("Could not save");
+  });
+
+  it("advances to on site when arrival is queued", async () => {
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    let loaded = false;
+    getMock.mockImplementation(async () => {
+      if (loaded) throw new Error("offline");
+      loaded = true;
+      return jobPayload({ dispatch_status: "en_route" });
+    });
+    postQueuedMock.mockResolvedValue({ queued: true });
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    await w.find('[data-testid="mjd-arrived"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="mjd-complete"]').exists()).toBe(true);
+  });
+
+  it("does NOT advance when the server actually refuses", async () => {
+    // The counterweight. A queued write is a recorded intent; a 4xx is a real
+    // answer, and the card must not claim progress the server rejected.
+    const { default: View } = await import("../MobileJobDetailView.vue");
+    getMock.mockImplementation(async () => jobPayload({ dispatch_status: "assigned" }));
+    postQueuedMock.mockRejectedValue(new Error("409 already en route"));
+    const w = mount(View, { global: { stubs } });
+    await flushPromises();
+    await w.find('[data-testid="mjd-en-route"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-testid="mjd-en-route"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-arrived"]').exists()).toBe(false);
+    expect(toastAdd.mock.calls.map((c) => c[0].summary)).toContain("Could not save");
+  });
+});
+
 describe("job context the route card always had and this screen never did", () => {
   it("shows priority, return visit and customer alerts", async () => {
     const w = await mountWith({

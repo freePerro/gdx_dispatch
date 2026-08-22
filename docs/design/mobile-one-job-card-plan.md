@@ -1,9 +1,15 @@
 # Mobile: One Job Card
 
 **Date:** 2026-08-21
-**Status:** PLAN — nothing built. Decision locked (Doug, 2026-08-21): one card
+**Status:** PARTIALLY BUILT. Decision locked (Doug, 2026-08-21): one card
 component, always compact, on all three mobile surfaces; the job actions live
 on the job detail screen only.
+**Built:** PR A — the detail screen gained quote / change order / chat /
+install-equipment / job context, plus the backend card fields and a customer
+sub-dict parity test. **Not built:** the offline-advance fix (PR A2) and PR B
+itself — one shared `MobileJobCard`, the three surfaces adopting it, and the
+jobs-list endpoint moving onto `_job_card`. Today's route card is unchanged and
+still not tappable.
 
 **Related plan — read it first:** `tech-mobile-workflow-plan.md` (v3,
 2026-07-17), whose status line was corrected to PARTIALLY BUILT by **#389**

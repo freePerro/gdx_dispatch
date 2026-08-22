@@ -93,18 +93,77 @@ function localDayParams() {
   return params
 }
 
+// The route survives a cold remount with no signal.
+//
+// This screen held the day's route in memory only. That was survivable while a
+// tech never left it — but every tap-through to a job and back is a remount,
+// and with no signal `load()` threw, `jobs` stayed [], and the screen said
+// "Nothing scheduled today". The tech loses the route mid-day, in the exact
+// dead zone the offline queue exists for.
+//
+// Cached per tech+day so a stale route can never be shown as if it were
+// another tech's or another day's. Writes are best-effort: a full or blocked
+// localStorage must never break the load path.
+const ROUTE_CACHE_KEY = 'gdx_today_route_cache'
+
+function cacheKeyFor(dayParams) {
+  return `${ROUTE_CACHE_KEY}:${dayParams}`
+}
+
+function readRouteCache(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && Array.isArray(parsed.jobs) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeRouteCache(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      jobs: data.jobs || [],
+      area_jobs: data.area_jobs || [],
+      tech_id: data.tech_id,
+      date: data.date,
+      cached_at: new Date().toISOString(),
+    }))
+  } catch {
+    // Quota or private mode. A cache miss is a worse day, not a broken one.
+  }
+}
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   refreshing.value = silent
   error.value = null
+  const params = localDayParams().toString()
+  const key = cacheKeyFor(params)
   try {
-    const data = await api.get(`/api/mobile/today?${localDayParams().toString()}`)
+    const data = await api.get(`/api/mobile/today?${params}`)
     jobs.value = data.jobs || []
     areaJobs.value = data.area_jobs || []
     tech.value = data.tech_id
     date.value = data.date
+    fromCache.value = false
+    writeRouteCache(key, data)
   } catch (err) {
-    error.value = err?.message || "Couldn't load today's route"
+    const cached = readRouteCache(key)
+    if (cached) {
+      // Show the route we last saw rather than an empty day. Labelled, because
+      // a tech acting on a stale route must know it is stale.
+      jobs.value = cached.jobs || []
+      areaJobs.value = cached.area_jobs || []
+      tech.value = cached.tech_id
+      date.value = cached.date
+      fromCache.value = true
+      error.value = null
+    } else {
+      fromCache.value = false
+      error.value = err?.message || "Couldn't load today's route"
+    }
   } finally {
     loading.value = false
     refreshing.value = false
@@ -438,6 +497,7 @@ const partsLoading = ref({})        // job_id -> bool
 // Surfaces the customer's installed equipment (door + opener specs) on the
 // job card so a tech on an install/service call sees the unit details. Reuses
 // GET /api/customers/{id}/equipment (gated on the equipment_tracking module).
+const fromCache = ref(false)   // showing a cached route: no signal right now
 const equipExpandedJobId = ref(null)
 const equipByCustomer = ref({})     // customer_id -> array of equipment
 const equipLoading = ref({})        // customer_id -> bool
@@ -1151,6 +1211,14 @@ function replayTour() {
       </header>
 
       <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
+
+      <!-- No signal, showing the last route we saw. Says so plainly: a tech
+           acting on a stale route must know it is stale. Without this the
+           screen would be indistinguishable from a live one. -->
+      <div v-if="fromCache" class="cached-banner" data-testid="mt-cached-route">
+        <i class="pi pi-wifi" />
+        <span>No signal — showing your last saved route. Pull refresh when you're back in range.</span>
+      </div>
 
       <div v-if="loading && !refreshing" class="loading">Loading…</div>
 
@@ -2084,4 +2152,12 @@ function replayTour() {
 .area-address span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .area-title { color: var(--p-text-muted-color, #6b7280); font-size: 0.85rem; }
 .return-visit-tag { margin-left: 0.4rem; font-size: 0.65rem; vertical-align: middle; }
+.cached-banner {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.55rem 0.75rem; border-radius: 0.5rem;
+  font-size: 0.85rem; line-height: 1.35;
+  color: var(--p-text-color, #111827);
+  background: var(--p-content-hover-background, #f3f4f6);
+  border-left: 3px solid var(--p-orange-500, #f97316);
+}
 </style>

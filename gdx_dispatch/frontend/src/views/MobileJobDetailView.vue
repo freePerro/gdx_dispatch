@@ -1297,21 +1297,43 @@ async function toggleEquipment() {
 // Queued, not posted: a tech taps these in driveways and dead zones. postQueued
 // lands the row locally and drains on reconnect; a 4xx still throws (a real
 // answer is not an outage).
-async function advance(path, body, actionType, okMsg) {
+// The status flip happens AFTER the queued write resolves and BEFORE the
+// refetch, and that ordering is the whole fix.
+//
+// This used to refetch instead of flipping, on the stated grounds that "Today
+// flips the status before checking the result and never rolls it back". That
+// premise is false: MobileTodayView's onMyWay/imHere both assign
+// dispatch_status *after* their `await postQueued(...)`, inside the try, so a
+// throw skips the flip. Today never had the bug this was avoiding — and
+// avoiding it cost the tech the one thing that actually matters in a garage.
+//
+// What it cost: offline, postQueued QUEUES the write and resolves {queued:true}
+// — the tap is durably recorded. Then refresh() threw into the outer catch, so
+// the tech got "Saved offline" AND "Could not save" together and the button
+// still read "On my way". Today, which flips, worked. Same job, two answers,
+// depending only on which screen you opened it from.
+//
+// So: a real 4xx still throws before the flip (no false advance). A queued
+// write flips. The refetch is best-effort and cannot undo a durable write or
+// contradict the toast the tech just read.
+async function advance(path, body, actionType, okMsg, nextStatus) {
   advancing.value = true
   try {
     const r = await api.postQueued(`/api/mobile/jobs/${job.value.id}/${path}`, body, {
       actionType, resourceId: String(job.value.id),
     })
+    if (job.value && nextStatus) job.value.dispatch_status = nextStatus
     if (r?.queued) {
       toast.add({ severity: 'warn', summary: 'Saved offline', detail: 'Sends when you have signal', life: 3000 })
     } else {
       toast.add({ severity: 'success', summary: okMsg, life: 2000 })
     }
-    // Refetch rather than guess the new state locally — Today flips the status
-    // before checking the result and never rolls it back on failure, so its
-    // card can show "en route" while an error toast fires. Don't copy that.
-    await refresh()
+    try {
+      await refresh()
+    } catch {
+      // No signal. The write is queued and the local flip already reflects it;
+      // a second error toast here would just contradict "Saved offline".
+    }
   } catch (err) {
     toast.add({ severity: 'error', summary: 'Could not save', detail: err?.message || '', life: 4000 })
   } finally {
@@ -1320,11 +1342,11 @@ async function advance(path, body, actionType, okMsg) {
 }
 
 function onMyWay() {
-  return advance('en-route', {}, 'job.en_route', 'On my way')
+  return advance('en-route', {}, 'job.en_route', 'On my way', 'en_route')
 }
 
 async function imHere() {
-  return advance('arrived', await currentPosition(), 'job.arrived', "You're here")
+  return advance('arrived', await currentPosition(), 'job.arrived', "You're here", 'on_site')
 }
 
 // Best-effort: a tech in a metal building may never get a fix, and arriving
