@@ -4,12 +4,21 @@
 are resolved (e.g. `equipment_tracking.py:215` now serves PATCH), and most of
 C6 — the fake-success class — was converted to a logged 501 via
 `ui_compat._not_implemented`.
-**Still open:** three C6 handlers still answer a bare `return _ok()` —
-`PATCH /api/onboarding/checklist` (`ui_compat.py:327`) and
-`PUT /api/campaigns/{id}/activate` / `/deactivate` (`:941`, `:946`) — and the
-C5 permanent blanks remain (`onboarding_checklist`, `preview_campaign`,
-`campaign_send_history`). The build/remove/leave decisions live in
-`unimplemented-endpoints-decision-list.md` and are still untaken.
+**C6 is now fully converted** (#391, merged 2026-08-21): the last three
+handlers refuse with a logged 501 and the `_ok()` helper is deleted. They were
+*shadowed* by real handlers at runtime — verified live, a PUT to a non-existent
+campaign 404s and the checklist PATCH 422s — so this changed no current
+behaviour. It matters for the one case where the shadowing breaks: `app.py`
+substitutes an empty router when a real router fails to import, and a fake
+success on an already-degraded system is the worst version of this bug.
+Guarded by `tests/test_ui_compat_no_fake_success.py`, counterfactually verified.
+The three were `PATCH /api/onboarding/checklist` and
+`PUT /api/campaigns/{id}/activate` / `/deactivate`.
+
+**Still open:** the C5 permanent blanks remain (`onboarding_checklist`,
+`preview_campaign`, `campaign_send_history` all return fixed empty shapes), and
+the 17 build/remove/leave decisions in
+`unimplemented-endpoints-decision-list.md` are still untaken.
 
 First run of `gdx_dispatch/tools/frontend_contract_scan.py`, checked against the
 **live** route table (1,444 routes) rather than static parsing.

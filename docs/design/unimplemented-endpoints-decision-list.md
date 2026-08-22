@@ -4,8 +4,10 @@
 conversion that produced this list is done (`ui_compat.py` now calls
 `_not_implemented(...)` rather than answering `{"ok": true}`), but none of the
 seventeen build/remove/leave decisions below has been taken.
-Three fake-success handlers also survive the conversion and still answer a bare
-`return _ok()`: `PATCH /api/onboarding/checklist` (`ui_compat.py:327`) and
+~~Three fake-success handlers also survive the conversion and still answer a
+bare `return _ok()`~~ — **closed by #391 (2026-08-21)**: they now refuse with a
+logged 501 and `_ok()` is gone. For the record they were
+`PATCH /api/onboarding/checklist` (`ui_compat.py:327`) and
 `PUT /api/campaigns/{id}/activate` / `/deactivate` (`:941`, `:946`).
 
 Created 2026-08-12 from the C6 fix. These endpoints used to answer `{"ok": true}`
