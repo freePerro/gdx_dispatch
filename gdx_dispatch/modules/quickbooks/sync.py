@@ -253,104 +253,23 @@ def _delete_sync_enabled(tenant_id: str | None = None, db: Session | None = None
     return os.getenv("QB_DELETE_SYNC_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def _detect_qbo_merge_deletes(
-    tenant_id: str,
-    entity_type: str,
-    seen_qb_ids: set[str],
-    db: Session,
-    qb: QBClient,
-) -> int:
-    """Detect QBO-side merges/deletes by per-row Active probe.
-
-    QBO has no programmatic merge API; the user merges via the UI by renaming
-    one customer to match another's DisplayName, which triggers QBO's
-    DisplayName-uniqueness constraint into prompting a merge. The merged-away
-    record gets ``Active=false`` and falls out of the default
-    ``SELECT * FROM Customer`` pull (which filters Active=true by default).
-
-    This helper closes the loop on the local side: for each existing
-    ``qb_entity_maps`` row whose qb_id was NOT in this sync's ``seen_qb_ids``,
-    issue a targeted ``GET /<entity>/<qb_id>`` and check the ``Active`` flag:
-
-      - ``Active=false`` → confirmed remote merge/delete; soft-delete the local
-        row, drop the map, audit as ``qbo_<entity>_merged_remote``.
-      - ``Active=true`` → the entity exists but was missing from this pull
-        (pagination, where-clause filter, transient API hiccup). No-op.
-      - HTTP 404 / lookup failure → ambiguous. No-op.
-
-    This is safer than the full-set-diff ``_apply_qbo_deletes`` path because
-    every deletion is positively confirmed by a per-row GET. No feature flag
-    required — always-on.
-
-    Returns the number of soft-deletes performed.
-    """
-    model_map = {"customer": Customer, "invoice": Invoice, "payment": Payment}
-    model = model_map.get(entity_type)
-    if model is None:
-        return 0
-
-    entity_name_qb = {"customer": "Customer", "invoice": "Invoice", "payment": "Payment"}[entity_type]
-
-    all_maps = db.execute(
-        select(QBEntityMap).where(
-            QBEntityMap.tenant_id == tenant_id,
-            QBEntityMap.entity_type == entity_type,
-        )
-    ).scalars().all()
-    candidates = [m for m in all_maps if m.qb_id not in seen_qb_ids]
-
-    if not candidates:
-        return 0
-
-    soft_deleted = 0
-    for mapping in candidates:
-        try:
-            remote = await qb.read(entity_name_qb, mapping.qb_id)
-        except Exception:
-            log.warning(
-                "qbo_merge_probe_failed tenant=%s entity=%s qb_id=%s (skipping — ambiguous)",
-                tenant_id, entity_type, mapping.qb_id,
-            )
-            continue
-
-        if remote.get("Active", True):
-            # Entity exists and is active — just missed by this pull. Don't act.
-            continue
-
-        # Confirmed Active=false → merged or deleted on the QBO side.
-        try:
-            _audit(db, f"qbo_{entity_type}_merged_remote", mapping.qb_id, {
-                "tenant_id": tenant_id,
-                "entity_type": entity_type,
-                "qb_id": mapping.qb_id,
-                "local_id": mapping.local_id,
-                "reason": "qbo_active_false_after_pull",
-                "remote_display_name": remote.get("DisplayName"),
-            })
-        except Exception:
-            log.exception(
-                "qbo_merge_audit_failed tenant=%s entity=%s qb_id=%s",
-                tenant_id, entity_type, mapping.qb_id,
-            )
-
-        try:
-            local = db.get(model, UUID(mapping.local_id))
-            if local is not None and getattr(local, "deleted_at", None) is None:
-                local.deleted_at = datetime.now(UTC)
-                soft_deleted += 1
-            db.delete(mapping)
-        except Exception:
-            log.exception(
-                "qbo_merge_apply_failed tenant=%s entity=%s qb_id=%s",
-                tenant_id, entity_type, mapping.qb_id,
-            )
-
-    if soft_deleted:
-        log.info(
-            "qbo_merge_detected tenant=%s entity_type=%s soft_deleted=%d",
-            tenant_id, entity_type, soft_deleted,
-        )
-    return soft_deleted
+# `_detect_qbo_merge_deletes` was removed 2026-08-21 (QuickBooks phase-out).
+#
+# It probed every entity_type='customer' map missing from a pull with a live,
+# METERED `GET /Customer/<id>` and soft-deleted the local row on Active=false.
+# It was always-on with no feature flag — its docstring argued a per-row
+# positive confirmation made a flag unnecessary.
+#
+# Why it had to go rather than gain a flag: GDX is the book of record now (the
+# GL cut over in July) and the QB connection is dead (`auth_state =
+# needs_reconnect`). The only remaining reason to reconnect is to export
+# history for the CPA — and on that reconnect this probe would run against a
+# months-stale map set and soft-delete live GDX customers for being "merged
+# away" in a book we no longer maintain. A read-only export must not be able
+# to delete production customers.
+#
+# Its flagged sibling `_apply_qbo_deletes` below stays: it is gated
+# (`delete_sync_enabled`, default OFF) and does not act unilaterally.
 
 
 def _apply_qbo_deletes(
@@ -1008,7 +927,6 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                 log.exception("qb_pull_subcustomer_row_failed qb_id=%s", qb_id)
                 errors.append({"qb_id": qb_id, "name": name, "error": str(row_exc)[:200]})
 
-        merged_remote = await _detect_qbo_merge_deletes(tenant_id, "customer", seen_qb_ids, db, qb)
         deleted = _apply_qbo_deletes(tenant_id, "customer", seen_qb_ids, db)
         db.commit()
         _touch_sync_success(tenant_id, db)
@@ -1017,7 +935,7 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
             "adopted": adopted, "sites_created": sites_created,
             "sites_updated": sites_updated,
             "sites_skipped_deleted": sites_skipped_deleted,
-            "legacy_subs": legacy_subs, "merged_remote": merged_remote,
+            "legacy_subs": legacy_subs,
             "deleted": deleted, "errors": len(errors),
         })
         db.commit()
@@ -1025,7 +943,7 @@ async def pull_customers(tenant_id: str, db: Session, qb: QBClient) -> dict[str,
                 "sites_created": sites_created, "sites_updated": sites_updated,
                 "sites_skipped_deleted": sites_skipped_deleted,
                 "legacy_subs": legacy_subs,
-                "merged_remote": merged_remote, "deleted": deleted, "errors": errors}
+                "deleted": deleted, "errors": errors}
     except QBAPIError:
         db.rollback()
         raise

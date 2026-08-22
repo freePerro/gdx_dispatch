@@ -2702,97 +2702,58 @@ def test_qb_events_action_filter_returns_only_matching(db_session: Session, qb_c
 
 
 # ---------------------------------------------------------------------------
-# QBO merge-detection (Active=false probe)
+# QBO merge-detection: REMOVED 2026-08-21 (QuickBooks phase-out)
 # ---------------------------------------------------------------------------
+# Three tests here pinned `_detect_qbo_merge_deletes` — the always-on, metered
+# per-row Active probe that soft-deleted local customers. The probe is gone;
+# what replaces them is the guard that it stays gone.
 
-def test_pull_customers_detects_qbo_merge_active_false(db_session: Session, qb_connection, mock_qb):
-    """When a mapped customer drops out of the pull AND qb.read returns
-    Active=false, the local row gets soft-deleted, its map is dropped, and an
-    audit row is written. This is the QBO-side merge detection class."""
+
+def test_pull_customers_never_issues_a_metered_per_row_probe(
+    db_session: Session, qb_connection, mock_qb
+):
+    """A customer pull must not read individual entities back.
+
+    `_detect_qbo_merge_deletes` issued `GET /Customer/<id>` for every mapped id
+    missing from the pull, then soft-deleted the local row on Active=false.
+    With GDX as the book of record and the QB connection dead, the only reason
+    left to reconnect is exporting history for the CPA — and this probe would
+    turn that read-only export into a delete against a months-stale map set.
+
+    Behavioural, not a source grep: seed a mapped customer, pull WITHOUT it,
+    assert no per-row read fired and the local row survives.
+    """
     from gdx_dispatch.modules.quickbooks import sync
 
-    # Seed a local customer that was previously mapped to QB-C-MERGED.
-    cust = _seed_customer(db_session, "Merged")
+    cust = Customer(name="Dropped From Pull", company_id="tenant-1")
+    db_session.add(cust)
+    db_session.commit()
     db_session.add(QBEntityMap(
         tenant_id="tenant-1", entity_type="customer",
-        local_id=str(cust.id), qb_id="QB-C-MERGED",
+        local_id=str(cust.id), qb_id="9001",
     ))
     db_session.commit()
 
-    # The pull does NOT return this customer (it was merged-away in QBO).
-    mock_qb.query = AsyncMock(return_value=[])
-    # The targeted probe returns Active=false.
-    mock_qb.read = AsyncMock(return_value={
-        "Id": "QB-C-MERGED", "DisplayName": "Merged", "Active": False,
-    })
+    # The pull returns a different customer; 9001 is absent from it — exactly
+    # the condition the probe used to treat as "merged away in QBO".
+    mock_qb.query = AsyncMock(return_value=[
+        {"Id": "9002", "DisplayName": "Still Here",
+         "PrimaryEmailAddr": {"Address": "still@example.invalid"}},
+    ])
+    mock_qb.read = AsyncMock(return_value={"Active": False})  # would have deleted
 
     out = asyncio.run(sync.pull_customers("tenant-1", db_session, mock_qb))
 
-    assert out["merged_remote"] == 1
-    # Local row was soft-deleted.
-    db_session.refresh(cust)
-    assert cust.deleted_at is not None
-    # Map row was dropped.
-    residual_map = db_session.execute(
-        select(QBEntityMap).where(QBEntityMap.qb_id == "QB-C-MERGED")
-    ).scalar_one_or_none()
-    assert residual_map is None
-    # Audit row written.
-    audit = db_session.execute(
-        select(AuditLog).where(AuditLog.action == "qbo_customer_merged_remote")
-    ).scalar_one()
-    assert audit.entity_id == "QB-C-MERGED"
-    assert audit.details["local_id"] == str(cust.id)
+    mock_qb.read.assert_not_called()
 
-
-def test_pull_customers_qbo_merge_noop_on_active_true(db_session: Session, qb_connection, mock_qb):
-    """If qb.read returns Active=true (entity exists, just missed by this
-    pull — e.g. pagination, where-clause filter), do NOT delete."""
-    from gdx_dispatch.modules.quickbooks import sync
-
-    cust = _seed_customer(db_session, "StillActive")
-    db_session.add(QBEntityMap(
-        tenant_id="tenant-1", entity_type="customer",
-        local_id=str(cust.id), qb_id="QB-C-ACTIVE",
-    ))
-    db_session.commit()
-
-    mock_qb.query = AsyncMock(return_value=[])
-    mock_qb.read = AsyncMock(return_value={
-        "Id": "QB-C-ACTIVE", "DisplayName": "StillActive", "Active": True,
-    })
-
-    out = asyncio.run(sync.pull_customers("tenant-1", db_session, mock_qb))
-
-    assert out["merged_remote"] == 0
-    db_session.refresh(cust)
-    assert cust.deleted_at is None
-    residual_map = db_session.execute(
-        select(QBEntityMap).where(QBEntityMap.qb_id == "QB-C-ACTIVE")
-    ).scalar_one_or_none()
-    assert residual_map is not None
-
-
-def test_pull_customers_qbo_merge_noop_on_read_failure(db_session: Session, qb_connection, mock_qb):
-    """If qb.read raises (404, network blip, permission), treat as ambiguous
-    and do not act. The local row + map must stay intact for the next sync."""
-    from gdx_dispatch.modules.quickbooks import sync
-
-    cust = _seed_customer(db_session, "Ambiguous")
-    db_session.add(QBEntityMap(
-        tenant_id="tenant-1", entity_type="customer",
-        local_id=str(cust.id), qb_id="QB-C-MISSING",
-    ))
-    db_session.commit()
-
-    mock_qb.query = AsyncMock(return_value=[])
-    mock_qb.read = AsyncMock(side_effect=RuntimeError("404 Not Found"))
-
-    out = asyncio.run(sync.pull_customers("tenant-1", db_session, mock_qb))
-
-    assert out["merged_remote"] == 0
-    db_session.refresh(cust)
-    assert cust.deleted_at is None
+    db_session.expire_all()
+    survivor = db_session.get(Customer, cust.id)
+    assert survivor is not None and survivor.deleted_at is None, (
+        "a customer absent from one pull was soft-deleted — the merge probe is back"
+    )
+    assert "merged_remote" not in out, (
+        "pull_customers still reports merged_remote; the probe was reintroduced"
+    )
 
 
 def test_find_or_create_import_job_helper_removed():
