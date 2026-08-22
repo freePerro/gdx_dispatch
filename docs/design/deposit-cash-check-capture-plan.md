@@ -1,6 +1,22 @@
 # Accepting an estimate: no way to take a check or cash for the downpayment
 
-Status: **MERGED #309** — P1 through P5 are all on main (verified 2026-08-21).
+Status: **MERGED #309 · its date argument DIAGNOSED 2026-08-22, NOT YET RESOLVED.**
+§6.2 argued the recorded date must be when money changed hands in the field,
+not when it reached a desktop. `payment-date-recording-plan.md` (#249, shipped
+six weeks later, neither doc citing the other) made the same column the **bank
+deposit date** and backfilled 340 prod rows to mean that. One column, two
+contradictory definitions, on a field month-end reporting keys off.
+
+**No fix is built.** Migration 073 was drafted and dropped — prod is on 072 and `payments.received_at` does not exist. The form's date input is still labelled "Date received" while being sent to the banked column; that mismatch stands. See `undeposited-funds-clearing-plan.md`.
+
+⚠ **The resolution described just above changed shape on 2026-08-22.** The
+split still stands as a statement of the two facts, but the mechanism does not:
+the banked date is not typed by anyone and `payment_date` does not become
+nullable — it comes from the bank line when a deposit is matched. See
+`undeposited-funds-clearing-plan.md`, which also found that no payment has
+reached the bank account in the ledger since the July cutover.
+
+**Original status, still true:** — P1 through P5 are all on main (verified 2026-08-21).
 `components/PaymentCaptureForm.vue` is the shared form, used by
 `MobileEstimatesView.vue:260` (P1), `MobileCustomerQuoteDialog.vue:303` (P2),
 `EstimateView.vue:75` + `:174` (P3, both the accept and Request-Deposit

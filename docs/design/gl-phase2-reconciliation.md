@@ -8,6 +8,15 @@ unbuilt here: the matcher has never been re-targeted to GL lines, there is no
 tie-out-to-GL assertion, no §4 processor/payout clearing, no §5 QBO push
 completion, and no §6.2 monthly QBO diff. The v4.1 planning content below
 stands; only this header's "blocked before implementation" framing was stale.
+⚠ **Do not read the won't-build note below as covering all of Phase 2.**
+§3.3's **R3 deposit sweep is the opposite: needed, specified here, and the one
+thing actively wrong in production.** Its design — "statement deposit = sum of
+undeposited 1050 lines" — is exactly the clearing that was never built, and
+$80,291.99 is stranded in 1050 because of it. The shipped matcher
+(`bank-statement-import-plan.md`) implements R3 against **Payment rows**, not
+GL lines, which is why it clears nothing. Scoped in
+`undeposited-funds-clearing-plan.md`.
+
 **⛔ Revised again 2026-08-21 — the QBO half is WON'T BUILD.** §5 (QBO push
 completion) and §6.2 (the monthly QBO diff) both assume QuickBooks stays a
 *maintained* second book to reconcile against. It does not: the connection has
@@ -101,7 +110,7 @@ As v1 (`bank_matches` + `bank_match_externals` + `bank_match_gl_lines`, cardinal
 |---|---|---|---|
 | R1 | Reference | Statement description carries a hard id: Stripe payout id (§4.3), check number ↔ `Payment.reference`, invoice number | 0.99, auto-confirm eligible |
 | R2 | Exact 1:1 | amount equal + same `bank_account_id` + date within ±3 business days + no competing candidate **across the whole candidate set** | 0.95, auto-confirm eligible |
-| R3 | Deposit sweep (N:1/1:N) | statement deposit = sum of undeposited 1050 lines (cash/check payments) within 7 days; bounded subset-sum (n≤12, k≤6, else manual). *Transition mode only:* `linked_qb_ids` shortcut where QBO ids still map (**[AUDIT-R1]**: that mapping is fed by disabled pulls — post-cutover R3 is subset-sum only, stated plainly) | 0.9 / 0.7 |
+| R3 ⚠ **THE LIVE GAP — build this** | Deposit sweep (N:1/1:N) | statement deposit = sum of undeposited 1050 lines (cash/check payments) within 7 days; bounded subset-sum (n≤12, k≤6, else manual). *Transition mode only:* `linked_qb_ids` shortcut where QBO ids still map (**[AUDIT-R1]**: that mapping is fed by disabled pulls — post-cutover R3 is subset-sum only, stated plainly) | 0.9 / 0.7 |
 | R4 | Tolerance | R2 ± ≤100¢ (config); difference → `residual_cents` → P12 to 6990 on confirm | 0.6, suggest-only |
 | R5 | User rules → new entry | payee/description patterns for bank-only reality (fees, interest, loan autopay → P10; principal/interest split **[CPA]**) | suggest-only until ≥3 confirmed uses **[JUDGMENT]** |
 | R6 | Unmatched aging | unmatched >14 days → exception queue; in transition mode, QBO-mirror rows not traceable to a GDX push → divergence candidates (§6.3) | triage |

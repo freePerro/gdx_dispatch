@@ -207,7 +207,10 @@ block /send resurrection of voided invoices (bug #3).** Lifecycle + reversal tes
 
 ## S6 — Payments posting (P3/P4)  *(spec §5.3)*  · behind flag
 
-`payments.voided_at` column. P3 (debit 1000/1050, credit 1200); P4 void reversal +
+`payments.voided_at` column. P3 (debit 1000/1050, credit 1200) — ⚠ **the
+1050 half of P3 shipped with no counterpart: nothing credits 1050, so
+cash/check/card payments never reach the bank account. $80,291.99 stranded on
+prod as of 2026-08-22; see `undeposited-funds-clearing-plan.md`.** P4 void reversal +
 `POST /payments/{id}/void`; overpayment→2300 opt-in (cap 1.0). **Refactor
 `core/payments.py:_mark_invoice_paid`** — drop mid-flow commit, create idempotent Payment
 row (bug #1, Stripe consolidation), route through the transition helper. **`/refund` enum
