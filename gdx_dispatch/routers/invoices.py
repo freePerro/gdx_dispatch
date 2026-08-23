@@ -1131,6 +1131,37 @@ def create_invoice(
         ).scalar_one_or_none()
         if not estimate or estimate.job_id != payload.job_id:
             raise HTTPException(status_code=404, detail="estimate not found for this job")
+        # M23 (money audit 2026-08-04): this path checked existence, soft-delete
+        # and job scope — but never STATUS. A job with accepted estimate A and a
+        # later declined variant B would happily bill B, because `estimate_id`
+        # means "copy this estimate's lines and ignore mine" and the copy asked
+        # no questions. The other two conversion paths already refuse:
+        # mobile_invoicing.py:447 and estimates.py's /deposit-invoice both 409.
+        #
+        # Honest scope: this field has no frontend caller today — see the
+        # `source_estimate_id` contract note below, and InvoiceCreateView's
+        # client-side accepted-filter. This closes the API surface, not a
+        # live office hole. Worth closing anyway, because `estimate_id`
+        # copies lines the operator never sees — the one shape where a
+        # wrong estimate bills silently. The office prefill puts its lines
+        # in an editor the operator reads before sending.
+        #
+        # Deliberately NOT applied to `source_estimate_id` below: that is
+        # provenance for lines the caller already built, it copies nothing, and
+        # a counter sale whose lines originated in a quote that was later
+        # revised is legitimate. Gating it would refuse honest history.
+        #
+        # `status` is a DB enum — draft|sent|accepted|declined|rejected|expired
+        # — so the case fold is belt-and-braces agreement with the deposit
+        # path's identical check, not a reachable case.
+        if (estimate.status or "").lower() != "accepted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "estimate must be 'accepted' to invoice; current: "
+                    f"{estimate.status or 'unset'}"
+                ),
+            )
 
     # `source_estimate_id` gets the SAME existence + soft-delete + job-scope
     # checks as the copy path above. It had none, so a counter sale could be

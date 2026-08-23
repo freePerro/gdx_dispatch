@@ -19,9 +19,15 @@ header is `total` with real values, not a blank `total_amount` column. Invoice
 why MobileBillingView's "Paid" row had never rendered — it renders now. Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
 M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8**, **M35**, **M19** and **M20** (and half of **M18**).
+§4's two HIGH conversion findings closed 2026-08-23: **M22** (proposal-mode
+estimates billed the sum of all tiers) was already resolved by the accepted-tier
+copy at `invoices.py:1355` plus the deletion of `create_invoice_from_job`;
+**M23** (estimates billed without checking status) is fixed here — the canonical
+path now 409s on a non-accepted estimate, matching the two conversion paths that
+already refused.
 **Not fixed:** M18's other half (a tax component on `invoice_adjustments` —
-a money rule plus a migration, deliberately not guessed), the rest of §4, §5
-and §6, and the frontend items in §7 — except M8's frontend half, which
+a money rule plus a migration, deliberately not guessed), the rest of §4 (M25),
+§5 and §6, and the frontend items in §7 — except M8's frontend half, which
 shipped with it. The GL findings are no longer "gated on CPA review" in the
 sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
 — but the CPA questions themselves are still unanswered.
@@ -810,7 +816,16 @@ labeled, margins validated to [0,1), tier ranges half-open with fail-loud on gap
 overlaps. The problems are at the estimate→invoice boundary, where a discount-aware
 totals function meets an invoice invariant that has no discount concept.
 
-### M22 — Proposal-mode estimates bill the sum of all tiers `HIGH` `CONFIRMED`
+### M22 — Proposal-mode estimates bill the sum of all tiers `HIGH` `CONFIRMED` ✅ FIXED
+
+**Closed, verified 2026-08-23.** Both halves are gone. `invoices.py:1355` now
+resolves `accepted_tier_id` and bills `tier_contract_lines(...)` for that tier
+alone, collapsing a flat tier to one package line at the tier price — the
+comment there records that the MOBILE builder stores all three tiers' lines
+untagged, which is what made the old unconditional copy bill Good+Better+Best
+summed. The `jobs.py` half no longer exists: `create_invoice_from_job` was
+DELETED in the 2026-08-08 audit (~200 lines with its own numbering and tax
+resolution, and zero frontend callers).
 
 Good/better/best tiers are stored as ordinary `EstimateLine` rows on one estimate, and
 accepting a tier sets `accepted_tier_id` and the estimate total without touching the
@@ -828,7 +843,45 @@ Mobile invoicing gets this right (one line for the chosen tier). The paths disag
 invoice lines, job parts, and `_recalculate_total` — to the accepted tier, or collapse
 to a single line the way mobile does.
 
-### M23 — Estimates are billed without checking their status `HIGH` `CONFIRMED`
+### M23 — Estimates are billed without checking their status `HIGH` `CONFIRMED` ✅ FIXED
+
+**Closed 2026-08-23.** `POST /api/invoices` now 409s when the named estimate is
+not accepted, naming the current status so the operator knows what to do about
+it. `estimate_id` means "copy this estimate's lines and ignore mine", so the
+estimate it names IS the bill — and the path validated existence, soft-delete
+and job scope while never asking about status.
+
+The other two conversion paths already refused (`mobile_invoicing.py:447` and
+`estimates.py`'s `/deposit-invoice`). The `jobs.py` one-click half was deleted
+outright in the 2026-08-08 audit.
+
+**Scope, stated precisely, because an adversarial review caught the first draft
+of this note overstating it.** `estimate_id` has **no frontend caller today**:
+the office create page deliberately sends `source_estimate_id` instead (see the
+contract comment at `invoices.py:695-706`), and the mobile dialog posts to its
+own already-gated endpoint. So this closes the **API surface**, not a live
+office hole. It is worth closing regardless, because `estimate_id` copies lines
+the operator never sees — the one shape where a wrong estimate bills silently.
+The office prefill puts its lines in an editor the operator reads first, and is
+filtered to accepted **client-side** at `InvoiceCreateView.vue:761` (added by
+the 2026-08-08 audit). That client filter is the office surface's only guard;
+if it moves, the prefill can draw from a declined estimate again — visibly, in
+an editable editor, but without any server refusal. Worth a server-side answer
+eventually; it is not what M23 described.
+
+Guarded by five parametrized cases covering the whole non-accepted half of the
+`estimate_status` enum — draft, sent, declined, rejected, expired — plus the
+counterfactual (an accepted estimate still bills) and an explicit assertion that
+`source_estimate_id` is deliberately NOT gated, because it copies nothing and a
+counter sale whose lines originated in a later-revised quote is honest history.
+Counterfactually verified: disabling the gate turns all five red.
+
+**Prod exposure when it was closed:** none realised. All 6 estimate-linked
+invoices came from accepted estimates, and 0 jobs carried both an accepted and a
+non-accepted estimate — but 43 estimates sit in `sent` and 9 in `declined`, so
+the shape appears the first time anyone quotes a revision.
+
+The original finding, for the record:
 
 The one-click path picks `order_by(created_at desc).limit(1)` with **no status
 filter** ([jobs.py:2612-2624](../../gdx_dispatch/routers/jobs.py#L2612-L2624)), and
