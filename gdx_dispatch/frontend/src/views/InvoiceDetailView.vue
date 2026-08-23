@@ -500,6 +500,46 @@
             icon="pi pi-lock"
             data-testid="invoice-locked-tag"
           />
+          <!-- Void. The endpoint has existed, complete and audited, since GL
+               S5 and had ZERO callers until 2026-08-23 — no .vue file called
+               it, and prod had never written a single `invoice_voided` audit
+               row. The office simply could not void an invoice.
+
+               Not the same verb as Delete: delete is soft and draft-only,
+               void is TERMINAL (there is no un-void endpoint anywhere) and
+               keeps the invoice on the record with its number intact, which
+               is what a compliance trail needs. So it gets a typed
+               confirmation rather than a one-click confirm — same pattern
+               DatabaseAdminView uses for a migration.
+
+               Hidden on an already-void invoice. NOT hidden on a paid one:
+               the button stays, and the dialog explains that the payments
+               have to go first. Hiding it there would be a different dead end
+               — the operator wanting to void a mispaid invoice would find no
+               control and no reason. (An earlier draft of this comment
+               claimed a paid-invoice guard that the v-if did not have;
+               adversarial review caught it.)
+
+               `canWriteInvoices` is UX only. On THIS tenant it does not
+               exclude technicians: their TenantRole snapshot has drifted to
+               include invoices.read_all + invoices.write, and the resolver
+               trusts a non-admin snapshot verbatim. Filed, not papered over. -->
+          <Button
+            v-if="canWriteInvoices && String(invoice.status || '').toLowerCase() !== 'void'"
+            label="Void"
+            icon="pi pi-ban" aria-label="Void invoice"
+            severity="danger"
+            outlined
+            data-testid="void-invoice-btn"
+            @click="openVoidDialog"
+          />
+          <Tag
+            v-if="String(invoice.status || '').toLowerCase() === 'void'"
+            value="Void"
+            severity="danger"
+            icon="pi pi-ban"
+            data-testid="invoice-void-tag"
+          />
           <Button
             label="Delete"
             icon="pi pi-trash" aria-label="Delete"
@@ -853,6 +893,73 @@
         </template>
       </Dialog>
 
+      <!-- Void Dialog. Typed confirmation, not a one-click confirm: a void
+           cannot be undone and no un-void endpoint exists. The body says what
+           actually happens, because "are you sure?" is not information. -->
+      <Dialog
+        v-model:visible="showVoidDialog"
+        header="Void this invoice?"
+        modal
+        :style="{ width: '32rem', maxWidth: '95vw' }"
+        data-testid="void-invoice-dialog"
+      >
+        <div class="void-dialog-body">
+          <div
+            v-if="voidBlockedReason"
+            class="void-blocked"
+            data-testid="void-blocked-reason"
+          >
+            {{ voidBlockedReason }}
+          </div>
+          <p class="void-lead">
+            <strong>{{ invoice.invoice_number }}</strong> for
+            <strong>{{ currency(invoice.total) }}</strong> will be voided.
+            <strong>This is permanent</strong> — there is no way to un-void an
+            invoice.
+          </p>
+          <ul class="void-consequences" data-testid="void-consequences">
+            <li>The invoice stays on the record with its number, marked void.</li>
+            <li>
+              Any parts and change orders it claimed go back on the unbilled
+              checklist, so they can be billed on a new invoice.
+            </li>
+            <li v-if="glPostingEnabled">
+              Its ledger entry is reversed and the receivable cleared.
+            </li>
+            <li>To bill this work you will need to create a new invoice.</li>
+          </ul>
+          <label v-if="!voidBlockedReason" class="void-type-label" for="void-confirm-input">
+            Type <code>{{ invoice.invoice_number }}</code> to confirm
+          </label>
+          <InputText
+            v-if="!voidBlockedReason"
+            id="void-confirm-input"
+            v-model="voidConfirmText"
+            class="void-type-input"
+            autocomplete="off"
+            data-testid="void-confirm-input"
+            :placeholder="invoice.invoice_number"
+          />
+        </div>
+        <template #footer>
+          <Button
+            label="Cancel"
+            severity="secondary"
+            data-testid="void-cancel-btn"
+            @click="showVoidDialog = false"
+          />
+          <Button
+            label="Void invoice"
+            icon="pi pi-ban"
+            severity="danger"
+            data-testid="void-confirm-btn"
+            :disabled="!voidConfirmMatches"
+            :loading="voiding"
+            @click="voidInvoice"
+          />
+        </template>
+      </Dialog>
+
       <!-- ConfirmDialog removed 2026-05-12 — AppLayout.vue:49 already mounts
            one globally, and PrimeVue's useConfirm() broadcasts to every
            mounted instance, causing duplicate dialog renders. -->
@@ -876,6 +983,7 @@ import { useApiWithToast as useApi } from "../composables/useApiWithToast";
 import { qbSyncLabel } from "../composables/qbSyncLabel";
 import { formatDate, formatMoney, formatPercent, formatPhone, formatStampDateTime } from "../composables/useFormatters";
 import { useDestructiveConfirm } from "../composables/useDestructiveConfirm";
+import { usePermission } from "../composables/usePermission";
 import { invoiceStatusSeverity as statusSeverity } from "../utils/statusSeverity";
 import { useTenantModules } from "../composables/useTenantModules";
 import { openAuthedFile } from "../composables/useAuthedFile";
@@ -909,6 +1017,7 @@ const savingPayment = ref(false);
 const showPaymentDialog = ref(false);
 const qbConnected = ref(false);
 const pushingToQb = ref(false);
+
 
 // Job photos on the invoice PDF (2026-08-07). jobPhotos = the job's photo
 // roll; invoice.attached_photo_ids = the current pick. Toggling PATCHes the
@@ -1145,6 +1254,37 @@ const invoice = ref({
   payments: [],
 });
 
+// Void. `hasPermission` is UX glue only — the server gates the route on
+// invoices.write; this just stops offering a button that would 403.
+const { hasPermission } = usePermission();
+const canWriteInvoices = computed(() => hasPermission("invoices.write"));
+const showVoidDialog = ref(false);
+const voidConfirmText = ref("");
+const voiding = ref(false);
+// Trim, and compare case-insensitively: the operator is retyping a number
+// they can see, not proving they can match whitespace.
+// The server refuses a void while any NON-voided payment exists: "voiding a
+// bill while keeping its money would silently orphan the cash." Rather than
+// let the operator read a scary permanent-deletion warning, retype the whole
+// invoice number and THEN eat a 409, say it up front. Prefer the server's
+// amount_paid; fall back to the payments sum (which includes voided rows and
+// so only ever over-blocks) when an older payload omits it.
+const livePaidAmount = computed(() => {
+  const server = invoice.value?.amount_paid;
+  return server === undefined || server === null ? totalPaid.value : toNum(server);
+});
+const voidBlockedReason = computed(() => {
+  if (livePaidAmount.value > 0) {
+    return "This invoice has recorded payments. Void or remove those payments first — voiding a bill while keeping its money would leave the cash with nothing to belong to.";
+  }
+  return "";
+});
+const voidConfirmMatches = computed(() => {
+  if (voidBlockedReason.value) return false;
+  const target = String(invoice.value?.invoice_number || "").trim().toLowerCase();
+  return target.length > 0 && voidConfirmText.value.trim().toLowerCase() === target;
+});
+
 // Customer-edit dialog state. customerForEdit holds the full customer record
 // (loaded just-in-time when the user clicks Edit) so the dialog can preserve
 // fields the invoice payload doesn't carry (notes, access_notes, etc.).
@@ -1288,6 +1428,12 @@ function normalizeInvoice(payload) {
   invoice.value = {
     id: payload.id,
     invoice_number: payload.invoice_number || payload.invoiceNumber || `INV-${String(payload.id).substring(0, 8)}`,
+    // The server's LIVE paid figure (core/invoice_paid.py — sum of payments
+    // that are not voided). The `payments` array below carries voided rows
+    // too, so summing it over-counts; this is the number the void guard has
+    // to key on, because the server refuses a void only while a NON-voided
+    // payment exists. Another field the normalizer used to drop.
+    amount_paid: toNum(payload.amount_paid ?? 0),
     customer_id: payload.customer_id || null,
     // 2026-08-12 browser walk: THIS is why the job-photo picker never worked.
     // This normalizer copies fields explicitly, job_id was never listed, so
@@ -2078,6 +2224,59 @@ function confirmDelete() {
   });
 }
 
+function openVoidDialog() {
+  // Always start empty — a retained value would let a second void go through
+  // on one click, which is exactly the friction this dialog exists to add.
+  voidConfirmText.value = "";
+  showVoidDialog.value = true;
+}
+
+async function voidInvoice() {
+  if (!voidConfirmMatches.value) return;
+  voiding.value = true;
+  try {
+    // suppressErrorToast: the server's 409s are the informative part
+    // ("invoice has recorded payments — void or remove them first", "void
+    // posts into a locked accounting period — …"). A generic toast on top of
+    // them tells the operator nothing about what to do next.
+    await api.post(
+      `/api/invoices/${route.params.id}/void`,
+      {},
+      { suppressErrorToast: true },
+    );
+    showVoidDialog.value = false;
+    // Re-fetch rather than assign the response. The API speaks `lines`; this
+    // view speaks `line_items`, and `normalizeInvoice` is what translates —
+    // assigning the raw payload left `line_items` undefined and the totals
+    // computed threw "Cannot read properties of undefined (reading 'reduce')".
+    // The void had already succeeded server-side, so the operator saw a broken
+    // screen after a destructive action that actually worked. Caught in a real
+    // browser; jsdom never rendered the crash.
+    await fetchInvoice();
+    toast.add({
+      severity: "success",
+      summary: "Voided",
+      // Deliberately does NOT say "see the banner below". `fetchUnbilledJobParts`
+      // returns early unless the invoice is a DRAFT, so on a freshly-voided
+      // invoice the banner is empty by design — the parts really are released
+      // (the audit event records the count), they are just billed from the
+      // JOB, not from this dead invoice. Promising a panel that renders
+      // nothing is how a true statement becomes a lie on screen.
+      detail: `${invoice.value?.invoice_number || "Invoice"} is void. Any parts and change orders it claimed are billable again from the job.`,
+      life: 5000,
+    });
+  } catch (err) {
+    toast.add({
+      severity: "error",
+      summary: "Could not void",
+      detail: err?.message || "Failed to void this invoice",
+      life: 8000,
+    });
+  } finally {
+    voiding.value = false;
+  }
+}
+
 function pushToQuickbooks() {
   // Push IS destructive — it creates a QB invoice on the live realm and
   // can't be undone from the GDX side (operator has to void in QB if
@@ -2439,6 +2638,41 @@ onMounted(() => {
 .unbilled-parts-list {
   display: block;
   color: var(--p-text-muted-color, #6b7280);
+  font-size: 0.9rem;
+}
+
+/* Void dialog. Theme tokens only — a pale fixed background here would go
+   white-on-white in dark mode, which is how the bank-feed nudge broke. */
+.void-dialog-body { display: flex; flex-direction: column; gap: 0.85rem; }
+.void-lead { margin: 0; }
+.void-consequences {
+  margin: 0;
+  padding: 0.65rem 0.9rem 0.65rem 2rem;
+  border-left: 3px solid var(--p-red-500, #ef4444);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  color: var(--p-text-color, inherit);
+  font-size: 0.9rem;
+}
+.void-consequences li + li { margin-top: 0.3rem; }
+.void-type-label {
+  font-size: 0.88rem;
+  color: var(--p-text-muted-color, #6b7280);
+}
+.void-type-label code {
+  color: var(--p-text-color, inherit);
+  background: var(--p-content-background, transparent);
+  border: 1px solid var(--p-content-border-color, rgba(127, 127, 127, 0.3));
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+.void-type-input { width: 100%; }
+.void-blocked {
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  color: var(--p-text-color, inherit);
   font-size: 0.9rem;
 }
 </style>

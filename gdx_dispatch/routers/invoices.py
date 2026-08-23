@@ -3139,7 +3139,18 @@ def list_payments(
     return [_serialize_payment(row) for row in rows]
 
 
-@router.post("/{invoice_id}/void", response_model=None)
+@router.post(
+    "/{invoice_id}/void",
+    response_model=None,
+    # Gated when the UI landed (2026-08-23). Until then this endpoint had no
+    # caller at all, so "any authenticated user" was academic; putting a button
+    # on the invoice screen makes it reachable by every role that can open the
+    # screen — and `/billing/:id` carries no route permission of its own.
+    # `invoices.write` matches what `/billing/new` already requires and is what
+    # `accounting` holds; `technician`, `dispatcher` and `sales` do not, which
+    # is the intended line. A void is terminal and there is no un-void.
+    dependencies=[Depends(require_permission("invoices.write"))],
+)
 def void_invoice(
     invoice_id: UUID,
     _: dict = Depends(get_current_user),
