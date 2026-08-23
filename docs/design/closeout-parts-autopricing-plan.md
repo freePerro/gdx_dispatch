@@ -11,13 +11,14 @@ gated on `invoices.write`. See § Follow-ups. Two new findings were filed there
 rather than bundled: 18 of 20 invoice mutation routes carry no permission gate,
 and this tenant's `technician` role snapshot has drifted to include
 `invoices.write`.
-**Still not built (re-verified 2026-08-23):** provenance on a stored price
-(no source column, no audit event — "who priced this and why" is still
-unanswerable, invariant #1 on money code); a server-side unbilled-parts gate
-on `verify_invoice`, the only surfacing that binds the mobile lane, the API and
-the accounting role that cannot read inventory; and
-`release_untouched_autodraft` still deletes office-added lines on a
-re-closeout. Each is filed in § Follow-ups, not silently dropped.
+**Follow-ups 1 and 3 shipped 2026-08-23** — migration 075 adds
+`job_parts_needed.price_source` and `invoice_lines.source`, so a stored price
+says which lane produced it and the closeout rebuild stops deleting lines the
+office added by hand.
+**Still not built:** the server-side unbilled-parts gate on `verify_invoice`
+(follow-up 2) — the only surfacing that binds the mobile lane, the API and the
+accounting role that cannot read inventory. Plus follow-ups 5–8, 10 and 11,
+each filed in § Follow-ups, not silently dropped.
 
 Investigated 2026-08-18 against prod v1.68.2 (read-only queries). Design
 corrected three times by Doug on 2026-08-18; see § The model. Five adversarial
@@ -352,12 +353,38 @@ No plan in the corpus reaches a decision opposite to this one.
 
 Each of these was found during the build and deliberately left out of it.
 
-1. **A stored price carries no provenance.** Office number, bench inventory,
-   catalog price, and tier-engine markup all land in the same
-   `Numeric(10,2)` with no source column and no audit event. "Who priced this
-   part and why" cannot be answered from the records — invariant #1, on money
-   code. The fix is a `price_source` column written at capture plus an audit
-   event, and it is the largest remaining gap in this work.
+1. ~~**A stored price carries no provenance.**~~ **FIXED 2026-08-23**
+   (migration 075). Office number, bench inventory, catalog price and
+   tier-engine markup all landed in the same `Numeric(10,2)` with no source
+   column and no audit event, so "who priced this part and why" could not be
+   answered from the records — invariant #1, on money code.
+   `job_parts_needed.price_source` now records the lane, written at capture by
+   every path that stores a resolved price, and the parts-needed create audit
+   event carries the price, its source, and the client-supplied figure when
+   the server overrode it. The vocabulary lives in
+   `core/part_pricing.PriceSource`: `office`, `job_quote`, `inventory`,
+   `catalog`, `catalog_cost`, `chi`, `chi_cost`. The two `_cost` lanes are
+   named apart deliberately — a marked-up cost is the machine's opinion, a
+   sell price is somebody's decision, and a reader has to be able to tell.
+   `resolve_sell_price()` keeps its old scalar contract; every capture path
+   that stores a resolved price — office add, closeout, mobile parts-used
+   (both lanes), van stock — calls the new `resolve_sell_price_with_source()`.
+   The paths that store NO price (`routers/estimates.py`, which writes prices
+   into free-text notes per follow-up 5, and `modules/vendor_invoices/confirm.py`,
+   which sets `unit_price=None` on purpose) leave the column NULL, which is
+   consistent rather than a gap. `price_source` is also returned by
+   `GET /api/jobs/{id}/parts-needed`, so it is readable, not write-only.
+
+   An adversarial review caught a real one here: `build_closeout_lines` writes
+   **three** kinds of `InvoiceLine`, not two, and the first pass stamped only
+   the service-lane labor line and the parts line — missing the **install-lane
+   matrix labor line, the dominant path**. The machine would have built an
+   install autodraft and disowned it in the same transaction: a re-closeout
+   silently no-ops (stale totals, no error, no trace) and "not billable" 409s
+   pointing at a void verb. The existing stamp assertion ran on a Service Call,
+   so the whole install lane was uncovered. Both the stamp and an install-lane
+   test now exist, and the test asserts the consequence — that
+   `is_untouched_autodraft` still says True — not just the column.
 
 2. **The durable unbilled-parts gate belongs on the server.** The banner is
    client-side, so it cannot help the accounting role (no `inventory.read`,
@@ -365,11 +392,31 @@ Each of these was found during the build and deliberately left out of it.
    `verify_invoice` listing unbilled parts unless explicitly acknowledged
    binds every caller. Raised by the round-5 audit; correct, and not built.
 
-3. **`release_untouched_autodraft` deletes office-added lines.** A re-closeout
-   wipes every line on an untouched draft, including parts the office added by
-   hand — exactly what the new banner tells them to do. Needs a marker
-   distinguishing machine lines from human ones before the rebuild can be
-   selective.
+3. ~~**`release_untouched_autodraft` deletes office-added lines.**~~
+   **FIXED 2026-08-23** (migration 075). A re-closeout wiped every line on an
+   untouched draft, including parts the office had added by hand — exactly
+   what the unbilled-parts banner tells them to do. `invoice_lines.source`
+   now marks the lines the autodraft wrote, and `is_untouched_autodraft`
+   returns False when any live line is not machine-authored. Every arm of that
+   guard had asked about the INVOICE; none had asked about its LINES.
+
+   **NULL is read as possibly-human, not as machine.** Every line predating
+   the column is unknowable, and deleting an operator's work on a guess is the
+   worse of the two errors — so no backfill was attempted. The SQL is
+   `IS DISTINCT FROM`, not `!=`: in SQL `NULL != 'autodraft'` is NULL rather
+   than true, so a plain inequality would match nothing and every pre-075 line
+   would read as machine-authored, reintroducing the exact bug. A test pins
+   that.
+
+   When the guard now refuses, nothing duplicates: `release_untouched_autodraft`
+   returns None, so `autodraft_invoice_for_closeout` gets no `reuse_invoice`,
+   finds the live non-void invoice on the job, and returns None — the closeout
+   proceeds unbilled and the office's draft survives intact, which is already
+   the designed behaviour for a human-touched draft.
+
+   Measured on prod before shipping: **zero** autodraft invoices are still in
+   draft (all 4 are sent or paid), and 5 of 812 live invoice lines sit on an
+   autodraft invoice — so the conservative reading costs nothing that exists.
 
 4. ~~**`void_invoice` never releases part claims.**~~ **FIXED 2026-08-23.** A
    part claimed onto an invoice that is later voided was billed to nothing: it

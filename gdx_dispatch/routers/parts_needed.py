@@ -139,13 +139,19 @@ def _serialize(p: JobPartNeeded) -> dict[str, Any]:
         # unit_price: catalog sell price at capture, NULL = office prices it.
         "source": getattr(p, "source", None) or "request",
         "unit_price": float(p.unit_price) if getattr(p, "unit_price", None) is not None else None,
+        # Migration 075 — WHICH lane produced `unit_price` (see
+        # core.part_pricing.PriceSource). Exposed rather than left write-only:
+        # a provenance column nothing can read answers the audit question in
+        # theory and nobody's question in practice. NULL = unpriced, or
+        # captured before the column existed.
+        "price_source": getattr(p, "price_source", None),
         "created_at": str(p.created_at) if p.created_at else None,
         "updated_at": str(p.updated_at) if p.updated_at else None,
     }
 
 
-def _resolved_unit_price(db: Session, job_id: str, payload) -> Any:
-    """The sell price to store for an office-added part.
+def _resolved_unit_price(db: Session, job_id: str, payload) -> tuple[Any, str | None]:
+    """The sell price to store for an office-added part, and where it came from.
 
     A caller-supplied price is honoured ONLY when it is a price the catalog
     itself would stand behind. The job screen's catalog picker sends the raw
@@ -159,12 +165,23 @@ def _resolved_unit_price(db: Session, job_id: str, payload) -> Any:
     resolves, keep the caller's number -- a human typing a price by hand is
     still authoritative, and refusing it would break manual entry.
     """
-    from gdx_dispatch.core.part_pricing import resolve_sell_price
+    from gdx_dispatch.core.part_pricing import (
+        PriceSource,
+        resolve_sell_price_with_source,
+    )
 
-    resolved = resolve_sell_price(db, job_id=job_id, sku=payload.sku or None)
+    resolved, source = resolve_sell_price_with_source(
+        db, job_id=job_id, sku=payload.sku or None
+    )
     if resolved is not None:
-        return resolved
-    return payload.unit_price
+        return resolved, source
+    # A human's typed number. `OFFICE` rather than NULL: "an operator decided
+    # this" is a real answer and the most authoritative one in the table, and
+    # it is exactly what a later reader needs to distinguish from a machine
+    # markup. NULL stays reserved for "we do not know".
+    if payload.unit_price is not None:
+        return payload.unit_price, PriceSource.OFFICE
+    return None, None
 
 
 @router.post(
@@ -183,6 +200,7 @@ def add_part_needed(
     uid = _uid(user)
     part_id = str(uuid4())
     now = datetime.now(timezone.utc)
+    _resolved_price, _price_source = _resolved_unit_price(db, job_id, payload)
     part = JobPartNeeded(
         id=part_id,
         company_id=tid,
@@ -203,7 +221,11 @@ def add_part_needed(
         # input core.part_pricing treats as "the office's number for this
         # job", so a bad value laundered itself into authority on the next
         # capture. Resolving server-side keeps one pricing rule.
-        unit_price=_resolved_unit_price(db, job_id, payload),
+        unit_price=_resolved_price,
+        # Migration 075 — record WHICH lane produced that number. Without it
+        # an office figure, a bench-inventory price and a marked-up catalog
+        # cost were indistinguishable once stored.
+        price_source=_price_source,
         requested_by_user_id=uid,
         created_at=now,
         updated_at=now,
@@ -223,6 +245,22 @@ def add_part_needed(
             "qty": payload.quantity,
             "sku": payload.sku,
             "urgency": payload.urgency,
+            # The other half of follow-up 1: the column says where the number
+            # came from, the trail says what the number WAS at capture. A
+            # later edit changes the column; it cannot change this row. Both
+            # are needed to answer "who priced this part and why".
+            "unit_price": float(_resolved_price) if _resolved_price is not None else None,
+            "price_source": _price_source,
+            # Only meaningful when the client sent one and the resolver
+            # overrode it — that override is a silent behaviour the office
+            # otherwise cannot see.
+            "client_price": (
+                float(payload.unit_price)
+                if payload.unit_price is not None
+                and _price_source is not None
+                and _price_source != "office"
+                else None
+            ),
         },
         request=request,
     )

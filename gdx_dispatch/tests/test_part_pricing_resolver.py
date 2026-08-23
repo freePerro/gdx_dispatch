@@ -589,11 +589,15 @@ def test_office_catalog_add_never_stores_cost_as_the_sell_price(db) -> None:
         sku = "CHI-2294"
         unit_price = 2207.00  # what the picker posts today
 
-    stored = _resolved_unit_price(db, str(job.id), _Payload())
+    stored, source = _resolved_unit_price(db, str(job.id), _Payload())
     assert stored is not None
     assert Decimal(str(stored)) > Decimal("2207.00"), (
         f"stored {stored} — the office would bill a door at cost"
     )
+    # Migration 075: the row now says the markup engine produced this, NOT the
+    # office — which is the whole point. A reader deciding whether to trust
+    # $2,207-plus-margin has to know a machine chose it.
+    assert source == "catalog_cost", source
 
 
 def test_a_hand_typed_price_for_an_unknown_part_is_still_honoured(db) -> None:
@@ -606,4 +610,8 @@ def test_a_hand_typed_price_for_an_unknown_part_is_still_honoured(db) -> None:
         sku = None
         unit_price = 42.00
 
-    assert _resolved_unit_price(db, str(job.id), _Payload()) == 42.00
+    stored, source = _resolved_unit_price(db, str(job.id), _Payload())
+    assert stored == 42.00
+    # And it is recorded as a human's decision, not a machine's — the most
+    # authoritative provenance in the table (migration 075).
+    assert source == "office", source

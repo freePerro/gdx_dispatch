@@ -33,7 +33,7 @@ from gdx_dispatch.core.job_site import (
     resolve_job_sites,
 )
 from gdx_dispatch.core.modules import require_module, require_permission
-from gdx_dispatch.core.part_pricing import resolve_sell_price
+from gdx_dispatch.core.part_pricing import resolve_sell_price_with_source
 from gdx_dispatch.core.permissions import is_dispatch_manager
 from gdx_dispatch.core.pii import decrypt_if_ciphertext
 from gdx_dispatch.core.user_display import resolve_author_name
@@ -4377,6 +4377,9 @@ def mobile_job_parts_used(
                 continue
             _line_name = (part.name or "").strip() or part.sku or "Part"
             _fx_now = datetime.now(UTC)
+            _fx_price, _fx_price_source = resolve_sell_price_with_source(
+                db, job_id=str(_job_uuid_parts), sku=part.sku, part_id=None
+            )
             _fx_row = JobPartNeeded(
                 id=str(uuid.uuid4()),
                 company_id=tenant_id,
@@ -4390,12 +4393,9 @@ def mobile_job_parts_used(
                 # from the job's own scoped rows or the catalog (2026-08-19).
                 # Unresolvable stays NULL — the office prices it at invoicing,
                 # same rule as closeout: never invent a sell price.
-                unit_price=resolve_sell_price(
-                    db,
-                    job_id=str(_job_uuid_parts),
-                    sku=part.sku,
-                    part_id=None,
-                ),
+                unit_price=_fx_price,
+                # Migration 075 — which lane priced it (see PriceSource).
+                price_source=_fx_price_source,
                 requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
                 created_at=_fx_now,
                 updated_at=_fx_now,
@@ -4446,6 +4446,9 @@ def mobile_job_parts_used(
         # but the part NEVER reached billing. One source-tagged billable
         # checklist row per event (events accumulate; never merged).
         _pn_now = datetime.now(UTC)
+        _pn_price, _pn_price_source = resolve_sell_price_with_source(
+            db, job_id=str(_job_uuid_parts), sku=part_obj.sku, part_id=_part_uuid
+        )
         _pn_row = JobPartNeeded(
             id=str(uuid.uuid4()),
             company_id=tenant_id,
@@ -4457,12 +4460,9 @@ def mobile_job_parts_used(
             source="mobile",
             # Inventory price still wins via part_id (tier 2); the resolver
             # adds the job's own scoped price and the catalog behind it.
-            unit_price=resolve_sell_price(
-                db,
-                job_id=str(_job_uuid_parts),
-                sku=part_obj.sku,
-                part_id=_part_uuid,
-            ),
+            unit_price=_pn_price,
+            # Migration 075 — which lane priced it (see PriceSource).
+            price_source=_pn_price_source,
             requested_by_user_id=str((current_user or {}).get("user_id") or (current_user or {}).get("sub") or ""),
             created_at=_pn_now,
             updated_at=_pn_now,

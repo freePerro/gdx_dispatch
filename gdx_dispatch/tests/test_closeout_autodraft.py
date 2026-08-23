@@ -204,6 +204,15 @@ def test_service_closeout_autodrafts_priced_invoice(db) -> None:
     # plus the $45 catalog part.
     lines = _lines(db, inv)
     assert len(lines) == 2
+    # Migration 075 — BOTH kinds of line the builder writes (labor and part)
+    # carry the machine stamp. `release_untouched_autodraft` reads this to
+    # decide whether it may still empty the draft, so if the builder ever
+    # stops stamping, the guard inverts: every machine line reads as human and
+    # the rebuild dies silently. Asserted by running the builder, not by
+    # grepping its source.
+    assert {line.source for line in lines} == {"autodraft"}, (
+        f"unstamped autodraft lines: {[(l.description, l.source) for l in lines]}"
+    )
     assert float(inv.total) == pytest.approx(245.00)
     assert float(inv.balance_due) == pytest.approx(245.00)
 

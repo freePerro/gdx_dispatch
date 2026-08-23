@@ -23,7 +23,10 @@ from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
 from gdx_dispatch.core.modules import require_module, require_permission
-from gdx_dispatch.core.part_pricing import duplicate_capture_groups, resolve_sell_price
+from gdx_dispatch.core.part_pricing import (
+    duplicate_capture_groups,
+    resolve_sell_price_with_source,
+)
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -2155,6 +2158,13 @@ def closeout_job(
             # parts, which never carry a part_id by design — the tech attested
             # a part the office had already priced on this very job and it was
             # captured NULL, then dropped from the draft.
+            _co_price, _co_price_source = resolve_sell_price_with_source(
+                db,
+                job_id=str(job.id),
+                sku=p.sku,
+                part_id=part_uuid if part_exists else None,
+                customer_id=job.customer_id,
+            )
             db.add(JobPartNeeded(
                 id=str(uuid.uuid4()),
                 company_id=tenant_id,
@@ -2164,13 +2174,12 @@ def closeout_job(
                 quantity=int(p.qty),
                 status="used",
                 source="closeout",
-                unit_price=resolve_sell_price(
-                    db,
-                    job_id=str(job.id),
-                    sku=p.sku,
-                    part_id=part_uuid if part_exists else None,
-                    customer_id=job.customer_id,
-                ),
+                unit_price=_co_price,
+                # Migration 075 — the lane, beside the number. Without it this
+                # path would write a price with no provenance and make the
+                # column a half-truth: some rows answerable, some not, and no
+                # way to tell which from the data.
+                price_source=_co_price_source,
                 # PR5: the tech's free-text explanation (a part not in the
                 # system) leads; the cost breadcrumb follows.
                 notes=" — ".join(
