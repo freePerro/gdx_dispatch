@@ -1032,7 +1032,50 @@ later detail fetch lies.
 **Fix.** `invariant_ok = "INVARIANT_MISMATCH" not in (invoice.notes or "")`, and then
 store a real boolean column rather than parsing prose for a money guard.
 
-### M27 — Commission revenue counts voided, soft-deleted and draft invoices `HIGH` `CONFIRMED`
+### M27 — Commission revenue counts voided, soft-deleted and draft invoices `HIGH` `CONFIRMED` 🔶 NOT FIXED — SUPERSEDED
+
+**Researched 2026-08-23 and deliberately not repaired.** M27 is real, and it is
+the *smallest* of four defects in a feature that has never once run. Fixing it
+alone would be worse than leaving it: repairing the invoice predicate on a query
+that cannot execute changes nothing, and repairing the query without the
+predicate starts paying inflated commission.
+
+What the research found, measured on prod:
+
+1. `_fetch_tech_revenue` selects **`j.assigned_tech_id`, a column that exists in
+   no schema here** — the jobs table has `assigned_to`. The resulting
+   `OperationalError` was caught and turned into an empty dict, so every tech
+   reported **$0.00 revenue and $0.00 commission as though calculated**.
+2. It filters **`j.status = 'completed'`** while this tenant stores
+   `'Complete'` (32 jobs) and `'Completed'` (17). Even with 1 fixed it matches
+   nothing. The codebase has no canonical vocabulary here — `reports.py:856`
+   matches only `'Complete'`, `jobs.py:3376` only `'Completed'`/`'completed'`.
+3. M27 itself — no `deleted_at`, void or draft filter on the invoice join.
+4. **The whole Payroll screen is 501.** `pay-periods`, `pay-stubs` and
+   `run-current-period` are all `ui_compat` stubs.
+
+Plus, in the data rather than the code: all 4 configured rates are
+`percent = 0.01`, which computes **one hundredth of one percent** — $1.00 on a
+$10,000 job. Never noticed, because defect 1 meant the number was never produced.
+
+`commission_entries` = 0 and `payroll_entries` = 0. Nothing has ever been
+generated, so no live data depends on any of it.
+
+**Decision (Doug, 2026-08-23): commission belongs in a plugin, not core.**
+Scoped in `commission-as-a-plugin-plan.md`. The deposit-basis question this
+finding raised ("decide the deposit/final netting basis explicitly") moves there
+with it — two prod jobs carry both a deposit and a standard invoice and they
+disagree about whether summing is right.
+
+**What shipped instead:** the surface stops lying. `_fetch_tech_revenue` raises
+`RevenueBasisUnavailable` rather than returning `{}`, and all three consumers
+return **503** naming the reason instead of a page of $0.00 rows. `PayrollView`
+says payroll runs are not built, and the button that could only 501 is gone.
+Three pre-existing tests that asserted the swallow — including one that "proved"
+the CSV export worked while exporting a file derived from a raised query — now
+assert the refusal.
+
+The original finding:
 
 `_fetch_tech_revenue` ([payroll.py:304-316](../../gdx_dispatch/routers/payroll.py#L304-L316))
 joins invoices with no `deleted_at`, no void and no draft filter, while
