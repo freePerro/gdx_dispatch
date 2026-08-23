@@ -3179,8 +3179,38 @@ def void_invoice(
             detail=f"void posts into a locked accounting period — {exc}",
         ) from exc
     invoice.balance_due = _money(0)
-    db.commit()
-    db.refresh(invoice)
+    # A void is dead money — `core/billing_predicates.py` excludes voided
+    # invoices from "is this job billed" for exactly that reason. But the parts
+    # and change orders it claimed stayed stamped with its id, so they read
+    # "billed" while no LIVE invoice bills them: gone from
+    # `parts-needed?unbilled=true`, absent from Ready-for-Billing, and
+    # unbillable forever. Money that was going to be charged silently stops
+    # being charged.
+    #
+    # This is the same reasoning an auditor already applied to the soft-delete
+    # path (see `delete_invoice`), and `void_untouched_autodraft` in
+    # core/closeout_billing.py releases on its own void too. This was the one
+    # void that did not — three void paths, two releases.
+    released_parts = db.execute(
+        update(JobPartNeeded)
+        .where(JobPartNeeded.billed_invoice_id == invoice.id)
+        .values(billed_invoice_id=None)
+    ).rowcount
+    from gdx_dispatch.routers.change_orders import ChangeOrder as _CO
+
+    released_cos = db.execute(
+        update(_CO)
+        .where(_CO.billed_invoice_id == invoice.id)
+        .values(billed_invoice_id=None)
+    ).rowcount
+    # ONE commit, and the audit row is staged into it -- deliberately not the
+    # commit-then-log-then-commit shape `delete_invoice` uses. Releasing a
+    # claim puts billable work back on the checklist, so a release that lands
+    # while its trail does not is a silent write, the defect class this repo
+    # ranks highest. Staging both means the database decides them together:
+    # either the void, the releases and the record of them are all durable, or
+    # none of them are. (Adversarial review 2026-08-23 caught the two-commit
+    # window; `delete_invoice` swallows the same failure into a log line.)
     log_audit_event_sync(
         db=db,
         tenant_id=None,
@@ -3188,9 +3218,17 @@ def void_invoice(
         action="invoice_voided",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"total": _to_float(invoice.total)},
+        # The release counts belong in the trail: voiding an invoice puts work
+        # back on the unbilled checklist, and "what changed" has to include
+        # that, not just the invoice total.
+        details={
+            "total": _to_float(invoice.total),
+            "released_parts": int(released_parts or 0),
+            "released_change_orders": int(released_cos or 0),
+        },
     )
     db.commit()
+    db.refresh(invoice)
     return _serialize_invoice(invoice)
 
 

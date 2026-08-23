@@ -3,14 +3,16 @@
 **Status:** **RELEASED v1.69.0** — MERGED #360, #362, #363, #364; deployed to
 prod and demo 2026-08-19 and walked there on a real invoice. The pricing path
 is built and on main.
-**Still not built (re-verified 2026-08-21):** provenance on a stored price
+**Follow-up 4 shipped 2026-08-23** — `void_invoice` now releases the part and
+change-order claims it holds, and records the counts in the audit event. See
+§ Follow-ups.
+**Still not built (re-verified 2026-08-23):** provenance on a stored price
 (no source column, no audit event — "who priced this and why" is still
 unanswerable, invariant #1 on money code); a server-side unbilled-parts gate
-on `verify_invoice` (`invoices.py:3182`), the only surfacing that binds the
-mobile lane, the API and the accounting role that cannot read inventory;
+on `verify_invoice`, the only surfacing that binds the mobile lane, the API and
+the accounting role that cannot read inventory; and
 `release_untouched_autodraft` still deletes office-added lines on a
-re-closeout; and `void_invoice` (`invoices.py:3078`) never releases part
-claims. Each is filed in § Follow-ups, not silently dropped.
+re-closeout. Each is filed in § Follow-ups, not silently dropped.
 
 Investigated 2026-08-18 against prod v1.68.2 (read-only queries). Design
 corrected three times by Doug on 2026-08-18; see § The model. Five adversarial
@@ -364,10 +366,38 @@ Each of these was found during the build and deliberately left out of it.
    distinguishing machine lines from human ones before the rebuild can be
    selective.
 
-4. **`void_invoice` never releases part claims.** A part claimed onto an
-   invoice that is later voided is billed to nothing: it disappears from the
-   checklist, the banner, and the consumed-but-not-billed report.
-   `delete_invoice` already does this correctly; void does not.
+4. ~~**`void_invoice` never releases part claims.**~~ **FIXED 2026-08-23.** A
+   part claimed onto an invoice that is later voided was billed to nothing: it
+   disappeared from the checklist, the banner, and the consumed-but-not-billed
+   report. `delete_invoice` and `void_untouched_autodraft` both released;
+   `void_invoice` was the third void path and the only one that did not. It now
+   releases parts *and* change orders, and the audit event carries both counts
+   — voiding puts billable work back on the checklist, so "what changed" has to
+   say so. The release and its audit row are staged into **one** commit, not
+   the commit-then-log-then-commit shape `delete_invoice` uses, so a release
+   can never land without its trail.
+
+   **Measured on prod before shipping:** 2 void invoices, **0** stranded parts,
+   **0** stranded change orders — latent, never realised, so no data repair is
+   needed. The idempotent early-return means re-voiding could not repair a
+   stranded row anyway; that would take SQL.
+
+   **What the adversarial review found instead, and is NOT fixed:**
+   `POST /api/invoices/{id}/void` **has no UI caller.** No Vue file calls it;
+   the path exists only in `api.d.ts` and the stale `openapi.json`, and
+   `patch_invoice` refuses status writes. Prod has never written a single
+   `invoice_voided` audit row — its two voids came from a one-off repair script
+   and from the deposit-supersede path in `modules/deposits/service.py`. So the
+   office currently **cannot void an invoice at all**, and by this repo's own
+   "no orphans in either direction" rule that missing UI is the larger defect.
+   Filed as follow-up 9.
+
+9. **The office has no way to void an invoice.** `POST /api/invoices/{id}/void`
+   is a complete, audited, ledger-aware endpoint with zero callers — found by
+   the follow-up-4 review, 2026-08-23. Voiding is terminal (there is no un-void
+   endpoint anywhere in the repo), which is exactly why the UI question is a
+   product decision and not a mechanical wiring job: where the control lives,
+   what it warns, and who may press it. Held for Doug.
 
 5. **Estimate→job copy strips prices into free-text notes**
    (`routers/estimates.py:2117`) — writes `"$X ea"` into `notes` and leaves
