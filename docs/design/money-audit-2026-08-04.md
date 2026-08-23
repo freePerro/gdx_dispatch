@@ -3,9 +3,9 @@
 **Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, which is
 still accurate as re-verified 2026-08-21. Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
-M4, M5, M6, M7, M9, M10, M11, M14, M24, M26 and M37.
-**Not fixed:** everything in §3 (reporting), the rest of §4, §5 and §6, and the
-frontend items in §7. The GL findings are no longer "gated on CPA review" in the
+M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8** and **M35**.
+**Not fixed:** the rest of §3 (M18, M19, M20), the rest of §4, §5 and §6, and the
+frontend items in §7 — except M8's frontend half, which shipped with it. The GL findings are no longer "gated on CPA review" in the
 sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
 — but the CPA questions themselves are still unanswered.
 ✅ **The regression net this audit built now runs** (#390, merged 2026-08-21).
@@ -60,7 +60,7 @@ to:
 | M5 | Portal "Pay" on a settled invoice charges the full total again | `balance_due <= 0` falls back to `invoice.total` |
 | M6 | `/api/commissions/calculate` mints commission from client-supplied totals, no role gate | Any authenticated tech can pay themselves |
 | M7 | Estimate discounts silently evaporate on the first invoice recalc | Customer billed more than the estimate they signed |
-| M8 | Revenue reports sum a column no code ever writes | Several reports read `$0` against real billed work |
+| M8 | ✅ **FIXED** — Revenue reports sum a column no code ever writes | Several reports read `$0` against real billed work |
 
 Everything is grouped by system below, worst first within each group.
 
@@ -154,6 +154,19 @@ which is why the GL came back clean. Two design notes learned by running it:
 
 `GDX_INVOICE_INVARIANT=log` downgrades it to a warning; treat needing that as an
 incident, not configuration.
+
+**M8 — one definition of revenue** (2026-08-22). Four surfaces summed
+`Invoice.total_amount`, NULL on all 349 prod rows: `/revenue-by-period`,
+`/revenue-analytics` (`by_period`, which contradicted its own `by_job_type`), and
+both `/export` CSVs — the `invoices` register exported a *blank* total column to
+whoever the office sends it to. Replaced with three shared helpers so the next
+revenue surface inherits the whole rule instead of two thirds of it. Counterfactual
+proof, not assurance: with the router reverted the new tests report
+`assert 0.0 == 1500.0` and the invoices CSV row reads `,paid,,0.0,`.
+`/revenue-by-period` — the endpoint behind the chart, and the one M8 surface
+SQLite cannot execute (`date_trunc`) — is guarded by a real Postgres test
+against `gdx-test-postgres`, which reports `assert 0.0 == 2000.0` pre-fix.
+Run it with `--network host` or it skips.
 
 **Migration `056_money_correctness_rails`** — validated against real Postgres with
 seeded duplicate payments and a QB-imported invoice, not just written and hoped for:
@@ -552,7 +565,63 @@ URL while an intent for the current balance is in flight.
 
 ## 3. Sales tax and financial reporting
 
-### M8 — Revenue reports sum a column nothing writes `HIGH` `CONFIRMED`
+### M8 — Revenue reports sum a column nothing writes `HIGH` `CONFIRMED` ✅ FIXED
+
+> **FIXED 2026-08-22.** All four surfaces now share one revenue definition
+> (`_revenue_amount_sql` / `_revenue_where_sql` / `_revenue_orm_filters` in
+> `routers/reports.py`): `COALESCE(total_amount, total)` and billed statuses
+> (`sent`/`paid`/`overdue`). `_summary_window` and `/top-customers` were routed
+> through the same helpers — a **behaviour-preserving refactor**, since both
+> already carried exactly those two terms — so the definition cannot drift.
+> Regression net: seven `test_m8_*` tests in `tests/test_reports.py`, each
+> counterfactually verified to fail against the pre-fix code (`0.0 == 1500.0`),
+> plus the first `ReportsView` spec.
+>
+> **Revenue also moved onto the billed date.** All four surfaces grouped and
+> filtered on `created_at`, which for imported invoices is the import run: 278
+> QB invoices spanning 2024-2026 all carry `created_at = 2026-03-29`, so the
+> chart drew a **$607,419.52 spike on the import day** and emptied the months
+> the work was actually billed in. `_summary_window` moved to `invoice_date` on
+> 2026-04-27 (Phase D) and the raw-SQL siblings were missed — the same sibling
+> gap as `total_amount`, a third time. Now shared as `_revenue_date_sql()` /
+> `_revenue_date_expr()`. Prod after the fix, 2026 by month: Jan $13,020.96 ·
+> Feb $11,116.00 · Mar $21,960.95 · Apr $6,033.72 · May $8,619.61 ·
+> Jul $69,741.68 · Aug $32,809.13 (YTD $163,302.05, against an all-time billed
+> book of $826,772.77 spanning 2024-2026). Guarded on Postgres by
+> `test_m8_revenue_periods_use_the_billed_date_not_the_import_date`, which
+> reports `0 == 4200.0` pre-fix.
+>
+> **Deposits COUNT — an earlier draft of this fix got that wrong.** It excluded
+> `billing_type='deposit'`, reasoning that a deposit and its final invoice bill
+> the same work twice. The adversarial audit refuted it from
+> `modules/deposits/service.py` rule 2: *"the final invoice nets the deposit
+> with a negative line … no 150% double-count"* (`service.py:503` writes
+> "Less deposit paid — <n>"; prod INV-000354 carries `-2936.49` against
+> INV-000353). De-duplication already happens at invoice creation, so the filter
+> would have subtracted deposits a **second** time — and only ONE of the five
+> non-void deposits on prod has a netting sibling, so the other four (including
+> a **paid $6,793.04**) would have been erased from revenue. The wrong figure
+> $811,407.85 appeared in an earlier revision of this doc; the correct billed
+> total is **$826,772.77**.
+>
+> **This finding was incomplete.** It named only the backend. The chart was
+> broken a SECOND, independent way: `ReportsView.vue` mapped `b.label` / `b.value`,
+> fields `/revenue-by-period` has never emitted (it returns `period_start` /
+> `revenue`), so both chart arrays were `[undefined, ...]`. **Fixing either half
+> alone still left the chart blank** — which is why a prod browser walk on
+> 2026-08-22 found an empty frame on a 0–1 axis with no x-axis labels, sitting
+> beside a KPI card showing real money. Both halves shipped together.
+>
+> **Why it survived the 2026-08-04 audit and every test:**
+> `docker/demo/seed_demo.py:302` writes `total_amount=total`, so the chart works
+> on the demo stack — and every pre-existing test in `test_reports.py` seeded
+> `total_amount` too. The new tests seed the PROD shape (`total_amount` NULL).
+> Excluding voids and drafts moves prod revenue from a gross $829,164.66 to
+> **$826,772.77** (2 void invoices, $2,391.89). Deposits stay in. Note that
+> figure is **gross billed across 2024-2026**, not a year and not net: four
+> credit memos totalling **$797.45** are not deducted, because netting
+> adjustments per period is M18/M19/M20, not M8.
+
 
 `Invoice.total_amount` is nullable
 ([tenant_models.py:479](../../gdx_dispatch/models/tenant_models.py#L479)) and **no
@@ -958,7 +1027,47 @@ lines or both exclude them — and restrict the clamp to genuinely new lines.
   the sign convention `money_format.py` establishes server-side. Cosmetic; all guard
   NaN.
 
-### M35 — `amount_paid` is written by nothing and read by five surfaces `MEDIUM` `CONFIRMED`
+### M35 — `amount_paid` is written by nothing and read by five surfaces `MEDIUM` `CONFIRMED` ✅ FIXED
+
+> **FIXED 2026-08-22.** Every live reader now derives paid-to-date from the
+> `payments` table via `core/invoice_paid.py`
+> (`paid_to_date` / `paid_to_date_bulk` / `paid_amount_sq`), the same rule
+> `_recalculate_invoice` already used: `Σ payments WHERE voided_at IS NULL`.
+>
+> This finding listed five surfaces; there were **seven**. The two it missed:
+> `core/closeout_billing.py:291` — `is_untouched_autodraft`'s payment arm, a
+> guard that could not guard because the column was always 0, so an autodraft
+> carrying real money still looked like the machine's to void — and
+> `job_display_state.py:160`, the `deposit_paid` badge (distinct from the
+> `partially_paid` arm at :206 the finding did cover).
+>
+> Measured on prod 2026-08-22 before the fix: **24 invoices, $62,473.72 of
+> drift, every one understating**; 24 of the 27 payments involved were recorded
+> after the 2026-07-31 repair. Worst row: invoice 50010651, total $15,476.93,
+> status `paid`, real payments $15,476.93, `amount_paid` **0.00**.
+>
+> **Correction.** An earlier draft of this entry claimed MobileBillingView
+> rendered that invoice as "Paid $0.00" to a technician. It did not — the
+> adversarial audit caught the claim as unverified and it was wrong. The screen
+> loads from `/api/invoices/{id}`, whose serializer carried **no `amount_paid`
+> key at all**, and the row is gated on `detail.amount_paid != null`, so it
+> never rendered. That is a real defect too, and the same change fixes it: the
+> detail payload now carries a true paid-to-date derived from the payments it
+> already loads, plus `credit_total`, so `total − paid − credits == balance_due`
+> reconciles on screen instead of leaving a credited invoice showing money
+> unaccounted for. Nothing here was browser-walked before the claim was made;
+> it is now stated only as far as the code shows.
+>
+> Guard: `tests/test_m35_amount_paid_retired.py`. Six behavioural tests record a
+> payment WITHOUT touching the column and assert the surface reports it, plus a
+> tokenizer-based scanner that fails if any live path reads the attribute again
+> (it correctly flags all seven pre-fix sites when the source is reverted; it
+> ignores comments, docstrings, and the API payload key of the same name, which
+> is now sourced from payments).
+>
+> The column itself is dropped separately — see the migration PR — so this
+> change is revertable without a schema move.
+
 
 Not strictly frontend, but this is where it surfaces. `Invoice.amount_paid` is
 deprecated — `_recalculate_invoice` deliberately ignores it
@@ -1089,8 +1198,8 @@ Not arithmetic errors, but they lie about money:
   fixing them separately will leave the seams.
 - **M8**, **M18**, **M19**, **M20** — the reporting cluster, sharing one
   "net adjustments per period" join.
-- **M35** — resolve `amount_paid` one way or the other. It has now produced two
-  findings on its own.
+- ~~**M35** — resolve `amount_paid` one way or the other.~~ ✅ Done 2026-08-22:
+  readers migrated to Σ(non-voided payments); the column drop ships separately.
 - The GL items in §6, gated on the CPA review rather than on a deploy.
 
 ### Does fixing all of this make the math correct?
