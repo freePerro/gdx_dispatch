@@ -217,6 +217,50 @@ class TestAutodraftWritesProvenance:
         # on Postgres the string is cast silently.
         assert line.labor_price_item_id == item.id
 
+    def test_every_lane_stamps_its_line_as_machine_authored(self, db):
+        """Migration 075. `is_untouched_autodraft` refuses to let the machine
+        rebuild a draft carrying any line that is not `source='autodraft'`, so
+        an unstamped builder line makes the machine disown its own work the
+        instant it writes it.
+
+        This exists because the INSTALL lane was the one missed. The builder
+        writes THREE kinds of line — install matrix labor, service attested
+        labor, and parts — and the first pass stamped only the last two. The
+        existing stamp assertion ran on a Service Call, so the whole install
+        lane (the dominant path) was uncovered. Consequences on prod would
+        have been a re-closeout that silently no-ops and a "not billable" that
+        409s, neither with a trace.
+        """
+        from gdx_dispatch.core.closeout_billing import (
+            AUTODRAFT_LINE_SOURCE,
+            AUTODRAFT_ORIGIN,
+            is_untouched_autodraft,
+        )
+
+        _item, closeout, invoice = _install_closeout(db)
+        # The shared fixture leaves `origin` unset; a real autodraft carries
+        # it, and the guard checks origin BEFORE it ever looks at lines. Set
+        # it so the line arm is what this test actually exercises — otherwise
+        # the assertion below would fail for the wrong reason and pass for the
+        # wrong reason once someone "fixed" it.
+        invoice.origin = AUTODRAFT_ORIGIN
+        added, _total, _taxable = build_closeout_lines(
+            db,
+            tenant_id=TENANT,
+            invoice=invoice,
+            closeout=closeout,
+            job_type=INSTALLATION,
+            job_id=str(closeout.job_id),
+        )
+        assert added == 1
+        assert _labor_line(db, invoice).source == AUTODRAFT_LINE_SOURCE
+
+        # The consequence, not just the column: the machine still owns it.
+        db.commit()
+        assert is_untouched_autodraft(invoice, db) is True, (
+            "the builder disowned its own install draft"
+        )
+
     def test_install_lane_makes_no_hours_claim(self, db):
         """A quoted flat price is not a statement about duration.
 

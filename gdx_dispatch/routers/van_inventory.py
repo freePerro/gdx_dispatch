@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core.part_pricing import resolve_sell_price
+from gdx_dispatch.core.part_pricing import resolve_sell_price_with_source
 from gdx_dispatch.models.tenant_models import VanInventoryItem, VanInventoryLog
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -185,6 +185,9 @@ def use_van_item(
         # its own; the sku is what prices it.
         if _job_key:
             from gdx_dispatch.models.tenant_models import JobPartNeeded
+            _van_price, _van_price_source = resolve_sell_price_with_source(
+                db, job_id=_job_key, sku=item.sku
+            )
             db.add(JobPartNeeded(
                 id=str(uuid4()),
                 company_id=tid,
@@ -194,7 +197,12 @@ def use_van_item(
                 quantity=int(payload.quantity),
                 status="used",
                 source="van",
-                unit_price=resolve_sell_price(db, job_id=_job_key, sku=item.sku),
+                # Migration 075 — record WHICH lane produced the number, not
+                # just the number. `source` above is the CAPTURE lane (how the
+                # part was recorded); `price_source` is the PRICING lane. They
+                # answer different questions and both were needed.
+                unit_price=_van_price,
+                price_source=_van_price_source,
                 notes=(f"van stock ({payload.reason})" if payload.reason else "van stock"),
                 requested_by_user_id=uid,
                 created_at=now,

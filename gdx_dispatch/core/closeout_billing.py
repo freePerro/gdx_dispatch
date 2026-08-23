@@ -41,6 +41,12 @@ from gdx_dispatch.modules.proposals.models import Estimate
 log = logging.getLogger(__name__)
 
 AUTODRAFT_ORIGIN = "closeout_autodraft"
+# `invoice_lines.source` for a line THIS builder wrote (migration 075). Any
+# other value — including NULL — is treated as possibly-human and stops the
+# machine from deleting the line. NULL is the honest reading for every line
+# that predates the column: what nobody recorded cannot now be inferred, and
+# deleting an operator's work on a guess is the worse of the two errors.
+AUTODRAFT_LINE_SOURCE = "autodraft"
 
 
 def _money(v: Decimal | float | str) -> Decimal:
@@ -173,6 +179,14 @@ def build_closeout_lines(
                 # the value is always a real UUID's string form.
                 labor_price_item_id=_as_uuid(_install.matrix_item_id),
                 labor_source="matrix",
+                # Migration 075 — machine-authored. The INSTALL lane, and the
+                # one an adversarial review caught unstamped: this builder
+                # writes THREE kinds of line, not two, and missing this one
+                # meant the machine built an install autodraft and lost
+                # ownership of it in the same transaction — a re-closeout then
+                # silently no-opped and "not billable" 409'd on a verb that
+                # had worked. If you add a fourth line kind here, stamp it.
+                source=AUTODRAFT_LINE_SOURCE,
                 sort_order=sort,
                 company_id=str(tenant_id),
             ))
@@ -201,6 +215,10 @@ def build_closeout_lines(
             # row: nothing quoted this.
             estimated_man_hours=Decimal(str(labor.attested_hours)),
             labor_source="attested",
+            # Migration 075 — machine-authored. `release_untouched_autodraft`
+            # deletes every line on an untouched draft so it can rebuild; this
+            # stamp is what lets it leave a human's line alone.
+            source=AUTODRAFT_LINE_SOURCE,
             sort_order=sort,
             company_id=str(tenant_id),
         ))
@@ -266,6 +284,8 @@ def build_closeout_lines(
             # unbill); the autodraft never did, so its lines claimed parts that
             # deleting the line could not give back.
             part_id=part_row.id,
+            # Migration 075 — machine-authored, same reason as the labor line.
+            source=AUTODRAFT_LINE_SOURCE,
             sort_order=sort,
             company_id=str(tenant_id),
         ))
@@ -300,7 +320,28 @@ def is_untouched_autodraft(inv: Invoice, db: Session | None = None) -> bool:
     if db is not None:
         from gdx_dispatch.core.invoice_paid import paid_to_date
 
-        return paid_to_date(db, inv.id) == 0
+        if paid_to_date(db, inv.id) != 0:
+            return False
+        # Follow-up 3 (migration 075). Every arm above asks about the INVOICE;
+        # none asked about its LINES, so an invoice the office had added a
+        # part to was still "untouched" and `release_untouched_autodraft`
+        # deleted the lot — including the line the unbilled-parts banner had
+        # just told them to add.
+        #
+        # `IS DISTINCT FROM` rather than `!=`: in SQL `NULL != 'autodraft'` is
+        # NULL, not true, so a plain inequality would silently match nothing
+        # and every pre-075 line would read as machine-authored — the exact
+        # bug this is here to fix, reintroduced by an operator precedence.
+        # Soft-deleted lines are excluded: a line the office already removed
+        # is not work to protect.
+        human_line = db.execute(
+            select(InvoiceLine.id).where(
+                InvoiceLine.invoice_id == inv.id,
+                InvoiceLine.deleted_at.is_(None),
+                InvoiceLine.source.is_distinct_from(AUTODRAFT_LINE_SOURCE),
+            ).limit(1)
+        ).first()
+        return human_line is None
     return True
 
 

@@ -641,6 +641,16 @@ class InvoiceLine(Base):
     includes_labor: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Who authored this line (migration 075). "autodraft" = the closeout
+    # builder wrote it; anything else, INCLUDING NULL, may be a human.
+    #
+    # `release_untouched_autodraft` empties an untouched draft so the closeout
+    # can rebuild it, and without this column it could not tell a machine line
+    # from a part the office added by hand — which is exactly what the
+    # unbilled-parts banner tells them to do. NULL is deliberately read as
+    # "possibly human": every line that predates this column is unknowable,
+    # and deleting someone's work on a guess is the worse error.
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # Soft-delete so a removed line never re-appears on a re-load while
@@ -2342,6 +2352,25 @@ class JobPartNeeded(Base):
     # Suggested SELL price for the office (catalog Part.unit_price at capture
     # time — NOT the cost). NULL = office prices it on the invoice.
     unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
+    # WHERE that number came from (migration 075). Four lanes write
+    # `unit_price` and all four landed in the same Numeric with no way to tell
+    # them apart, so "who priced this part and why" could not be answered from
+    # the records — invariant #1, on money code.
+    #
+    # Values, matching `core/part_pricing.PriceSource`:
+    #   "office"        an operator typed it on this row
+    #   "job_quote"     copied from the office's own priced request row on
+    #                   this job for the same SKU (tier 1)
+    #   "inventory"     bench inventory Part.unit_price (tier 2)
+    #   "catalog"       the tenant's catalog sell price (tier 3)
+    #   "catalog_cost"  that catalog's COST through the margin engine
+    #   "chi"           CHI's parts catalog sell price (tier 4)
+    #   "chi_cost"      that catalog's COST through the margin engine
+    # NULL = unpriced, or captured before this column existed. The three
+    # markup lanes are named separately from the quoted ones on purpose: a
+    # marked-up cost is the machine's opinion, a sell price is somebody's
+    # decision, and a reader has to be able to tell.
+    price_source: Mapped[str | None] = mapped_column(String(24), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 

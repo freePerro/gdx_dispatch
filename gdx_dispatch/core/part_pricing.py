@@ -193,6 +193,29 @@ def _engine_sell(
         return None
 
 
+class PriceSource:
+    """Where a stored ``job_parts_needed.unit_price`` came from (migration 075).
+
+    A plain namespace of short tags rather than an Enum: these are written to a
+    ``VARCHAR(24)`` and read by humans reading the table, and an Enum here buys
+    validation the DB does not enforce anyway while making every read site
+    import a class.
+
+    The markup lanes are named apart from the quoted ones deliberately. A
+    marked-up cost is the machine's opinion; a sell price is somebody's
+    decision. A reader deciding whether to trust a number has to be able to
+    tell those apart, and before this column nothing could.
+    """
+
+    OFFICE = "office"              # an operator typed it on this row
+    JOB_QUOTE = "job_quote"        # the office's own priced request row, same job + SKU
+    INVENTORY = "inventory"        # bench inventory Part.unit_price
+    CATALOG = "catalog"            # tenant catalog sell price
+    CATALOG_COST = "catalog_cost"  # tenant catalog COST through the margin engine
+    CHI = "chi"                    # CHI parts catalog sell price
+    CHI_COST = "chi_cost"          # CHI catalog COST through the margin engine
+
+
 def _resolve_sell_price(
     db: Session,
     *,
@@ -200,8 +223,14 @@ def _resolve_sell_price(
     sku: str | None,
     part_id=None,
     customer_id=None,
-) -> Decimal | None:
-    """Best available SELL price for a part, or None for the office to set.
+) -> tuple[Decimal | None, str | None]:
+    """Best available SELL price for a part and WHERE it came from.
+
+    Returns ``(price, source)``; ``(None, None)`` means "the office prices it".
+    The source is the whole point of migration 075 — four lanes wrote the same
+    ``Numeric`` and nothing recorded which, so "who priced this part and why"
+    was unanswerable. The lane is only knowable here, at the moment of
+    resolution, so it is returned rather than re-derived later.
 
     Tier order, first hit wins:
 
@@ -256,7 +285,7 @@ def _resolve_sell_price(
         ]
         agreed = _distinct(priced)
         if agreed is not None:
-            return agreed
+            return agreed, PriceSource.JOB_QUOTE
 
     # --- Tier 2: bench inventory ------------------------------------------
     if part_id:
@@ -266,10 +295,10 @@ def _resolve_sell_price(
             select(Part).where(Part.id == part_id)
         ).scalar_one_or_none()
         if part is not None and part.unit_price and Decimal(str(part.unit_price)) > 0:
-            return _money(part.unit_price)
+            return _money(part.unit_price), PriceSource.INVENTORY
 
     if not needle:
-        return None
+        return None, None
 
     # --- Tier 3: the tenant's own catalog ---------------------------------
     items = db.execute(
@@ -283,7 +312,7 @@ def _resolve_sell_price(
         real_sells = [p for p in (_believable_sell(it) for it in items) if p is not None]
         agreed = _distinct(real_sells)
         if agreed is not None:
-            return agreed
+            return agreed, PriceSource.CATALOG
 
         # Nothing believable as a sell price, so mark the cost up — except
         # where a recorded price sits BELOW cost. `price == cost` is the
@@ -298,7 +327,7 @@ def _resolve_sell_price(
             and Decimal(str(it.price)) < Decimal(str(it.cost))
             for it in items
         ):
-            return None
+            return None, None
         costs = [
             _money(it.cost)
             for it in items
@@ -317,7 +346,7 @@ def _resolve_sell_price(
                 customer_id=customer_id,
             )
             if marked_up is not None:
-                return marked_up
+                return marked_up, PriceSource.CATALOG_COST
 
     # --- Tier 4: CHI's parts catalog --------------------------------------
     chi = db.execute(
@@ -338,7 +367,7 @@ def _resolve_sell_price(
         ]
         agreed = _distinct(sells)
         if agreed is not None:
-            return agreed
+            return agreed, PriceSource.CHI
 
         if any(
             c.sell_price is not None
@@ -347,7 +376,7 @@ def _resolve_sell_price(
             and Decimal(str(c.sell_price)) < Decimal(str(c.cost))
             for c in chi
         ):
-            return None
+            return None, None
 
         costs = [_money(c.cost) for c in chi if c.cost and Decimal(str(c.cost)) > 0]
         agreed_cost = _distinct(costs)
@@ -361,9 +390,9 @@ def _resolve_sell_price(
                 customer_id=customer_id,
             )
             if marked_up is not None:
-                return marked_up
+                return marked_up, PriceSource.CHI_COST
 
-    return None
+    return None, None
 
 
 
@@ -375,7 +404,17 @@ def resolve_sell_price(
     part_id=None,
     customer_id=None,
 ) -> Decimal | None:
-    """Guarded entry point — see ``_resolve_sell_price`` for the tier order.
+    """Guarded entry point, price only — see ``_resolve_sell_price`` for tiers.
+
+    **No production caller as of migration 075.** Every capture path that
+    STORES a price moved to ``resolve_sell_price_with_source`` so
+    ``job_parts_needed.price_source`` records the lane. This wrapper is kept
+    deliberately, not by oversight: it is the scalar form the resolver's own
+    test suite reads with, and the right entry point for a future caller that
+    wants a number and has nowhere to put a provenance tag. Said out loud here
+    because a symbol only tests call is otherwise indistinguishable from one
+    somebody forgot to delete.
+
 
     A price lookup must never be the reason a tech cannot close out a job.
     The closeout is the one transaction in this system that has to succeed:
@@ -389,6 +428,25 @@ def resolve_sell_price(
     not a guarantee. It does cover the far more likely shapes: a malformed
     decimal, an unexpected None, a model that moved.
     """
+    return resolve_sell_price_with_source(
+        db, job_id=job_id, sku=sku, part_id=part_id, customer_id=customer_id
+    )[0]
+
+
+def resolve_sell_price_with_source(
+    db: Session,
+    *,
+    job_id: str | None,
+    sku: str | None,
+    part_id=None,
+    customer_id=None,
+) -> tuple[Decimal | None, str | None]:
+    """``resolve_sell_price`` plus the lane that produced the number.
+
+    Same guarantees, same degradation to ``(None, None)``. Capture paths that
+    STORE the price call this one so `job_parts_needed.price_source` records
+    the answer; callers that only need a number keep the simpler signature.
+    """
     try:
         return _resolve_sell_price(
             db, job_id=job_id, sku=sku, part_id=part_id, customer_id=customer_id
@@ -398,7 +456,9 @@ def resolve_sell_price(
             "part_pricing: resolve failed for sku=%r job=%r — office prices it",
             sku, job_id,
         )
-        return None
+        # A failed resolve is not "unpriced by decision" — it is unknown. Both
+        # read as NULL, which is the honest answer either way.
+        return None, None
 
 def duplicate_capture_groups(db: Session, job_id: str) -> list[dict]:
     """Unbilled capture rows on a job that name the same part more than once.
