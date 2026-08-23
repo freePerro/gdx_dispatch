@@ -301,6 +301,11 @@ class RevenueBasisUnavailable(RuntimeError):
     that reports $0.00 it did not actually calculate is worse than one that
     refuses. Callers surface it; they do not default it to zero.
 
+    Callers report the REASON, not the driver error. v1.80.0 returned the
+    raw psycopg2 message in the 503 body — authenticated and permission
+    gated, so low risk, but a DB error naming internal columns is not
+    something to hand a client. It is logged instead (log.exception below).
+
     Known live cause (money audit M27, 2026-08-23): `_fetch_tech_revenue`
     queries `j.assigned_tech_id`, which exists in no schema here — the column
     is `assigned_to`. A second defect sits behind it: the query matches
@@ -496,7 +501,8 @@ def payroll_summary(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                f"({exc})"
+                "See the server log (payroll_revenue_basis_unavailable) for the "
+                "database error."
             ),
         ) from exc
 
@@ -525,7 +531,8 @@ def payroll_tech_detail(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                f"({exc})"
+                "See the server log (payroll_revenue_basis_unavailable) for the "
+                "database error."
             ),
         ) from exc
     row = rows[0] if rows else {
@@ -658,7 +665,8 @@ def export_payroll_csv(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                f"({exc})"
+                "See the server log (payroll_revenue_basis_unavailable) for the "
+                "database error."
             ),
         ) from exc
 

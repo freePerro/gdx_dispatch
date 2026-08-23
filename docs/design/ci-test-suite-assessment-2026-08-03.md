@@ -1,10 +1,42 @@
 # CI & Test Suite Deep Assessment — 2026-08-03
 
-**Status:** **PARTIALLY ACTIONED** — see the status update below, still
-accurate as re-verified 2026-08-21. §7 items 1, 2 (#264) and 6 (#265) are done.
-**Still open:** item 3 (`.test_durations` is still checked in),
-item 4, item 5, and item 7 — `gdx_dispatch/tests/_adversarial/` and
-`gdx_dispatch/tests/_reproductions/` are both still present on main.
+**Status:** **PARTIALLY ACTIONED.** §7 items 1, 2 (#264) and 6 (#265) done.
+**Item 3 and item 7 closed 2026-08-23.** **Still open:** item 4 (targeted
+`@pytest.mark.forked`) and item 5 (a production-faithful `client` fixture).
+
+**Item 3 — re-scoped by verification.** Three of its four asks were already
+done by the 2026-08-04 rewrite: the marker filter is preserved, `--forked` is
+available via `FORKED=1`, and the `.venv` assumption is gone (`$PYTEST` >
+`.venv` > `python3`, with a message naming the docker form). What remained was
+`.test_durations`, and it was genuinely stale: **6,009 entries across 523 test
+files, 38 of which no longer exist.** pytest-split balances shards from that
+file, and the imbalance showed — one shard ran **87 tests in 550s** while
+another ran **1,807 in 196s**. Regenerated from a full serial run.
+
+⚠ **A claim in this doc's own §3 was wrong**, and it would have destroyed
+coverage: *"`test_13_onboarding.py` (4 tests, fully subsumed by
+`test_24_onboarding.py`'s 33)"*. **None of its four test names appears in
+`test_24`** — `test_onboarding_returns_six_steps`,
+`test_onboarding_step_structure`, `test_onboarding_graceful_on_missing_tables`,
+`test_onboarding_percent_calculation`. It was NOT deleted. A second claim was
+also wrong but harmless: `test_zz_probe_integration.py` is described as
+untracked; it is tracked.
+
+**Item 7 — the deletes, each verified before removal rather than trusted:**
+
+| Removed | Evidence it was dead |
+|---|---|
+| `tests/_reproductions/` (9 files) | Named `bug_test_*.py`, which **cannot match** pytest's `test_*.py` pattern — never collected by any invocation. Bodies are stubs: `xfail(strict=False)` with the real assertion commented out. |
+| `tests/_adversarial/` (2 files) | The runner and curator `pytest.ini` named — `adversarial_tests.py`, `tools/orchestrator/adversarial_curate.py` — **do not exist**. Nothing ran them by path or otherwise. |
+| `tests/factories/` | Contained only `__pycache__`. |
+| `tests/test_zz_probe_integration.py` | 0 bytes. |
+| `.test_baseline` | Nothing reads it; its enforcing script `tools/pre_commit_test_gate.sh` is gone. |
+| `pytest.ini` markers `auth`, `billing`, `infra`, `requires_pg` | **0 uses** of `@pytest.mark.<name>` each. `requires_pg` reads as live — the name appears 12 times — but every one is a local `_requires_pg = pytest.mark.skipif(...)` variable or prose, never the declared marker. |
+
+**Also corrected, in memory rather than here:** a standing note claimed
+`run_tests_split.sh` "prints FAIL but exits 0". It does not — planting a
+failing test and running it with no pipe returns **exit 1**. The original
+observation came from piping it to `tail`, which replaces the exit status.
 
 Read-only assessment of whether the CI workflows and test suite are still relevant after the
 last ~7 weeks of heavy feature work, or whether they're accumulating tech debt. Produced from
