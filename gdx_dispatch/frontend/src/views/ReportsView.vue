@@ -190,11 +190,31 @@ const salesTaxError = ref(false);
 
 const jobStatusCounts = ref({});
 
+// period_start is a UTC date_trunc boundary ("2026-07-01T00:00:00+00:00").
+// Formatting it in local time would render July as "Jun 2026" for anyone west
+// of UTC — which is everyone here — so pin the formatter to UTC.
+function formatPeriodLabel(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+// M8 (money-audit-2026-08-04): this read `b.label` / `b.value`, fields
+// /api/reports/revenue-by-period has never emitted — it returns
+// {period_start, invoice_count, revenue, avg_invoice}. Both arrays were
+// therefore [undefined, ...], and Chart.js drew an empty frame on a 0–1 axis
+// with no x labels. The backend was ALSO summing a null column, so each bug
+// hid the other: fixing either alone still leaves the chart blank.
 const revenueChartData = computed(() => ({
-  labels: revenueByPeriod.value.map((b) => b.label),
+  labels: revenueByPeriod.value.map((b) => formatPeriodLabel(b.period_start)),
   datasets: [{
     label: "Revenue",
-    data: revenueByPeriod.value.map((b) => b.value),
+    data: revenueByPeriod.value.map((b) => Number(b.revenue ?? 0)),
     backgroundColor: "#0ea5e9",
     borderRadius: 4,
   }],
