@@ -116,6 +116,17 @@ CREATE TYPE public.estimate_status AS ENUM (
 
 
 --
+-- Name: invoice_adjustment_kind; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.invoice_adjustment_kind AS ENUM (
+    'credit_memo',
+    'refund',
+    'credit_applied'
+);
+
+
+--
 -- Name: invoice_billing_type; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -1541,6 +1552,23 @@ CREATE TABLE public.inventory_items (
 
 
 --
+-- Name: invoice_adjustments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice_adjustments (
+    id uuid NOT NULL,
+    invoice_id uuid NOT NULL,
+    kind public.invoice_adjustment_kind NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    reason character varying(200),
+    refund_method character varying(50),
+    created_by character varying(64),
+    created_at timestamp with time zone NOT NULL,
+    company_id character varying(36) NOT NULL
+);
+
+
+--
 -- Name: invoice_lines; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1563,11 +1591,12 @@ CREATE TABLE public.invoice_lines (
 
 CREATE TABLE public.invoices (
     id uuid NOT NULL,
-    job_id uuid NOT NULL,
+    job_id uuid,
     invoice_number character varying(50) NOT NULL,
     billing_type public.invoice_billing_type NOT NULL,
     sequence_number integer NOT NULL,
     subtotal numeric(12,2) NOT NULL,
+    tax_rate numeric(9,6),
     tax_amount numeric(12,2) NOT NULL,
     total numeric(12,2) NOT NULL,
     balance_due numeric(12,2) NOT NULL,
@@ -1580,12 +1609,25 @@ CREATE TABLE public.invoices (
     paid_at timestamp with time zone,
     public_token character varying(64) NOT NULL,
     amount_paid numeric(12,2),
+    qb_dirty boolean DEFAULT true NOT NULL,
+    qb_synced_at timestamp with time zone,
     customer_id uuid,
     company_id character varying(36) NOT NULL,
     total_amount numeric(12,2),
     invoice_date date,
     created_at timestamp with time zone NOT NULL,
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    dunning_paused boolean DEFAULT false NOT NULL,
+    hide_line_prices boolean DEFAULT false NOT NULL,
+    estimate_id uuid,
+    verified_at timestamp with time zone,
+    verified_by_user_id character varying(36),
+    adjusts_invoice_id uuid,
+    totals_locked boolean DEFAULT false NOT NULL,
+    sent_via character varying(20),
+    origin character varying(32),
+    attached_photo_ids text,
+    source_estimate_id uuid
 );
 
 
@@ -2154,8 +2196,10 @@ CREATE TABLE public.payments (
     amount numeric(12,2) NOT NULL,
     method character varying(50) NOT NULL,
     payment_date date NOT NULL,
+    reference character varying(200),
     created_at timestamp with time zone NOT NULL,
-    company_id character varying(36) NOT NULL
+    company_id character varying(36) NOT NULL,
+    voided_at timestamp with time zone
 );
 
 

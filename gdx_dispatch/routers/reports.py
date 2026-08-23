@@ -21,7 +21,6 @@ from gdx_dispatch.models.tenant_models import (
     Job,
     JobCloseout,
     Payment,
-    TimeEntry,
     WarrantyClaim,
 )
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
@@ -128,6 +127,71 @@ def _revenue_date_sql(alias: str = "") -> str:
     return f"COALESCE({p}invoice_date, CAST({p}created_at AS DATE))"
 
 
+def _credits_by_period(db: Session, period: str, start_ts, end_ts) -> dict:
+    """Σ credit MEMOS per period, keyed by truncated date.
+
+    `credit_applied` is deliberately excluded. It is a settlement event, not a
+    revenue reduction: the credit memo that minted the customer credit already
+    reduced revenue, and applying that credit to another invoice would subtract
+    it a second time. The ledger agrees — `modules/ledger/reports.py::_cash_events`
+    signs `credit_applied` **+1**, grouping it with payments and refunds as cash,
+    while plain credit memos are not cash events at all. (`_recalculate_invoice`
+    does subtract both, correctly, because it is computing BALANCE, not revenue.)
+
+    M19 (money-audit-2026-08-04): `Invoice.total` is never reduced by a credit
+    memo — only `balance_due` is — and no revenue aggregate joined
+    `invoice_adjustments`, so a credited invoice kept counting at full value.
+
+    Attributed to the date the credit was ISSUED, which is what the GL does:
+    `post_credit_memo` posts at `effective_at = adjustment.created_at.date()`
+    (modules/ledger/rules.py). The ledger is the book of record, so the reports
+    match it rather than inventing a second convention.
+
+    NOTE M19's other prescription — "exclude billing_type='deposit' from billed
+    revenue" — is WRONG here and deliberately not implemented. The final invoice
+    already nets the deposit with a negative line, so excluding it subtracts the
+    deposit twice. Verified on the one real pair on prod: deposit $3,112.61 +
+    final $3,288.74 − credits $176.12 = $6,225.23, exactly the job's true value;
+    excluding the deposit gives $3,288.74. Netting credits is the whole fix.
+    """
+    rows = db.execute(
+        text(
+            """
+            SELECT date_trunc(:period, a.created_at) AS period_start,
+                   COALESCE(SUM(a.amount), 0) AS credited
+            FROM invoice_adjustments a
+            JOIN invoices i ON i.id = a.invoice_id
+            WHERE a.kind = 'credit_memo'
+              AND i.deleted_at IS NULL
+              AND a.created_at >= :start_ts
+              AND a.created_at < :end_ts
+            GROUP BY date_trunc(:period, a.created_at)
+            """
+        ),
+        {"period": period, "start_ts": start_ts, "end_ts": end_ts},
+    ).mappings().all()
+    return {_iso_or_none(r["period_start"]): float(r["credited"] or 0) for r in rows}
+
+
+def _credits_total(db: Session, start_ts, end_ts) -> float:
+    """Σ credits issued in the window — the scalar form of `_credits_by_period`."""
+    got = db.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(a.amount), 0)
+            FROM invoice_adjustments a
+            JOIN invoices i ON i.id = a.invoice_id
+            WHERE a.kind = 'credit_memo'
+              AND i.deleted_at IS NULL
+              AND a.created_at >= :start_ts
+              AND a.created_at < :end_ts
+            """
+        ),
+        {"start_ts": start_ts, "end_ts": end_ts},
+    ).scalar_one_or_none()
+    return float(got or 0)
+
+
 def _iso_or_none(value):
     """Raw-SQL date columns come back as datetime on Postgres and as `str` on
     SQLite. Both reach these serializers, so coerce instead of assuming — a
@@ -229,7 +293,12 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
         )
     ) or 0
     return {
-        "revenue_total": float((revenue_row or {}).get("revenue_total", 0) or 0),
+        # M19: the KPI tile nets credits for the same reason the chart beside
+        # it does — a credit memo reduces balance_due and never touches
+        # Invoice.total, so a credited invoice kept counting at full value.
+        # This also feeds DashboardView's "Revenue Billed" tile.
+        "revenue_total": float((revenue_row or {}).get("revenue_total", 0) or 0)
+        - _credits_total(db, start_dt, end_dt),
         "avg_job_value": float((revenue_row or {}).get("avg_job_value", 0) or 0),
         "jobs_completed": int(jobs_completed),
         "open_jobs": int(open_jobs),
@@ -416,15 +485,45 @@ def revenue_by_period(
         log.exception("revenue_by_period_failed")
         raise HTTPException(status_code=500, detail="Unable to compute revenue by period") from None
 
-    items = [
-        {
-            "period_start": _iso_or_none(r["period_start"]),
-            "invoice_count": int(r["invoice_count"] or 0),
-            "revenue": float(r["revenue"] or 0),
-            "avg_invoice": float(r["avg_invoice"] or 0),
-        }
-        for r in rows
-    ]
+    # M19: net balance-reducing adjustments out of each period. Without this a
+    # credited invoice keeps counting at full value, because a credit memo
+    # reduces balance_due and never touches Invoice.total.
+    _credits = _credits_by_period(db, period, start_dt, end_dt)
+    items = []
+    for r in rows:
+        key = _iso_or_none(r["period_start"])
+        gross = float(r["revenue"] or 0)
+        credited = _credits.pop(key, 0.0)
+        count = int(r["invoice_count"] or 0)
+        net = gross - credited
+        items.append(
+            {
+                "period_start": key,
+                "invoice_count": count,
+                "revenue": net,
+                "gross_revenue": gross,
+                "credits": credited,
+                # Average invoice BILLED — gross over count. Dividing net by
+                # count would report a negative "average invoice" for any
+                # period whose credits exceed its billings, which is not a
+                # number that means anything.
+                "avg_invoice": (gross / count) if count else 0.0,
+            }
+        )
+    # A period with credits but no invoices billed still reduced revenue; it
+    # must appear rather than silently vanishing.
+    for key, credited in _credits.items():
+        items.append(
+            {
+                "period_start": key,
+                "invoice_count": 0,
+                "revenue": -credited,
+                "gross_revenue": 0.0,
+                "credits": credited,
+                "avg_invoice": 0.0,
+            }
+        )
+    items.sort(key=lambda i: i["period_start"] or "")
     return {
         "items": items,
         "period": period,
@@ -526,7 +625,17 @@ def sales_tax_report(
                          ELSE 'quickbooks' END AS source,
                     COUNT(*) AS invoice_count,
                     COALESCE(SUM(tax_amount), 0) AS tax_total,
-                    COALESCE(SUM(CASE WHEN paid_at IS NOT NULL
+                    -- M18: this keyed "collected" off `paid_at IS NOT NULL`.
+                    -- A fully-credited invoice flips to paid with paid_at
+                    -- stamped and ZERO cash received, so credited tax landed
+                    -- in the remittance-liability bucket as if collected.
+                    -- Six prod invoices carry paid_at with no payment at all;
+                    -- two of them carry tax. Gate on real, non-voided cash.
+                    COALESCE(SUM(CASE WHEN EXISTS (
+                                          SELECT 1 FROM payments pm
+                                          WHERE pm.invoice_id = invoices.id
+                                            AND pm.voided_at IS NULL
+                                      )
                                       THEN tax_amount ELSE 0 END), 0) AS tax_collected
                 FROM invoices
                 WHERE deleted_at IS NULL
@@ -905,23 +1014,43 @@ def customer_ltv(
 
 @router.get("/outstanding-aging", response_model=None)
 def outstanding_aging(
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    start_dt, end_dt, resolved_end = _resolve_date_range(start_date, end_date)
+    """Point-in-time AR backlog. Deliberately takes NO date range.
 
-    # Fetch raw data — compute aging buckets in Python for SQLite/PostgreSQL portability — ORM
+    M20 removed the `created_at` window; leaving `start_date`/`end_date` in the
+    signature would have been worse than the bug — parameters a caller can pass
+    that silently do nothing. Aging answers "what is owed right now", so there
+    is nothing for a range to mean. (Zero frontend callers today; the endpoint
+    is reachable but unrendered.)
+    """
+    resolved_end = datetime.now(UTC).date()
+
+    # M20 (money-audit-2026-08-04): three defects in one query.
+    #
+    # 1. It windowed on `created_at`, so ANY receivable created more than 30
+    #    days ago vanished from aging entirely — and the 91+ bucket could only
+    #    ever fill from QB-imported rows whose created_at is the import date.
+    #    Aging is a point-in-time backlog, not a windowed report; the date
+    #    range is gone.
+    # 2. No status filter, so drafts counted as receivables: a draft's
+    #    balance_due equals its total at creation.
+    # 3. It aged from `invoice_date` while /reports/cash-risk ages from
+    #    `due_date` and excludes paid/void/draft — two AR agings that could not
+    #    structurally agree. This now anchors on due_date to match, falling
+    #    back to invoice_date only where due_date is null (legacy/imported).
     rows = db.execute(
         select(
-            Invoice.invoice_date,
+            func.coalesce(Invoice.due_date, Invoice.invoice_date).label("age_from"),
             func.coalesce(Invoice.balance_due, 0).label("balance_due"),
         ).where(
             Invoice.deleted_at.is_(None),
             Invoice.balance_due > 0,
-            Invoice.created_at >= start_dt,
-            Invoice.created_at < end_dt,
+            # Same three terms /reports/cash-risk uses, so the two AR views can
+            # finally agree. Before this they differed by $16,324.21 on prod:
+            # aging admitted paid invoices and had no not-yet-due skip.
+            Invoice.status.notin_(("paid", "void", "draft")),
         )
     ).mappings().all()
 
@@ -929,7 +1058,7 @@ def outstanding_aging(
     totals = {"0_30": 0.0, "31_60": 0.0, "61_90": 0.0, "91_plus": 0.0}
 
     for row in rows:
-        inv_date = row.get("invoice_date")
+        inv_date = row.get("age_from")
         if inv_date is None:
             continue
         if isinstance(inv_date, str):
@@ -941,6 +1070,10 @@ def outstanding_aging(
         elif isinstance(inv_date, datetime):
             inv_date = inv_date.date()
         age_days = (resolved_end - inv_date).days
+        # Not yet due is not outstanding. cash-risk skips these; aging counted
+        # them in the 0-30 bucket, which is most of why the two disagreed.
+        if age_days < 0:
+            continue
         if age_days <= 30:
             bucket = "0_30"
         elif age_days <= 60:

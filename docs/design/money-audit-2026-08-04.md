@@ -3,9 +3,11 @@
 **Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, which is
 still accurate as re-verified 2026-08-21. Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
-M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8** and **M35**.
-**Not fixed:** the rest of §3 (M18, M19, M20), the rest of §4, §5 and §6, and the
-frontend items in §7 — except M8's frontend half, which shipped with it. The GL findings are no longer "gated on CPA review" in the
+M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8**, **M35**, **M19** and **M20** (and half of **M18**).
+**Not fixed:** M18's other half (a tax component on `invoice_adjustments` —
+a money rule plus a migration, deliberately not guessed), the rest of §4, §5
+and §6, and the frontend items in §7 — except M8's frontend half, which
+shipped with it. The GL findings are no longer "gated on CPA review" in the
 sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
 — but the CPA questions themselves are still unanswered.
 ✅ **The regression net this audit built now runs** (#390, merged 2026-08-21).
@@ -645,7 +647,23 @@ column *is* populated.
 everywhere, and export `total`. Then delete `total_amount` — a column nothing writes
 and five things read is a trap that keeps re-firing.
 
-### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` `CONFIRMED`
+### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` `CONFIRMED` 🟡 HALF FIXED
+
+> **Half fixed 2026-08-22.** `tax_collected` no longer keys off
+> `paid_at IS NOT NULL`; it requires a real, non-voided payment. Six prod
+> invoices carry `paid_at` with zero cash — two of them carry tax — so credited
+> tax was sitting in the remittance-liability bucket as if collected. Guarded on
+> Postgres by `test_m18_tax_is_collected_only_when_cash_arrived`, which reports
+> `Obtained: 100.0` against the pre-fix code.
+>
+> **Still open — needs a decision, not code:** storing a tax component on
+> `invoice_adjustments`. Today the table carries a flat `amount` with no tax
+> split, so a credit cannot reduce the tax it originally charged. Prod exposure:
+> **4 credited invoices carrying $570.79 of tax against $797.45 of credits.**
+> Splitting a credit into tax and non-tax is a money rule (pro-rata at the
+> invoice's rate? operator-entered? credits never reduce tax?) and needs a
+> migration, so it is deliberately not guessed here.
+
 
 The known limitation is still live: the report has no join to `invoice_adjustments`,
 and `InvoiceAdjustment` carries a flat `amount` with no tax component. Two things make
@@ -667,7 +685,39 @@ truth of $110.70 and $0.
 **Fix.** Store a tax component on `invoice_adjustments` and net it per period; gate
 `tax_collected` on actual non-voided payments rather than `paid_at`.
 
-### M19 — Credit memos reduce no revenue report; deposits and finals overlap `HIGH` `CONFIRMED`
+### M19 — Credit memos reduce no revenue report; deposits and finals overlap `HIGH` `CONFIRMED` ✅ FIXED
+
+> **FIXED 2026-08-22 — but only half of what this finding prescribed.**
+>
+> DONE: revenue aggregates now subtract Σ(credit_memo) per period, attributed
+> to the date the credit was ISSUED — matching the GL, which
+> posts `post_credit_memo` at `effective_at = adjustment.created_at.date()`.
+> The ledger is the book of record, so the reports follow it rather than
+> inventing a second convention.
+>
+> NOT DONE, ON PURPOSE: "exclude `billing_type='deposit'` from billed revenue"
+> is **wrong**, for the same reason M8's deposit prescription was. The final
+> invoice already nets the deposit with a negative "Less deposit paid" line
+> (`modules/deposits/service.py` rule 2), so excluding it subtracts the deposit
+> twice. Tested against the one real pair on prod: deposit $3,112.61 + final
+> $3,288.74 − credits $176.12 = **$6,225.23, exactly the job's true value**;
+> excluding the deposit gives $3,288.74. Netting the credits is the whole fix —
+> and it reproduces this finding's own worked example exactly
+> ($2,000 + $9,500 − $1,500 = $10,000, where the finding reported $11,500).
+> `test_m19_does_not_also_exclude_deposits` exists to stop it being "fixed" the
+> prescribed way later.
+>
+> **`credit_applied` is excluded from the subtraction**, which the first pass of
+> this fix got wrong. It is a settlement event, not a revenue reduction: the
+> credit memo that minted the customer credit already reduced revenue, so
+> subtracting the application counts it twice. The ledger draws the same line —
+> `modules/ledger/reports.py::_cash_events` signs `credit_applied` **+1**,
+> grouping it with payments and refunds as cash, while plain credit memos are
+> not cash events at all. (`_recalculate_invoice` subtracts both, correctly,
+> because it computes BALANCE, not revenue.) Zero `credit_applied` rows exist on
+> prod, so nothing would have caught this;
+> `test_m19_credit_applied_is_not_a_second_revenue_reduction` now does.
+
 
 `Invoice.total` is never reduced by a credit memo (only `balance_due` is), and no
 revenue aggregate joins `invoice_adjustments`. Deposit invoices are `sent`, so they
@@ -683,7 +733,27 @@ A $10,000 job with a $2,000 deposit of which $500 was paid reports $2,000 + $9,5
 already does. This and M18 are the same missing subtraction seen from two reports —
 one shared "net adjustments per period" join fixes both.
 
-### M20 — `/reports/outstanding-aging` windows AR on `created_at` and includes drafts `MEDIUM-HIGH` `CONFIRMED`
+### M20 — `/reports/outstanding-aging` windows AR on `created_at` and includes drafts `MEDIUM-HIGH` `CONFIRMED` ✅ FIXED
+
+> **FIXED 2026-08-22.** All three defects: the `created_at` window is gone
+> (aging is a point-in-time backlog, so a receivable older than the 30-day
+> default no longer vanishes and the 91+ bucket can fill from real invoices,
+> not just QB imports); drafts and voids are excluded; and it now ages from
+> `due_date` — falling back to `invoice_date` only where due_date is null — so
+> it agrees with `/reports/cash-risk` instead of structurally disagreeing.
+>
+> **Proven, not asserted.** An adversarial review measured the two views still
+> $16,324.21 apart after the first pass — aging admitted `paid` invoices and had
+> no not-yet-due skip, so future-dated receivables landed in the "0-30 days
+> outstanding" bucket. Both were fixed. On prod now: aging **19 rows /
+> $19,337.91**, cash-risk **19 rows / $19,337.91**.
+>
+> The endpoint also stopped accepting `start_date`/`end_date`. Removing the
+> window without removing the parameters would have left a caller able to pass
+> a range that silently does nothing — a worse defect than the one being fixed.
+> (Zero frontend callers today; the endpoint is reachable but unrendered, so
+> this fix is correctness-in-waiting rather than something a user sees.)
+
 
 The query filters `created_at >= start_dt` with a 30-day default and has no status
 filter ([reports.py:806-845](../../gdx_dispatch/routers/reports.py#L806-L845)).
@@ -1196,8 +1266,10 @@ Not arithmetic errors, but they lie about money:
   "materialize estimate totals as invoice lines" helper carrying discount, taxability,
   rate and the accepted tier. These are four symptoms of one missing abstraction, and
   fixing them separately will leave the seams.
-- **M8**, **M18**, **M19**, **M20** — the reporting cluster, sharing one
-  "net adjustments per period" join.
+- ~~**M8**, **M18**, **M19**, **M20** — the reporting cluster, sharing one
+  "net adjustments per period" join.~~ ✅ Done 2026-08-22. The shared join is
+  `_credits_by_period` / `_credits_total` in `routers/reports.py`. Only M18's
+  tax-component half remains, and that is a decision plus a migration.
 - ~~**M35** — resolve `amount_paid` one way or the other.~~ ✅ Done 2026-08-22:
   readers migrated to Σ(non-voided payments); the column drop ships separately.
 - The GL items in §6, gated on the CPA review rather than on a deploy.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -83,6 +84,22 @@ def tenant_db_session():
                 created_at TEXT,
                 invoice_date TEXT,
                 deleted_at TEXT
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TABLE invoice_adjustments (
+                id TEXT PRIMARY KEY,
+                invoice_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                reason TEXT,
+                company_id TEXT,
+                created_at TEXT,
+                created_by TEXT
             )
             """
         )
@@ -702,7 +719,9 @@ def test_outstanding_aging_returns_buckets(tenant_db_session):
     _seed_invoice(tenant_db_session, job_id=job_70, created_at=now - timedelta(days=70), total_amount=30, balance_due=30, status="Unpaid")
     _seed_invoice(tenant_db_session, job_id=job_120, created_at=now - timedelta(days=120), total_amount=40, balance_due=40, status="Unpaid")
 
-    data = reports.outstanding_aging("2000-01-01", now.date().isoformat(), {}, tenant_db_session)
+    # M20: aging is a point-in-time backlog and no longer takes a date range —
+    # the old parameters would have been silently inert.
+    data = reports.outstanding_aging({}, tenant_db_session)
     assert data["counts"]["0_30"] == 1
     assert data["counts"]["31_60"] == 1
     assert data["counts"]["61_90"] == 1
@@ -1105,3 +1124,297 @@ def test_m8_revenue_periods_use_the_billed_date_not_the_import_date(pg_test_sess
         "invoice billed inside the window was missed — revenue is still "
         "grouping/filtering on created_at (the import date)"
     )
+
+
+# ---------------------------------------------------------------------------
+# M18 / M19 / M20 — the reporting cluster (money-audit-2026-08-04 §3).
+# One missing subtraction seen from three reports.
+# ---------------------------------------------------------------------------
+
+
+def _seed_credit(db, invoice_id, amount, *, kind="credit_memo", when=None):
+    db.execute(
+        text(
+            """
+            INSERT INTO invoice_adjustments (id, invoice_id, kind, amount, company_id, created_at)
+            VALUES (:id, :inv, :kind, :amt, 'tenant-test', :at)
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()), "inv": invoice_id, "kind": kind, "amt": amount,
+            "at": _iso(when or datetime.now(UTC)),
+        },
+    )
+    db.commit()
+
+
+def test_m19_credit_memo_reduces_reported_revenue(tenant_db_session):
+    """`Invoice.total` is never reduced by a credit memo — only `balance_due`
+    is — and no revenue aggregate joined invoice_adjustments, so a credited
+    invoice kept counting at full value.
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Credit Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=2), lifecycle_stage="Complete",
+    )
+    inv = _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2), total=1000,
+    )
+    _seed_credit(tenant_db_session, inv, 250, when=now - timedelta(days=1))
+
+    summary = reports.reports_summary(None, None, {}, tenant_db_session)
+
+    assert summary["revenue_total"] == pytest.approx(750.0), (
+        "credit memo must reduce reported revenue"
+    )
+
+
+def test_m19_does_not_also_exclude_deposits(tenant_db_session):
+    """M19's OTHER prescription — "exclude billing_type='deposit' from billed
+    revenue" — is wrong and must stay unimplemented.
+
+    The final invoice already nets the deposit with a negative "Less deposit
+    paid" line, so excluding the deposit subtracts it twice. Proven on the one
+    real pair on prod: deposit $3,112.61 + final $3,288.74 − credits $176.12 =
+    $6,225.23, exactly the job's true value. Excluding the deposit gives
+    $3,288.74. Netting credits is the whole fix.
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Deposit Net Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=2), lifecycle_stage="Complete",
+    )
+    dep = _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2),
+        total=2000, billing_type="deposit",
+    )
+    # Final invoice, already net of the PAID part of the deposit.
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2), total=9500,
+    )
+    # The unpaid deposit remainder is credit-memo'd, exactly as the deposit
+    # lifecycle does it.
+    _seed_credit(tenant_db_session, dep, 1500, when=now - timedelta(days=1))
+
+    summary = reports.reports_summary(None, None, {}, tenant_db_session)
+
+    # 2000 + 9500 - 1500 = 10000, the job's true value. The audit's own worked
+    # example; it reported 11500 before this fix.
+    assert summary["revenue_total"] == pytest.approx(10000.0)
+
+
+def test_m20_aging_excludes_drafts_and_voids(tenant_db_session):
+    """A draft's balance_due equals its total at creation, so drafts appeared
+    as receivables."""
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Aging Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=10), lifecycle_stage="Complete",
+    )
+    _seed_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=10),
+        total_amount=None, total=500, balance_due=500, status="sent",
+    )
+    for bad_status in ("draft", "void"):
+        _seed_invoice(
+            tenant_db_session, job_id=job, created_at=now - timedelta(days=10),
+            total_amount=None, total=9999, balance_due=9999, status=bad_status,
+        )
+
+    data = reports.outstanding_aging({}, tenant_db_session)
+
+    assert sum(data["totals"].values()) == pytest.approx(500.0), (
+        "drafts and voids are not receivables"
+    )
+    assert sum(data["counts"].values()) == 1
+
+
+def test_m20_aging_is_a_backlog_not_a_30_day_window(tenant_db_session):
+    """It filtered `created_at >= start_dt` with a 30-day default, so ANY
+    receivable created more than 30 days ago vanished from aging entirely —
+    the 91+ bucket could only ever fill from QB imports.
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Old AR Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=200), lifecycle_stage="Complete",
+    )
+    _seed_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=200),
+        total_amount=None, total=400, balance_due=400, status="overdue",
+    )
+
+    data = reports.outstanding_aging({}, tenant_db_session)
+
+    assert data["totals"]["91_plus"] == pytest.approx(400.0), (
+        "a 200-day-old receivable must appear in the 91+ bucket"
+    )
+
+
+def test_m18_tax_is_collected_only_when_cash_arrived(pg_test_session):
+    """M18: `tax_collected` keyed off `paid_at IS NOT NULL`. A fully-credited
+    invoice flips to paid with paid_at stamped and ZERO cash received, so
+    credited tax landed in the remittance-liability bucket as if collected.
+    Six prod invoices carry paid_at with no payment at all; two carry tax.
+
+    Postgres-only: the sales-tax report groups with date_trunc.
+    """
+    job = _pg_seed_job(pg_test_session)
+    when = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+
+    # Marked paid, tax on it, but no cash ever arrived.
+    pg_test_session.execute(
+        text(
+            """
+            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+                                  sequence_number, subtotal, tax_amount, total,
+                                  total_amount, balance_due, locked, public_token,
+                                  company_id, created_at, invoice_date, paid_at)
+            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+                    CAST('standard' AS invoice_billing_type),
+                    1, 1000, 100, 1100, NULL, 0, false, :tok, :company,
+                    now(), CAST(:when AS DATE), now())
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()), "job_id": job, "num": f"INV-{uuid.uuid4().hex[:6]}",
+            "tok": uuid.uuid4().hex, "company": PG_COMPANY, "when": when,
+        },
+    )
+    pg_test_session.commit()
+
+    start = (datetime.now(UTC) - timedelta(days=10)).date().isoformat()
+    end = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
+    data = reports.sales_tax_report(start, end, "month", {}, pg_test_session)
+
+    assert data["totals"]["tax_total"] == pytest.approx(100.0), "tax is still a liability"
+    assert data["totals"]["tax_collected"] == pytest.approx(0.0), (
+        "no cash arrived — tax cannot be reported as collected"
+    )
+
+
+def test_money_tables_in_the_pg_fixture_match_the_orm():
+    """The PG fixture schema had drifted from the ORM, and the drift was
+    silent: `payments` was missing `voided_at` and `reference`, and
+    `invoice_adjustments` was absent entirely. Every requires_pg test therefore
+    ran against a schema production does not have — and the M18/M19 guards
+    could not run at all until it was patched.
+
+    Scoped to the tables the money reports read. A whole-schema assertion would
+    fail today on 90 tables and 128 columns of pre-existing drift (the
+    `refresh_test_schema.sh` the fixture's docstring names does not exist), and
+    a guard that fails for unrelated reasons gets deleted. These three are the
+    ones a wrong answer here would mis-report money from.
+    """
+    import re
+
+    from gdx_dispatch.models.tenant_models import Base
+
+    sql = (pathlib.Path(__file__).resolve().parents[0] / "fixtures" / "structure.sql").read_text()
+    fixture: dict[str, set[str]] = {}
+    for m in re.finditer(r"CREATE TABLE public\.(\w+) \((.*?)\n\);", sql, re.S):
+        cols = set()
+        for line in m.group(2).splitlines():
+            line = line.strip().rstrip(",")
+            if not line or line.split()[0].upper() in {
+                "CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK",
+            }:
+                continue
+            cols.add(line.split()[0])
+        fixture[m.group(1)] = cols
+
+    missing = []
+    for table_name in ("invoices", "payments", "invoice_adjustments"):
+        table = Base.metadata.tables.get(table_name)
+        assert table is not None, f"{table_name} is not in the ORM metadata"
+        assert table_name in fixture, f"{table_name} missing from structure.sql entirely"
+        for col in table.columns:
+            if col.name not in fixture[table_name]:
+                missing.append(f"{table_name}.{col.name}")
+
+    assert not missing, (
+        "gdx_dispatch/tests/fixtures/structure.sql has drifted from the ORM — "
+        "requires_pg tests would run against a schema prod does not have:\n"
+        + "\n".join(missing)
+    )
+
+
+def test_m19_credit_applied_is_not_a_second_revenue_reduction(tenant_db_session):
+    """`credit_applied` must NOT reduce revenue.
+
+    It is a settlement event: the credit_memo that minted the customer credit
+    already reduced revenue, so subtracting the application too counts it twice.
+    The ledger says the same — `modules/ledger/reports.py::_cash_events` signs
+    credit_applied +1, grouping it with payments and refunds as cash, while
+    plain credit memos are not cash events at all. (`_recalculate_invoice` does
+    subtract both, correctly, because it computes BALANCE, not revenue.)
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Applied Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=2), lifecycle_stage="Complete",
+    )
+    inv = _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2), total=1000,
+    )
+    _seed_credit(tenant_db_session, inv, 300, kind="credit_applied", when=now - timedelta(days=1))
+
+    summary = reports.reports_summary(None, None, {}, tenant_db_session)
+
+    assert summary["revenue_total"] == pytest.approx(1000.0), (
+        "credit_applied is settlement, not a revenue reduction — subtracting it "
+        "double-counts against the credit_memo that created the credit"
+    )
+
+
+def test_m20_aging_skips_not_yet_due_and_paid_to_match_cash_risk(tenant_db_session):
+    """The two AR views differed by $16,324.21 on prod: aging admitted paid
+    invoices and counted not-yet-due ones in the 0-30 bucket, while cash-risk
+    skipped both. They now share the filter.
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Due Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=5), lifecycle_stage="Complete",
+    )
+    # Genuinely overdue — counts.
+    overdue = _seed_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=45),
+        total_amount=None, total=100, balance_due=100, status="overdue",
+    )
+    tenant_db_session.execute(
+        text("UPDATE invoices SET due_date = :d WHERE id = :i"),
+        {"d": (now - timedelta(days=45)).date().isoformat(), "i": overdue},
+    )
+    # Not yet due — must NOT count as outstanding.
+    future = _seed_invoice(
+        tenant_db_session, job_id=job, created_at=now,
+        total_amount=None, total=5000, balance_due=5000, status="sent",
+    )
+    tenant_db_session.execute(
+        text("UPDATE invoices SET due_date = :d WHERE id = :i"),
+        {"d": (now + timedelta(days=20)).date().isoformat(), "i": future},
+    )
+    # Paid with a residual balance row — cash-risk excludes paid; so must aging.
+    paid = _seed_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=60),
+        total_amount=None, total=700, balance_due=700, status="paid",
+    )
+    tenant_db_session.execute(
+        text("UPDATE invoices SET due_date = :d WHERE id = :i"),
+        {"d": (now - timedelta(days=60)).date().isoformat(), "i": paid},
+    )
+    tenant_db_session.commit()
+
+    data = reports.outstanding_aging({}, tenant_db_session)
+
+    assert sum(data["totals"].values()) == pytest.approx(100.0)
+    assert data["totals"]["31_60"] == pytest.approx(100.0)
+    assert sum(data["counts"].values()) == 1
