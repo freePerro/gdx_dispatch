@@ -7,11 +7,6 @@ from celery.schedules import crontab
 
 def build_beat_schedule() -> dict[str, dict[str, object]]:
     return {
-        "check-upcoming-appointment-reminders-hourly": {
-            "task": "gdx_dispatch.tasks.reminders.check_upcoming_appointment_reminders",
-            "schedule": crontab(minute=0),
-            "options": {"queue": "priority:high"},
-        },
         "drain-plugin-email-outbox-every-minute": {
             # Email overhaul P6: plugins queue mail on the shared DB
             # (plugin-host has no egress); this drain delivers via the
@@ -40,6 +35,26 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=6, minute=0),
             "options": {"queue": "priority:low"},
         },
+        # "check-upcoming-appointment-reminders-hourly" was the same pattern,
+        # and outlived both of the others. It fired every hour on prod and
+        # logged `succeeded ... {'scheduled_count': 0}` every time, because
+        # gdx_dispatch.tasks.reminders was three stubs:
+        # _find_upcoming_appointment_ids returned [], _get_appointment returned
+        # None, _send_sms did nothing. Its one test monkeypatched all three, so
+        # it proved the stub could call itself and nothing more.
+        #
+        # Not removed for being unused — the data is real (36 appointments,
+        # 16 in the 90 days to 2026-08-22). Removed because the stub was wired
+        # to nothing that can send: its private `_send_sms` was a no-op, and
+        # `core/sms.py` (the only shared sender) is Twilio, whose credentials
+        # are unset on prod. The account's working outbound path is Phone.com
+        # (`modules/phone_com/client.py::send_message`, called from that
+        # module's router) — the stub never touched it. So implementing the
+        # finder alone would still have sent zero messages while logging
+        # success. Reviving this needs a product go/no-go on automated customer
+        # SMS *and* wiring to the Phone.com sender, not just a query.
+        # Removed 2026-08-22 along with the module; re-add with the task when
+        # an outbound SMS transport actually exists.
         # S122-3 (T2): "sync-qb-every-15-minutes" was wired to a no-op stub
         # since pre-2026-04 — fired every 15 minutes producing
         # synced_count=0. Removed 2026-05-12. CDC poller (S122-18) is the

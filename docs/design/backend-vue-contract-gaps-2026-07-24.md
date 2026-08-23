@@ -7,9 +7,15 @@ the A/R UI doors (credit-memo, apply-credit, warranties, job dependencies,
 reminders, finalize), `is_return_visit` badges, PO `received_date`, every
 invalid `'warning'` severity, the Tier-6 write-path drops, the forecasting
 authorization hole, the dead `AdminSettingsView`, and the mobile invoice email.
-**Still open:** Tier 10's non-QuickBooks half —
-`tasks/reminders.py::_find_upcoming_appointment_ids` still returns `[]` — plus
-the Tier-3 latent item (`amount_paid` absent from `_serialize_invoice`).
+**Tier 10's non-QuickBooks half is RESOLVED** (2026-08-22): the
+appointment-reminder task was three stubs wired to celery beat, firing hourly on
+prod and logging `scheduled_count: 0` forever. Removed — module, beat entry and
+all — because the blocker is transport, not the finder: every SMS path goes
+through `core/sms.py` (Twilio) and prod has **no SMS credentials set at all**,
+so wiring it would have sent zero messages while logging success.
+**Tier 3's latent item is RESOLVED too**: `amount_paid` is now on
+`_serialize_invoice` — sourced from the payments table, not the dead column
+(see money-audit M35).
 **⛔ Tier 10's QuickBooks half is WON'T FIX** as of the 2026-08-21 phase-out:
 the missing `ItemRef` and the unrendered per-record push state were only ever
 about *writing to* QuickBooks, and we no longer do. Prod:
@@ -51,14 +57,14 @@ sibling `money-audit-2026-08-04.md` §0.6 is the pattern being copied.
 |---|---|---|
 | 1 — broken today (5) | ✅ all fixed | `useApi.js:183/313` exports a `delete` alias with a distinct signature; OnboardingView posts through the shared client; `commission.py:140 PUT /rules/{rule_id}`; `settings.py:754 POST /branding/logo`; the `total_amount` fallback is gone from DashboardView |
 | 2 — built, no UI door (7) | ✅ doors exist | credit-memo + apply-credit on `InvoiceDetailView.vue:474/483`; `WarrantiesView.vue`; job dependencies at `JobDetailView.vue:403/2102`; receipt→expense on the bank-feeds line path; per-invoice reminders in `CollectionsView.vue:383-423`; finalize at `InvoiceDetailView.vue:1745`. **2.7 (mobile batch sync) is still undecided** — the endpoint remains, replay still goes per-URL |
-| 3 — serialized, never rendered | 🟡 mostly | `is_return_visit` renders on DispatchView + TechTimelineColumn; PO `received_date` is a column; budget seed returns its result. **Open:** `amount_paid` is still absent from `_serialize_invoice` (latent, all fallbacks still guarded by `balance_due ??`) |
+| 3 — serialized, never rendered | ✅ fixed | `is_return_visit` renders on DispatchView + TechTimelineColumn; PO `received_date` is a column; budget seed returns its result. **Fixed 2026-08-22:** `_serialize_invoice` now emits `amount_paid` (and `credit_total`), derived from payments — the MobileBillingView "Paid" row it gates had never rendered |
 | 4 — status-map divergence | ✅ fixed | zero invalid `'warning'` severities remain in any `.vue` file |
 | 5 — swallowed server detail | ✅ fixed | the Tier-1.2 onboarding raw fetch was the only real swallow |
 | 6 — write-path data loss (12) | ✅ fixed | technician name/email/phone on both models (`technicians.py`); `expenses.py:54/68` accepts `status`; `customers.py:146` `access_notes`; `jobs.py:629` honours `date=` |
 | 7 — permission / module gating | ✅ fixed | forecasting GETs carry `require_permission("accounting.read")`; nav entries key on real modules via `requires:` (`modules.js:46/59/61/160`) |
 | 8 — dead frontend surface | ✅ fixed | `AdminSettingsView.vue` deleted |
 | 9 — customer-facing documents | ✅ headline fixed | `mobile_invoicing.py:969` now passes `subtotal`/`tax_amount`/`balance_due`, so truck "Generate & email" actually sends |
-| 10 — invisible background state | 🟡 split | **Still open (not QB):** `tasks/reminders.py::_find_upcoming_appointment_ids` still `return []`. **⛔ Won't fix (QB phase-out 2026-08-21):** the zero `ItemRef` in `quickbooks/sync.py`, per-record push state missing from lists, and push failures surfacing nowhere — all push-side work for a book we no longer write to |
+| 10 — invisible background state | ✅ resolved / ⛔ split | **Resolved (not QB):** the `tasks/reminders.py` stub and its hourly beat entry were removed 2026-08-22 — it could never send, because prod has no SMS transport configured. **⛔ Won't fix (QB phase-out 2026-08-21):** the zero `ItemRef` in `quickbooks/sync.py`, per-record push state missing from lists, and push failures surfacing nowhere — all push-side work for a book we no longer write to |
 | 11 — dark mode + dead tail | 🟡 partly | scheduling has a real UI (`SchedulingView.vue`); the dark-mode items were not individually re-checked in the 2026-08-21 sweep |
 
 Two tiers were **not** re-verified item-by-item on 2026-08-21 and should not be
@@ -454,10 +460,15 @@ next-actions renderer absence, ItemRef absence).
   The entire billing-leak loop (`tasks/billing_followup.py`) and the weekly
   overdue nudge write NextActions nothing displays — corroborated by the
   in-repo comment at `routers/timeclock.py:961-963`.
-- **Appointment reminders are a scheduled stub (verified).**
-  `_find_upcoming_appointment_ids()` returns `[]`
-  (`tasks/reminders.py:55-64`); the hourly task has sent zero reminders ever,
-  and nothing signals that.
+- ~~**Appointment reminders are a scheduled stub (verified).**~~
+  ✅ **Resolved 2026-08-22 by deletion.** It was three stubs
+  (`_find_upcoming_appointment_ids` -> `[]`, `_get_appointment` -> `None`,
+  `_send_sms` -> no-op) firing hourly on prod and logging
+  `scheduled_count: 0` forever; its only test monkeypatched all three. Module,
+  beat entry, celery registration and test removed. Reviving it needs a product
+  go/no-go on automated customer SMS **and** wiring to the Phone.com sender
+  (`modules/phone_com/client.py::send_message`) — `core/sms.py` is Twilio and
+  has no credentials on prod, which is what the stub would have reached for.
 - **estimate_followup**: registered, unscheduled, and would stamp
   `reminder_sent_at` without sending if ever run
   (`tasks/estimate_followup.py:46-50`).

@@ -15,7 +15,7 @@ pull-side work for a book we no longer write to. Prod evidence:
 `qb_money_pull_paused = true`, entity maps frozen since May 2026, and the GL
 is the book of record (live since the July cutover).
 **The remaining seven have nothing to do with QuickBooks** and are still open:
-the NextAction renderer, the appointment-reminders stub, estimate_followup,
+the NextAction renderer, estimate_followup,
 estimate auto-expire, circuit breakers, failed-task visibility, and recurring
 run history. Do not let the QB-flavoured table heading bury them.
 
@@ -74,7 +74,7 @@ never pushed.
 | ⛔ **WON'T FIX** — **Push failures surface nowhere** (`tasks.py:120-131` `failed_permanent` list nothing reads; `_touch_sync_error` is pull-only) | The error model itself is incomplete — background push failures aren't recorded anywhere a status endpoint can read. `_touch_sync_error` even no-ops when there's no legacy `QBConnection` row. | ~~Decide where push errors are recorded (extend token store? per-record last_push_error?) then surface. The connection-health banner above covers the auth-failure case today.~~ **Closed by the QuickBooks phase-out 2026-08-21:** no pushes, therefore no push failures. |
 | ⛔ **WON'T FIX** — **`last_error: None` hardcode on the modern `/status` path** (`router.py`) | Left as-is: the modern path's real error signal is `auth_state` (now surfaced). Reading `QBConnection.last_error` there would show a stale/absent legacy value — a worse lie than the honest blank. | ~~Same decision as "push failures surface nowhere".~~ **Closed by the QuickBooks phase-out 2026-08-21:** the modern path's real signal is `auth_state`, which is surfaced and now permanently reads needs_reconnect. |
 | **NextAction renderer** (zero frontend refs; `billing_followup.py` + weekly nudge write NextActions nothing shows) | A whole new SPA surface. | Build a NextActions inbox, **or** stop writing them (`timeclock.py:961-963` already flags the dead loop). |
-| **Appointment reminders stub** (`reminders.py:55-64` returns `[]`; hourly task has sent zero) | Making it real = starting **outbound** SMS/email to customers. | Product go/no-go on automated reminders + copy + opt-out, then implement `_find_upcoming_appointment_ids`. |
+| ~~**Appointment reminders stub**~~ ✅ **REMOVED 2026-08-22** | The deferral reason was right and stayed true: making it real means starting outbound customer SMS. Prod has **no SMS transport at all** — `core/sms.py` is Twilio and none of its credentials are set — so the stub could never have sent, yet it fired hourly and logged success. Module + beat entry deleted rather than left looking alive. | Unchanged: a product go/no-go on automated reminders, and an outbound transport, before any code. |
 | **estimate_followup stub** (`estimate_followup.py:46-50`, unscheduled, would stamp `reminder_sent_at` without sending) | Outbound behavior + scheduling. | Same as reminders. |
 | **Estimate auto-expire** (`estimates.py:2107-2110`, user-auth endpoint, unscheduled/uncalled) | Auto-mutates estimate state (sent → expired) with no one watching. | Decide the expiry policy + whether to schedule it. |
 | **Circuit breakers** (`circuit_breaker.py:180`, `app.py:1094`; `qb_circuit` not wired into QB calls) | Redis-only, no endpoint/view; wiring it changes call behavior. | Decide whether to wire + expose. |
