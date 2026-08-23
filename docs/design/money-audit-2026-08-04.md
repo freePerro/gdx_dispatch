@@ -3,7 +3,7 @@
 **Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, which is
 still accurate as re-verified 2026-08-21. Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
-M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37 and **M8**.
+M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8** and **M35**.
 **Not fixed:** the rest of §3 (M18, M19, M20), the rest of §4, §5 and §6, and the
 frontend items in §7 — except M8's frontend half, which shipped with it. The GL findings are no longer "gated on CPA review" in the
 sense of being unbuilt — the ledger is live on prod (see `gl-phase1-core-ledger.md`)
@@ -1027,7 +1027,47 @@ lines or both exclude them — and restrict the clamp to genuinely new lines.
   the sign convention `money_format.py` establishes server-side. Cosmetic; all guard
   NaN.
 
-### M35 — `amount_paid` is written by nothing and read by five surfaces `MEDIUM` `CONFIRMED`
+### M35 — `amount_paid` is written by nothing and read by five surfaces `MEDIUM` `CONFIRMED` ✅ FIXED
+
+> **FIXED 2026-08-22.** Every live reader now derives paid-to-date from the
+> `payments` table via `core/invoice_paid.py`
+> (`paid_to_date` / `paid_to_date_bulk` / `paid_amount_sq`), the same rule
+> `_recalculate_invoice` already used: `Σ payments WHERE voided_at IS NULL`.
+>
+> This finding listed five surfaces; there were **seven**. The two it missed:
+> `core/closeout_billing.py:291` — `is_untouched_autodraft`'s payment arm, a
+> guard that could not guard because the column was always 0, so an autodraft
+> carrying real money still looked like the machine's to void — and
+> `job_display_state.py:160`, the `deposit_paid` badge (distinct from the
+> `partially_paid` arm at :206 the finding did cover).
+>
+> Measured on prod 2026-08-22 before the fix: **24 invoices, $62,473.72 of
+> drift, every one understating**; 24 of the 27 payments involved were recorded
+> after the 2026-07-31 repair. Worst row: invoice 50010651, total $15,476.93,
+> status `paid`, real payments $15,476.93, `amount_paid` **0.00**.
+>
+> **Correction.** An earlier draft of this entry claimed MobileBillingView
+> rendered that invoice as "Paid $0.00" to a technician. It did not — the
+> adversarial audit caught the claim as unverified and it was wrong. The screen
+> loads from `/api/invoices/{id}`, whose serializer carried **no `amount_paid`
+> key at all**, and the row is gated on `detail.amount_paid != null`, so it
+> never rendered. That is a real defect too, and the same change fixes it: the
+> detail payload now carries a true paid-to-date derived from the payments it
+> already loads, plus `credit_total`, so `total − paid − credits == balance_due`
+> reconciles on screen instead of leaving a credited invoice showing money
+> unaccounted for. Nothing here was browser-walked before the claim was made;
+> it is now stated only as far as the code shows.
+>
+> Guard: `tests/test_m35_amount_paid_retired.py`. Six behavioural tests record a
+> payment WITHOUT touching the column and assert the surface reports it, plus a
+> tokenizer-based scanner that fails if any live path reads the attribute again
+> (it correctly flags all seven pre-fix sites when the source is reverted; it
+> ignores comments, docstrings, and the API payload key of the same name, which
+> is now sourced from payments).
+>
+> The column itself is dropped separately — see the migration PR — so this
+> change is revertable without a schema move.
+
 
 Not strictly frontend, but this is where it surfaces. `Invoice.amount_paid` is
 deprecated — `_recalculate_invoice` deliberately ignores it
@@ -1158,8 +1198,8 @@ Not arithmetic errors, but they lie about money:
   fixing them separately will leave the seams.
 - **M8**, **M18**, **M19**, **M20** — the reporting cluster, sharing one
   "net adjustments per period" join.
-- **M35** — resolve `amount_paid` one way or the other. It has now produced two
-  findings on its own.
+- ~~**M35** — resolve `amount_paid` one way or the other.~~ ✅ Done 2026-08-22:
+  readers migrated to Σ(non-voided payments); the column drop ships separately.
 - The GL items in §6, gated on the CPA review rather than on a deploy.
 
 ### Does fixing all of this make the math correct?

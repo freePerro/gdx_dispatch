@@ -1276,7 +1276,7 @@ def cash_risk_kpis(
     # rather than collections.py (which uses mixed-case status filters
     # and would miss most prod rows).
     invoices = db.execute(
-        select(Invoice.id, Invoice.total, Invoice.amount_paid, Invoice.balance_due, Invoice.due_date)
+        select(Invoice.id, Invoice.total, Invoice.balance_due, Invoice.due_date)
         .where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "void", "draft")),
@@ -1295,7 +1295,10 @@ def cash_risk_kpis(
         days_overdue = (today - inv.due_date).days
         if days_overdue < 0:
             continue
-        amount = float(inv.balance_due or (inv.total or 0) - (inv.amount_paid or 0))
+        # M35: the fallback arm used to subtract `amount_paid`, a cache nothing
+        # maintains. It was unreachable anyway — the query above already
+        # filters `balance_due > 0` — so the stale column is simply gone.
+        amount = float(inv.balance_due or 0)
         if amount <= 0:
             continue
         total_outstanding += amount

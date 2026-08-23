@@ -44,6 +44,7 @@ from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
+from gdx_dispatch.core.invoice_paid import paid_to_date
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.models.tenant_models import (
     Customer,
@@ -173,7 +174,16 @@ def _serialize_invoice(inv: Invoice, *, include_lines: bool = False, db: Session
         "tax_amount": float(inv.tax_amount or 0),
         "total": float(inv.total or 0),
         "balance_due": float(inv.balance_due or 0),
-        "amount_paid": float(inv.amount_paid or 0) if inv.amount_paid is not None else 0.0,
+        # M35: this read `inv.amount_paid`, a cache nothing maintains — it
+        # rendered "Paid $0.00" on MobileBillingView for a fully-paid
+        # $15,476.93 invoice. Derive from payments, the same rule
+        # _recalculate_invoice uses. Needs `db`; without it the key is omitted
+        # rather than guessed, so the truck never shows an invented number.
+        **(
+            {"amount_paid": float(paid_to_date(db, inv.id))}
+            if db is not None
+            else {}
+        ),
         "due_date": inv.due_date.isoformat() if inv.due_date else None,
         "invoice_date": inv.invoice_date.isoformat() if inv.invoice_date else None,
         "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
@@ -1086,7 +1096,7 @@ def mobile_send_invoice(
         request=request,
     )
     db.commit()
-    resend_payload = _serialize_invoice(invoice)
+    resend_payload = _serialize_invoice(invoice, db=db)
     resend_payload["email_sent"] = bool(delivered)
     return _jr(resend_payload)
 

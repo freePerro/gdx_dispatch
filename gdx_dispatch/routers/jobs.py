@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import SessionLocal, get_db
+from gdx_dispatch.core.invoice_paid import paid_amount_sq, paid_to_date_bulk
 from gdx_dispatch.core.job_display_state import derive_job_display_state
 from gdx_dispatch.core.job_site import resolve_job_sites
 from gdx_dispatch.core.job_taxonomy import SERVICE_CALL, canonical_job_type
@@ -568,22 +569,30 @@ def _display_state_for_jobs(
     inv_by_job: dict[str, list[dict[str, Any]]] = {}
     est_by_job: dict[str, str] = {}
     try:
+        _inv_rows: list = []
+        # M35: `Invoice.amount_paid` is a cache nothing maintains, and
+        # job_display_state keys "Partially Paid" and the deposit_paid badge on
+        # it — so a partial payment recorded after 2026-07-31 read as $0 and the
+        # job showed "Invoiced". Derive paid-to-date from the payments table.
         for row in db.execute(
             select(
+                Invoice.id,
                 Invoice.job_id,
                 Invoice.status,
                 Invoice.balance_due,
-                Invoice.amount_paid,
                 Invoice.billing_type,
             ).where(Invoice.job_id.in_(uuid_ids), Invoice.deleted_at.is_(None))
         ).all():
             if row.job_id is None:
                 continue
+            _inv_rows.append(row)
+        _paid_by_invoice = paid_to_date_bulk(db, [r.id for r in _inv_rows])
+        for row in _inv_rows:
             inv_by_job.setdefault(str(row.job_id), []).append(
                 {
                     "status": row.status,
                     "balance_due": row.balance_due,
-                    "amount_paid": row.amount_paid,
+                    "amount_paid": _paid_by_invoice.get(str(row.id), 0),
                     "billing_type": row.billing_type,
                 }
             )
@@ -2936,7 +2945,7 @@ def mark_job_not_billable(
         ).scalars().all()
         voided_autodrafts: list[str] = []
         for inv in live_invoices:
-            if is_untouched_autodraft(inv):
+            if is_untouched_autodraft(inv, db):
                 continue
             if invoice_bills_job(inv.status, float(inv.total or 0), inv.deleted_at, inv.billing_type):
                 return jsonable_response(
@@ -2944,7 +2953,7 @@ def mark_job_not_billable(
                     409,
                 )
         for inv in live_invoices:
-            if is_untouched_autodraft(inv):
+            if is_untouched_autodraft(inv, db):
                 void_untouched_autodraft(db, inv)
                 voided_autodrafts.append(inv.invoice_number)
         now = datetime.now(UTC)
@@ -3461,7 +3470,9 @@ def get_job_costing(
         revenue = db.execute(
             select(
                 func.coalesce(func.sum(Invoice.total), 0).label("total_revenue"),
-                func.coalesce(func.sum(Invoice.amount_paid), 0).label("total_paid"),
+                # M35: was SUM(amount_paid) — a column nothing writes, so job
+                # profitability understated collections by the whole drift.
+                func.coalesce(func.sum(paid_amount_sq()), 0).label("total_paid"),
             ).where(
                 Invoice.job_id == job_id,
                 Invoice.company_id == tenant_id,
