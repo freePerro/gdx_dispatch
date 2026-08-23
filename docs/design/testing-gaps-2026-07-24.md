@@ -38,7 +38,9 @@ that exist but never gate anything.
 - `frontend/e2e/` — 13 Playwright specs, run only via manual `npm run e2e`
 - `gdx_dispatch/tests/load/locustfile.py` — never run, no perf budgets
 - `gdx_dispatch/tests/health/` — silent-failure drift detectors, opt-in
-- `gdx_dispatch/tests/_adversarial/` — vLLM-generated, deliberately excluded
+- ~~`gdx_dispatch/tests/_adversarial/`~~ — **deleted 2026-08-23**: the runner and
+  curator `pytest.ini` named (`adversarial_tests.py`,
+  `tools/orchestrator/adversarial_curate.py`) did not exist, so nothing ran it
 - Histoire stories — manual `story:dev` only
 
 **Absent entirely:** contract-parity checks, ESLint/TypeScript/jsconfig,

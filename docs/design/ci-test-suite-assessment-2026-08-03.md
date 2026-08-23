@@ -1,17 +1,40 @@
 # CI & Test Suite Deep Assessment — 2026-08-03
 
 **Status:** **PARTIALLY ACTIONED.** §7 items 1, 2 (#264) and 6 (#265) done.
-**Item 3 and item 7 closed 2026-08-23.** **Still open:** item 4 (targeted
-`@pytest.mark.forked`) and item 5 (a production-faithful `client` fixture).
+**Item 3 closed and item 7 MOSTLY closed, 2026-08-23.** **Still open:** item 4
+(targeted `@pytest.mark.forked`), item 5 (a production-faithful `client`
+fixture), and **the rest of item 7** — `gdx_dispatch/tests/load/locustfile.py`
+still exists (never run, points at a placeholder domain) and the 31
+`test_NN_*` sprint-numbered files are unrenamed. Named rather than glossed:
+an adversarial review caught the first draft of this line claiming item 7 was
+closed outright.
 
 **Item 3 — re-scoped by verification.** Three of its four asks were already
 done by the 2026-08-04 rewrite: the marker filter is preserved, `--forked` is
 available via `FORKED=1`, and the `.venv` assumption is gone (`$PYTEST` >
 `.venv` > `python3`, with a message naming the docker form). What remained was
 `.test_durations`, and it was genuinely stale: **6,009 entries across 523 test
-files, 38 of which no longer exist.** pytest-split balances shards from that
-file, and the imbalance showed — one shard ran **87 tests in 550s** while
-another ran **1,807 in 196s**. Regenerated from a full serial run.
+files, 38 of which no longer exist.** Regenerated from a full serial run
+(`--store-durations`, which needs `PYTEST_FULL_SERIAL=1` to get past the
+conftest guard) and then **pruned against the collected set** — `--store-durations`
+MERGES rather than replaces, so the first pass left all 38 dead files in place
+and grew the file to 7,281 entries. After pruning: **6,828 entries, 554
+collectable files, 0 dead FILES.** The prune is file-level — `--collect-only -q`
+prints `file: count`, not node ids — so ~67 entries for tests removed from
+files that still exist remain. pytest-split ignores unknown keys, so they cost
+nothing; the claim is stated per-file because that is what was measured.
+
+**What this did NOT fix, stated plainly because the first draft of this note
+claimed it did.** The local shard wall-clock spread — one shard 166s, another
+542s — is **not** caused by stale durations. pytest-split balances correctly:
+asked for group 4 it reports `estimated duration: 183.42s` against a 180s ideal
+(1,259s ÷ 7). The spread is CPU contention from running seven docker containers
+on one 14-core laptop; the shards sum to 2,305s of wall-clock against 1,259s of
+recorded work, a 1.8× inflation. In CI each shard is its own runner, where
+accurate durations do translate into balance — that is where the payoff is.
+The suite's genuinely slow tests are network-retry paths: one
+`test_phone_com_sync` case at 47.7s and five OAuth-callback cases near 20s each,
+12 tests accounting for 15% of the recorded total.
 
 ⚠ **A claim in this doc's own §3 was wrong**, and it would have destroyed
 coverage: *"`test_13_onboarding.py` (4 tests, fully subsumed by

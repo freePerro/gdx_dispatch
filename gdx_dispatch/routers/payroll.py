@@ -294,6 +294,10 @@ def _fetch_tech_hours(
     return result
 
 
+# The single log key the 503 body points at. Both failure arms emit it.
+REVENUE_BASIS_LOG_KEY = "payroll_revenue_basis_unavailable"
+
+
 class RevenueBasisUnavailable(RuntimeError):
     """The revenue side of commission could not be computed.
 
@@ -360,10 +364,19 @@ def _fetch_tech_revenue(
         # here — the jobs table has `assigned_to`. An empty dict is
         # indistinguishable from "this tech earned nothing", which is the
         # difference between a number and a guess on a pay surface.
-        log.exception("payroll_revenue_basis_unavailable")
+        log.exception("%s cause=OperationalError", REVENUE_BASIS_LOG_KEY)
         raise RevenueBasisUnavailable(str(exc)) from exc
     except SQLAlchemyError as exc:
-        log.exception("payroll_jobs_query_failed")
+        # ONE key for both arms, because the 503 points the reader at it and a
+        # pointer that is right in tests and wrong in production is worse than
+        # none. The live cause — the missing `j.assigned_tech_id` column —
+        # raises psycopg2 UndefinedColumn on Postgres, which maps to
+        # SQLAlchemy ProgrammingError. ProgrammingError is NOT a subclass of
+        # OperationalError, so prod lands HERE while SQLite (which raises
+        # OperationalError for the same SQL) lands above. Verified on prod
+        # 2026-08-23: 0 hits for the old first-arm key, 2 for this one, from
+        # the two requests that produced them.
+        log.exception("%s cause=%s", REVENUE_BASIS_LOG_KEY, type(exc).__name__)
         raise RevenueBasisUnavailable(str(exc)) from exc
     for row in rows:
         tid = str(row[0]) if row[0] is not None else ""
@@ -501,7 +514,7 @@ def payroll_summary(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                "See the server log (payroll_revenue_basis_unavailable) for the "
+                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
                 "database error."
             ),
         ) from exc
@@ -531,7 +544,7 @@ def payroll_tech_detail(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                "See the server log (payroll_revenue_basis_unavailable) for the "
+                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
                 "database error."
             ),
         ) from exc
@@ -665,7 +678,7 @@ def export_payroll_csv(
             detail=(
                 "Payroll revenue cannot be computed — the commission revenue "
                 "query is broken against this schema. Hours are unaffected. "
-                "See the server log (payroll_revenue_basis_unavailable) for the "
+                f"See the server log ({REVENUE_BASIS_LOG_KEY}) for the "
                 "database error."
             ),
         ) from exc

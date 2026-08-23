@@ -373,6 +373,54 @@ class TestRevenueBasisRefusesRatherThanReportingZero:
         r = client.get("/api/payroll/export")
         assert r.status_code == 503, r.text
 
+    def test_the_503_points_at_a_log_key_that_is_actually_emitted(self, client: TestClient, caplog):
+        """The 503 tells the reader which log line to look for. A pointer that
+        is right in tests and wrong in production is worse than none.
+
+        It was wrong: the live cause — the missing `j.assigned_tech_id` column
+        — raises psycopg2 UndefinedColumn on Postgres, which maps to SQLAlchemy
+        `ProgrammingError`. That is NOT a subclass of `OperationalError`, so
+        production took the second `except` arm and logged a different key,
+        while SQLite (which raises `OperationalError` for the same SQL) took
+        the first. Measured on prod 2026-08-23 before the fix: **0** hits for
+        the key the 503 named, **2** for the one actually written.
+
+        Both arms now emit `REVENUE_BASIS_LOG_KEY`, and this asserts the body
+        and the log agree.
+        """
+        import logging
+
+        from gdx_dispatch.routers.payroll import REVENUE_BASIS_LOG_KEY
+
+        with caplog.at_level(logging.ERROR, logger="gdx_dispatch.routers.payroll"):
+            r = client.get("/api/payroll/summary")
+        assert r.status_code == 503
+        assert REVENUE_BASIS_LOG_KEY in r.json()["detail"], "the 503 must name the key"
+        assert any(REVENUE_BASIS_LOG_KEY in rec.getMessage() for rec in caplog.records), (
+            "the handler must actually emit the key the 503 points at"
+        )
+
+    def test_both_failure_arms_emit_the_same_key(self):
+        """Guards the arm SQLite cannot reach. `ProgrammingError` (Postgres'
+        missing-column path) and `OperationalError` (SQLite's) must not log
+        different names, or the 503 pointer is right on only one engine."""
+        import inspect
+
+        from sqlalchemy.exc import OperationalError, ProgrammingError
+
+        from gdx_dispatch.routers import payroll as _p
+
+        # The hierarchy fact the bug turned on — assert it, do not assume it.
+        assert not issubclass(ProgrammingError, OperationalError)
+
+        src = inspect.getsource(_p._fetch_tech_revenue)
+        # Every log.exception in the helper routes through the constant.
+        emits = [ln for ln in src.splitlines() if "log.exception" in ln]
+        assert emits, "expected the helper to log its failures"
+        assert all("REVENUE_BASIS_LOG_KEY" in ln for ln in emits), (
+            f"an arm logs a different key: {emits}"
+        )
+
     def test_the_helper_raises_a_named_error(self, client: TestClient):
         """Not a bare Exception — callers have to be able to tell this apart
         from a genuine empty period."""

@@ -13,7 +13,7 @@ The pre-commit hook automatically runs the PG integration gate (`gdx_dispatch/to
 | `gdx_dispatch/migrations/versions/*.py` | Control-plane migration DDL — must be valid PostgreSQL |
 | `gdx_dispatch/models/platform*.py` | Control-plane ORM — migrations must match these |
 | `gdx_dispatch/models/tenant_models.py` | Tenant-plane ORM — source of truth for `TenantBase.create_all()` |
-| `gdx_dispatch/tests/factories/*.py` | Factories exercise the schema under test |
+| ~~`gdx_dispatch/tests/factories/*.py`~~ | **Removed 2026-08-23** — the directory held only `__pycache__` |
 
 ## What Happens When Triggered
 
@@ -31,7 +31,8 @@ Total time: ~25 seconds when triggered.
 
 - Changes to routers, frontend, docs, config — no PG gate
 - Changes to non-platform models (e.g., `gdx_dispatch/models/user.py`) — no PG gate
-- Only platform models, alembic versions, and test factories trigger it
+- Only platform models and alembic versions trigger it (the test-factories
+  path was removed 2026-08-23 — the directory was empty)
 
 ## Bypass
 

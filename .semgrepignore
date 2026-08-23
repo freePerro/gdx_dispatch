@@ -2,9 +2,15 @@
 #
 # Presence of this file overrides semgrep's bundled default. We re-list the
 # standard exclusions we DO want, and intentionally omit the default's `_*`
-# pattern so that `gdx/tests/_adversarial/`, `gdx/tests/_reproductions/`, and
-# similar directories are scanned. Those test files are real test code and
-# silent-error scanners need to see them.
+# pattern so underscore-prefixed directories are still scanned.
+#
+# 2026-08-23: the two directories this originally named —
+# `tests/_adversarial/` and `tests/_reproductions/` — were deleted (no runner
+# existed for the first; the second's files were named `bug_test_*.py`, which
+# pytest cannot collect, with their assertions commented out). The `_*`
+# omission is KEPT anyway: it is the right default for a repo that puts real
+# code behind underscore-prefixed paths, and re-adding it would silently drop
+# any future one from the scan.
 
 # Source control
 .git/
