@@ -456,7 +456,7 @@
             severity="success"
             data-testid="verify-invoice-btn"
             :loading="verifying"
-            @click="verifyInvoice"
+            @click="verifyInvoice()"
           />
           <Tag
             v-else
@@ -893,6 +893,65 @@
         </template>
       </Dialog>
 
+      <!-- The server's unbilled-parts refusal, rendered as a question rather
+           than an error. The office is allowed to proceed — warranty,
+           goodwill and flat-priced work all bill nothing — but they have to
+           see the list first, and the answer is recorded. -->
+      <Dialog
+        v-model:visible="showVerifyUnbilledDialog"
+        header="Some recorded parts are not on this invoice"
+        modal
+        :style="{ width: '34rem', maxWidth: '95vw' }"
+        data-testid="verify-unbilled-dialog"
+      >
+        <div class="verify-unbilled-body">
+          <p>
+            {{ verifyUnbilledParts.length }}
+            part{{ verifyUnbilledParts.length === 1 ? '' : 's' }} recorded on
+            this job {{ verifyUnbilledParts.length === 1 ? 'is' : 'are' }} not
+            billed by any invoice:
+          </p>
+          <ul class="verify-unbilled-list" data-testid="verify-unbilled-list">
+            <li v-for="p in verifyUnbilledParts" :key="p.id">
+              {{ p.part_name }}
+              <span v-if="p.quantity > 1">&times;{{ p.quantity }}</span>
+              <span v-if="p.unit_price != null" class="verify-unbilled-price">
+                — {{ currency(p.unit_price) }} each
+              </span>
+            </li>
+          </ul>
+          <p class="verify-unbilled-note">
+            Add them to this invoice, or verify anyway if they are warranty,
+            goodwill, or already covered by a flat price. Verifying anyway is
+            recorded against your name.
+          </p>
+        </div>
+        <template #footer>
+          <!-- Only when the invoice is actually editable. `enterEditMode`
+               does not check, and `canEdit` is draft-only — offering it on a
+               non-draft would flip the page into an editor whose Save and
+               Cancel are themselves v-if'd on canEdit, stranding the operator
+               until they reload. The server now gates drafts only, so this is
+               belt and braces rather than the primary guard. -->
+          <Button
+            v-if="canEdit"
+            label="Add them"
+            icon="pi pi-pencil"
+            severity="secondary"
+            data-testid="verify-unbilled-edit"
+            @click="showVerifyUnbilledDialog = false; enterEditMode()"
+          />
+          <Button
+            label="Verify anyway"
+            icon="pi pi-check-square"
+            severity="warn"
+            data-testid="verify-anyway-btn"
+            :loading="verifying"
+            @click="verifyAnyway"
+          />
+        </template>
+      </Dialog>
+
       <!-- Void Dialog. Typed confirmation, not a one-click confirm: a void
            cannot be undone and no un-void endpoint exists. The body says what
            actually happens, because "are you sure?" is not information. -->
@@ -1168,25 +1227,54 @@ const editHideLinePrices = ref(false);
 const tenantDefaultRatePct = computed(() => taxRate.value * 100);
 
 const verifying = ref(false);
-async function verifyInvoice() {
-  // Deliberately NOT gated behind a confirm dialog. The §11 gate asks "has a
-  // human signed off on these numbers" and never "is anything missing",
-  // which is what let a labor-only draft sail through -- but
-  // useDestructiveConfirm auto-accepts silently (issue #215), so a confirm
-  // here would LOOK like a second gate while stopping nothing. A control
-  // that no-ops is the defect class this whole stack exists to remove. The
-  // banner above the fold is the real surfacing, and it renders before the
-  // Verify button is ever reached. Revisit once #215 is fixed.
+async function verifyInvoice(acknowledgeUnbilledParts = false) {
+  // MUST be invoked as `verifyInvoice()` from the template. `@click="verifyInvoice"`
+  // hands Vue's MouseEvent in as the first argument, which is truthy, and the
+  // office would silently acknowledge a warning it was never shown — the gate
+  // defeating itself on every click. The unit test could not see it: the
+  // Button stub emits `click` with no payload while the real PrimeVue button
+  // emits the native event. Only a browser caught this.
+  // The §11 gate asks "has a human signed off on these numbers" and never
+  // "is anything missing", which is what let a labor-only draft sail through.
+  // The banner above the fold was the only surfacing, and being client-side
+  // it could not help the accounting role (no inventory.read, so its fetch
+  // 403s), the mobile lane, or any API caller. The SERVER now refuses and
+  // says what is missing; this screen turns that 409 into a choice instead of
+  // an error, because plenty of parts legitimately go unbilled.
   verifying.value = true;
   try {
-    const r = await api.post(`/api/invoices/${route.params.id}/verify`, {});
+    const r = await api.post(
+      `/api/invoices/${route.params.id}/verify`,
+      acknowledgeUnbilledParts ? { acknowledge_unbilled_parts: true } : {},
+      { suppressErrorToast: true },
+    );
     invoice.value.verified_at = r?.verified_at || new Date().toISOString();
+    verifyUnbilledParts.value = [];
     toast.add({ severity: "success", summary: "Invoice verified", detail: "The tech can now send it from the field.", life: 3000 });
   } catch (e) {
+    // `useApi` attaches the parsed JSON body as `err.body` (not `err.data` —
+    // an earlier draft guessed `data`, the unit test was written to match the
+    // guess, and the two agreed with each other all the way to a real browser
+    // where the dialog never appeared).
+    const parts = e?.body?.detail?.unbilled_parts;
+    if (e?.status === 409 && Array.isArray(parts)) {
+      // Not an error — a question. Show what is missing and let the office
+      // answer it. Falling through to a red toast here would leave them with
+      // a refusal and no way past it, which is the dead end this gate would
+      // otherwise create for the very role it exists to protect.
+      verifyUnbilledParts.value = parts;
+      showVerifyUnbilledDialog.value = true;
+      return;
+    }
     toast.add({ severity: "error", summary: "Verify failed", detail: e?.message || "Try again.", life: 4000 });
   } finally {
     verifying.value = false;
   }
+}
+
+async function verifyAnyway() {
+  showVerifyUnbilledDialog.value = false;
+  await verifyInvoice(true);
 }
 
 // Paper invoices — printed and posted, no email involved. mark-sent with
@@ -1209,10 +1297,28 @@ async function ensureVerifiedForDelivery() {
   });
   if (!ok) return false;
   try {
-    await api.post(`/api/invoices/${invoice.value.id}/verify`, {});
+    await api.post(
+      `/api/invoices/${invoice.value.id}/verify`,
+      {},
+      { suppressErrorToast: true },
+    );
     await fetchInvoice();
     return true;
   } catch (e) {
+    // The SECOND verify caller on this screen — found by sweeping for callers
+    // rather than assuming the button was the only one. The server's
+    // unbilled-parts refusal has to become the same question here, or Send /
+    // Mark-as-Mailed would report a bare "Verify failed" and the office would
+    // have no idea what was missing or how to proceed.
+    const parts = e?.body?.detail?.unbilled_parts;
+    if (e?.status === 409 && Array.isArray(parts)) {
+      verifyUnbilledParts.value = parts;
+      showVerifyUnbilledDialog.value = true;
+      // Delivery does NOT continue: the office answers the question first,
+      // then presses Send again. Silently sending past a warning they were
+      // shown mid-flow would be worse than the bounce.
+      return false;
+    }
     toast.add({ severity: "error", summary: "Verify failed", detail: e?.message || "Try again.", life: 4000 });
     return false;
   }
@@ -1258,6 +1364,9 @@ const invoice = ref({
 // invoices.write; this just stops offering a button that would 403.
 const { hasPermission } = usePermission();
 const canWriteInvoices = computed(() => hasPermission("invoices.write"));
+// The server's unbilled-parts refusal, turned into a choice (follow-up 2).
+const showVerifyUnbilledDialog = ref(false);
+const verifyUnbilledParts = ref([]);
 const showVoidDialog = ref(false);
 const voidConfirmText = ref("");
 const voiding = ref(false);
@@ -2667,6 +2776,18 @@ onMounted(() => {
   padding: 0.05rem 0.3rem;
 }
 .void-type-input { width: 100%; }
+.verify-unbilled-body { display: flex; flex-direction: column; gap: 0.75rem; }
+.verify-unbilled-body p { margin: 0; }
+.verify-unbilled-list {
+  margin: 0;
+  padding: 0.6rem 0.9rem 0.6rem 2rem;
+  border-left: 3px solid var(--p-orange-500, #f97316);
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  color: var(--p-text-color, inherit);
+}
+.verify-unbilled-price { color: var(--p-text-muted-color, #6b7280); }
+.verify-unbilled-note { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; }
 .void-blocked {
   padding: 0.6rem 0.9rem;
   border-left: 3px solid var(--p-orange-500, #f97316);

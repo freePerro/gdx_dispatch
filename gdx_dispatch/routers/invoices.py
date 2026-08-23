@@ -3285,6 +3285,83 @@ def finalize_invoice(
 # unparseable by the canonical generator) and a public pay token on every
 # shell — and had zero frontend callers.
 
+# The banner on InvoiceDetailView asks for exactly this: parts on the job that
+# are ordered/received/used, unbilled, and not already lined on THIS invoice.
+# Kept in lockstep with it deliberately — two definitions of "missing from this
+# invoice" would let the screen and the server disagree about whether the
+# office may proceed, and the office would be right to distrust both.
+_UNBILLED_PART_STATUSES = ("ordered", "received", "used")
+
+
+def _unbilled_parts_for_invoice(db: Session, invoice: Invoice) -> list[dict[str, object]]:
+    """Parts recorded against this invoice's job that nothing is billing.
+
+    Empty for an invoice with no job (a counter sale has no parts checklist),
+    and empty for anything past DRAFT.
+
+    Draft-only mirrors the banner exactly — `fetchUnbilledJobParts` returns
+    early on any non-draft invoice — and that lockstep is the point: two
+    definitions of "missing from this invoice" would let the screen and the
+    server disagree about whether the office may proceed.
+
+    It also matters on this tenant's real data. `require_deliverable` gates
+    drafts only, because prod carries thousands of pre-rail invoices with
+    `verified_at` NULL and status sent/paid. Verifying one of those is a
+    backfill of an approval that already happened in the world, not a review
+    of work still to be billed — refusing it would fire a warning on invoices
+    no banner has ever shown, for parts the office decided about months ago.
+
+    `wont_bill` is excluded by the status filter — it is the office's dismiss
+    verb for warranty / goodwill / already-flat-priced parts, and re-raising a
+    part they explicitly declined is how a warning becomes wallpaper.
+
+    A part already on THIS invoice is excluded via `InvoiceLine.part_id`:
+    "unbilled" is job-wide, but this gate claims something narrower — not on
+    this invoice. Reporting a part that IS already charged here would push the
+    office to add a second line for it, and the new claim would silence the
+    warning. A false alarm laundering itself into a double charge.
+    """
+    if invoice.job_id is None:
+        return []
+    if (invoice.status or "draft").lower() != "draft":
+        return []
+    lined = {
+        str(pid)
+        for (pid,) in db.execute(
+            select(InvoiceLine.part_id).where(
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.deleted_at.is_(None),
+                InvoiceLine.part_id.is_not(None),
+            )
+        ).all()
+    }
+    rows = db.execute(
+        select(JobPartNeeded).where(
+            JobPartNeeded.job_id == str(invoice.job_id),
+            JobPartNeeded.billed_invoice_id.is_(None),
+            JobPartNeeded.status.in_(_UNBILLED_PART_STATUSES),
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(row.id),
+            "part_name": row.part_name,
+            "quantity": int(row.quantity or 1),
+            "unit_price": _to_float(row.unit_price) if row.unit_price is not None else None,
+        }
+        for row in rows
+        if str(row.id) not in lined
+    ]
+
+
+class VerifyInvoiceIn(BaseModel):
+    """Optional body for verify. Absent body == not acknowledged, which is the
+    safe default: an API caller who does not know about the gate gets the 409
+    rather than silently sailing past it."""
+
+    acknowledge_unbilled_parts: bool = False
+
+
 @router.post(
     "/{invoice_id}/verify",
     response_model=None,
@@ -3295,6 +3372,7 @@ def finalize_invoice(
 )
 def verify_invoice(
     invoice_id: str,
+    payload: VerifyInvoiceIn | None = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
@@ -3331,6 +3409,36 @@ def verify_invoice(
             "verified_by_user_id": invoice.verified_by_user_id,
             "already_verified": True,
         }
+    # Follow-up 2 of closeout-parts-autopricing: the durable unbilled-parts
+    # gate belongs on the SERVER. The banner on InvoiceDetailView is
+    # client-side, so it cannot help the accounting role (holds invoices.write,
+    # does NOT hold inventory.read, so the banner's own fetch 403s and the
+    # empty banner reads as an all-clear on a money screen) or any API caller.
+    # The plan also named the mobile lane; that was rhetoric — no mobile
+    # surface calls /verify, it only reads verified_at and 409s on send.
+    # Verify is still the right place: it is the one approval an invoice must
+    # pass before a customer can see it, and it already row-locks.
+    #
+    # Refuses rather than warns, and lists what is missing. An acknowledgement
+    # is required to proceed because plenty of parts legitimately go unbilled
+    # (warranty, goodwill, already covered by a flat price) — the office
+    # decides, the server just makes sure they were asked.
+    unbilled = _unbilled_parts_for_invoice(db, invoice)
+    if unbilled and not (payload and payload.acknowledge_unbilled_parts):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(unbilled)} recorded part"
+                    f"{'' if len(unbilled) == 1 else 's'} from this job "
+                    f"{'is' if len(unbilled) == 1 else 'are'} not on this "
+                    "invoice. Add them, or re-send with "
+                    "acknowledge_unbilled_parts to verify anyway."
+                ),
+                "unbilled_parts": unbilled,
+                "acknowledge_field": "acknowledge_unbilled_parts",
+            },
+        )
     invoice.verified_at = datetime.now(UTC)
     invoice.verified_by_user_id = _actor_id(_)
     log_audit_event_sync(
@@ -3340,6 +3448,14 @@ def verify_invoice(
             "invoice_number": invoice.invoice_number,
             "total": float(invoice.total or 0),
             "status": invoice.status,
+            # Verifying PAST a warning is a different act from verifying with
+            # nothing outstanding, and the record has to be able to tell them
+            # apart — "who approved this and what did they know" is the whole
+            # point of the stamp. Only present when there was something to
+            # acknowledge.
+            "acknowledged_unbilled_parts": (
+                [p["part_name"] for p in unbilled] if unbilled else None
+            ),
         },
     )
     db.commit()

@@ -624,11 +624,31 @@ describe('InvoiceDetailView — unbilled parts banner', () => {
     expect(block).toMatch(/enterEditMode/);
   });
 
-  it('verify is NOT gated behind a confirm — useDestructiveConfirm auto-accepts (#215)', () => {
-    const i = SRC.indexOf('async function verifyInvoice');
-    const span = SRC.slice(i, i + 900);
-    expect(span).not.toMatch(/confirmAsync/);
-    expect(span).toMatch(/#215/);
+  it('verify posts straight through — no confirm dialog stands between', async () => {
+    // Was a source-text test asserting the handler's comment mentioned #215.
+    // It asserted authorship, not behaviour, and its premise expired: #215 is
+    // FIXED — useDestructiveConfirm now resolves useConfirm() during setup()
+    // and AppLayout mounts <ConfirmDialog/>, so confirms really do confirm.
+    // What still matters is that Verify is not behind one, because the real
+    // second gate is the SERVER's unbilled-parts refusal. Asserted by
+    // clicking it.
+    const auth = useAuthStore();
+    auth.user = { id: 'u1', email: 'office@example.com', role: 'accounting' };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(['invoices.write']);
+    auth.permissionsLoaded = true;
+    mockApi(buildInvoicePayload({ verified_at: null }));
+    const wrapper = mountView();
+    await flushPromises();
+    await nextTick();
+
+    apiPost.mockResolvedValueOnce({ verified_at: '2026-08-23T12:00:00Z' });
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith(
+      '/api/invoices/inv-1/verify', {}, expect.anything(),
+    );
   });
 
   it('banner styling uses theme tokens, not hardcoded light colours', () => {
@@ -778,5 +798,171 @@ describe('InvoiceDetailView — Void', () => {
     expect(apiPost).toHaveBeenCalledWith('/api/invoices/inv-1/void', {}, expect.anything());
     expect(apiGet, 'a successful void must re-read the invoice, not trust the response shape')
       .toHaveBeenCalledWith('/api/invoices/inv-1');
+  });
+});
+
+// ── Verify: the server's unbilled-parts gate (follow-up 2, 2026-08-23) ──────
+// The banner was client-side, so it could not help the accounting role (holds
+// invoices.write, NOT inventory.read — its fetch 403s), the mobile lane, or
+// any API caller. The server now refuses; this screen must turn that refusal
+// into a CHOICE, not a red toast the office cannot get past.
+describe('InvoiceDetailView — verify unbilled-parts gate', () => {
+  async function mounted() {
+    const auth = useAuthStore();
+    auth.user = { id: 'u1', email: 'office@example.com', role: 'accounting' };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(['invoices.write']);
+    auth.permissionsLoaded = true;
+    mockApi(buildInvoicePayload({ verified_at: null }));
+    const wrapper = mountView();
+    await flushPromises();
+    await nextTick();
+    return wrapper;
+  }
+
+  function refusal() {
+    // Shaped the way `useApi` actually throws: the parsed JSON body lands on
+    // `err.body`. Writing this as `err.data` (what an earlier draft guessed)
+    // made this test agree with the bug — the dialog never opened in a real
+    // browser. Mirror the transport, do not invent it.
+    return Object.assign(new Error('conflict'), {
+      status: 409,
+      body: {
+        detail: {
+          message: '1 recorded part from this job is not on this invoice.',
+          unbilled_parts: [
+            { id: 'p1', part_name: 'Torsion spring', quantity: 2, unit_price: 149 },
+          ],
+          acknowledge_field: 'acknowledge_unbilled_parts',
+        },
+      },
+    });
+  }
+
+  it('shows what is missing instead of a dead-end error', async () => {
+    const wrapper = await mounted();
+    apiPost.mockRejectedValueOnce(refusal());
+
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="verify-unbilled-dialog"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="verify-unbilled-list"]').text()).toContain('Torsion spring');
+    // A refusal is not a failure to report as one.
+    expect(toastAdd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'error' }),
+    );
+  });
+
+  it('verifies anyway with the acknowledgement the server asked for', async () => {
+    const wrapper = await mounted();
+    apiPost.mockRejectedValueOnce(refusal());
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    apiPost.mockResolvedValueOnce({ verified_at: '2026-08-23T12:00:00Z' });
+    await wrapper.find('[data-testid="verify-anyway-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenLastCalledWith(
+      '/api/invoices/inv-1/verify',
+      { acknowledge_unbilled_parts: true },
+      expect.anything(),
+    );
+  });
+
+  it('does not acknowledge on the FIRST attempt', async () => {
+    // The whole gate is defeated if the client always sends the override.
+    const wrapper = await mounted();
+    apiPost.mockResolvedValueOnce({ verified_at: '2026-08-23T12:00:00Z' });
+
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith(
+      '/api/invoices/inv-1/verify', {}, expect.anything(),
+    );
+  });
+
+  it('does not acknowledge when the button hands it a click EVENT', async () => {
+    // The bug a real browser caught and this file's stub hid. `@click="fn"`
+    // passes Vue's MouseEvent as the first argument; the handler's first
+    // parameter is `acknowledgeUnbilledParts`, and a MouseEvent is truthy —
+    // so every click silently acknowledged a warning nobody was shown.
+    //
+    // The shared Button stub emits `click` with NO payload, so the standard
+    // trigger('click') above cannot see it. This one emits an event the way
+    // the real PrimeVue button does.
+    const auth = useAuthStore();
+    auth.user = { id: 'u1', email: 'office@example.com', role: 'accounting' };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(['invoices.write']);
+    auth.permissionsLoaded = true;
+    mockApi(buildInvoicePayload({ verified_at: null }));
+
+    const EVENT_EMITTING_BUTTON = {
+      props: ['label', 'icon', 'severity', 'outlined', 'disabled', 'loading', 'text', 'rounded', 'size', 'type'],
+      emits: ['click'],
+      template:
+        '<button :data-testid="$attrs[\'data-testid\']" @click="$emit(\'click\', $event)">{{ label }}</button>',
+      inheritAttrs: false,
+    };
+    const wrapper = mount(InvoiceDetailView, {
+      global: { stubs: { ...baseStubs, Button: EVENT_EMITTING_BUTTON } },
+    });
+    await flushPromises();
+    await nextTick();
+
+    apiPost.mockResolvedValueOnce({ verified_at: '2026-08-23T12:00:00Z' });
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith(
+      '/api/invoices/inv-1/verify', {}, expect.anything(),
+    );
+  });
+
+  it('Send also surfaces the gate instead of a bare "Verify failed"', async () => {
+    // The SECOND verify caller on this screen. `ensureVerifiedForDelivery`
+    // verifies inline when the office presses Send or Mark as Mailed on an
+    // unverified draft — found by sweeping for callers rather than assuming
+    // the Verify button was the only one. Without this it would report a bare
+    // "Verify failed" with no list and no way forward.
+    const wrapper = await mounted();
+    // `ensureVerifiedForDelivery` asks "verify and continue?" first. The
+    // shared confirm mock records the call and never answers it, so accept it
+    // here or the flow parks on an unresolved promise and this test would
+    // "fail" for a reason that has nothing to do with the gate.
+    confirmRequire.mockImplementation((opts) => opts.accept && opts.accept());
+    apiPost.mockRejectedValueOnce(refusal());
+
+    await wrapper.find('[data-testid="mark-mailed-btn"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="verify-unbilled-dialog"]').exists()).toBe(true);
+    expect(toastAdd).not.toHaveBeenCalledWith(
+      expect.objectContaining({ summary: 'Verify failed' }),
+    );
+    // Delivery must NOT proceed while the question stands.
+    expect(apiPost).not.toHaveBeenCalledWith(
+      expect.stringContaining('mark-sent'), expect.anything(), expect.anything(),
+    );
+  });
+
+  it('still reports a real failure as an error', async () => {
+    const wrapper = await mounted();
+    apiPost.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+
+    await wrapper.find('[data-testid="verify-invoice-btn"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="verify-unbilled-dialog"]').exists()).toBe(false);
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'error' }),
+    );
   });
 });
