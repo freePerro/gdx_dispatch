@@ -1,7 +1,8 @@
 # Money Audit — 2026-08-04
 
-**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, which is
-still accurate as re-verified 2026-08-21. Fixed: the `core/invoice_invariants.py`
+**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list.
+Re-verified 2026-08-21; the §3 reporting cluster was then closed on 2026-08-22
+(PRs #399, #400, #402, #403). Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
 M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8**, **M35**, **M19** and **M20** (and half of **M18**).
 **Not fixed:** M18's other half (a tax component on `invoice_adjustments` —

@@ -1,6 +1,7 @@
 # Backend ↔ Vue Contract Gaps — Full Sweep, 2026-07-24
 
-**Status:** **MOSTLY FIXED** — re-verified against main 2026-08-21. Tiers 1-9
+**Status:** **FIXED** — every tier closed or explicitly won't-fix, as of
+2026-08-22 (PRs #399-#403). Re-verified against main 2026-08-21, then finished. Tiers 1-9
 and 11 are substantially closed: the `api.delete` alias (`useApi.js:183/313`),
 the onboarding import, `PUT /commissions/rules/{id}`, `POST /settings/branding/logo`,
 the A/R UI doors (credit-memo, apply-credit, warranties, job dependencies,
@@ -10,12 +11,23 @@ authorization hole, the dead `AdminSettingsView`, and the mobile invoice email.
 **Tier 10's non-QuickBooks half is RESOLVED** (2026-08-22): the
 appointment-reminder task was three stubs wired to celery beat, firing hourly on
 prod and logging `scheduled_count: 0` forever. Removed — module, beat entry and
-all — because the blocker is transport, not the finder: every SMS path goes
-through `core/sms.py` (Twilio) and prod has **no SMS credentials set at all**,
-so wiring it would have sent zero messages while logging success.
+all — because the blocker is transport, not the finder. The stub's own
+`_send_sms` was a no-op, and the shared `core/sms.py` is Twilio, whose
+credentials are unset on prod. **Correction to an earlier draft of this line:**
+that draft said "no outbound SMS transport exists", which is false — Phone.com
+can send (`modules/phone_com/client.py::send_message`, called from that module's
+router). The stub simply never touched the working sender, so implementing the
+finder alone would still have sent zero messages while logging success.
+Reviving it needs a product go/no-go on automated customer SMS **and** wiring to
+Phone.com.
 **Tier 3's latent item is RESOLVED too**: `amount_paid` is now on
-`_serialize_invoice` — sourced from the payments table, not the dead column
-(see money-audit M35).
+`_serialize_invoice` — sourced from the payments table, not the dead column,
+which is itself now **dropped** (migration 073). See money-audit M35. Worth
+recording why this doc read the situation backwards: it framed the gap as "the
+field is missing from the serializer", and the first instinct was to add the
+column. Adding it would have surfaced a cache nothing wrote. The field was
+genuinely missing — MobileBillingView gates its "Paid" row on it, so that row
+had never rendered — but the fix was to derive the value, not expose the column.
 **⛔ Tier 10's QuickBooks half is WON'T FIX** as of the 2026-08-21 phase-out:
 the missing `ItemRef` and the unrendered per-record push state were only ever
 about *writing to* QuickBooks, and we no longer do. Prod:
