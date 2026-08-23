@@ -19,7 +19,16 @@
     <Tabs v-model:value="activeTab" class="bank-feeds-tabview">
       <TabList>
         <Tab value="banks" data-testid="bank-feeds-tab-banks">Banks</Tab>
-        <Tab value="accounts" data-testid="bank-feeds-tab-accounts">Accounts</Tab>
+        <Tab value="accounts" data-testid="bank-feeds-tab-accounts">
+          Accounts
+          <Badge
+            v-if="unlinkedAccounts.length"
+            :value="unlinkedAccounts.length"
+            severity="info"
+            class="tab-badge"
+            data-testid="bank-feeds-unlinked-badge"
+          />
+        </Tab>
         <Tab value="transactions" data-testid="bank-feeds-tab-transactions">Transactions</Tab>
         <Tab value="statements" data-testid="bank-feeds-tab-statements">Statements</Tab>
         <Tab value="reconcile" data-testid="bank-feeds-tab-reconcile">Reconcile</Tab>
@@ -136,6 +145,39 @@
 
         <!-- ── Accounts ──────────────────────────────────────────── -->
         <TabPanel value="accounts">
+          <!-- An unlinked account is silent otherwise: its rows read "not
+               linked" on the Transactions tab, but nothing brings anyone
+               here to fix it. -->
+          <!-- A plain panel, not PrimeVue's Message: Message sizes its content
+               row for a single line and clipped this list mid-word in a real
+               browser while jsdom happily reported every item at full height. -->
+          <div
+            v-if="unlinkedAccounts.length"
+            class="unlinked-banner"
+            data-testid="bank-feeds-unlinked-banner"
+          >
+            <div class="unlinked-body">
+              <p class="unlinked-lede">
+                {{ unlinkedAccounts.length }}
+                {{ unlinkedAccounts.length === 1 ? 'account is' : 'accounts are' }}
+                syncing transactions but
+                {{ unlinkedAccounts.length === 1 ? 'is' : 'are' }}
+                not linked to a statement account, so
+                {{ unlinkedAccounts.length === 1 ? 'its' : 'their' }}
+                transactions can't be checked against the bank's own statement.
+                Set one in the <strong>Statement account</strong> column below.
+              </p>
+              <ul class="unlinked-list">
+                <li v-for="a in unlinkedAccounts" :key="a.id">
+                  <span class="unlinked-name">{{ a.name || 'Account' }}</span>
+                  <span class="muted">
+                    — {{ a.transaction_count }}
+                    {{ a.transaction_count === 1 ? 'transaction' : 'transactions' }} unchecked
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
           <DataTable :value="accounts" striped-rows responsiveLayout="scroll" data-testid="bank-feeds-accounts-table">
             <template #empty>
               <EmptyState
@@ -924,6 +966,7 @@ import { useAuthStore } from '../stores/auth';
 import { useApiWithToast } from '../composables/useApiWithToast';
 import { formatDateTime } from '../composables/useFormatters';
 import EmptyState from '../components/EmptyState.vue';
+import Badge from 'primevue/badge';
 import Button from 'primevue/button';
 import Checkbox from 'primevue/checkbox';
 import Column from 'primevue/column';
@@ -1139,6 +1182,14 @@ const toggleAccount = async (account, value) => {
 // and the only last-4 on this tenant's SimpleFIN rows lives inside a
 // renameable display name.
 
+// Rows worth prompting about. The server decides what counts as actionable
+// (unlinked AND syncing AND actually carrying transactions) so the banner, the
+// badge and the API can never disagree about it — a disabled feed with nothing
+// in it is not a to-do.
+const unlinkedAccounts = computed(() =>
+  accounts.value.filter((a) => a.needs_statement_link),
+);
+
 const statementAccountOptions = computed(() =>
   statementAccounts.value.map((a) => ({
     label: `${a.name} ····${a.last4}`,
@@ -1156,7 +1207,10 @@ const linkStatementAccount = async (account, value) => {
     );
     account.bank_account_label = res.bank_account_label || null;
     // The status column is derived from this link, so the rows on screen are
-    // stale the moment it changes.
+    // stale the moment it changes. Reload the accounts too: taking one
+    // suggestion can invalidate another (a statement account is claimed by at
+    // most one feed account), and a stale hint would offer a link that 409s.
+    loadStatus();
     loadTransactions();
   } catch {
     account.bank_account_id = previous;
@@ -1712,6 +1766,39 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Content tokens, not the primary palette: `--p-primary-50` stays pale in
+   both themes while `--p-text-color` flips to near-white, which rendered this
+   panel as white-on-pale-green in dark mode. These four follow the theme. */
+.unlinked-banner {
+  margin-bottom: 0.85rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--p-content-border-radius, 6px);
+  border: 1px solid var(--p-content-border-color);
+  border-left: 4px solid var(--p-primary-color);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+}
+.unlinked-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.unlinked-lede {
+  margin: 0;
+}
+.unlinked-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.unlinked-name {
+  font-weight: 600;
+}
+.tab-badge {
+  margin-left: 0.4rem;
+}
 /* The picker sits inside a data-table cell; without a cap it stretches the
    column past the rest of the table on a narrow desktop. */
 .stmt-link-select {

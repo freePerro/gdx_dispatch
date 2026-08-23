@@ -4,9 +4,25 @@ Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Track 1 shipped as
 #321: migration 065 `vendor_bill_payments`, `modules/vendor_invoices/payments.py`
 with `effective_expense_date` + `sync_expense_dates`, and the confirm-effects
 in `statement_matching.py`.
-**Not built:** Track 2 item 4 — match status on the feed, no
-"statement-verified"/"feed-only" anywhere. Still worth building; it does not
-depend on QuickBooks.
+**Track 2 item 4 — BUILT, RELEASED v1.76.0** (#407, deployed to prod
+2026-08-23 and walked). The Feed Transactions tab carries a Statement column:
+`matched` / `statement_verified` / `ambiguous` / `unmatched` / `feed_only` /
+`no_amount` / `unlinked` / `pending`.
+Two things the plan did not anticipate, both recorded because they change what
+"pair the way the tie-out does" means:
+1. **There was no account pairing to reuse.** `bank_accounts` is keyed on
+   institution + last4 and `bank_feed_accounts` on connection + external id,
+   with no link between them, and on this tenant every SimpleFIN row carries an
+   EMPTY `account_number_masked`. Migration 074 adds a nullable
+   `bank_feed_accounts.bank_account_id`, set by an operator from a picker —
+   inferring it from a renameable display name was rejected.
+2. **"Amount + date ±1" as an existence test is wrong.** Answered per
+   transaction it let two identical charges against ONE statement line both
+   report `statement_verified` — a duplicate bank charge showing as two green
+   tags. Pairing is an assignment over a bipartite graph; contested claimants
+   report `ambiguous` rather than a coin-flip winner.
+Live prod after linking: 149 `statement_verified`, 62 `feed_only`, 0
+`unmatched`, 0 `ambiguous` across 211 posted transactions.
 **⛔ Won't build (QB phase-out 2026-08-21):** Track 2 item 5, QB mirror rows as
 transition-mode match candidates. The mirror stopped growing in May 2026 and
 the connection is dead, so matching against it has a shrinking floor. Track 4
