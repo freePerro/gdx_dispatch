@@ -1,7 +1,8 @@
 # Backend ↔ Vue Contract Gaps — Full Sweep, 2026-07-24
 
-**Status:** **FIXED** — every tier closed or explicitly won't-fix, as of
-2026-08-22 (PRs #399-#403). Re-verified against main 2026-08-21, then finished. Tiers 1-9
+**Status:** **FIXED — RELEASED v1.75.0**, deployed to prod and demo 2026-08-23
+and prod-walked. Every tier closed or explicitly won't-fix (PRs #399-#404).
+Re-verified against main 2026-08-21, then finished 2026-08-22. Tiers 1-9
 and 11 are substantially closed: the `api.delete` alias (`useApi.js:183/313`),
 the onboarding import, `PUT /commissions/rules/{id}`, `POST /settings/branding/logo`,
 the A/R UI doors (credit-memo, apply-credit, warranties, job dependencies,

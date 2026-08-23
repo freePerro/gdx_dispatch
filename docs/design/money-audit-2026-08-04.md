@@ -2,7 +2,21 @@
 
 **Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list.
 Re-verified 2026-08-21; the §3 reporting cluster was then closed on 2026-08-22
-(PRs #399, #400, #402, #403). Fixed: the `core/invoice_invariants.py`
+(PRs #399, #400, #402, #403) and **RELEASED v1.75.0**, deployed to prod and demo
+2026-08-23 and **walked on prod with real data**.
+
+Prod-walk evidence (2026-08-23, v1.75.0, owner role, light + dark):
+"Revenue by Period" renders labelled bars — Jul 2026 and Aug 2026 on a
+$0-$35,000 axis — where before the release it drew an empty frame on a 0-1 axis
+with no x labels. The KPI card and the chart now return the identical figure
+($33,505.96); they disagreed by construction before. Credits net per period on
+live data (Jul: gross $1,494.28 − credits $620.79 = $873.49; Aug: $32,809.13 −
+$176.66 = $32,632.47). `/reports/outstanding-aging` and `/reports/cash-risk`
+both report 19 invoices / $19,337.91, closing a $16,324.21 gap. The invoices CSV
+header is `total` with real values, not a blank `total_amount` column. Invoice
+50010651 ($15,476.93, paid) now returns `amount_paid = 15476.93` with
+`total − paid − credits == balance_due`; the key did not exist before, which is
+why MobileBillingView's "Paid" row had never rendered — it renders now. Fixed: the `core/invoice_invariants.py`
 enforcement rail, migration `056_money_correctness_rails`, and findings M1, M2,
 M4, M5, M6, M7, M9, M10, M11, M14, M24, M26, M37, **M8**, **M35**, **M19** and **M20** (and half of **M18**).
 **Not fixed:** M18's other half (a tax component on `invoice_adjustments` —
