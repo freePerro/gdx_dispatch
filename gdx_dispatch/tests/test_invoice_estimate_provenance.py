@@ -318,3 +318,170 @@ class TestProvenanceDoesNotMoveMoney:
                 db=tenant_db_session,
             )
         assert exc.value.status_code == 404
+
+
+class TestOnlyAnAcceptedEstimateCanBeBilled:
+    """M23, money audit 2026-08-04.
+
+    `estimate_id` means "copy this estimate's lines and ignore mine", so the
+    estimate it names IS the bill. This path validated existence, soft-delete
+    and job scope — and never status. A job with accepted estimate A and a
+    later declined variant B would bill B.
+
+    The other two conversion paths already refuse (`mobile_invoicing.py:447`
+    and `estimates.py`'s `/deposit-invoice`). Three paths, two gates, and the
+    ungated one was the canonical office route.
+    """
+
+    @staticmethod
+    def _estimate(db, job, status):
+        est = Estimate(
+            id=uuid4(),
+            job_id=job.id,
+            customer_id=job.customer_id,
+            estimate_number=f"EST-M23-{status[:4].upper()}",
+            status=status,
+            company_id="tenant-1",
+            public_token=uuid4().hex,
+        )
+        db.add(est)
+        db.flush()
+        return est
+
+    # The full non-accepted half of the `estimate_status` enum — exhaustive,
+    # so a new status added to the enum without a decision here shows up as a
+    # gap rather than silently billing.
+    @pytest.mark.parametrize("status", ["draft", "sent", "declined", "rejected", "expired"])
+    def test_a_non_accepted_estimate_is_refused(self, tenant_db_session, status):  # noqa: F811
+        from fastapi import HTTPException
+
+        from gdx_dispatch.routers.invoices import create_invoice
+
+        job = _seed_job(tenant_db_session)
+        est = self._estimate(tenant_db_session, job, status)
+
+        with pytest.raises(HTTPException) as exc:
+            create_invoice(
+                payload=InvoiceCreateIn(
+                    job_id=job.id,
+                    customer_id=job.customer_id,
+                    estimate_id=est.id,
+                ),
+                _=_current_user(),
+                db=tenant_db_session,
+            )
+        assert exc.value.status_code == 409
+        # The refusal names the current status, so an operator knows what to do
+        # about it rather than only that they were stopped.
+        assert status in str(exc.value.detail)
+
+    def test_an_accepted_estimate_still_bills(self, tenant_db_session):  # noqa: F811
+        """The counterfactual: the gate must not refuse the honest case."""
+        from gdx_dispatch.routers.invoices import create_invoice
+
+        job = _seed_job(tenant_db_session)
+        est = self._estimate(tenant_db_session, job, "accepted")
+
+        created = create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job.id,
+                customer_id=job.customer_id,
+                estimate_id=est.id,
+            ),
+            _=_current_user(),
+            db=tenant_db_session,
+        )
+        assert created is not None
+
+    def test_provenance_is_deliberately_not_gated(self, tenant_db_session):  # noqa: F811
+        """`source_estimate_id` copies nothing — it records where lines the
+        caller already built came from. A counter sale whose lines originated
+        in a quote that was later revised is legitimate history, not a money
+        error, so the gate does NOT extend here. Asserting the boundary so a
+        future tightening is a decision rather than an accident."""
+        from gdx_dispatch.routers.invoices import create_invoice
+
+        job = _seed_job(tenant_db_session)
+        est = self._estimate(tenant_db_session, job, "declined")
+
+        created = create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job.id,
+                customer_id=job.customer_id,
+                source_estimate_id=est.id,
+                line_items=[{"description": "L", "quantity": 1, "unit_price": 10}],
+            ),
+            _=_current_user(),
+            db=tenant_db_session,
+        )
+        assert created is not None
+
+    def test_the_finding_itself_accepted_A_and_declined_B_on_one_job(self, tenant_db_session):  # noqa: F811
+        """M23 as written: a job carrying accepted estimate A *and* a later
+        declined variant B. Every other case here has a single estimate, which
+        is not the shape the finding describes."""
+        from fastapi import HTTPException
+
+        from gdx_dispatch.routers.invoices import create_invoice
+
+        job = _seed_job(tenant_db_session)
+        accepted_a = self._estimate(tenant_db_session, job, "accepted")
+        declined_b = self._estimate(tenant_db_session, job, "declined")
+
+        with pytest.raises(HTTPException) as exc:
+            create_invoice(
+                payload=InvoiceCreateIn(
+                    job_id=job.id, customer_id=job.customer_id, estimate_id=declined_b.id
+                ),
+                _=_current_user(),
+                db=tenant_db_session,
+            )
+        assert exc.value.status_code == 409
+        # ...and A, on the same job, still bills.
+        assert create_invoice(
+            payload=InvoiceCreateIn(
+                job_id=job.id, customer_id=job.customer_id, estimate_id=accepted_a.id
+            ),
+            _=_current_user(),
+            db=tenant_db_session,
+        ) is not None
+
+    def test_a_refusal_leaves_no_invoice_and_burns_no_number(self, tenant_db_session):  # noqa: F811
+        """The gate sits before any write, and that has to stay true. A refusal
+        that allocated an invoice number would leave a gap in the sequence for
+        an estimate nobody agreed to."""
+        from fastapi import HTTPException
+        from sqlalchemy import func, select
+
+        from gdx_dispatch.routers.invoices import create_invoice
+
+        job = _seed_job(tenant_db_session)
+        est = self._estimate(tenant_db_session, job, "declined")
+        before = tenant_db_session.execute(
+            select(func.count()).select_from(Invoice)
+        ).scalar_one()
+
+        with pytest.raises(HTTPException):
+            create_invoice(
+                payload=InvoiceCreateIn(
+                    job_id=job.id, customer_id=job.customer_id, estimate_id=est.id
+                ),
+                _=_current_user(),
+                db=tenant_db_session,
+            )
+
+        after = tenant_db_session.execute(
+            select(func.count()).select_from(Invoice)
+        ).scalar_one()
+        assert after == before, "a refused request wrote an invoice row"
+
+    def test_the_parametrized_statuses_really_are_every_non_accepted_one(self):
+        """The list above is called exhaustive. Enforce it, so adding a status
+        to the enum without deciding how it bills shows up as a failure rather
+        than silently taking the accepted path."""
+        enum_values = set(Estimate.__table__.c.status.type.enums)
+        covered = {"draft", "sent", "declined", "rejected", "expired"}
+        assert enum_values - {"accepted"} == covered, (
+            "estimate_status changed — decide how the new status bills, then "
+            "extend the parametrize list"
+        )
