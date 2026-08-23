@@ -55,7 +55,21 @@ def _tenant_id(request: FastAPIRequest) -> str:
     return tenant_id
 
 
-def _audit(db: Session, request: FastAPIRequest, user: dict, action: str, entity_id: str = "") -> None:
+def _audit(
+    db: Session,
+    request: FastAPIRequest,
+    user: dict,
+    action: str,
+    entity_id: str = "",
+    details: dict | None = None,
+) -> None:
+    """``details`` answers "what changed", not just "something changed".
+
+    It defaults to ``{}`` so every existing caller is unaffected, but a change
+    whose whole content is *which row it now points at* has to say so — an
+    audit line reading only "statement linked" cannot reconstruct the pairing
+    that produced a statement-verified verdict.
+    """
     log_audit_event_sync(
         db,
         tenant_id=_tenant_id(request),
@@ -63,7 +77,7 @@ def _audit(db: Session, request: FastAPIRequest, user: dict, action: str, entity
         action=action,
         entity_type="bank_feeds",
         entity_id=entity_id,
-        details={},
+        details=details or {},
         request=request,
     )
     db.commit()
@@ -645,10 +659,24 @@ def list_accounts(
     ).scalars().all()
     # One read for the linked statement-account labels, so the Accounts tab can
     # show the pairing without the caller hitting /statements/accounts too.
-    stmt_accounts = {
-        r.id: f"{r.name} ····{r.last4}"
-        for r in db.scalars(select(BankAccount)).all()
-    }
+    statement_rows = db.scalars(select(BankAccount)).all()
+    stmt_accounts = {r.id: f"{r.name} ····{r.last4}" for r in statement_rows}
+    # An unlinked account otherwise sits silent: the status column says
+    # "not linked" per row, but nothing brings anyone to the tab that fixes it.
+    # Count only the ones worth acting on — a disabled feed, or one that has
+    # never carried a transaction, has nothing to reconcile and would make a
+    # permanent badge nobody reads.
+    txn_counts = dict(
+        db.execute(
+            select(BankFeedTransaction.account_id, func.count())
+            .where(BankFeedTransaction.deleted_at.is_(None))
+            .group_by(BankFeedTransaction.account_id)
+        ).all()
+    )
+    actionable = [
+        a for a in rows
+        if a.bank_account_id is None and a.sync_enabled and txn_counts.get(a.id, 0) > 0
+    ]
     items = []
     for a in rows:
         inst = inst_map.get(a.connection_id, ("", ""))
@@ -669,8 +697,15 @@ def list_accounts(
             "last_synced_at": a.last_synced_at.isoformat() if a.last_synced_at else None,
             "bank_account_id": str(a.bank_account_id) if a.bank_account_id else None,
             "bank_account_label": stmt_accounts.get(a.bank_account_id),
+            "needs_statement_link": a in actionable,
+            "transaction_count": txn_counts.get(a.id, 0),
         })
-    return {"accounts": items}
+    return {
+        "accounts": items,
+        # Counted server-side: "is this worth prompting about" is a rule, and
+        # the banner and the badge must never disagree about it.
+        "unlinked_actionable_count": len(actionable),
+    }
 
 
 @router.patch("/accounts/{account_id}", dependencies=[_MODULE])
@@ -768,6 +803,12 @@ def patch_account_statement_link(
         if target is not None
         else "bank_feeds_account_statement_unlinked",
         str(acct.id),
+        details={
+            "feed_account": acct.name,
+            "bank_account_id": str(target.id) if target is not None else None,
+            "bank_account": f"{target.name} ····{target.last4}" if target is not None else None,
+            "previous_bank_account_id": previous,
+        },
     )
     return {
         "id": str(acct.id),
