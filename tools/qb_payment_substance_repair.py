@@ -15,8 +15,9 @@ the payment ROWS from QB's own per-invoice allocation lines:
    Payment allocations get those rows, with the real QB TxnDate. Invoices QB
    settled without a Payment (credit memo, point-of-sale) are REPORTED, not
    faked — a synthesized "payment" would be a lie; they need adjustments.
-3. ``amount_paid`` — set to Σ(unvoided payments) everywhere it disagrees
-   (the importer never wrote it; several read paths still trust it).
+3. ``amount_paid`` — REMOVED 2026-08-22. The column was dropped (migration
+   073) after every reader moved to ``core/invoice_paid.py``
+   (Σ unvoided payments). This tool now repairs payment ROWS only.
 4. ``--void-invoice NUMBER`` (repeatable, explicit) — void a test-junk
    invoice: status → void, its payments voided, its stale QB map deleted.
 
@@ -353,24 +354,14 @@ def apply_plan(db, plan: SubstancePlan, operator: str, void_numbers: list[str]) 
         )
         voided.append(number)
 
-    # -- amount_paid cache, everywhere it disagrees -------------------------
-    res = db.execute(text(
-        "UPDATE invoices i SET amount_paid = agg.paid "
-        "FROM (SELECT invoice_id, SUM(amount) AS paid FROM payments "
-        "      WHERE voided_at IS NULL GROUP BY invoice_id) agg "
-        "WHERE agg.invoice_id = i.id "
-        "  AND COALESCE(i.amount_paid, 0) <> agg.paid"
-    ))
-    amount_paid_fixed = res.rowcount
-    log_audit_event_sync(
-        db, tenant_id=tenant, user_id=actor,
-        action="qb_substance_repair_amount_paid_backfill",
-        entity_type="invoice", entity_id="bulk",
-        details={"rows_updated": amount_paid_fixed},
-    )
-
+    # The amount_paid backfill step lived here and ran once, on prod,
+    # 2026-07-31 10:23:58 UTC (287 rows). It is GONE because the column is
+    # gone (migration 073): every reader now derives paid-to-date from the
+    # payments table via core/invoice_paid.py, which is what this step was
+    # approximating. Re-running this tool repairs payment ROWS only — which
+    # was always the substantive half.
     db.commit()
-    return {"voided": voided, "amount_paid_fixed": amount_paid_fixed}
+    return {"voided": voided}
 
 
 # ---------------------------------------------------------------------------
@@ -391,15 +382,6 @@ def _print_plan(db, plan: SubstancePlan) -> None:
     for i in plan.inserts:
         print(f"  {i.invoice_number:<16} +${i.amount}  {i.payment_date}  "
               f"[{i.origin}, QB payment {i.qb_payment_id}]")
-    n = db.execute(text(
-        "SELECT count(*) FROM invoices i "
-        "JOIN (SELECT invoice_id, SUM(amount) AS paid FROM payments "
-        "      WHERE voided_at IS NULL GROUP BY invoice_id) agg "
-        "  ON agg.invoice_id = i.id "
-        "WHERE COALESCE(i.amount_paid, 0) <> agg.paid"
-    )).scalar()
-    print(f"\n== amount_paid cache: {n} invoice(s) currently disagree "
-          "(recomputed AFTER the writes above on apply) ==")
     if plan.issues:
         print(f"\n  ⚠ {len(plan.issues)} item(s) not repairable from QB data:")
         for issue in plan.issues:
@@ -438,8 +420,7 @@ def main() -> int:
 
         result = apply_plan(db, plan, operator=args.operator.strip(),
                             void_numbers=args.void_invoice)
-        print(f"\nApplied: {len(plan.resets)} reset(s), {len(plan.inserts)} new row(s), "
-              f"amount_paid fixed on {result['amount_paid_fixed']} invoice(s)"
+        print(f"\nApplied: {len(plan.resets)} reset(s), {len(plan.inserts)} new row(s)"
               + (f", voided {result['voided']}" if result["voided"] else "")
               + ". Audit rows written (qb_substance_repair_*).")
         return 0

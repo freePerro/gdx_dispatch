@@ -4,7 +4,9 @@
 deliberately ignores the column; the only writer in the repo is the one-off
 `tools/qb_payment_substance_repair.py`, which ran on prod once (2026-07-31
 10:23:58 UTC, 287 rows). Every payment recorded since left the column behind —
-measured 2026-08-22: 24 invoices, $62,473.72 of drift, all understating.
+measured 2026-08-22: 24 invoices, $62,473.72 of drift, all understating. The
+column is now dropped (migration 073); these tests keep the readers honest and
+stop it being reintroduced.
 
 Blast radius, verified rather than assumed: job profitability understated
 ``total_paid``; ``is_untouched_autodraft``'s payment arm could never fire. The
@@ -37,7 +39,7 @@ def _customer(db):
     return c
 
 
-def _invoice(db, *, total, balance_due, status="sent", stale_amount_paid=Decimal("0.00")):
+def _invoice(db, *, total, balance_due, status="sent"):
     inv = Invoice(
         id=uuid.uuid4(),
         customer_id=_customer(db).id,
@@ -49,8 +51,6 @@ def _invoice(db, *, total, balance_due, status="sent", stale_amount_paid=Decimal
         tax_amount=Decimal("0.00"),
         total=Decimal(str(total)),
         balance_due=Decimal(str(balance_due)),
-        # The whole point: the cache is left at its stale value.
-        amount_paid=stale_amount_paid,
         locked=False,
         public_token=uuid.uuid4().hex,
         company_id=COMPANY,
@@ -80,8 +80,6 @@ def test_paid_to_date_reads_payments_not_the_stale_column(tenant_db):
     _pay(tenant_db, inv, 600)
 
     assert paid_to_date(tenant_db, inv.id) == Decimal("600.00")
-    # Proof the fixture really is the drifted shape the prod data has.
-    assert float(inv.amount_paid) == 0.0
 
 
 def test_paid_to_date_ignores_voided_payments(tenant_db):
@@ -146,14 +144,16 @@ def test_untouched_autodraft_sees_a_payment_the_column_missed(tenant_db):
 
     assert is_untouched_autodraft(inv, tenant_db) is True
 
-    _pay(tenant_db, inv, 100)  # real money lands; amount_paid stays 0
-    assert float(inv.amount_paid) == 0.0
+    _pay(tenant_db, inv, 100)  # real money lands
     assert is_untouched_autodraft(inv, tenant_db) is False, (
         "an autodraft carrying a real payment is no longer the machine's to void"
     )
 
 
-def test_no_live_code_reads_the_deprecated_column():
+DROPPED_COLUMNS = ("amount_paid", "total_amount", "dispatched_at")
+
+
+def test_no_code_reads_any_dropped_invoice_column():
     """Absence assertion — proves a string is GONE, the safe direction.
 
     An adversarial review broke the first version of this scanner four ways, so
@@ -166,24 +166,76 @@ def test_no_live_code_reads_the_deprecated_column():
     root = pathlib.Path(__file__).resolve().parents[1]
     assert root.name == "gdx_dispatch", root
 
-    patterns = (
-        re.compile(r"\w+\.amount_paid\b"),                      # inv.amount_paid
-        re.compile(r"getattr\s*\(\s*[^,]+,\s*[\"']amount_paid"),  # getattr(inv, "amount_paid")
-        # DB-row subscripts only. A plain dict/payload key of the same name is
-        # ALLOWED on purpose — `amount_paid` is the response field, now fed
-        # from the payments table, and job_display_state reads that same key
-        # off the dict jobs.py hands it.
-        re.compile(r"_mapping\s*\[\s*[\"']amount_paid"),
-        re.compile(r"amount_paid", re.I),                        # raw SQL text, see sql_only below
-    )
-    allowed = {
-        "docker/demo/seed_demo.py",     # demo seeder writes the column
-        "modules/ledger/backfill.py",   # legacy-suspect diagnostic (uses getattr on purpose)
-        "models/tenant_models.py",      # the column definition itself
+    # One scanner for ALL THREE dropped columns. The first version knew only
+    # `amount_paid` — and `total_amount` was the one with live readers: two MCP
+    # tools summing it inside raw-SQL STRINGS, invisible to an attribute-level
+    # pattern. That miss is what this closes.
+    # `total_amount` is a live column on SupplierOrder / DealerOrder /
+    # PurchaseOrder / qb_deposits. Only an INVOICE receiver is a violation, or
+    # SQL that reads the invoices table — otherwise this guard cries wolf on
+    # four healthy models and gets deleted.
+    _receiver = {
+        "total_amount": r"(?:inv|invoice|Invoice)\w*",
+        "amount_paid": r"\w+",
+        "dispatched_at": r"(?:job|Job)\w*",
     }
 
-    def _candidate_lines(src: str) -> set[int]:
-        """Line numbers where `amount_paid` appears as CODE, not prose.
+    def _patterns(col: str):
+        return (
+            re.compile(rf"{_receiver[col]}\.{col}\b"),               # inv.total_amount
+            re.compile(rf"getattr\s*\(\s*[^,]+,\s*[\"']{col}"),      # getattr(inv, "...")
+            # DB-row subscripts only. A plain dict/payload key of the same name
+            # is allowed on purpose — `amount_paid` is still a response field,
+            # now fed from the payments table.
+            re.compile(rf"_mapping\s*\[\s*[\"']{col}"),
+        )
+
+    # Nothing is allowed for `amount_paid` any more: the column is gone, and so
+    # are the demo seeder's write, the GL legacy-suspect probe, and the model
+    # definition. `Invoice` is not the only model with a `total_amount`,
+    # though — SupplierOrder, DealerOrder, PurchaseOrder and qb_deposits each
+    # have a live one — so skip the modules that own those rather than
+    # blanket-allowing the name.
+    allowed: set[str] = set()
+    other_models = (
+        "modules/distributor/", "modules/purchase_orders/", "modules/inventory/",
+        "modules/quickbooks/banking.py",
+        "routers/supplier_portal.py", "routers/supplier_invite.py",
+    )
+
+    def _sql_string_hits(src: str, col: str) -> list[tuple[int, str]]:
+        """Raw-SQL STRING tokens that read `col` from the invoices table.
+        Reported separately from code lines because a multi-line SQL literal
+        starts on its opening-quote line, so mapping the hit back to that source
+        line finds no column name there. That is exactly how two MCP tools
+        summing `total_amount` slipped past the first version of this scanner.
+        """
+        import io
+        import tokenize
+
+        hits: list[tuple[int, str]] = []
+        try:
+            toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return hits
+        for tok in toks:
+            if tok.type != tokenize.STRING:
+                continue
+            body = tok.string
+            if col not in body:
+                continue
+            if not re.search(r"\b(select|update|insert)\b", body, re.I):
+                continue
+            if not re.search(r"\binvoices\b", body, re.I):
+                continue  # another model's table of the same column name
+            snippet = next(
+                (ln.strip() for ln in body.splitlines() if col in ln), body[:90]
+            )
+            hits.append((tok.start[0], snippet))
+        return hits
+
+    def _candidate_lines(src: str, col: str) -> set[int]:
+        """Line numbers where `col` appears as CODE, not prose.
 
         Tokenizing decides code-vs-prose; the regexes below then run against
         the real source line, because an attribute read spans three tokens
@@ -204,18 +256,18 @@ def test_no_live_code_reads_the_deprecated_column():
                 continue
             if tok.type == tokenize.STRING:
                 body = tok.string
-                if "amount_paid" not in body:
+                if col not in body:
                     continue
                 # Raw SQL counts, and so does a bare "amount_paid" literal
                 # (it may be a DB-row subscript key — the regexes decide from
                 # the full line). A docstring that merely names the column
                 # does not.
                 if re.search(r"\b(select|update|insert)\b", body, re.I) or (
-                    body.strip("\"'") == "amount_paid"
+                    body.strip("\"'") == col
                 ):
                     out.add(tok.start[0])
                 continue
-            if tok.type == tokenize.NAME and tok.string == "amount_paid":
+            if tok.type == tokenize.NAME and tok.string == col:
                 out.add(tok.start[0])
         return out
 
@@ -223,23 +275,38 @@ def test_no_live_code_reads_the_deprecated_column():
     offenders = []
     for path in root.rglob("*.py"):
         rel = path.relative_to(root).as_posix()
-        if rel in allowed or rel.startswith("tests/"):
+        # Migrations must name the column they drop, and the historical ones
+        # that created it are immutable by definition.
+        # `tests/` is NOT skipped any more: a test assigning a dropped
+        # attribute is a silent no-op that stays green while asserting nothing.
+        if rel in allowed or rel.startswith("migrations/") or rel.startswith(other_models):
+            continue
+        if rel.endswith((
+            "test_m35_amount_paid_retired.py",
+            # This one asserts the columns are GONE — it must name them.
+            "test_migration_073_drop_dead_columns.py",
+        )):
             continue
         src = path.read_text(encoding="utf-8")
         scanned += 1
-        if "amount_paid" not in src:
+        if not any(c in src for c in DROPPED_COLUMNS):
             continue
         lines = src.splitlines()
-        for lineno in _candidate_lines(src):
-            real = lines[lineno - 1].strip() if lineno <= len(lines) else ""
-            if any(p.search(real) for p in patterns[:3]) or re.search(
-                r"\b(select|update|insert)\b.*amount_paid", real, re.I
-            ):
-                offenders.append(f"{rel}:{lineno}: {real[:90]}")
+        for col in DROPPED_COLUMNS:
+            if col not in src:
+                continue
+            pats = _patterns(col)
+            for lineno in _candidate_lines(src, col):
+                real = lines[lineno - 1].strip() if lineno <= len(lines) else ""
+                if any(p.search(real) for p in pats):
+                    offenders.append(f"{rel}:{lineno}: {real[:90]}")
+            for lineno, snippet in _sql_string_hits(src, col):
+                offenders.append(f"{rel}:{lineno}: {snippet[:90]}")
 
     assert scanned > 100, f"scanner only looked at {scanned} files — it is not scanning the tree"
     assert not offenders, (
-        "live code reads the deprecated column again:\n" + "\n".join(sorted(set(offenders)))
+        "code reads a column dropped by migration 073:\n"
+        + "\n".join(sorted(set(offenders)))
     )
 
 

@@ -74,7 +74,6 @@ def _invoice(db, *, lines, tax="0.00", invoice_date=date(2026, 7, 8), issue=True
         tax_amount=Decimal(tax),
         total=total,
         balance_due=total,
-        amount_paid=Decimal("0.00"),
         invoice_date=invoice_date,
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=COMPANY,

@@ -56,7 +56,6 @@ def _invoice(db, total="1000.00", status="draft"):
         tax_amount=Decimal("0.00"),
         total=Decimal(total),
         balance_due=Decimal(total),
-        amount_paid=Decimal("0.00"),
         invoice_date=dt.date(2026, 7, 1),
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=COMPANY,
@@ -413,8 +412,8 @@ def test_refund_does_not_write_invalid_status(db):
     inv = _invoice(db, total="100.00", status="sent")
     _pay(db, inv, 100.0)
     db.refresh(inv)
-    inv.amount_paid = Decimal("100.00")
-    db.commit()
+    # (Formerly also set the deprecated `amount_paid` cache here; the column is
+    # dropped — migration 073 — and the assignment had become a silent no-op.)
 
     process_refund(str(inv.id), RefundIn(amount=100.0, reason="test"), db=db, _=USER)
     db.refresh(inv)

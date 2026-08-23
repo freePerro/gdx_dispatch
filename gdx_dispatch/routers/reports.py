@@ -62,12 +62,13 @@ _BILLED_STATUSES = ("sent", "paid", "overdue")
 
 # M8 (money-audit-2026-08-04, HIGH/CONFIRMED) — one definition of "revenue".
 #
-# `Invoice.total_amount` is nullable and NO insert path writes it: it was NULL
-# on all 349 prod rows on 2026-08-22, so every surface that summed the bare
-# column reported $0 against $829,164.66 of real billed work. `_summary_window`
-# was fixed alone on 2026-04-27 and its four siblings were missed — which is
-# exactly how the bug survived. These helpers exist so the NEXT revenue surface
-# inherits the rule instead of re-deriving half of it.
+# `Invoice.total_amount` was nullable and NO insert path ever wrote it: NULL on
+# all 349 prod rows on 2026-08-22, so every surface that summed the bare column
+# reported $0 against $829,164.66 of real billed work. `_summary_window` was
+# fixed alone on 2026-04-27 and its four siblings were missed — which is exactly
+# how the bug survived. The column is now DROPPED (migration 073) so it cannot
+# be read again; these helpers exist so the NEXT revenue surface inherits the
+# rule instead of re-deriving half of it.
 #
 # DEPOSITS ARE COUNTED. An earlier draft of this fix excluded
 # billing_type='deposit' on the theory that a deposit and its final invoice
@@ -100,9 +101,14 @@ def _alias_prefix(alias: str) -> str:
 
 
 def _revenue_amount_sql(alias: str = "") -> str:
-    """`COALESCE(total_amount, total)` for raw-SQL revenue aggregations."""
+    """The invoice amount for raw-SQL revenue aggregations.
+
+    Was `COALESCE(total_amount, total)` while `total_amount` still existed —
+    NULL on every row, which is what M8 was. The column is dropped (migration
+    073); `total` is NOT NULL and is the amount.
+    """
     p = _alias_prefix(alias)
-    return f"COALESCE({p}total_amount, {p}total)"
+    return f"{p}total"
 
 
 def _revenue_where_sql(alias: str = "") -> str:
@@ -237,7 +243,7 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
     # Phase D audit 2026-04-27: filter on invoice_date (business semantics)
     # not created_at (import-import semantics). Also: jobs.status is the
     # legacy varchar — null on QB-imported rows. Use lifecycle_stage.
-    _amount = func.coalesce(Invoice.total_amount, Invoice.total)
+    _amount = Invoice.total
     _start_d = date.fromisoformat(start_dt[:10])
     _end_d = date.fromisoformat(end_dt[:10])  # exclusive day
     _rev_date = _revenue_date_expr()
@@ -684,7 +690,7 @@ def daily_snapshot(
 
     # Revenue billed in the window. Same semantics as /summary —
     # invoice_date with created_at fallback, billed-statuses only.
-    _amount = func.coalesce(Invoice.total_amount, Invoice.total)
+    _amount = Invoice.total
     _rev_date = _revenue_date_expr()
     _start_d = date.fromisoformat(start_dt[:10])
     _end_d = date.fromisoformat(end_dt[:10])
@@ -786,7 +792,7 @@ def job_profitability(
 
     # Revenue per job via ORM — uses Invoice.total (canonical column); HAVING filters zero-revenue jobs
     _inv_revenue = func.coalesce(
-        func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0
+        func.sum(Invoice.total), 0
     ).label("revenue")
 
     rows = db.execute(
@@ -811,10 +817,10 @@ def job_profitability(
         )
         .group_by(Job.id, Job.title, Customer.name)
         .having(
-            func.coalesce(func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0) > 0
+            func.coalesce(func.sum(Invoice.total), 0) > 0
         )
         .order_by(
-            func.coalesce(func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0).desc()
+            func.coalesce(func.sum(Invoice.total), 0).desc()
         )
     ).mappings().all()
 
@@ -848,7 +854,7 @@ def technician_performance(
                 t.id AS technician_id,
                 t.name AS technician_name,
                 COUNT(DISTINCT CASE WHEN j.status = 'Complete' THEN j.id END) AS jobs_completed,
-                COALESCE(SUM(COALESCE(ih.total_amount, ih.total)), 0) AS revenue
+                COALESCE(SUM(ih.total), 0) AS revenue
             FROM technicians t
             LEFT JOIN jobs j
                 ON (CAST(j.assigned_to AS TEXT) = CAST(t.id AS TEXT) OR CAST(j.assigned_to AS TEXT) = CAST(t.user_id AS TEXT))
@@ -911,7 +917,7 @@ def revenue_analytics(
 
     # Revenue by job type — ORM; uses Invoice.total (canonical) with fallback to total_amount
     _rev = func.coalesce(
-        func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0
+        func.sum(Invoice.total), 0
     ).label("revenue")
     by_type = db.execute(
         select(
@@ -938,7 +944,7 @@ def revenue_analytics(
         )
         .group_by(func.coalesce(Job.job_type, "Unknown"))
         .order_by(
-            func.coalesce(func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0).desc()
+            func.coalesce(func.sum(Invoice.total), 0).desc()
         )
     ).mappings().all()
 
@@ -967,7 +973,7 @@ def customer_ltv(
 
     # Customer lifetime value — ORM
     _ltv = func.coalesce(
-        func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0
+        func.sum(Invoice.total), 0
     ).label("lifetime_value")
 
     rows = db.execute(
@@ -995,7 +1001,7 @@ def customer_ltv(
         .group_by(Customer.id, Customer.name)
         .having(func.count(func.distinct(Job.id)) > 0)
         .order_by(
-            func.coalesce(func.sum(func.coalesce(Invoice.total_amount, Invoice.total)), 0).desc()
+            func.coalesce(func.sum(Invoice.total), 0).desc()
         )
     ).mappings().all()
 
@@ -1136,7 +1142,7 @@ def _sold_window(db: Session, start: datetime, end: datetime) -> dict:
 def _billed_window(db: Session, start_d: date, end_d: date) -> dict:
     """Sum invoice revenue (sent/paid/overdue) in [start_d, end_d) using
     coalesce(invoice_date, created_at::date) — same anchor as /summary."""
-    _amount = func.coalesce(Invoice.total_amount, Invoice.total)
+    _amount = Invoice.total
     _rev_date = _revenue_date_expr()
     row = db.execute(
         select(

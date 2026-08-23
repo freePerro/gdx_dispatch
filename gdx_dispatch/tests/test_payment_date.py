@@ -51,7 +51,6 @@ def _invoice(db, total="1000.00", status="sent"):
         tax_amount=Decimal("0.00"),
         total=Decimal(total),
         balance_due=Decimal(total),
-        amount_paid=Decimal("0.00"),
         invoice_date=dt.date(2026, 7, 1),
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=COMPANY,

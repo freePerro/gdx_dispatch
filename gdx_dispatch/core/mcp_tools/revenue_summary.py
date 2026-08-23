@@ -47,10 +47,13 @@ async def handler(
     else:
         since_dt = datetime.now(timezone.utc) - timedelta(days=30)
 
-    # The query uses COALESCE to ensure we get 0 instead of None for the sum.
+    # Sums `total`, NOT the dropped `total_amount` (migration 073): that column
+    # was NULL on every row, so this tool reported $0 revenue — the same M8 bug,
+    # in a raw-SQL string an attribute-level grep could not see.
+    # COALESCE keeps a no-rows result at 0 rather than None.
     # We assume the existence of 'paid_at' and 'status' columns based on the spec.
     query = """
-        SELECT COALESCE(SUM(total_amount), 0), COUNT(*)
+        SELECT COALESCE(SUM(total), 0), COUNT(*)
         FROM invoices
         WHERE status = 'paid'
           AND paid_at >= :since

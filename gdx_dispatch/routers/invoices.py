@@ -909,7 +909,7 @@ def billing_summary(
     """
     today = datetime.now(UTC).date()
     month_start = today.replace(day=1)
-    _amount = func.coalesce(Invoice.total_amount, Invoice.total)
+    _amount = Invoice.total
     _balance = func.coalesce(Invoice.balance_due, _amount)
 
     total_outstanding = float(db.scalar(

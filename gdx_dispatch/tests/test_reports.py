@@ -71,9 +71,7 @@ def tenant_db_session():
                 subtotal REAL DEFAULT 0,
                 tax_amount REAL DEFAULT 0,
                 total REAL DEFAULT 0,
-                total_amount REAL,
                 balance_due REAL DEFAULT 0,
-                amount_paid REAL DEFAULT 0,
                 status TEXT DEFAULT 'draft',
                 locked INTEGER DEFAULT 0,
                 public_token TEXT DEFAULT '',
@@ -286,17 +284,14 @@ def _seed_invoice(
     *,
     job_id: str,
     created_at: datetime,
-    total_amount: float,
     balance_due: float,
     status: str,
     total: float = 0,
     billing_type: str = "standard",
     customer_id: str | None = None,
 ) -> str:
-    # `total_amount` stays a positional-style kwarg for the ~20 existing
-    # callers, but prod's shape is the OPPOSITE: total_amount is NULL on every
-    # row and `total` carries the money (M8). Pass total_amount=None, total=X
-    # to reproduce a real invoice.
+    # `total_amount` is gone (migration 073) — it was NULL on every prod row and
+    # nothing ever wrote it, which is what M8 was. `total` is the amount.
     # Phase D audit fix 2026-04-27: canonical Invoice.status enum is
     # draft/sent/paid/overdue/void. Older tests passed display labels
     # ("Unpaid", "Partial", "Paid") which the old reports code summed
@@ -317,10 +312,10 @@ def _seed_invoice(
         text(
             """
             INSERT INTO invoices (
-                id, job_id, total_amount, total, billing_type, balance_due, status,
+                id, job_id, total, billing_type, balance_due, status,
                 customer_id, company_id, created_at, invoice_date, deleted_at
             ) VALUES (
-                :id, :job_id, :total_amount, :total, :billing_type, :balance_due, :status,
+                :id, :job_id, :total, :billing_type, :balance_due, :status,
                 :customer_id, 'tenant-test', :created_at, :invoice_date, NULL
             )
             """
@@ -328,7 +323,6 @@ def _seed_invoice(
         {
             "id": inv_id,
             "job_id": job_id,
-            "total_amount": total_amount,
             "total": total,
             "billing_type": billing_type,
             "balance_due": balance_due,
@@ -452,7 +446,7 @@ def test_summary_returns_dashboard_kpis(tenant_db_session):
         tenant_db_session,
         job_id=job1,
         created_at=now - timedelta(days=1),
-        total_amount=250,
+        total=250,
         balance_due=50,
         status="sent",
     )
@@ -487,7 +481,7 @@ def test_summary_respects_explicit_date_range(tenant_db_session):
         tenant_db_session,
         job_id=in_range_job,
         created_at=now - timedelta(days=3),
-        total_amount=175,
+        total=175,
         balance_due=0,
         status="paid",
     )
@@ -503,7 +497,7 @@ def test_summary_respects_explicit_date_range(tenant_db_session):
         tenant_db_session,
         job_id=old_job,
         created_at=now - timedelta(days=70),
-        total_amount=900,
+        total=900,
         balance_due=0,
         status="paid",
     )
@@ -529,7 +523,7 @@ def test_daily_snapshot_returns_today_metrics(tenant_db_session):
         tenant_db_session,
         job_id=today_job,
         created_at=now,
-        total_amount=440,
+        total=440,
         balance_due=140,
         status="Unpaid",
     )
@@ -557,7 +551,7 @@ def test_daily_snapshot_supports_date_range(tenant_db_session):
         tenant_db_session,
         job_id=range_job,
         created_at=base_day,
-        total_amount=300,
+        total=300,
         balance_due=100,
         status="Partial",
     )
@@ -585,7 +579,7 @@ def test_job_profitability_returns_profit_per_job(tenant_db_session):
         tenant_db_session,
         job_id=job_id,
         created_at=now - timedelta(days=1),
-        total_amount=250,
+        total=250,
         balance_due=0,
         status="Paid",
     )
@@ -615,7 +609,7 @@ def test_technician_performance_returns_jobs_and_revenue(tenant_db_session):
         tenant_db_session,
         job_id=job_a,
         created_at=now - timedelta(days=2),
-        total_amount=220,
+        total=220,
         balance_due=0,
         status="Paid",
     )
@@ -631,7 +625,7 @@ def test_technician_performance_returns_jobs_and_revenue(tenant_db_session):
         tenant_db_session,
         job_id=job_b,
         created_at=now - timedelta(days=2),
-        total_amount=120,
+        total=120,
         balance_due=0,
         status="Paid",
     )
@@ -666,7 +660,7 @@ def test_revenue_analytics_returns_period_and_type_breakdowns(tenant_db_session)
         tenant_db_session,
         job_id=repair_job,
         created_at=now - timedelta(days=10),
-        total_amount=500,
+        total=500,
         balance_due=0,
         status="Paid",
     )
@@ -674,7 +668,7 @@ def test_revenue_analytics_returns_period_and_type_breakdowns(tenant_db_session)
         tenant_db_session,
         job_id=install_job,
         created_at=now - timedelta(days=1),
-        total_amount=300,
+        total=300,
         balance_due=0,
         status="Paid",
     )
@@ -695,9 +689,9 @@ def test_customer_ltv_returns_lifetime_value_per_customer(tenant_db_session):
     job_a2 = _seed_job(tenant_db_session, customer_id=cust_a, technician_id=None, created_at=now - timedelta(days=1))
     job_b1 = _seed_job(tenant_db_session, customer_id=cust_b, technician_id=None, created_at=now - timedelta(days=2))
 
-    _seed_invoice(tenant_db_session, job_id=job_a1, created_at=now - timedelta(days=3), total_amount=200, balance_due=0, status="Paid")
-    _seed_invoice(tenant_db_session, job_id=job_a2, created_at=now - timedelta(days=1), total_amount=150, balance_due=50, status="Partial")
-    _seed_invoice(tenant_db_session, job_id=job_b1, created_at=now - timedelta(days=2), total_amount=100, balance_due=0, status="Paid")
+    _seed_invoice(tenant_db_session, job_id=job_a1, created_at=now - timedelta(days=3), total=200, balance_due=0, status="Paid")
+    _seed_invoice(tenant_db_session, job_id=job_a2, created_at=now - timedelta(days=1), total=150, balance_due=50, status="Partial")
+    _seed_invoice(tenant_db_session, job_id=job_b1, created_at=now - timedelta(days=2), total=100, balance_due=0, status="Paid")
 
     rows = reports.customer_ltv(None, None, {}, tenant_db_session)["items"]
     assert rows[0]["customer_name"] == "Hotel Co"
@@ -714,10 +708,10 @@ def test_outstanding_aging_returns_buckets(tenant_db_session):
     job_70 = _seed_job(tenant_db_session, customer_id=cust, technician_id=None, created_at=now - timedelta(days=70))
     job_120 = _seed_job(tenant_db_session, customer_id=cust, technician_id=None, created_at=now - timedelta(days=120))
 
-    _seed_invoice(tenant_db_session, job_id=job_10, created_at=now - timedelta(days=10), total_amount=10, balance_due=10, status="Unpaid")
-    _seed_invoice(tenant_db_session, job_id=job_40, created_at=now - timedelta(days=40), total_amount=20, balance_due=20, status="Unpaid")
-    _seed_invoice(tenant_db_session, job_id=job_70, created_at=now - timedelta(days=70), total_amount=30, balance_due=30, status="Unpaid")
-    _seed_invoice(tenant_db_session, job_id=job_120, created_at=now - timedelta(days=120), total_amount=40, balance_due=40, status="Unpaid")
+    _seed_invoice(tenant_db_session, job_id=job_10, created_at=now - timedelta(days=10), total=10, balance_due=10, status="Unpaid")
+    _seed_invoice(tenant_db_session, job_id=job_40, created_at=now - timedelta(days=40), total=20, balance_due=20, status="Unpaid")
+    _seed_invoice(tenant_db_session, job_id=job_70, created_at=now - timedelta(days=70), total=30, balance_due=30, status="Unpaid")
+    _seed_invoice(tenant_db_session, job_id=job_120, created_at=now - timedelta(days=120), total=40, balance_due=40, status="Unpaid")
 
     # M20: aging is a point-in-time backlog and no longer takes a date range —
     # the old parameters would have been silently inert.
@@ -781,26 +775,25 @@ def test_reports_router_registered_in_create_app():
 
 # ---------------------------------------------------------------------------
 # M8 (money-audit-2026-08-04, HIGH/CONFIRMED) — revenue surfaces summed
-# `Invoice.total_amount`, a column NO insert path writes. It was NULL on all
+# `Invoice.total_amount`, a column NO insert path wrote. It was NULL on all
 # 349 prod rows on 2026-08-22, so "Revenue by Period" charted $0 against
 # $829,164.66 of real billed work and the accountant's CSV exported a blank
 # total column.
 #
-# Every test above seeds `total_amount` — the same shape the DEMO seeder
-# writes (docker/demo/seed_demo.py:302 sets total_amount=total), which is
-# precisely why the demo stack looked healthy and no test ever caught this.
-# These tests seed the PROD shape instead: total_amount NULL, `total` real.
+# Every test above USED to seed `total_amount` — the same shape the demo seeder
+# wrote, which is precisely why the demo stack looked healthy and no test ever
+# caught this. The column is now dropped (migration 073), so every seed here
+# carries the money in `total`, exactly as prod does.
 # Each one fails against the pre-fix code.
 # ---------------------------------------------------------------------------
 
 
 def _seed_prod_shape_invoice(db, *, job_id, created_at, total, status="paid", **kw):
-    """An invoice as prod actually stores one: total_amount NULL, total set."""
+    """An invoice as prod stores one: the money is in `total`."""
     return _seed_invoice(
         db,
         job_id=job_id,
         created_at=created_at,
-        total_amount=None,
         total=total,
         balance_due=kw.pop("balance_due", 0),
         status=status,
@@ -1021,19 +1014,19 @@ def _pg_seed_job(session) -> str:
     return job_id
 
 
-def _pg_seed_invoice(session, job_id, *, total, total_amount, status, billing_type, created_at):
+def _pg_seed_invoice(session, job_id, *, total, status, billing_type, created_at):
     session.execute(
         text(
             """
             INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
-                                  total_amount, balance_due, locked, public_token,
+                                  balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
             VALUES (:id, :job_id, :num,
                     CAST(:status AS invoice_status),
                     CAST(:btype AS invoice_billing_type),
                     1, 0, 0, :total,
-                    :total_amount, 0, false, :tok,
+                    0, false, :tok,
                     :company, CAST(:created_at AS timestamptz),
                     CAST(:created_at AS DATE))
             """
@@ -1045,7 +1038,6 @@ def _pg_seed_invoice(session, job_id, *, total, total_amount, status, billing_ty
             "status": status,
             "btype": billing_type,
             "total": total,
-            "total_amount": total_amount,
             "tok": uuid.uuid4().hex,
             "company": PG_COMPANY,
             "created_at": created_at,
@@ -1061,14 +1053,14 @@ def test_m8_revenue_by_period_on_postgres(pg_test_session):
     now = datetime.now(UTC)
     when = (now - timedelta(days=3)).isoformat()
     job = _pg_seed_job(pg_test_session)
-    _pg_seed_invoice(pg_test_session, job, total=1500, total_amount=None, status="paid",
+    _pg_seed_invoice(pg_test_session, job, total=1500, status="paid",
                      billing_type="standard", created_at=when)
-    _pg_seed_invoice(pg_test_session, job, total=500, total_amount=None, status="sent",
+    _pg_seed_invoice(pg_test_session, job, total=500, status="sent",
                      billing_type="deposit", created_at=when)
     # Neither of these is billed revenue.
-    _pg_seed_invoice(pg_test_session, job, total=9999, total_amount=None, status="draft",
+    _pg_seed_invoice(pg_test_session, job, total=9999, status="draft",
                      billing_type="standard", created_at=when)
-    _pg_seed_invoice(pg_test_session, job, total=8888, total_amount=None, status="void",
+    _pg_seed_invoice(pg_test_session, job, total=8888, status="void",
                      billing_type="standard", created_at=when)
     pg_test_session.commit()
 
@@ -1099,11 +1091,11 @@ def test_m8_revenue_periods_use_the_billed_date_not_the_import_date(pg_test_sess
             """
             INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
-                                  total_amount, balance_due, locked, public_token,
+                                  balance_due, locked, public_token,
                                   company_id, created_at, invoice_date)
             VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
-                    1, 0, 0, 4200, NULL, 0, false, :tok, :company,
+                    1, 0, 0, 4200, 0, false, :tok, :company,
                     now(), CAST(:billed AS DATE))
             """
         ),
@@ -1217,12 +1209,12 @@ def test_m20_aging_excludes_drafts_and_voids(tenant_db_session):
     )
     _seed_invoice(
         tenant_db_session, job_id=job, created_at=now - timedelta(days=10),
-        total_amount=None, total=500, balance_due=500, status="sent",
+        total=500, balance_due=500, status="sent",
     )
     for bad_status in ("draft", "void"):
         _seed_invoice(
             tenant_db_session, job_id=job, created_at=now - timedelta(days=10),
-            total_amount=None, total=9999, balance_due=9999, status=bad_status,
+            total=9999, balance_due=9999, status=bad_status,
         )
 
     data = reports.outstanding_aging({}, tenant_db_session)
@@ -1246,7 +1238,7 @@ def test_m20_aging_is_a_backlog_not_a_30_day_window(tenant_db_session):
     )
     _seed_invoice(
         tenant_db_session, job_id=job, created_at=now - timedelta(days=200),
-        total_amount=None, total=400, balance_due=400, status="overdue",
+        total=400, balance_due=400, status="overdue",
     )
 
     data = reports.outstanding_aging({}, tenant_db_session)
@@ -1273,11 +1265,11 @@ def test_m18_tax_is_collected_only_when_cash_arrived(pg_test_session):
             """
             INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
                                   sequence_number, subtotal, tax_amount, total,
-                                  total_amount, balance_due, locked, public_token,
+                                  balance_due, locked, public_token,
                                   company_id, created_at, invoice_date, paid_at)
             VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
                     CAST('standard' AS invoice_billing_type),
-                    1, 1000, 100, 1100, NULL, 0, false, :tok, :company,
+                    1, 1000, 100, 1100, 0, false, :tok, :company,
                     now(), CAST(:when AS DATE), now())
             """
         ),
@@ -1387,7 +1379,7 @@ def test_m20_aging_skips_not_yet_due_and_paid_to_match_cash_risk(tenant_db_sessi
     # Genuinely overdue — counts.
     overdue = _seed_invoice(
         tenant_db_session, job_id=job, created_at=now - timedelta(days=45),
-        total_amount=None, total=100, balance_due=100, status="overdue",
+        total=100, balance_due=100, status="overdue",
     )
     tenant_db_session.execute(
         text("UPDATE invoices SET due_date = :d WHERE id = :i"),
@@ -1396,7 +1388,7 @@ def test_m20_aging_skips_not_yet_due_and_paid_to_match_cash_risk(tenant_db_sessi
     # Not yet due — must NOT count as outstanding.
     future = _seed_invoice(
         tenant_db_session, job_id=job, created_at=now,
-        total_amount=None, total=5000, balance_due=5000, status="sent",
+        total=5000, balance_due=5000, status="sent",
     )
     tenant_db_session.execute(
         text("UPDATE invoices SET due_date = :d WHERE id = :i"),
@@ -1405,7 +1397,7 @@ def test_m20_aging_skips_not_yet_due_and_paid_to_match_cash_risk(tenant_db_sessi
     # Paid with a residual balance row — cash-risk excludes paid; so must aging.
     paid = _seed_invoice(
         tenant_db_session, job_id=job, created_at=now - timedelta(days=60),
-        total_amount=None, total=700, balance_due=700, status="paid",
+        total=700, balance_due=700, status="paid",
     )
     tenant_db_session.execute(
         text("UPDATE invoices SET due_date = :d WHERE id = :i"),

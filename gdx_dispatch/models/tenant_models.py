@@ -354,7 +354,6 @@ class Job(Base):
     # Distinct from arrived_at (which is the Dispatch app's "tech is on
     # site" signal); started_at = "tech tapped Start Job".
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    dispatched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     holding_area_id: Mapped[str] = mapped_column(String(36), nullable=True)
     notes: Mapped[str] = mapped_column(Text, nullable=True)
     signature_data: Mapped[str] = mapped_column(Text, nullable=True)
@@ -544,7 +543,6 @@ class Invoice(Base):
     adjusts_invoice_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     public_token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True, default=0)
     # S122-14: qb_dirty drives the QB push filter. Pre-fix
     # ``sync_all_invoices_task`` filtered ``status != 'paid'`` and re-pushed
     # every non-paid invoice on every full sync (~80 % wasted at GDX scale
@@ -565,7 +563,6 @@ class Invoice(Base):
     # corresponding tenant-DB migration is `migrate_invoices_customer_id_not_null.sql`.
     customer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("customers.id"), nullable=False)
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    total_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=True)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
