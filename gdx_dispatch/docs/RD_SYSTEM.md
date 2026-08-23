@@ -46,6 +46,10 @@ Exit 0 = clean. Fix all violations before deploy.
 Frontend: `cd gdx_dispatch/frontend && npx vitest run`.
 
 ## Quality Gates (Automated)
-- `gdx_dispatch/tools/pre_commit_test_gate.sh` — blocks commit if pass count decreased; baseline in `.test_baseline`.
+- ~~`gdx_dispatch/tools/pre_commit_test_gate.sh`~~ — **gone.** The script was
+  deleted earlier; its `.test_baseline` companion was removed 2026-08-23
+  because nothing read it and nothing could regenerate it. There is no
+  pass-count ratchet today — the ruff ratchet (`.ruff_baseline`) is separate
+  and still live.
 - `gdx_dispatch/tools/test_red_light.py` — `check` / `status` / `clear`; `.tests_red` marker means don't modify non-test code.
 - `gdx_dispatch/tools/session_checkpoint.py` — `save` / `show` to capture/restore session state.
