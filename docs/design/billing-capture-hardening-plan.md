@@ -2,12 +2,21 @@
 
 **Status:** **RELEASED v1.10.0** — all six PRs merged (#110-#114; PR 4 is
 `1584f2d`, merged as #112).
-**Not built:** PR 6 §3, the recurring-billing resurrection. There is no
-`modules/billing/invoice_factory.py`, no `create_invoice_core`, no
-`recurring_billing` task and no beat entry — the dead task was **deleted**
-rather than revived, and `tasks/billing_followup.py:16` records it as "the
-(since-removed) recurring_billing task". If recurring service-agreement
-billing is still wanted, it is unbuilt work, not shipped work.
+**PR 6 §3 — descoped to removal. A decision, not a gap.** Re-confirmed
+2026-08-23 by read-only prod query: **0 service agreements, 0 templates**, so
+the 2026-07-07 premise ("GDX has no recurring-service customers") still holds.
+The dead task's SQL named `service_agreements` columns that have never existed
+— `amount`, `billing_interval_months`, `next_billing_date`, `active` — against
+a real model of `name/price/status/start_date/end_date`. It was a booby trap
+that would have crashed on first wiring, so it was **deleted** rather than
+revived (full reasoning in the 2026-07-07 scope note below). There is
+deliberately no `modules/billing/invoice_factory.py`, no `create_invoice_core`,
+no `recurring_billing` task and no beat entry;
+`tests/test_billing_followup_pr5.py:335` guards the dead-task-never-scheduled
+failure mode it left behind. Recurring service-agreement billing, if ever
+wanted, is a **new designed feature**, not the resurrection of this one — see
+`recurring-service-agreement-billing-plan.md` (NOT SCHEDULED), which §3
+promised to file and which went unwritten until 2026-08-23.
 _Re-verified against main 2026-08-21. The PR-4 catalog-sell-price gap this
 header used to describe is FIXED: `jobs.py:2158` now routes through
 `resolve_sell_price`, delivered by `closeout-parts-autopricing-plan.md`._
