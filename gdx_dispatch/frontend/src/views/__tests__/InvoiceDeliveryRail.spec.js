@@ -22,9 +22,15 @@ describe('§11 delivery rail — InvoiceDetailView', () => {
   it('send and mark-as-mailed gate on ensureVerifiedForDelivery', () => {
     const fn = DETAIL.indexOf('async function ensureVerifiedForDelivery');
     expect(fn).toBeGreaterThan(-1);
-    const span = DETAIL.slice(fn, fn + 1200);
+    const span = DETAIL.slice(fn, fn + 2200);
     expect(span).toMatch(/confirmAsync\(/);
-    expect(span).toMatch(/api\.post\(`\/api\/invoices\/\$\{invoice\.value\.id\}\/verify`/);
+    // Matches the URL alone, not the whole call expression. The old pattern
+    // pinned `api.post(\`…/verify\`, {})` on ONE line and went red the day the
+    // call was reformatted to pass an options argument — a cosmetic edit
+    // failing a test that was meant to guard the delivery rail. Behaviour for
+    // this handler is asserted for real in InvoiceDetailView.spec.js
+    // ("Send also surfaces the gate"), which mounts the component and clicks.
+    expect(span).toMatch(/\/api\/invoices\/\$\{invoice\.value\.id\}\/verify/);
     expect(DETAIL).toMatch(/async function sendInvoice\(\)[\s\S]{0,600}?ensureVerifiedForDelivery\(\)/);
     expect(DETAIL).toMatch(/async function markAsMailed\(\)[\s\S]{0,200}?ensureVerifiedForDelivery\(\)/);
   });

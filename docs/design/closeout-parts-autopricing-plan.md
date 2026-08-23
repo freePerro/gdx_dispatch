@@ -15,9 +15,11 @@ and this tenant's `technician` role snapshot has drifted to include
 `job_parts_needed.price_source` and `invoice_lines.source`, so a stored price
 says which lane produced it and the closeout rebuild stops deleting lines the
 office added by hand.
-**Still not built:** the server-side unbilled-parts gate on `verify_invoice`
-(follow-up 2) — the only surfacing that binds the mobile lane, the API and the
-accounting role that cannot read inventory. Plus follow-ups 5–8, 10 and 11,
+**Follow-up 2 shipped 2026-08-23** — `verify_invoice` refuses while the job
+carries recorded parts nothing is billing, and records the acknowledgement when
+the office proceeds anyway.
+**All four items the header opened with are now built.** What remains are
+follow-ups 5–8 (found during the build) and 10–11 (found by the reviews),
 each filed in § Follow-ups, not silently dropped.
 
 Investigated 2026-08-18 against prod v1.68.2 (read-only queries). Design
@@ -386,11 +388,36 @@ Each of these was found during the build and deliberately left out of it.
    test now exist, and the test asserts the consequence — that
    `is_untouched_autodraft` still says True — not just the column.
 
-2. **The durable unbilled-parts gate belongs on the server.** The banner is
-   client-side, so it cannot help the accounting role (no `inventory.read`,
-   gets a 403), the mobile lane, or any API caller. A 409 from
-   `verify_invoice` listing unbilled parts unless explicitly acknowledged
-   binds every caller. Raised by the round-5 audit; correct, and not built.
+2. ~~**The durable unbilled-parts gate belongs on the server.**~~
+   **FIXED 2026-08-23.** The banner was client-side, so it could not help the
+   accounting role (holds `invoices.write` but NOT `inventory.read`, so its own
+   fetch 403s and the empty banner reads as an all-clear on a money screen —
+   the very user who verifies drafts) or any API caller.
+   `POST /api/invoices/{id}/verify` now 409s while the job carries recorded
+   parts nothing is billing, listing them, unless the caller sends
+   `acknowledge_unbilled_parts`. The audit event records the acknowledgement:
+   verifying with nothing outstanding and verifying PAST a warning are
+   different acts and the trail can tell them apart.
+
+   **Draft-only, mirroring the banner exactly.** An adversarial review caught
+   the first draft gating every status: `require_deliverable` gates drafts only
+   because prod carries thousands of pre-rail invoices with `verified_at` NULL
+   and status sent/paid. Verifying one of those is a backfill of an approval
+   that already happened, not a review of work still to be billed — and the
+   screen's "Add them" route is closed there anyway, because editing is
+   draft-only. The gate would have raised warnings no banner ever showed and
+   stranded the operator in an unsaveable editor.
+
+   **The plan's own claim about the mobile lane was wrong** and is corrected
+   here: no mobile surface calls `/verify` — `routers/mobile_invoicing.py`
+   only reads `verified_at` and 409s on send. Mobile could never verify, so
+   the gate does not "bind" it; what it binds is every caller that can.
+
+   Both callers on the invoice screen handle the 409 as a question with a list
+   and two exits — the Verify button and `ensureVerifiedForDelivery`, which
+   verifies inline when the office presses Send or Mark as Mailed. The second
+   was found by sweeping for callers rather than assuming the button was the
+   only one.
 
 3. ~~**`release_untouched_autodraft` deletes office-added lines.**~~
    **FIXED 2026-08-23** (migration 075). A re-closeout wiped every line on an
