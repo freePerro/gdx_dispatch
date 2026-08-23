@@ -294,6 +294,25 @@ def _fetch_tech_hours(
     return result
 
 
+class RevenueBasisUnavailable(RuntimeError):
+    """The revenue side of commission could not be computed.
+
+    Raised instead of returning an empty result, because a payroll surface
+    that reports $0.00 it did not actually calculate is worse than one that
+    refuses. Callers surface it; they do not default it to zero.
+
+    Known live cause (money audit M27, 2026-08-23): `_fetch_tech_revenue`
+    queries `j.assigned_tech_id`, which exists in no schema here — the column
+    is `assigned_to`. A second defect sits behind it: the query matches
+    `j.status = 'completed'` while this tenant's data holds 'Complete' (32
+    jobs) and 'Completed' (17), so even with the column fixed it would match
+    nothing. Both are left as-is deliberately: commission is heading for a
+    plugin rather than a core repair (see
+    docs/design/commission-as-a-plugin-plan.md). What is NOT acceptable in the
+    meantime is reporting a computed-looking zero.
+    """
+
+
 def _fetch_tech_revenue(
     db: Session, *, tenant_id: str, start: date, end: date, tech_id: str | None = None
 ) -> dict[str, tuple[int, float]]:
@@ -328,12 +347,19 @@ def _fetch_tech_revenue(
     result: dict[str, tuple[int, float]] = {}
     try:
         rows = db.execute(text(sql), params).all()
-    except OperationalError:
-        log.exception("payroll_jobs_or_invoices_missing")
-        return result
-    except SQLAlchemyError:
+    except OperationalError as exc:
+        # FAIL LOUDLY. This used to swallow the error and return {}, so every
+        # tech got revenue = 0.00 and a commission of $0.00 presented as fact.
+        # It has been failing that way continuously: the query names
+        # `j.assigned_tech_id`, a column that does not exist on any database
+        # here — the jobs table has `assigned_to`. An empty dict is
+        # indistinguishable from "this tech earned nothing", which is the
+        # difference between a number and a guess on a pay surface.
+        log.exception("payroll_revenue_basis_unavailable")
+        raise RevenueBasisUnavailable(str(exc)) from exc
+    except SQLAlchemyError as exc:
         log.exception("payroll_jobs_query_failed")
-        return result
+        raise RevenueBasisUnavailable(str(exc)) from exc
     for row in rows:
         tid = str(row[0]) if row[0] is not None else ""
         if not tid:
@@ -459,7 +485,20 @@ def payroll_summary(
     e = _parse_date(end, default_end)
     if e < s:
         raise HTTPException(status_code=422, detail="end must be >= start")
-    return _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
+    try:
+        return _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
+    except RevenueBasisUnavailable as exc:
+        # 503, not an empty list. The caller asked what the techs earned; the
+        # honest answer is "this cannot be computed", not a page of $0.00 rows
+        # that look calculated.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Payroll revenue cannot be computed — the commission revenue "
+                "query is broken against this schema. Hours are unaffected. "
+                f"({exc})"
+            ),
+        ) from exc
 
 
 @router.get("/api/payroll/tech/{tech_id}", response_model=None)
@@ -478,7 +517,17 @@ def payroll_tech_detail(
     if e < s:
         raise HTTPException(status_code=422, detail="end must be >= start")
 
-    rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e, tech_id=tech_id)
+    try:
+        rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e, tech_id=tech_id)
+    except RevenueBasisUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Payroll revenue cannot be computed — the commission revenue "
+                "query is broken against this schema. Hours are unaffected. "
+                f"({exc})"
+            ),
+        ) from exc
     row = rows[0] if rows else {
         "tech_id": tech_id,
         "tech_name": tech_id,
@@ -601,7 +650,17 @@ def export_payroll_csv(
     if e < s:
         raise HTTPException(status_code=422, detail="end must be >= start")
 
-    rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
+    try:
+        rows = _build_summary_rows(db, tenant_id=tenant_id, start=s, end=e)
+    except RevenueBasisUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Payroll revenue cannot be computed — the commission revenue "
+                "query is broken against this schema. Hours are unaffected. "
+                f"({exc})"
+            ),
+        ) from exc
 
     buf = io.StringIO()
     writer = csv.writer(buf)

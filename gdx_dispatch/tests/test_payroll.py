@@ -184,14 +184,22 @@ def test_rate_value_bounds_negative(client: TestClient):
 # ---------------------------------------------------------------------------
 # Summary / export (degrade gracefully when time_entries missing)
 # ---------------------------------------------------------------------------
-def test_summary_returns_empty_when_time_entries_missing(client: TestClient):
+def test_summary_refuses_when_the_revenue_basis_is_broken(client: TestClient):
+    """Was `test_summary_returns_empty_when_time_entries_missing`, and its
+    premise was wrong.
+
+    It asserted 200 + an empty list, and passed — but not for the reason its
+    name gave. The revenue query names `j.assigned_tech_id`, a column that
+    exists in no schema here, so it raised, the handler swallowed it, and the
+    endpoint returned an empty page. The test proved the swallow, not the
+    degrade. Now the refusal is the assertion (money audit M27 follow-up).
+    """
     r = client.get(
         "/api/payroll/summary",
         params={"start": "2026-01-01", "end": "2026-01-31"},
     )
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert isinstance(data, list)
+    assert r.status_code == 503, r.text
+    assert "cannot be computed" in r.json()["detail"]
 
 
 def test_summary_bad_date_range(client: TestClient):
@@ -207,32 +215,27 @@ def test_summary_bad_date_format(client: TestClient):
     assert r.status_code == 422
 
 
-def test_tech_detail_returns_zero_row(client: TestClient):
+def test_tech_detail_refuses_rather_than_returning_a_zero_row(client: TestClient):
+    """Was `test_tech_detail_returns_zero_row`. A zero row for a named person
+    on a pay screen is a claim about what they earned. It was never computed."""
     r = client.get(
         "/api/payroll/tech/tech-99",
         params={"start": "2026-01-01", "end": "2026-01-31"},
     )
-    assert r.status_code == 200
-    data = r.json()
-    assert data["tech_id"] == "tech-99"
-    assert "daily" in data
-    assert isinstance(data["daily"], list)
+    assert r.status_code == 503, r.text
 
 
-def test_export_returns_csv(client: TestClient):
+def test_export_refuses_rather_than_writing_a_csv_of_zeroes(client: TestClient):
+    """Was `test_export_returns_csv`, and it was the most misleading of the
+    three: it asserted a well-formed CSV with a `gross_pay` column and passed,
+    while the file's contents came from a query that had raised. A CSV is the
+    shape that leaves the building — a spreadsheet of $0.00 gross pay is worse
+    than no file."""
     r = client.get(
         "/api/payroll/export",
         params={"start": "2026-01-01", "end": "2026-01-31"},
     )
-    assert r.status_code == 200, r.text
-    assert r.headers["content-type"].startswith("text/csv")
-    assert "attachment" in r.headers.get("content-disposition", "")
-    body = r.text
-    header_line = body.splitlines()[0]
-    assert "tech_id" in header_line
-    assert "regular_hours" in header_line
-    assert "overtime_hours" in header_line
-    assert "gross_pay" in header_line
+    assert r.status_code == 503, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -325,3 +328,67 @@ def test_gross_pay_with_overtime():
     assert calculate_gross_pay(
         regular_hours=40, overtime_hours=10, base_rate=20, commission=50
     ) == 1150.0
+
+
+# ---------------------------------------------------------------------------
+# The revenue basis fails loudly (money audit M27 follow-up, 2026-08-23)
+# ---------------------------------------------------------------------------
+
+
+class TestRevenueBasisRefusesRatherThanReportingZero:
+    """`_fetch_tech_revenue` used to swallow an OperationalError and return
+    `{}`, so every tech reported $0.00 revenue and $0.00 commission as though
+    it had been calculated.
+
+    It has been failing that way continuously: the query names
+    `j.assigned_tech_id`, a column that exists in no schema here — the jobs
+    table has `assigned_to`. An empty dict is indistinguishable from "this
+    tech earned nothing", which on a pay surface is the difference between a
+    number and a guess.
+
+    The query is deliberately NOT repaired here. Commission is heading for a
+    plugin (`docs/design/commission-as-a-plugin-plan.md`), and repairing it in
+    place would turn a silent zero into a confident wrong number: the invoice
+    join still counts voided and draft invoices (M27), the status literal
+    matches neither spelling this tenant stores, and the deposit basis is
+    undecided.
+    """
+
+    def test_the_summary_endpoint_503s_rather_than_paging_zeroes(self, client: TestClient):
+        """A page of $0.00 rows reads as a calculation. A 503 reads as what it
+        is — and names which half still works."""
+        r = client.get("/api/payroll/summary")
+        assert r.status_code == 503, r.text
+        detail = r.json()["detail"]
+        assert "cannot be computed" in detail
+        assert "Hours are unaffected" in detail
+
+    def test_the_tech_detail_endpoint_refuses_too(self, client: TestClient):
+        r = client.get("/api/payroll/tech/some-tech-id")
+        assert r.status_code == 503, r.text
+
+    def test_the_export_refuses_rather_than_writing_a_csv_of_zeroes(self, client: TestClient):
+        """A CSV is the shape that leaves the building. A file of $0.00
+        commission rows is worse than no file."""
+        r = client.get("/api/payroll/export")
+        assert r.status_code == 503, r.text
+
+    def test_the_helper_raises_a_named_error(self, client: TestClient):
+        """Not a bare Exception — callers have to be able to tell this apart
+        from a genuine empty period."""
+        from datetime import date as _date
+
+        from gdx_dispatch.routers.payroll import (
+            RevenueBasisUnavailable,
+            _fetch_tech_revenue,
+        )
+
+        db = sessionmaker(bind=client._engine)()  # type: ignore[attr-defined]
+        try:
+            with pytest.raises(RevenueBasisUnavailable):
+                _fetch_tech_revenue(
+                    db, tenant_id="tenant-test",
+                    start=_date(2026, 1, 1), end=_date(2026, 12, 31),
+                )
+        finally:
+            db.close()

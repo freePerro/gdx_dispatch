@@ -4,16 +4,28 @@
         <template #start>
           <h2 class="page-title">Payroll</h2>
         </template>
-        <template #end>
-          <Button
-            label="Run payroll for current period"
-            icon="pi pi-play"
-            :loading="runningPayroll"
-            data-testid="run-payroll-btn"
-            @click="runPayroll"
-          />
-        </template>
+        <!-- The "Run payroll for current period" button is GONE, not
+             disabled. POST /api/payroll/run-current-period is a ui_compat 501
+             stub, so the button could only ever fail. Disabling it was tried
+             first and read worse: the theme renders a disabled primary button
+             almost identically to an enabled one, so it invited a click that
+             silently did nothing — less honest than the error it replaced.
+             The notice below carries the message instead. -->
       </Toolbar>
+
+      <div class="payroll-notice" data-testid="payroll-not-built-notice">
+        <i class="pi pi-info-circle" aria-hidden="true" />
+        <div>
+          <p class="notice-lede"><strong>Payroll runs are not built.</strong></p>
+          <p class="notice-body">
+            This screen cannot create pay periods or pay stubs — the endpoints
+            behind all three of its controls return “not implemented”. Nothing
+            is stored and nothing is calculated here.
+            <strong>Hours are unaffected:</strong> the timeclock records them
+            and the weekly timesheet reports them.
+          </p>
+        </div>
+      </div>
 
       <Tabs v-model:value="activeTab" class="payroll-tabview">
         <TabList>
@@ -38,8 +50,8 @@
             <template #empty>
               <EmptyState
                 icon="pi pi-calendar"
-                title="No pay periods yet"
-                message="Run payroll for the current period to create the first one."
+                title="Pay periods are not built"
+                message="Nothing creates them yet. Hours live in the timeclock."
               />
             </template>
             <Column field="start" header="Start">
@@ -143,7 +155,6 @@ const payPeriods = ref([]);
 const payStubs = ref([]);
 const loadingPeriods = ref(false);
 const loadingStubs = ref(false);
-const runningPayroll = ref(false);
 const activeTab = ref('periods');
 const detailModal = ref(false);
 const detailRecord = ref(null);
@@ -172,39 +183,16 @@ function formatDetail(value) {
   return value;
 }
 
-async function loadPayPeriods() {
-  loadingPeriods.value = true;
-  try {
-    const data = await api.get('/api/payroll/pay-periods');
-    payPeriods.value = Array.isArray(data) ? data : data?.items || [];
-  } finally {
-    loadingPeriods.value = false;
-  }
-}
-
-async function loadPayStubs() {
-  loadingStubs.value = true;
-  try {
-    const data = await api.get('/api/payroll/pay-stubs');
-    payStubs.value = Array.isArray(data) ? data : data?.items || [];
-  } finally {
-    loadingStubs.value = false;
-  }
-}
-
-async function loadPayrollData() {
-  await Promise.all([loadPayPeriods(), loadPayStubs()]);
-}
-
-async function runPayroll() {
-  runningPayroll.value = true;
-  try {
-    await api.post('/api/payroll/run-current-period', null, { successMessage: 'Payroll queued' });
-    await loadPayrollData();
-  } finally {
-    runningPayroll.value = false;
-  }
-}
+// `/api/payroll/pay-periods`, `/pay-stubs` and `/run-current-period` are all
+// ui_compat 501 stubs — none of them is implemented. Calling them produced a
+// failed request and an error toast on every visit, while the empty states
+// told the operator to press the button that caused it. The screen now says
+// so instead of asking the server three times to confirm it.
+//
+// Deliberately NOT deleted: the tables and the detail modal are the shape this
+// screen will take when payroll runs exist, and the decision list
+// (`unimplemented-endpoints-decision-list`) has not called build-or-remove on
+// them yet.
 
 function openDetail(record, type) {
   detailRecord.value = record;
@@ -212,5 +200,27 @@ function openDetail(record, type) {
   detailModal.value = true;
 }
 
-onMounted(loadPayrollData);
 </script>
+
+<style scoped>
+/* Theme tokens, not a fixed palette — this panel has to read in dark mode,
+   where a hardcoded pale background would put near-white text on it. */
+.payroll-notice {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin: 0.75rem 0 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--p-content-border-color);
+  border-left: 4px solid var(--p-primary-color);
+  border-radius: var(--p-content-border-radius, 6px);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+}
+.payroll-notice .pi {
+  margin-top: 0.15rem;
+  color: var(--p-primary-color);
+}
+.notice-lede { margin: 0 0 0.2rem; }
+.notice-body { margin: 0; color: var(--p-text-muted-color); font-size: 0.9rem; }
+</style>
