@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
 
 from gdx_dispatch.core.celery_app import celery_app
-from gdx_dispatch.tasks import recurring, reminders
+from gdx_dispatch.tasks import recurring
 
 
 @pytest.fixture(autouse=True)
@@ -22,34 +21,68 @@ def _celery_eager_mode():
         celery_app.conf.task_eager_propagates = original_eager_propagates
 
 
-def test_reminder_sends_sms(monkeypatch):
-    appointment_id = str(uuid4())
-    now = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
-    start_at = now + timedelta(hours=24)
+def test_appointment_reminders_stub_removed():
+    """The appointment-reminder task was a no-op wired to celery beat.
 
-    sent: list[tuple[str, str]] = []
+    It fired hourly on prod and logged `succeeded ... {'scheduled_count': 0}`
+    every time: _find_upcoming_appointment_ids returned [], _get_appointment
+    returned None, _send_sms did nothing. The test that used to live here
+    monkeypatched all three, so it proved the stub could call itself and
+    nothing else — a green test over a feature that had never sent a message.
 
-    monkeypatch.setattr(reminders, "_now_utc", lambda: now)
-    monkeypatch.setattr(
-        reminders,
-        "_get_appointment",
-        lambda _appointment_id: {
-            "id": appointment_id,
-            "start_at": start_at,
-            "customer_phone": "+15551234567",
-        },
+    Removed 2026-08-22, following the qb_sync and late_fees precedent. The
+    blocker is transport, not the finder: every SMS path funnels through
+    core/sms.py (Twilio) and no SMS credentials are set on prod at all, so
+    wiring it would have sent zero messages while logging success. Re-add with
+    the task when an outbound transport exists.
+    """
+    import importlib
+
+    import pytest
+
+    with pytest.raises(ImportError):
+        importlib.import_module("gdx_dispatch.tasks.reminders")
+
+
+def test_every_beat_entry_names_a_task_the_worker_has_registered():
+    """The 2026-07-07 prod audit found a beat entry naming a task that never
+    existed — every firing died as "unregistered task", silently, for months.
+
+    Two things an adversarial review caught in the first version of this test,
+    both of which would have let that recur:
+
+    1. It checked ``hasattr(module, attr)``. celery_app.py's own comment records
+       the incident as "defined but never imported by the worker" — a module can
+       define the function and the WORKER still not know it. Registration in
+       ``celery_app.tasks`` is the property that actually matters.
+    2. It skipped any task not starting with "gdx_dispatch.", which is 19 of the
+       29 entries — the outlook.*, phone_com.*, invoice_reminders.* and
+       billing_followup.* namespaces, i.e. most of the schedule.
+
+    Both fixed: every entry, checked against the real registry.
+    """
+    from gdx_dispatch.core.celery_app import celery_app
+    from gdx_dispatch.core.scheduler import build_beat_schedule
+
+    # Do what a worker does at startup: import everything in `include`/`imports`.
+    # Without this the registry holds only what this test process happened to
+    # import, and four legitimately-registered tasks (verified against the live
+    # gdx-celery-beat-1 worker) look missing — a false alarm that would get the
+    # whole test deleted the first time it fired.
+    celery_app.loader.import_default_modules()
+
+    schedule = build_beat_schedule()
+    assert len(schedule) > 20, f"only {len(schedule)} beat entries — schedule did not load"
+
+    unregistered = [
+        f"{name} -> {entry.get('task')}"
+        for name, entry in schedule.items()
+        if str(entry.get("task", "")) not in celery_app.tasks
+    ]
+    assert not unregistered, (
+        "beat schedule points at tasks the worker has not registered "
+        "(they will fire and die as 'unregistered task'):\n" + "\n".join(unregistered)
     )
-    monkeypatch.setattr(
-        reminders,
-        "_send_sms",
-        lambda phone, message: sent.append((phone, message)),
-    )
-
-    result = reminders.send_appointment_reminder.delay(appointment_id).get()
-
-    assert result["status"] == "sent"
-    assert sent
-    assert sent[0][0] == "+15551234567"
 
 
 def test_recurring_job_created(monkeypatch):
@@ -79,6 +112,7 @@ def test_s122_3_qb_sync_stub_removed():
     webhooks (CloudEvents-aware per S122-CE) carry the active path until then.
     """
     import importlib
+
     import pytest
     with pytest.raises(ImportError):
         importlib.import_module("gdx_dispatch.tasks.qb_sync")

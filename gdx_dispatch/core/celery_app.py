@@ -18,7 +18,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         broker=broker,
         backend=backend,
         include=[
-            "gdx_dispatch.tasks.reminders",
             "gdx_dispatch.tasks.recurring",
             "gdx_dispatch.tasks.planner_digest",
             # gdx_dispatch.tasks.qb_sync (S122-3 T2) and gdx_dispatch.tasks.late_fees
@@ -71,7 +70,6 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
         ),
         task_default_queue="priority:low",
         task_routes={
-            "gdx_dispatch.tasks.reminders.*": {"queue": "priority:high"},
             "gdx_dispatch.tasks.recurring.*": {"queue": "priority:low"},
             "gdx_dispatch.tasks.email_poller.*": {"queue": "priority:low"},
             "gdx_dispatch.core.webhooks.tasks.*": {"queue": "priority:high"},
@@ -123,7 +121,6 @@ from gdx_dispatch.tasks import estimate_archive as _estimate_archive_tasks  # no
 from gdx_dispatch.tasks import estimate_expiry as _estimate_expiry_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import estimate_followup as _estimate_followup_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import recurring as _recurring_tasks  # noqa: E402,F401
-from gdx_dispatch.tasks import reminders as _reminder_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import tech_locations_prune as _tech_locations_prune_tasks  # noqa: E402,F401
 from gdx_dispatch.tasks import timeclock_sweep as _timeclock_sweep_tasks  # noqa: E402,F401
 

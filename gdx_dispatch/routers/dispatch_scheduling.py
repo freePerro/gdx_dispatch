@@ -159,7 +159,12 @@ def on_my_way(
 
         # Send SMS to customer
         sms_sent = False
+        # Every not-sent path must name itself. Recording only the provider's
+        # reason left the two cases a human would actually investigate — no
+        # phone on file, and an exception mid-send — both writing a blank.
+        sms_reason: str | None = "no_customer_phone"
         if job["customer_phone"]:
+            sms_reason = None
             try:
                 from gdx_dispatch.core import sms as sms_service
                 eta_text = f" ETA: ~{eta_minutes} minutes." if eta_minutes else ""
@@ -168,21 +173,43 @@ def on_my_way(
                     msg += f" Track: {map_link}"
                 import os as _os
                 from_phone = _os.getenv("TWILIO_PHONE_NUMBER", "").strip()
-                sms_service.send_sms(
+                # send_sms returns {"sent": False, "reason": "not configured"}
+                # when Twilio credentials are absent — which is the case on
+                # prod today, where no SMS env var is set at all. This used to
+                # discard the result and mark the send successful regardless,
+                # writing a delivery that never happened into the audit log.
+                # Never fired (on_my_way_sent has zero prod rows), but "an
+                # action that fakes a success response without doing the work"
+                # is the defect class this repo treats as highest.
+                result = sms_service.send_sms(
                     to_phone=job["customer_phone"],
                     body=msg,
                     from_phone=from_phone,
                     tenant_id=tenant_id,
-                )
-                sms_sent = True
-            except Exception:
+                ) or {}
+                sms_sent = bool(result.get("sent"))
+                sms_reason = result.get("reason")
+                if not sms_sent:
+                    log.warning(
+                        "on_my_way_sms_not_sent reason=%s job_id=%s",
+                        sms_reason or "unknown", job_id,
+                    )
+            except Exception as exc:
+                sms_reason = f"exception: {type(exc).__name__}"
                 log.exception("on_my_way_sms_failed")
 
         log_audit_event_sync(
             db=db, tenant_id=tenant_id,
             user_id=str(user.get("sub") or user.get("user_id") or "system"),
             action="on_my_way_sent", entity_type="job", entity_id=job_id,
-            details={"eta_minutes": eta_minutes, "sms_sent": sms_sent},
+            details={
+                "eta_minutes": eta_minutes,
+                "sms_sent": sms_sent,
+                # Why it did not go, when it did not go — otherwise the trail
+                # says "no SMS" and cannot say whether that was a missing
+                # phone number, a provider error, or unconfigured credentials.
+                **({"sms_not_sent_reason": sms_reason} if not sms_sent else {}),
+            },
             request=request,
         )
         db.commit()
