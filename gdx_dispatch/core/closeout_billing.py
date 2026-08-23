@@ -276,20 +276,32 @@ def build_closeout_lines(
     return lines_added, lines_total, taxable_total
 
 
-def is_untouched_autodraft(inv: Invoice) -> bool:
+def is_untouched_autodraft(inv: Invoice, db: Session | None = None) -> bool:
     """True only while the machine may still rebuild or void this invoice.
 
     Strict on purpose: any human advancement (verify, send, lock, payment,
-    status past draft) permanently ends machine ownership."""
-    return (
+    status past draft) permanently ends machine ownership.
+
+    M35: the payment arm used to read ``inv.amount_paid``, a cache nothing
+    maintains — it was 0 on every invoice paid since 2026-07-31, so the term
+    contributed nothing and this guard leaned entirely on ``paid_at``/status.
+    Pass ``db`` to check the payments table for real; without it the payment
+    arm is skipped rather than silently answered with a stale 0.
+    """
+    if not (
         (inv.origin or "") == AUTODRAFT_ORIGIN
         and (inv.status or "draft") == "draft"
         and inv.verified_at is None
         and inv.sent_at is None
         and not bool(inv.locked)
         and inv.paid_at is None
-        and float(inv.amount_paid or 0) == 0
-    )
+    ):
+        return False
+    if db is not None:
+        from gdx_dispatch.core.invoice_paid import paid_to_date
+
+        return paid_to_date(db, inv.id) == 0
+    return True
 
 
 def _live_autodraft(db: Session, job_id) -> Invoice | None:
@@ -316,7 +328,7 @@ def release_untouched_autodraft(db: Session, *, job: Job) -> Invoice | None:
     rebuild into (same invoice number), or None when there is nothing the
     machine may touch."""
     inv = _live_autodraft(db, job.id)
-    if inv is None or not is_untouched_autodraft(inv):
+    if inv is None or not is_untouched_autodraft(inv, db):
         return None
     db.execute(
         update(JobPartNeeded)

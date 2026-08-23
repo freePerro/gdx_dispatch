@@ -261,7 +261,12 @@ def _decode_photo_ids(invoice: Invoice) -> list[str]:
         return []
 
 
-def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_payments: bool = False) -> dict[str, object]:
+def _serialize_invoice(
+    invoice: Invoice,
+    include_lines: bool = False,
+    include_payments: bool = False,
+    credit_total: object | None = None,
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": str(invoice.id),
         "job_id": str(invoice.job_id) if invoice.job_id else None,
@@ -338,6 +343,27 @@ def _serialize_invoice(invoice: Invoice, include_lines: bool = False, include_pa
     if include_payments:
         payments = sorted(invoice.payments, key=lambda p: (p.payment_date, p.created_at, p.id))
         payload["payments"] = [_serialize_payment(payment) for payment in payments]
+        # M35 / ledger item #1: this payload never carried a paid-to-date at
+        # all, so MobileBillingView's "Paid" row — gated on
+        # `detail.amount_paid != null` — simply never rendered. The old fix for
+        # that would have been to surface `Invoice.amount_paid`, a cache
+        # nothing writes; instead derive it from the payments already loaded
+        # here (no extra query, and no N+1 because list callers pass
+        # include_payments=False). Voided payments stay as history but stop
+        # counting, matching _recalculate_invoice.
+        payload["amount_paid"] = float(
+            sum(
+                Decimal(str(p.amount or 0))
+                for p in invoice.payments
+                if getattr(p, "voided_at", None) is None
+            )
+        )
+        # Credits are the OTHER term in the balance: _recalculate_invoice
+        # computes balance = total - payments - credits. Emitting paid without
+        # credits would let a credited invoice read
+        # "Total 1000 / Paid 300 / Balance 0" with $700 unaccounted for.
+        if credit_total is not None:
+            payload["credit_total"] = float(credit_total)
     return payload
 
 
@@ -1749,7 +1775,15 @@ def get_invoice(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db, include_relations=True)
-    payload = _serialize_invoice(invoice, include_lines=True, include_payments=True)
+    _credits = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice.id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+        )
+    ).scalar_one_or_none() or 0
+    payload = _serialize_invoice(
+        invoice, include_lines=True, include_payments=True, credit_total=_credits
+    )
     # Tier 10 — authoritative "in QuickBooks" flag from QBEntityMap (what every
     # push path writes and the QB dashboard counts). qb_synced_at alone is NOT
     # this signal: it's un-backfilled, so a legacy/imported/manual invoice reads
