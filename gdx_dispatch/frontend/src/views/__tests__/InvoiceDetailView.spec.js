@@ -12,6 +12,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { nextTick } from 'vue';
+import { setActivePinia, createPinia } from 'pinia';
+import { useAuthStore } from '../../stores/auth';
 
 const apiGet = vi.fn();
 const apiPost = vi.fn();
@@ -173,6 +175,13 @@ function mockApi(invoicePayload, customerPayload = null) {
 }
 
 beforeEach(() => {
+  // The view resolves `invoices.write` through usePermission -> useAuthStore
+  // to decide whether to offer Void (2026-08-23). Without an active Pinia the
+  // store throws during setup and EVERY test in this file dies at mount.
+  // A fresh pinia per test also means no permission leaks between them: the
+  // store starts empty, so `hasPermission` is false and the Void button is
+  // hidden unless a test seeds it.
+  setActivePinia(createPinia());
   apiGet.mockReset();
   apiPost.mockReset();
   apiPatch.mockReset();
@@ -652,3 +661,122 @@ describe('InvoiceDetailView — unbilled parts banner', () => {
   });
 });
 
+// ── Void (2026-08-23) ───────────────────────────────────────────────────────
+// `POST /api/invoices/{id}/void` had existed since GL S5 with ZERO UI callers,
+// so the office could not void an invoice at all. These assert BEHAVIOUR --
+// what renders -- not that the source contains a string.
+describe('InvoiceDetailView — Void', () => {
+  async function mountWith({ permissions = [], role = 'accounting', status = 'draft' } = {}) {
+    const auth = useAuthStore();
+    // `isAuthenticated` derives from accessToken, and `isAdmin` from the role
+    // claim — an admin/owner short-circuits hasPermission entirely, so the
+    // "hidden" case has to be seeded as a non-admin role or it proves nothing.
+    auth.user = { id: 'u1', email: 'office@example.com', role };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(permissions);
+    auth.permissionsLoaded = true;
+    // normalizeInvoice reads `effective_status` FIRST, so setting `status`
+    // alone leaves the view on the payload's default and the assertion tests
+    // nothing. Set both.
+    mockApi(buildInvoicePayload({ status, effective_status: status }));
+    const wrapper = mountView();
+    await flushPromises();
+    await nextTick();
+    return wrapper;
+  }
+
+  it('offers Void to a role that holds invoices.write', async () => {
+    const wrapper = await mountWith({ permissions: ['invoices.write'] });
+    expect(wrapper.find('[data-testid="void-invoice-btn"]').exists()).toBe(true);
+  });
+
+  it('hides Void from a role that does not', async () => {
+    // The technician tier. The API also 403s them, but a button that only
+    // ever errors is a dead end -- do not draw it.
+    const wrapper = await mountWith({ permissions: ['jobs.write', 'inventory.write'], role: 'technician' });
+    expect(wrapper.find('[data-testid="void-invoice-btn"]').exists()).toBe(false);
+  });
+
+  it('does not offer Void on an already-void invoice, and tags it instead', async () => {
+    const wrapper = await mountWith({ permissions: ['invoices.write'], status: 'void' });
+    expect(wrapper.find('[data-testid="void-invoice-btn"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="invoice-void-tag"]').exists()).toBe(true);
+  });
+
+  it('will not fire until the invoice number is retyped exactly', async () => {
+    const wrapper = await mountWith({ permissions: ['invoices.write'] });
+    await wrapper.find('[data-testid="void-invoice-btn"]').trigger('click');
+    await nextTick();
+
+    const confirmBtn = () => wrapper.find('[data-testid="void-confirm-btn"]');
+    expect(confirmBtn().attributes('disabled')).toBeDefined();
+
+    const input = wrapper.find('[data-testid="void-confirm-input"]');
+    await input.setValue('INV-0002');
+    await nextTick();
+    expect(confirmBtn().attributes('disabled'),
+      'a different invoice number must not unlock the void').toBeDefined();
+
+    await input.setValue('INV-0001');
+    await nextTick();
+    expect(confirmBtn().attributes('disabled'),
+      'the exact number must unlock it').toBeUndefined();
+
+    expect(apiPost).not.toHaveBeenCalledWith(
+      expect.stringContaining('/void'), expect.anything(), expect.anything(),
+    );
+  });
+
+  it('explains the payments blocker instead of letting the operator earn a 409', async () => {
+    // The server refuses a void while any non-voided payment exists. An
+    // earlier draft only *claimed* to guard this in a comment: the button
+    // rendered, the operator retyped the whole invoice number, then ate the
+    // 409. Adversarial review caught the gap between comment and v-if.
+    const auth = useAuthStore();
+    auth.user = { id: 'u1', email: 'office@example.com', role: 'accounting' };
+    auth.accessToken = 'test-token';
+    auth.permissions = new Set(['invoices.write']);
+    auth.permissionsLoaded = true;
+    mockApi(buildInvoicePayload({
+      status: 'paid', effective_status: 'paid', amount_paid: 80.25,
+      payments: [{ id: 'p1', amount: 80.25, method: 'card', date: '2026-05-22' }],
+    }));
+    const wrapper = mountView();
+    await flushPromises();
+    await nextTick();
+
+    // Still offered — hiding it would leave someone wanting to void a mispaid
+    // invoice with no control and no reason.
+    await wrapper.find('[data-testid="void-invoice-btn"]').trigger('click');
+    await nextTick();
+
+    const blocked = wrapper.find('[data-testid="void-blocked-reason"]');
+    expect(blocked.exists(), 'the dialog must say WHY it cannot proceed').toBe(true);
+    expect(blocked.text()).toMatch(/payments/i);
+    // No point offering the retype when it cannot unlock anything.
+    expect(wrapper.find('[data-testid="void-confirm-input"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="void-confirm-btn"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('re-fetches through normalizeInvoice instead of assigning the raw response', async () => {
+    // The API speaks `lines`; this view speaks `line_items`. Assigning the
+    // void response directly left line_items undefined and the totals computed
+    // threw "Cannot read properties of undefined (reading 'reduce')" -- AFTER
+    // the void had already succeeded server-side. Caught in a real browser.
+    const wrapper = await mountWith({ permissions: ['invoices.write'] });
+    apiPost.mockResolvedValueOnce({ id: 'inv-1', status: 'void', lines: [], payments: [] });
+
+    await wrapper.find('[data-testid="void-invoice-btn"]').trigger('click');
+    await nextTick();
+    await wrapper.find('[data-testid="void-confirm-input"]').setValue('INV-0001');
+    await nextTick();
+
+    apiGet.mockClear();
+    await wrapper.find('[data-testid="void-confirm-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(apiPost).toHaveBeenCalledWith('/api/invoices/inv-1/void', {}, expect.anything());
+    expect(apiGet, 'a successful void must re-read the invoice, not trust the response shape')
+      .toHaveBeenCalledWith('/api/invoices/inv-1');
+  });
+});

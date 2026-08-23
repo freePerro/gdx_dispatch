@@ -3,9 +3,14 @@
 **Status:** **RELEASED v1.69.0** — MERGED #360, #362, #363, #364; deployed to
 prod and demo 2026-08-19 and walked there on a real invoice. The pricing path
 is built and on main.
-**Follow-up 4 shipped 2026-08-23** — `void_invoice` now releases the part and
-change-order claims it holds, and records the counts in the audit event. See
-§ Follow-ups.
+**Follow-ups 4 and 9 shipped 2026-08-23** — `void_invoice` now releases the
+part and change-order claims it holds and records the counts in its audit
+event (#413, v1.81.1); and the office can finally *reach* void at all: a Void
+action on the invoice detail screen behind a typed confirmation, with the route
+gated on `invoices.write`. See § Follow-ups. Two new findings were filed there
+rather than bundled: 18 of 20 invoice mutation routes carry no permission gate,
+and this tenant's `technician` role snapshot has drifted to include
+`invoices.write`.
 **Still not built (re-verified 2026-08-23):** provenance on a stored price
 (no source column, no audit event — "who priced this and why" is still
 unanswerable, invariant #1 on money code); a server-side unbilled-parts gate
@@ -392,12 +397,55 @@ Each of these was found during the build and deliberately left out of it.
    "no orphans in either direction" rule that missing UI is the larger defect.
    Filed as follow-up 9.
 
-9. **The office has no way to void an invoice.** `POST /api/invoices/{id}/void`
-   is a complete, audited, ledger-aware endpoint with zero callers — found by
-   the follow-up-4 review, 2026-08-23. Voiding is terminal (there is no un-void
-   endpoint anywhere in the repo), which is exactly why the UI question is a
-   product decision and not a mechanical wiring job: where the control lives,
-   what it warns, and who may press it. Held for Doug.
+9. ~~**The office has no way to void an invoice.**~~ **FIXED 2026-08-23.**
+   `POST /api/invoices/{id}/void` was a complete, audited, ledger-aware
+   endpoint with zero callers. It now has a Void action on the invoice detail
+   screen behind a **typed confirmation** (retype the invoice number — the
+   pattern `DatabaseAdminView` uses for a migration), because voiding is
+   terminal and there is no un-void endpoint anywhere in the repo. The dialog
+   states the consequences rather than asking "are you sure": the invoice stays
+   on the record marked void, its parts and change orders go back on the
+   unbilled checklist, the ledger entry reverses, and billing the work needs a
+   new invoice. The route is now gated on `invoices.write`, matching
+   `verify_invoice` next door.
+
+   **Two defects the adversarial review caught before merge**, both the same
+   class — a comment asserting behaviour the code did not have:
+   (a) the comment claimed the button was hidden on a paid invoice; the `v-if`
+   had no such guard, so the operator would read a permanent-deletion warning,
+   retype the whole invoice number, and *then* eat the server's 409. It now
+   explains the payments blocker up front and does not offer the retype.
+   (b) the success toast promised "parts are back on the unbilled list" while
+   `fetchUnbilledJobParts` returns early on any non-draft invoice — so the
+   banner is empty by design and the true statement read as a lie on screen.
+   Reworded to say the work is billable again *from the job*.
+   A real browser also caught a crash a unit test could not: assigning the void
+   response straight to the view left `line_items` undefined (the API speaks
+   `lines`) and the totals computed threw — **after** the void had succeeded.
+
+10. **18 of the 20 mutation routes in `routers/invoices.py` have no permission
+    gate.** Swept 2026-08-23 while gating `/void`. Only `/verify` and `/void`
+    declare `require_permission`. Ungated and reachable by any authenticated
+    user: invoice create, `PATCH /{id}`, `DELETE /{id}`, `/lines` (add / patch
+    / delete), `/payments`, `/payments/{id}/void`, `/refund`, `/credit-memo`,
+    `/apply-credit`, `/payment-plan`, `/send`, `/mark-sent`, `/pay-link`,
+    `/finalize`, `/send-receipt`, `/email-preview`. `/refund` and
+    `/payments/{id}/void` move money and are indicted harder than `/void` was.
+    Deliberately NOT bundled into the void PR — changing authorization on
+    eighteen money routes at once is its own risk-managed change, and it needs
+    a decision about which permission each one takes.
+
+11. **This tenant's `technician` role snapshot has drifted.** Measured on prod
+    2026-08-23: `tenant_roles` holds two `technician` rows, one with the
+    builtin 11 permissions and one with **18, including `invoices.read_all` and
+    `invoices.write`** — and both role-assigned technicians resolve to the
+    drifted one. `_load_user_permissions` rule 4 trusts a non-admin snapshot
+    verbatim, so BUILTIN_ROLES does not save it. Consequence: the
+    `invoices.write` gate on `/void` does **not** currently exclude technicians
+    on this tenant, and they can already reach `/billing` and create invoices.
+    Pre-existing and unrelated to the void work, but the void button makes it
+    consequential. The repair is a role-snapshot reset, which is an
+    authorization data change — Doug's call.
 
 5. **Estimate→job copy strips prices into free-text notes**
    (`routers/estimates.py:2117`) — writes `"$X ea"` into `notes` and leaves
