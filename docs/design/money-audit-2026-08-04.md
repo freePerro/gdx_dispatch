@@ -454,7 +454,51 @@ The locking pattern is applied to an approval flag and not to money.
 race genuinely cannot slip through. Add `with_for_update()` on the invoice row in
 `_mark_invoice_paid` as well.
 
-### M3 — A partial refund voids the entire payment `HIGH` `CONFIRMED`
+### M3 — A partial refund voids the entire payment `HIGH` `CONFIRMED` 🟡 HALF FIXED
+
+**The void is fixed, 2026-08-23.** `charge.refunded` now splits: a full refund
+(`amount_refunded >= amount`) still voids the payment and re-opens the invoice;
+a **partial** one leaves the payment and the balance alone. Refunding $50 of a
+$500 payment no longer voids the $500, no longer flips the invoice paid→sent,
+and no longer puts a paid-in-full customer back into dunning.
+
+**Deliberately still open: the partial refund is not auto-recorded as money.**
+The first implementation did record it as an `InvoiceAdjustment(kind='refund')`,
+and an adversarial review found two ways that double-books, both needing a
+schema change to close:
+
+1. `amount_refunded` is **cumulative**, so a partial refund followed by a full
+   one arrives as `amount_refunded == amount` and takes the void branch — which
+   knows nothing about the partial row already written. Net paid goes
+   **negative**: $550 reversed against a $500 charge, and every later office
+   refund on that invoice 422s forever.
+2. If the office also records the refund by hand — the normal way to record one
+   — nothing links the two rows, so $50 returned is booked as **$100**, under
+   the cap, silently.
+
+Both need refunds keyed on **Stripe's refund id in a real column**, not inferred
+from free text. Until that exists the webhook records the FACT — a
+`stripe_partial_refund_received` audit event plus a WARNING log naming the
+amounts and the invoice — and leaves the money entry to
+`POST /api/invoices/{id}/refund`, which caps by net paid and posts to the
+ledger. Incomplete and visible beats wrong and silent on a money surface, and it
+is strictly better than the void it replaces. Scoped in
+`stripe-refund-reconciliation-plan.md`.
+
+**Known consequence, written down rather than discovered later:** until the
+office records it, the dashboard "collected" tile overstates cash by the
+refunded amount (`reports.py:1539` now says so).
+
+**Sibling found in the sweep, NOT fixed here:** a **partial dispute** has the
+identical shape — a $50 dispute on a $500 charge voids all $500. It is left
+alone deliberately, because a dispute is provisional and needs the lifecycle
+**M15** describes (there is no `charge.dispute.closed` handler at all), not a
+one-sided split. Recorded against M15.
+
+Prod exposure when this was fixed: 3 card payments totalling $1,021 and zero
+refunds ever recorded.
+
+The original finding:
 
 `charge.refunded` routes straight to `_reverse_recorded_payment`, which sets
 `voided_at` on the whole `Payment` row
@@ -548,6 +592,12 @@ it is not currently `succeeded`. Filter `voided_at.is_(None)` in the existence c
 so a legitimate re-record can heal a wrongful void.
 
 ### M15 — Dispute handling is one-directional `MEDIUM` `CONFIRMED`
+
+**Sibling added 2026-08-23 during M3's sweep:** disputes also void the payment
+in FULL regardless of the disputed amount, so a $50 dispute on a $500 charge
+reverses all $500 — the same shape M3 fixed for refunds. It was not split the
+same way, because a dispute is provisional: the lifecycle below has to exist
+first, or a partial split just creates a second wrong state to unwind.
 
 `charge.dispute.created` voids the payment (correct), but there is no
 `charge.dispute.closed` handler anywhere. Winning a dispute reinstates the money at

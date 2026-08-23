@@ -1535,12 +1535,21 @@ def cash_risk_kpis(
     # created_at, so a backfilled payment lands in the period the money
     # actually arrived. Voided payments stay history: excluded here exactly
     # as _recalculate_invoice and the ledger exclude them.
-    # Refunds are asymmetric in this schema (adversarial audit catch): a
+    # Refunds are asymmetric in this schema (adversarial audit catch): a FULL
     # Stripe refund VOIDS the payment row (already excluded above), but an
     # office refund is an append-only InvoiceAdjustment kind='refund' with
     # the Payment row left standing. Counting payments alone would make the
     # tile net-of-card-refunds but gross-of-check-refunds — subtract refund
     # adjustments in the same window so "collected" means NET CASH both ways.
+    #
+    # M3 (2026-08-23) added a third shape: a PARTIAL Stripe refund no longer
+    # voids the payment (voiding $500 over a $50 goodwill refund was the bug),
+    # and it is not auto-recorded as an adjustment either — keying refunds to
+    # Stripe's refund id needs a column that does not exist yet, and without
+    # one the auto-record double-books against a manual office entry. So until
+    # the office records it, this tile OVERSTATES collected cash by the
+    # refunded amount. The webhook writes a `stripe_partial_refund_received`
+    # audit event so the gap is findable rather than silent.
     last30_start_date = today - timedelta(days=29)
     collected_count, collected_gross = db.execute(
         select(func.count(), func.coalesce(func.sum(Payment.amount), 0)).where(
@@ -1622,9 +1631,10 @@ def cash_risk_kpis(
             "window_days": 30,
         },
         "collected": {
-            # NET cash: payments minus office-refund adjustments. Stripe
-            # refunds already void their payment row, so both refund paths
-            # subtract exactly once.
+            # NET cash: payments minus office-refund adjustments. A FULL
+            # Stripe refund already voids its payment row, so those two paths
+            # subtract exactly once. A PARTIAL Stripe refund is not subtracted
+            # here until the office records it — see the M3 note above.
             "total": float(collected_gross or 0) - float(refunded_window or 0),
             "count": int(collected_count or 0),
             "refunded": float(refunded_window or 0),

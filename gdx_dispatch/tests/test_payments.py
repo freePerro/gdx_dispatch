@@ -629,3 +629,173 @@ def test_receipt_email_placeholder_on_webhook(db_session, invoice, caplog):
 
     assert result["status"] == "paid"
     assert any(str(invoice.id) in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# M3 — a partial refund must not void the whole payment
+# ---------------------------------------------------------------------------
+
+
+def _lined_invoice(db, *, number, unit_price):
+    """An invoice with a REAL line.
+
+    `_mk_invoice` creates none, and `_recalculate_invoice` derives the total
+    from lines — so a line-less invoice is silently rewritten to just its
+    preserved tax ($12). A balance assertion on that invoice holds no matter
+    what the refund logic does, which is how the first draft of these tests
+    "passed" while proving nothing.
+    """
+    from gdx_dispatch.models.tenant_models import InvoiceLine
+
+    inv = _mk_invoice(db, token=uuid.uuid4().hex, number=number, total=unit_price)
+    db.add(InvoiceLine(
+        invoice_id=inv.id, description="Work", quantity=1,
+        unit_price=unit_price, line_total=unit_price, taxable=False,
+        company_id=inv.company_id,
+    ))
+    inv.tax_amount = 0
+    db.commit()
+    db.refresh(inv)
+    return inv
+
+
+def _pay(db, invoice, reference, cents):
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    assert handle_payment_webhook(
+        {
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": reference,
+                    "metadata": {"invoice_id": str(invoice.id)},
+                    "amount_received": cents,
+                }
+            },
+        },
+        db,
+    )["status"] == "paid"
+    db.refresh(invoice)
+
+
+def _refund_event(reference, charge_cents, refunded_cents, kind="charge.refunded"):
+    return {
+        "type": kind,
+        "data": {
+            "object": {
+                "id": "ch_x",
+                "payment_intent": reference,
+                "amount": charge_cents,
+                "amount_refunded": refunded_cents,
+            }
+        },
+    }
+
+
+def test_a_partial_refund_leaves_the_payment_and_the_invoice_alone(db_session):
+    """The finding itself: refunding $50 of a $500 payment as goodwill used to
+    void the entire $500 — balance back to $500, invoice flipped paid→sent, and
+    dunning chasing a customer who had paid in full.
+
+    Uses a LINED invoice paid at its exact total, so `balance_due == 0` is a
+    real assertion about the refund rather than an artefact of a $12 invoice
+    over-paid by $488.
+    """
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_invoice(db_session, number="INV-M3-PARTIAL", unit_price=500.00)
+    assert float(inv.total) == 500.00, "the fixture must bill what we pay"
+    _pay(db_session, inv, "pi_partial", 50000)
+    assert inv.status == "paid"
+    assert float(inv.balance_due or 0) == 0.0
+
+    out = handle_payment_webhook(_refund_event("pi_partial", 50000, 5000), db_session)
+    assert out["status"] == "partial_refund_not_recorded"
+    assert out["refunded_total"] == 50.00
+
+    db_session.refresh(inv)
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_partial").one()
+    assert pay.voided_at is None, "a partial refund voided the whole payment"
+    assert invoice_is_still_paid(inv), "the customer paid; the invoice must stay paid"
+
+
+def invoice_is_still_paid(inv) -> bool:
+    return inv.status == "paid" and float(inv.balance_due or 0) == 0.0
+
+
+def test_the_partial_refund_is_recorded_as_a_fact_even_though_the_money_is_not(db_session):
+    """It is not silently dropped. The office has to record the money entry
+    (the endpoint that caps by net paid and posts to the ledger), so the event
+    has to be findable — otherwise "we did not book it" becomes "nobody knew"."""
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_invoice(db_session, number="INV-M3-AUDIT", unit_price=500.00)
+    _pay(db_session, inv, "pi_audited", 50000)
+    handle_payment_webhook(_refund_event("pi_audited", 50000, 5000), db_session)
+
+    row = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "stripe_partial_refund_received")
+        .one()
+    )
+    assert row.details["refunded_total"] == 50.00
+    assert row.details["charge_total"] == 500.00
+    assert row.details["recorded"] is False
+    assert row.user_id == "stripe:webhook"
+
+
+def test_a_full_refund_still_voids_and_reopens(db_session):
+    """The other half of `charge.refunded`, unchanged: the money really left."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_invoice(db_session, number="INV-M3-FULL", unit_price=500.00)
+    _pay(db_session, inv, "pi_full", 50000)
+    out = handle_payment_webhook(_refund_event("pi_full", 50000, 50000), db_session)
+    assert out["status"] == "reversed"
+
+    db_session.refresh(inv)
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_full").one()
+    assert pay.voided_at is not None
+    assert inv.status != "paid"
+    assert float(inv.balance_due or 0) > 0
+
+
+def test_a_refund_without_amounts_falls_back_to_the_full_void(db_session):
+    """Older payloads carry no `amount_refunded`. Absent is not zero, and must
+    not be read as a partial refund of nothing."""
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_invoice(db_session, number="INV-M3-NOAMT", unit_price=500.00)
+    _pay(db_session, inv, "pi_noamt", 50000)
+    out = handle_payment_webhook(
+        {
+            "type": "charge.refunded",
+            "data": {"object": {"id": "ch_y", "payment_intent": "pi_noamt"}},
+        },
+        db_session,
+    )
+    assert out["status"] == "reversed"
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_noamt").one()
+    assert pay.voided_at is not None
+
+
+def test_a_dispute_still_voids_in_full_even_with_amounts_present(db_session):
+    """Only `charge.refunded` splits. A dispute takes the whole payment back
+    regardless of what the payload says about amounts.
+
+    NOTE: a PARTIAL dispute has the same shape as the bug fixed here — a $50
+    dispute on a $500 charge voids all $500. That is left alone deliberately:
+    a dispute is provisional and needs the lifecycle M15 describes (there is no
+    `charge.dispute.closed` handler at all), not a one-sided split.
+    """
+    from gdx_dispatch.core.payments import handle_payment_webhook
+
+    inv = _lined_invoice(db_session, number="INV-M3-DISP", unit_price=500.00)
+    _pay(db_session, inv, "pi_disp", 50000)
+    out = handle_payment_webhook(
+        _refund_event("pi_disp", 50000, 5000, kind="charge.dispute.created"), db_session
+    )
+    assert out["status"] == "reversed"
+    pay = db_session.query(Payment).filter(Payment.reference == "pi_disp").one()
+    assert pay.voided_at is not None
