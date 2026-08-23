@@ -110,13 +110,21 @@ prod and demo and walked on prod in light and dark.
       `stash@{1}` and `stash@{2}` predate this session.
 - [ ] **~18 untracked screenshots in the repo root** (`eventlog-*.png`, `n8n-*.png`,
       `prod-*.png`, …) from earlier sessions. Not mine to delete.
-- [ ] **13 untracked design docs in `docs/design/`** — plans that were written but never
-      committed. Worth committing so the corpus audit can see them.
+- [ ] **13 of the 59 design docs are untracked** — written but never committed, so they
+      exist only on this machine. The completion ledger classifies all 59, which means 13 of
+      its rows describe plans nobody else can read. Committing them is what makes that audit
+      reproducible. _(counted 2026-08-23: 46 tracked, 13 untracked)_
 
 ---
 
 ## Not in this file
 
 Anything the [Design Doc Completion Ledger](https://claude.ai/code/artifact/6294e8e2-c7ab-4f8f-9b6f-cf9480c9dd5b)
-already tracks row by row — 23 completed, 23 not completed, 8 not started. This file is the
-short list of what needs a person; the ledger is the exhaustive one.
+already tracks row by row — **24 completed, 23 not completed, 10 not started, 2 superseded**,
+which is all 59 files in `docs/design/`. This file is the short list of what needs a person;
+the ledger is the exhaustive one.
+
+One caveat that applies to both: of those 59 docs, **46 are on `origin/main` and 13 are
+untracked** — local to one machine. A ledger row for an untracked doc describes a plan that
+exists nowhere else, so committing them is what makes this audit reproducible by anyone but
+the person holding the laptop.
