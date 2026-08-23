@@ -754,6 +754,100 @@ def _invoice_public_photos(invoice: Any, db: Session) -> list[dict[str, Any]]:
 # Webhook helper (called from gdx_dispatch/routers/stripe_webhook.py)
 # ---------------------------------------------------------------------------
 
+def _apply_charge_refund(db: Session, data: dict) -> dict:
+    """Split `charge.refunded` into the two things it actually means.
+
+    M3. Stripe fires this event for PARTIAL refunds too, and the old code
+    treated both as one: straight to the full void. Refunding $50 of a $500
+    payment as goodwill voided the entire $500 — the balance came back, the
+    invoice flipped paid→sent, and dunning chased a customer who had paid in
+    full.
+
+    * **Full** (``amount_refunded >= amount``) — the money genuinely left.
+      Void the payment; the balance re-opens and the invoice un-pays. Unchanged.
+    * **Partial** — the customer still paid. **Do not touch the payment.**
+
+    Why a partial refund is not recorded here automatically
+    ------------------------------------------------------
+    It is tempting, and an adversarial review showed two ways it books money
+    twice, both of which need a schema change to close properly:
+
+    1. ``amount_refunded`` is cumulative, so a partial refund followed by a
+       full one arrives as ``amount_refunded == amount`` and takes the void
+       branch — which knows nothing about the partial row already written. Net
+       paid goes NEGATIVE: $550 reversed on a $500 charge.
+    2. If the office also records the refund by hand (the normal way to record
+       one), nothing links the two rows, so $50 returned is booked as $100.
+
+    Both need refunds keyed on Stripe's refund id in a real column, not
+    inferred from free text. Until that exists, this records the FACT loudly —
+    audit event plus log — and leaves the money entry to the office refund
+    endpoint, which caps by net paid and posts to the ledger. Incomplete and
+    visible beats wrong and silent on a money surface, and it is strictly
+    better than the void it replaces.
+    """
+    from gdx_dispatch.core.audit import log_audit_event_sync
+
+    reference = str(data.get("payment_intent") or "")
+    if not reference:
+        return {"status": "no_reference"}
+
+    charge_total = _cents_to_dollars(data.get("amount"))
+    refunded_total = _cents_to_dollars(data.get("amount_refunded"))
+
+    # Absent is not zero. An older payload shape, or one that omits the
+    # amounts, must not be read as a partial refund of nothing.
+    if refunded_total is None or charge_total is None or refunded_total >= charge_total:
+        return _reverse_recorded_payment(db, reference, "charge.refunded")
+
+    payment = db.scalars(
+        select(Payment).where(Payment.reference == reference, Payment.voided_at.is_(None))
+    ).first()
+    if payment is None:
+        return {"status": "no_payment_to_reverse", "reference": reference}
+
+    logger.warning(
+        "stripe_partial_refund_not_recorded reference=%s refunded=%.2f of charge=%.2f "
+        "invoice=%s — the payment was left intact (a partial refund must not void it); "
+        "record the refund via POST /api/invoices/{id}/refund so it reaches the books",
+        reference, refunded_total, charge_total, payment.invoice_id,
+    )
+    log_audit_event_sync(
+        db=db,
+        tenant_id=None,
+        user_id="stripe:webhook",
+        action="stripe_partial_refund_received",
+        entity_type="invoice",
+        entity_id=str(payment.invoice_id),
+        details={
+            "reference": reference,
+            "charge_total": charge_total,
+            "refunded_total": refunded_total,
+            "recorded": False,
+            "why": "partial refunds are recorded by the office refund endpoint; "
+                   "see M3 in money-audit-2026-08-04",
+        },
+    )
+    db.commit()
+    return {
+        "status": "partial_refund_not_recorded",
+        "reference": reference,
+        "charge_total": charge_total,
+        "refunded_total": refunded_total,
+    }
+
+
+def _cents_to_dollars(value) -> float | None:
+    """Stripe amounts are integer minor units. ``None`` means "not supplied",
+    which is different from zero and must not be read as a full refund."""
+    if value is None:
+        return None
+    try:
+        return round(int(value) / 100.0, 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
     """Void the Payment row recorded for ``reference`` and re-open the invoice.
 
@@ -862,7 +956,15 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
 
     # Money leaving again. `charge.*` events carry the PaymentIntent id in
     # `payment_intent`; that is the same value stored as Payment.reference.
-    if event_type in ("charge.refunded", "charge.dispute.created", "charge.failed"):
+    if event_type == "charge.refunded":
+        # M3 (money audit 2026-08-04): Stripe fires `charge.refunded` for
+        # PARTIAL refunds too. This used to route straight to the full void, so
+        # refunding $50 of a $500 payment as goodwill voided the entire $500 —
+        # the balance came back, the invoice flipped from paid to sent, and
+        # dunning chased a customer who had paid in full.
+        return _apply_charge_refund(db, data)
+
+    if event_type in ("charge.dispute.created", "charge.failed"):
         return _reverse_recorded_payment(
             db, str(data.get("payment_intent") or ""), event_type
         )
