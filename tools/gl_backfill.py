@@ -79,13 +79,11 @@ def _print_report(report: dict) -> None:
             )
     else:
         print("  ✓ every open invoice's GL AR matches its operational balance")
-    suspects = report.get("legacy_credit_suspects") or []
-    if suspects:
-        print(f"\n  ⚠ {len(suspects)} invoice(s) carry legacy amount_paid values — pre-GL")
-        print("    credit memos lived there and are invisible to BOTH sides of this")
-        print("    report (delta reads zero). Hand-check these against QBO aging:")
-        for row in suspects:
-            print(f"    - {row['invoice_number']}: amount_paid ${_dollars(row['amount_paid_cents'])}")
+    # The legacy-amount_paid suspects block printed here was removed
+    # 2026-08-22 with the column (migration 073). It had already stopped
+    # discriminating: the 2026-07-31 repair rewrote `amount_paid` as a payment
+    # cache on 287 rows, so the probe flagged 286 invoices — nearly the whole
+    # book — and the QBO hand-check it pointed at is unreachable anyway.
 
 
 def _write_csv(path: str, rows: list[dict]) -> None:

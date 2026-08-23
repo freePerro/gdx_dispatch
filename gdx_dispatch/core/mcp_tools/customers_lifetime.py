@@ -39,11 +39,12 @@ async def handler(principal: Any, db: Any, customer_id: str, **_) -> dict[str, A
     """
     Calculates lifetime revenue rollup for a specific customer.
     """
-    # The query as specified in the requirements.
+    # Sums `total`, NOT the dropped `total_amount` (migration 073) — that column
+    # was NULL on every row, so lifetime value reported $0 for every customer.
     # Note: The requirement says 'status=paid' and 'deleted_at IS NULL'.
     query = """
         SELECT
-            COALESCE(SUM(total_amount), 0),
+            COALESCE(SUM(total), 0),
             COUNT(*),
             MIN(issue_date),
             MAX(issue_date)

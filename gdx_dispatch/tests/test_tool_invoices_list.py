@@ -27,7 +27,8 @@ def _row(amount: float = 100.0, status: str = "unpaid") -> SimpleNamespace:
         invoice_number=f"INV-{uuid4().hex[:6]}",
         customer_id=str(uuid4()),
         status=status,
-        total_amount=amount,
+        # Invoice.total_amount was dropped (migration 073); total is the amount.
+        total=amount,
         amount_due=amount if status != "paid" else 0.0,
         issue_date=None,
         due_date=None,

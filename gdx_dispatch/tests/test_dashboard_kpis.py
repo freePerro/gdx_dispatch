@@ -45,8 +45,8 @@ def kpi_db():
     db.execute(text("""
         CREATE TABLE invoices (
             id TEXT PRIMARY KEY, job_id TEXT, invoice_number TEXT,
-            total REAL DEFAULT 0, total_amount REAL, balance_due REAL DEFAULT 0,
-            amount_paid REAL DEFAULT 0, status TEXT, due_date TEXT,
+            total REAL DEFAULT 0, balance_due REAL DEFAULT 0,
+            status TEXT, due_date TEXT,
             invoice_date TEXT, created_at TEXT NOT NULL, deleted_at TEXT,
             customer_id TEXT, company_id TEXT
         )
@@ -175,18 +175,29 @@ def _seed_job(db, *, lifecycle_stage="completed", created_at=None, completed_at=
 
 
 def _seed_invoice(db, *, balance_due, due_date, status="sent", total=None, amount_paid=0):
+    """`total_amount` and `amount_paid` were dropped (migration 073) — both were
+    columns nothing wrote. `total` carries the money; a paid amount is a real
+    payment row."""
     iid = str(uuid.uuid4())
     db.execute(text("""
-        INSERT INTO invoices (id, total, total_amount, balance_due, amount_paid, status,
+        INSERT INTO invoices (id, total, balance_due, status,
                               due_date, invoice_date, created_at, company_id)
-        VALUES (:id, :t, :ta, :bd, :ap, :st, :dd, :idate, :created, 'tenant-test')
+        VALUES (:id, :t, :bd, :st, :dd, :idate, :created, 'tenant-test')
     """), {
-        "id": iid, "t": total or balance_due, "ta": total or balance_due,
-        "bd": balance_due, "ap": amount_paid, "st": status,
+        "id": iid, "t": total or balance_due,
+        "bd": balance_due, "st": status,
         "dd": due_date.isoformat() if due_date else None,
         "idate": (due_date or datetime.now(UTC).date()).isoformat(),
         "created": _iso(datetime.now(UTC)),
     })
+    if amount_paid:
+        db.execute(text("""
+            INSERT INTO payments (id, invoice_id, amount, company_id, created_at)
+            VALUES (:id, :iid, :amt, 'tenant-test', :created)
+        """), {
+            "id": str(uuid.uuid4()), "iid": iid, "amt": amount_paid,
+            "created": _iso(datetime.now(UTC)),
+        })
     db.commit()
     return iid
 

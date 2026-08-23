@@ -97,7 +97,7 @@ async def handler(
             "invoice_number": inv.invoice_number,
             "customer_id": str(inv.customer_id),
             "status": inv.status,
-            "total_amount": _f(inv.total_amount),
+            "total_amount": _f(inv.total),  # column dropped (073); `total` is the amount
             "amount_due": _f(getattr(inv, "amount_due", None)),
             "due_date": inv.due_date.isoformat() if inv.due_date else None,
         })

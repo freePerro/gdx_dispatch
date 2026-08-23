@@ -61,7 +61,6 @@ def _invoice(db, total="1000.00", status="draft", customer_id=None):
         tax_amount=Decimal("0.00"),
         total=Decimal(total),
         balance_due=Decimal(total),
-        amount_paid=Decimal("0.00"),
         invoice_date=dt.date(2026, 7, 1),
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=COMPANY,
@@ -120,14 +119,18 @@ def _live_ar_cents(db) -> int:
 # Credit memos
 # ---------------------------------------------------------------------------
 
-def test_credit_memo_reduces_balance_without_touching_amount_paid(db):
-    """bug #4: the old endpoint inflated amount_paid, which recalc ignores —
-    the credit evaporated on the next recalculation."""
+def test_credit_memo_reduces_balance_via_the_adjustments_table(db):
+    """bug #4: the old endpoint inflated `amount_paid`, which recalc ignored —
+    so the credit evaporated on the next recalculation. The credit now lives in
+    invoice_adjustments, and `amount_paid` no longer exists at all (it was a
+    cache nothing wrote; dropped in migration 073)."""
     inv = _invoice(db, total="500.00", status="sent")
     _credit(db, inv, 200.0)
     db.refresh(inv)
     assert float(inv.balance_due) == 300.0
-    assert float(inv.amount_paid) == 0.0
+    assert not hasattr(inv, "amount_paid"), (
+        "the deprecated cache is back — see migration 073 and money-audit M35"
+    )
     row = db.scalars(select(InvoiceAdjustment)).one()
     assert row.kind == "credit_memo" and float(row.amount) == 200.0
 
@@ -182,10 +185,11 @@ def test_unknown_reason_defaults_to_refunds_bucket(db):
 # Refunds
 # ---------------------------------------------------------------------------
 
-def test_refund_capped_by_net_paid_not_amount_paid(db):
+def test_refund_capped_by_net_paid(db):
+    """Was "…not_amount_paid": it used to set that deprecated column to $999 to
+    prove the cap ignored it. The column is gone (migration 073), so the cap can
+    only ever read real payments — which is the property being asserted."""
     inv = _invoice(db, total="200.00", status="sent")
-    inv.amount_paid = Decimal("999.00")  # deprecated garbage — must be ignored
-    db.commit()
     with pytest.raises(HTTPException) as exc:
         _refund(db, inv, 50.0)  # nothing actually paid
     assert exc.value.status_code == 422

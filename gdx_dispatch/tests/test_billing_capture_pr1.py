@@ -157,13 +157,17 @@ def test_aging_report_excludes_non_receivables(tenant_db_session):
     assert all(b["count"] == 0 for b in out["buckets"])
 
 
-def test_aging_report_uses_balance_due_not_amount_paid(tenant_db_session):
-    """amount_paid is the deprecated field balance recomputation ignores —
-    a partially-paid invoice must age by its balance_due remainder."""
+def test_aging_report_uses_balance_due(tenant_db_session):
+    """A partially-paid invoice must age by its balance_due remainder.
+
+    This used to set `inv.amount_paid = 100` to prove the report ignored that
+    deprecated column. The column is dropped (migration 073), so the
+    assignment had become a silent no-op on an unmapped attribute — green, and
+    asserting nothing. The property still holds: the report ages on
+    balance_due, and a real payment does not change that.
+    """
     db = tenant_db_session
     inv = _seed_invoice(db, status="sent", balance=300.0, due_days_ago=35, total=1000.0)
-    # Simulate stale legacy amount_paid that disagrees with balance_due.
-    inv.amount_paid = Decimal("100.00")
     db.commit()
 
     out = aging_report(_=_current_user(), db=db)

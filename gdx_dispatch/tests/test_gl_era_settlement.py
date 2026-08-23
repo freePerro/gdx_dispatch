@@ -65,7 +65,7 @@ def _era_invoice(db, total="1000.00"):
         invoice_number=f"INV-{uuid4().hex[:8].upper()}",
         status="sent", subtotal=Decimal(total), tax_amount=Decimal("0.00"),
         total=Decimal(total), balance_due=Decimal(total),
-        amount_paid=Decimal("0.00"), invoice_date=date(2026, 5, 12),
+        invoice_date=date(2026, 5, 12),
         public_token=secrets.token_urlsafe(48)[:64], company_id=COMPANY,
     )
     db.add(inv)

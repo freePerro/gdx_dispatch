@@ -48,7 +48,6 @@ def _make_invoice(status="draft", company_id=COMPANY, number=None):
         invoice_number=number or f"INV-{uuid4().hex[:8].upper()}",
         status=status,
         total=Decimal("100.00"),
-        amount_paid=Decimal("0.00"),
         invoice_date=dt.date(2026, 7, 1),
         public_token=secrets.token_urlsafe(48)[:64],
         company_id=company_id,

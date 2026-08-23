@@ -304,7 +304,6 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
     rows = []
     op_total = 0
     gl_attributed = 0
-    legacy_credit_suspects = []
     era_settlement_shortfalls = []
     cutover = _cutover_date(session, company_id)
     for invoice in _company_invoices(session, company_id):
@@ -348,19 +347,20 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
                         )
         op_total += op_cents
         gl_attributed += gl_cents
-        # Pre-GL credit memos lived as amount_paid mutations — invisible to
-        # BOTH the opening formula and balance_due recomputation, so their
-        # delta reads zero here (self-consistent, not correct). Surface every
-        # invoice carrying legacy amount_paid so the QBO aging hand-check
-        # knows exactly which rows deserve a hard look.
-        legacy_paid = to_cents(_dec(getattr(invoice, "amount_paid", None)))
-        if legacy_paid:
-            legacy_credit_suspects.append(
-                {
-                    "invoice_number": invoice.invoice_number,
-                    "amount_paid_cents": legacy_paid,
-                }
-            )
+        # The `legacy_credit_suspects` probe lived here. It flagged every
+        # invoice carrying a non-zero `amount_paid` so a QBO aging hand-check
+        # could give those rows a hard look — pre-GL credit memos were recorded
+        # as amount_paid mutations, invisible to both the opening formula and
+        # balance recomputation.
+        #
+        # Removed 2026-08-22 with the column (migration 073). It had already
+        # stopped meaning anything: the 2026-07-31 repair repurposed
+        # `amount_paid` from "legacy credit residue" into a payment cache and
+        # wrote it on 287 rows, so the probe flagged 286 invoices — 278 of them
+        # pre-cutover, i.e. effectively the whole book. A probe designed to
+        # surface a handful that surfaces everything surfaces nothing. The
+        # hand-check it fed is separately unsatisfiable: it compares against a
+        # QBO we can no longer reach (gl-phase1-core-ledger §11 step 4).
         if op_cents or gl_cents:
             rows.append(
                 {
@@ -376,7 +376,6 @@ def reconciliation_report(session: Session, company_id: str) -> dict:
     return {
         "rows": rows,
         "mismatches": mismatches,
-        "legacy_credit_suspects": legacy_credit_suspects,
         "era_settlement_shortfalls": era_settlement_shortfalls,
         "totals": {
             "operational_ar_cents": op_total,

@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 import gdx_dispatch.models.tenant_models  # noqa: F401  (register tenant tables)
 import gdx_dispatch.modules.proposals.models  # noqa: F401  (register Estimate)
 from gdx_dispatch.core.audit import TenantBase
-from gdx_dispatch.models.tenant_models import Invoice, Job
+from gdx_dispatch.models.tenant_models import Invoice, Job, Payment
 from gdx_dispatch.modules.proposals.models import Estimate
 from gdx_dispatch.routers.jobs import _display_state_for_jobs
 
@@ -66,8 +66,16 @@ def _invoice(
     job_id, status, balance_due, amount_paid, deleted=False,
     billing_type="standard",
 ) -> Invoice:
+    """Build an invoice, and carry `amount_paid` as a real PAYMENT.
+
+    `Invoice.amount_paid` was dropped (migration 073) — it was a cache nothing
+    wrote. Paid-to-date now comes from the payments table, so a fixture that
+    wants "this invoice has $500 on it" has to say so the way production does.
+    The payment is attached via the relationship so a single `db.add(...)` at
+    the call site still works unchanged.
+    """
     n = uuid.uuid4().hex[:12]
-    return Invoice(
+    inv = Invoice(
         id=uuid.uuid4(),
         job_id=job_id,
         customer_id=uuid.uuid4(),  # FK not enforced in sqlite test
@@ -76,11 +84,20 @@ def _invoice(
         public_token=f"tok-{n}",
         status=status,
         balance_due=balance_due,
-        amount_paid=amount_paid,
         billing_type=billing_type,
         deleted_at=datetime.now(timezone.utc) if deleted else None,
         created_at=datetime.now(timezone.utc),
     )
+    if amount_paid:
+        inv.payments.append(
+            Payment(
+                id=uuid.uuid4(),
+                amount=amount_paid,
+                company_id=_TENANT,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    return inv
 
 
 def _estimate(job_id, status, deleted=False) -> Estimate:

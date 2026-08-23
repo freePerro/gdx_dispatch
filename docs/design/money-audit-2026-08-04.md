@@ -1135,8 +1135,17 @@ lines or both exclude them — and restrict the clamp to genuinely new lines.
 > ignores comments, docstrings, and the API payload key of the same name, which
 > is now sourced from payments).
 >
-> The column itself is dropped separately — see the migration PR — so this
-> change is revertable without a schema move.
+> **The column is now dropped** — migration `073_drop_dead_money_columns`,
+> which also takes `invoices.total_amount` (M8's column) and `jobs.dispatched_at`
+> (defined once, never written, never read, NULL on all 275 prod rows). The
+> audit's own words about total_amount applied to all three: "a column nothing
+> writes and five things read is a trap that keeps re-firing."
+>
+> Rollback rebuilds `amount_paid` from the payments table rather than restoring
+> the drift — a downgrade should leave the column better than it was. Verified
+> upgrade → downgrade → upgrade on BOTH dialects against real engines; the first
+> draft rolled back to all-zeros on SQLite because only the Postgres branch had
+> the rebuild, which a guard now catches.
 
 
 Not strictly frontend, but this is where it surfaces. `Invoice.amount_paid` is
