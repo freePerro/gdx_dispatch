@@ -1587,3 +1587,202 @@ def test_soft_delete_invoice_releases_billed_parts(tenant_db_session):
     )
     tenant_db_session.refresh(part)
     assert part.billed_invoice_id is None
+
+
+def test_void_invoice_releases_billed_parts(tenant_db_session):
+    """A void is dead money — `billing_predicates` excludes voided invoices
+    from "is this job billed". But the parts it claimed stayed stamped with
+    its id, so they read "billed" while no LIVE invoice bills them: gone from
+    `parts-needed?unbilled=true`, absent from Ready-for-Billing, unbillable
+    forever. Work that was going to be charged silently stops being charged.
+
+    The same reasoning was already applied to the soft-delete path (see
+    `test_soft_delete_invoice_releases_billed_parts`) and to
+    `void_untouched_autodraft`. Three void-ish paths, and this was the one
+    that did not release.
+    """
+    from gdx_dispatch.routers.invoices import void_invoice
+
+    job = _seed_job(tenant_db_session)
+    part = _seed_part(tenant_db_session, job.id, "Torsion spring", "received")
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            line_items=[{"description": "Torsion spring", "quantity": 1, "unit_price": 120.0}],
+            from_part_ids=[part.id],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(part)
+    assert str(part.billed_invoice_id) == created["id"], "setup: the part must be claimed"
+
+    void_invoice(
+        invoice_id=UUID(created["id"]),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(part)
+    assert part.billed_invoice_id is None, "voiding stranded the part"
+
+
+def test_void_invoice_records_what_it_released(tenant_db_session):
+    """Voiding puts work back on the unbilled checklist. "What changed" has to
+    include that, not just the invoice total — otherwise the trail cannot
+    explain why a part reappeared."""
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.routers.invoices import void_invoice
+
+    job = _seed_job(tenant_db_session)
+    part = _seed_part(tenant_db_session, job.id, "Cable", "received")
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            line_items=[{"description": "Cable", "quantity": 1, "unit_price": 30.0}],
+            from_part_ids=[part.id],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    void_invoice(
+        invoice_id=UUID(created["id"]),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    row = (
+        tenant_db_session.query(AuditLog)
+        .filter(AuditLog.action == "invoice_voided")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    assert row is not None
+    assert row.details["released_parts"] == 1
+    assert "released_change_orders" in row.details
+
+
+def test_voiding_one_invoice_leaves_another_invoices_claims_alone(tenant_db_session):
+    """The scoping counterfactual, and the one that would hurt if it broke.
+
+    An earlier version of this test asserted that an unclaimed part is still
+    unclaimed after the void — which is true whether or not the release exists,
+    so it proved nothing (adversarial review 2026-08-23 called it out). What
+    actually needs pinning is the `billed_invoice_id == invoice.id` scope: a
+    part claimed by a DIFFERENT, live invoice must survive this void. Widen
+    that predicate by accident and voiding any invoice would un-bill work that
+    another invoice is still charging for — the office would re-add the line
+    and the customer would be billed twice.
+    """
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.routers.invoices import void_invoice
+
+    job = _seed_job(tenant_db_session)
+    # Claimed by the invoice that SURVIVES.
+    keeper_part = _seed_part(tenant_db_session, job.id, "Roller", "received")
+    keeper = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            line_items=[{"description": "Roller", "quantity": 1, "unit_price": 40.0}],
+            from_part_ids=[keeper_part.id],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(keeper_part)
+    assert str(keeper_part.billed_invoice_id) == keeper["id"], "setup"
+
+    # A second, claim-free invoice on the same job, which is the one voided.
+    # `force` clears the double-billing guard — deliberate: both invoices must
+    # live on ONE job, or the surviving claim would be scoped out by job id
+    # rather than by the invoice id this test exists to pin.
+    doomed = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            line_items=[{"description": "Labor", "quantity": 1, "unit_price": 95.0}],
+            force=True,
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    void_invoice(
+        invoice_id=UUID(doomed["id"]),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(keeper_part)
+    assert str(keeper_part.billed_invoice_id) == keeper["id"], (
+        "voiding one invoice released a part another invoice is still billing"
+    )
+    row = (
+        tenant_db_session.query(AuditLog)
+        .filter(AuditLog.action == "invoice_voided")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    # Reports zero rather than omitting the key — a missing count reads as
+    # "nothing was checked", not "nothing was released".
+    assert row.details["released_parts"] == 0
+    assert row.details["released_change_orders"] == 0
+
+
+def test_void_invoice_releases_billed_change_orders(tenant_db_session):
+    """The change-order arm, exercised for real.
+
+    `test_void_invoice_records_what_it_released` only asserted the key exists
+    in the audit details — which would keep passing if the change-order UPDATE
+    matched nothing forever (adversarial review 2026-08-23). An approved CO
+    claimed onto a voided invoice is the same money as a stranded part: it
+    drops off `change-orders?unbilled=true` while no live invoice charges it.
+    """
+    from gdx_dispatch.core.audit import AuditLog
+    from gdx_dispatch.routers.change_orders import (
+        ChangeOrder,
+        ChangeOrderIn,
+        create_change_order,
+    )
+    from gdx_dispatch.routers.invoices import void_invoice
+
+    job = _seed_job(tenant_db_session)
+    out = create_change_order(
+        payload=ChangeOrderIn(
+            job_id=str(job.id),
+            customer_id=str(job.customer_id),
+            title="Extra opener",
+            status="approved",
+            line_items=[{"description": "Opener unit", "quantity": 1, "unit_price": 300.0}],
+        ),
+        user=_current_user(),
+        db=tenant_db_session,
+    )
+    co = tenant_db_session.get(ChangeOrder, UUID(out["id"]))
+
+    created = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=job.id,
+            customer_id=job.customer_id,
+            from_change_order_ids=[co.id],
+        ),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(co)
+    assert str(co.billed_invoice_id) == created["id"], "setup: the CO must be claimed"
+
+    void_invoice(
+        invoice_id=UUID(created["id"]),
+        _=_current_user(),
+        db=tenant_db_session,
+    )
+    tenant_db_session.refresh(co)
+    assert co.billed_invoice_id is None, "voiding stranded the change order"
+    row = (
+        tenant_db_session.query(AuditLog)
+        .filter(AuditLog.action == "invoice_voided")
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    assert row.details["released_change_orders"] == 1
