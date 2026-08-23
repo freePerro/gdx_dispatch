@@ -162,6 +162,22 @@
                 {{ data.last_synced_at ? formatDateTime(data.last_synced_at) : '—' }}
               </template>
             </Column>
+            <Column header="Statement account" :style="{ minWidth: '210px' }">
+              <template #body="{ data }">
+                <Select
+                  :modelValue="data.bank_account_id"
+                  :options="statementAccountOptions"
+                  optionLabel="label"
+                  optionValue="value"
+                  placeholder="Not linked"
+                  showClear
+                  :disabled="!canManage"
+                  class="stmt-link-select"
+                  :data-testid="`bank-feeds-statement-link-${data.id}`"
+                  @update:modelValue="(v) => linkStatementAccount(data, v)"
+                />
+              </template>
+            </Column>
             <Column header="Sync" :style="{ width: '100px' }">
               <template #body="{ data }">
                 <InputSwitch
@@ -242,9 +258,17 @@
                 <span :class="amountClass(data.amount_cents)">{{ formatCents(data.amount_cents) }}</span>
               </template>
             </Column>
-            <Column header="" :style="{ width: '110px' }">
+            <Column header="Statement" :style="{ width: '205px' }">
               <template #body="{ data }">
-                <Tag v-if="data.pending" value="pending" severity="warn" />
+                <span :title="matchStatusHint(data)">
+                  <Tag
+                    v-if="matchStatusMeta(data)"
+                    :value="matchStatusMeta(data).label"
+                    :severity="matchStatusMeta(data).severity"
+                    :data-testid="`bank-feeds-txn-status-${data.id}`"
+                  />
+                  <span v-else class="muted">—</span>
+                </span>
               </template>
             </Column>
           </DataTable>
@@ -1110,6 +1134,85 @@ const toggleAccount = async (account, value) => {
   account.sync_enabled = value;
 };
 
+// ── statement-account link (books-convergence Track 2 item 4) ───────
+// Asked for, not inferred: the feed and statement sides share no natural key,
+// and the only last-4 on this tenant's SimpleFIN rows lives inside a
+// renameable display name.
+
+const statementAccountOptions = computed(() =>
+  statementAccounts.value.map((a) => ({
+    label: `${a.name} ····${a.last4}`,
+    value: a.id,
+  })),
+);
+
+const linkStatementAccount = async (account, value) => {
+  const previous = account.bank_account_id;
+  account.bank_account_id = value || null;
+  try {
+    const res = await api.patch(
+      `/api/bank-feeds/accounts/${account.id}/statement-link`,
+      { bank_account_id: value || null },
+    );
+    account.bank_account_label = res.bank_account_label || null;
+    // The status column is derived from this link, so the rows on screen are
+    // stale the moment it changes.
+    loadTransactions();
+  } catch {
+    account.bank_account_id = previous;
+    toast.add({
+      severity: 'error',
+      summary: 'Could not link that statement account',
+      detail: 'The link was not saved. The account is unchanged.',
+      life: 5000,
+    });
+  }
+};
+
+// ── feed match status ──────────────────────────────────────────────
+
+const MATCH_STATUS_META = {
+  // `pending` lives here rather than in a column of its own: it is one of the
+  // statuses, and a second tag for the same fact read as two different facts
+  // — and pushed the table wide enough to clip its own last column.
+  pending: { label: 'pending', severity: 'warn' },
+  matched: { label: 'matched', severity: 'success' },
+  statement_verified: { label: 'statement-verified', severity: 'info' },
+  ambiguous: { label: 'ambiguous', severity: 'warn' },
+  unmatched: { label: 'unmatched', severity: 'danger' },
+  feed_only: { label: 'feed-only', severity: 'warn' },
+  no_amount: { label: 'no amount', severity: 'secondary' },
+  unlinked: { label: 'not linked', severity: 'secondary' },
+};
+
+const MATCH_STATUS_HINT = {
+  matched: 'A statement line for this transaction sits in a confirmed match.',
+  statement_verified: "The bank's own statement shows this transaction. Not reconciled to a books record yet.",
+  ambiguous: 'Identical transactions outnumber the statement lines that could explain them — often a duplicate charge. Which is which cannot be told apart.',
+  unmatched: 'A statement covers this date but shows no such line — worth a look.',
+  feed_only: 'No imported statement covers this date yet.',
+  no_amount: 'The feed did not carry an amount for this row, so there is nothing to compare.',
+  unlinked: 'This feed account has no statement account linked. Set one on the Accounts tab.',
+  pending: 'Still pending at the bank — nothing to compare yet.',
+};
+
+const matchStatusMeta = (row) => {
+  const meta = MATCH_STATUS_META[row.match_status];
+  if (!meta) return null;
+  if (row.match_status === 'matched' && row.match_classification) {
+    return { ...meta, label: `matched · ${row.match_classification}` };
+  }
+  if (row.match_status === 'ambiguous' && row.ambiguous_claimants) {
+    return {
+      ...meta,
+      label: `ambiguous · ${row.ambiguous_claimants} for ${row.ambiguous_lines}`,
+    };
+  }
+  return meta;
+};
+
+const matchStatusHint = (row) => MATCH_STATUS_HINT[row.match_status] || '';
+
 // ── transactions ───────────────────────────────────────────────────
 
 const transactions = ref([]);
@@ -1609,6 +1712,12 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* The picker sits inside a data-table cell; without a cap it stretches the
+   column past the rest of the table on a narrow desktop. */
+.stmt-link-select {
+  width: 100%;
+  max-width: 220px;
+}
 .imports-header {
   display: flex;
   align-items: center;

@@ -643,6 +643,12 @@ def list_accounts(
     rows = db.execute(
         select(BankFeedAccount).order_by(BankFeedAccount.created_at.asc())
     ).scalars().all()
+    # One read for the linked statement-account labels, so the Accounts tab can
+    # show the pairing without the caller hitting /statements/accounts too.
+    stmt_accounts = {
+        r.id: f"{r.name} ····{r.last4}"
+        for r in db.scalars(select(BankAccount)).all()
+    }
     items = []
     for a in rows:
         inst = inst_map.get(a.connection_id, ("", ""))
@@ -661,6 +667,8 @@ def list_accounts(
             "is_inactive": a.is_inactive,
             "initial_backfill_done": a.initial_backfill_done,
             "last_synced_at": a.last_synced_at.isoformat() if a.last_synced_at else None,
+            "bank_account_id": str(a.bank_account_id) if a.bank_account_id else None,
+            "bank_account_label": stmt_accounts.get(a.bank_account_id),
         })
     return {"accounts": items}
 
@@ -685,6 +693,90 @@ def patch_account(
     db.commit()
     _audit(db, request, current_user, "bank_feeds_account_toggled", str(acct.id))
     return {"id": str(acct.id), "sync_enabled": acct.sync_enabled}
+
+
+class StatementLinkPatch(BaseModel):
+    """``None`` clears the link. A separate endpoint from ``AccountPatch``
+    because that body requires ``sync_enabled``, and an optional field there
+    could not tell "leave the link alone" from "unlink this account"."""
+
+    bank_account_id: str | None = None
+
+
+@router.patch("/accounts/{account_id}/statement-link", dependencies=[_MODULE])
+def patch_account_statement_link(
+    account_id: str,
+    body: StatementLinkPatch,
+    request: FastAPIRequest,
+    current_user: dict = Depends(get_current_user),
+    _perm: None = Depends(require_permission("bank_feeds.manage")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Point a feed account at the statement account it really is.
+
+    Books-convergence Track 2 item 4. Asked once per account rather than
+    inferred: the two sides share no natural key, and the only last-4 that
+    survives on the live tenant's SimpleFIN rows lives inside a renameable
+    display name.
+    """
+    try:
+        acct = db.get(BankFeedAccount, UUID(account_id))
+    except ValueError:
+        acct = None
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    target = None
+    if body.bank_account_id:
+        try:
+            target = db.get(BankAccount, UUID(body.bank_account_id))
+        except ValueError:
+            target = None
+        if target is None:
+            raise HTTPException(status_code=404, detail="Bank account not found")
+
+    if target is not None:
+        # One statement account, one feed account. Without this, two feed
+        # accounts pointed at the same statement would both claim the same
+        # lines and both report "statement-verified" for what is one real
+        # transaction — the false-green failure the status column exists to
+        # avoid.
+        clash = db.execute(
+            select(BankFeedAccount).where(
+                BankFeedAccount.bank_account_id == target.id,
+                BankFeedAccount.id != acct.id,
+            )
+        ).scalars().first()
+        if clash is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{target.name} ····{target.last4}' is already linked to "
+                    f"'{clash.name or 'another feed account'}'. Unlink it first."
+                ),
+            )
+
+    previous = str(acct.bank_account_id) if acct.bank_account_id else None
+    acct.bank_account_id = target.id if target is not None else None
+    acct.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    _audit(
+        db,
+        request,
+        current_user,
+        "bank_feeds_account_statement_linked"
+        if target is not None
+        else "bank_feeds_account_statement_unlinked",
+        str(acct.id),
+    )
+    return {
+        "id": str(acct.id),
+        "bank_account_id": str(acct.bank_account_id) if acct.bank_account_id else None,
+        "bank_account_label": (
+            f"{target.name} ····{target.last4}" if target is not None else None
+        ),
+        "previous_bank_account_id": previous,
+    }
 
 
 # ── transactions ───────────────────────────────────────────────────────
@@ -756,6 +848,13 @@ def list_transactions(
     ).all()
 
     inst_map = _institution_map(db)
+    # Books-convergence Track 2 item 4 — what the bank's own statement says
+    # about each row. Computed for the page in three set-based reads, never
+    # stored, and imported here for the same ORM-ordering reason the statement
+    # models are imported late in this module.
+    from gdx_dispatch.modules.bank_feeds.feed_match_status import compute_statuses
+
+    statuses = compute_statuses(db, rows)
     items = []
     for txn, acct in rows:
         inst = inst_map.get(acct.connection_id, ("", ""))
@@ -773,6 +872,7 @@ def list_transactions(
             "check_number": txn.check_number,
             "category": txn.category,
             "merchant_name": txn.merchant_name,
+            **statuses.get(str(txn.id), {}),
         })
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
