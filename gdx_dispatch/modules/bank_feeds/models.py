@@ -167,6 +167,17 @@ class BankFeedAccount(TenantBase):
     account_subtype: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Last-4 display only — the full account number is never stored.
     account_number_masked: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Operator-set link to the statement-evidence account this feed account is
+    # the same real-world account as (books-convergence Track 2 item 4). The
+    # two sides share no natural key — ``bank_accounts`` is keyed on
+    # institution + last4, this table on connection + external id — and on the
+    # live tenant ``account_number_masked`` is EMPTY for every SimpleFIN row,
+    # so the pairing is asked for once rather than guessed off a display name.
+    # NULL means "not linked yet": the feed match status says so plainly
+    # instead of reporting a false discrepancy.
+    bank_account_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("bank_accounts.id"), nullable=True, index=True
+    )
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
     balance: Mapped[object | None] = mapped_column(Numeric(14, 2), nullable=True)
     available_balance: Mapped[object | None] = mapped_column(Numeric(14, 2), nullable=True)
