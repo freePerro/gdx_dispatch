@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import and_ as sa_and
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -60,6 +61,92 @@ def _resolve_date_range(start_date: str | None, end_date: str | None) -> tuple[s
 # can collect on, not the gross sum of every row in the invoices table.
 _BILLED_STATUSES = ("sent", "paid", "overdue")
 
+# M8 (money-audit-2026-08-04, HIGH/CONFIRMED) — one definition of "revenue".
+#
+# `Invoice.total_amount` is nullable and NO insert path writes it: it was NULL
+# on all 349 prod rows on 2026-08-22, so every surface that summed the bare
+# column reported $0 against $829,164.66 of real billed work. `_summary_window`
+# was fixed alone on 2026-04-27 and its four siblings were missed — which is
+# exactly how the bug survived. These helpers exist so the NEXT revenue surface
+# inherits the rule instead of re-deriving half of it.
+#
+# DEPOSITS ARE COUNTED. An earlier draft of this fix excluded
+# billing_type='deposit' on the theory that a deposit and its final invoice
+# bill the same work twice. That is false in this codebase and the adversarial
+# audit caught it: `modules/deposits/service.py` rule 2 — "the final invoice
+# nets the deposit with a negative line ... so deposit revenue + final revenue
+# net to exactly the job's true total — no 150% double-count"
+# (`service.py:503` writes "Less deposit paid — <n>"; prod INV-000354 carries
+# -2936.49 against INV-000353). De-duplication already happens at invoice
+# creation, so filtering deposits out here would subtract them a SECOND time —
+# and of the five non-void deposits on prod only ONE has a netting sibling, so
+# the other four (including a PAID $6,793.04) would have been deleted from
+# revenue outright. Do not re-add the filter.
+_BILLED_STATUS_SQL = ", ".join(f"'{s}'" for s in _BILLED_STATUSES)
+
+
+def _alias_prefix(alias: str) -> str:
+    """`"i"` -> `"i."`, `""` -> `""`, anything else -> ValueError.
+
+    These fragments are interpolated into SQL, so the alias is the one input
+    that could carry injection if a future caller ever sourced it from a
+    request. Whitelisting the shape here is what makes the `# noqa: S608` on
+    the call sites an actual guarantee rather than a promise.
+    """
+    if not alias:
+        return ""
+    if not alias.isidentifier():
+        raise ValueError(f"unsafe SQL alias: {alias!r}")
+    return f"{alias}."
+
+
+def _revenue_amount_sql(alias: str = "") -> str:
+    """`COALESCE(total_amount, total)` for raw-SQL revenue aggregations."""
+    p = _alias_prefix(alias)
+    return f"COALESCE({p}total_amount, {p}total)"
+
+
+def _revenue_where_sql(alias: str = "") -> str:
+    """Shared WHERE fragment: not deleted, and billed (excludes draft + void)."""
+    p = _alias_prefix(alias)
+    return f"{p}deleted_at IS NULL AND {p}status IN ({_BILLED_STATUS_SQL})"
+
+
+def _revenue_date_sql(alias: str = "") -> str:
+    """Raw-SQL twin of `_revenue_date_expr()`: when the work was BILLED.
+
+    `created_at` is when the row was inserted, which for imported invoices is
+    the import run — 278 QB invoices spanning 2024-2026 all carry
+    created_at = 2026-03-29. Grouping revenue on it draws a $607,419.52 spike
+    on the import date and empties the months the work was actually billed in.
+    `_summary_window` moved to invoice_date on 2026-04-27 (Phase D) and the
+    raw-SQL surfaces were missed — the same sibling gap as `total_amount`.
+
+    invoice_date is nullable on legacy rows, so fall back to created_at.
+    """
+    p = _alias_prefix(alias)
+    return f"COALESCE({p}invoice_date, CAST({p}created_at AS DATE))"
+
+
+def _iso_or_none(value):
+    """Raw-SQL date columns come back as datetime on Postgres and as `str` on
+    SQLite. Both reach these serializers, so coerce instead of assuming — a
+    bare `.isoformat()` made `/top-customers` and `/revenue-by-period`
+    untestable on the SQLite harness (and would 500 on any SQLite-backed run).
+    """
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
+def _revenue_orm_filters() -> tuple:
+    """ORM equivalent of `_revenue_where_sql` — same terms, same order."""
+    return (
+        Invoice.deleted_at.is_(None),
+        Invoice.status.in_(_BILLED_STATUSES),
+    )
+
 # Lifecycle stages considered "open" — anything not terminal.
 # Source of truth is jobs.lifecycle_stage (Enum), not jobs.status (legacy
 # nullable varchar that imports leave NULL).
@@ -95,8 +182,12 @@ def _summary_window(db: Session, start_dt: str, end_dt: str, today: date | None 
             func.coalesce(func.sum(_amount), 0).label("revenue_total"),
             func.coalesce(func.avg(_amount), 0).label("avg_job_value"),
         ).where(
-            Invoice.deleted_at.is_(None),
-            Invoice.status.in_(_BILLED_STATUSES),
+            # M8: routed through the shared definition so the KPI card and the
+            # "Revenue by Period" chart can never drift apart. Behaviour here is
+            # UNCHANGED — these are the same two terms this query already had.
+            # (This also feeds DashboardView's "Revenue Billed" tile, so a real
+            # rule change here would move a second screen, not just Reports.)
+            *_revenue_orm_filters(),
             _rev_date >= _start_d,
             _rev_date < _end_d,
         )
@@ -221,7 +312,7 @@ def top_customers(
     user_supplied_range = bool(start_date or end_date)
     start_dt, end_dt, end_date_resolved = _resolve_date_range(start_date, end_date)
     sql = text(
-        """
+        f"""
         SELECT
             c.id AS customer_id,
             c.name AS customer_name,
@@ -229,24 +320,23 @@ def top_customers(
             c.phone AS customer_phone,
             COUNT(DISTINCT i.id) AS invoice_count,
             COUNT(DISTINCT j.id) AS job_count,
-            COALESCE(SUM(COALESCE(i.total_amount, i.total)), 0) AS total_revenue,
-            COALESCE(AVG(COALESCE(i.total_amount, i.total)), 0) AS avg_invoice,
+            COALESCE(SUM({_revenue_amount_sql("i")}), 0) AS total_revenue,
+            COALESCE(AVG({_revenue_amount_sql("i")}), 0) AS avg_invoice,
             MAX(i.created_at) AS last_invoice_at
         FROM invoices i
         LEFT JOIN jobs j ON j.id = i.job_id
         LEFT JOIN customers c ON c.id = COALESCE(i.customer_id, j.customer_id) AND c.deleted_at IS NULL
-        WHERE i.deleted_at IS NULL
-          AND i.status IN ('sent', 'paid', 'overdue')
-          AND i.created_at >= :start_dt
-          AND i.created_at < :end_dt
+        WHERE {_revenue_where_sql("i")}
+          AND {_revenue_date_sql("i")} >= :start_d
+          AND {_revenue_date_sql("i")} < :end_d
           AND c.id IS NOT NULL
         GROUP BY c.id, c.name, c.email, c.phone
         ORDER BY total_revenue DESC NULLS LAST
         LIMIT :limit
-        """
+        """  # noqa: S608 — interpolation is constants + whitelisted alias (_alias_prefix); user input is bound
     )
     try:
-        rows = db.execute(sql, {"start_dt": start_dt, "end_dt": end_dt, "limit": limit}).mappings().all()
+        rows = db.execute(sql, {"start_d": date.fromisoformat(start_dt[:10]), "end_d": date.fromisoformat(end_dt[:10]), "limit": limit}).mappings().all()
         if not rows and not user_supplied_range:
             # Widen to 90 days for the no-data default case.
             wider_start = datetime.combine(
@@ -272,7 +362,7 @@ def top_customers(
             "total_revenue": float(r["total_revenue"] or 0),
             "lifetime_value": float(r["total_revenue"] or 0),
             "avg_invoice": float(r["avg_invoice"] or 0),
-            "last_invoice_at": r["last_invoice_at"].isoformat() if r["last_invoice_at"] else None,
+            "last_invoice_at": _iso_or_none(r["last_invoice_at"]),
         }
         for r in rows
     ]
@@ -302,21 +392,25 @@ def revenue_by_period(
     try:
         rows = db.execute(
             text(
-                """
+                f"""
                 SELECT
-                    date_trunc(:period, created_at) AS period_start,
+                    date_trunc(:period, {_revenue_date_sql()}) AS period_start,
                     COUNT(*) AS invoice_count,
-                    COALESCE(SUM(total_amount), 0) AS revenue,
-                    COALESCE(AVG(total_amount), 0) AS avg_invoice
+                    COALESCE(SUM({_revenue_amount_sql()}), 0) AS revenue,
+                    COALESCE(AVG({_revenue_amount_sql()}), 0) AS avg_invoice
                 FROM invoices
-                WHERE deleted_at IS NULL
-                  AND created_at >= :start_dt
-                  AND created_at < :end_dt
-                GROUP BY date_trunc(:period, created_at)
+                WHERE {_revenue_where_sql()}
+                  AND {_revenue_date_sql()} >= :start_d
+                  AND {_revenue_date_sql()} < :end_d
+                GROUP BY date_trunc(:period, {_revenue_date_sql()})
                 ORDER BY period_start ASC
-                """
+                """  # noqa: S608 — interpolation is constants only; user input is bound
             ),
-            {"period": period, "start_dt": start_dt, "end_dt": end_dt},
+            {
+                "period": period,
+                "start_d": date.fromisoformat(start_dt[:10]),
+                "end_d": date.fromisoformat(end_dt[:10]),
+            },
         ).mappings().all()
     except Exception:
         log.exception("revenue_by_period_failed")
@@ -324,7 +418,7 @@ def revenue_by_period(
 
     items = [
         {
-            "period_start": r["period_start"].isoformat() if r["period_start"] else None,
+            "period_start": _iso_or_none(r["period_start"]),
             "invoice_count": int(r["invoice_count"] or 0),
             "revenue": float(r["revenue"] or 0),
             "avg_invoice": float(r["avg_invoice"] or 0),
@@ -691,19 +785,19 @@ def revenue_analytics(
     # Revenue by date — text(); CAST(created_at AS DATE) is portable across SQLite + PostgreSQL
     by_period = db.execute(
         text(
-            """
+            f"""
             SELECT
-                CAST(created_at AS DATE) AS period,
-                COALESCE(SUM(total_amount), 0) AS revenue
+                {_revenue_date_sql()} AS period,
+                COALESCE(SUM({_revenue_amount_sql()}), 0) AS revenue
             FROM invoices
-            WHERE deleted_at IS NULL
-              AND created_at >= :start_dt
-              AND created_at < :end_dt
-            GROUP BY CAST(created_at AS DATE)
+            WHERE {_revenue_where_sql()}
+              AND {_revenue_date_sql()} >= :start_d
+              AND {_revenue_date_sql()} < :end_d
+            GROUP BY {_revenue_date_sql()}
             ORDER BY period
-            """
+            """  # noqa: S608 — interpolation is constants only; user input is bound
         ),
-        {"start_dt": start_dt, "end_dt": end_dt},
+        {"start_d": date.fromisoformat(start_dt[:10]), "end_d": date.fromisoformat(end_dt[:10])},
     ).mappings().all()
 
     # Revenue by job type — ORM; uses Invoice.total (canonical) with fallback to total_amount
@@ -718,9 +812,15 @@ def revenue_analytics(
         .outerjoin(
             Invoice,
             (Invoice.job_id == Job.id)
-            & Invoice.deleted_at.is_(None)
-            & (Invoice.created_at >= start_dt)
-            & (Invoice.created_at < end_dt),
+            # M8: by_period and by_job_type ship in ONE payload. Before this,
+            # by_period summed the null column ($0) while by_job_type coalesced
+            # (real dollars), so the response's own total contradicted its own
+            # detail rows. Both now share the one revenue definition.
+            & sa_and(*_revenue_orm_filters())
+            # M8: window on the billed date, matching by_period in this same
+            # payload (and _summary_window). created_at is the import run.
+            & (_revenue_date_expr() >= date.fromisoformat(start_dt[:10]))
+            & (_revenue_date_expr() < date.fromisoformat(end_dt[:10])),
         )
         .where(
             Job.deleted_at.is_(None),
@@ -1176,7 +1276,7 @@ def cash_risk_kpis(
     # rather than collections.py (which uses mixed-case status filters
     # and would miss most prod rows).
     invoices = db.execute(
-        select(Invoice.id, Invoice.total, Invoice.amount_paid, Invoice.balance_due, Invoice.due_date)
+        select(Invoice.id, Invoice.total, Invoice.balance_due, Invoice.due_date)
         .where(
             Invoice.deleted_at.is_(None),
             Invoice.status.notin_(("paid", "void", "draft")),
@@ -1195,7 +1295,10 @@ def cash_risk_kpis(
         days_overdue = (today - inv.due_date).days
         if days_overdue < 0:
             continue
-        amount = float(inv.balance_due or (inv.total or 0) - (inv.amount_paid or 0))
+        # M35: the fallback arm used to subtract `amount_paid`, a cache nothing
+        # maintains. It was unreachable anyway — the query above already
+        # filters `balance_due > 0` — so the stale column is simply gone.
+        amount = float(inv.balance_due or 0)
         if amount <= 0:
             continue
         total_outstanding += amount
@@ -1406,13 +1509,23 @@ def export_report(
         raise HTTPException(status_code=400, detail="Invalid report type")
 
     start_dt, end_dt, _ = _resolve_date_range(start_date, end_date)
-    params = {"start_dt": start_dt, "end_dt": end_dt}
+    params = {
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "start_d": date.fromisoformat(start_dt[:10]),
+        "end_d": date.fromisoformat(end_dt[:10]),
+    }
 
     queries = {
         "jobs": "SELECT id, title, status, assigned_to, scheduled_at, created_at FROM jobs WHERE deleted_at IS NULL AND created_at >= :start_dt AND created_at < :end_dt",
-        "invoices": "SELECT id, invoice_number, status, total_amount, balance_due, due_date, created_at FROM invoices WHERE deleted_at IS NULL AND created_at >= :start_dt AND created_at < :end_dt",
+        # M8: this exported `total_amount` verbatim — a column NULL on every
+        # prod row — so the accountant's CSV carried a blank total on all 349
+        # invoices. Export the coalesced amount under the name people expect.
+        # Deliberately NOT filtered to billed statuses: this is the invoice
+        # register, where a draft or void is a row you want to SEE.
+        "invoices": f"SELECT id, invoice_number, status, {_revenue_amount_sql()} AS total, balance_due, due_date, {_revenue_date_sql()} AS invoice_date FROM invoices WHERE deleted_at IS NULL AND {_revenue_date_sql()} >= :start_d AND {_revenue_date_sql()} < :end_d",  # noqa: S608 — constants only; dates are bound
         "customers": "SELECT id, name, email, phone, created_at FROM customers WHERE deleted_at IS NULL AND created_at >= :start_dt AND created_at < :end_dt",
-        "revenue": "SELECT CAST(created_at AS DATE) as date, COUNT(*) as invoice_count, COALESCE(SUM(total_amount),0) as revenue FROM invoices WHERE deleted_at IS NULL AND created_at >= :start_dt AND created_at < :end_dt GROUP BY CAST(created_at AS DATE) ORDER BY 1",
+        "revenue": f"SELECT {_revenue_date_sql()} as date, COUNT(*) as invoice_count, COALESCE(SUM({_revenue_amount_sql()}),0) as revenue FROM invoices WHERE {_revenue_where_sql()} AND {_revenue_date_sql()} >= :start_d AND {_revenue_date_sql()} < :end_d GROUP BY {_revenue_date_sql()} ORDER BY 1",  # noqa: S608 — constants only; dates are bound
     }
 
     result = db.execute(text(queries[report_type]), params)

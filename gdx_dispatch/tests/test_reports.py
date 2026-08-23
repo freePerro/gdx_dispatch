@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -271,7 +272,14 @@ def _seed_invoice(
     total_amount: float,
     balance_due: float,
     status: str,
+    total: float = 0,
+    billing_type: str = "standard",
+    customer_id: str | None = None,
 ) -> str:
+    # `total_amount` stays a positional-style kwarg for the ~20 existing
+    # callers, but prod's shape is the OPPOSITE: total_amount is NULL on every
+    # row and `total` carries the money (M8). Pass total_amount=None, total=X
+    # to reproduce a real invoice.
     # Phase D audit fix 2026-04-27: canonical Invoice.status enum is
     # draft/sent/paid/overdue/void. Older tests passed display labels
     # ("Unpaid", "Partial", "Paid") which the old reports code summed
@@ -292,9 +300,11 @@ def _seed_invoice(
         text(
             """
             INSERT INTO invoices (
-                id, job_id, total_amount, balance_due, status, company_id, created_at, invoice_date, deleted_at
+                id, job_id, total_amount, total, billing_type, balance_due, status,
+                customer_id, company_id, created_at, invoice_date, deleted_at
             ) VALUES (
-                :id, :job_id, :total_amount, :balance_due, :status, 'tenant-test', :created_at, :invoice_date, NULL
+                :id, :job_id, :total_amount, :total, :billing_type, :balance_due, :status,
+                :customer_id, 'tenant-test', :created_at, :invoice_date, NULL
             )
             """
         ),
@@ -302,8 +312,11 @@ def _seed_invoice(
             "id": inv_id,
             "job_id": job_id,
             "total_amount": total_amount,
+            "total": total,
+            "billing_type": billing_type,
             "balance_due": balance_due,
             "status": canon_status,
+            "customer_id": customer_id,
             "created_at": _iso(created_at),
             "invoice_date": created_at.date().isoformat(),
         },
@@ -745,3 +758,350 @@ def test_reports_router_registered_in_create_app():
     app_py = Path("gdx_dispatch/app.py").read_text(encoding="utf-8")
     assert "from gdx_dispatch.routers import reports as reports_router" in app_py
     assert "app.include_router(reports_router.router if hasattr(reports_router, \"router\") else reports_router)" in app_py
+
+
+# ---------------------------------------------------------------------------
+# M8 (money-audit-2026-08-04, HIGH/CONFIRMED) — revenue surfaces summed
+# `Invoice.total_amount`, a column NO insert path writes. It was NULL on all
+# 349 prod rows on 2026-08-22, so "Revenue by Period" charted $0 against
+# $829,164.66 of real billed work and the accountant's CSV exported a blank
+# total column.
+#
+# Every test above seeds `total_amount` — the same shape the DEMO seeder
+# writes (docker/demo/seed_demo.py:302 sets total_amount=total), which is
+# precisely why the demo stack looked healthy and no test ever caught this.
+# These tests seed the PROD shape instead: total_amount NULL, `total` real.
+# Each one fails against the pre-fix code.
+# ---------------------------------------------------------------------------
+
+
+def _seed_prod_shape_invoice(db, *, job_id, created_at, total, status="paid", **kw):
+    """An invoice as prod actually stores one: total_amount NULL, total set."""
+    return _seed_invoice(
+        db,
+        job_id=job_id,
+        created_at=created_at,
+        total_amount=None,
+        total=total,
+        balance_due=kw.pop("balance_due", 0),
+        status=status,
+        **kw,
+    )
+
+
+def _csv_body(resp) -> str:
+    """export_report returns a StreamingResponse; Starlette wraps the plain
+    `iter([str])` into an async generator, so drain it on a loop. Chunks are
+    `str` here, not bytes."""
+    async def _drain():
+        return [chunk async for chunk in resp.body_iterator]
+
+    return "".join(
+        chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+        for chunk in asyncio.run(_drain())
+    )
+
+
+def test_m8_revenue_analytics_reads_total_when_total_amount_is_null(tenant_db_session):
+    """Pre-fix this returned 0.0 — the bug, exactly as prod showed it."""
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="M8 Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=2), lifecycle_stage="Complete", job_type="Repair",
+    )
+    _seed_prod_shape_invoice(tenant_db_session, job_id=job, created_at=now - timedelta(days=2), total=1500)
+
+    data = reports.revenue_analytics(None, None, {}, tenant_db_session)
+
+    assert data["total_revenue"] == pytest.approx(1500.0)
+    # by_period and by_job_type ride in ONE payload and must agree — the audit
+    # flagged them contradicting each other.
+    by_type = {r["job_type"]: r["revenue"] for r in data["by_job_type"]}
+    assert by_type["Repair"] == pytest.approx(1500.0)
+    assert sum(r["revenue"] for r in data["by_period"]) == pytest.approx(
+        sum(by_type.values())
+    )
+
+
+def test_m8_revenue_counts_deposits_but_not_drafts_or_voids(tenant_db_session):
+    """Deposits COUNT. An earlier draft of M8's fix excluded them, reasoning a
+    deposit and its final invoice bill the same work twice. False here: the
+    final invoice already nets the deposit with a negative "Less deposit paid"
+    line (modules/deposits/service.py rule 2), so filtering them out subtracts
+    them a SECOND time — and a deposit with no final sibling yet would vanish
+    from revenue entirely. This test is the guard against re-adding it."""
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Deposit Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=2), lifecycle_stage="Complete",
+    )
+    _seed_prod_shape_invoice(tenant_db_session, job_id=job, created_at=now - timedelta(days=2), total=1000)
+    # A deposit IS billed revenue and must count.
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2),
+        total=400, billing_type="deposit",
+    )
+    # Neither of these is billed, so neither may count.
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2),
+        total=999, status="draft",
+    )
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=2),
+        total=777, status="void",
+    )
+
+    data = reports.revenue_analytics(None, None, {}, tenant_db_session)
+    assert data["total_revenue"] == pytest.approx(1400.0), (
+        "deposit must be included (1000 + 400); draft and void must not be"
+    )
+
+
+def test_m8_summary_and_top_customers_agree_with_each_other(tenant_db_session):
+    """KPI card and the top-customers table render on the SAME screen as the
+    chart; a different revenue rule in either is a visible contradiction."""
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Agree Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=3), lifecycle_stage="Complete",
+    )
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=3),
+        total=2500, customer_id=cust,
+    )
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=3),
+        total=600, billing_type="deposit", customer_id=cust,
+    )
+
+    summary = reports.reports_summary(None, None, {}, tenant_db_session)
+    top = reports.top_customers(None, None, 10, {}, tenant_db_session)
+
+    # 2500 final + 600 deposit: both are billed revenue.
+    assert summary["revenue_total"] == pytest.approx(3100.0)
+    assert top["items"][0]["total_revenue"] == pytest.approx(3100.0)
+    assert summary["revenue_total"] == pytest.approx(top["items"][0]["total_revenue"])
+
+
+def test_m8_export_invoices_csv_carries_a_real_total(tenant_db_session):
+    """The invoices export selected `total_amount` verbatim, so every row's
+    total column was blank in the accountant's CSV."""
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="CSV Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=1), lifecycle_stage="Complete",
+    )
+    _seed_prod_shape_invoice(tenant_db_session, job_id=job, created_at=now - timedelta(days=1), total=1234.56)
+
+    resp = reports.export_report(None, None, "invoices", {}, tenant_db_session)
+    body = _csv_body(resp)
+
+    assert "total" in body.splitlines()[0]
+    assert "1234.56" in body, f"invoice total missing from CSV: {body!r}"
+
+
+def test_m8_export_revenue_csv_is_not_all_zero(tenant_db_session):
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="CSV Rev Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=1), lifecycle_stage="Complete",
+    )
+    _seed_prod_shape_invoice(tenant_db_session, job_id=job, created_at=now - timedelta(days=1), total=880)
+
+    resp = reports.export_report(None, None, "revenue", {}, tenant_db_session)
+    body = _csv_body(resp)
+
+    assert "880" in body, f"revenue missing from CSV: {body!r}"
+
+
+def test_m8_shared_revenue_definition_is_actually_applied(tenant_db_session):
+    """Behavioural, not source-text: asserting a helper returns a given STRING
+    proves authorship, not correctness. Execute the fragment and check which
+    rows it admits.
+    """
+    now = datetime.now(UTC)
+    cust = _seed_customer(tenant_db_session, name="Predicate Co")
+    job = _seed_job(
+        tenant_db_session, customer_id=cust, technician_id=None,
+        created_at=now - timedelta(days=1), lifecycle_stage="Complete",
+    )
+    for status, total in (("paid", 100), ("sent", 10), ("draft", 5000), ("void", 9000)):
+        _seed_prod_shape_invoice(
+            tenant_db_session, job_id=job, created_at=now - timedelta(days=1),
+            total=total, status=status,
+        )
+    _seed_prod_shape_invoice(
+        tenant_db_session, job_id=job, created_at=now - timedelta(days=1),
+        total=1, billing_type="deposit",
+    )
+
+    got = tenant_db_session.execute(
+        text(
+            f"SELECT COALESCE(SUM({reports._revenue_amount_sql()}), 0) "
+            f"FROM invoices WHERE {reports._revenue_where_sql()}"
+        )
+    ).scalar()
+
+    # 100 + 10 + 1(deposit); draft and void excluded.
+    assert float(got) == pytest.approx(111.0)
+
+
+def test_m8_alias_prefix_rejects_anything_that_is_not_an_identifier():
+    """The alias is the only value interpolated into these SQL fragments that a
+    future caller could source from a request — which is what the `# noqa: S608`
+    on the call sites leans on. Keep that guarantee real.
+    """
+    assert reports._alias_prefix("") == ""
+    assert reports._alias_prefix("i") == "i."
+    for bad in ("i; DROP TABLE invoices", "i.", "1=1", "i OR 1", "'"):
+        with pytest.raises(ValueError):
+            reports._alias_prefix(bad)
+
+
+# ---------------------------------------------------------------------------
+# /revenue-by-period on real Postgres.
+#
+# This is THE endpoint behind the broken "Revenue by Period" chart, and it was
+# the one M8 surface with no guard: its SQL uses `date_trunc`, which SQLite
+# does not have, so the in-memory harness above cannot execute it at all. An
+# adversarial review caught that the fix shipped six tests and none of them
+# touched the endpoint the finding is about.
+#
+# Runs against the local `gdx-test-postgres` container. Needs the container
+# reachable — from inside the docker-app image that means `--network host`,
+# otherwise 127.0.0.1:5433 is the *container's* loopback and these SKIP.
+# ---------------------------------------------------------------------------
+
+
+PG_COMPANY = "11111111-1111-1111-1111-111111111111"
+
+
+def _pg_seed_job(session) -> str:
+    """invoices.job_id is NOT NULL with an FK to jobs, so a revenue row needs a
+    real job behind it."""
+    job_id = str(uuid.uuid4())
+    session.execute(
+        text(
+            """
+            INSERT INTO jobs (id, title, lifecycle_stage, dispatch_status,
+                              billing_status, is_return_visit, company_id, created_at)
+            VALUES (:id, 'M8 revenue fixture',
+                    CAST('completed' AS job_lifecycle_stage),
+                    CAST('unassigned' AS job_dispatch_status),
+                    CAST('unbilled' AS job_billing_status),
+                    false, :company, now())
+            """
+        ),
+        {"id": job_id, "company": PG_COMPANY},
+    )
+    return job_id
+
+
+def _pg_seed_invoice(session, job_id, *, total, total_amount, status, billing_type, created_at):
+    session.execute(
+        text(
+            """
+            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+                                  sequence_number, subtotal, tax_amount, total,
+                                  total_amount, balance_due, locked, public_token,
+                                  company_id, created_at, invoice_date)
+            VALUES (:id, :job_id, :num,
+                    CAST(:status AS invoice_status),
+                    CAST(:btype AS invoice_billing_type),
+                    1, 0, 0, :total,
+                    :total_amount, 0, false, :tok,
+                    :company, CAST(:created_at AS timestamptz),
+                    CAST(:created_at AS DATE))
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "job_id": job_id,
+            "num": f"T-{uuid.uuid4().hex[:8]}",
+            "status": status,
+            "btype": billing_type,
+            "total": total,
+            "total_amount": total_amount,
+            "tok": uuid.uuid4().hex,
+            "company": PG_COMPANY,
+            "created_at": created_at,
+        },
+    )
+
+
+def test_m8_revenue_by_period_on_postgres(pg_test_session):
+    """The prod shape: total_amount NULL, `total` real. Pre-fix this endpoint
+    returned revenue 0 for every period against real invoices — which is
+    exactly what the 2026-08-22 prod walk saw.
+    """
+    now = datetime.now(UTC)
+    when = (now - timedelta(days=3)).isoformat()
+    job = _pg_seed_job(pg_test_session)
+    _pg_seed_invoice(pg_test_session, job, total=1500, total_amount=None, status="paid",
+                     billing_type="standard", created_at=when)
+    _pg_seed_invoice(pg_test_session, job, total=500, total_amount=None, status="sent",
+                     billing_type="deposit", created_at=when)
+    # Neither of these is billed revenue.
+    _pg_seed_invoice(pg_test_session, job, total=9999, total_amount=None, status="draft",
+                     billing_type="standard", created_at=when)
+    _pg_seed_invoice(pg_test_session, job, total=8888, total_amount=None, status="void",
+                     billing_type="standard", created_at=when)
+    pg_test_session.commit()
+
+    data = reports.revenue_by_period(None, None, "month", {}, pg_test_session)
+
+    assert data["items"], "no periods returned — the window or filter is wrong"
+    total = sum(i["revenue"] for i in data["items"])
+    # 1500 standard + 500 deposit; draft and void excluded.
+    assert total == pytest.approx(2000.0)
+    assert data["total_revenue"] == pytest.approx(2000.0)
+    # The frontend keys off these exact names (it used to read label/value).
+    first = data["items"][0]
+    assert {"period_start", "invoice_count", "revenue", "avg_invoice"} <= set(first)
+    assert first["period_start"] is not None
+
+
+def test_m8_revenue_periods_use_the_billed_date_not_the_import_date(pg_test_session):
+    """The QB import inserted 278 invoices spanning 2024-2026 with
+    created_at = 2026-03-29. Grouping revenue on created_at drew a
+    $607,419.52 spike on the import day and emptied the months the work was
+    actually billed in. Revenue must follow invoice_date.
+    """
+    job = _pg_seed_job(pg_test_session)
+    # Billed last month; "imported" (created) today.
+    billed = (datetime.now(UTC) - timedelta(days=40)).date()
+    pg_test_session.execute(
+        text(
+            """
+            INSERT INTO invoices (id, job_id, invoice_number, status, billing_type,
+                                  sequence_number, subtotal, tax_amount, total,
+                                  total_amount, balance_due, locked, public_token,
+                                  company_id, created_at, invoice_date)
+            VALUES (:id, :job_id, :num, CAST('paid' AS invoice_status),
+                    CAST('standard' AS invoice_billing_type),
+                    1, 0, 0, 4200, NULL, 0, false, :tok, :company,
+                    now(), CAST(:billed AS DATE))
+            """
+        ),
+        {
+            "id": str(uuid.uuid4()), "job_id": job,
+            "num": f"T-{uuid.uuid4().hex[:8]}", "tok": uuid.uuid4().hex,
+            "company": PG_COMPANY, "billed": billed.isoformat(),
+        },
+    )
+    pg_test_session.commit()
+
+    # A window that contains the BILLED date but ends before today.
+    start = (billed - timedelta(days=5)).isoformat()
+    end = (billed + timedelta(days=5)).isoformat()
+    data = reports.revenue_by_period(start, end, "month", {}, pg_test_session)
+
+    assert sum(i["revenue"] for i in data["items"]) == pytest.approx(4200.0), (
+        "invoice billed inside the window was missed — revenue is still "
+        "grouping/filtering on created_at (the import date)"
+    )
