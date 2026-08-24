@@ -425,6 +425,8 @@ def test_rollup_sales_tax_empty_is_all_zero():
     assert items == []
     assert totals == {
         "tax_total": 0, "tax_collected": 0, "tax_outstanding": 0,
+        # M18: the tax given back is an explicit pair of fields now.
+        "tax_credited": 0, "tax_refunded": 0,
         "gdx_tax": 0, "quickbooks_tax": 0,
     }
 

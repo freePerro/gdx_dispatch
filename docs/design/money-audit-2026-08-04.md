@@ -253,7 +253,7 @@ The math inside it is correct — Decimal throughout, `quantize(0.01, ROUND_HALF
 voided payments excluded, credits netted. **Every bug in this section is a caller
 that violates the invariant the function assumes.**
 
-### M1 — Recording a payment on a QB-imported invoice rewrites its total from wrong lines `CRITICAL` `CONFIRMED`
+### M1 — Recording a payment on a QB-imported invoice rewrites its total from wrong lines `CRITICAL` ✅ **FIXED (probe-proven; §0.6: totals_locked + migration 056)**
 
 **This is the most urgent finding in the audit, because the office is triggering it
 right now.**
@@ -309,7 +309,7 @@ any have *already* been recalculated by a backfill payment. A read-only query ov
 imported invoices comparing `total` against `SUM(line_total)` will tell you both, and
 the ones that already drifted need their totals restored from QB.
 
-### M7 — Estimate discounts evaporate on the first recalc `HIGH` `CONFIRMED`
+### M7 — Estimate discounts evaporate on the first recalc `HIGH` ✅ **FIXED (probe-proven; §0.6 — discount materialized as a line on both create paths)**
 
 Two independent audit passes found this from opposite directions, and the code
 comments admit it.
@@ -344,7 +344,7 @@ conversion, exactly the way deposit netting already does it. That makes
 `total == Σlines + tax` a true invariant instead of something individual callers
 hand-maintain and recalc destroys. Hand-adjusted totals cannot survive this codebase.
 
-### M9 — Two of three invoice-creation paths leave `tax_rate` NULL, freezing tax `MEDIUM` `CONFIRMED`
+### M9 — Two of three invoice-creation paths leave `tax_rate` NULL, freezing tax `MEDIUM` ✅ **FIXED (probe-proven; §0.6 + migration 056 rate-derive)**
 
 `_recalculate_invoice` is rate-driven when `tax_rate` is set and falls back to
 preserving a flat stored `tax_amount` when it is NULL. Only the canonical create path
@@ -368,7 +368,7 @@ cases (`round(2.675, 2)` is 2.67 in float; Decimal half-up gives 2.68).
 **Fix.** Set `tax_rate` on all creation paths and route the `jobs.py` math through
 `_money()`. Better still, drop the legacy NULL branch once no rows need it.
 
-### M10 — Mobile invoicing stamps tax but excludes it from the total `MEDIUM` `CONFIRMED`
+### M10 — Mobile invoicing stamps tax but excludes it from the total `MEDIUM` ✅ **FIXED (probe-proven; §0.6 — mobile stores its tax rate; header restated from lines)**
 
 The mobile path writes `tax_amount` from the estimate, then both estimate branches
 overwrite `invoice.total` and `balance_due` with the line sum alone, leaving the tax
@@ -381,7 +381,7 @@ never asked for.**
 **Fix.** Recompute `total = subtotal + tax_amount` after the overwrite, or zero
 `tax_amount` if this path genuinely means tax-free.
 
-### M11 — Overpayment is clamped to zero and disappears `MEDIUM` `CONFIRMED`
+### M11 — Overpayment is clamped to zero and disappears `MEDIUM` ✅ **FIXED (probe-proven; §0.6 — surfaced 2026-08-08 as the overpayment banner)**
 
 `balance_due = max(total − paid − credited, 0)`. There is no customer-credit concept
 outside the GL, and the GL overpayment gate only runs when
@@ -679,7 +679,7 @@ The scope tell is in the tests: `test_payments_portal_authz.py` covers `charge_m
 ownership, amount and void — and nothing about currency, the `/intent` endpoint, or
 refunds.
 
-### M2 — `/confirm` and the webhook can both insert the same payment `HIGH` `CONFIRMED`
+### M2 — `/confirm` and the webhook can both insert the same payment `HIGH` ✅ **FIXED (probe-proven; §0.6 — partial unique index, migration 056)**
 
 `_mark_invoice_paid` is idempotent by reading first and inserting second
 ([core/payments.py:298-306](../../gdx_dispatch/core/payments.py#L298-L306)):
@@ -778,7 +778,7 @@ refunded $50. Books understate cash by $450.
 **Fix.** Compare `amount_refunded` against the charge amount. Full refund → void.
 Partial → record an `InvoiceAdjustment(kind="refund")` for the refunded portion only.
 
-### M4 — The client picks the currency; the server records the number as dollars `HIGH` `CONFIRMED`
+### M4 — The client picks the currency; the server records the number as dollars `HIGH` ✅ **FIXED (probe-proven; §0.6 — USD locked server-side + webhook-enforced, v1.63.0)**
 
 `CreateIntentRequest.currency` is a client field passed verbatim to Stripe
 ([core/payments.py:123](../../gdx_dispatch/core/payments.py#L123),
@@ -800,7 +800,7 @@ path ([routers/payments.py:53](../../gdx_dispatch/routers/payments.py#L53)).
 then refuse to record any webhook event whose `currency != "usd"`. Both halves —
 otherwise an intent minted before the deploy still records wrong.
 
-### M5 — Portal "Pay" on a settled invoice charges the full total `HIGH` `CONFIRMED`
+### M5 — Portal "Pay" on a settled invoice charges the full total `HIGH` ✅ **FIXED (probe-proven; §0.6 — total-fallback deleted; void/zero-balance 409, v1.63.0)**
 
 [portal.py:523-533](../../gdx_dispatch/routers/portal.py#L523-L533):
 
@@ -1295,7 +1295,7 @@ column *is* populated.
 everywhere, and export `total`. Then delete `total_amount` — a column nothing writes
 and five things read is a trap that keeps re-firing.
 
-### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` `CONFIRMED` 🟡 HALF FIXED
+### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` 🟢 **2 of 3 parts BUILT** — collected-gate (2026-08-22) + credit tax split (PR #TBD 2026-08-24, pro-rata per Doug); supersession netting stays GATED on the §12 supersede model (0 such invoices exist today)
 
 > **Half fixed 2026-08-22.** `tax_collected` no longer keys off
 > `paid_at IS NOT NULL`; it requires a real, non-voided payment. Six prod
@@ -1311,6 +1311,20 @@ and five things read is a trap that keeps re-firing.
 > Splitting a credit into tax and non-tax is a money rule (pro-rata at the
 > invoice's rate? operator-entered? credits never reduce tax?) and needs a
 > migration, so it is deliberately not guessed here.
+
+> **DECIDED and BUILT 2026-08-24 (Doug, AskUserQuestion): pro-rata at the
+> invoice's rate.** `invoice_adjustments.tax_component` (migration 080) =
+> amount × (tax/total), stamped by all four writers through ONE helper
+> (`core/invoice_tax.credit_tax_component`) and backfilled with the SAME
+> arithmetic (the prod row: $570.79 credit on 49796251 → $32.22). The report
+> nets credits out of the LIABILITY in the credit's own period (mirroring
+> `_credits_by_period` — a remitted month is never restated) and refunds out
+> of liability AND collected; per-period `tax_credited`/`tax_refunded` are
+> explicit fields, plus a "Given back" chip on the report. 10 SQLite tests +
+> 2 PG tests (real date_trunc SQL + the PG backfill lane); 4 biting
+> counterfactuals; the PG-fixture schema guard (`structure.sql`) carries the
+> new column so `test_money_tables_in_the_pg_fixture_match_the_orm` stays
+> honest.
 
 
 The known limitation is still live: the report has no join to `invoice_adjustments`,
@@ -1520,7 +1534,7 @@ A job with accepted estimate A ($1,400) and a later declined variant B ($2,100) 
 **Fix.** Filter on accepted (ordering by `accepted_at`) in `jobs.py`, and 409 on a
 non-accepted `estimate_id` in the canonical path.
 
-### M24 — Line taxability is lost on conversion `HIGH` `CONFIRMED`
+### M24 — Line taxability is lost on conversion `HIGH` ✅ **FIXED (probe-proven; §0.6 — taxable flags carried through conversion)**
 
 The line copy forwards `category`, `cost_snapshot` and both margin snapshots — but not
 `taxable`, which defaults to `True`. Estimates exclude labor from tax when the tenant's
@@ -2160,7 +2174,7 @@ fixing; none substitutes for the others.
 middleware off the JWT it already has access to. Then add a test that asserts a
 replayed POST is served from cache in a *production-wired* app, not a hand-built one.
 
-### M37 — Deleting a draft invoice orphans its applied payments `MEDIUM` `CONFIRMED`
+### M37 — Deleting a draft invoice orphans its applied payments `MEDIUM` ✅ **FIXED (probe-proven; §0.6 — delete refuses while live payments exist)**
 
 `delete_invoice` ([invoices.py:1270-1322](../../gdx_dispatch/routers/invoices.py#L1270-L1322))
 checks only `status == "draft"`. It carefully releases parts and change orders back to

@@ -1560,6 +1560,7 @@ CREATE TABLE public.invoice_adjustments (
     invoice_id uuid NOT NULL,
     kind public.invoice_adjustment_kind NOT NULL,
     amount numeric(12,2) NOT NULL,
+    tax_component numeric(12,2) DEFAULT 0.00 NOT NULL,
     reason character varying(200),
     refund_method character varying(50),
     created_by character varying(64),

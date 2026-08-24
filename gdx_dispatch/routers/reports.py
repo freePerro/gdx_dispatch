@@ -168,6 +168,13 @@ def _credits_by_period(db: Session, period: str, start_ts, end_ts) -> dict:
             FROM invoice_adjustments a
             JOIN invoices i ON i.id = a.invoice_id
             WHERE a.kind = 'credit_memo'
+              -- M18 audit round 2, same shape swept here (the only two
+              -- queries netting invoice_adjustments against a status-
+              -- filtered invoice universe live in this file): a voided
+              -- invoice's revenue leaves the universe — its credit memo
+              -- must stop netting too. Deposits deliberately stay (the
+              -- docstring proves excluding them double-subtracts here).
+              AND i.status != 'void'
               AND i.deleted_at IS NULL
               AND a.created_at >= :start_ts
               AND a.created_at < :end_ts
@@ -559,6 +566,11 @@ def _rollup_sales_tax(rows) -> tuple[list[dict], dict]:
             "gdx": _empty_source(),
             "quickbooks": _empty_source(),
         })
+        if r.get("row_kind") == "adjustments":
+            # M18 companion rows: per-period tax given back, split by kind.
+            p["tax_credited"] = float(r.get("tax_credited") or 0) + float(p.get("tax_credited") or 0)
+            p["tax_refunded"] = float(r.get("tax_refunded") or 0) + float(p.get("tax_refunded") or 0)
+            continue
         src = r["source"] if r["source"] in ("gdx", "quickbooks") else "quickbooks"
         p[src] = {
             "tax_total": float(r["tax_total"] or 0),
@@ -567,14 +579,29 @@ def _rollup_sales_tax(rows) -> tuple[list[dict], dict]:
         }
     items = sorted(periods.values(), key=lambda p: p["period_start"])
     for p in items:
-        p["tax_total"] = round(p["gdx"]["tax_total"] + p["quickbooks"]["tax_total"], 2)
-        p["tax_collected"] = round(p["gdx"]["tax_collected"] + p["quickbooks"]["tax_collected"], 2)
+        # M18 (Doug 2026-08-24: pro-rata at the invoice's rate): net the tax
+        # given back. Credits reduce the LIABILITY (tax_total) in the period
+        # the credit was issued — mirroring _credits_by_period's revenue
+        # treatment; a remitted month is never restated. Refunds return cash,
+        # so they reduce liability AND collected, leaving outstanding alone.
+        credited = round(float(p.get("tax_credited") or 0), 2)
+        refunded = round(float(p.get("tax_refunded") or 0), 2)
+        p["tax_credited"] = credited
+        p["tax_refunded"] = refunded
+        p["tax_total"] = round(
+            p["gdx"]["tax_total"] + p["quickbooks"]["tax_total"] - credited - refunded, 2
+        )
+        p["tax_collected"] = round(
+            p["gdx"]["tax_collected"] + p["quickbooks"]["tax_collected"] - refunded, 2
+        )
         p["tax_outstanding"] = round(p["tax_total"] - p["tax_collected"], 2)
 
     totals = {
         "tax_total": round(sum(p["tax_total"] for p in items), 2),
         "tax_collected": round(sum(p["tax_collected"] for p in items), 2),
         "tax_outstanding": round(sum(p["tax_total"] - p["tax_collected"] for p in items), 2),
+        "tax_credited": round(sum(p["tax_credited"] for p in items), 2),
+        "tax_refunded": round(sum(p["tax_refunded"] for p in items), 2),
         "gdx_tax": round(sum(p["gdx"]["tax_total"] for p in items), 2),
         "quickbooks_tax": round(sum(p["quickbooks"]["tax_total"] for p in items), 2),
     }
@@ -609,15 +636,18 @@ def sales_tax_report(
     should be charging the 7.38% default at all on construction-contract work
     (see mn-sales-tax rule) is an accountant call — this shows the numbers.
 
-    KNOWN LIMITATION — reads invoices.tax_amount only, does NOT net credit
-    memos or supersessions. invoice_adjustments (credit_memo/refund) carries a
-    flat `amount` with no tax component, and a superseded original stays in
-    sent/paid status (per the §12 "adjustment, never void-and-reissue"
-    decision). So once §12 supplemental/supersession invoices exist, tax that
-    was credited back still counts here, and a full replacement double-counts
-    against its original. Harmless today (0 invoices with adjusts_invoice_id,
-    1 credit memo with no tax); MUST be reconciled when §12 lands — track the
-    net-of-adjustments tax there, not by patching this read path in isolation.
+    M18 (2026-08-24): credits and refunds DO net now — invoice_adjustments
+    carries a pro-rata `tax_component` (Doug's ruling: amount × tax/total);
+    a companion per-period query subtracts credits from the liability and
+    refunds from liability AND collected, in the ADJUSTMENT's period (the
+    GL's convention — a remitted month is never restated). Only rows whose
+    parent is still in the liability universe net: a voided or deposit
+    invoice's tax never counted, so its credits must not subtract.
+
+    STILL OPEN — supersessions: a §12 replacement invoice
+    (adjusts_invoice_id) double-counts against its original once such
+    invoices exist (0 today). Gated on the §12 supersede model; reconcile
+    there, not by patching this read path in isolation.
     """
     start_dt, end_dt, end_resolved = _resolve_date_range(start_date, end_date)
     trunc = "quarter" if period == "quarter" else "month"
@@ -660,7 +690,42 @@ def sales_tax_report(
         log.exception("sales_tax_report_failed")
         raise HTTPException(status_code=500, detail="Unable to compute the sales-tax report") from None
 
-    items, totals = _rollup_sales_tax(rows)
+    # M18: the tax given back, per the CREDIT's own period (created_at) —
+    # a remitted month is never restated. Same window as the main query.
+    try:
+        adj_rows = db.execute(
+            text(
+                """
+                SELECT
+                    date_trunc(:trunc, a.created_at) AS period_start,
+                    'adjustments' AS row_kind,
+                    COALESCE(SUM(CASE WHEN a.kind IN ('credit_memo', 'credit_applied')
+                                      THEN a.tax_component ELSE 0 END), 0) AS tax_credited,
+                    COALESCE(SUM(CASE WHEN a.kind = 'refund'
+                                      THEN a.tax_component ELSE 0 END), 0) AS tax_refunded
+                FROM invoice_adjustments a
+                JOIN invoices i ON i.id = a.invoice_id
+                WHERE i.deleted_at IS NULL
+                  -- Audit round 2 (the foundational hole): the parent must
+                  -- still be IN the liability universe. A voided or deposit
+                  -- invoice's tax never counts in tax_total, so netting its
+                  -- credit would understate the liability forever (voiding
+                  -- reverses the GL but the adjustment ROW survives).
+                  AND i.status IN ('sent', 'paid', 'overdue')
+                  AND (i.billing_type IS NULL OR i.billing_type != 'deposit')
+                  AND a.tax_component > 0
+                  AND a.created_at >= :start_dt
+                  AND a.created_at < :end_dt
+                GROUP BY 1
+                """
+            ),
+            {"trunc": trunc, "start_dt": start_dt, "end_dt": end_dt},
+        ).mappings().all()
+    except Exception:
+        log.exception("sales_tax_adjustments_failed")
+        adj_rows = []
+
+    items, totals = _rollup_sales_tax(list(rows) + list(adj_rows))
     return {
         "items": items,
         "period": period,

@@ -97,6 +97,7 @@
               <div class="sales-tax-totals" data-testid="sales-tax-totals">
                 <span class="tax-chip">Collected {{ formatCurrencyCents(salesTax.totals.tax_collected) }}</span>
                 <span class="tax-chip tax-chip-muted">Outstanding {{ formatCurrencyCents(salesTax.totals.tax_outstanding) }}</span>
+                <span v-if="salesTax.totals.tax_credited || salesTax.totals.tax_refunded" class="tax-chip tax-chip-muted" data-testid="tax-credited-chip">Given back {{ formatCurrencyCents((salesTax.totals.tax_credited || 0) + (salesTax.totals.tax_refunded || 0)) }}</span>
                 <span class="tax-chip tax-chip-total">Total {{ formatCurrencyCents(salesTax.totals.tax_total) }}</span>
               </div>
             </div>

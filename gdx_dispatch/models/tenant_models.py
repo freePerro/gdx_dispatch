@@ -746,6 +746,12 @@ class InvoiceAdjustment(Base):
         nullable=False,
     )
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    # M18 (Doug 2026-08-24: pro-rata at the invoice's rate): the tax share of
+    # this adjustment, amount × (tax/total) at write time. The sales-tax
+    # report nets it; without it, credited tax stayed a remittance liability.
+    tax_component: Mapped[float] = mapped_column(
+        Numeric(12, 2), nullable=False, default=0, server_default="0.00"
+    )
     reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
     refund_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
