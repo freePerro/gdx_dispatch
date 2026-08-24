@@ -1,7 +1,15 @@
 # Money Audit — 2026-08-04
 
-**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, and each
-finding's own entry for whether it shipped.
+**Status:** **AUDIT CLOSED 2026-08-24** — every finding is fixed, superseded,
+or carries a recorded decision at its own entry. The close-out train ran
+v1.84.1→v1.98.0 (M12, M16, M17, M26, M31/M33, M32, M28, M29, M38, M36, M39,
+M18, and the four triaged bundles M21/M25/M30/M34), each released, deployed to
+prod+demo, and walked with evidence at its entry. Recorded remainders, filed
+so they cannot silently wait: M3's recording half (its own plan doc owns it),
+M18's supersession third (gated on the §12 supersede model, 0 such invoices),
+§6's GL set (premise corrected — the flag is ON; the HIGH is #445), and the
+deferred bundle items (#440, #442, #443, #444). Each finding's own entry
+remains the authority; §0.6 is a pointer.
 Re-verified 2026-08-21; the §3 reporting cluster was then closed on 2026-08-22
 (PRs #399, #400, #402, #403) and **RELEASED v1.75.0**, deployed to prod and demo
 2026-08-23 and **walked on prod with real data**.
@@ -1295,7 +1303,12 @@ column *is* populated.
 everywhere, and export `total`. Then delete `total_amount` — a column nothing writes
 and five things read is a trap that keeps re-firing.
 
-### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` 🟢 **2 of 3 parts BUILT** — collected-gate (2026-08-22) + credit tax split (PR #TBD 2026-08-24, pro-rata per Doug); supersession netting stays GATED on the §12 supersede model (0 such invoices exist today)
+### M18 — Sales-tax report double-counts supersessions and books credited tax as collected `HIGH` 🟢 **2 of 3 parts SHIPPED — #446 · RELEASED v1.95.0 · deployed prod+demo + WALKED 2026-08-24**; supersession netting stays GATED on §12 (0 such invoices)
+
+> **Walk 2026-08-24 (v1.95.0, migration 080 at prod head):** the one taxed
+> credit row backfilled **570.79 → 32.22** exactly per the pro-rata ruling;
+> the LIVE report nets it — totals `tax_credited: 32.22` in the 2026-07
+> period, liability reduced accordingly.
 
 > **Half fixed 2026-08-22.** `tax_collected` no longer keys off
 > `paid_at IS NOT NULL`; it requires a real, non-voided payment. Six prod
@@ -1430,7 +1443,18 @@ excludes paid/void/draft — two AR agings that structurally cannot agree.
 **Fix.** Drop the `created_at` window (aging is a point-in-time backlog), exclude
 draft and void, and anchor on `due_date` to match cash-risk.
 
-### M21 — Smaller reporting items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 3 fixed, 3 recorded**
+### M21 — Smaller reporting items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item — #448 · RELEASED v1.97.0 · deployed prod+demo + WALKED 2026-08-24: 3 fixed (+ the prod header-only-CSV repair), 3 recorded (#444)**
+
+> **Walk 2026-08-24 (v1.97.0 live):** the repaired exports returned DATA for
+> the first time since they shipped — customers 402 CSV lines, jobs 233,
+> invoices 350, versus the header-only single lines their broken SELECTs
+> produced on prod all along.
+>
+> **Round 3 (restored — this note was lost in a snapshot merge):** removing
+> the blanket swallow immediately exposed that the customers and jobs CSV
+> exports SELECTed columns that DO NOT EXIST on prod (`city/state/zip`,
+> `jobs.total`) — header-only since they shipped, the finding's exact
+> scenario already happening. SELECT lists repaired to real columns.
 
 > **FIXED here** — estimate tax now rounds Decimal ROUND_HALF_UP like the
 > invoice (taxable $36.25 @10% is $3.63 on BOTH documents); a schema-mismatch
@@ -1577,7 +1601,12 @@ same way, so an estimate deliberately quoted at 0% re-acquires the tenant defaul
 
 **Fix.** Copy `taxable` in the line loop and use `estimate.tax_rate` when present.
 
-### M25 — Smaller pricing items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 5 fixed, 1 verified already-fixed, 2 recorded**
+### M25 — Smaller pricing items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item — #449 · RELEASED v1.98.0 · deployed prod+demo + WALKED 2026-08-24: 5 fixed (+3 audit-round-2), 1 verified already-fixed, 2 recorded (#442)**
+
+> **Walk 2026-08-24 (v1.98.0 live on prod):** `GET /api/pricing/calculate?cost=100`
+> returned `margin 0.3 → sell 142.86` — matching an independent `cost/(1−m)`
+> recomputation to the cent (the old markup math priced $130); re-accepting an
+> already-accepted estimate returned the lock-guarded 409, writing nothing.
 
 > Per-item disposition (a finding names an instance; the disposition owns it):
 > **FIXED here** — (1) `/api/pricing/calculate` + `/comparison` markup-as-margin
@@ -1851,7 +1880,13 @@ the code constant exactly, so no walk can distinguish the tenant-path from
 the constant-path — whether that 65.00 was deliberate is a question only
 Doug can answer, recorded here rather than assumed.
 
-### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24**
+### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` ✅ **FIXED #436 · RELEASED v1.91.0 · deployed prod+demo 2026-08-24**
+
+> **Walk 2026-08-24 (v1.91.0 live):** both stacks healthy; 11 prod bills
+> render with `invariant_ok`; zero `vendor_invoice_void_reversed_lines`
+> audit events — the reversal path is unexercised on prod data by design
+> (nothing has been voided); the 16-test suite + 12 counterfactuals carry
+> that proof.
 
 > **Adversarial audit round 2 (2026-08-24) — five findings, all fixed:** (1) the
 > ledger reversal sat under a bare `except` with `expense_reversed = True` set
@@ -1897,7 +1932,13 @@ is informational). The reversal writes a
 A pre-existing note: there was no line-unconfirm before this — a bare block
 would have been a dead end with no way through.
 
-### M30 — Smaller cost-side items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 2 fixed, 2 verified changed-since-audit, 4 recorded**
+### M30 — Smaller cost-side items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item — #447 · RELEASED v1.96.0 · deployed prod+demo 2026-08-24: 2 fixed (+2 audit-round-2 fixes), 2 verified changed-since-audit, 4 recorded (#443)**
+
+> **Walk 2026-08-24 (v1.96.0 live):** both stacks healthy; the shipped image
+> grep-carries `_parse_statement_lines` and `_stock_units`; zero received POs
+> exist, so the re-receive 409 had no safe probe target — the parser's live
+> proof is the next real statement ingest, where fail-loud is the designed
+> outcome.
 
 > Per-item disposition:
 > **FIXED here** — the Midwest STATEMENT parser now parses credit rows
@@ -2132,7 +2173,7 @@ when the cycle opened — `InvoiceCreateView`'s filter had already moved to
 `>= 0` on 2026-08-08; the quantity substitution and the other four surfaces
 had not.
 
-### M34 — Smaller frontend items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 1 fixed, 3 verified obsolete**
+### M34 — Smaller frontend items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item — #448 · RELEASED v1.97.0 2026-08-24: 1 fixed, 3 verified obsolete/unreachable**
 
 > **FIXED here** — the invoice prefill mirrors the tenant `tax_labor` flag
 > (`tenantTaxLabor`) instead of hardcoding non-taxable (irrelevant at GDX
@@ -2356,7 +2397,12 @@ step, not an invariant.
 **Fix.** Mirror the desktop guard, or make the endpoint idempotent per
 `(job, closeout)`.
 
-### M39 — Endpoints that report success without doing anything `LOW` ✅ **BUILT PR #TBD 2026-08-24 (2 audit rounds)** — was DECIDED (Doug): BUILD, don't delete
+### M39 — Endpoints that report success without doing anything `LOW` ✅ **#441 · RELEASED v1.94.0 · deployed prod+demo + WALKED both ways 2026-08-24 (2 audit rounds)** — was DECIDED (Doug): BUILD, don't delete
+
+> **Walk 2026-08-24 (v1.94.0, migration 079 at prod head):** prod (toggle OFF)
+> → `{enabled:false}` and zero plan rows; demo (disposable) → toggle ON,
+> create 3×$220.97/.98, GET the schedule, cancel, toggle OFF — the full cycle
+> live end-to-end.
 
 > **Built per the decision:** `payment_plans` + `payment_plan_installments`
 > (migration 079, ORM-aligned DDL), behind `app_settings.payment_plans_enabled`
