@@ -1817,7 +1817,7 @@ What is left is a narrower and more interesting class: **mutations applied at su
 time that make the persisted invoice differ from the total the operator approved on
 screen.**
 
-### M31 — A cleared quantity becomes 1 at submit, billing a line the on-screen total excluded `HIGH` ✅ **FIXED PR #TBD 2026-08-24 (with M33 — same class)**
+### M31 — A cleared quantity becomes 1 at submit, billing a line the on-screen total excluded `HIGH` ✅ **FIXED #432 — RELEASED v1.88.0, prod+demo, WALKED ON PROD 2026-08-24 (with M33 — same class)**
 
 [InvoiceCreateView.vue:481](../../gdx_dispatch/frontend/src/views/InvoiceCreateView.vue#L481):
 
@@ -1866,7 +1866,16 @@ descriptive lines (the old filter's accidental semantics, made deliberate),
 and the review's theater find — a source-pin anchored to a *comment* — now
 anchors the executable guard.
 
-### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` `CONFIRMED`
+**Prod walk, v1.88.0, 2026-08-24 — the refusal exercised for real.** Headed
+browser, Doug's own owner account, a real customer: description + $650 price
+entered on /billing/new, the quantity CLEARED (Subtotal showed $0.00 — the
+Vue model provably took the clear), Create clicked. The refusal alert rendered
+with the shipped copy ("No quantity on: … a cleared quantity is never billed
+as 1"), the page did not navigate, and the database confirms **zero invoices
+and zero lines written**. The deployed bundle was grep-verified to carry the
+guard strings before the click.
+
+### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` ✅ **FIXED PR #TBD 2026-08-24**
 
 [BillingView.vue:758-771](../../gdx_dispatch/frontend/src/views/BillingView.vue#L758-L771)
 posts `amount: balance` where `balance` comes from the row loaded into the browser,
@@ -1882,7 +1891,22 @@ smaller window.
 `expected_balance` and return 409 on mismatch. The first is better — it removes the
 client from the arithmetic entirely.
 
-### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24 (with M31 — same class)**
+**FIXED — the first option, exactly as prescribed.** `PaymentCreateIn` gains
+`pay_remaining: bool` (with `amount` now optional and a validator demanding
+exactly one of the two — both is a contradiction, neither is not a silent
+zero). `record_payment` derives *total − credit memos/applied − live
+payments* inside the transaction, before every consumer of the amount — the
+same arithmetic the GL overpayment gate trusts, so the mode can never mint
+the negative-AR overpayment that gate exists to stop. Nothing remaining is a
+409, not a $0 payment. The bulk Mark-Paid path sends the mode and **no
+amount**; the audit trail records `pay_remaining: true` so "who computed this
+figure" is answerable. The mobile form is deliberately unchanged — its
+prefill is visible to and editable by a human, which is the lesser sibling,
+not the blind bulk shape. Guarded by `test_m32_pay_remaining.py` (8 tests,
+five counterfactuals biting, including the audit's own $400-then-stale-tab
+scenario asserting $600 — not $1,000 — is recorded).
+
+### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` ✅ **FIXED #432 — RELEASED v1.88.0, prod+demo 2026-08-24 (with M31 — same class)**
 
 `.filter((l) => l.description && toNum(l.unit_price) > 0)` — used identically in
 `InvoiceCreateView`, `EstimateView` and `ChangeOrdersView` — drops zero and negative

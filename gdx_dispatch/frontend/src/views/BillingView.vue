@@ -839,8 +839,13 @@ async function confirmBulkMarkPaid() {
       continue;
     }
     try {
+      // M32: the server derives "whatever is still owed" inside the
+      // transaction. This row's `balance` may be minutes stale — another
+      // user's check between load and click used to make this post the OLD
+      // balance and overpay ($1,400 on a $1,000 invoice, clamped invisible).
+      // The client no longer does the arithmetic at all.
       await api.post(`/api/invoices/${inv.id}/payments`, {
-        amount: balance,
+        pay_remaining: true,
         method: bulkPaidMethod.value,
         date: payDay,
         reference: 'bulk mark-paid',

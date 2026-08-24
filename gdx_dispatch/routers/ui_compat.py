@@ -520,6 +520,11 @@ def create_payment(
 
     try:
         body = _PaymentCreateIn(
+            # M32 review: this shim's payload model is extra="allow", which
+            # silently SWALLOWED pay_remaining — {amount, pay_remaining:true}
+            # recorded the stale amount and audited pay_remaining:false.
+            # Forward the mode; the core validator then enforces the XOR.
+            **({"pay_remaining": True} if getattr(payload, "pay_remaining", False) else {}),
             amount=payload.amount,
             method=(payload.method or "other").strip() or "other",
             reference=(payload.reference or payload.processor_ref or None),

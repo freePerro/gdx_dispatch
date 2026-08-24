@@ -386,6 +386,28 @@ def _next_invoice_number(db: Session) -> str:
 
 
 
+
+def _remaining_receivable(invoice, db: Session) -> float:
+    """total − credit memos/applied − live payments: THE remaining-receivable
+    arithmetic. Extracted (M32 review) because it existed three times in this
+    file — the exact duplicated-money-arithmetic shape the M8 postmortem says
+    drifts: two of the copies were already one kind-tuple edit away from
+    disagreeing.
+    """
+    already = db.execute(
+        select(func.sum(Payment.amount)).where(
+            Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
+        )
+    ).scalar_one_or_none() or 0
+    credited = db.execute(
+        select(func.sum(InvoiceAdjustment.amount)).where(
+            InvoiceAdjustment.invoice_id == invoice.id,
+            InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
+        )
+    ).scalar_one_or_none() or 0
+    return round(_to_float(invoice.total) - _to_float(credited) - _to_float(already), 2)
+
+
 def _get_invoice_or_404(invoice_id: UUID, db: Session, include_relations: bool = False) -> Invoice:
     q = select(Invoice).where(Invoice.id == invoice_id, Invoice.deleted_at.is_(None))
     if include_relations:
@@ -853,7 +875,17 @@ class InvoicePatchIn(BaseModel):
 
 
 class PaymentCreateIn(BaseModel):
-    amount: float = Field(gt=0)
+    # M32: optional because `pay_remaining` is the other way to say it. The
+    # validator below still demands exactly one of the two — a bare {} is a
+    # 422, not a silent zero.
+    amount: float | None = Field(default=None, gt=0)
+    # M32 (money audit): "pay whatever is still owed", computed SERVER-side
+    # inside the transaction. The bulk Mark-Paid path used to post the balance
+    # from the row loaded into the browser, possibly minutes earlier — User A
+    # records a $400 check, User B's stale tab bulk-pays $1,000, and $1,400
+    # lands on a $1,000 invoice. This mode removes the client from the
+    # arithmetic entirely.
+    pay_remaining: bool = False
     method: str = Field(min_length=1, max_length=50)
     # Defaulted to today so a caller without a date picker records the
     # payment instead of 422ing (the /billing dialog shipped without one
@@ -869,6 +901,16 @@ class PaymentCreateIn(BaseModel):
     # was missing from the schema and dropped by Pydantic; payment-history
     # cells rendered empty for every payment recorded via the UI.
     reference: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _amount_xor_pay_remaining(self):
+        # Exactly one way to say how much: a client that sends BOTH is
+        # contradicting itself, and one that sends NEITHER is asking for $0.
+        if self.pay_remaining and self.amount is not None:
+            raise ValueError("send either amount or pay_remaining, not both")
+        if not self.pay_remaining and self.amount is None:
+            raise ValueError("amount is required unless pay_remaining is true")
+        return self
 
     @field_validator("date")
     @classmethod
@@ -2871,27 +2913,51 @@ def record_payment(
                 ),
             )
 
+    # M32: derive "whatever is still owed" HERE, server-side, before anything
+    # reads payload.amount — the stale-browser overpayment (minutes of drift)
+    # is gone. HONESTY (review catch): this is a READ COMMITTED read, not a
+    # spell — two same-instant writers could still both derive pre-commit
+    # sums, so the invoice row is locked for the duration of this request's
+    # transaction (the same with_for_update pattern /verify uses), shrinking
+    # the race to serialized-or-blocked instead of pretending it away.
+    if payload.pay_remaining:
+        db.execute(
+            select(Invoice.id).where(Invoice.id == invoice.id).with_for_update()
+        )
+        # QB-legacy guard (review catch): an imported invoice settled off-book
+        # can carry balance_due=0 with NO Payment rows — the sum-derivation
+        # would happily re-charge its full total. balance_due is a clamp, not
+        # the truth, but ≤0 is an unambiguous "nothing is owed".
+        if _to_float(invoice.balance_due) <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "nothing_remaining",
+                        "message": "nothing remains to pay on this invoice"},
+            )
+        _remaining = _remaining_receivable(invoice, db)
+        if _remaining <= 0.005:
+            # Structured like DUPLICATE_PAYMENT_CODE: this 409 means "the
+            # invoice is settled", not "your payment failed" — a queued caller
+            # rendering them identically would tell an operator to re-record
+            # money that is already there.
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "nothing_remaining",
+                        "message": "nothing remains to pay on this invoice"},
+            )
+        payload.amount = _remaining
+
     # GL S6: overpayment gate, active only when ledger posting is on (flag
     # off keeps today's permissive behavior — zero behavior change until
     # cutover). Opt-in routes the excess to 2300 Customer Credits.
     if ledger_posting_enabled(db, invoice.company_id) and not payload.allow_overpayment:
-        already_paid = db.execute(
-            select(func.sum(Payment.amount)).where(
-                Payment.invoice_id == invoice.id, Payment.voided_at.is_(None)
-            )
-        ).scalar_one_or_none() or 0
         # Audit round 3: the gate must measure against the REMAINING
         # receivable — total minus credit memos/applied credits — or a
         # payment of the printed total after a credit memo silently drives
-        # AR negative instead of minting a customer credit.
-        credited = db.execute(
-            select(func.sum(InvoiceAdjustment.amount)).where(
-                InvoiceAdjustment.invoice_id == invoice.id,
-                InvoiceAdjustment.kind.in_(("credit_memo", "credit_applied")),
-            )
-        ).scalar_one_or_none() or 0
-        remaining = _to_float(invoice.total) - _to_float(credited)
-        if _to_float(already_paid) + float(_money(payload.amount)) > remaining + 0.005:
+        # AR negative instead of minting a customer credit. M32 extracted the
+        # arithmetic into _remaining_receivable so this and the pay_remaining
+        # derivation cannot drift apart.
+        if float(_money(payload.amount)) > _remaining_receivable(invoice, db) + 0.005:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -3084,6 +3150,8 @@ def record_payment(
             # anything. Claiming a cancellation the task has not run yet
             # would be the kind of comfortable lie this fix removes.
             "stale_intent_sweep_queued": queued,
+            # M32: whether the server derived the amount (pay-remaining mode).
+            "pay_remaining": bool(payload.pay_remaining),
         },
     )
     db.commit()
