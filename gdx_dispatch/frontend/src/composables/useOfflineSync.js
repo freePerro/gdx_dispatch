@@ -70,13 +70,15 @@ export async function queueAction(method, url, body = null, opts = {}) {
     // closed-out deposit, locked GL period) opt in here so the refusal is
     // surfaced instead of being filed as "synced".
     //
-    // Do NOT assume the Idempotency-Key header below dedupes replays. This
-    // comment used to say that was the middleware's job; it is not, because
-    // the middleware never runs — core/middleware/idempotency.py returns early
-    // unless request.state.principal is set, and nothing in production sets
-    // it. Any endpoint queued here that can be replayed after a lost response
-    // needs its own server-side dedupe. Payments has one: an exact-reference
-    // match, plus a short window for reference-less (cash) payments.
+    // Idempotency-Key coverage, stated honestly (M36, 2026-08-24): the
+    // middleware DOES run now — PrincipalStampMiddleware feeds it — so a
+    // SEQUENTIAL replay of a POST (drain retry after a lost response) is
+    // served from cache. What it does NOT cover: two CONCURRENT drains of
+    // the same row (SS-14 has no in-flight lock), and patchQueued replays
+    // (the cache is POST-only — the header on PATCH is decoration). So
+    // endpoints queued here still keep their own server-side dedupe as the
+    // belt. Payments has one: an exact-reference match, plus a short window
+    // for reference-less (cash) payments.
     conflict_is_error: !!opts.conflictIsError,
     status: QUEUE_STATUS.PENDING,
     attempt_count: 0,

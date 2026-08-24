@@ -310,6 +310,7 @@ def test_s122_1_encryption_boot_gate_refuses_in_prod(monkeypatch):
     plaintext refresh tokens — direct grants to a customer's QBO realm.
     """
     import pytest
+
     import gdx_dispatch.core.pii as pii_mod
     from gdx_dispatch.app import _check_encryption_at_rest
     monkeypatch.setattr(pii_mod, "_FERNET", None)
@@ -356,9 +357,12 @@ def test_audit_log_model_columns():
 
 
 def test_idempotency_middleware_importable():
-    """Idempotency middleware and redis client helper are importable."""
-    from gdx_dispatch.core.idempotency import get_redis_client
-    assert callable(get_redis_client)
+    """The LIVE idempotency stack imports: the SS-14 cache middleware and the
+    M36 principal stamp that feeds it. (The old core/idempotency.py duplicate
+    was deleted 2026-08-24 — registered nowhere, a second implementation.)"""
+    from gdx_dispatch.core.middleware.idempotency import IdempotencyMiddleware
+    from gdx_dispatch.core.middleware.principal_stamp import PrincipalStampMiddleware
+    assert callable(IdempotencyMiddleware) and callable(PrincipalStampMiddleware)
 
 
 def test_alembic_migrations_exist():

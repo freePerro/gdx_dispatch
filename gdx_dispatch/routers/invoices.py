@@ -3002,11 +3002,12 @@ def record_payment(
     # That became load-bearing when the field surfaces moved to the offline
     # queue: on a network error after the server already committed (the normal
     # dead-signal driveway failure) the queue leaves the row PENDING and
-    # replays it. The Idempotency-Key middleware that would otherwise catch a
-    # replay never runs in production — it returns early unless
-    # request.state.principal is set, and nothing outside tests sets it — so a
-    # replayed $500 cash deposit would post twice and drive the balance
-    # negative.
+    # replays it. Until M36 (2026-08-24) the Idempotency-Key middleware that
+    # should catch such a replay never ran in production — it returned early
+    # unless request.state.principal was set, and nothing outside tests set
+    # it. PrincipalStampMiddleware now feeds it, so header-carrying replays
+    # are caught upstream; this window REMAINS as the belt for requests that
+    # arrive without the header (a manual double-tap is one).
     #
     # A short window keyed on (invoice, amount, method) is the honest fix: two
     # identical reference-less payments seconds apart are a replay or a
