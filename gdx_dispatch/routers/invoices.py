@@ -1147,15 +1147,9 @@ def create_invoice(
         and payload.billing_type != "deposit"
         and not payload.force
     ):
-        _existing = db.execute(
-            select(Invoice).where(
-                Invoice.job_id == payload.job_id,
-                Invoice.deleted_at.is_(None),
-                Invoice.status != "void",
-                Invoice.billing_type != "deposit",
-                or_(Invoice.total > 0, Invoice.status != "draft"),
-            ).order_by(Invoice.created_at.desc()).limit(1)
-        ).scalar_one_or_none()
+        from gdx_dispatch.core.billing_predicates import first_billing_real_invoice
+
+        _existing = first_billing_real_invoice(db, payload.job_id)
         if _existing is not None:
             raise HTTPException(
                 status_code=409,

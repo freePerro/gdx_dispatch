@@ -2154,7 +2154,25 @@ A $500 draft with a $200 check recorded is deletable. The invoice soft-deletes, 
 
 **Fix.** Mirror it: 409 the delete when non-voided payments exist.
 
-### M38 — Mobile invoice creation has no double-billing guard `MEDIUM` `CONFIRMED`
+### M38 — Mobile invoice creation has no double-billing guard `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24**
+
+> Fixed by mirroring the desktop guard verbatim (lockstep with
+> `core/billing_predicates.job_billed_exists`): a billing-real invoice on the
+> job 409s the mobile create with `already_billed` naming the invoice. Void,
+> deposit, and $0-draft invoices don't block (predicate parity, each pinned by
+> a test); a SENT $0 invoice does. Mobile deliberately gets NO force-override —
+> billing twice on purpose is an office decision. 6 tests + a biting
+> counterfactual (guard deleted → both refusal tests fail). Audit round 2:
+> the 409 now nests `detail={code,message}` (the shape useApi.js actually
+> reads — a top-level code was invisible to the client), the dialog branches
+> on it (warn toast naming the invoice + summary refresh, not a dead-end
+> error), and the guard query was extracted to
+> `billing_predicates.first_billing_real_invoice` — ONE spelled copy now
+> serves desktop and mobile (this was the third hand-spelled clone), with the
+> NULL-semantics divergence from the canonical predicate documented at the
+> helper. Known shared limit:
+> two truly concurrent requests can both pass the guard — the same race the
+> desktop guard accepts; guard parity was the declared scope.
 
 The desktop create path 409s on an existing live invoice for the job
 ([invoices.py:678-699](../../gdx_dispatch/routers/invoices.py#L678-L699)) and the

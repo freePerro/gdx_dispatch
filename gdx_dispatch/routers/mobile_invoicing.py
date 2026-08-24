@@ -433,6 +433,30 @@ def mobile_create_invoice(
     job_customer_id = job_row[0]
     job_job_type = job_row[1]
 
+    # M38 (money audit 2026-08-04): the desktop create path 409s when the job
+    # already carries a billing-real invoice; this path had no guard, so a
+    # tech double-tapping Generate on a slow connection minted two drafts
+    # each carrying the same labor line. ONE shared query (audit round 2 —
+    # this was the third hand-spelled copy): void invoices, $0 drafts, and
+    # DEPOSIT invoices don't count as billed. Mobile deliberately gets NO
+    # force-override — billing a job twice on purpose is an office decision,
+    # and the office path has the escape hatch. detail={code,message} is the
+    # shape useApi.js actually reads (the duplicate_payment convention) — a
+    # top-level code is invisible to the client.
+    from gdx_dispatch.core.billing_predicates import first_billing_real_invoice
+
+    _existing = first_billing_real_invoice(db, _UUID(job_id))
+    if _existing is not None:
+        return _jr(
+            {
+                "detail": {
+                    "code": "already_billed",
+                    "message": f"Job is already billed on {_existing.invoice_number}.",
+                }
+            },
+            409,
+        )
+
     # Estimate (optional — if present must be accepted + on this job).
     estimate: Estimate | None = None
     if payload.estimate_id:

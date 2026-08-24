@@ -211,7 +211,14 @@ async function generateInvoice() {
     emit('invoiced', inv)
     await loadSummary()
   } catch (e) {
-    toast.add({ severity: 'error', summary: 'Could not invoice', detail: e.message, life: 5000 })
+    if (e.code === 'already_billed') {
+      // M38: the double-tap's second request — not an error, a fact. Show
+      // which invoice exists and refresh so the dialog renders it.
+      toast.add({ severity: 'warn', summary: 'Already billed', detail: `${e.message} Check with the office before billing again.`, life: 8000 })
+      await loadSummary()
+    } else {
+      toast.add({ severity: 'error', summary: 'Could not invoice', detail: e.message, life: 5000 })
+    }
   } finally {
     submitting.value = false
   }
