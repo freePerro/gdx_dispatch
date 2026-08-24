@@ -1430,14 +1430,24 @@ def _resolve_portal_email(customer: Customer, override: str | None) -> str:
     return email
 
 
+def _portal_user_rank(user: CustomerUser) -> tuple[int, Any]:
+    """Selection key when a customer has several `customer_users` rows.
+
+    Active beats inactive; among equals, newest created_at wins. Every place
+    that picks "the" portal user for a customer must use this, or the reader
+    reports on a different row than the writer touches. `created_at` is
+    NOT NULL, so there is no NULLS-ordering split between SQLite and Postgres.
+    """
+    return (1 if user.is_active else 0, user.created_at)
+
+
 def _get_or_create_customer_user(db: Session, customer: Customer, email: str) -> CustomerUser:
     # customer_users has no unique constraint on customer_id, so pick
     # deterministically: active record first, then newest.
-    user = db.execute(
-        select(CustomerUser)
-        .where(CustomerUser.customer_id == customer.id)
-        .order_by(CustomerUser.is_active.desc(), CustomerUser.created_at.desc())
-    ).scalars().first()
+    candidates = db.execute(
+        select(CustomerUser).where(CustomerUser.customer_id == customer.id)
+    ).scalars().all()
+    user = max(candidates, key=_portal_user_rank) if candidates else None
     if user:
         user.email = email
         user.is_active = True
@@ -1464,9 +1474,18 @@ def portal_admin_list(
     ).scalars().all()
     users_by_customer: dict[Any, CustomerUser] = {}
     for user in db.execute(select(CustomerUser)).scalars():
-        # Prefer the active record when a customer somehow has several.
+        # customer_users has no unique constraint on customer_id, so a customer
+        # can have several. ONE selection rule across this router — active
+        # first, then newest — shared with `_get_or_create_customer_user` (the
+        # writer) and `portal_admin_status` (the customer page's reader).
+        #
+        # 2026-08-24: this loop used to keep the FIRST row encountered and only
+        # upgrade inactive->active, which with two ACTIVE duplicates picked an
+        # arbitrary row — so this list and the customer page could show
+        # different emails for the same customer, and either could disagree
+        # with the row Enable/Disable actually writes.
         existing = users_by_customer.get(user.customer_id)
-        if existing is None or (user.is_active and not existing.is_active):
+        if existing is None or _portal_user_rank(user) > _portal_user_rank(existing):
             users_by_customer[user.customer_id] = user
 
     payments_by_customer = {
@@ -1493,6 +1512,62 @@ def portal_admin_list(
             }
         )
     return entries
+
+
+@staff_router.get("/{customer_id}", response_model=None, dependencies=[Depends(require_permission("customers.read_all"))])
+def portal_admin_status(
+    customer_id: UUID,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Portal status for ONE customer, for the customer page's Portal tab.
+
+    Added 2026-08-24. The tab previously read
+    `GET /api/customers/{id}/portal-account`, a ui_compat shim that returned a
+    hardcoded `{"exists": false, "account": null}` for every customer — so the
+    office was told "no portal account" even for the customer who had one. The
+    list endpoint above already had the real data; it just had no per-customer
+    form, and pulling the whole tenant list to render one row is the wrong
+    shape for a detail page.
+
+    Keys mirror the list endpoint (`portal_enabled`, `email`, `last_login`) so
+    both surfaces speak one vocabulary. Registered AFTER the literal `/info`
+    route, which therefore still wins arbitration for `GET /api/portal/info`.
+    """
+    customer = db.execute(
+        select(Customer).where(Customer.id == customer_id, Customer.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Same tie-break as _get_or_create_customer_user: customer_users has no
+    # unique constraint on customer_id, so prefer the active record, then the
+    # newest. Picking differently here than the writer picks would report on a
+    # different row than the one Enable/Disable actually touches.
+    candidates = db.execute(
+        select(CustomerUser).where(CustomerUser.customer_id == customer.id)
+    ).scalars().all()
+    user = max(candidates, key=_portal_user_rank) if candidates else None
+
+    return {
+        "id": str(customer.id),
+        "customer_name": customer.name,
+        "email": (user.email if user else None) or customer.email,
+        "portal_enabled": bool(user and user.is_active),
+        "last_login": user.last_login_at.isoformat() if user and user.last_login_at else None,
+        # NOT "invite_expires_at". `portal_token` is one column serving two
+        # lifecycles: a staff invite (INVITE_LINK_TTL_DAYS = 7) and a customer's
+        # own self-service sign-in link (MAGIC_LINK_TTL_MINUTES = 15, written by
+        # portal_login). Nothing distinguishes them, so calling this an invite
+        # would tell the office "the invite you sent expired" 15 minutes after a
+        # customer requested their own link. Both ARE sign-in links, so name it
+        # for what is actually true of both.
+        "signin_link_expires_at": (
+            user.portal_token_expires_at.isoformat()
+            if user and user.portal_token and user.portal_token_expires_at
+            else None
+        ),
+    }
 
 
 @staff_router.patch("/{customer_id}", response_model=None, dependencies=[Depends(require_permission("customers.write"))])

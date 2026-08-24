@@ -196,4 +196,66 @@ describe('MobileCustomerDetailView', () => {
     expect(wrapper.find('[data-test="mcd-error"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="mcd-error"]').text()).toContain('boom');
   });
+
+  // ── Portal tab ────────────────────────────────────────────────────────────
+  // This tab called `/api/customers/{id}/portal-account`, a ui_compat shim that
+  // returned a hardcoded {"exists": false, "account": null}. Two consequences:
+  // it said "No portal account." for every customer, and `last_login` could
+  // never render because the shim never sent that key. When the shim was
+  // deleted with the desktop tab's repoint, THIS caller was missed and the tab
+  // broke outright — the sweep was scoped to the desktop file. These pin the
+  // repoint so it cannot silently regress again.
+
+  async function openPortalTab() {
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+      if (url === '/api/portal/cust-123') {
+        return Promise.resolve({
+          id: 'cust-123',
+          customer_name: 'Jeff Johnson',
+          email: 'jeff@example.com',
+          portal_enabled: true,
+          last_login: null,
+          signin_link_expires_at: null,
+        });
+      }
+      return Promise.resolve([]);
+    });
+    const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+    await flushPromises();
+    // Click the tab rather than setting activeTab: the fetch hangs off
+    // selectTab(), and a feature the office cannot reach is not shipped.
+    const tab = wrapper.findAll('button').find((b) => b.text().trim() === 'Portal');
+    expect(tab, 'the Portal tab control must exist').toBeTruthy();
+    await tab.trigger('click');
+    await flushPromises();
+    return wrapper;
+  }
+
+  it('Portal tab reads the real staff endpoint, not the deleted shim', async () => {
+    await openPortalTab();
+    const urls = apiGet.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/api/portal/cust-123');
+    expect(urls.some((u) => String(u).includes('portal-account'))).toBe(false);
+  });
+
+  it('Portal tab shows an enabled account as on, not as unavailable', async () => {
+    const wrapper = await openPortalTab();
+    // NOTE: the tab BUTTON and the tab PANEL both carry
+    // data-test="mcd-tab-portal" (the strip templates its testid from the tab
+    // name). A bare find() returns the button. Pre-existing collision; select
+    // the panel explicitly rather than assert against a button's label.
+    const panel = wrapper.findAll('[data-test="mcd-tab-portal"]').find((el) => el.element.tagName !== 'BUTTON');
+    expect(panel, 'the Portal panel must render').toBeTruthy();
+    const tab = panel;
+    expect(tab.text()).toContain('Portal access on');
+    // What a broken fetch renders. If this reappears the endpoint moved again.
+    expect(tab.text()).not.toContain('Portal status unavailable');
+    expect(tab.text()).not.toContain('No portal account');
+  });
+
+  it('Portal tab says when an active customer has never signed in', async () => {
+    const wrapper = await openPortalTab();
+    expect(wrapper.find('[data-test="mcd-portal-never"]').exists()).toBe(true);
+  });
 });

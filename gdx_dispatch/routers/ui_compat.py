@@ -217,7 +217,15 @@ def run_admin_op(
 # CollectionsView permanent theater.
 
 
-# ── Customer detail: recurring jobs, communications, portal ─────────────
+# ── Customer detail: recurring jobs, communications ──────────────────────
+# The portal-account pair that lived here was removed 2026-08-24. Its GET
+# returned a hardcoded {"exists": false, "account": null} for EVERY customer,
+# so the customer page reported "no portal account" even for the one customer
+# on prod who has one; its POST was a 501 and its sibling DELETE never existed
+# at all (the Remove button 405'd). Portal provisioning was already real the
+# whole time — portal.py's staff_router: GET /api/portal/{customer_id},
+# PATCH /api/portal/{customer_id}, POST /api/portal/invite — and the customer
+# page now calls it.
 
 @router.get("/api/customers/{customer_id}/recurring-jobs", response_model=None)
 def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
@@ -249,19 +257,6 @@ def log_customer_communication(
     _not_implemented("Logging a customer communication", request, user)
 
 
-@router.get("/api/customers/{customer_id}/portal-account", response_model=None)
-def get_customer_portal_account(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
-    return {"exists": False, "account": None}
-
-
-@router.post("/api/customers/{customer_id}/portal-account", response_model=None)
-def create_customer_portal_account(
-    customer_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating a customer portal account", request, user)
 
 
 # ── Dispatch utilities (map, optimizer, geocoder) ─────────────────────────

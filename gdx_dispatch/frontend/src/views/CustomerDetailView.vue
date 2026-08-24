@@ -360,29 +360,41 @@
           <template #title>Customer Portal Account</template>
           <template #content>
             <div class="portal-status" data-testid="portal-status-line">
-              <span v-if="portalStatus?.exists" class="portal-active">
-                <i class="pi pi-check-circle" /> Active — {{ portalStatus.account?.email }}
-                <small v-if="portalStatus.account?.last_login_at">
-                  last login {{ formatDateTime(portalStatus.account.last_login_at) }}
+              <span v-if="portalStatus?.portal_enabled" class="portal-active">
+                <i class="pi pi-check-circle" /> Active — {{ portalStatus.email }}
+                <small v-if="portalStatus.last_login">
+                  last sign-in {{ formatDateTime(portalStatus.last_login) }}
+                </small>
+                <small v-else class="muted" data-testid="portal-never-signed-in">
+                  has not signed in yet
                 </small>
               </span>
-              <span v-else class="muted">No portal account registered for this customer.</span>
+              <span v-else class="muted">Portal access is off for this customer.</span>
+            </div>
+            <div v-if="portalStatus?.signin_link_expires_at" class="portal-invite-note" data-testid="portal-invite-note">
+              <small :class="portalInviteExpired ? 'inline-error' : 'muted'">
+                {{ portalInviteExpired
+                  ? `Their sign-in link expired ${formatDateTime(portalStatus.signin_link_expires_at)} — send another.`
+                  : `Sign-in link valid until ${formatDateTime(portalStatus.signin_link_expires_at)}.` }}
+              </small>
             </div>
             <div class="portal-actions">
-            <Button
-              label="Manage Account"
-              icon="pi pi-shield"
-              data-testid="portal-manage-btn"
-              :loading="isSavingPortal"
-              :disabled="isSavingPortal"
-              @click="openPortalDialog"
-            />
               <Button
-                label="Remove Portal Account"
-                icon="pi pi-trash" aria-label="Delete"
+                :label="portalStatus?.portal_enabled ? 'Resend Portal Invite' : 'Enable Portal & Send Invite'"
+                icon="pi pi-send"
+                data-testid="portal-invite-btn"
+                :loading="isSavingPortal"
+                :disabled="isSavingPortal"
+                @click="openPortalDialog"
+              />
+              <Button
+                label="Turn Off Portal Access"
+                icon="pi pi-ban"
                 severity="danger"
+                outlined
                 data-testid="portal-remove-btn"
-                :disabled="!portalStatus?.exists || isRemovingPortal"
+                :disabled="!portalStatus?.portal_enabled || isRemovingPortal"
+                :loading="isRemovingPortal"
                 @click="removePortalAccount"
               />
             </div>
@@ -710,14 +722,15 @@
         @hide="portalFormError = ''"
         data-testid="portal-dialog"
       >
-        <form class="dialog-form" @submit.prevent="savePortalAccount">
+        <form class="dialog-form" @submit.prevent="sendPortalInvite">
           <p class="muted" style="font-size: 0.9rem; margin: 0;">
-            {{ portalStatus?.exists
-              ? 'Update the portal account credentials and the customer will receive a notice.'
-              : 'Create a portal login for this customer. They will receive an email with their credentials.' }}
+            Sends a sign-in link to the customer. They set their own password on
+            arrival — nobody here ever types it. The link is single-use and
+            time-limited; if the email does not go out you will get the link to
+            pass on yourself.
           </p>
           <div class="form-field">
-            <label for="portal-email">Email *</label>
+            <label for="portal-email">Send to *</label>
             <InputText
               id="portal-email"
               v-model="portalForm.email"
@@ -727,27 +740,59 @@
               data-testid="portal-dialog-email"
             />
           </div>
-          <div class="form-field">
-            <label for="portal-password">Password *</label>
-            <InputText
-              id="portal-password"
-              v-model="portalForm.password"
-              type="password"
-              class="w-full"
-              data-testid="portal-dialog-password"
-            />
-          </div>
           <div v-if="portalFormError" class="inline-error">{{ portalFormError }}</div>
           <div class="form-actions">
             <Button type="button" label="Cancel" text @click="closePortalDialog" />
             <Button
               type="submit"
-              label="Create / Update"
+              label="Send Invite"
               :loading="isSavingPortal"
               data-testid="portal-dialog-save"
             />
           </div>
         </form>
+      </Dialog>
+
+      <Dialog
+        v-model:visible="portalInviteResultVisible"
+        header="Portal invite"
+        modal
+        :style="{ width: '540px' }"
+        data-testid="portal-invite-result-dialog"
+      >
+        <div v-if="portalInviteResult" class="invite-result">
+          <p v-if="portalInviteResult.invite_sent" data-testid="portal-invite-sent">
+            <i class="pi pi-check-circle" /> Invite emailed to
+            <strong>{{ portalInviteResult.email }}</strong>.
+          </p>
+          <p v-else class="inline-error" data-testid="portal-invite-not-sent">
+            <i class="pi pi-exclamation-triangle" /> The email did not send{{
+              portalInviteResult.email_skip_reason ? ` — ${portalInviteResult.email_skip_reason}` : ''
+            }}. Send this link to the customer yourself.
+          </p>
+          <p class="muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">
+            The customer opens this link, then sets their own password.
+          </p>
+          <div class="invite-link-row">
+            <InputText
+              :model-value="portalInviteResult.magic_link"
+              readonly
+              class="w-full"
+              data-testid="portal-invite-link"
+              @focus="$event.target.select()"
+            />
+            <Button
+              icon="pi pi-copy"
+              severity="secondary"
+              aria-label="Copy sign-in link"
+              data-testid="portal-invite-copy"
+              @click="copyPortalInviteLink"
+            />
+          </div>
+        </div>
+        <template #footer>
+          <Button label="Done" @click="portalInviteResultVisible = false" />
+        </template>
       </Dialog>
 
       <Toast data-testid="customer-detail-toast" />
@@ -756,9 +801,10 @@
 
 <script setup>
 import { JOB_TYPE_OPTIONS } from "../constants/jobTypes";
-import { computed, ref, onMounted } from "vue";
+import { computed, ref, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useToast } from "primevue/usetoast";
+import { useApi } from "../composables/useApi";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { qbSyncLabel } from "../composables/qbSyncLabel";
 import { formatDate, formatDateTime, formatMoney, formatPercent, formatPhone } from "../composables/useFormatters";
@@ -787,6 +833,9 @@ import Toast from "primevue/toast";
 const route = useRoute();
 const router = useRouter();
 const api = useApiWithToast();
+// Un-wrapped client for reads whose failure is not worth a red banner (see
+// fetchPortalStatus).
+const rawApi = useApi();
 const toast = useToast();
 const auth = useAuthStore();
 
@@ -879,10 +928,37 @@ const communicationError = ref("");
 const isSavingCommunication = ref(false);
 const portalStatus = ref(null);
 const showPortalDialog = ref(false);
-const portalForm = ref({ email: '', password: '' });
+const portalForm = ref({ email: '' });
 const portalFormError = ref('');
 const isSavingPortal = ref(false);
 const isRemovingPortal = ref(false);
+const portalInviteResult = ref(null);
+const portalInviteResultVisible = ref(false);
+// The sign-in link is time-limited server-side; surface an expired one rather
+// than letting the operator assume the customer still has a working link.
+// Fetched lazily, NOT on mount. `GET /api/portal/{id}` is gated on
+// customers.read_all; the ui_compat shim it replaced had no gate at all. Firing
+// it for every customer-page load meant any user without that permission (an
+// accounting or viewer role reaching /customers/:id, which has no route guard)
+// got a "Permission denied" toast on every single page open — a regression this
+// change introduced and this defers away. Same lazy shape the mobile tab uses.
+let portalStatusRequested = false;
+watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === 'Portal' && !portalStatusRequested) {
+      portalStatusRequested = true;
+      fetchPortalStatus();
+    }
+  },
+);
+
+const portalInviteExpired = computed(() => {
+  const expiry = portalStatus.value?.signin_link_expires_at;
+  if (!expiry) return false;
+  const parsed = new Date(expiry);
+  return !Number.isNaN(parsed.valueOf()) && parsed.valueOf() < Date.now();
+});
 const updatingPrimary = ref(null);
 
 async function loadCustomerEstimates() {
@@ -1090,9 +1166,19 @@ async function saveCommunication() {
   }
 }
 
+// 2026-08-24: this tab used to call `/api/customers/{id}/portal-account`, a
+// ui_compat shim whose GET was a hardcoded `{"exists": false}` — it reported
+// "no portal account" for every customer, including the one who has one — and
+// whose POST was a 501 and DELETE did not exist. Portal provisioning was real
+// the whole time on portal.py's staff_router, which PortalView already uses.
+// These three now call it: GET /api/portal/{id}, POST /api/portal/invite and
+// PATCH /api/portal/{id}.
 async function fetchPortalStatus() {
   try {
-    portalStatus.value = await api.get(`/api/customers/${route.params.id}/portal-account`);
+    // rawApi (no toast wrapper): a 403 here means "this user cannot see portal
+    // state", which the tab renders as unavailable. Toasting it would put a
+    // red banner on the page for a section the user did not ask about.
+    portalStatus.value = await rawApi.get(`/api/portal/${route.params.id}`);
   } catch {
     portalStatus.value = null;
   }
@@ -1100,8 +1186,9 @@ async function fetchPortalStatus() {
 
 function openPortalDialog() {
   portalFormError.value = '';
-  const email = portalStatus.value?.account?.email || customer.value.email || '';
-  portalForm.value = { email, password: '' };
+  // The server falls back to the customer record's email when this is blank;
+  // prefill so the operator can see and override what it will use.
+  portalForm.value = { email: portalStatus.value?.email || customer.value.email || '' };
   showPortalDialog.value = true;
 }
 
@@ -1109,46 +1196,72 @@ function closePortalDialog() {
   showPortalDialog.value = false;
 }
 
-async function savePortalAccount() {
+async function sendPortalInvite() {
   portalFormError.value = '';
   const email = (portalForm.value.email || '').trim();
   if (!email) {
-    portalFormError.value = 'Email is required.';
-    return;
-  }
-  const password = portalForm.value.password || '';
-  if (password.length < 8) {
-    portalFormError.value = 'Password must be at least 8 characters.';
+    portalFormError.value = 'An email address is required to send the invite.';
     return;
   }
 
   isSavingPortal.value = true;
   try {
-    await api.post(
-      `/api/customers/${route.params.id}/portal-account`,
-      { email, password },
-      { successMessage: 'Portal account saved' },
-    );
+    // Creates the portal account if there isn't one, mints a fresh sign-in
+    // link, emails it, and audits the attempt. No success toast here: the
+    // result dialog reports whether the email actually left, which a green
+    // toast would paper over.
+    const result = await api.post('/api/portal/invite', {
+      customer_id: route.params.id,
+      email,
+    });
     closePortalDialog();
+    portalInviteResult.value = result;
+    portalInviteResultVisible.value = true;
     await fetchPortalStatus();
   } catch (err) {
-    portalFormError.value = err?.message || 'Failed to save portal account.';
+    portalFormError.value = err?.message || 'Failed to send the portal invite.';
   } finally {
     isSavingPortal.value = false;
   }
 }
 
+async function copyPortalInviteLink() {
+  const link = portalInviteResult.value?.magic_link;
+  if (!link) return;
+  try {
+    await navigator.clipboard.writeText(link);
+    toast.add({ severity: 'success', summary: 'Copied', detail: 'Sign-in link copied.', life: 3000 });
+  } catch {
+    // Clipboard is blocked in some browsers/contexts; the field is selectable
+    // and readonly, so the operator can still copy it by hand.
+    toast.add({
+      severity: 'warn',
+      summary: 'Copy blocked',
+      detail: 'Select the link and copy it manually.',
+      life: 5000,
+    });
+  }
+}
+
 async function removePortalAccount() {
-  if (!portalStatus.value?.exists) {
+  if (!portalStatus.value?.portal_enabled) {
     return;
   }
   isRemovingPortal.value = true;
   try {
-    await api.del(`/api/customers/${route.params.id}/portal-account`);
-    toast.add({ severity: "success", summary: "Removed", detail: "Portal account deleted.", life: 4000 });
+    // Turning access off deactivates the account and clears any live sign-in
+    // token — it is not a delete, so the record (and its audit chain) survives
+    // and access can be granted again later.
+    await api.patch(`/api/portal/${route.params.id}`, { portal_enabled: false });
+    toast.add({
+      severity: 'success',
+      summary: 'Portal access off',
+      detail: 'The customer can no longer sign in.',
+      life: 4000,
+    });
     await fetchPortalStatus();
   } catch {
-    // handled
+    // toast handled by useApiWithToast
   } finally {
     isRemovingPortal.value = false;
   }
@@ -1422,7 +1535,6 @@ onMounted(async () => {
     fetchEquipment(),
     fetchRecurringJobs(),
     fetchCommunications(),
-    fetchPortalStatus(),
     loadPricingSettings(),
   ]);
 });
@@ -1633,6 +1745,14 @@ onMounted(async () => {
   color: var(--p-text-muted-color);
 }
 
+/* Copied with the invite markup from PortalView, whose styles are `scoped` and
+   therefore did not come with it — without these the copy button wraps below a
+   100%-width input. jsdom applies no media queries and asserts no layout, so
+   nothing in the test suite would have caught that. */
+.invite-result p { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; }
+.invite-link-row { display: flex; gap: 0.5rem; align-items: center; }
+.invite-link-row input { flex: 1 1 auto; min-width: 0; }
+.portal-invite-note { margin: 0.35rem 0 0.75rem; }
 .portal-actions {
   display: flex;
   gap: 0.5rem;
