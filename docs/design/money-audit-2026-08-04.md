@@ -2111,7 +2111,28 @@ things read has now caused two separate findings.
 These belong with §1 by subject, but they are guards and plumbing rather than
 totals math, so they are grouped here.
 
-### M36 — The idempotency middleware is a permanent pass-through `HIGH` `CONFIRMED`
+### M36 — The idempotency middleware is a permanent pass-through `HIGH` ✅ **FIXED PR #TBD 2026-08-24**
+
+> Fixed by feeding it, not rewriting it: `PrincipalStampMiddleware` (outermost)
+> stamps a minimal signature-verified principal on exactly the requests the
+> SS-14 cache handles (POST + `Idempotency-Key` + Bearer) — same key/alg the
+> auth dependency uses, never rejects, defers to any richer upstream stamp
+> (SS-9's slot). The offline queue's replays are finally deduped. The
+> never-registered duplicate `core/idempotency.py` is DELETED (it was a second
+> implementation registered nowhere), the scaffold test now imports the live
+> stack, and the two `routers/invoices.py` comments that described the
+> middleware as dead are corrected — the cash dedupe window stays as belt for
+> header-less requests. 8 tests incl. a real-app registration pin (the unit
+> apps alone couldn't catch a deleted registration); 4 biting counterfactuals
+> (registration deleted, stamp removed, typ check dropped, signature
+> verification disabled). Audit round 2 caveats, stated not hidden: SS-14
+> dedupes SEQUENTIAL replays only — the deleted duplicate's in-flight NX lock
+> was a capability, and two truly concurrent drains still both execute (the
+> route-level dedupes remain the belt); `patchQueued` replays are uncovered
+> (cache is POST-only); the shared denylist redis client is sync inside async
+> dispatch (pre-existing shape, now on this path too); the miss path re-wraps
+> responses (drops custom headers/BackgroundTasks — none queued today).
+> All four filed as one follow-up issue rather than bundled.
 
 [core/middleware/idempotency.py:68-70](../../gdx_dispatch/core/middleware/idempotency.py#L68-L70)
 bails out when `request.state.principal` is None:

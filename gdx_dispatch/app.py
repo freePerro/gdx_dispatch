@@ -1392,6 +1392,18 @@ def create_app() -> FastAPI:
     except Exception:
         logging.getLogger("gdx_dispatch.app").exception("ss14_idempotency_middleware_unavailable")
 
+    # M36 (money audit 2026-08-04): the SS-14 cache above was a permanent
+    # pass-through — it requires request.state.principal and nothing in
+    # production ever stamped it. This outer middleware (added later = runs
+    # FIRST) stamps a minimal verified principal on exactly the requests the
+    # cache handles (POST + Idempotency-Key + Bearer), so the replay cache
+    # finally functions for the offline queue's replays. It never rejects.
+    try:
+        from gdx_dispatch.core.middleware.principal_stamp import PrincipalStampMiddleware
+        app.add_middleware(PrincipalStampMiddleware)
+    except Exception:
+        logging.getLogger("gdx_dispatch.app").exception("principal_stamp_middleware_unavailable")
+
     # SS-28 Consumer audit log capture — REMOVED. This was a multi-tenant
     # platform (Command Center) middleware that fail-closed-wrote to the
     # platform_consumer_audit table on every request; that table and the rest
