@@ -813,12 +813,35 @@ async function createInvoice() {
     // sent fine elsewhere. Keep every described line; the tenant's
     // zero-price catalog policy (block/warn) is the arbiter server-side,
     // and a block surfaces as a visible 422 instead of a silent vanish.
+    // M31+M33 (money audit): the on-screen total and the submitted payload
+    // must never disagree silently. A cleared quantity used to submit as 1 —
+    // billing $650 the operator watched render as $0.00 — and a negative
+    // (discount) line summed on screen while the filter dropped it from the
+    // payload. Refuse, name the lines, let the operator decide.
+    const described = form.value.line_items.filter((l) => l.description);
+    const badQty = described.filter(
+      (l) => toNum(l.unit_price) >= 0 && !(toNum(l.quantity) > 0),
+    );
+    const negPrice = described.filter((l) => toNum(l.unit_price) < 0);
+    if (badQty.length || negPrice.length) {
+      const names = [...badQty, ...negPrice].map((l) => `“${l.description}”`).join(', ');
+      toast.add({
+        severity: 'warn',
+        summary: 'Fix line items before creating',
+        detail: badQty.length
+          ? `No quantity on: ${names}. Enter a quantity or remove the line — a cleared quantity is never billed as 1.`
+          : `Negative price on: ${names}. Negative lines can't be submitted from this screen yet — remove or zero them.`,
+        life: 8000,
+      });
+      creating.value = false;
+      return;
+    }
     const lineItems = form.value.line_items
       .filter((l) => l.description && toNum(l.unit_price) >= 0)
       .map((l) => {
         const out = {
           description: l.description,
-          quantity: toNum(l.quantity) > 0 ? Number(l.quantity) : 1,
+          quantity: Number(l.quantity),
           unit_price: toNum(l.unit_price),
           taxable: l.taxable !== false,
         };

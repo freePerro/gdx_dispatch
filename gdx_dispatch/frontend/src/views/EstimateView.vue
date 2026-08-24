@@ -2272,13 +2272,24 @@ async function addTierLine(name) {
   try {
     await api.post(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}/lines`, {
       description: draft.description,
-      quantity: Number(draft.quantity || 1),
+      // M31: a cleared quantity blocks instead of silently becoming 1.
+      quantity: (() => {
+        if (!(Number(draft.quantity) > 0)) {
+          throw Object.assign(new Error('tier line needs a quantity'), { _qtyGuard: true });
+        }
+        return Number(draft.quantity);
+      })(),
       unit_price: toNum(draft.unit_price || 0),
       category: draft.labor ? "Labor" : null,
     });
     tierNewLine.value[name] = blankNewLine();
     await loadTiers();
-  } catch {
+  } catch (e) {
+    if (e && e._qtyGuard) {
+      toast.add({ severity: "warn", summary: "Quantity required",
+        detail: "Enter a quantity — a cleared quantity is never saved as 1.", life: 6000 });
+      return;
+    }
     toast.add({ severity: "error", summary: "Could not add the line", life: 4000 });
   }
 }
@@ -2289,13 +2300,23 @@ async function saveTierLine(name, line) {
   try {
     await api.patch(`/api/estimates/${route.params.id}/proposal-tiers/${t.id}/lines/${line.id}`, {
       description: line.description,
-      quantity: Number(line.quantity || 1),
+      quantity: (() => {
+        if (!(Number(line.quantity) > 0)) {
+          throw Object.assign(new Error('tier line needs a quantity'), { _qtyGuard: true });
+        }
+        return Number(line.quantity);
+      })(),
       unit_price: toNum(line.unit_price || 0),
       category: line.category,
     });
     await loadTiers();
     toast.add({ severity: "success", summary: "Line saved", life: 2000 });
-  } catch {
+  } catch (e) {
+    if (e && e._qtyGuard) {
+      toast.add({ severity: "warn", summary: "Quantity required",
+        detail: "Enter a quantity — a cleared quantity is never saved as 1.", life: 6000 });
+      return;
+    }
     toast.add({ severity: "error", summary: "Could not save the line", life: 4000 });
   }
 }
@@ -2712,8 +2733,13 @@ async function _flushNow() {
     // price edited down to $0 is a real edit that must reach the DB (and the
     // PDF), but a transiently CLEARED price input (null, mid-retype) must
     // not: the backend treats null as "derive for me" (409s manual lines).
+    // M31 (audit): a cleared QUANTITY is the same shape — EstimateLine.quantity
+    // is NOT NULL, so flushing null 500s mid-autosave while the screen shows
+    // the line at $0.00. Hold the flush until a quantity exists again.
     for (const li of form.value.line_items) {
-      if (li.id ? !(li.description && li.unit_price != null) : !_lineHasContent(li)) continue;
+      if (li.id
+        ? !(li.description && li.unit_price != null && Number(li.quantity) > 0)
+        : !_lineHasContent(li)) continue;
       if (li.id) {
         try {
           await apiRaw.patch(`/api/estimates/${id}/lines/${li.id}`, _linePatchPayload(li));
@@ -2816,6 +2842,29 @@ async function createEstimate() {
     // tenant default. Otherwise leave null so the estimate tracks tenant.
     const formPct = Number(form.value.tax_rate) || 0;
     const persistTax = Math.abs(formPct - tenantDefaultTaxPct.value) > 0.001;
+    // M31+M33: the on-screen total sums every line; the payload must not
+    // silently disagree. Refuse cleared quantities and negative prices with
+    // the lines named, instead of dropping or substituting.
+    {
+      const described = form.value.line_items.filter((li) => li.description);
+      const evBadQty = described.filter(
+        (li) => Number(li.unit_price || 0) >= 0 && !(Number(li.quantity) > 0),
+      );
+      const evNeg = described.filter((li) => Number(li.unit_price || 0) < 0);
+      if (evBadQty.length || evNeg.length) {
+        const names = [...evBadQty, ...evNeg].map((li) => `“${li.description}”`).join(', ');
+        toast.add({
+          severity: 'warn',
+          summary: 'Fix line items before saving',
+          detail: evBadQty.length
+            ? `No quantity on: ${names}. Enter one or remove the line.`
+            : `Negative price on: ${names}.`,
+          life: 8000,
+        });
+        saving.value = false;
+        return;
+      }
+    }
     const payload = {
       customer_id: customerId,
       label: form.value.label,
@@ -2826,8 +2875,10 @@ async function createEstimate() {
       tax_rate: persistTax ? formPct / 100 : null,
       discount: Number(form.value.discount) > 0 ? Number(form.value.discount) : null,
       hide_line_prices: form.value.hide_line_prices ?? null,
+      // M31+M33: keep zero-priced described lines (the display sums them and
+      // $0 scope lines are legit); divergent lines were refused above.
       line_items: form.value.line_items
-        .filter((li) => li.description && li.unit_price > 0)
+        .filter((li) => li.description && Number(li.unit_price || 0) >= 0)
         .map((li) => ({
           category: li.category,
           description: li.description,

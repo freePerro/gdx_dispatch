@@ -646,3 +646,83 @@ describe('InvoiceCreateView — job photos', () => {
     expect(wrapper.find('[data-testid="invoice-create-photos"]').exists()).toBe(false);
   });
 });
+
+describe('InvoiceCreateView — M31+M33: screen and payload never disagree silently', () => {
+  // A cleared InputNumber leaves the model null; the on-screen total renders
+  // that line as $0.00. The old submit substituted quantity: 1 — billing $650
+  // the operator watched render as zero — and silently dropped negative
+  // (discount) lines the same total summed.
+  const GUARD_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `
+      <div>
+        <button data-testid="le-cleared-qty" @click="$emit('update:lines', [{
+          description: 'Opener install', quantity: null, unit_price: 650, taxable: true
+        }])">cleared</button>
+        <button data-testid="le-negative" @click="$emit('update:lines', [{
+          description: 'Coupon', quantity: 1, unit_price: -50, taxable: true
+        }, {
+          description: 'Door', quantity: 1, unit_price: 500, taxable: true
+        }])">negative</button>
+        <button data-testid="le-zero-price" @click="$emit('update:lines', [{
+          description: 'Warranty visit', quantity: 2, unit_price: 0, taxable: true
+        }, {
+          description: 'Spring', quantity: 1, unit_price: 120, taxable: true
+        }])">zero</button>
+      </div>`,
+  };
+
+  async function mountReady() {
+    routeQuery.value = { job_id: 'job-1' };
+    apiGet.mockImplementation((url) => {
+      if (url.startsWith('/api/customers')) return Promise.resolve(CUSTOMERS);
+      if (url.startsWith('/api/jobs?')) return Promise.resolve(JOBS);
+      if (url.startsWith('/api/tax/resolve')) return Promise.resolve({ rate: 0.0825, rate_pct: 8.25 });
+      return Promise.resolve([]);
+    });
+    apiPost.mockResolvedValue({ id: 'inv-9', invoice_number: 'INV-0009' });
+    const wrapper = mount(InvoiceCreateView, {
+      global: { stubs: { ...stubs, LineItemEditor: GUARD_STUB } },
+    });
+    await flushPromises();
+    return wrapper;
+  }
+
+  it('a cleared quantity refuses the submit — never billed as 1', async () => {
+    const wrapper = await mountReady();
+    await wrapper.find('[data-testid="le-cleared-qty"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+    const warn = toastAdd.mock.calls.find(([t]) => t.severity === 'warn');
+    expect(warn).toBeTruthy();
+    expect(warn[0].detail).toContain('Opener install');
+    expect(warn[0].detail).toContain('never billed as 1');
+  });
+
+  it('a negative line the total sums refuses instead of vanishing', async () => {
+    const wrapper = await mountReady();
+    await wrapper.find('[data-testid="le-negative"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).not.toHaveBeenCalled();
+    const warn = toastAdd.mock.calls.find(([t]) => t.severity === 'warn');
+    expect(warn).toBeTruthy();
+    expect(warn[0].detail).toContain('Coupon');
+  });
+
+  it('a zero-priced line with a real quantity still submits, quantity intact', async () => {
+    const wrapper = await mountReady();
+    await wrapper.find('[data-testid="le-zero-price"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="invoice-create-submit"]').trigger('click');
+    await flushPromises();
+    expect(apiPost).toHaveBeenCalled();
+    const [, payload] = apiPost.mock.calls[0];
+    expect(payload.line_items[0]).toMatchObject({ description: 'Warranty visit', quantity: 2, unit_price: 0 });
+  });
+});
+
