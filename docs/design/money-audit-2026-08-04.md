@@ -1724,7 +1724,13 @@ inflates the basis the same way.
 **Fix.** Add `i.deleted_at IS NULL AND i.status NOT IN ('void','draft')`, and decide
 the deposit/final netting basis explicitly.
 
-### M28 — `job_costing` re-rates a deliberate $0 labor rate to $95/h `MEDIUM-HIGH` ✅ **FIXED PR #TBD 2026-08-24 (audited)**
+### M28 — `job_costing` re-rates a deliberate $0 labor rate to $95/h `MEDIUM-HIGH` ✅ **FIXED #435 · RELEASED v1.90.0 · deployed prod+demo + walked 2026-08-24**
+
+> **Walk 2026-08-24 (prod, v1.90.0, auditor account):** swept `/api/costing/jobs/{id}` for all 25
+> jobs on `/api/costing/profitability` — labor rates are exactly {50.0 ×12 (attested tenant
+> rates), 65.0 ×13 (the unified fallback)}; **zero 95.0** in any payload. Caveat already on
+> record below: prod's configured 65.00 equals the code constant, so the walk proves the $95
+> constant is gone but cannot distinguish tenant-path from constant-path on this tenant.
 
 `rate = Decimal(str(r[1] or DEFAULT_LABOR_RATE))` — and `0 or 95` is 95
 ([job_costing.py:201](../../gdx_dispatch/routers/job_costing.py#L201)). `labor.py`
@@ -1770,7 +1776,24 @@ the code constant exactly, so no walk can distinguish the tenant-path from
 the constant-path — whether that 65.00 was deliberate is a question only
 Doug can answer, recorded here rather than assumed.
 
-### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` `CONFIRMED`
+### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24**
+
+> **Adversarial audit round 2 (2026-08-24) — five findings, all fixed:** (1) the
+> ledger reversal sat under a bare `except` with `expense_reversed = True` set
+> unconditionally — the trail could claim a reversal that never posted (M29's own
+> shape rebuilt inside its fix). Now: no swallow, an honest `ledger_reversed`
+> counter, and a locked month posts the reversal into the open period
+> (payments.py's escape hatch); when TODAY is locked too the whole void refuses
+> 409 `period_locked`. (2) Flag-gating orphaned entries posted while the flag was
+> ON — existence of a live entry is now the predicate, not the flag. (3) The
+> billed-line check raced billing's bulk `UPDATE … WHERE billed_invoice_id IS
+> NULL` through a stale identity map — the helper now re-reads the row FOR UPDATE
+> with `populate_existing` and raises `LineBilledError` (router → 409). (4) Stock
+> reversal re-derived from `line.quantity` — it now negates the STORED
+> `StockAdjustment.quantity_delta`. (5) Residue: routing keys/skip_reason cleared
+> on reset, and `reviewed_at`/`reviewed_by_user_id` null on void (void→open is
+> legal; a reopened all-pending bill must not claim review). 15 tests, incl.
+> flag-ON ledger coverage the first round entirely lacked.
 
 PATCH flips status to `void` with no check on confirmed lines and no compensating
 action. Confirmed lines have already created `Expense` rows, incremented stock, and
@@ -1780,6 +1803,24 @@ cleanly and the costs exist twice.
 
 **Fix.** Block the void while confirmed lines exist, or generate reversing expense and
 stock adjustments.
+
+**FIXED — both options, where each is right.** The void now REVERSES what
+confirmed lines created, keyed on the line (every side effect stores its key:
+`expense_id`, `stock_adjustment_id`, `job_part_needed_id`): the Expense
+soft-deletes (all consumers filter `deleted_at` — verified) and its live
+ledger entry reverses through the engine's idempotent `reverse_entry`,
+flag-gated exactly like the posting; stock takes the negative delta through
+the same `apply_stock_delta` that added it; an unbilled checklist row is
+removed; the line returns to `pending` so the corrected re-issue starts
+clean. The BLOCK survives for the one case reversal would lie about: a
+checklist row already **billed** to a customer invoice refuses the void with
+a structured 409 naming the line — billing supersedes, and deleting a billed
+row would break that invoice's provenance. Deliberately NOT reversed:
+`update_catalog_cost` (the old unit cost was never stored; a cost observation
+is informational). The reversal writes a
+`vendor_invoice_void_reversed_lines` audit event with per-effect counts.
+A pre-existing note: there was no line-unconfirm before this — a bare block
+would have been a dead end with no way through.
 
 ### M30 — Smaller cost-side items `LOW–MEDIUM`
 
@@ -2129,7 +2170,17 @@ step, not an invariant.
 **Fix.** Mirror the desktop guard, or make the endpoint idempotent per
 `(job, closeout)`.
 
-### M39 — Endpoints that report success without doing anything `LOW` `CONFIRMED`
+### M39 — Endpoints that report success without doing anything `LOW` `CONFIRMED` — **DECIDED (Doug, 2026-08-24): BUILD, don't delete**
+
+> **The decision, verbatim intent:** "we don't do payment plans. but the
+> option for it should be there for it to be turned on and functional."
+> So `create_payment_plan` becomes a REAL feature: plans persisted, behind a
+> settings toggle that defaults OFF for this deployment, functional when ON,
+> and honestly refusing (not lying) when OFF. `send_payment_receipt` gets
+> wired to the real send pipeline (the email-overhaul path) rather than
+> deleted. `batch_create_invoices` — the third liar — was already removed
+> before this cycle. Recorded here at the entry, not just in a sibling doc,
+> so the decision cannot be re-litigated the way commission's was.
 
 Not arithmetic errors, but they lie about money:
 
