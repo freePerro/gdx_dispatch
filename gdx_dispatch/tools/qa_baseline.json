@@ -72,10 +72,6 @@
       "last_checked": "2026-04-08",
       "note": "fixed missing company_module_grant"
     },
-    "/api/scheduling": {
-      "status": 200,
-      "last_checked": "2026-04-08"
-    },
     "/api/sticky-notes": {
       "status": 200,
       "last_checked": "2026-04-08"
@@ -239,10 +235,6 @@
       "js_errors": 0,
       "last_checked": "2026-04-08"
     },
-    "/scheduling": {
-      "js_errors": 0,
-      "last_checked": "2026-04-08"
-    },
     "/planner": {
       "js_errors": 0,
       "last_checked": "2026-04-08"
@@ -330,10 +322,6 @@
       "js_errors": 0,
       "last_checked": "2026-04-08"
     },
-    "/booking": {
-      "js_errors": 0,
-      "last_checked": "2026-04-08"
-    },
     "/voice": {
       "js_errors": 0,
       "last_checked": "2026-04-08"
@@ -355,10 +343,6 @@
       "last_checked": "2026-04-08"
     },
     "/change-orders": {
-      "js_errors": 0,
-      "last_checked": "2026-04-08"
-    },
-    "/pricing": {
       "js_errors": 0,
       "last_checked": "2026-04-08"
     }

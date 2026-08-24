@@ -32,11 +32,12 @@ export const MODULE_CATEGORIES = [
       // Field tier (ungated — every role, no permission needed): jobs, timeclock.
       { key: 'jobs', label: 'Jobs', icon: 'pi pi-briefcase', to: '/jobs', type: 'Jobs' },
       { key: 'dispatch', label: 'Dispatch', icon: 'pi pi-map', to: '/dispatch', type: 'Jobs', permission: 'nav.office' },
-      // 2026-07-01 UX audit: "Scheduling" vs "Appointments" were conflated (both
-      // touch job assignment). Renamed + given distinct icons + descriptions:
-      // Team Scheduling = reassign jobs across techs; Appointment Confirmations =
-      // confirm visit dates with customers.
-      { key: 'scheduling', label: 'Team Scheduling', icon: 'pi pi-calendar', to: '/scheduling', type: 'Operations', permission: 'nav.office', description: 'Reassign and reschedule jobs across technicians' },
+      // 2026-07-01 UX audit split "Scheduling" from "Appointments" (both touch
+      // job assignment). Team Scheduling was retired 2026-08-24: its list was a
+      // read-only derivation of `jobs.scheduled_at` and both write paths were
+      // ui_compat 501 stubs, so its Save/Reassign buttons never did anything.
+      // Dispatch and Jobs already own reassignment. Appointment Confirmations
+      // (below) is the surviving half — confirm visit dates with customers.
       { key: 'appointments', label: 'Appointment Confirmations', icon: 'pi pi-calendar-clock', to: '/appointments', type: 'Jobs', permission: 'nav.office', description: 'Confirm upcoming visit dates with customers' },
       { key: 'tasks', label: 'Tasks', icon: 'pi pi-list', to: '/tasks', type: 'Operations', permission: 'nav.office' },
       { key: 'planner', label: 'Planner', icon: 'pi pi-calendar-plus', to: '/planner', type: 'Operations', permission: 'nav.office' },
@@ -62,7 +63,6 @@ export const MODULE_CATEGORIES = [
       { key: 'daily_loadsheet', label: 'Daily Load Sheet', icon: 'pi pi-check-square', to: '/daily-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Daily' },
       { key: 'delivery_loadsheet', label: 'Delivery Load Sheet', icon: 'pi pi-truck', to: '/delivery-loadsheet', type: 'Operations', permission: 'nav.office', cluster: 'loadsheets_hub', tabLabel: 'Delivery' },
       { key: 'equipment', label: 'Customer Equipment', icon: 'pi pi-cog', to: '/equipment', type: 'Operations', permission: 'nav.office' },
-      { key: 'equipment_tracking', label: 'Company Tools', icon: 'pi pi-database', to: '/equipment-tracking', type: 'Operations', permission: 'nav.office' },
       // Office tier: the default /photos feed is /api/photos/recent, a tenant-wide
       // gallery restricted to dispatch/admin (a tech must not see other jobs'
       // customer-premises photos). Field-tier here showed techs a nav item that
@@ -90,7 +90,6 @@ export const MODULE_CATEGORIES = [
       { key: 'reviews', label: 'Reviews', icon: 'pi pi-star', to: '/reviews', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Reviews' },
       { key: 'referrals', label: 'Referrals', icon: 'pi pi-share-alt', to: '/referrals', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Referrals' },
       { key: 'surveys', label: 'Surveys', icon: 'pi pi-comments', to: '/surveys', type: 'Customers', permission: 'nav.office', cluster: 'reputation_hub', tabLabel: 'Surveys' },
-      { key: 'booking', label: 'Online Booking', icon: 'pi pi-calendar', to: '/booking', type: 'Operations', permission: 'nav.office' },
       { key: 'warranties', label: 'Warranties', icon: 'pi pi-shield', to: '/warranties', type: 'Jobs', permission: 'nav.office' },
     ],
   },
@@ -128,7 +127,6 @@ export const MODULE_CATEGORIES = [
     modules: [
       { key: 'expenses', label: 'Expenses', icon: 'pi pi-wallet', to: '/expenses', type: 'Invoices', permission: 'accounting.read' },
       { key: 'job_costing', label: 'Job Costing', icon: 'pi pi-chart-line', to: '/job-costing', type: 'Invoices', permission: 'nav.admin' },
-      { key: 'pricing', label: 'Pricing', icon: 'pi pi-tags', to: '/pricing', type: 'Invoices', permission: 'nav.admin' },
       { key: 'labor_matrix', label: 'Labor Matrix', icon: 'pi pi-wrench', to: '/labor-matrix', type: 'Invoices', permission: 'pricing.labor_matrix.read' },
       { key: 'vendor_statements', label: 'Vendor Statements', icon: 'pi pi-file-import', to: '/vendor-statements', type: 'Invoices', permission: 'vendor_statements.read' },
       { key: 'vendor_bills', label: 'Vendor Bills', icon: 'pi pi-inbox', to: '/vendor-bills', type: 'Invoices', permission: 'vendor_invoices.read' },
@@ -227,7 +225,6 @@ export const MODULE_CATEGORIES = [
       { key: 'webhooks', label: 'Webhooks', icon: 'pi pi-bell', to: '/webhooks', type: 'Operations', permission: 'webhooks.manage' },
       { key: 'gdpr', label: 'GDPR & Compliance', icon: 'pi pi-shield', to: '/gdpr', type: 'Admin', permission: 'settings.write' },
       { key: 'activity', label: 'Activity', icon: 'pi pi-history', to: '/activity', type: 'Admin', permission: 'nav.admin' },
-      { key: 'sso', label: 'SSO', icon: 'pi pi-lock', to: '/sso', type: 'Admin', permission: 'settings.write' },
       { key: 'onboarding', label: 'Onboarding', icon: 'pi pi-flag', to: '/onboarding', type: 'Admin', permission: 'nav.admin' },
       { key: 'admin_ops', label: 'Admin Operations', icon: 'pi pi-server', to: '/admin-ops', type: 'Admin', permission: 'settings.write' },
       { key: 'server_errors', label: 'Server Logs', icon: 'pi pi-exclamation-triangle', to: '/server-errors', type: 'Admin', permission: 'settings.write' },

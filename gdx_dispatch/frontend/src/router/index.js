@@ -37,7 +37,6 @@ const DeliveryLoadsheetView = () => import('../views/DeliveryLoadsheetView.vue')
 const PlannerView = () => import('../views/PlannerView.vue');
 const EquipmentView = () => import('../views/EquipmentView.vue');
 const CommunicationsView = () => import('../views/CommunicationsView.vue');
-const SchedulingView = () => import('../views/SchedulingView.vue');
 const CampaignsView = () => import('../views/CampaignsView.vue');
 const AutomationsView = () => import('../views/AutomationsView.vue');
 const WinbackView = () => import('../views/WinbackView.vue');
@@ -86,14 +85,12 @@ const PhoneComColdLeadsView = () => import('../views/PhoneComColdLeadsView.vue')
 const PhoneComFaxesView = () => import('../views/PhoneComFaxesView.vue');
 const OutlookSettingsView = () => import('../views/admin/OutlookSettingsView.vue');
 const InboxView = () => import('../views/InboxView.vue');
-const EquipmentTrackingView = () => import('../views/EquipmentTrackingView.vue');
 const JobTemplatesView = () => import('../views/JobTemplatesView.vue');
 const PayrollView = () => import('../views/PayrollView.vue');
 const OnboardingView = () => import('../views/OnboardingView.vue');
 const ServiceAgreementsView = () => import('../views/ServiceAgreementsView.vue');
 const MaintenanceView = () => import('../views/MaintenanceView.vue');
 const AppointmentsView = () => import('../views/AppointmentsView.vue');
-const BookingView = () => import('../views/BookingView.vue');
 const LeadsView = () => import('../views/LeadsView.vue');
 const SignaturesView = () => import('../views/SignaturesView.vue');
 const TechniciansView = () => import('../views/TechniciansView.vue');
@@ -125,11 +122,9 @@ const ReviewsView = () => import('../views/ReviewsView.vue');
 const WarrantiesView = () => import('../views/WarrantiesView.vue');
 const MapsView = () => import('../views/MapsView.vue');
 const ResourcesView = () => import('../views/ResourcesView.vue');
-const SsoView = () => import('../views/SsoView.vue');
 const PortalView = () => import('../views/PortalView.vue');
 const CustomerPortalView = () => import('../views/CustomerPortalView.vue');
 const ProposalPublicView = () => import('../views/ProposalPublicView.vue');
-const PricingView = () => import('../views/PricingView.vue');
 const MarginTiersView = () => import('../views/MarginTiersView.vue');
 const LaborMatrixView = () => import('../views/LaborMatrixView.vue');
 const VendorStatementsView = () => import('../views/VendorStatementsView.vue');
@@ -178,7 +173,6 @@ export const routes = [
   { path: '/portal', name: 'portal', component: PortalView },
   { path: '/customers/:id', name: 'customer-detail', component: CustomerDetailView },
   { path: '/dispatch', name: 'dispatch', component: DispatchView },
-  { path: '/scheduling', name: 'scheduling', component: SchedulingView },
   { path: '/tasks', name: 'tasks', component: TasksView },
   // /messages → /communications (deduped 2026-04-29 per modules.js cleanup;
   // route kept as redirect so existing bookmarks resolve).
@@ -226,7 +220,6 @@ export const routes = [
   { path: '/accounting-settings', name: 'accounting-settings', component: AccountingSettingsView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/accounting-ledger', name: 'accounting-ledger', component: AccountingLedgerView, meta: { requiresPermission: 'accounting.read' } },
   { path: '/profile', name: 'profile', component: UserProfileView },
-  { path: '/sso', name: 'sso', component: SsoView },
   // (duplicate /onboarding registration removed 2026-05-09 — already declared
   //  above at the top of the public-route block; Vue Router warned + the
   //  second declaration silently won. Single declaration now.)
@@ -269,7 +262,6 @@ export const routes = [
   // /marketing → /campaigns (deduped 2026-04-29). Bookmark redirect.
   { path: '/marketing', redirect: '/campaigns' },
   { path: '/reports', name: 'reports', component: ReportsView },
-  { path: '/pricing', name: 'pricing', component: PricingView },
   { path: '/margin-tiers', name: 'margin-tiers', component: MarginTiersView },
   { path: '/labor-matrix', name: 'labor-matrix', component: LaborMatrixView },
   { path: '/vendor-statements', name: 'vendor-statements', component: VendorStatementsView, meta: { requiresPermission: 'vendor_statements.read' } },
@@ -340,14 +332,12 @@ export const routes = [
   },
   { path: '/settings/integrations/outlook', name: 'outlook-settings', component: OutlookSettingsView },
   { path: '/inbox', name: 'inbox', component: InboxView },
-  { path: '/equipment-tracking', name: 'equipment-tracking', component: EquipmentTrackingView },
   { path: '/job-templates', name: 'job-templates', component: JobTemplatesView },
   { path: '/payroll', name: 'payroll', component: PayrollView, meta: { requiresPermission: 'payroll.read' } },
   { path: '/checklists', name: 'checklists', component: ChecklistsView },
   { path: '/service-agreements', name: 'service-agreements', component: ServiceAgreementsView },
   { path: '/maintenance', name: 'maintenance', component: MaintenanceView },
   { path: '/appointments', name: 'appointments', component: AppointmentsView },
-  { path: '/booking', name: 'booking', component: BookingView },
   { path: '/leads', name: 'leads', component: LeadsView, meta: { requiresPermission: 'leads.read' } },
   // /proposals → /estimates. The standalone Proposals page ran on its own
   // `proposals` table — a flat good/better/best re-implementation with no line

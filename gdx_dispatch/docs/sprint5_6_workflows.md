@@ -118,7 +118,9 @@ isolation is the connection. No `tenant_id` column on any new table.
   consolidation migration backfills any rows into `customer_equipments`
   and the table can be dropped in a follow-up sprint after confirming
   zero reads on prod.
-- `/api/equipment-tracking` shim in `ui_compat.py` still returns empty
+- `/api/equipment-tracking` and its Company Tools page were REMOVED 2026-08-24
+  (owner decision, docs/design/unimplemented-endpoints-decision-list.md item 9).
+  The canonical equipment surface is `/api/equipment`
   lists for any historical caller (kept until a frontend audit confirms
   no view depends on it).
 
