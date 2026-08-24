@@ -173,9 +173,17 @@ function needsReview(row) {
 }
 
 function mathMismatch(row) {
-  // Separate signal: the parser's arithmetic invariant didn't hold. Distinct
-  // from "needs review" so a reviewed bill can still flag a math problem.
-  return String(row.notes || '').startsWith('INVARIANT_MISMATCH')
+  // Separate signal: the arithmetic invariant didn't hold. Distinct from
+  // "needs review" so a reviewed bill can still flag a math problem.
+  // M26: the verdict is a real field now. The old contract parsed notes with
+  // startsWith — which reported PASS for every LLM bill, because the service
+  // prefixes the LLM marker ("LLM_EXTRACTED (...); INVARIANT_MISMATCH...").
+  // The office queue showed green for exactly the bills the check exists to
+  // catch. Substring survives only as the fallback for rows the API sent
+  // without the field — and as `includes`, never `startsWith`.
+  if (row.invariant_ok === false) return true
+  if (row.invariant_ok === true) return false
+  return String(row.notes || '').includes('INVARIANT_MISMATCH')
 }
 
 const fetchItems = async () => {

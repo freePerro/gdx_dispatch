@@ -360,6 +360,9 @@ def _persist_parsed_invoice(
         extraction_method=extraction_method,
         uploaded_by=uploaded_by,
         notes="; ".join(note_parts) or None,
+        # M26: the verdict is data, not prose — stored where a money guard
+        # belongs. The note stays for humans; nothing parses it any more.
+        invariant_ok=invariant_ok,
     )
     invoice.lines = build_lines_from_parsed(parsed)
     db.add(invoice)

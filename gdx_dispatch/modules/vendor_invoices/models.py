@@ -19,7 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -140,6 +140,15 @@ class VendorInvoice(TenantBase):
     possible_duplicate_of_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("vendor_invoices.id"), nullable=True
     )
+
+    # M26 (money audit 2026-08-04): the arithmetic-check verdict as a REAL
+    # column, not prose. The old contract parsed `notes` for a substring — a
+    # money guard riding a free-text field it shares with the LLM marker, which
+    # is exactly how `startswith` silently defeated it for the extraction path
+    # it existed to protect. NULL means "row predates the column"; readers fall
+    # back to the substring for those, which is the same inference they used
+    # before, so legacy behavior is unchanged.
+    invariant_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     uploaded_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

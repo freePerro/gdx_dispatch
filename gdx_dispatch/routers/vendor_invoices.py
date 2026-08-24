@@ -88,6 +88,11 @@ class LineOut(BaseModel):
 
 class InvoiceSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    # M26: the stored verdict rides the LIST rows too — the review queue is
+    # where the office actually looks, and it re-derived this from notes with
+    # the startsWith bug until 2026-08-24. None = pre-column row; the client
+    # falls back to the substring, reproducing the historical inference.
+    invariant_ok: bool | None = None
 
     id: UUID
     vendor_id: UUID | None
@@ -188,18 +193,27 @@ def _detail(db: Session, invoice: VendorInvoice, *, with_suggestions: bool = Tru
         .order_by(VendorBillPayment.created_at)
     ).all()
     return InvoiceDetailOut(
-        **summary.model_dump(),
+        # M26: the summary dump now carries the RAW column (the list rows need
+        # it); here the explicit kwarg below computes column-else-substring and
+        # stays authoritative — drop the raw one or the constructor sees two.
+        **{k: v for k, v in summary.model_dump().items() if k != "invariant_ok"},
         lines=[LineOut.model_validate(ln) for ln in lines],
         suggestions=suggestions,
         payments=[PaymentOut.model_validate(p) for p in all_payments],
         **payment_summary(db, invoice),
-        # M26 (money audit 2026-08-04): was `.startswith(...)`, but the service
-        # joins note parts with "; " and puts the LLM marker FIRST — so a
-        # rung-2 bill whose header arithmetic failed read
-        # "LLM_EXTRACTED (...); INVARIANT_MISMATCH: ..." and startswith
-        # returned False. The guard on untrusted LLM money reported PASS for
-        # exactly the extraction path it exists to protect.
-        invariant_ok="INVARIANT_MISMATCH" not in (invoice.notes or ""),
+        # M26 (money audit 2026-08-04), both halves. First the substring bug:
+        # `.startswith(...)` missed "LLM_EXTRACTED (...); INVARIANT_MISMATCH..."
+        # because the service joins note parts with "; " and puts the LLM
+        # marker FIRST — the guard reported PASS for exactly the extraction
+        # path it exists to protect. Then the real fix: the verdict is a
+        # column (migration 078), written at creation. The substring survives
+        # ONLY as the fallback for pre-column rows (invariant_ok IS NULL),
+        # where it reproduces the historical inference exactly.
+        invariant_ok=(
+            bool(invoice.invariant_ok)
+            if invoice.invariant_ok is not None
+            else "INVARIANT_MISMATCH" not in (invoice.notes or "")
+        ),
     )
 
 
