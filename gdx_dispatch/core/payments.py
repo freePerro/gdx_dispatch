@@ -933,7 +933,16 @@ def confirm_payment(
     if pi.status == "succeeded":
         _mark_invoice_paid(
             invoice, db, external_ref=pi.id, method="card",
-            amount=(pi.amount or 0) / 100.0,
+            # M17.3: `amount_received`, not `amount`. Identical under
+            # auto-capture (every intent here — no mint site sets
+            # capture_method="manual"), divergent the moment manual capture
+            # appears: `amount` is what was ASKED, `amount_received` is what
+            # MOVED, and the webhook already records the latter. Recording
+            # different figures for the same charge depending on which
+            # message arrives first is a books divergence waiting for a
+            # capture flow. Fallback to `amount` keeps legacy/test intents
+            # without the field recording exactly as before.
+            amount=(getattr(pi, "amount_received", None) or pi.amount or 0) / 100.0,
             source="stripe-confirm",
             connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
         )
@@ -1071,7 +1080,16 @@ def ach_charge(
     if pi.status == "succeeded":
         _mark_invoice_paid(
             invoice, db, external_ref=pi.id, method="ach",
-            amount=(pi.amount or 0) / 100.0,
+            # M17.3: `amount_received`, not `amount`. Identical under
+            # auto-capture (every intent here — no mint site sets
+            # capture_method="manual"), divergent the moment manual capture
+            # appears: `amount` is what was ASKED, `amount_received` is what
+            # MOVED, and the webhook already records the latter. Recording
+            # different figures for the same charge depending on which
+            # message arrives first is a books divergence waiting for a
+            # capture flow. Fallback to `amount` keeps legacy/test intents
+            # without the field recording exactly as before.
+            amount=(getattr(pi, "amount_received", None) or pi.amount or 0) / 100.0,
             source="stripe-ach-charge",
             connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
         )

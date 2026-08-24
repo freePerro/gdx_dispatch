@@ -1363,17 +1363,11 @@ def create_invoice(
     db.add(invoice)
     # 2026-08-08 audit: two concurrent creates could compute the same number
     # and the second flush raised an uncaught IntegrityError → raw 500. The
-    # unique constraint is the referee; one regenerate-and-retry absorbs the
-    # residual race the bump-past-takers generator can't see.
-    try:
-        db.flush()
-    except IntegrityError as _num_exc:
-        if "invoice_number" not in str(_num_exc):
-            raise
-        db.rollback()
-        db.add(invoice)
-        invoice.invoice_number = _next_invoice_number(db)
-        db.flush()
+    # shared helper (M17.4 consolidated all three creators onto it)
+    # regenerates once; the unique constraint stays the referee.
+    from gdx_dispatch.core.closeout_billing import flush_invoice_with_number_retry
+
+    flush_invoice_with_number_retry(db, invoice)
 
     if estimate:
         # Accepted TIER (2026-08-14): the contract is the accepted tier's
