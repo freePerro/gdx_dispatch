@@ -117,6 +117,37 @@ The tables and detail modal are deliberately left in place: they are the shape
 the screen takes when runs exist, and the build-or-remove call has not been
 made.
 
+## 5.5 Why this doc has to be found from the money audit
+
+On 2026-08-23 a later pass worked the money audit top-down, reached **M6**, and
+started building a uniqueness constraint on `commission_entries` — a fix for a
+feature this document had already retired. Doug caught it: *"commissions were
+supposed to be dropped, it is something we will build as a plugin later. How
+did this get missed from the last time this was worked on and I answered that
+question."*
+
+**The mechanism:** the decision was recorded here and on the money audit's
+**M27**, but M6 in that same document still read as a live `HIGH` finding with
+a "Fix." prescription and no cross-reference. A reader entering from M6 had
+nothing telling them to stop. The corpus audit already names this failure —
+*"check for a rival plan first; two plans in this repo reached opposite
+decisions about the same money path without ever referencing each other"* —
+and this was the same shape, one document to the next.
+
+**Fixed by** putting a DO-NOT-BUILD banner on M6 itself, pointing here. If a
+further commission finding is ever added to that audit, it needs the same
+banner: a decision recorded in one place and not the other is a decision that
+will be re-litigated by whoever reads the other one.
+
+**One thing that work did establish, worth keeping:** the natural key for a
+commission entry is NOT `(user_id, job_id, period)`. `CommissionRule` is
+per-**role** and `CommissionEntry` has no role column, so the same person on
+the same job as `tech` (10%) then `lead` (50%) collapses to one row at $500
+instead of two totalling $600 — silently, audited as an ordinary update. One
+person selling *and* installing a job is the ordinary owner-operator pattern
+here, so the plugin's model must carry the role. That is a money rule for
+whoever builds it, not something a constraint should decide.
+
 ## 6. Traps carried forward
 
 - **Do not "fix" `_fetch_tech_revenue` in place and call commission working.**
@@ -125,5 +156,12 @@ made.
 - **`j.status` has no canonical vocabulary.** Any consumer matching a single
   literal is wrong for roughly half the data. Match case-insensitively against
   both, or fix the vocabulary — but decide, do not copy the next literal along.
+- **`POST /api/commissions/rules` has a button and no unique index.** It is a
+  check-then-insert on `commission_rules.role`, and both `set_rules` and
+  `calculate_commission` then call `scalar_one_or_none()` on that role — so a
+  duplicate makes both raise. Unlike `/calculate`, this one is reachable from
+  `CommissionsView.vue`. Left alone deliberately: it is commission, and
+  commission is leaving core.
+
 - **The 0.01 rates.** Whatever consumes them should refuse or flag a percent
   rate below some floor rather than silently paying a hundredth of a percent.

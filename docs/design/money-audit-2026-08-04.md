@@ -81,7 +81,7 @@ to:
 | M3 | A partial Stripe refund voids the **entire** payment | One goodwill refund re-opens the full invoice and restarts dunning |
 | M4 | Client picks the currency; server records the number as dollars | A $500 invoice can be settled for ~$3 |
 | M5 | Portal "Pay" on a settled invoice charges the full total again | `balance_due <= 0` falls back to `invoice.total` |
-| M6 | `/api/commissions/calculate` mints commission from client-supplied totals, no role gate | Any authenticated tech can pay themselves |
+| M6 ⛔ | `/api/commissions/calculate` mints commission from client-supplied totals, no role gate | Role gate SHIPPED. Rest **superseded** — commission is becoming a plugin |
 | M7 | Estimate discounts silently evaporate on the first invoice recalc | Customer billed more than the estimate they signed |
 | M8 | ✅ **FIXED** — Revenue reports sum a column no code ever writes | Several reports read `$0` against real billed work |
 
@@ -1018,7 +1018,7 @@ same way, so an estimate deliberately quoted at 0% re-acquires the tenant defaul
 
 ## 5. Cost side: vendor bills, payroll, commission
 
-### M6 — `/api/commissions/calculate` mints commission from client input with no role gate `HIGH` `CONFIRMED`
+### M6 — `/api/commissions/calculate` mints commission from client input with no role gate `HIGH` `CONFIRMED` ⛔ SUPERSEDED — commission is becoming a plugin
 
 Three money problems in one endpoint
 ([commission.py:215-266](../../gdx_dispatch/routers/commission.py#L215-L266)):
@@ -1036,6 +1036,38 @@ Any authenticated technician can POST their own user id with a $10,000,000
 
 **Fix.** Server-derive the totals from the job's invoices, add a role gate, and make
 it an upsert on `(user_id, job_id, period)`.
+
+> ### ⛔ DO NOT BUILD THIS. Read before touching any commission code.
+>
+> **Doug's decision, 2026-08-23: commission is being DROPPED from core and
+> rebuilt as a plugin.** Scoped in `commission-as-a-plugin-plan.md`. The
+> decision was recorded there and on **M27** below, but not here — so a later
+> pass reading this section top-down saw a live `HIGH` finding with a
+> prescription and started building it. **That is why this banner exists.**
+>
+> **What is actually true:** the role gate (`require_permission("payroll.write")`)
+> already shipped, so the "any technician pays themselves $10,000,000" attack
+> is gone. The remaining two items are NOT to be fixed in core:
+>
+> - *Server-derive the totals* — needs the deposit basis decided, which
+>   `commission-as-a-plugin-plan.md` §3 records as an open business question.
+> - *Upsert on `(user_id, job_id, period)`* — **that key is wrong.** An
+>   adversarial review proved it silently overwrites: the same person on the
+>   same job calculated as `tech` (10%) then `lead` (50%) leaves ONE row at
+>   $500 instead of two totalling $600, audited as an innocuous `update`.
+>   `CommissionRule` is per-**role** and `CommissionEntry` has no role column,
+>   so two genuine earnings collapse onto one key. One person selling *and*
+>   installing a job is the ordinary owner-operator pattern here. **The right
+>   grain is a money rule the plugin's owner decides — not a constraint.**
+>
+> **Nothing is at risk today:** prod carries **0 commission entries** and
+> **0 commission rules**, and `/calculate` has no UI caller. The feature has
+> never once run.
+>
+> A related sibling, unfixed and also for the plugin: `POST /rules` *does*
+> have a button and is a check-then-insert on `commission_rules.role` with no
+> unique index, and both `set_rules` and `calculate_commission` then call
+> `scalar_one_or_none()` on that role.
 
 ### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` `CONFIRMED`
 
