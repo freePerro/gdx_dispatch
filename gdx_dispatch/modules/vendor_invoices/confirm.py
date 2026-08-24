@@ -40,6 +40,7 @@ from gdx_dispatch.modules.vendor_invoices.models import (
     DISP_STOCK,
     KIND_ITEM,
     LINE_CONFIRMED,
+    LINE_PENDING,
     VALID_DISPOSITIONS,
     VendorInvoice,
     VendorInvoiceLine,
@@ -240,6 +241,138 @@ def confirm_line(
     line.confirmed_by_user_id = actor_id
     line.confirmed_at = _now()
     return result
+
+
+
+class LineBilledError(RuntimeError):
+    """A confirmed line's checklist row was billed to a customer invoice —
+    caught between the router's unlocked fast-path check and the
+    authoritative locked read inside reverse_confirmed_line. The void must
+    refuse: silently keeping (or deleting) a billed row breaks the customer
+    invoice's provenance."""
+
+    def __init__(self, line) -> None:
+        self.line = line
+        super().__init__(f"line {line.line_no} is billed to a customer invoice")
+
+
+def reverse_confirmed_line(db: Session, invoice: VendorInvoice, line: VendorInvoiceLine, *, actor_id: str) -> dict:
+    """Undo one confirmed line's effects so a bill void reverses instead of
+    orphaning (money-audit M29: voiding a $3,120 bill left the Expense rows,
+    the stock increment, and the checklist rows all standing, and the
+    corrected re-issue then imported cleanly — the costs existed twice).
+
+    Every effect is keyed on the line (expense_id / stock_adjustment_id /
+    job_part_needed_id), so reversal is lookups of recorded artifacts, not
+    re-derivations:
+
+    - the Expense soft-deletes, and its LIVE ledger entry — when one EXISTS —
+      reverses through the engine's idempotent reverse_entry. Existence, not
+      the posting flag, is the predicate: an entry posted while the flag was
+      ON must still unwind when the flag is OFF at void time. A reversal
+      whose own month is locked posts into the current period instead (the
+      same lock-tolerant escape hatch payments.py uses); if TODAY's period
+      is locked too, PeriodLockedError propagates and the whole void rolls
+      back — a half-reversed void would be this finding's own shape rebuilt,
+      and the audit trail may never claim a reversal that did not post;
+    - stock negates the STORED StockAdjustment.quantity_delta — the recorded
+      artifact, not a re-derivation from line.quantity, which can have been
+      edited since confirm;
+    - the checklist row is re-read UNDER LOCK (populate_existing defeats the
+      identity map; FOR UPDATE holds the row against billing's concurrent
+      ``UPDATE … WHERE billed_invoice_id IS NULL`` claim): billed since the
+      router's fast-path check → LineBilledError, the caller 409s and the
+      transaction rolls back; unbilled → removed (this confirm minted it);
+    - ``update_catalog_cost`` is deliberately NOT reversed — the old unit
+      cost was never stored, and a cost observation is informational.
+
+    The line returns to pending — routing keys, skip reason and confirm
+    stamps all cleared — so a corrected re-issue starts clean.
+    """
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.models.tenant_models import JobPartNeeded
+
+    out = {"line_id": str(line.id), "expense_reversed": False,
+           "ledger_reversed": False, "stock_reversed": False,
+           "checklist_removed": False}
+
+    if line.expense_id is not None:
+        expense = db.get(Expense, line.expense_id)
+        if expense is not None and expense.deleted_at is None:
+            expense.deleted_at = _now()
+            out["expense_reversed"] = True
+
+            from gdx_dispatch.modules.ledger.engine import (
+                PeriodLockedError,
+                reverse_entry,
+            )
+            from gdx_dispatch.modules.ledger.rules import _live_expense_entry
+
+            live = _live_expense_entry(db, expense)
+            if live is not None:
+                try:
+                    reverse_entry(db, live, created_by=actor_id)
+                except PeriodLockedError:
+                    # The entry's own month is closed — post the reversal
+                    # into the current period. If THAT is locked too, the
+                    # error propagates: the caller refuses the whole void.
+                    reverse_entry(
+                        db, live,
+                        effective_at=datetime.now(timezone.utc).date(),
+                        created_by=actor_id,
+                    )
+                out["ledger_reversed"] = True
+
+    if line.stock_adjustment_id is not None and line.inventory_item_id is not None:
+        from gdx_dispatch.models.tenant_models import InventoryItem, StockAdjustment
+        from gdx_dispatch.modules.inventory.stock import apply_stock_delta
+
+        item = db.get(InventoryItem, line.inventory_item_id)
+        if item is not None:
+            adj = db.get(StockAdjustment, line.stock_adjustment_id)
+            if adj is not None:
+                delta = -int(adj.quantity_delta)
+            else:
+                # The recorded artifact is gone (should not happen — this
+                # confirm stamped the FK). Re-derive rather than leave the
+                # increment standing, and say so in the log.
+                log.warning(
+                    "vendor_void_stock_adjustment_missing line=%s adj=%s",
+                    line.id, line.stock_adjustment_id,
+                )
+                delta = -_int_qty(line.quantity)
+            apply_stock_delta(
+                db, item, delta=delta,
+                reason="vendor bill voided",
+                notes=f"Reversal: invoice {invoice.invoice_number} line {line.line_no}",
+            )
+            out["stock_reversed"] = True
+
+    if line.job_part_needed_id is not None:
+        jpn = db.execute(
+            _select(JobPartNeeded)
+            .where(JobPartNeeded.id == line.job_part_needed_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if jpn is not None:
+            if jpn.billed_invoice_id is not None:
+                raise LineBilledError(line)
+            db.delete(jpn)
+            out["checklist_removed"] = True
+
+    line.status = LINE_PENDING
+    line.disposition = "pending"
+    line.skip_reason = None
+    line.job_id = None
+    line.inventory_item_id = None
+    line.expense_id = None
+    line.stock_adjustment_id = None
+    line.job_part_needed_id = None
+    line.confirmed_by_user_id = None
+    line.confirmed_at = None
+    return out
 
 
 def _attach_document_to_job(db: Session, invoice: VendorInvoice, job_id: UUID) -> None:

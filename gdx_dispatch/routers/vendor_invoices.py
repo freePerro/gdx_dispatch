@@ -433,6 +433,96 @@ async def patch_invoice(
                     detail="bill has recorded payments — void the payments "
                     "before voiding the bill",
                 )
+            # M29: confirmed lines have already created Expense rows, stock
+            # increments and checklist rows — voiding used to leave all three
+            # standing, and the corrected re-issue imported cleanly, so the
+            # costs existed twice. Reverse them, keyed on the line. A line
+            # whose checklist row was already BILLED blocks instead: billing
+            # supersedes, and quietly deleting a billed row would break the
+            # invoice's provenance.
+            from gdx_dispatch.models.tenant_models import JobPartNeeded as _JPN
+            from gdx_dispatch.modules.ledger.engine import PeriodLockedError
+            from gdx_dispatch.modules.vendor_invoices.confirm import (
+                LINE_CONFIRMED as _LC,
+            )
+            from gdx_dispatch.modules.vendor_invoices.confirm import (
+                LineBilledError,
+                reverse_confirmed_line,
+            )
+
+            _confirmed = [ln for ln in invoice.lines if ln.status == _LC]
+            for ln in _confirmed:
+                if ln.job_part_needed_id is not None:
+                    _jpn = db.get(_JPN, ln.job_part_needed_id)
+                    if _jpn is not None and _jpn.billed_invoice_id is not None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "line_billed",
+                                "message": (
+                                    f"line {ln.line_no} ('{(ln.description or '')[:60]}') was "
+                                    "billed to an invoice — resolve that billing before "
+                                    "voiding this bill"
+                                ),
+                            },
+                        )
+            try:
+                _reversals = [
+                    reverse_confirmed_line(db, invoice, ln, actor_id=_actor(user))
+                    for ln in _confirmed
+                ]
+            except LineBilledError as exc:
+                # Race lost: billing claimed the row between the fast-path
+                # check above and the locked read inside the helper. Nothing
+                # committed — the request-scoped session discards the
+                # partial reversals.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "line_billed",
+                        "message": (
+                            f"line {exc.line.line_no} ('{(exc.line.description or '')[:60]}') was "
+                            "billed to an invoice — resolve that billing before "
+                            "voiding this bill"
+                        ),
+                    },
+                ) from exc
+            except PeriodLockedError as exc:
+                # The expense's month AND the current period are locked —
+                # a void that cannot post its ledger reversal must refuse
+                # whole, never half-succeed with diverging books.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "period_locked",
+                        "message": (
+                            "voiding this bill requires a ledger reversal, but the "
+                            "current accounting period is locked — move the lock "
+                            "date, then void"
+                        ),
+                    },
+                ) from exc
+            if _reversals:
+                log_audit_event_sync(
+                    db=db,
+                    tenant_id=_tid(request),
+                    user_id=_actor(user),
+                    action="vendor_invoice_void_reversed_lines",
+                    entity_type="vendor_invoice",
+                    entity_id=str(invoice.id),
+                    details={
+                        "lines": len(_reversals),
+                        "expenses_reversed": sum(r["expense_reversed"] for r in _reversals),
+                        "ledger_reversed": sum(r["ledger_reversed"] for r in _reversals),
+                        "stock_reversed": sum(r["stock_reversed"] for r in _reversals),
+                        "checklist_removed": sum(r["checklist_removed"] for r in _reversals),
+                    },
+                )
+            # A void bill must not claim review: reopening leaves every line
+            # pending again, and the review stamp described the pre-void
+            # state of the books.
+            invoice.reviewed_at = None
+            invoice.reviewed_by_user_id = None
         invoice.status = payload.status
         if payload.status == STATUS_OPEN:
             # Reopening runs the derivation — a bill whose live payments
