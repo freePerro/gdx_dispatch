@@ -848,6 +848,114 @@ def _cents_to_dollars(value) -> float | None:
         return None
 
 
+def _failure_event_is_superseded(
+    intent_id: str, failed_charge_id: str, connected_account: str = ""
+) -> bool | None:
+    """Is this failure event about an attempt the intent has already moved on from?
+
+    Returns True/False, or **None when we could not find out** — which the
+    caller must not read as False.
+
+    M14. Stripe does not guarantee delivery order, and a card retry reuses the
+    same PaymentIntent. So "attempt one declines, customer retries, attempt two
+    succeeds" can deliver as `succeeded` (recorded, $500) then the delayed
+    `charge.failed` from attempt one — which reversed the good payment,
+    re-opened the invoice, and put a customer who had paid back into dunning.
+
+    **The discriminator is the CHARGE, not the intent's status.** Each attempt
+    on an intent is its own charge, and a superseded attempt names a charge the
+    intent no longer points at. Comparing `latest_charge` answers the actual
+    question — "is this event about the current attempt?" — without depending
+    on what a PaymentIntent's `status` does in any particular flow.
+
+    **Scope, stated honestly.** This guard covers CARD RETRIES, which is where
+    the ordering hazard actually lives. A `us_bank_account` failure after the
+    intent reaches `succeeded` does NOT arrive here at all — Stripe raises a
+    **dispute** for that case and the intent stays `succeeded`; these two
+    events only fire while the intent is still `processing`. An earlier draft
+    of this docstring justified the design by an ACH-return-versus-stale-decline
+    dilemma that does not occur on this path; an adversarial review checked the
+    Stripe documentation and killed it.
+
+    Keying on the charge rather than the status is still the better rule — it
+    answers the question actually being asked, and it does not depend on being
+    right about intent status transitions in any flow — but it is a
+    robustness choice, not a fix for a live ACH hole.
+
+    Without a charge id to compare (nothing in the event names one), this
+    returns None rather than guessing — an unknown, not a False.
+    """
+    if not intent_id or not failed_charge_id:
+        return None
+    try:
+        stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+        # PaymentIntents are CREATED with `**_stripe_extra(tenant)`, which
+        # carries `stripe_account` on a Connect tenant. A retrieve without it
+        # looks in the platform account, 404s, and this guard degrades to
+        # "unknown" on every event — inert, plus an ERROR line each time. The
+        # webhook envelope carries the account, so pass it through.
+        pi = stripe.PaymentIntent.retrieve(
+            intent_id, **({"stripe_account": connected_account} if connected_account else {})
+        )
+        latest = getattr(pi, "latest_charge", None)
+        # `latest_charge` is an id string unless the caller expanded it.
+        latest_id = str(getattr(latest, "id", latest) or "")
+        if not latest_id:
+            return None
+        return latest_id != str(failed_charge_id)
+    except Exception:
+        logger.exception("payment_intent_charge_check_failed intent=%s", intent_id)
+        return None
+
+
+def _reverse_unless_superseded(
+    db: Session,
+    reference: str,
+    reason: str,
+    failed_charge_id: str = "",
+    connected_account: str = "",
+) -> dict:
+    """Reverse a recorded payment, UNLESS this event is a superseded attempt.
+
+    M14's fix, and the single place both failure events go through so they
+    cannot drift apart.
+
+    A genuine late ACH return (which MUST reverse) and a stale pre-success card
+    decline (which must NOT) arrive as the same event shape. What separates
+    them is whether the event names the intent's CURRENT charge.
+
+    When that cannot be established — no charge id in the event, or Stripe
+    unreadable — this falls back to reversing, which is today's behaviour. The
+    alternative would invent a new failure mode in which genuinely returned
+    money silently stays recorded, and a missed reversal is far worse than a
+    reversal that has to be undone: the invoice would read paid, dunning would
+    stop chasing, and the cash would be gone with nothing on the record.
+    """
+    superseded = _failure_event_is_superseded(
+        reference, failed_charge_id, connected_account
+    )
+    if superseded is True:
+        logger.warning(
+            "stale_failure_event_ignored reference=%s charge=%s reason=%s — the "
+            "intent has moved on to a later charge, so this event is a "
+            "superseded attempt. NOT reversing.",
+            reference, failed_charge_id, reason,
+        )
+        return {
+            "status": "ignored_stale_failure",
+            "reference": reference,
+            "reason": reason,
+        }
+    if superseded is None and reference:
+        logger.error(
+            "failure_event_unverified reference=%s charge=%s reason=%s — could not "
+            "establish whether this attempt is current; reversing on the event "
+            "alone, which is the pre-M14 behaviour.",
+            reference, failed_charge_id, reason,
+        )
+    return _reverse_recorded_payment(db, reference, reason)
+
+
 def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
     """Void the Payment row recorded for ``reference`` and re-open the invoice.
 
@@ -912,6 +1020,9 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
     """
     event_type: str = event.get("type", "")
     data: dict = event.get("data", {}).get("object", {})
+    # Connect: the envelope names the account the event belongs to. Any live
+    # read we make has to look in the same place the object lives.
+    connected_account: str = str(event.get("account") or "")
 
     if event_type == "payment_intent.succeeded":
         invoice_id: str = (data.get("metadata") or {}).get("invoice_id", "")
@@ -964,9 +1075,47 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
         # dunning chased a customer who had paid in full.
         return _apply_charge_refund(db, data)
 
-    if event_type in ("charge.dispute.created", "charge.failed"):
+    if event_type == "charge.dispute.created":
+        # A dispute is not a stale-ordering problem, so it does NOT go through
+        # the superseded check — the intent keeps pointing at the disputed
+        # charge, and routing disputes through that check would refuse every
+        # one of them.
+        #
+        # But it must not reverse unconditionally either. Stripe's `warning_*`
+        # dispute statuses are INQUIRIES: the bank is asking a question and
+        # **no funds have been withdrawn**. ACH raises these routinely. Voiding
+        # a real payment over a paperwork request re-opens the invoice, puts a
+        # customer who paid back into dunning, and books cash as gone that is
+        # still sitting there. Reverse only once money has actually moved.
+        dispute_status = str(data.get("status") or "")
+        if dispute_status.startswith("warning_"):
+            logger.warning(
+                "dispute_inquiry_no_funds_moved charge=%s intent=%s status=%s — "
+                "NOT reversing; the bank is asking, not taking.",
+                data.get("id"), data.get("payment_intent"), dispute_status,
+            )
+            return {
+                "status": "dispute_inquiry_noted",
+                "dispute_status": dispute_status,
+                "reference": str(data.get("payment_intent") or ""),
+            }
         return _reverse_recorded_payment(
             db, str(data.get("payment_intent") or ""), event_type
+        )
+
+    if event_type == "charge.failed":
+        # M14: a card retry reuses the intent, and Stripe does not guarantee
+        # delivery order, so this can be attempt one's decline arriving after
+        # attempt two's success.
+        return _reverse_unless_superseded(
+            db,
+            str(data.get("payment_intent") or ""),
+            event_type,
+            # `data.object` IS the charge here, so its id is the attempt that
+            # failed — exactly what has to be compared against the intent's
+            # current charge.
+            failed_charge_id=str(data.get("id") or ""),
+            connected_account=connected_account,
         )
 
     if event_type == "payment_intent.payment_failed":
@@ -978,8 +1127,19 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             failure_msg,
         )
         # An ACH return can arrive as payment_failed AFTER a succeeded event,
-        # so reverse anything already recorded for this intent.
-        reversal = _reverse_recorded_payment(db, str(data.get("id") or ""), event_type)
+        # so anything already recorded for this intent must come back off —
+        # UNLESS the intent is currently succeeded, in which case this event is
+        # a superseded earlier attempt rather than a return (M14). A returned
+        # ACH leaves the intent not-succeeded, which is what separates them.
+        reversal = _reverse_unless_superseded(
+            db,
+            str(data.get("id") or ""),
+            event_type,
+            # `data.object` is the INTENT here; the charge that failed is the
+            # one it pointed at when the event fired.
+            failed_charge_id=str(data.get("latest_charge") or ""),
+            connected_account=connected_account,
+        )
         # Tenant notification placeholder — wire up notification service here
         # notify_tenant_payment_failed(invoice_id, failure_msg)
         return {
