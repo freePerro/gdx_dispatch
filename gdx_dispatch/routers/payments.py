@@ -405,6 +405,7 @@ def charge_method(
                 external_ref=intent.id,
                 method="card",
                 amount=(intent.amount or 0) / 100.0,
+                source="portal-charge-method",
             )
         except Exception:
             # The charge SUCCEEDED at Stripe — never 500 the customer for a

@@ -39,6 +39,10 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             "gdx_dispatch.modules.phone_com.tasks",
             "gdx_dispatch.modules.forecasting.tasks",
             # PR5-billing-capture — the daily billing follow-up loop.
+            # M12 — cancel pay pages left open on an invoice settled another
+            # way. Kept OUT of the request/webhook transaction on purpose:
+            # it makes several Stripe calls and must not hold money locks.
+            "gdx_dispatch.tasks.stale_intent_sweep",
             "gdx_dispatch.tasks.billing_followup",
             # PR6-billing-capture — opt-in automated dunning.
             "gdx_dispatch.tasks.invoice_reminders_auto",
