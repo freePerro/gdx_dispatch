@@ -3092,6 +3092,11 @@ def void_payment(
         return _serialize_payment(payment)  # idempotent
 
     payment.voided_at = datetime.now(UTC)
+    # M15 / migration 076. Say WHOSE void this is. A dispute reinstatement
+    # only ever un-voids a dispute's own reversal, so recording "office_void"
+    # here is what stops a later `charge.dispute.funds_reinstated` from
+    # silently undoing a reversal the office made on purpose.
+    payment.voided_reason = "office_void"
     db.flush()  # resettle reads Payment rows — the void must be visible
     # Reverses the voided payment's P3 AND reverse+reposts every remaining
     # payment whose AR/2300 split the void changed (audit round 2: stale

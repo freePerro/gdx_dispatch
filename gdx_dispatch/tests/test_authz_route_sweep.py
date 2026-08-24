@@ -98,3 +98,39 @@ def test_payment_endpoints_are_token_authorized_not_open(current: set[str]) -> N
     # come back they must not come back ungated.
     assert "GET /api/payments/methods" not in current
     assert "DELETE /api/payments/methods/{pm_id}" not in current
+
+
+def test_the_tenant_wide_payment_list_has_no_ungated_twin():
+    """M17. `core/payments.py` carried an UNAUTHENTICATED tenant-wide
+    `GET /api/payments` returning the whole AR book. It was unreachable only
+    because ui_compat's authenticated handler for the same path registers
+    first (app.py:1670 vs :1756) and FastAPI is first-match-wins.
+
+    That safety was accidental. `app.py` substitutes an EMPTY router when the
+    ui_compat import fails, and with that branch taken the twin became live —
+    proven 2026-08-23 against a real container: HTTP 200, 200 payment rows,
+    invoice numbers and amounts, no credentials sent. Afterwards, the same
+    simulation returns 404.
+
+    `authz_sweep` deliberately ignores shadowed duplicates, so it could never
+    have caught this. Asserted on the ROUTER rather than the assembled app for
+    exactly that reason: the app hides the twin, the router cannot.
+    """
+    from gdx_dispatch.core.payments import router as core_payments_router
+
+    # The router stores the FULL path including its own `/api/payments`
+    # prefix — NOT the "" the decorator was written with. An earlier version
+    # of this test looked for "" and therefore passed with the twin restored:
+    # a guard that could not fail, caught by counterfactually re-adding the
+    # route it exists to forbid.
+    listing = [
+        r for r in core_payments_router.routes
+        if str(getattr(r, "path", "")).rstrip("/") == "/api/payments"
+        and "GET" in (getattr(r, "methods", None) or set())
+    ]
+    assert not listing, (
+        "core/payments.py has re-grown a tenant-wide GET listing. It is "
+        "shadowed by ui_compat's authenticated handler ONLY while that import "
+        "succeeds — app.py falls back to an empty router when it does not, and "
+        "then this one serves the whole payment book to anonymous callers."
+    )

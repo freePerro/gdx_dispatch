@@ -117,9 +117,20 @@ def ungated_routes(app=None) -> list[str]:
 
     # FastAPI resolves first-match-wins, so when a (method, path) is registered
     # twice only the FIRST registration is reachable. Judge that one and ignore
-    # the shadowed duplicate — e.g. `GET /api/payments` is served by ui_compat's
-    # authenticated handler, while an unauthenticated twin sits unreachable
-    # behind it. Reporting the shadowed one would be a phantom finding.
+    # the shadowed duplicate; reporting it would be a phantom finding.
+    #
+    # ⚠️ But "shadowed" is only as durable as the thing doing the shadowing.
+    # This comment used to cite `GET /api/payments` as the example: ui_compat's
+    # authenticated handler registers first, with an unauthenticated twin sat
+    # unreachable behind it. `app.py` wraps that import in a try/except which
+    # substitutes an EMPTY router on failure — and with that branch taken the
+    # twin became the live route. Proven 2026-08-23 against a real container:
+    # HTTP 200, 200 payment rows, no credentials. The twin is now deleted
+    # (M17), so the example is gone.
+    #
+    # The lesson survives it: an ungated route excused as unreachable is a
+    # hole waiting for an import to fail. Prefer deleting the twin to trusting
+    # the shadow.
     verdict: dict[str, bool] = {}
     for path, route in iter_app_routes(app):
         dependant = getattr(route, "dependant", None)

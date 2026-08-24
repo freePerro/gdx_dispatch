@@ -29,7 +29,7 @@ import contextlib
 import logging
 import os
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dt_time
 from typing import Any
 from uuid import UUID
 
@@ -60,44 +60,26 @@ router = APIRouter(prefix="/api/payments", tags=["payments"])
 public_router = APIRouter(tags=["payments-public"])
 
 
-@router.get("", operation_id="api_list_payments")
-def list_payments(
-    source: str | None = None,
-    limit: int = 200,
-    db: Session = Depends(get_db),
-) -> dict:
-    """Tenant-wide payment list. PaymentsView.vue calls this on mount.
-
-    `source` filter:
-        - "quickbooks" → only Payment.method == "quickbooks" (C6)
-        - "manual"     → everything else
-        - None         → all payments
-    """
-    from sqlalchemy import select as _select
-
-    stmt = _select(Payment, Invoice).join(Invoice, Payment.invoice_id == Invoice.id)
-    if source == "quickbooks":
-        stmt = stmt.where(Payment.method == "quickbooks")
-    elif source == "manual":
-        stmt = stmt.where(Payment.method != "quickbooks")
-    stmt = stmt.order_by(Payment.payment_date.desc(), Payment.created_at.desc()).limit(max(1, min(limit, 1000)))
-
-    items = []
-    for payment, invoice in db.execute(stmt).all():
-        items.append({
-            "id": str(payment.id),
-            "invoice_id": str(payment.invoice_id),
-            "invoice_number": invoice.invoice_number if invoice else None,
-            "amount": float(payment.amount or 0),
-            "method": payment.method,
-            # Derived `source` so the UI can filter without re-encoding the
-            # method-string convention. quickbooks => imported; else manual.
-            "source": "quickbooks" if payment.method == "quickbooks" else "manual",
-            "date": payment.payment_date.isoformat() if payment.payment_date else None,
-            "created_at": payment.created_at.isoformat() if payment.created_at else None,
-        })
-    return {"items": items, "total": len(items)}
-
+# M17 (money audit 2026-08-04). An UNAUTHENTICATED, tenant-wide
+# `GET /api/payments` used to live here — no auth dependency, `Depends(get_db)`
+# only, returning the whole AR book. It was never reachable because
+# `ui_compat`'s AUTHENTICATED handler for the same path registers first
+# (app.py:1670 vs :1756) and FastAPI is first-match-wins.
+#
+# That safety was accidental. `app.py` wraps the ui_compat import in a
+# try/except that substitutes an EMPTY router on failure — and with that
+# branch taken, this handler became the live one. Demonstrated 2026-08-23
+# against a real container: simulating the import failure turned an
+# unauthenticated `GET /api/payments` into **HTTP 200 with 200 payment rows**,
+# invoice numbers and amounts, no credentials sent.
+#
+# `authz_sweep.py` knew about the duplicate and deliberately ignored it as
+# "unreachable behind the shadow" — reasoning that was true only while the
+# import it depended on kept succeeding.
+#
+# Deleted rather than gated: it had no callers, and the authenticated version
+# in `ui_compat` is what `PaymentsView.vue` actually reaches. A route that
+# exists only to be shadowed is a hole waiting for an import to fail.
 _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
@@ -984,6 +966,10 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
         return {"status": "no_payment_to_reverse", "reference": reference}
 
     payment.voided_at = datetime.now(timezone.utc)
+    # M15 / migration 076. `reason` was taken and thrown away; without it a
+    # later reinstatement cannot tell a dispute's void from a refund's or the
+    # office's, and un-voiding the wrong one invents money.
+    payment.voided_reason = (reason or "")[:64] or None
     # Flush explicitly: _recalculate_invoice SUMs non-voided payments with a
     # SELECT, and on an autoflush=False session the pending void would not be
     # visible to it — the balance would come back unchanged and the invoice
@@ -1002,12 +988,169 @@ def _reverse_recorded_payment(db: Session, reference: str, reason: str) -> dict:
 
             transition_invoice_status(db, invoice, "sent", actor="stripe-webhook")
             invoice.paid_at = None
+    _audit_payment_reversal(
+        db, payment, action="payment_reversed", reason=reason,
+        detail={"invoice_reopened": True},
+    )
     db.commit()
     logger.warning(
         "payment_reversed reference=%s invoice=%s reason=%s — invoice re-opened",
         reference, payment.invoice_id, reason,
     )
     return {"status": "reversed", "invoice_id": str(payment.invoice_id), "reason": reason}
+
+
+def _audit_payment_reversal(db: Session, payment, *, action: str, reason: str, detail: dict) -> None:
+    """Record a webhook-driven money movement.
+
+    Invariant #1: every state-changing action answers who did it, what
+    changed, when. Both of these move money on an invoice off a signed Stripe
+    event, and both used to leave nothing but a `logger.warning` — which is
+    not a record, it is a hope that somebody greps.
+
+    The actor is the webhook, named as such: this is machine-initiated, and
+    saying so is more honest than attributing it to whoever last logged in.
+    Never raises — a failed trail must not 500 a webhook Stripe will retry,
+    turning one lost audit row into a redelivery loop.
+    """
+    try:
+        from gdx_dispatch.core.audit import log_audit_event_sync
+
+        log_audit_event_sync(
+            db=db,
+            tenant_id=None,
+            user_id="stripe-webhook",
+            action=action,
+            entity_type="payment",
+            entity_id=str(payment.id),
+            details={
+                "invoice_id": str(payment.invoice_id),
+                "amount": float(payment.amount or 0),
+                "reference": payment.reference,
+                "stripe_event": reason,
+                **detail,
+            },
+        )
+    except Exception:
+        logger.exception("%s_audit_failed reference=%s", action, payment.reference)
+
+
+# The only void reasons a dispute reinstatement may undo. Anything else — a
+# refund, an office void, or a NULL from before migration 076 — is somebody
+# else's reversal, and putting it back would invent money.
+_DISPUTE_VOID_REASONS = frozenset(
+    {"charge.dispute.created", "charge.dispute.funds_withdrawn"}
+)
+
+
+def _reinstate_reversed_payment(db: Session, reference: str, reason: str) -> dict:
+    """Un-void the Payment row for ``reference`` and settle the invoice again.
+
+    M15. `charge.dispute.created` voided the payment (correct at the time) and
+    there was no handler for the other end of the lifecycle. Winning a dispute
+    reinstates the money at Stripe and nothing restored it here: the payment
+    stayed voided, the invoice stayed open, dunning chased a customer whose
+    charge had stood, and the cash sat in the bank with no `Payment` row.
+
+    The mirror of `_reverse_recorded_payment`. Un-voiding rather than inserting
+    a second row keeps one payment per charge — a new row would double-count
+    against `core/invoice_paid.py`, which sums non-voided payments.
+    """
+    from sqlalchemy import select as _select
+
+    from gdx_dispatch.routers.invoices import _recalculate_invoice
+
+    if not reference:
+        return {"status": "no_reference"}
+
+    voided = db.scalars(
+        _select(Payment)
+        .where(Payment.reference == reference, Payment.voided_at.is_not(None))
+        .order_by(Payment.voided_at.desc())
+    ).all()
+    if not voided:
+        # Nothing was reversed for this charge — e.g. the dispute was an
+        # inquiry we correctly declined to reverse, and it closed in our
+        # favour. There is nothing to put back. Not an error.
+        return {"status": "no_payment_to_reinstate", "reference": reference}
+
+    # THREE things void a payment: this dispute path, a full Stripe refund
+    # (`_apply_charge_refund`, which writes NO InvoiceAdjustment — it is a
+    # bare `return _reverse_recorded_payment(...)`), and the office's own
+    # void-payment action. Un-voiding the wrong one INVENTS money: the invoice
+    # returns to paid on cash that was refunded or deliberately reversed.
+    #
+    # An earlier attempt guarded on "does this invoice carry a refund
+    # adjustment", which CANNOT FIRE on the Stripe path — it was checking for
+    # a row that path never writes. Migration 076 records the reason instead,
+    # so the guard is on the fact rather than on a proxy for it.
+    #
+    # Refusing when it cannot tell is the safe direction: recoverable off a
+    # loud log, where inventing money is not.
+    if len(voided) > 1:
+        logger.error(
+            "dispute_reinstate_ambiguous reference=%s voided_rows=%d reason=%s — "
+            "NOT reinstating; a human has to say which row the dispute voided.",
+            reference, len(voided), reason,
+        )
+        return {
+            "status": "reinstate_needs_review",
+            "reference": reference,
+            "why": "more than one voided payment for this charge",
+        }
+
+    payment = voided[0]
+    voided_reason = str(getattr(payment, "voided_reason", None) or "")
+    if voided_reason not in _DISPUTE_VOID_REASONS:
+        logger.error(
+            "dispute_reinstate_not_ours reference=%s invoice=%s voided_reason=%r "
+            "reason=%s — NOT reinstating; this payment was not voided by a "
+            "dispute (a refund, an office void, or a row from before the reason "
+            "was recorded). Un-voiding it would invent money.",
+            reference, payment.invoice_id, voided_reason or None, reason,
+        )
+        return {
+            "status": "reinstate_needs_review",
+            "reference": reference,
+            "why": f"voided_reason={voided_reason or 'unrecorded'}, not a dispute",
+        }
+
+    payment.voided_at = None
+    payment.voided_reason = None
+    # Flush for the same reason the reversal does: `_recalculate_invoice` SUMs
+    # non-voided payments with a SELECT, and on autoflush=False the pending
+    # un-void would not be visible to it.
+    db.flush()
+    invoice = db.get(Invoice, payment.invoice_id)
+    if invoice is not None:
+        _recalculate_invoice(invoice, db)
+        # The invoice was paid when the customer paid it, not when a dispute
+        # closed months later. `_recalculate_invoice` re-stamps `paid_at` on
+        # the flip back to paid, which would move this invoice's revenue into
+        # the wrong period on every report grouping by it — a silent
+        # restatement of a closed month.
+        #
+        # The invoice's own `paid_at` cannot be read back: the REVERSAL nulled
+        # it on the way out (that is what re-opened the invoice), so by the
+        # time this runs it is already gone. The payment row is the surviving
+        # record of when the money actually arrived, so take it from there.
+        when_paid = getattr(payment, "created_at", None)
+        if when_paid is None:
+            pay_date = getattr(payment, "payment_date", None)
+            if pay_date is not None:
+                when_paid = datetime.combine(pay_date, dt_time.min, tzinfo=timezone.utc)
+        if when_paid is not None and invoice.paid_at is not None:
+            invoice.paid_at = when_paid
+    _audit_payment_reversal(
+        db, payment, action="payment_reinstated", reason=reason,
+        detail={"dispute_event": reason},
+    )
+    db.commit()
+    logger.warning(
+        "payment_reinstated reference=%s invoice=%s reason=%s — the money stood",
+        reference, payment.invoice_id, reason,
+    )
+    return {"status": "reinstated", "invoice_id": str(payment.invoice_id), "reason": reason}
 
 
 def handle_payment_webhook(event: dict, db: Session) -> dict:
@@ -1100,6 +1243,29 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
                 "reference": str(data.get("payment_intent") or ""),
             }
         return _reverse_recorded_payment(
+            db, str(data.get("payment_intent") or ""), event_type
+        )
+
+    # M15. Stripe publishes the money movement itself, and these are the only
+    # two events that mean cash actually moved because of a dispute:
+    #
+    #   charge.dispute.funds_withdrawn  "Occurs when funds are removed from
+    #                                    your account due to a dispute."
+    #   charge.dispute.funds_reinstated "Occurs when funds are reinstated to
+    #                                    your account after a dispute is closed."
+    #
+    # Keying on these rather than on `closed`+status is deliberate. It closes
+    # the lifecycle at both ends AND covers the case the inquiry guard above
+    # opens: an inquiry we correctly declined to reverse can still ESCALATE,
+    # and when it does the withdrawal arrives here. `dispute.created` alone
+    # could never have seen that.
+    if event_type == "charge.dispute.funds_withdrawn":
+        return _reverse_recorded_payment(
+            db, str(data.get("payment_intent") or ""), event_type
+        )
+
+    if event_type == "charge.dispute.funds_reinstated":
+        return _reinstate_reversed_payment(
             db, str(data.get("payment_intent") or ""), event_type
         )
 
