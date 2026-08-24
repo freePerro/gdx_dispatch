@@ -604,7 +604,7 @@ day that column is added the hole opens silently — not because anyone walked
 through it. An adversarial review is what forced this paragraph to say so;
 the first draft narrated the hole as live.
 
-### M14 — A late failure event voids a genuinely collected payment `MEDIUM` `PLAUSIBLE`
+### M14 — A late failure event voids a genuinely collected payment `MEDIUM` `PLAUSIBLE` ✅ FIXED 2026-08-23 (and the review found a bigger one next to it)
 
 `charge.failed` and `payment_intent.payment_failed` both reverse whatever is recorded
 for that PaymentIntent. Stripe does not guarantee delivery order, and a card retry
@@ -620,6 +620,75 @@ reverse) from a stale pre-success decline.
 
 **Fix.** On any failure event, retrieve the PaymentIntent live and only reverse when
 it is not currently `succeeded`. Filter `voided_at.is_(None)` in the existence check
+
+**✅ Done 2026-08-23 — both halves.**
+
+The `voided_at` filter in `_mark_invoice_paid` had already landed, so a
+redelivered `succeeded` can recover a wrongly-voided payment; there is now a
+regression test pinning it.
+
+The first half is new. `charge.failed` and `payment_intent.payment_failed` both
+route through `_reverse_unless_superseded`.
+
+**The prescription above says to key on `status != "succeeded"`.** The fix keys
+on the **charge** instead: each attempt on an intent is its own charge, and the
+right question is "is this event about the current attempt?" — answered by
+comparing the failed charge id against the intent's live `latest_charge`.
+
+**Scope, corrected after review.** An earlier draft justified this by an ACH
+hazard: *"a status-based rule would silently stop reversing returned money."*
+**That is false and has been removed.** An adversarial review checked Stripe's
+documentation: a `us_bank_account` failure arriving after the intent reaches
+`succeeded` raises a **dispute**, not `charge.failed`/`payment_intent.payment_failed`
+— those two only fire while the intent is still `processing`, and the intent
+stays `succeeded` through an ACH return. So the "genuine return vs stale
+decline" dilemma never occurs on this path.
+
+What the guard actually covers is **card retries**, which is where the ordering
+hazard genuinely lives. Keying on the charge is still the better rule — it
+answers the question being asked and does not depend on intent-status
+transitions in any flow — but it is a robustness choice, not the closing of a
+live ACH hole. The status version would have been safe too.
+
+A superseded card decline names a charge the intent has moved on from, and is
+ignored with a loud log.
+
+**Disputes deliberately do NOT go through that check.** `charge.dispute.created`
+leaves the intent `succeeded` while the money is held, so routing disputes
+through the status check would refuse every one of them. A counterfactual test
+pins that — the over-correction fails the suite.
+
+**When it cannot be established** (no charge id in the event, Stripe
+unreachable, key missing) it falls back to reversing — today's behaviour — and
+logs `failure_event_unverified` at ERROR. A missed reversal is worse than a
+reversal that has to be undone: the invoice would read paid, dunning would stop
+chasing, and the cash would be gone with nothing on the record.
+
+**The review's real find, and it is fixed here too: a dispute INQUIRY was
+voiding real payments.** `charge.dispute.created` reversed unconditionally, and
+Stripe's `warning_*` dispute statuses are inquiries — the bank is asking a
+question and **no funds have been withdrawn**. ACH raises these routinely. So a
+paperwork request re-opened the invoice, put a customer who had paid back into
+dunning, and booked cash as gone that was still sitting there. There was no
+`dispute.status` branching anywhere in the module. Now `warning_*` is noted and
+not reversed; a real dispute (`needs_response`, `under_review`, `lost`) still
+reverses; a missing status still reverses, because absent is not "inquiry".
+
+**Two traps found by the same review, NOT fixed, filed here:**
+
+1. **No `api_version` is pinned anywhere.** `latest_charge` replaced `charges`
+   on the PaymentIntent in Stripe's `2022-11-15` version. Webhooks render at
+   the *account's* API version while the library retrieves at its own, so on an
+   account pinned before that, `data.get("latest_charge")` is always empty and
+   the `payment_intent.payment_failed` arm degrades to "unknown" — reversing on
+   the event alone, i.e. pre-M14 behaviour, silently. Pinning the version is a
+   repo-wide decision, not a payments-module one.
+2. **Connect retrieves needed the account and did not have it** — fixed in
+   passing (the envelope's `account` is now threaded into the live read), but
+   it is worth naming: PaymentIntents are *created* with
+   `**_stripe_extra(tenant)`, and any live read that omits `stripe_account`
+   looks in the platform account, 404s, and degrades every event to "unknown".
+   Any future live Stripe read from a webhook has the same trap.
 so a legitimate re-record can heal a wrongful void.
 
 ### M15 — Dispute handling is one-directional `MEDIUM` `CONFIRMED`
