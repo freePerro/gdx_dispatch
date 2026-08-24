@@ -483,6 +483,29 @@
             </template>
           </Card>
 
+          <Card data-testid="payment-plans-card" style="margin-bottom:1rem">
+            <template #title>Payment plans</template>
+            <template #content>
+              <div style="display:flex; align-items:center; gap:0.75rem;">
+                <ToggleSwitch v-model="paymentPlansEnabled" inputId="payment-plans" data-testid="payment-plans-toggle" />
+                <div>
+                  <strong>Allow installment payment plans on invoices</strong>
+                  <div class="muted">
+                    When on, an invoice can carry an agreed installment
+                    schedule (set up from the invoice screen). Nothing
+                    auto-charges — payments are still recorded as they
+                    arrive; the plan is the agreed schedule. Off by default:
+                    with it off, the invoice screen doesn't offer plans and
+                    the API refuses honestly.
+                  </div>
+                </div>
+              </div>
+              <div style="margin-top:0.85rem;">
+                <Button label="Save" icon="pi pi-save" :loading="paymentPlansSaving" @click="savePaymentPlans" data-testid="payment-plans-save" />
+              </div>
+            </template>
+          </Card>
+
           <Card data-testid="automation-email-card" style="margin-bottom:1rem">
             <template #title>Automation emails</template>
             <template #content>
@@ -1820,6 +1843,31 @@ async function saveDebugLogging() {
 }
 
 // ── Automation emails (email overhaul 4a; locked: an on/off option) ──
+// Payment plans (money-audit M39; locked: an on/off option, default OFF)
+const paymentPlansEnabled = ref(false);
+const paymentPlansSaving = ref(false);
+async function loadPaymentPlans() {
+  try {
+    const s = await api.get("/api/settings");
+    paymentPlansEnabled.value = !!s?.payment_plans_enabled;
+  } catch (_e) { /* default off */ }
+}
+async function savePaymentPlans() {
+  paymentPlansSaving.value = true;
+  try {
+    const s = await api.patch(
+      "/api/settings",
+      { payment_plans_enabled: paymentPlansEnabled.value },
+      { successMessage: paymentPlansEnabled.value
+          ? "Payment plans on — invoices can now carry installment schedules."
+          : "Payment plans off." },
+    );
+    if (s && typeof s.payment_plans_enabled === "boolean") paymentPlansEnabled.value = s.payment_plans_enabled;
+  } finally {
+    paymentPlansSaving.value = false;
+  }
+}
+
 const automationEmailsEnabled = ref(false);
 const automationSenderUserId = ref(null);
 const automationEmailSaving = ref(false);
@@ -2196,7 +2244,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail(), loadPaymentPlans()]);
 });
 
 onBeforeUnmount(() => {

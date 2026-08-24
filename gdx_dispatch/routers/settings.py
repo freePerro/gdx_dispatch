@@ -67,6 +67,9 @@ class SettingsPatchIn(BaseModel):
     # out as (background sends have no calling user).
     automation_emails_enabled: bool | None = None
     automation_sender_user_id: str | None = Field(default=None, max_length=36)
+    # Money-audit M39 (Doug 2026-08-24): payment plans are an on/off OPTION,
+    # default OFF here — the endpoint refuses honestly when off.
+    payment_plans_enabled: bool | None = None
 
 
 class BrandingPatchIn(BaseModel):
@@ -152,6 +155,7 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "debug_logging_enabled": bool(getattr(row, "debug_logging_enabled", False)),
         "customer_listings_enabled": bool(getattr(row, "customer_listings_enabled", False)),
         "automation_emails_enabled": bool(getattr(row, "automation_emails_enabled", False)),
+        "payment_plans_enabled": bool(getattr(row, "payment_plans_enabled", False)),
         "automation_sender_user_id": getattr(row, "automation_sender_user_id", None) or "",
     }
 
@@ -205,6 +209,7 @@ def patch_settings(
         "qb_accounting_method", "debug_logging_enabled",
         "customer_listings_enabled",
         "automation_emails_enabled", "automation_sender_user_id",
+        "payment_plans_enabled",
     ):
         if key in updates:
             setattr(row, key, updates[key])

@@ -67,6 +67,12 @@ class AppSettings(Base):
     automation_emails_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Money-audit M39 (Doug 2026-08-24): payment plans are an OPTION,
+    # default OFF at this deployment — the endpoint refuses honestly when
+    # off instead of pretending. Turning it on is a deliberate Settings act.
+    payment_plans_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     automation_sender_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Phone.com per-tenant integration. voip_id is the Phone.com account ID
     # (not a secret — appears in every API URL). default_extension_id chooses
@@ -3626,3 +3632,47 @@ def _install_invoice_invariant() -> None:
 
 
 _install_invoice_invariant()
+
+
+class PaymentPlan(Base):
+    """A persisted installment schedule for one invoice (money-audit M39).
+
+    Doug 2026-08-24: "we don't do payment plans. but the option for it should
+    be there for it to be turned on and functional." The old endpoint computed
+    a schedule, persisted NOTHING, and returned a plan_id that did not exist.
+    Plans are a schedule the office agrees with the customer — payments are
+    still recorded through the normal payment paths as they arrive; nothing
+    auto-charges.
+    """
+
+    __tablename__ = "payment_plans"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    invoice_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )  # active | cancelled | completed
+    num_installments: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class PaymentPlanInstallment(Base):
+    __tablename__ = "payment_plan_installments"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    plan_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("payment_plans.id"), nullable=False, index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )  # pending | paid | overdue (derived by readers; nothing auto-charges)

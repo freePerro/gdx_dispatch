@@ -81,6 +81,8 @@ from gdx_dispatch.models.tenant_models import (  # noqa: F401
     OnboardingState,
     OverheadObligation,
     Payment,
+    PaymentPlan,
+    PaymentPlanInstallment,
     PaymentReminder,
     PdfTemplate,
     Plan,
