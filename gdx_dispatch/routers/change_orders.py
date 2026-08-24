@@ -340,6 +340,31 @@ def update_change_order(
             sum(float(li.unit_price) * int(li.quantity) for li in payload.line_items)
         ))
     elif payload.amount is not None:
+        # M25: a bare-amount PATCH on a CO that HAS lines left the stale
+        # rows standing — and billing follows the LINES, so $500 billed
+        # where $700 was approved. Amount and lines must agree; the office
+        # edits the lines (or clears them), never the denormalized subtotal.
+        from gdx_dispatch.models.tenant_models import ChangeOrderLine as _COL
+        _lines = db.execute(
+            _COL.__table__.select().where(_COL.co_id == co.id)
+        ).fetchall()
+        _lines_sum = float(sum((r.line_total or 0) for r in _lines))
+        # Audit round 2 (replacement): the flatWins flow M31/M33 MANDATED —
+        # all-$0 descriptive lines with the money on the flat amount — sends
+        # line_items: [] (indistinguishable from "not sent"; the field
+        # defaults to []). Zero-sum lines carry no money, so a bare amount
+        # cannot diverge from them: exempt. The 409 guards only the real
+        # divergence — stored lines that CARRY money disagreeing with a
+        # bare amount (billing follows the lines).
+        if _lines and _lines_sum != 0 and abs(_lines_sum - float(payload.amount)) > 0.005:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{co.co_number} has {len(_lines)} line item(s) totalling "
+                    f"{_lines_sum:.2f} — billing follows the lines, so edit or "
+                    "clear the lines instead of the flat amount"
+                ),
+            )
         co.amount = Decimal(str(payload.amount))
     if payload.status in CO_STATUSES:
         co.status = payload.status

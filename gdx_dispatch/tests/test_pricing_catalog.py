@@ -83,14 +83,17 @@ def _create_item(db: Session, catalog_id: str, **overrides: object) -> dict[str,
 def test_calculate_sell_price_retail():
     pricing_router._PRICING_SETTINGS = deepcopy(DEFAULT_PRICING_SETTINGS)
     data = pricing_router.calculate_sell_price(cost=100, customer_type="retail", _=_user())
-    assert data["sell_price"] == pytest.approx(130.0)
+    # M25: was 130.0 — this test PINNED the markup-as-margin bug. A 30%
+    # MARGIN on $100 cost is 100/(1−0.30) = $142.86, the engine's convention.
+    assert data["sell_price"] == pytest.approx(142.86)
     assert data["margin_pct"] == pytest.approx(0.30)
 
 
 def test_calculate_sell_price_contractor():
     pricing_router._PRICING_SETTINGS = deepcopy(DEFAULT_PRICING_SETTINGS)
     data = pricing_router.calculate_sell_price(cost=100, customer_type="contractor", _=_user())
-    assert data["sell_price"] == pytest.approx(125.0)
+    # M25: was 125.0 (markup) — 25% margin is 100/0.75 = $133.33.
+    assert data["sell_price"] == pytest.approx(133.33)
     assert data["margin_pct"] == pytest.approx(0.25)
 
 
@@ -106,7 +109,9 @@ def test_volume_discount():
     pricing_router._PRICING_SETTINGS = deepcopy(DEFAULT_PRICING_SETTINGS)
     data = pricing_router.calculate_sell_price(cost=1000, customer_type="retail", annual_spend=50000, _=_user())
     assert data["volume_discount_pct"] == pytest.approx(0.02)
-    assert data["sell_price"] == pytest.approx(1274.0)
+    # M25: was 1274.0 (markup base 1300 × 0.98) — margin base is
+    # 1000/0.70 = 1428.57, × 0.98 = 1400.00.
+    assert data["sell_price"] == pytest.approx(1400.0)
 
 
 def test_pricing_settings_patch():

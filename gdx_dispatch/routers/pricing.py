@@ -258,7 +258,12 @@ def calculate_sell_price(
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
     margin = _get_margin(customer_type)
-    base_sell = cost * (1 + margin)
+    # M25: this was markup math (cost × (1+m)) on values NAMED margin — at
+    # 30% on a $100 cost that's $130 vs the engine's $142.86, a 9% revenue
+    # gap. sell = cost / (1 − margin) is the engine's one convention.
+    if margin >= 1:
+        raise HTTPException(status_code=422, detail="margin must be < 1")
+    base_sell = cost / (1 - margin)
 
     labor_rate = _get_labor_rate(tech_id)
     labor_total = labor_rate * labor_hours
@@ -404,10 +409,12 @@ def price_comparison(
 ) -> list[dict[str, object]]:
     """Show cost vs sell price vs margin for all vendor-listed items."""
     margin = _get_margin(customer_type)
+    if margin >= 1:
+        raise HTTPException(status_code=422, detail="margin must be < 1")
     results = []
     for _key, item in _tenant_vendor_lists().items():
         cost = float(item.get("cost", 0))
-        sell = _money(cost * (1 + margin))
+        sell = _money(cost / (1 - margin))  # M25: was markup math
         profit = _money(sell - cost)
         margin_pct = _money(profit / sell * 100) if sell > 0 else 0
         results.append({

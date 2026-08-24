@@ -1516,3 +1516,40 @@ def test_send_honors_free_typed_recipient(client: TestClient, monkeypatch):
     r = client.post(f"/api/estimates/{est2['id']}/send", json={"to_email": "not-an-email"})
     assert r.status_code == 200
     assert r.json()["email_skip_reason"] == "invalid_recipient_email"
+
+
+def test_m25_explicit_zero_margin_override_sells_at_cost(client: TestClient):
+    """M25: `override or snapshot` discarded an EXPLICIT 0% override back to
+    the tier margin — a sell-at-cost line silently re-priced itself on the
+    next cost edit. 0 is a value, not an absence."""
+    import uuid as _uuid
+
+    estimate = _create_estimate(client)
+    db = next(client.app.dependency_overrides[get_db]())
+    try:
+        line = EstimateLine(
+            id=_uuid.uuid4(), estimate_id=_uuid.UUID(estimate["id"]),
+            description="Sell-at-cost door", quantity=1,
+            unit_price=100, line_total=100,
+            cost_snapshot=100, margin_pct_snapshot=Decimal("0.35"),
+            margin_pct_override=Decimal("0"),
+            company_id="tenant-test",
+        )
+        db.add(line)
+        db.commit()
+        line_id = str(line.id)
+    finally:
+        db.close()
+
+    r = client.patch(
+        f"/api/estimates/{estimate['id']}/lines/{line_id}", json={"cost": 120}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    lines = body.get("lines") or body.get("line_items") or []
+    mine = next((l for l in lines if l.get("id") == line_id), body)
+    got = float(mine.get("unit_price") or 0)
+    assert got == 120.0, (
+        f"0% override must sell at the new cost (120.00), got {got} — "
+        "the tier margin re-applied itself"
+    )

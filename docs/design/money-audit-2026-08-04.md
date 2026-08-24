@@ -1577,7 +1577,39 @@ same way, so an estimate deliberately quoted at 0% re-acquires the tenant defaul
 
 **Fix.** Copy `taxable` in the line loop and use `estimate.tax_rate` when present.
 
-### M25 — Smaller pricing items `LOW–MEDIUM`
+### M25 — Smaller pricing items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 5 fixed, 1 verified already-fixed, 2 recorded**
+
+> Per-item disposition (a finding names an instance; the disposition owns it):
+> **FIXED here** — (1) `/api/pricing/calculate` + `/comparison` markup-as-margin
+> → `cost/(1−m)` with a `margin<1` guard (no UI caller; math corrected anyway);
+> (2) explicit 0% override discarded by `or` → `is not None` idiom, pinned by a
+> sell-at-cost PATCH test; (6) archived labor-matrix rows priced new lines →
+> `_resolve_labor_matrix_row` treats `active=False`/past `effective_to` as
+> absent; (7-lock) all THREE accept writers (staff/portal/truck) re-read FOR
+> UPDATE with `populate_existing` and recheck before writing — the stale-
+> identity double-accept is dead (test poisons the map and flips the row
+> behind the ORM); (5-guard) a bare-amount CO PATCH that disagrees with its
+> line rows 409s (billing follows the LINES — $500-billed-where-$700-approved
+> is refused at the door).
+> **Verified already fixed** — (4) unit-price rounding drift: every store in
+> the nested-create path quantizes via `_money()` today (re-checked
+> 2026-08-24).
+> **Recorded, filed, not built** — (3) rolling-volume discount is configured-
+> but-never-applied: wiring it into real estimates is a pricing decision
+> (customer-facing money), filed; (7-index) the deposit partial unique index
+> and (5-display) the approval screen showing $0 for amount-only COs, filed
+> with it. 10 tests, 6 biting counterfactuals.
+>
+> **Audit round 2 (replacement auditor; all four findings fixed):** the CO
+> guard exempted the flatWins shape it would have broken — all-$0
+> descriptive lines carry no money, so a bare amount cannot diverge from
+> them (line_items defaults to [], so "sent empty" is indistinguishable
+> from "not sent"); staff DECLINE takes the same lock as accept (same
+> finalization-race shape, stale-map test bites); the mobile post-lock
+> recheck covers a decline landing in the window; and the archived-row
+> boundary matches billing_lanes' one definition (retired is STRICTLY
+> past — expiring today still prices, pinned). SQLite proves the stale-
+> identity half of the locks; FOR UPDATE contention is PG-only, stated.
 
 - **`/api/pricing/calculate` uses markup math on values named "margin"** —
   `cost * (1 + margin)` where the engine means `cost / (1 - margin)`. At 30% on a $100
@@ -2212,7 +2244,14 @@ things read has now caused two separate findings.
 These belong with §1 by subject, but they are guards and plumbing rather than
 totals math, so they are grouped here.
 
-### M36 — The idempotency middleware is a permanent pass-through `HIGH` ✅ **FIXED PR #TBD 2026-08-24**
+### M36 — The idempotency middleware is a permanent pass-through `HIGH` ✅ **FIXED #439 · RELEASED v1.93.0 · deployed prod+demo + WALKED LIVE 2026-08-24**
+
+> **Walk 2026-08-24 (v1.93.0, demo — disposable data):** a real POST
+> /api/customers with an `Idempotency-Key` and a real login, sent twice: the
+> replay returned the IDENTICAL response body and the database holds ONE row.
+> The cache demonstrably functions end-to-end through the deployed stack
+> (nightly reset wipes the probe row). Prod carries the same image; its
+> health reports denylist_backend=redis, so the cache is armed there too.
 
 > Fixed by feeding it, not rewriting it: `PrincipalStampMiddleware` (outermost)
 > stamps a minimal signature-verified principal on exactly the requests the
