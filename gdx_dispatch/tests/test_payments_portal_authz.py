@@ -144,6 +144,10 @@ def _intent(amount=20000):
     m.id = "pi_portal_1"
     m.status = "succeeded"
     m.amount = amount
+    # M17.3: production reads amount_received (what MOVED). A bare
+    # MagicMock auto-creates a truthy Mock for it and Mock/100 breaks
+    # recording — set it like a real succeeded intent.
+    m.amount_received = amount
     return m
 
 

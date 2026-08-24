@@ -231,7 +231,7 @@ and **M12** (stale PaymentIntents — stateless Stripe-side sweep, no migration)
 marked at its own entry below; this paragraph is a pointer, not a second source of
 truth. Read the entry.
 
-**Not yet fixed** — M17 items 2-4, M18's tax half
+**Not yet fixed** — M18's tax half
 (needs a money-rule decision), the recording half of M3, the rest of §4, §5 and §6,
 and the frontend items in §7. The GL findings remain gated on the CPA review. §9's
 ordering still applies to what's left.
@@ -1139,7 +1139,7 @@ processing banner. **Not prod-exercised:** the processing page state and the
 debit; they are browser-verified from the identical template and covered by
 the now-subscribed transport.
 
-### M17 — Smaller payment-path items `LOW`
+### M17 — Smaller payment-path items `LOW` — **ALL FOUR CLOSED** (item 1 deleted 2026-08-23; items 2–4 PR #TBD 2026-08-24)
 
 - ~~**Unauthenticated tenant-wide `GET /api/payments`**~~ ✅ **DELETED 2026-08-23.**
   It had no auth dependency and returned the whole AR book, shadowed only
@@ -1156,14 +1156,50 @@ the now-subscribed transport.
   succeeding. The sweep's comment now says so, and a regression test asserts
   on the ROUTER (where the twin is visible) rather than the assembled app
   (where the shadow hides it).
-- **No idempotency fallback on `charge_method`**: the key is optional from both header
-  and body, so a double-click makes two distinct intents and two full-balance charges.
-  Derive a fallback server-side like the public path does.
-- **`confirm` records `pi.amount` while the webhook records `amount_received`** —
-  identical under auto-capture, divergent the moment manual capture appears.
-- **`_next_invoice_number` is `COUNT(*) + 1`** ([invoices.py:177-179](../../gdx_dispatch/routers/invoices.py#L177-L179)),
-  so concurrent creates collide on the unique constraint. Not a money error, but it
-  500s the loser.
+- ~~**No idempotency fallback on `charge_method`**~~ ✅ **FIXED 2026-08-24.** The key
+  now falls back to a server-derived
+  `gdx-pi-{invoice}-portal-{method}-{cents}-b{30s-bucket}` when the client sends
+  neither header nor body key. **Time-bucketed, not static — an adversarial review
+  caught the first draft borrowing the public path's static shape onto a
+  `confirm=True` create**, where Stripe replays the first request's saved response
+  for 24h: a static key would replay a cached *decline* at the customer who fixed
+  their funds, and — worse — replay a stale *success* after a void restored the
+  balance, recording a phantom payment with no money moved. The 30s bucket
+  collapses the double-click this exists for; a deliberate retry lands fresh.
+  Residual (accepted, recorded): a void-then-retry inside the same 30s replays.
+  Suffixed with the payment-method id: a *different* saved card is a legitimate
+  second attempt (a reused key with different params 400s and would wedge the
+  card switch). The endpoint remains latent (`CustomerUser` still has no
+  `stripe_customer_id`) — hardened for the day the column arrives, the M13
+  precedent.
+- ~~**`confirm` records `pi.amount` while the webhook records `amount_received`**~~ ✅
+  **FIXED 2026-08-24, and the sweep found two siblings** — `ach/charge` and the portal
+  charge recorded the ASK too. All four recording sites now **prefer**
+  `amount_received` (what MOVED); their absent-field fallbacks still differ (the
+  webhook falls to the remaining balance inside `_mark_invoice_paid`, the direct
+  paths fall to `amount`) — stated precisely because a review caught "all four
+  agree" overclaiming. The falsy-`or` fallback was adversarially checked:
+  a real `succeeded` intent cannot carry `amount_received=0` (50¢ minimum,
+  `capture(0)` disallowed, an uncaptured cancel goes to `canceled`), so the
+  fallback is unreachable in production and exists for legacy/test stubs.
+  Identical under auto-capture — no mint site here sets
+  `capture_method="manual"`, verified — divergent the moment one does.
+- ~~**`_next_invoice_number` is `COUNT(*) + 1`**~~ ✅ **already 3/4 fixed before this
+  pass; the rest closed 2026-08-24.** The 2026-08-08 audit had consolidated all four
+  generators into one max-based bump-past-takers generator
+  (`core/closeout_billing.py::next_invoice_number`) and given the office create path a
+  regenerate-once retry on `IntegrityError` — this finding's line pointer was stale.
+  What remained: the **mobile** and **deposit** creators still flushed bare, so the
+  loser of a same-instant race 500'd (mid-service-flow, for deposits). All three
+  creators now route through one shared helper
+  (`core/closeout_billing.py::flush_invoice_with_number_retry`) — extracted after a
+  review called the three copy-pasted blocks pinned by source-text presence tests
+  what they were, theater. The same review found the sharper hole: **the retry's
+  `rollback()` releases the FOR UPDATE lock serializing concurrent deposit
+  pay-clicks**, letting the rival through to mint the same estimate's deposit.
+  The deposit site now re-checks after rollback and adopts the winner instead of
+  double-minting. Behaviorally tested at the helper (collision→regenerate, winner
+  adoption, foreign IntegrityError untouched); call sites pinned.
 
 ---
 

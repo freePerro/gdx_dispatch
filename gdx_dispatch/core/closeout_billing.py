@@ -92,6 +92,46 @@ def next_invoice_number(db: Session) -> str:
     return f"INV-{datetime.now(UTC):%y%m}{secrets.token_hex(2).upper()}"
 
 
+def flush_invoice_with_number_retry(db: Session, invoice, *, already_won=None):
+    """Flush a freshly-built invoice; absorb an invoice_number collision.
+
+    Two same-instant creates can compute the same number — the bump-past-takers
+    generator cannot see an uncommitted sibling, so the unique constraint is
+    the referee. On that specific IntegrityError: roll back, regenerate, flush
+    again. Any other IntegrityError re-raises untouched.
+
+    ``already_won`` (M17.4, adversarial review): **db.rollback() releases row
+    locks.** A caller that serialized concurrent requests with SELECT…FOR
+    UPDATE (the deposit path) lets its rival through the moment we roll back —
+    and the rival may legitimately create the very invoice we were building.
+    The callable re-checks after the rollback; a non-None result is the
+    winner's row, returned for the caller to adopt INSTEAD of double-minting.
+    Callers that adopt must not keep building on their own dead row — compare
+    identity and return early.
+
+    Extracted from three near-identical inline blocks (office, mobile,
+    deposit) so the behavior is tested once, behaviorally, instead of pinned
+    by three source-text presence tests.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        db.flush()
+        return invoice
+    except IntegrityError as exc:
+        if "invoice_number" not in str(exc):
+            raise
+        db.rollback()
+        if already_won is not None:
+            winner = already_won()
+            if winner is not None:
+                return winner
+        db.add(invoice)
+        invoice.invoice_number = next_invoice_number(db)
+        db.flush()
+        return invoice
+
+
 def build_closeout_lines(
     db: Session,
     *,

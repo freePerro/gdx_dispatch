@@ -266,7 +266,20 @@ def create_deposit_invoice(
         created_at=now,
     )
     db.add(invoice)
-    db.flush()
+    # M17.4 + adversarial review: the retry's rollback RELEASES the FOR UPDATE
+    # lock that serializes concurrent pay-clicks, so the rival un-blocks and
+    # may mint this estimate's deposit first. Re-check after rollback and
+    # adopt the winner instead of double-minting.
+    from gdx_dispatch.core.closeout_billing import flush_invoice_with_number_retry
+
+    flushed = flush_invoice_with_number_retry(
+        db, invoice,
+        already_won=lambda: find_deposit_invoice_for_estimate(db, estimate.id),
+    )
+    if flushed is not invoice:
+        # A concurrent click won the race while we were rolled back. Theirs IS
+        # the deposit invoice — ours was never flushed and must not grow lines.
+        return flushed
     db.add(
         InvoiceLine(
             id=uuid4(),

@@ -555,7 +555,11 @@ def mobile_create_invoice(
         company_id=str(tenant_id),
     )
     db.add(invoice)
-    db.flush()
+    # M17.4: a same-instant sibling can compute the same number; the shared
+    # helper regenerates once instead of 500ing the loser.
+    from gdx_dispatch.core.closeout_billing import flush_invoice_with_number_retry
+
+    flush_invoice_with_number_retry(db, invoice)
 
     # Copy estimate → invoice lines via raw SQL (portable across SQLite/PG).
     # Two paths:

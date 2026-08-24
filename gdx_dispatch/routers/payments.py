@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time as _time
 from typing import Any
 
 import stripe
@@ -369,8 +370,31 @@ def charge_method(
     metadata = {"invoice_id": str(invoice.id)}
 
     # Prevent double-charge on retry/double-click: forward an idempotency key to
-    # Stripe (Idempotency-Key header wins; ChargeRequest.idempotency_key fallback).
-    _idem = idempotency_key or body.idempotency_key
+    # Stripe (Idempotency-Key header wins; ChargeRequest.idempotency_key next).
+    # M17.2: both were OPTIONAL, so a caller that sent neither got no
+    # protection at all — a double-click minted two distinct intents and two
+    # full-balance charges.
+    #
+    # The fallback is TIME-BUCKETED, unlike the public path's static shape,
+    # because this create runs with `confirm=True` and Stripe replays the
+    # FIRST request's saved response for 24h (adversarial review): a static
+    # key would replay a cached DECLINE at the customer who fixed their funds,
+    # and — worse — replay a stale SUCCESS after a void restored the balance,
+    # recording a phantom payment with no money moved. A 30s bucket collapses
+    # the double-click it exists for; a deliberate retry lands in a fresh
+    # bucket and charges for real. Residual: a replay within the same 30s of a
+    # void-then-retry — accepted, and this endpoint remains latent anyway
+    # (CustomerUser has no stripe_customer_id). Suffixed with the payment
+    # method id: charging a DIFFERENT saved card is a legitimate second
+    # attempt, not a retry to collapse.
+    _idem = (
+        idempotency_key
+        or body.idempotency_key
+        or (
+            f"gdx-pi-{invoice.id}-portal-{method_id}-{amount_cents}"
+            f"-b{int(_time.time() // 30)}"
+        )
+    )
     try:
         intent = charge_saved_method(
             customer_id=stripe_cid,
@@ -404,7 +428,8 @@ def charge_method(
                 invoice, db,
                 external_ref=intent.id,
                 method="card",
-                amount=(intent.amount or 0) / 100.0,
+                # M17.3 sibling: same asked-vs-moved distinction as /confirm.
+                amount=(getattr(intent, "amount_received", None) or intent.amount or 0) / 100.0,
                 source="portal-charge-method",
             )
         except Exception:
