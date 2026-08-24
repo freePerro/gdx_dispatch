@@ -582,6 +582,34 @@
           credit the excess.
         </div>
 
+        <!-- Payment Plan (M39) — only offered when the Settings toggle is on;
+             the schedule is an agreement, nothing auto-charges. -->
+        <div v-if="planFeatureEnabled" data-testid="payment-plan-section" style="margin-bottom:1rem">
+          <h3>Payment Plan</h3>
+          <div v-if="paymentPlan">
+            <DataTable responsiveLayout="scroll" :value="paymentPlan.installments" dataKey="id" data-testid="payment-plan-table">
+              <Column field="seq" header="#" />
+              <Column field="due_date" header="Due">
+                <template #body="{ data }">{{ formatDate(data.due_date) }}</template>
+              </Column>
+              <Column field="amount" header="Amount" style="text-align: right">
+                <template #body="{ data }">{{ currency(data.amount) }}</template>
+              </Column>
+              <Column field="status" header="Status" />
+            </DataTable>
+            <Button label="Cancel plan" icon="pi pi-times" severity="secondary" text
+              style="margin-top:0.5rem" :loading="planBusy" @click="cancelPlan" data-testid="payment-plan-cancel" />
+          </div>
+          <div v-else style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+            <span class="muted">No payment plan. Agree a schedule:</span>
+            <InputNumber v-model="planInstallments" :min="2" :max="12" showButtons style="width:7rem"
+              inputId="plan-installments" data-testid="payment-plan-installments" />
+            <input type="date" v-model="planStartDate" data-testid="payment-plan-start" />
+            <Button label="Create plan" icon="pi pi-calendar-plus" :loading="planBusy"
+              :disabled="!planStartDate" @click="createPlan" data-testid="payment-plan-create" />
+          </div>
+        </div>
+
         <!-- Payment History -->
         <h3>Payment History</h3>
         <DataTable
@@ -2490,6 +2518,45 @@ onMounted(() => {
   loadQbStatus();
   loadGlPosting();
 });
+
+// Payment Plan (M39)
+const planFeatureEnabled = ref(false);
+const paymentPlan = ref(null);
+const planInstallments = ref(3);
+const planStartDate = ref("");
+const planBusy = ref(false);
+async function loadPaymentPlan() {
+  // ONE call tells the whole truth (audit round 2): /api/settings is
+  // admin-gated, so reading the toggle there hid the section from exactly
+  // the non-admin office staff who'd use it.
+  try {
+    const r = await api.get(`/api/invoices/${route.params.id}/payment-plan`, { suppressErrorToast: true });
+    planFeatureEnabled.value = !!r?.enabled;
+    paymentPlan.value = r?.plan || null;
+  } catch (_e) { planFeatureEnabled.value = false; paymentPlan.value = null; }
+}
+async function createPlan() {
+  planBusy.value = true;
+  try {
+    const created = await api.post(`/api/invoices/${route.params.id}/payment-plan`, {
+      num_installments: Number(planInstallments.value) || 2,
+      start_date: planStartDate.value,
+    }, { successMessage: "Payment plan created." });
+    paymentPlan.value = created;
+  } catch (_e) { /* useApiWithToast surfaced it */ } finally {
+    planBusy.value = false;
+  }
+}
+async function cancelPlan() {
+  planBusy.value = true;
+  try {
+    await api.delete(`/api/invoices/${route.params.id}/payment-plan`, { successMessage: "Payment plan cancelled." });
+    paymentPlan.value = null;
+  } catch (_e) { /* toasted */ } finally {
+    planBusy.value = false;
+  }
+}
+onMounted(loadPaymentPlan);
 </script>
 
 <style scoped>

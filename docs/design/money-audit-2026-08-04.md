@@ -2175,7 +2175,14 @@ A $500 draft with a $200 check recorded is deletable. The invoice soft-deletes, 
 
 **Fix.** Mirror it: 409 the delete when non-voided payments exist.
 
-### M38 — Mobile invoice creation has no double-billing guard `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24**
+### M38 — Mobile invoice creation has no double-billing guard `MEDIUM` ✅ **FIXED #438 · RELEASED v1.92.0 · deployed prod+demo 2026-08-24**
+
+> **Walk 2026-08-24 (v1.92.0 live on both stacks):** the shipped SPA bundle
+> carries the `already_billed` branch and toast copy (grep-verified inside the
+> running container), and `first_billing_real_invoice` is present in all three
+> shipped backend files. The live mutation path was deliberately NOT probed on
+> prod — a failed guard would mint a real draft; the 6 API tests + 2 dialog
+> specs + biting CFs + the 6,877/0 matrix carry that proof.
 
 > Fixed by mirroring the desktop guard verbatim (lockstep with
 > `core/billing_predicates.job_billed_exists`): a billing-real invoice on the
@@ -2209,7 +2216,24 @@ step, not an invariant.
 **Fix.** Mirror the desktop guard, or make the endpoint idempotent per
 `(job, closeout)`.
 
-### M39 — Endpoints that report success without doing anything `LOW` `CONFIRMED` — **DECIDED (Doug, 2026-08-24): BUILD, don't delete**
+### M39 — Endpoints that report success without doing anything `LOW` ✅ **BUILT PR #TBD 2026-08-24 (2 audit rounds)** — was DECIDED (Doug): BUILD, don't delete
+
+> **Built per the decision:** `payment_plans` + `payment_plan_installments`
+> (migration 079, ORM-aligned DDL), behind `app_settings.payment_plans_enabled`
+> default OFF — an honest 409 `payment_plans_disabled` when off. One active
+> plan per invoice; schedule = the REMAINING receivable (audit round 2 — not
+> the printed total); last installment absorbs rounding and a sub-cent slice
+> refuses 422 (round 2 reproduced a persisted −1¢ installment); only issued
+> invoices; POST/DELETE gated `invoices.write` (round 2 — not joining the
+> 18/20-ungated pile) with a counterfactual-verified route pin; voiding the
+> invoice cancels its plan in the same transaction; installment statuses
+> DERIVE at read time from money that arrived (covered/overdue/pending —
+> nothing auto-charges, so stored statuses would rot); ONE GET returns
+> {enabled, plan} so the view never reads admin-gated /api/settings (round
+> 2's UX killer: the section was invisible to non-admin office). Settings
+> card + invoice-screen section only when on. `send_payment_receipt` needed
+> NO work — really wired to the shared /send path since 2026-08-17. 15
+> tests, 8 biting counterfactuals.
 
 > **The decision, verbatim intent:** "we don't do payment plans. but the
 > option for it should be there for it to be turned on and functional."

@@ -3298,6 +3298,20 @@ def void_invoice(
         .where(_CO.billed_invoice_id == invoice.id)
         .values(billed_invoice_id=None)
     ).rowcount
+    # M39 audit round 2: a void kills what is owed — an ACTIVE payment plan
+    # scheduling money on a void invoice would be a standing lie. Cancel it
+    # in the same transaction, with its own trail.
+    _plan = _live_plan(db, invoice.id)
+    if _plan is not None:
+        _plan.status = "cancelled"
+        _plan.cancelled_at = datetime.now(UTC)
+        _plan.cancelled_by = _actor_id(_)
+        log_audit_event_sync(
+            db=db, tenant_id=None, user_id=_actor_id(_),
+            action="payment_plan_cancelled", entity_type="invoice",
+            entity_id=str(invoice.id),
+            details={"plan_id": str(_plan.id), "why": "invoice voided"},
+        )
     # ONE commit, and the audit row is staged into it -- deliberately not the
     # commit-then-log-then-commit shape `delete_invoice` uses. Releasing a
     # claim puts billable work back on the checklist, so a release that lands
@@ -3837,38 +3851,227 @@ class PaymentPlanIn(BaseModel):
     start_date: date
 
 
-@router.post("/{invoice_id}/payment-plan", response_model=None)
+def _payment_plans_enabled(db: Session) -> bool:
+    from gdx_dispatch.models.tenant_models import AppSettings
+
+    row = db.query(AppSettings).first()
+    return bool(row and getattr(row, "payment_plans_enabled", False))
+
+
+def _plan_out(plan, installments, *, invoice=None, db=None) -> dict[str, object]:
+    """Audit round 2: nothing ever WRITES installment statuses (payments
+    arrive through the normal paths, nothing auto-charges), so the stored
+    'pending' would read as a lie on a paid invoice. Derive the display
+    status at read time from money that actually arrived: an installment is
+    'covered' once cumulative paid reaches its slice, else 'overdue' past
+    its due date, else 'pending'."""
+    from datetime import date as _date
+
+    paid = 0.0
+    if invoice is not None and db is not None:
+        from gdx_dispatch.core.invoice_paid import paid_to_date
+
+        try:
+            paid = float(paid_to_date(db, invoice.id))
+        except Exception:
+            paid = 0.0
+    today = _date.today()
+    out_installments = []
+    cumulative = 0.0
+    for i in installments:
+        cumulative = round(cumulative + _to_float(i.amount), 2)
+        if paid + 0.005 >= cumulative:
+            derived = "covered"
+        elif i.due_date < today:
+            derived = "overdue"
+        else:
+            derived = "pending"
+        out_installments.append({
+            "id": str(i.id),
+            "seq": i.seq,
+            "due_date": i.due_date.isoformat(),
+            "amount": _to_float(i.amount),
+            "status": derived,
+        })
+    return {
+        "plan_id": str(plan.id),
+        "invoice_id": str(plan.invoice_id),
+        "status": plan.status,
+        "num_installments": plan.num_installments,
+        "total_amount": _to_float(plan.total_amount),
+        "start_date": plan.start_date.isoformat(),
+        "installments": out_installments,
+    }
+
+
+def _live_plan(db: Session, invoice_id):
+    from gdx_dispatch.models.tenant_models import PaymentPlan
+
+    return (
+        db.query(PaymentPlan)
+        .filter(PaymentPlan.invoice_id == invoice_id, PaymentPlan.status == "active")
+        .order_by(PaymentPlan.created_at.desc())
+        .first()
+    )
+
+
+@router.post(
+    "/{invoice_id}/payment-plan",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.write"))],
+)
 def create_payment_plan(
     invoice_id: str,
     payload: PaymentPlanIn,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ) -> dict[str, object]:
-    """Split an invoice into monthly installments."""
+    """Split an invoice into monthly installments — persisted (M39).
+
+    The pre-2026-08-24 version computed a schedule, persisted NOTHING, and
+    returned a plan_id that did not exist. Doug's ruling: payment plans are
+    an OPTION — off by default here, honestly refusing when off, functional
+    when on. A plan is an agreed schedule; payments still arrive through the
+    normal payment paths and nothing auto-charges.
+    """
     _validate_uuid(invoice_id, "Invoice")
     from datetime import timedelta
     from uuid import uuid4
 
-    invoice = _get_invoice_or_404(invoice_id, db)
-    total = _to_float(invoice.total)
+    from gdx_dispatch.models.tenant_models import PaymentPlan, PaymentPlanInstallment
+
+    if not _payment_plans_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "payment_plans_disabled",
+                "message": (
+                    "Payment plans are not enabled for this company — "
+                    "turn them on in Settings first."
+                ),
+            },
+        )
+
+    invoice_uuid = UUID(invoice_id)
+    invoice = _get_invoice_or_404(invoice_uuid, db)
+    # Audit round 2: a plan on a draft/void invoice schedules money that may
+    # never be owed (mirrors the credit-memo issuance gate).
+    if invoice.status not in ("sent", "paid", "overdue"):
+        raise HTTPException(
+            status_code=409,
+            detail="only issued invoices can carry a payment plan",
+        )
+    # Audit round 2: schedule what is still OWED, not the printed total — a
+    # deposit-paid or partially-paid invoice plans its remainder.
+    total = _remaining_receivable(invoice, db)
+    if total <= 0:
+        raise HTTPException(status_code=422, detail="nothing remains to schedule on this invoice")
+    if _live_plan(db, invoice.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "plan_exists",
+                "message": "this invoice already has an active payment plan — cancel it first",
+            },
+        )
+
     per_installment = _money(total / payload.num_installments)
-    plan_id = str(uuid4())
+    last = _money(total - float(per_installment) * (payload.num_installments - 1))
+    if float(last) <= 0:
+        # Audit round 2 (reproduced): $0.10 over 12 → eleven 1¢ rows and a
+        # PERSISTED −1¢ installment. Too many slices for the amount.
+        raise HTTPException(
+            status_code=422,
+            detail="too many installments for this amount — each installment must be at least a cent",
+        )
+    plan = PaymentPlan(
+        id=uuid4(),
+        invoice_id=invoice.id,
+        status="active",
+        num_installments=payload.num_installments,
+        total_amount=_money(total),
+        start_date=payload.start_date,
+        created_by=_actor_id(_),
+    )
+    db.add(plan)
+    db.flush()
 
     installments = []
     for i in range(payload.num_installments):
-        inst_id = str(uuid4())
         due = payload.start_date + timedelta(days=30 * i)
-        amount = per_installment if i < payload.num_installments - 1 else _money(total - float(per_installment) * (payload.num_installments - 1))
-        installments.append({"id": inst_id, "due_date": due.isoformat(), "amount": float(amount), "status": "pending"})
+        # The last installment absorbs the rounding remainder so the schedule
+        # sums to the invoice total exactly.
+        amount = per_installment if i < payload.num_installments - 1 else last
+        inst = PaymentPlanInstallment(
+            id=uuid4(), plan_id=plan.id, seq=i + 1, due_date=due, amount=amount
+        )
+        db.add(inst)
+        installments.append(inst)
+    db.flush()
 
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="payment_plan_created", entity_type="invoice", entity_id=str(invoice.id),
-        details={"plan_id": plan_id, "installments": payload.num_installments, "total": total},
+        details={"plan_id": str(plan.id), "installments": payload.num_installments, "total": total},
     )
     db.commit()
+    return _plan_out(plan, installments, invoice=invoice, db=db)
 
-    return {"plan_id": plan_id, "invoice_id": str(invoice.id), "installments": installments}
+
+@router.get("/{invoice_id}/payment-plan", response_model=None)
+def get_payment_plan(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """{enabled, plan} in ONE call. Audit round 2: the view used to read
+    /api/settings for the toggle, which is admin-gated — so the section
+    silently never rendered for exactly the non-admin office staff who'd
+    use it. Any authenticated reader may learn the toggle + the plan."""
+    _validate_uuid(invoice_id, "Invoice")
+    from gdx_dispatch.models.tenant_models import PaymentPlanInstallment
+
+    invoice = _get_invoice_or_404(UUID(invoice_id), db)
+    if not _payment_plans_enabled(db):
+        return {"enabled": False, "plan": None}
+    plan = _live_plan(db, invoice.id)
+    if plan is None:
+        return {"enabled": True, "plan": None}
+    installments = (
+        db.query(PaymentPlanInstallment)
+        .filter(PaymentPlanInstallment.plan_id == plan.id)
+        .order_by(PaymentPlanInstallment.seq.asc())
+        .all()
+    )
+    return {"enabled": True, "plan": _plan_out(plan, installments, invoice=invoice, db=db)}
+
+
+@router.delete(
+    "/{invoice_id}/payment-plan",
+    response_model=None,
+    dependencies=[Depends(require_permission("invoices.write"))],
+)
+def cancel_payment_plan(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """Cancel the active plan (soft — the schedule stays reconstructable)."""
+    _validate_uuid(invoice_id, "Invoice")
+    invoice = _get_invoice_or_404(UUID(invoice_id), db)
+    plan = _live_plan(db, invoice.id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="no active payment plan on this invoice")
+    plan.status = "cancelled"
+    plan.cancelled_at = datetime.now(UTC)
+    plan.cancelled_by = _actor_id(_)
+    log_audit_event_sync(
+        db=db, tenant_id=None, user_id=_actor_id(_),
+        action="payment_plan_cancelled", entity_type="invoice", entity_id=str(invoice.id),
+        details={"plan_id": str(plan.id)},
+    )
+    db.commit()
+    return {"plan_id": str(plan.id), "status": "cancelled"}
 
 
 # ---------------------------------------------------------------------------
