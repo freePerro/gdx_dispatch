@@ -133,4 +133,20 @@ describe('VendorBillDetailView', () => {
     wrapper.vm.draft.l1.skip_reason = 'already on estimate';
     expect(wrapper.vm.canConfirm({ id: 'l1' })).toBe(true);
   });
+
+  it('invariantOk trusts the stored verdict over the prose', async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    // the field is authoritative — scrubbed notes cannot flip a failing bill
+    wrapper.vm.invoice = { ...INVOICE, invariant_ok: false, notes: 'office cleaned this up' };
+    expect(wrapper.vm.invariantOk).toBe(false);
+    wrapper.vm.invoice = { ...INVOICE, invariant_ok: true, notes: 'mentions INVARIANT_MISMATCH history' };
+    expect(wrapper.vm.invariantOk).toBe(true);
+    // pre-column rows (no field): the fallback must catch the marker ANYWHERE
+    // — the old startsWith re-derivation showed green for every LLM bill
+    wrapper.vm.invoice = { ...INVOICE, notes: 'LLM_EXTRACTED (x): verify; INVARIANT_MISMATCH: off' };
+    expect(wrapper.vm.invariantOk).toBe(false);
+    wrapper.vm.invoice = { ...INVOICE, notes: 'all clean' };
+    expect(wrapper.vm.invariantOk).toBe(true);
+  });
 });

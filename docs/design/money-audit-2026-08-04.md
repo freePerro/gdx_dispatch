@@ -1139,7 +1139,7 @@ processing banner. **Not prod-exercised:** the processing page state and the
 debit; they are browser-verified from the identical template and covered by
 the now-subscribed transport.
 
-### M17 — Smaller payment-path items `LOW` — **ALL FOUR CLOSED** (item 1 deleted 2026-08-23; items 2–4 PR #TBD 2026-08-24)
+### M17 — Smaller payment-path items `LOW` — **ALL FOUR CLOSED — RELEASED v1.86.0, prod+demo, walked 2026-08-24** (item 1 deleted 2026-08-23; items 2–4 PR #428→#430)
 
 - ~~**Unauthenticated tenant-wide `GET /api/payments`**~~ ✅ **DELETED 2026-08-23.**
   It had no auth dependency and returned the whole AR book, shadowed only
@@ -1200,6 +1200,16 @@ the now-subscribed transport.
   The deposit site now re-checks after rollback and adopts the winner instead of
   double-minting. Behaviorally tested at the helper (collision→regenerate, winner
   adoption, foreign IntegrityError untouched); call sites pinned.
+
+**Prod walk, v1.86.0, 2026-08-24:** every container on 1.86.0, edge 200, celery
+kept the Stripe key with the sweep task registered, all 9 webhook events
+intact, and the deployed image provably carries the three changes
+(`flush_invoice_with_number_retry` in closeout_billing, the 30s bucket in the
+portal key, `amount_received` at the recording sites — grepped inside the
+running container, not inferred from the tag). A real invoice's pay page still
+serves the normal form. **Not prod-exercised:** all three fixes guard races and
+latent paths that need concurrent or replayed traffic to observe — they are
+counterfactually tested and the matrix is the regression net.
 
 ---
 
@@ -1605,7 +1615,7 @@ it an upsert on `(user_id, job_id, period)`.
 > unique index, and both `set_rules` and `calculate_commission` then call
 > `scalar_one_or_none()` on that role.
 
-### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` `CONFIRMED`
+### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` ✅ **FIXED — substring half 2026-08-23 (its header was never stamped; §0.6 said so alone), column half PR #TBD 2026-08-24**
 
 The invariant check exists to guard untrusted LLM-extracted money. The review queue
 reports it like this
@@ -1630,6 +1640,27 @@ later detail fetch lies.
 
 **Fix.** `invariant_ok = "INVARIANT_MISMATCH" not in (invoice.notes or "")`, and then
 store a real boolean column rather than parsing prose for a money guard.
+
+**Both halves are now in — and an adversarial review caught the half nobody
+named.** The substring fix shipped 2026-08-23 and was listed in §0.6 — but this
+header was never stamped, the exact one-entry-not-its-sibling trap that
+re-litigated the commission decision. Worse, the finding named only the
+BACKEND: both office Vue views re-derived the verdict from notes with the
+original `startsWith` bug (`VendorBillsView.mathMismatch`,
+`VendorBillDetailView.invariantOk`), the list endpoint never served the field
+at all, and `VendorBillsView.spec.js` asserted the buggy behavior as correct —
+so the office saw PASS for failing LLM bills on every screen a human looks at,
+regardless of what the backend computed. All four are fixed with this change:
+the list rows carry the verdict (`InvoiceSummaryOut.invariant_ok: bool | None`,
+None = pre-column row), both views trust the field and fall back to an
+`includes` substring only when it is absent, and the spec now asserts the
+LLM-marker case the old contract missed. The column half (migration 078,
+`vendor_invoices.invariant_ok BOOLEAN NULL`) writes the verdict at creation and
+is preferred at read; NULL rows (pre-column) fall back to the substring, which
+reproduces the historical inference exactly. Backfill is deliberately partial:
+marker-present rows → FALSE (the marker is written iff the check failed — that
+direction is proven); marker-absent rows stay NULL rather than asserting
+"passed" for eras this migration cannot vouch for.
 
 ### M27 — Commission revenue counts voided, soft-deleted and draft invoices `HIGH` `CONFIRMED` 🔶 NOT FIXED — SUPERSEDED
 

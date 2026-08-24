@@ -53,8 +53,17 @@ describe('VendorBillsView', () => {
     // needs review == not yet reviewed (matches backend ?needs_review=true)
     expect(wrapper.vm.needsReview({ reviewed_at: null })).toBe(true);
     expect(wrapper.vm.needsReview({ reviewed_at: 'x' })).toBe(false);
-    // math mismatch is independent — a reviewed bill can still flag it
-    expect(wrapper.vm.mathMismatch({ notes: 'INVARIANT_MISMATCH: ...' })).toBe(true);
+    // math mismatch is independent — a reviewed bill can still flag it.
+    // M26: the field is authoritative; prose is only the legacy fallback.
+    expect(wrapper.vm.mathMismatch({ invariant_ok: false, notes: null })).toBe(true);
+    expect(wrapper.vm.mathMismatch({ invariant_ok: true,
+      notes: 'office note that mentions INVARIANT_MISMATCH history' })).toBe(false);
+    // the legacy fallback must catch the marker ANYWHERE in notes — the old
+    // startsWith contract reported PASS for every LLM bill, whose notes read
+    // "LLM_EXTRACTED (...); INVARIANT_MISMATCH: ..." (this spec used to
+    // assert that bug as correct behavior)
+    expect(wrapper.vm.mathMismatch({
+      notes: 'LLM_EXTRACTED (llm:x): verify; INVARIANT_MISMATCH: header off' })).toBe(true);
     expect(wrapper.vm.mathMismatch({ notes: null })).toBe(false);
   });
 

@@ -314,7 +314,16 @@ function dispositionOptionsFor(line) {
   return line.kind === 'item' ? ALL_DISPOSITIONS : ALL_DISPOSITIONS.filter((o) => o.value !== 'stock')
 }
 
-const invariantOk = computed(() => !String(invoice.value?.notes || '').startsWith('INVARIANT_MISMATCH'))
+// M26: the detail API serves the stored verdict (`invariant_ok`); this view
+// used to re-derive it from notes with startsWith — the exact bug the backend
+// fixed — so a failing LLM bill showed green HERE even after the API said
+// false. Trust the field; substring (includes) only if it's ever absent.
+const invariantOk = computed(() => {
+  const v = invoice.value?.invariant_ok
+  if (v === false) return false
+  if (v === true) return true
+  return !String(invoice.value?.notes || '').includes('INVARIANT_MISMATCH')
+})
 
 const matchedJobLabel = computed(() => {
   const id = invoice.value?.matched_job_id
