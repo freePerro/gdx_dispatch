@@ -16,9 +16,22 @@ The three were `PATCH /api/onboarding/checklist` and
 `PUT /api/campaigns/{id}/activate` / `/deactivate`.
 
 **Still open:** the C5 permanent blanks remain (`onboarding_checklist`,
-`preview_campaign`, `campaign_send_history` all return fixed empty shapes), and
-the 17 build/remove/leave decisions in
-`unimplemented-endpoints-decision-list.md` are still untaken.
+`preview_campaign`, `campaign_send_history` all return fixed empty shapes).
+
+**The 17 decisions are TAKEN (2026-08-24, owner)** — see
+`unimplemented-endpoints-decision-list.md`, which now carries a Decision column
+on every row plus the prod evidence that decided them (zero 501s across 175,965
+requests). Five surfaces whose entire data source was ui_compat — Pricing, SSO,
+Online Booking, Company Tools, Team Scheduling — are deleted with their views,
+nav entries and 14 stubs. Two builds approved (portal-account provisioning,
+review replies); the rest removed or deferred with the reason recorded.
+
+Read that doc before acting on the C5 list here: re-verification found that one
+of these "permanent blanks" is not merely empty but **actively lying** —
+`GET /api/customers/{id}/portal-account` returns a hardcoded
+`{"exists": false}` while prod holds a real `customer_users` row. Any other C5
+blank may have the same shape; an empty response and a false response look
+identical from the frontend.
 
 First run of `gdx_dispatch/tools/frontend_contract_scan.py`, checked against the
 **live** route table (1,444 routes) rather than static parsing.

@@ -36,13 +36,13 @@ export function moduleVisible(module, hasPermission) {
 // Section assignment per module key. Anything not listed → "Other".
 const SECTION_BY_KEY = {
   // Field
-  jobs: 'Field', dispatch: 'Field', scheduling: 'Field',
+  jobs: 'Field', dispatch: 'Field',
   appointments: 'Field', tasks: 'Field', planner: 'Field',
   checklists: 'Field', job_templates: 'Field',
   maintenance: 'Field', technicians: 'Field', performance: 'Field',
   timeclock: 'Field', timesheets: 'Field', fleet: 'Field', gps: 'Field', maps: 'Field',
   daily_loadsheet: 'Field', delivery_loadsheet: 'Field',
-  equipment: 'Field', equipment_tracking: 'Field',
+  equipment: 'Field',
   photos: 'Field',
   // Customers & Comms
   customers: 'Customers & Comms', customer_portal: 'Customers & Comms',
@@ -51,7 +51,7 @@ const SECTION_BY_KEY = {
   phone_com_messages: 'Customers & Comms',
   phone_com_faxes: 'Customers & Comms',
   reviews: 'Customers & Comms', referrals: 'Customers & Comms',
-  surveys: 'Customers & Comms', booking: 'Customers & Comms',
+  surveys: 'Customers & Comms',
   warranties: 'Customers & Comms', leads: 'Customers & Comms',
   campaigns: 'Customers & Comms', segments: 'Customers & Comms',
   automations: 'Customers & Comms', winback: 'Customers & Comms',
@@ -63,7 +63,7 @@ const SECTION_BY_KEY = {
   expenses: 'Money', collections: 'Money',
   invoice_reminders: 'Money', payroll: 'Money',
   commissions: 'Money', job_costing: 'Money',
-  pricing: 'Money', labor_matrix: 'Money',
+  labor_matrix: 'Money',
   vendor_statements: 'Money', reports: 'Money',
   variance_report: 'Money', exports: 'Money',
   quickbooks: 'Money',
@@ -75,7 +75,7 @@ const SECTION_BY_KEY = {
   documents: 'Admin', pdf_templates: 'Admin', resources: 'Admin',
   users: 'Admin', role_permissions: 'Admin', custom_fields: 'Admin',
   webhooks: 'Admin', gdpr: 'Admin',
-  activity: 'Admin', sso: 'Admin', onboarding: 'Admin',
+  activity: 'Admin', onboarding: 'Admin',
   admin_operations: 'Admin', settings: 'Admin',
   // Account (MH-9b)
   profile: 'Account',

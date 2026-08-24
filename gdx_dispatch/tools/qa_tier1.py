@@ -29,7 +29,7 @@ ENDPOINTS = [
     "/api/timeclock/entries", "/api/fleet/vehicles", "/api/equipment",
     "/api/inventory/parts", "/api/campaigns",
     "/api/documents", "/api/tags", "/api/vendors", "/api/purchase-orders",
-    "/api/scheduling", "/api/communications/threads",
+    "/api/communications/threads",
     "/api/reviews", "/api/photos/recent", "/api/commissions/summary",
     "/api/payroll/pay-periods", "/api/settings/branding",
     "/api/maintenance/plans", "/api/service-agreements",

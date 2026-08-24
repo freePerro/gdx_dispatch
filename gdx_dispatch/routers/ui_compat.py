@@ -3,9 +3,9 @@ ui_compat.py — thin compatibility shim for Vue views whose expected backend
 endpoints don't exist yet.
 
 The Wave C/D/E Vue views were built with Codex-guessed API paths that didn't
-match the real router prefixes (e.g. /api/admin-ops, /api/booking, /api/collections,
-/api/loyalty, /api/maps, /api/marketing, /api/pricing, /api/scheduling, /api/sso,
-/api/uploads, /api/voice, /api/quickbooks, etc.).
+match the real router prefixes (e.g. /api/admin-ops, /api/collections,
+/api/loyalty, /api/maps, /api/marketing, /api/uploads, /api/voice,
+/api/quickbooks, etc.).
 
 This router exposes thin GET/POST/PATCH handlers that:
   - Return `{"items": []}` for list endpoints (UI renders empty state)
@@ -24,6 +24,30 @@ had a body of exactly `return {"ok": True}` — no table, no write, no audit.
 The Vue read that as success and showed "Saved", so the user's edit vanished
 with a green toast. `PATCH /api/pricing/{id}` was the clearest case: Pricing
 edits reported "Entry updated" and changed nothing.
+
+2026-08-24 retirement. Five surfaces whose ENTIRE data source was this shim —
+Pricing, SSO, Online Booking, Company Tools (equipment-tracking) and Team
+Scheduling — were deleted along with their Vue views and nav entries, taking
+14 handlers with them. Four of the five were inert: their GETs returned a
+hardcoded empty list or a fake config object, so no page could ever render a
+row, and every write 501'd.
+
+Team Scheduling was NOT inert and is recorded here so nobody rediscovers it the
+hard way. `list_scheduling` ran real SQL over `jobs`, and the 2026-04-29 pass
+had widened it on purpose to include `lifecycle_stage = 'scheduled' AND
+scheduled_at IS NULL` — jobs a dispatcher advanced without setting a date — so
+the view could badge them as fixable. Prod carries 5 such rows today. They stay
+reachable via Jobs filtered to "Scheduled" (blank Scheduled Date column), but
+nothing badges the anomaly any more. Filed as the follow-up named in the
+decision doc; the page still went because both of its WRITE paths were 501s, so
+the badge led to a button that did nothing.
+
+Prod evidence for the removal: zero 501 responses across 175,965 requests and
+zero GETs to any of the five `/api` paths (nginx, 21-24 Aug 2026). Note the
+"zero 501s" figure alone does NOT prove nobody opened the pages — those GETs
+answered 200 — the per-path GET count is the load-bearing measurement, and
+nginx rotation has since aged the window out, so it is not reproducible.
+Decisions recorded in docs/design/unimplemented-endpoints-decision-list.md.
 
 Those handlers now call `_not_implemented(...)`, which logs at WARNING and
 raises 501. A write endpoint here must either do the work or fail — never
@@ -156,32 +180,6 @@ def run_admin_op(
     return _ok_with_id()
 
 
-# ── Booking ────────────────────────────────────────────────────────────────
-
-@router.get("/api/booking", response_model=None)
-def list_booking(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.patch("/api/booking/{slot_id}", response_model=None)
-def update_booking(
-    slot_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Editing a booking slot", request, user)
-
-
-# ── Collections ────────────────────────────────────────────────────────────
-# The list/PATCH/bulk-send stubs that lived here were removed 2026-07-24:
-# routers/collections.py now implements the real queue (derived from overdue
-# invoices + the reminder ledger). The shim's {"items": []} made the whole
-# CollectionsView permanent theater.
-
-
-# ── Customer detail: recurring jobs, communications, portal ─────────────
-
 @router.get("/api/customers/{customer_id}/recurring-jobs", response_model=None)
 def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
     return _empty_list()
@@ -251,34 +249,6 @@ def geocode_missing_jobs(_: dict = Depends(get_current_user)) -> dict:
     from fastapi import HTTPException
     raise HTTPException(status_code=501, detail="Geocoding worker not implemented")
 
-
-# ── Equipment Tracking (separate from customer equipment) ─────────────────
-
-@router.get("/api/equipment-tracking", response_model=None)
-def list_equipment_tracking(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/equipment-tracking", response_model=None, status_code=201)
-def create_equipment_tracking(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating an equipment-tracking record", request, user)
-
-
-@router.patch("/api/equipment-tracking/{equipment_id}", response_model=None)
-def update_equipment_tracking(
-    equipment_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Editing an equipment-tracking record", request, user)
-
-
-# ── Loyalty (list index) ──────────────────────────────────────────────────
 
 @router.get("/api/loyalty", response_model=None)
 def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
@@ -574,148 +544,10 @@ def run_payroll_current(
 # gdx_dispatch/routers/portal.py (staff_router).
 
 
-# ── Pricing (list + create + update index) ────────────────────────────────
-
-@router.get("/api/pricing", response_model=None)
-def pricing_index(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/pricing", response_model=None, status_code=201)
-def create_pricing_entry(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating a pricing entry", request, user)
-
-
-@router.patch("/api/pricing/{entry_id}", response_model=None)
-def update_pricing_entry(
-    entry_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Editing a pricing entry", request, user)
-
-
-# ── Quickbooks integration status ─────────────────────────────────────────
-
 @router.get("/api/quickbooks", response_model=None)
 def quickbooks_status(_: dict = Depends(get_current_user)) -> dict:
     return {"connected": False, "last_sync": None, "recent_events": []}
 
-
-# ── Scheduling (list + create + update) ───────────────────────────────────
-
-@router.get("/api/scheduling", response_model=None)
-def list_scheduling(
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db = Depends(get_db),
-) -> dict:
-    """Derive scheduling entries from ``jobs.scheduled_at IS NOT NULL``.
-
-    P1-2 fix 2026-04-27: previously returned ``_empty_list()`` while
-    `/jobs` showed 8 scheduled rows on the same tenant. SchedulingView
-    contradicted JobsView. Real fix is to source from the same column
-    JobsView reads — `jobs.scheduled_at` — until a dedicated
-    ``schedule_entries`` table is wired up.
-    """
-    from sqlalchemy import text
-
-    tenant_id = str(getattr(request.state, "tenant", {}).get("id", ""))
-    # 2026-04-29: also include jobs whose lifecycle_stage was advanced to
-    # "Scheduled" but whose scheduled_at is still NULL (write-side gap —
-    # the dispatcher set status without setting a date). Show them with
-    # `date: null` so SchedulingView renders an "Unscheduled date" badge
-    # the operator can fix; previously these 8 GDX rows were invisible.
-    rows = db.execute(
-        text(
-            """
-            SELECT j.id, j.title, j.scheduled_at, j.assigned_to,
-                   j.lifecycle_stage::text AS status, j.customer_id,
-                   c.name AS customer_name
-            FROM jobs j
-            LEFT JOIN customers c ON c.id = j.customer_id
-            WHERE j.company_id = :tenant_id
-              AND j.deleted_at IS NULL
-              AND (
-                j.scheduled_at IS NOT NULL
-                OR LOWER(j.lifecycle_stage::text) = 'scheduled'
-              )
-            ORDER BY j.scheduled_at ASC NULLS LAST, j.created_at DESC
-            """
-        ),
-        {"tenant_id": tenant_id},
-    ).all()
-
-    items = []
-    for r in rows:
-        scheduled_at = r[2]
-        items.append(
-            {
-                "id": str(r[0]),
-                "job_id": str(r[0]),
-                "title": r[1] or "",
-                "date": scheduled_at.isoformat() if scheduled_at else None,
-                "start": scheduled_at.strftime("%H:%M") if scheduled_at else "",
-                "end": "",
-                "technician_id": str(r[3]) if r[3] else None,
-                "status": r[4] or "scheduled",
-                "customer_id": str(r[5]) if r[5] else None,
-                "customer_name": r[6] or "",
-            }
-        )
-    return {"items": items}
-
-
-@router.post("/api/scheduling", response_model=None, status_code=201)
-def create_scheduling(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating a scheduling entry", request, user)
-
-
-@router.patch("/api/scheduling/{entry_id}", response_model=None)
-def update_scheduling(
-    entry_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Editing a scheduling entry", request, user)
-
-
-# ── SSO config ────────────────────────────────────────────────────────────
-
-@router.get("/api/sso", response_model=None)
-def sso_config(_: dict = Depends(get_current_user)) -> dict:
-    return {"provider": None, "active": False, "entity_id": "", "metadata_url": ""}
-
-
-@router.patch("/api/sso", response_model=None)
-def update_sso_config(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Saving SSO configuration", request, user)
-
-
-@router.post("/api/sso/test-connection", response_model=None)
-def test_sso_connection(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Testing the SSO connection", request, user)
-
-
-# ── Uploads (list + upload) ───────────────────────────────────────────────
 
 @router.get("/api/uploads", response_model=None)
 def list_uploads(_: dict = Depends(get_current_user)) -> dict:
