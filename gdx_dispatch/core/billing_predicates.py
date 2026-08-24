@@ -146,3 +146,30 @@ def invoice_bills_job(
     # past draft), so a $0 NULL-status invoice is unbilled — lockstep with the
     # SQL, whose `status != 'draft'` goes NULL and fails EXISTS for that row.
     return float(total or 0) > 0 or s not in ("", "draft")
+
+
+def first_billing_real_invoice(db, job_id):
+    """The double-billing guard's query — ONE spelled copy (M38 extracted it;
+    the desktop and mobile create paths each hand-spelled it before, which is
+    how drift starts).
+
+    Returns the newest billing-real invoice on the job, else None. Conditions
+    match the audited guard behavior both paths shipped with: raw ``!=`` on
+    status/billing_type — NOT the NULL-coalescing twins above. On a row where
+    either column were NULL the EXISTS/Python predicates read UNBILLED while
+    this guard would also not match (NULL != 'void' is NULL → row excluded →
+    guard treats it as unbilled too, via a different route). Both columns are
+    ``nullable=False`` with defaults, so the divergence is unreachable today;
+    it is documented here so the next reader doesn't have to re-derive it.
+    """
+    from sqlalchemy import select
+
+    return db.execute(
+        select(Invoice).where(
+            Invoice.job_id == job_id,
+            Invoice.deleted_at.is_(None),
+            Invoice.status != "void",
+            Invoice.billing_type != "deposit",
+            or_(Invoice.total > 0, Invoice.status != "draft"),
+        ).order_by(Invoice.created_at.desc()).limit(1)
+    ).scalar_one_or_none()

@@ -225,3 +225,48 @@ describe('sendReceipt reads the REAL outcome (2026-08-18)', () => {
     expect(body.indexOf('payload?.sent')).toBeLessThan(body.indexOf("summary: 'Receipt sent'"))
   })
 })
+
+describe('M38 already_billed 409', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // No billing-real invoice in the summary — the Generate button only
+    // renders on an unbilled job. The 409 is precisely the race where the
+    // SERVER knows about an invoice this stale dialog doesn't.
+    apiGet.mockResolvedValue({ ...JSON.parse(JSON.stringify(SUMMARY)), invoices: [] });
+  });
+
+  it('a double-tap 409 shows the already-billed warn toast and refreshes — never the raw error toast', async () => {
+    const err = new Error('Job is already billed on INV-000123.');
+    err.status = 409;
+    err.code = 'already_billed';
+    apiPost.mockRejectedValueOnce(err);
+    const w = mountDialog();
+    await flushPromises();
+    const getCallsBefore = apiGet.mock.calls.length;
+    const btn = w.findAll('button').find((b) => (b.attributes('data-label') || '').startsWith('Generate'));
+    expect(btn).toBeTruthy();
+    await btn.trigger('click');
+    await flushPromises();
+    const toasts = toastAdd.mock.calls.map((c) => c[0]);
+    const warn = toasts.find((t) => t.severity === 'warn' && t.summary === 'Already billed');
+    expect(warn, 'the already_billed branch must produce the warn toast').toBeTruthy();
+    expect(warn.detail).toContain('INV-000123');
+    expect(toasts.find((t) => t.summary === 'Could not invoice')).toBeFalsy();
+    // and the dialog refreshed so the existing invoice renders
+    expect(apiGet.mock.calls.length).toBeGreaterThan(getCallsBefore);
+  });
+
+  it('any other failure still shows the plain error toast', async () => {
+    const err = new Error('boom');
+    err.status = 500;
+    apiPost.mockRejectedValueOnce(err);
+    const w = mountDialog();
+    await flushPromises();
+    const btn = w.findAll('button').find((b) => (b.attributes('data-label') || '').startsWith('Generate'));
+    await btn.trigger('click');
+    await flushPromises();
+    const toasts = toastAdd.mock.calls.map((c) => c[0]);
+    expect(toasts.find((t) => t.summary === 'Could not invoice')).toBeTruthy();
+    expect(toasts.find((t) => t.summary === 'Already billed')).toBeFalsy();
+  });
+});
