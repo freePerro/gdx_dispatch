@@ -557,7 +557,7 @@ This endpoint predates the hardening and was not part of it — the fixes went t
 **Fix.** Return 409 when `balance_due <= 0` or `status == "void"`, delete the fallback
 entirely, and add a server-derived idempotency key.
 
-### M13 — Portal `/payments/intent` still takes a client amount and arbitrary metadata `MEDIUM-HIGH` `CONFIRMED`
+### M13 — Portal `/payments/intent` still takes a client amount and arbitrary metadata `MEDIUM-HIGH` `CONFIRMED` ✅ FIXED 2026-08-23
 
 `charge_method` on this router got the full treatment — `_require_own_unpaid_invoice`,
 server-derived amount, void and ownership checks. Its sibling `/intent` on the same
@@ -572,6 +572,37 @@ caller controls amount, currency and target at once.
 **Fix.** Give `/intent` the same treatment `charge_method` already has: require an
 invoice reference, run the ownership check, derive the amount server-side, hardcode
 the currency, and whitelist metadata keys.
+
+**✅ Done 2026-08-23.** All five, plus three things the prescription did not
+anticipate:
+
+1. **The "gold standard" was itself two changes short.** `charge_method` still
+   honoured `body.currency` and still merged an arbitrary client `metadata`
+   dict onto a Stripe money object. Parity now runs both ways — both endpoints
+   hardcode the currency and whitelist metadata to the resolved `invoice_id`.
+2. **Neither endpoint refused a DRAFT.** `core/payments.py:_resolve_public_invoice`
+   has refused drafts since the 2026-08-08 §11 rail — *"a machine-priced
+   closeout autodraft nobody reviewed"* must not take money — but this router's
+   `_require_own_unpaid_invoice` never learned it, so both portal money paths
+   sat 15 days behind the resolver next door. The guard is now in the shared
+   helper, which fixes both at once. 404, not 409: an un-issued invoice must
+   not be confirmed to exist.
+3. **The audit block on `/intent` had never written a row.** It read
+   `locals().get('db')` on a handler that took no `db` parameter, so it was
+   always `None` — and would have logged `entity_id=""`, `details={}` had it
+   fired. Threaded through and given a subject. The same dead block on three
+   siblings (`setup_intent`, `ach_setup`, `remove_payment_method`) was fixed
+   in the same sweep; the repo's `KNOWN_DEAD_AUDIT_BLOCKS` ratchet is four
+   entries shorter and **every audit block on this router is now live.**
+
+**Exposure: latent, never exploitable.** `_require_stripe_customer` runs first
+and `CustomerUser` has no `stripe_customer_id` column, so every real caller
+400s before reaching the invoice logic; prod has **zero** `payment_intent`
+audit rows and **nothing in the repo calls the endpoint**. The live customer
+pay path is the token-scoped one in `core/payments.py`. Hardened because the
+day that column is added the hole opens silently — not because anyone walked
+through it. An adversarial review is what forced this paragraph to say so;
+the first draft narrated the hole as live.
 
 ### M14 — A late failure event voids a genuinely collected payment `MEDIUM` `PLAUSIBLE`
 

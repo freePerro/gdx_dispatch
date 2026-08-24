@@ -7,6 +7,7 @@ customer portal authentication via the portal session cookie.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import Any
@@ -19,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor
 from gdx_dispatch.core.database import get_db
+# One currency constant for every money path on this router (M4).
+from gdx_dispatch.core.payments import CURRENCY
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.stripe_payments import (
     charge_saved_method,
@@ -42,10 +45,20 @@ router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(
 # ---------------------------------------------------------------------------
 
 class CreateIntentRequest(BaseModel):
+    """M13: `amount_cents` and `currency` are now ADVISORY and ignored.
+
+    The server derives the amount from the invoice named in
+    `metadata.invoice_id` and hardcodes the currency. They are kept on the
+    model rather than removed so existing portal clients keep sending a valid
+    body instead of 422-ing mid-payment, and so the handler can record the
+    disagreement when a client asks for an amount the invoice does not owe.
+    Nothing here reaches Stripe.
+    """
+
     # amount_cents max = $1M (100_000_000 cents) — rejects obvious nonsense.
-    # currency is ISO 4217 three-letter code.
     amount_cents: int = Field(ge=1, le=100_000_000)
     currency: str = Field(default="usd", min_length=3, max_length=3, pattern=r"^[a-z]{3}$")
+    # Must carry `invoice_id`. Every other key is dropped.
     metadata: dict[str, Any] | None = None
 
 
@@ -125,6 +138,16 @@ def _require_own_unpaid_invoice(db: Session, user: CustomerUser, invoice_ref: An
         raise HTTPException(status_code=404, detail="Invoice not found")
     if invoice.status == "void":
         raise HTTPException(status_code=409, detail="This invoice has been cancelled.")
+    # §11 rail. `core/payments.py:_resolve_public_invoice` has refused DRAFTS
+    # since the 2026-08-08 audit — "a machine-priced closeout autodraft nobody
+    # reviewed" must not take money — but THIS helper never learned it, so
+    # both portal endpoints it guards were 15 days behind the resolver next
+    # door. Found by an adversarial review of the /intent fix, which had
+    # measured parity against this helper and called it "the full treatment".
+    #
+    # 404, not 409: an un-issued invoice should not be confirmed to exist.
+    if str(invoice.status or "").lower() == "draft":
+        raise HTTPException(status_code=404, detail="Invoice not found")
     if float(invoice.balance_due or 0) <= 0:
         raise HTTPException(status_code=409, detail="This invoice has no balance due.")
     return invoice
@@ -148,42 +171,86 @@ def _require_stripe_customer(user: CustomerUser) -> str:
 @router.post("/intent", response_model=None)
 def payment_intent(
     body: CreateIntentRequest,
+    request: Request,
     user: CustomerUser = Depends(_current_portal_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Create a PaymentIntent for an immediate one-time charge."""
+    """Create a PaymentIntent for an immediate one-time charge.
+
+    Money audit **M13**. `charge_method` on this router got the full treatment
+    on 2026-08-04 — ownership check, server-derived amount, hardcoded currency.
+    Its sibling here did not: `amount_cents` and `currency` came from the body
+    and `metadata` was forwarded verbatim, with no invoice reference required.
+
+    That mattered because `core/payments.py` records the resulting payment
+    against `metadata.invoice_id`: an authenticated portal user could mint an
+    intent carrying **any** invoice UUID and have their payment land on
+    another customer's bill — authentication enforced, authorization absent.
+    The same shape as the charge-path hole, on the sibling nobody closed.
+
+    **Latent, never exploitable.** `_require_stripe_customer` runs first and
+    `CustomerUser` has no `stripe_customer_id` column, so every real caller
+    400s before reaching any of this, and prod has zero `payment_intent` audit
+    rows. Nothing in the repo calls this endpoint either — the live customer
+    pay path is the token-scoped one in `core/payments.py`. Hardened because
+    the day that column is added the hole opens silently, not because anyone
+    walked through it.
+
+    Now identical to `charge_method`: the invoice must exist, belong to THIS
+    portal user's customer, not be void and still owe money; the amount is that
+    invoice's balance due; the currency is fixed; and `metadata.invoice_id` is
+    overwritten with the resolved id so a forged one cannot survive.
+    """
     stripe_cid = _require_stripe_customer(user)
+
+    invoice = _require_own_unpaid_invoice(db, user, (body.metadata or {}).get("invoice_id"))
+    amount_cents = int(round(float(invoice.balance_due or 0) * 100))
+    # Whitelist, not passthrough. Stripe metadata rides into the webhook and
+    # some of it is read back as fact; an arbitrary client-controlled dict on a
+    # money object is a channel nobody audits.
+    metadata = {"invoice_id": str(invoice.id)}
     try:
         intent = create_payment_intent(
-            amount_cents=body.amount_cents,
-            currency=body.currency,
+            amount_cents=amount_cents,
+            currency=CURRENCY,
             customer_id=stripe_cid,
-            metadata=body.metadata,
+            metadata=metadata,
         )
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating PaymentIntent for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="payment_intent",
-                entity_type="payment_intent",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            logger.exception('payment_intent_audit_failed')
+    # The audit write used to read `locals().get('db')` on a handler that took
+    # no `db` parameter, so it was ALWAYS None and this endpoint has never
+    # written a single row — a money path with a silent no-op where its trail
+    # should be. It also recorded `entity_id=""` and `details={}`, which would
+    # have said nothing even had it fired.
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id") or ""),
+            user_id=resolve_audit_actor(user, request),
+            action="payment_intent",
+            entity_type="invoice",
+            entity_id=str(invoice.id),
+            details={
+                "invoice_number": invoice.invoice_number,
+                "amount_cents": amount_cents,
+                "payment_intent_id": intent.id,
+                # What the client ASKED for, when it disagreed with the
+                # invoice. A mismatch is the signal that something is probing.
+                "client_amount_cents": (
+                    body.amount_cents if body.amount_cents != amount_cents else None
+                ),
+            },
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        # Never 500 a customer whose card Stripe has already accepted. Roll
+        # back so the session is usable rather than poisoned, and shout.
+        with contextlib.suppress(Exception):
+            db.rollback()
+        logger.exception("payment_intent_audit_failed")
     return {
         "client_secret": intent.client_secret,
         "payment_intent_id": intent.id,
@@ -192,7 +259,9 @@ def payment_intent(
 
 @router.post("/setup", response_model=None)
 def setup_intent(
+    request: Request,
     user: CustomerUser = Depends(_current_portal_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Create a SetupIntent to save a payment method without charging."""
     stripe_cid = _require_stripe_customer(user)
@@ -201,28 +270,25 @@ def setup_intent(
     except stripe.error.StripeError as exc:
         logger.error("Stripe error creating SetupIntent for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="setup_intent",
-                entity_type="setup_intent",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            logger.exception('setup_intent_audit_failed')
+    # Was `locals().get('db')` on a handler that took no `db` — always None,
+    # so this never wrote a row; `entity_id=""` + `details={}` would have said
+    # nothing had it fired. Threaded through, and given a subject.
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id") or ""),
+            user_id=resolve_audit_actor(user, request),
+            action="setup_intent",
+            entity_type="setup_intent",
+            entity_id=str(getattr(user, "id", "") or ""),
+            details={"setup_intent_id": intent.id, "stripe_customer_id": stripe_cid},
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            db.rollback()
+        logger.exception("setup_intent_audit_failed")
     return {
         "client_secret": intent.client_secret,
         "setup_intent_id": intent.id,
@@ -297,7 +363,10 @@ def charge_method(
 
     invoice = _require_own_unpaid_invoice(db, user, (body.metadata or {}).get("invoice_id"))
     amount_cents = int(round(float(invoice.balance_due or 0) * 100))
-    metadata = {**(body.metadata or {}), "invoice_id": str(invoice.id)}
+    # Whitelist, not merge. `{**body.metadata}` forwarded an arbitrary
+    # client-controlled dict onto a Stripe money object that rides into the
+    # webhook — a channel nobody audits. Only the resolved invoice id survives.
+    metadata = {"invoice_id": str(invoice.id)}
 
     # Prevent double-charge on retry/double-click: forward an idempotency key to
     # Stripe (Idempotency-Key header wins; ChargeRequest.idempotency_key fallback).
@@ -307,7 +376,11 @@ def charge_method(
             customer_id=stripe_cid,
             payment_method_id=method_id,
             amount_cents=amount_cents,
-            currency=body.currency,
+            # Hardcoded, like every other money path here (M4). `body.currency`
+            # was still being honoured on this endpoint even after the
+            # 2026-08-04 hardening — the "gold standard" its sibling was
+            # measured against was itself two changes short.
+            currency=CURRENCY,
             metadata=metadata,
             idempotency_key=_idem,
         )
@@ -370,7 +443,9 @@ def charge_method(
 @router.post("/ach/setup", response_model=None)
 def ach_setup(
     body: ACHSetupRequest,
+    request: Request,
     user: CustomerUser = Depends(_current_portal_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Initiate ACH bank account setup via micro-deposit verification."""
     stripe_cid = _require_stripe_customer(user)
@@ -384,28 +459,25 @@ def ach_setup(
     except stripe.error.StripeError as exc:
         logger.error("Stripe error setting up ACH for customer %s: %s", stripe_cid, exc)
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="ach_setup",
-                entity_type="ach_setup",
-                entity_id="",
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            logger.exception('ach_setup_audit_failed')
+    # Was `locals().get('db')` on a handler that took no `db` — always None,
+    # so this never wrote a row; `entity_id=""` + `details={}` would have said
+    # nothing had it fired. Threaded through, and given a subject.
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id") or ""),
+            user_id=resolve_audit_actor(user, request),
+            action="ach_setup",
+            entity_type="ach_setup",
+            entity_id=str(getattr(user, "id", "") or ""),
+            details={"bank_name": body.bank_name, "stripe_customer_id": stripe_cid},
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            db.rollback()
+        logger.exception("ach_setup_audit_failed")
     return {
         "source_id": source.id,
         "last4": getattr(source, "last4", None),
@@ -417,7 +489,9 @@ def ach_setup(
 @router.delete("/methods/{method_id}", response_model=None)
 def remove_payment_method(
     method_id: str,
+    request: Request,
     user: CustomerUser = Depends(_current_portal_user),
+    db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Detach (remove) a saved payment method from the customer account."""
     stripe_cid = _require_stripe_customer(user)
@@ -433,28 +507,25 @@ def remove_payment_method(
         )
         raise HTTPException(status_code=402, detail=str(exc.user_message or exc)) from exc
     logger.info("Detached PaymentMethod %s from customer %s", method_id, stripe_cid)
-    _audit_db = locals().get('db')
-    if _audit_db is not None:
-        try:
-            _audit_user_obj = locals().get('user') or locals().get('current_user') or {}
-            _audit_req = locals().get('request')
-            _audit_tenant = ''
-            if _audit_req is not None:
-                _audit_tenant = str((getattr(getattr(_audit_req, 'state', None), 'tenant', {}) or {}).get('id') or '')
-            _audit_user = resolve_audit_actor(_audit_user_obj, _audit_req)
-            log_audit_event_sync(
-                _audit_db,
-                tenant_id=_audit_tenant,
-                user_id=_audit_user,
-                action="remove_payment_method",
-                entity_type="payment_method",
-                entity_id=str(method_id),
-                details={},
-                request=_audit_req,
-            )
-            _audit_db.commit()
-        except Exception:
-            logger.exception('remove_payment_method_audit_failed')
+    # Was `locals().get('db')` on a handler that took no `db` — always None,
+    # so this never wrote a row; `entity_id=""` + `details={}` would have said
+    # nothing had it fired. Threaded through, and given a subject.
+    try:
+        log_audit_event_sync(
+            db,
+            tenant_id=str((getattr(getattr(request, "state", None), "tenant", {}) or {}).get("id") or ""),
+            user_id=resolve_audit_actor(user, request),
+            action="remove_payment_method",
+            entity_type="payment_method",
+            entity_id=method_id,
+            details={"stripe_customer_id": stripe_cid},
+            request=request,
+        )
+        db.commit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            db.rollback()
+        logger.exception("remove_payment_method_audit_failed")
     return {"status": "removed", "payment_method_id": method_id}
 
 
