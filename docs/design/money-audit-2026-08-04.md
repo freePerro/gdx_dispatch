@@ -1836,7 +1836,36 @@ is informational). The reversal writes a
 A pre-existing note: there was no line-unconfirm before this — a bare block
 would have been a dead end with no way through.
 
-### M30 — Smaller cost-side items `LOW–MEDIUM`
+### M30 — Smaller cost-side items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 2 fixed, 2 verified changed-since-audit, 4 recorded**
+
+> Per-item disposition:
+> **FIXED here** — the Midwest STATEMENT parser now parses credit rows
+> (−$x and ($x) forms; the −$2,900.98 class no longer vanishes into an
+> overstated payable), and vendor-invoice confirm REFUSES a fractional
+> stock quantity (409) instead of silently truncating 2.5 → 2.
+> **Verified changed since the audit** — the mounted PO receive HAS a
+> double-receive 409 guard today; the variance report selects ONE estimate
+> (accepted-first, limit 1), not all revisions.
+> **Recorded, filed** — PO short-shipment quantities (needs API+UI for
+> per-line received counts); weekly-overtime window straddling (which pay
+> period owns boundary OT is a payroll policy call); labor-variance's
+> unclamped wall-clock ceiling (an exclusion bound is a policy call under
+> the attested-hours rule); budget quick-fill divide-by-lookback (instance
+> not relocatable in today's budgets.py — may have been fixed with the
+> 2026-05-24 revenue-basis repair). Supplier-portal order totals are
+> supplier-entered by design (their quote); the "PO-number dict-iteration
+> crash" is not reproducible in today's code.
+>
+> **Audit round 2 (all four findings fixed):** the widened regex's `$-x` shape
+> was booking credits POSITIVE (sign robust across all five print forms now,
+> proven at the loop level); the silent `continue` on looks-like-but-unparseable
+> rows is a LOUD MidwestStatementStructureError (the loop extracted to
+> `_parse_statement_lines` so the contract is honestly testable — the first
+> structure test simulated its own raise); the whole-units 409 is scoped to the
+> STOCK disposition only (the first cut raised on the job path its own remedy
+> text recommended, and mid-void); and `po_workflow.py`'s receive — the third,
+> also-mounted PO system — gains the missing double-receive guard that was
+> duplicating van-inventory rows.
 
 - **PO receive books full quantity unconditionally** — `line.quantity_received = line.quantity_ordered`, so a short shipment (6 of 10) overstates inventory by 4 × unit cost. Two of the three PO systems are dead code; the unmounted one's `receive_po` has no already-received guard at all.
 - **Midwest statement parser silently drops credit rows**: `\$[\d,]+\.\d{2}` cannot match `-$123.45` or `($123.45)`, non-matching lines `continue` without error, and there is no printed-total reconciliation (unlike the invoice parser). A −$2,900.98 credit row vanishes and the payable is overstated by that amount.

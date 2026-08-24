@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import (
@@ -89,8 +90,29 @@ def _post_expense_to_ledger(db: Session, expense: Expense) -> None:
 
 
 def _int_qty(qty: Decimal) -> int:
-    # Inventory quantities are integers; truncate fractional coverage.
+    """Truncating integer coverage — used where a fraction is COVERAGE, not
+    stock (the job-checklist quantity, and the void fallback when the stored
+    StockAdjustment is gone). The STOCK path uses _stock_units below."""
     return int(qty)
+
+
+def _stock_units(qty: Decimal) -> int:
+    """M30 (scoped in audit round 2 — the first cut raised on the JOB path
+    too, and mid-void): STOCK quantities are whole units. Silent truncation
+    made 2.5 confirm as 2 with the half unit gone from every count. Only the
+    stock disposition refuses; job/expense routing takes fractional coverage
+    fine."""
+    q = Decimal(str(qty))
+    if q != q.to_integral_value():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"stock quantities are whole units — this line has qty {q}. "
+                "Route it to a job or expense (fractions are fine there), or "
+                "correct the quantity."
+            ),
+        )
+    return int(q)
 
 
 def confirm_line(
@@ -198,7 +220,7 @@ def confirm_line(
         if item is None:
             raise ConfirmError(f"inventory item {inventory_item_id} not found")
 
-        delta = _int_qty(line.quantity)
+        delta = _stock_units(line.quantity)
         adj = apply_stock_delta(
             db,
             item,

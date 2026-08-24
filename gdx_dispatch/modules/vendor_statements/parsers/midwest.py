@@ -37,7 +37,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
 
 from pypdf import PdfReader
 
@@ -69,7 +68,10 @@ class MidwestStatementStructureError(MidwestParseError):
     """
 
 
-_MONEY = r"\$[\d,]+\.\d{2}"
+# M30: credits print as -$123.45 or ($123.45) — the old pattern silently
+# skipped those rows (`continue`, no error), so a −$2,900.98 credit vanished
+# and the payable was overstated by exactly that amount.
+_MONEY = r"-?\(?\$-?[\d,]+\.\d{2}\)?"
 
 # Line A: invoice#, rep, date, amount, balance, 6 aging buckets
 _LINE_A = re.compile(
@@ -145,8 +147,8 @@ class MidwestParsedLine:
 
 @dataclass
 class MidwestParseResult:
-    statement_date: Optional[date]
-    customer_code: Optional[str]
+    statement_date: date | None
+    customer_code: str | None
     raw_total: Decimal
     lines: list[MidwestParsedLine] = field(default_factory=list)
 
@@ -156,7 +158,24 @@ class MidwestParseResult:
 
 
 def _money(s: str) -> Decimal:
-    return Decimal(s.replace("$", "").replace(",", ""))
+    """M30 (audit round 2): credits print as -$x, $-x, ($x), ( $x ), or a
+    trailing minus $x-. The first cut checked only a LEADING minus and then
+    stripped a $-x form's sign away — booking that credit POSITIVE, worse
+    than the silent drop it replaced. Sign survives wherever it appears."""
+    t = s.strip()
+    neg = False
+    if t.startswith("(") and t.endswith(")"):
+        neg = True
+        t = t[1:-1].strip()
+    t = t.replace("$", "").replace(",", "").strip()
+    if t.startswith("-"):
+        neg = True
+        t = t[1:].strip()
+    if t.endswith("-"):
+        neg = True
+        t = t[:-1].strip()
+    val = Decimal(t)
+    return -val if neg else val
 
 
 def _looks_like_line_a(line: str) -> bool:
@@ -165,6 +184,81 @@ def _looks_like_line_a(line: str) -> bool:
     if not stripped or not stripped[0].isdigit():
         return False
     return len(re.findall(_MONEY, stripped)) == 8
+
+
+def _parse_statement_lines(lines: list[str]) -> tuple[list[MidwestParsedLine], Decimal]:
+    """The row loop, extracted so the loud-stop contract is TESTABLE
+    (M30 audit round 2: the first structure test simulated its own raise —
+    a guard nothing could fail). A looks-like row that fails the shape
+    RAISES; credits parse signed; returns (parsed, raw_total)."""
+    parsed: list[MidwestParsedLine] = []
+    raw_total = Decimal("0.00")
+    line_no = 0
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _looks_like_line_a(line):
+            i += 1
+            continue
+
+        m_a = _LINE_A.match(line)
+        if not m_a:
+            # M30 audit round 2 — the CLASS fix. This silent skip is the
+            # mechanism that vanished the −$2,900.98 credit: a row that
+            # counts 8 currency tokens but fails the shape must be a parser
+            # gap, and a parser gap on a money document is a loud stop, not
+            # a shorter statement.
+            raise MidwestStatementStructureError(
+                f"row looks like a statement line but did not parse: {line[:90]!r}"
+            )
+
+        # Find next non-blank line for line B
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j >= len(lines):
+            raise MidwestStatementStructureError(f"line A at index {i} has no following line B")
+
+        line_b = lines[j]
+        m_b = _LINE_B.match(line_b)
+        if not m_b:
+            raise MidwestStatementStructureError(
+                f"could not parse line B for invoice {m_a.group('invoice')}: {line_b!r}"
+            )
+
+        try:
+            parsed_line = MidwestParsedLine(
+                line_no=line_no,
+                invoice_no=m_a.group("invoice"),
+                job_no=m_b.group("job"),
+                rep=m_a.group("rep"),
+                line_date=datetime.strptime(m_a.group("date"), "%m/%d/%Y").date(),
+                amount=_money(m_a.group("amount")),
+                balance=_money(m_a.group("balance")),
+                aging_0_29=_money(m_a.group("a0_29")),
+                aging_30_59=_money(m_a.group("a30_59")),
+                aging_60_89=_money(m_a.group("a60_89")),
+                aging_90_119=_money(m_a.group("a90_119")),
+                aging_120_plus=_money(m_a.group("a120")),
+                retainage=_money(m_a.group("retainage")),
+                po_ref=m_b.group("po").strip(),
+                description=m_b.group("description").strip(),
+                raw_text=line.strip() + "\n" + line_b.strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise MidwestStatementStructureError(
+                f"failed to build parsed line for invoice {m_a.group('invoice')}: {exc}"
+            ) from exc
+
+        parsed.append(parsed_line)
+        raw_total += parsed_line.balance
+        line_no += 1
+        i = j + 1
+
+    if not parsed:
+        raise MidwestStatementStructureError("no line items found in PDF")
+    return parsed, raw_total
 
 
 def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
@@ -221,67 +315,7 @@ def parse_midwest_statement(pdf_bytes: bytes) -> MidwestParseResult:
         customer_code = m.group(1).strip()
 
     lines = text.splitlines()
-    parsed: list[MidwestParsedLine] = []
-    raw_total = Decimal("0.00")
-    line_no = 0
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not _looks_like_line_a(line):
-            i += 1
-            continue
-
-        m_a = _LINE_A.match(line)
-        if not m_a:
-            i += 1
-            continue
-
-        # Find next non-blank line for line B
-        j = i + 1
-        while j < len(lines) and not lines[j].strip():
-            j += 1
-        if j >= len(lines):
-            raise MidwestStatementStructureError(f"line A at index {i} has no following line B")
-
-        line_b = lines[j]
-        m_b = _LINE_B.match(line_b)
-        if not m_b:
-            raise MidwestStatementStructureError(
-                f"could not parse line B for invoice {m_a.group('invoice')}: {line_b!r}"
-            )
-
-        try:
-            parsed_line = MidwestParsedLine(
-                line_no=line_no,
-                invoice_no=m_a.group("invoice"),
-                job_no=m_b.group("job"),
-                rep=m_a.group("rep"),
-                line_date=datetime.strptime(m_a.group("date"), "%m/%d/%Y").date(),
-                amount=_money(m_a.group("amount")),
-                balance=_money(m_a.group("balance")),
-                aging_0_29=_money(m_a.group("a0_29")),
-                aging_30_59=_money(m_a.group("a30_59")),
-                aging_60_89=_money(m_a.group("a60_89")),
-                aging_90_119=_money(m_a.group("a90_119")),
-                aging_120_plus=_money(m_a.group("a120")),
-                retainage=_money(m_a.group("retainage")),
-                po_ref=m_b.group("po").strip(),
-                description=m_b.group("description").strip(),
-                raw_text=line.strip() + "\n" + line_b.strip(),
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise MidwestStatementStructureError(
-                f"failed to build parsed line for invoice {m_a.group('invoice')}: {exc}"
-            ) from exc
-
-        parsed.append(parsed_line)
-        raw_total += parsed_line.balance
-        line_no += 1
-        i = j + 1
-
-    if not parsed:
-        raise MidwestStatementStructureError("no line items found in PDF")
+    parsed, raw_total = _parse_statement_lines(lines)
 
     return MidwestParseResult(
         statement_date=statement_date,
