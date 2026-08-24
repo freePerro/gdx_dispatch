@@ -1055,7 +1055,7 @@ which is exactly why it was not split first.
 
 **Transport correction 2026-08-24:** prod's webhook endpoint never subscribed to the `charge.dispute.*` events this fix handles — the dispute lifecycle was released and walked but unreachable until the subscription was repaired live (see M16's transport note). The code was correct; the events never arrived.
 
-### M16 — ACH has a double-payment window `MEDIUM` `FIXED`
+### M16 — ACH has a double-payment window `MEDIUM` `FIXED — RELEASED v1.85.0, prod+demo, walked 2026-08-24`
 
 Nothing is recorded while an ACH debit is `processing` — there is no
 `payment_intent.processing` handler — so the balance stays full and the Pay button
@@ -1065,7 +1065,8 @@ and again Monday mints a second intent; both settle.
 **Fix.** Handle `payment_intent.processing` with a pending marker and suppress the pay
 URL while an intent for the current balance is in flight.
 
-**FIXED — PR #TBD. No migration.** Built stateless rather than with the pending
+**FIXED — PR #428, RELEASED v1.85.0, deployed prod+demo and walked 2026-08-24.**
+No migration. Built stateless rather than with the pending
 marker prescribed above — a deliberate deviation: a `processing` intent bound to
 the invoice by `metadata.invoice_id` **is** the pending marker, already
 maintained by Stripe, already cleared when the debit settles or fails, with
@@ -1127,6 +1128,16 @@ lifecycle shipped inert at the transport layer** despite being released,
 tested, and walked. Repaired live via `WebhookEndpoint.modify` (before/after
 lists captured); a drift guard is filed as its own follow-up rather than
 bundled.
+
+**Prod walk, v1.85.0, 2026-08-24:** every container on 1.85.0, edge 200, celery
+kept the Stripe key with `payments.sweep_stale_intents` registered (no #425
+regression), all 9 webhook events survived the deploy, `_ach_in_flight` ran
+live against INV-000356 with the real key (returned None — nothing in flight),
+and that invoice's real pay page served the normal card form with no
+processing banner. **Not prod-exercised:** the processing page state and the
+`payment_intent.processing` audit write — both need a real in-flight ACH
+debit; they are browser-verified from the identical template and covered by
+the now-subscribed transport.
 
 ### M17 — Smaller payment-path items `LOW`
 
