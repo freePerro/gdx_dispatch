@@ -227,11 +227,11 @@ M26 (`invariant_ok` substring check), and the QB importer's line filter.
 
 **Fixed later, after this section was written** — §3 in full (PRs #399/#400/#402/#403,
 v1.75.0), M23, M13, M14 (stale failure events), M15 (dispute lifecycle, migration 076),
-and **M12** (stale PaymentIntents — stateless Stripe-side sweep, no migration). Each is
+and **M12** (stale PaymentIntents — stateless Stripe-side sweep, no migration), then **M16** (ACH double-payment window — same stateless scan, mint gates + pay-page state, 2026-08-24). Each is
 marked at its own entry below; this paragraph is a pointer, not a second source of
 truth. Read the entry.
 
-**Not yet fixed** — M16 (ACH double-payment window), M17 items 2-4, M18's tax half
+**Not yet fixed** — M17 items 2-4, M18's tax half
 (needs a money-rule decision), the recording half of M3, the rest of §4, §5 and §6,
 and the frontend items in §7. The GL findings remain gated on the CPA review. §9's
 ordering still applies to what's left.
@@ -1053,7 +1053,9 @@ regardless of the disputed amount, so a $50 dispute on a $500 charge reverses
 all $500. The lifecycle this fix adds is the precondition for splitting it —
 which is exactly why it was not split first.
 
-### M16 — ACH has a double-payment window `MEDIUM` `CONFIRMED` (gap) / `PLAUSIBLE` (occurrence)
+**Transport correction 2026-08-24:** prod's webhook endpoint never subscribed to the `charge.dispute.*` events this fix handles — the dispute lifecycle was released and walked but unreachable until the subscription was repaired live (see M16's transport note). The code was correct; the events never arrived.
+
+### M16 — ACH has a double-payment window `MEDIUM` `FIXED`
 
 Nothing is recorded while an ACH debit is `processing` — there is no
 `payment_intent.processing` handler — so the balance stays full and the Pay button
@@ -1062,6 +1064,69 @@ and again Monday mints a second intent; both settle.
 
 **Fix.** Handle `payment_intent.processing` with a pending marker and suppress the pay
 URL while an intent for the current balance is in flight.
+
+**FIXED — PR #TBD. No migration.** Built stateless rather than with the pending
+marker prescribed above — a deliberate deviation: a `processing` intent bound to
+the invoice by `metadata.invoice_id` **is** the pending marker, already
+maintained by Stripe, already cleared when the debit settles or fails, with
+nothing local to drift or forget. It reuses M12's `_open_intents_for_invoice`
+scan.
+
+Three surfaces honor it:
+
+- **The mint sites refuse.** `create_intent` (card), `ach_charge`, and the
+  portal's pay endpoint all 409 with "a bank transfer for this invoice is
+  already processing… you don't need to pay again" while a debit is in flight.
+  This is the actual closure of the Friday→Monday double-pay: the 24h
+  idempotency key has expired by then, but the gate asks Stripe live. A card
+  payment is refused too — it double-pays identically, the balance just hasn't
+  moved yet.
+- **The pay page says so.** GET /pay/{token} renders "Bank transfer processing"
+  with **no payment forms** instead of a live Pay button over a banner. The
+  prescription's "suppress the pay URL" is served this way: dunning emails may
+  still carry the link, but the page it lands on cannot collect.
+- **The trail knows.** A new `payment_intent.processing` webhook branch writes
+  an `ach_payment_processing` audit event on the invoice, so the office can
+  answer "why is the pay page refusing?" from the record.
+
+**Failure directions, chosen and tested:** both the page probe and the mint
+gates **fail open** on a Stripe outage. The honest accounting (from the
+adversarial review): in a FULL outage fail-open strands nobody extra — the
+mint dies with the list. The real exposure is the uncorrelated case, rate
+limiting: Stripe budgets reads separately from writes, and the probe spends
+read budget on an unauthenticated route, so a hammered `/pay/{token}` could
+429 the check while the write path still mints. The backstop
+(`payment_exceeds_receivable` + the M12 sweep) is **detection after
+settlement, not prevention** — accepted at this deployment's volume, and
+recorded here so nobody later mistakes it for a guarantee.
+
+Cited per the working agreement: ACH is "up to 4 business days to receive
+acknowledgement of success or failure"
+([docs.stripe.com/payments/ach-direct-debit](https://docs.stripe.com/payments/ach-direct-debit),
+read 2026-08-24) — the same page also confirms ACH supports **no manual capture
+and no partial refunds**.
+
+Guarded by `gdx_dispatch/tests/test_ach_processing_window.py` (17 tests), with
+seven counterfactuals proven to bite: deleting any of the three mint-site
+gates, widening the probe to any status, removing the template's processing
+branch, removing the webhook handler, or making the probe raise on outage each
+fails a test. Two of those started vacuous and were caught by their own counterfactuals: the
+portal presence test was satisfied by the *import* line with the call deleted
+(rewritten to assert the call, then again to assert it runs **before** the
+mint), and the `ach_payment_processing` audit event initially fired for a CARD
+intent transiting `processing` — a trail row lying about the method (now
+ACH-only).
+
+**The transport leg, verified live — and a bigger find.** The
+`payment_intent.processing` handler only runs if the Stripe webhook endpoint
+subscribes to that event, which is dashboard state no test can see. Checked on
+prod 2026-08-24: the endpoint subscribed to **four** events — and among the
+missing five were `charge.dispute.created` / `funds_withdrawn` /
+`funds_reinstated` and `charge.failed`, meaning **the entire M13–M15 dispute
+lifecycle shipped inert at the transport layer** despite being released,
+tested, and walked. Repaired live via `WebhookEndpoint.modify` (before/after
+lists captured); a drift guard is filed as its own follow-up rather than
+bundled.
 
 ### M17 — Smaller payment-path items `LOW`
 

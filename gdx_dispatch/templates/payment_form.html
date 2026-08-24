@@ -282,6 +282,11 @@
       <span>Status</span>
       <span>Paid</span>
     </div>
+    {% elif ach_processing %}
+    <div class="invoice-row" style="color:#92400e; font-weight:600; margin-top:0.5rem;" data-testid="ach-processing-status">
+      <span>Status</span>
+      <span>Bank transfer processing</span>
+    </div>
     {% else %}
     <div class="invoice-total">${{ "%.2f"|format(invoice.balance_due) }}</div>
     {% endif %}
@@ -310,6 +315,15 @@
 
   {% if invoice.status == "paid" %}
   <div class="alert success visible">This invoice has already been paid. Thank you!</div>
+  {% elif ach_processing %}
+  <!-- M16: an ACH debit is in flight. Presenting a live payment form here is
+       how a customer pays twice — the balance will not move until the bank
+       acknowledges, which Stripe documents as up to 4 business days. -->
+  <div class="alert success visible" data-testid="ach-processing-banner">
+    A bank transfer for this invoice is already processing. Bank transfers take
+    up to 4 business days to clear &mdash; you don't need to do anything else,
+    and you don't need to pay again.
+  </div>
   {% else %}
 
   <!-- Error / success alerts -->
@@ -389,7 +403,7 @@
   // the balance due and the client no longer gets a say.
   const INVOICE_TOKEN = "{{ invoice.public_token }}";
 
-  {% if invoice.status != "paid" %}
+  {% if invoice.status != "paid" and not ach_processing %}
 
   const stripe = Stripe(STRIPE_KEY);
   const elements = stripe.elements();

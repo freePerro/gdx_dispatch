@@ -680,6 +680,11 @@ def portal_invoice_pay(
         raise HTTPException(status_code=409, detail="This invoice has no balance due.")
 
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+    # M16: the portal is the same customer on a different door. A card payment
+    # minted while their ACH debit is processing double-pays identically.
+    from gdx_dispatch.core.payments import _refuse_if_ach_processing
+
+    _refuse_if_ach_processing(invoice, op="portal-pay")
     amount_cents = int(amount_due * 100)
 
     intent = stripe.PaymentIntent.create(
