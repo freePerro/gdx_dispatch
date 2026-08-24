@@ -20,6 +20,14 @@ x-app-env: &app-env
   GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
   MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
   GDX_ENV: ${GDX_ENV:-dev}
+  # Shared, not app-only: the celery workers call Stripe too.
+  # `payments.sweep_stale_intents` (money-audit M12) cancels a customer's
+  # stale PaymentIntent when an invoice is settled another way, and it runs
+  # ON A WORKER. With this key app-only, every such call failed with
+  # `AuthenticationError: You did not provide an API key` — the task logged,
+  # degraded and reported success, so the sweep was silently inert in
+  # production. Caught by walking it on prod, not by any test.
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
   VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
   VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
   VAPID_PRIVATE_KEY_B64: ${VAPID_PRIVATE_KEY_B64:-}
@@ -96,7 +104,6 @@ services:
       GDX_PLUGIN_CATALOG_URL: ${GDX_PLUGIN_CATALOG_URL:-}
       GDX_BASE_URL: ${GDX_BASE_URL:-http://localhost:8001}
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       QB_CLIENT_ID: ${QB_CLIENT_ID:-}

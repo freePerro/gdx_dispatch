@@ -173,6 +173,24 @@ def sweep_stale_intents(
             # PLATFORM account and silently found nothing, no-opping on exactly
             # the call site this fix exists for ("the office records a check").
             account = connected_account or _connected_account_for(db, invoice)
+            # Say WHY, distinguishably. The prod walk of v1.84.0 hit
+            # `AuthenticationError: You did not provide an API key` because the
+            # celery containers did not carry STRIPE_SECRET_KEY, and this task
+            # logged, degraded, and returned success with an empty result — so
+            # the sweep was inert in production and the task result said
+            # nothing was wrong. An unconfigured Stripe is a deployment fault,
+            # not "no stale intents".
+            from gdx_dispatch.core.payments import stripe_configured
+
+            if not stripe_configured():
+                log.error(
+                    "stale_intent_sweep_stripe_unconfigured invoice=%s why=%s — this worker "
+                    "has no STRIPE_SECRET_KEY, so no stale intent can be cancelled anywhere. "
+                    "Check that the celery services receive it.",
+                    invoice_id, why,
+                )
+                return {"invoice_id": invoice_id, "results": [], "error": "stripe_unconfigured"}
+
             results = cancel_open_intents_for_invoice(
                 invoice,
                 why=why,
