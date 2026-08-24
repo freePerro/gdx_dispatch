@@ -2196,7 +2196,8 @@ CREATE TABLE public.payments (
     reference character varying(200),
     created_at timestamp with time zone NOT NULL,
     company_id character varying(36) NOT NULL,
-    voided_at timestamp with time zone
+    voided_at timestamp with time zone,
+    voided_reason character varying(64)
 );
 
 

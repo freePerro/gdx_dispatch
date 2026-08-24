@@ -644,6 +644,14 @@ documentation: a `us_bank_account` failure arriving after the intent reaches
 stays `succeeded` through an ACH return. So the "genuine return vs stale
 decline" dilemma never occurs on this path.
 
+> **Source:** <https://docs.stripe.com/payments/ach-direct-debit> — read
+> **2026-08-24**. Verbatim: *"If a payment fails after funds have been made
+> available in your Stripe balance, Stripe immediately removes funds from your
+> Stripe account. In rare situations, Stripe might receive an ACH failure from
+> the bank after a PaymentIntent has transitioned to `succeeded`. If this
+> happens, Stripe creates a dispute with a `reason` of: `insufficient_funds`,
+> `incorrect_account_details`, `bank_cannot_process`."*
+
 What the guard actually covers is **card retries**, which is where the ordering
 hazard genuinely lives. Keying on the charge is still the better rule — it
 answers the question being asked and does not depend on intent-status
@@ -674,6 +682,16 @@ dunning, and booked cash as gone that was still sitting there. There was no
 not reversed; a real dispute (`needs_response`, `under_review`, `lost`) still
 reverses; a missing status still reverses, because absent is not "inquiry".
 
+> **Source:** <https://docs.stripe.com/api/disputes/object> — read
+> **2026-08-24**. The `status` enum documents `warning_needs_response` as *"An
+> inquiry that requires a response"*, `warning_under_review` as *"An inquiry
+> under review after evidence submission"*, and `warning_closed` as *"An
+> inquiry closed **without becoming a formal dispute**"* — against
+> `needs_response`, *"A dispute that requires a response."*
+> <https://docs.stripe.com/disputes> (same date) says a formal dispute
+> *"immediately reverses the payment… Stripe debits your balance for the
+> payment amount and dispute fee."* An inquiry is not a debit.
+
 **Two traps found by the same review, NOT fixed, filed here:**
 
 1. **No `api_version` is pinned anywhere.** `latest_charge` replaced `charges`
@@ -691,7 +709,7 @@ reverses; a missing status still reverses, because absent is not "inquiry".
    Any future live Stripe read from a webhook has the same trap.
 so a legitimate re-record can heal a wrongful void.
 
-### M15 — Dispute handling is one-directional `MEDIUM` `CONFIRMED`
+### M15 — Dispute handling is one-directional `MEDIUM` `CONFIRMED` ✅ FIXED 2026-08-23
 
 **Sibling added 2026-08-23 during M3's sweep:** disputes also void the payment
 in FULL regardless of the disputed amount, so a $50 dispute on a $500 charge
@@ -707,6 +725,69 @@ open, dunning chases a customer whose charge stood, and $600 sits in the bank wi
 
 **Fix.** Handle `charge.dispute.closed` with `status == "won"`.
 
+**✅ Done 2026-08-23 — and NOT the way this line says.** Stripe publishes the
+money movement itself, and these are the only two events that mean cash
+actually moved because of a dispute:
+
+| event | Stripe's wording |
+|---|---|
+| `charge.dispute.funds_withdrawn` | *"Occurs when funds are removed from your account due to a dispute."* |
+| `charge.dispute.funds_reinstated` | *"Occurs when funds are reinstated to your account after a dispute is closed."* |
+
+> **Source:** <https://docs.stripe.com/api/events/types> — read **2026-08-24**
+> against the currently published docs. No `api_version` is pinned anywhere in
+> this repo (see the trap below), so "current" is the operative caveat.
+> **Vendor-stated, not live-proven:** there is no test-mode key wired here for
+> webhook replay, so these events were not probed against a real account.
+
+Keying on those rather than on `closed` + `status == "won"` is better in three
+ways. It says *money moved* instead of *a case ended*; `closed` also fires for
+`warning_closed`, an inquiry ending with nothing to reinstate; and it covers a
+case `closed` cannot — an **inquiry that escalates**. The inquiry guard added
+the same day correctly declines to reverse a `warning_*` dispute, but that
+dispute can still become formal, and when it does the withdrawal arrives here.
+`charge.dispute.created` had already fired and could never see it.
+
+Reinstating **un-voids** the existing row rather than inserting one: a second
+row would double-count against `core/invoice_paid.py`, which sums non-voided
+payments, and the invoice would read as paid twice over. A reinstatement with
+nothing reversed (an inquiry that closed in our favour) is a normal outcome,
+not an error.
+
+**Migration 076 — `payments.voided_reason` — is what makes it safe, and an
+adversarial review is why it exists.** `voided_at` was the entire state, and
+THREE things set it: a dispute reversal, a **full Stripe refund**, and the
+office's own void-payment action. With only `voided_at` to go on, a
+reinstatement un-voided whichever row it found — proven against a real
+database: a refunded payment came back and the invoice read paid on cash that
+had been returned. Money invented.
+
+A first attempt guarded on "does this invoice carry a refund adjustment",
+which **cannot fire on the path that matters**: `_apply_charge_refund`'s
+full-refund branch is a bare `return _reverse_recorded_payment(...)` and
+deliberately leaves the money entry to the office endpoint, so the guard was
+checking for a row that path never writes — and the test agreed with it,
+because the test built the refund by hand instead of driving `charge.refunded`
+through the webhook. Both are fixed; the test now drives the real path.
+
+Only `charge.dispute.created` and `charge.dispute.funds_withdrawn` may be
+undone. A refund, an office void, or a **NULL from before the column existed**
+is refused with a loud log and a `reinstate_needs_review` status. Prod carries
+**3** voided payments, all of which will read NULL — the correct outcome for
+rows whose reason nobody recorded.
+
+Two more the review caught, both fixed: neither direction wrote an **audit
+row** (invariant #1, in a change whose subject is money — a `logger.warning`
+is not a record), and reinstating **re-stamped `paid_at`** to the dispute's
+close date, silently restating a closed month on every report that groups by
+it. The date now comes from the payment row, which is the surviving record of
+when the money actually arrived.
+
+**The sibling noted above is still open**: a dispute voids the payment in FULL
+regardless of the disputed amount, so a $50 dispute on a $500 charge reverses
+all $500. The lifecycle this fix adds is the precondition for splitting it —
+which is exactly why it was not split first.
+
 ### M16 — ACH has a double-payment window `MEDIUM` `CONFIRMED` (gap) / `PLAUSIBLE` (occurrence)
 
 Nothing is recorded while an ACH debit is `processing` — there is no
@@ -719,12 +800,21 @@ URL while an intent for the current balance is in flight.
 
 ### M17 — Smaller payment-path items `LOW`
 
-- **Unauthenticated tenant-wide `GET /api/payments`** ([core/payments.py:59-95](../../gdx_dispatch/core/payments.py#L59-L95))
-  has no auth dependency. It is shadowed today only because `ui_compat`'s
-  authenticated version registers first ([app.py:1649](../../gdx_dispatch/app.py#L1649)
-  vs [:1735](../../gdx_dispatch/app.py#L1735)). If that import ever fails, `app.py`
-  substitutes an empty router and the whole AR book goes public. It has no callers —
-  delete it.
+- ~~**Unauthenticated tenant-wide `GET /api/payments`**~~ ✅ **DELETED 2026-08-23.**
+  It had no auth dependency and returned the whole AR book, shadowed only
+  because `ui_compat`'s authenticated version registers first. **The failure
+  mode was proven, not theorised:** simulating the ui_compat import failure
+  that `app.py` explicitly guards against turned an unauthenticated
+  `GET /api/payments` into **HTTP 200 with 200 payment rows** — invoice
+  numbers and amounts, no credentials sent. After the deletion the same
+  simulation returns **404**.
+
+  `authz_sweep.py` could never have caught it: it deliberately ignores
+  shadowed duplicates as phantom findings, and cited this very route as its
+  example. That reasoning was true only while the import it depended on kept
+  succeeding. The sweep's comment now says so, and a regression test asserts
+  on the ROUTER (where the twin is visible) rather than the assembled app
+  (where the shadow hides it).
 - **No idempotency fallback on `charge_method`**: the key is optional from both header
   and body, so a double-click makes two distinct intents and two full-balance charges.
   Derive a fallback server-side like the public path does.

@@ -699,6 +699,19 @@ class Payment(Base):
     # _recalculate_invoice and the ledger both skip it. Set-once via the
     # payment-void endpoint; migration 022 adds the column on existing DBs.
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WHY it was voided (migration 076). THREE things set `voided_at` — a
+    # dispute/failure reversal, a full Stripe refund (which writes no
+    # InvoiceAdjustment at all), and the office's own void-payment action —
+    # and with only `voided_at` to go on, putting a payment back when a
+    # dispute is won could un-void a refund or a deliberate office reversal.
+    # That reads as money invented: the invoice returns to paid on cash that
+    # is not there.
+    #
+    # Holds the webhook event type or an internal verb, e.g.
+    # "charge.dispute.funds_withdrawn", "charge.refunded", "office_void".
+    # NULL = voided before this column existed, which the reinstate path
+    # treats as UNKNOWN and refuses — never as "safe to reverse".
+    voided_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     # -- columns from production schema not yet in ORM --
     company_id: Mapped[str] = mapped_column(String(36), nullable=False)

@@ -347,3 +347,230 @@ def test_a_dispute_with_no_status_reverses_rather_than_guessing(db, paid_invoice
     handle_payment_webhook(event, db)
     assert _live_payments(db, paid_invoice) == []
 
+
+# ── M15: the dispute lifecycle has two ends ────────────────────────────────
+#
+# `charge.dispute.created` voided the payment and NOTHING handled the other
+# end. Winning a dispute reinstates the money at Stripe; here the payment
+# stayed voided, the invoice stayed open, and dunning chased a customer whose
+# charge had stood.
+#
+# Stripe publishes the money movement itself, and these are the only two
+# events that mean cash actually moved because of a dispute (docs, verified
+# 2026-08-23):
+#   charge.dispute.funds_withdrawn  — "funds are removed from your account"
+#   charge.dispute.funds_reinstated — "funds are reinstated to your account"
+
+
+def _funds(kind):
+    return {
+        "type": f"charge.dispute.funds_{kind}",
+        "data": {"object": {"id": "dp_l", "payment_intent": INTENT, "amount": 50000}},
+    }
+
+
+def test_winning_a_dispute_puts_the_payment_back(db, paid_invoice):
+    """THE M15 BUG. The money stood; the books said otherwise."""
+    handle_payment_webhook(_funds("withdrawn"), db)
+    assert _live_payments(db, paid_invoice) == [], "setup: the withdrawal reverses"
+    db.refresh(paid_invoice)
+    assert paid_invoice.status == "sent"
+
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "reinstated", out
+    assert len(_live_payments(db, paid_invoice)) == 1, "the money never came back"
+    db.refresh(paid_invoice)
+    assert float(paid_invoice.balance_due or 0) == 0.0, "the invoice stayed open"
+    # Balance 0 with status "sent" would be a lying invoice — settled money
+    # under an unsettled label, still in aging and still being dunned.
+    assert paid_invoice.status == "paid", (
+        f"balance is 0 but status is {paid_invoice.status!r} — a lying status"
+    )
+
+
+def test_an_escalating_inquiry_is_caught_by_the_withdrawal(db, paid_invoice):
+    """The gap the inquiry guard opens, and why funds_withdrawn closes it.
+
+    An inquiry is correctly NOT reversed on `created`. But it can escalate —
+    and when it does, the money leaves. `charge.dispute.created` alone could
+    never see that, because it already fired.
+    """
+    handle_payment_webhook(_dispute("warning_needs_response"), db)
+    assert len(_live_payments(db, paid_invoice)) == 1, "setup: an inquiry does not reverse"
+
+    handle_payment_webhook(_funds("withdrawn"), db)
+
+    assert _live_payments(db, paid_invoice) == [], "the escalation was missed"
+    db.refresh(paid_invoice)
+    assert paid_invoice.status == "sent"
+
+
+def test_reinstating_does_not_invent_a_second_payment(db, paid_invoice):
+    """Un-void, never insert. A new row would double-count against
+    `core/invoice_paid.py`, which sums non-voided payments — the invoice would
+    read as paid twice over."""
+    handle_payment_webhook(_funds("withdrawn"), db)
+    handle_payment_webhook(_funds("reinstated"), db)
+
+    every = list(
+        db.execute(select(Payment).where(Payment.invoice_id == paid_invoice.id)).scalars()
+    )
+    assert len(every) == 1, f"{len(every)} payment rows for one charge"
+    assert every[0].voided_at is None
+
+
+def test_reinstating_when_nothing_was_reversed_is_not_an_error(db, paid_invoice):
+    """An inquiry we correctly declined to reverse can still close in our
+    favour. There is nothing to put back, and that is a normal outcome — not a
+    failure, and above all not a second payment."""
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "no_payment_to_reinstate", out
+    assert len(_live_payments(db, paid_invoice)) == 1
+
+
+def test_a_stripe_refunds_void_is_never_reinstated_by_a_dispute(db, paid_invoice):
+    """THE hole an adversarial review proved, driven through the REAL path.
+
+    Three things void a payment: a dispute reversal, a **full Stripe refund**,
+    and the office's own void action. With only `voided_at` to go on, a
+    dispute reinstatement un-voided whichever it found — so a refunded payment
+    came back and the invoice read paid on cash that had been returned.
+
+    An earlier version of this test built the refund by hand as an office-side
+    `InvoiceAdjustment`, and an earlier version of the guard checked for one.
+    Neither touched the path that matters: `_apply_charge_refund`'s full-refund
+    branch is a bare `return _reverse_recorded_payment(...)` and writes NO
+    adjustment. The guard was checking for a row that path never creates, and
+    the test agreed with it. This drives `charge.refunded` through the webhook
+    instead.
+    """
+    refund = {
+        "type": "charge.refunded",
+        "data": {
+            "object": {
+                "id": "ch_x", "payment_intent": INTENT,
+                "amount": 50000, "amount_refunded": 50000, "refunded": True,
+            }
+        },
+    }
+    handle_payment_webhook(refund, db)
+    assert _live_payments(db, paid_invoice) == [], "setup: a full refund voids the payment"
+    voided = db.execute(select(Payment).where(Payment.reference == INTENT)).scalars().one()
+    assert voided.voided_reason == "charge.refunded", voided.voided_reason
+
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "reinstate_needs_review", out
+    assert _live_payments(db, paid_invoice) == [], "money was invented on refunded cash"
+
+
+def test_an_office_void_is_never_reinstated_by_a_dispute(db, paid_invoice):
+    """The office reversed this payment on purpose. A dispute closing in our
+    favour months later must not quietly undo their decision."""
+    payment = db.execute(select(Payment).where(Payment.reference == INTENT)).scalars().one()
+    payment.voided_at = datetime.now(UTC)
+    payment.voided_reason = "office_void"
+    db.commit()
+
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "reinstate_needs_review", out
+    assert _live_payments(db, paid_invoice) == []
+
+
+def test_a_void_from_before_the_reason_was_recorded_is_treated_as_unknown(db, paid_invoice):
+    """Migration 076 backfills nothing — what nobody recorded cannot be
+    reconstructed. NULL is UNKNOWN, and unknown must never mean "safe to
+    reverse". Prod carries 3 such rows."""
+    payment = db.execute(select(Payment).where(Payment.reference == INTENT)).scalars().one()
+    payment.voided_at = datetime.now(UTC)
+    payment.voided_reason = None
+    db.commit()
+
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "reinstate_needs_review", out
+    assert "unrecorded" in out["why"]
+    assert _live_payments(db, paid_invoice) == []
+
+
+def test_reinstating_refuses_when_two_payments_were_voided(db, paid_invoice):
+    """Ambiguity is not a tie to break — it is a question for a human."""
+    handle_payment_webhook(_funds("withdrawn"), db)
+    db.add(
+        Payment(
+            id=uuid.uuid4(), invoice_id=paid_invoice.id, amount=Decimal("500.00"),
+            method="card", reference=INTENT, voided_at=datetime.now(UTC),
+            payment_date=datetime.now(UTC).date(), company_id=TENANT,
+        )
+    )
+    db.commit()
+
+    out = handle_payment_webhook(_funds("reinstated"), db)
+
+    assert out["status"] == "reinstate_needs_review", out
+    assert _live_payments(db, paid_invoice) == []
+
+
+def test_reinstating_does_not_move_the_invoice_into_a_later_period(db, paid_invoice):
+    """The invoice was paid when the customer paid it, not when a dispute
+    closed months later.
+
+    `_recalculate_invoice` re-stamps `paid_at` on the flip back to paid, which
+    would move this invoice's revenue into the wrong period on every report
+    that groups by it — a silent restatement of a closed month. Measured by an
+    adversarial review before it was fixed.
+    """
+    # A payment taken in JUNE, disputed and resolved in AUGUST. Asserting on
+    # a real gap rather than on microsecond equality: the question is which
+    # PERIOD the revenue lands in, and a same-instant fixture could not tell
+    # a preserved date from a re-stamped one.
+    june = datetime(2026, 6, 15, 14, 30, tzinfo=UTC)
+    payment = db.execute(select(Payment).where(Payment.reference == INTENT)).scalars().one()
+    payment.created_at = june
+    payment.payment_date = june.date()
+    paid_invoice.paid_at = june
+    db.commit()
+
+    handle_payment_webhook(_funds("withdrawn"), db)
+    handle_payment_webhook(_funds("reinstated"), db)
+
+    db.refresh(paid_invoice)
+    assert paid_invoice.status == "paid"
+    assert paid_invoice.paid_at is not None
+    assert paid_invoice.paid_at.month == 6, (
+        f"paid_at landed in month {paid_invoice.paid_at.month}, not June — the "
+        "revenue moved into the dispute's period and silently restated a "
+        "closed month"
+    )
+
+
+@pytest.mark.parametrize("kind,action", [("withdrawn", "payment_reversed"), ("reinstated", "payment_reinstated")])
+def test_both_directions_leave_an_audit_row(db, paid_invoice, kind, action):
+    """Invariant #1: who did it, what changed, when. Both of these move money
+    on an invoice off a signed Stripe event, and both used to leave nothing but
+    a `logger.warning` — which is not a record, it is a hope that somebody
+    greps.
+
+    The actor is named as the webhook, because it IS machine-initiated;
+    attributing it to whoever last logged in would be worse than saying so.
+    """
+    from gdx_dispatch.core.audit import AuditLog
+
+    if kind == "reinstated":
+        handle_payment_webhook(_funds("withdrawn"), db)
+    handle_payment_webhook(_funds(kind), db)
+
+    row = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == action)
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    assert row is not None, f"{action} left no audit row"
+    assert row.user_id == "stripe-webhook"
+    assert row.details["amount"] == 500.0
+    assert row.details["stripe_event"] == f"charge.dispute.funds_{kind}"
+
