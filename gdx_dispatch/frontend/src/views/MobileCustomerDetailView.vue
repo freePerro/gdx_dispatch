@@ -319,11 +319,17 @@
             <div v-else-if="portalStatus" class="info-card">
               <div class="info-row">
                 <i class="pi pi-user" />
-                <span v-if="portalStatus.exists">Portal account active</span>
-                <span v-else class="muted">No portal account.</span>
+                <span v-if="portalStatus.portal_enabled">Portal access on</span>
+                <span v-else class="muted">Portal access off.</span>
+              </div>
+              <div v-if="portalStatus.portal_enabled && portalStatus.email" class="info-row muted">
+                {{ portalStatus.email }}
               </div>
               <div v-if="portalStatus.last_login" class="info-row muted">
-                Last login: {{ fmtDate(portalStatus.last_login) }}
+                Last sign-in: {{ fmtDate(portalStatus.last_login) }}
+              </div>
+              <div v-else-if="portalStatus.portal_enabled" class="info-row muted" data-test="mcd-portal-never">
+                Has not signed in yet.
               </div>
             </div>
             <div v-else class="state-msg"><span class="muted">Portal status unavailable.</span></div>
@@ -547,10 +553,15 @@ async function fetchCommunications() {
   }
 }
 
+// 2026-08-24: was `/api/customers/{id}/portal-account`, a ui_compat shim whose
+// GET returned a hardcoded {"exists": false, "account": null} — so this tab said
+// "No portal account." for every customer, and `last_login` below could never
+// populate because the shim never sent it. Now reads the real staff endpoint,
+// same one the desktop tab and PortalView use.
 async function fetchPortal() {
   loadingPortal.value = true
   try {
-    portalStatus.value = await api.get(`/api/customers/${customerId.value}/portal-account`)
+    portalStatus.value = await api.get(`/api/portal/${customerId.value}`)
   } catch (_) {
     portalStatus.value = null
   } finally {

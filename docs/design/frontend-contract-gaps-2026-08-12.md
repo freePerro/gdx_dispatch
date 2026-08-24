@@ -28,7 +28,7 @@ review replies); the rest removed or deferred with the reason recorded.
 
 Read that doc before acting on the C5 list here: re-verification found that one
 of these "permanent blanks" is not merely empty but **actively lying** —
-`GET /api/customers/{id}/portal-account` returns a hardcoded
+~~`GET /api/customers/{id}/portal-account` returns a hardcoded~~ **(fixed 2026-08-24 — see decision-list row 5)** it returned a hardcoded
 `{"exists": false}` while prod holds a real `customer_users` row. Any other C5
 blank may have the same shape; an empty response and a false response look
 identical from the frontend.
@@ -90,7 +90,7 @@ because the URL looks right.
 | Frontend | Sends | Backend serves |
 |---|---|---|
 | `EquipmentView.vue:299` | `PATCH /api/equipment/{id}` | `PUT` (+GET/DELETE) |
-| `CustomerDetailView.vue:1022` | `DELETE /api/customers/{id}/portal-account` | `GET`, `POST` |
+| ~~`CustomerDetailView.vue:1022`~~ | ~~`DELETE /api/customers/{id}/portal-account`~~ | **RESOLVED 2026-08-24** — the tab now PATCHes `/api/portal/{id}` `{portal_enabled:false}`, the operation that exists; the shim is deleted |
 | `JobCostingView.vue:975` | `GET /api/jobs/{id}/parts` | `POST` |
 | `JobCostingView.vue:1029` | `DELETE /api/jobs/{id}/parts/{part_id}` | `PATCH` |
 | `JobCostingView.vue:1105` | `PATCH /api/jobs/{id}/costing` | `GET` |
@@ -132,7 +132,7 @@ silently does nothing while claiming success.
 | `POST /api/payroll/run-current-period` | `PayrollView:202` | "run payroll" does nothing |
 | ~~`POST /api/communications/bulk-sms`~~ | ~~`SegmentsView:689`~~ | **REMOVED 2026-08-24** — owner declined bulk send; stub and the SegmentsView button/dialog are gone |
 | `POST /api/customers/{id}/recurring-jobs` | `CustomerDetailView:911` | recurring job never created |
-| `POST /api/customers/{id}/portal-account` | `CustomerDetailView:1002` | portal account never created |
+| ~~`POST /api/customers/{id}/portal-account`~~ | ~~`CustomerDetailView:1002`~~ | **RESOLVED 2026-08-24** — provisioning was already real on `portal.py` `staff_router`; the tab now POSTs `/api/portal/invite` |
 | `POST/PATCH /api/scheduling[/{id}]` | `SchedulingView:484,486` | scheduling edits discarded |
 | `PATCH /api/sso`, `POST /api/sso/test-connection` | `SsoView:222,232` | SSO config discarded; "test" always passes |
 | `PATCH /api/booking/{slot_id}` | `BookingView:273` | booking edits discarded |
@@ -182,7 +182,7 @@ Highest-impact:
 | `GET /api/onboarding/checklist` | onboarding checklist always empty |
 | ~~`GET /api/billing/invoices`, `/billing/payment-methods`, `/billing/usage`~~ | **REMOVED 2026-08-24** (decision-list item 16) — no UI caller; `/api/billing/subscription` went too, it answered a hardcoded `{"plan":"pro","seats":5}`. `/api/billing/terms` is a DIFFERENT, real endpoint and stays |
 | ~~`GET /api/ai/quality/summary`, `/ai/quality/recent`~~ | **REMOVED 2026-08-24** (decision-list item 17) — no UI caller |
-| `GET /api/customers/{id}/portal-account` | portal-account status always empty |
+| ~~`GET /api/customers/{id}/portal-account`~~ | **RESOLVED 2026-08-24** — was not merely empty but FALSE (hardcoded `exists:false` over a real account). Replaced by `GET /api/portal/{customer_id}`; both the desktop AND mobile customer pages repointed |
 | `GET /api/quickbooks`, `/api/admin/permissions`, `/api/campaigns/{id}/preview`, `POST /api/campaigns/preview-filter`, `GET /api/role-permissions/migration-banner`, `POST .../ack` | as above |
 
 15 of the 19 live in `routers/ui_compat.py`. That file is doing more load-bearing
