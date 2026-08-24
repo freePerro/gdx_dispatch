@@ -1416,7 +1416,36 @@ excludes paid/void/draft — two AR agings that structurally cannot agree.
 **Fix.** Drop the `created_at` window (aging is a point-in-time backlog), exclude
 draft and void, and anchor on `due_date` to match cash-risk.
 
-### M21 — Smaller reporting items `LOW–MEDIUM`
+### M21 — Smaller reporting items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 3 fixed, 3 recorded**
+
+> **FIXED here** — estimate tax now rounds Decimal ROUND_HALF_UP like the
+> invoice (taxable $36.25 @10% is $3.63 on BOTH documents); a schema-mismatch
+> export 500s honestly instead of a short CSV indistinguishable from "no
+> data" (missing-OPTIONAL-table still degrades to empty by contract); the
+> invoices export filters `deleted_at` — soft-deleted rows no longer export
+> as live.
+> **Recorded, filed** — business dates from the server's UTC clock and the
+> five created_at-windowed reports (one tenant-timezone/tax-point policy
+> change, cross-cutting); partial-period buckets presented as full periods
+> (report-presentation); `modules/reporting/service.py` dead-but-loaded
+> (counts void+deleted, no router callers — the dead-code pile).
+>
+> **Audit round 2 (all findings fixed):** the exports missing-table contract is
+> dialect-honest now (SQLite `no such table` AND Postgres `does not exist` →
+> empty; a DROPPED CONNECTION — psycopg2's likeliest OperationalError — 500s
+> instead of shipping a short CSV); the `deleted_at` sweep owns the CLASS —
+> jobs, estimates, technicians and leads all filter (customers deliberately
+> exports the column visibly; payments has no deleted_at, voided_at is its
+> lifecycle) — pinned by a structural test that names any fetch that loses its
+> filter.
+>
+> **Round 3 — the honesty fix immediately caught a live prod defect.** With
+> the swallow gone, the export suite failed loudly: the customers export
+> SELECTed `city/state/zip` and the jobs export `j.total` — columns that DO
+> NOT EXIST on prod (verified against the live schema). Both CSVs have been
+> header-only since they shipped, indistinguishable from "no data" — the
+> finding's exact scenario, already happening. SELECT lists repaired to real
+> columns; the two exports return data for the first time.
 
 - **Estimate tax uses float `round()`** ([proposals/totals.py:113](../../gdx_dispatch/modules/proposals/totals.py#L113))
   while invoices use Decimal `ROUND_HALF_UP`. Taxable $36.25 at 10% gives $3.62 on the
@@ -1846,8 +1875,20 @@ constraint with immutability and txid sealing, and no code constructs journal en
 outside `engine.py`. Sign conventions are correct across issuance, payment, credit
 memo, credit application, and the opening-balance events.
 
-Everything below is **latent** — `ledger_posting_enabled` defaults off and is off in
-prod. These need to be fixed before the CPA review, not before the next deploy.
+> **PREMISE CORRECTED 2026-08-24.** This paragraph originally said the flag was
+> off in prod. **It is ON** — `ledger_posting_enabled = t` since the 2026-07
+> cutover — so everything below is **LIVE, not latent**. Measured prod exposure
+> at correction time: **zero** 2300 customer-credit postings, **zero** refund
+> adjustments ever recorded, and 3 overpaid invoices (all surfaced by the M11
+> banner, none refunded) — so the HIGH double-dip has never fired, but only
+> because no refund has ever been issued. The CPA-review gate stands as the
+> recorded decision for the design questions below; the HIGH is additionally
+> FILED (issue #445) so it cannot silently wait behind a premise that was
+> false. First refund on an overpaid invoice = the trap springs.
+
+Everything below needs the CPA review for the design calls — but read the
+corrected premise above: the flag is on, so these fire the day their
+preconditions occur.
 
 - **Refunding an overpayment double-dips** `HIGH` — `post_refund` always debits
   contra-revenue and never touches the 2300 customer-credit liability. Refunding a
@@ -2016,7 +2057,24 @@ when the cycle opened — `InvoiceCreateView`'s filter had already moved to
 `>= 0` on 2026-08-08; the quantity substitution and the other four surfaces
 had not.
 
-### M34 — Smaller frontend items `LOW–MEDIUM`
+### M34 — Smaller frontend items `LOW–MEDIUM` 🟢 **TRIAGED item-by-item, PR #TBD 2026-08-24: 1 fixed, 3 verified obsolete**
+
+> **FIXED here** — the invoice prefill mirrors the tenant `tax_labor` flag
+> (`tenantTaxLabor`) instead of hardcoding non-taxable (irrelevant at GDX
+> where labor is never customer-taxed; wrong for a self-hosted tax-labor
+> tenant).
+> **Round 2 corrections:** the first cut referenced `tenantTaxLabor` without
+> DEFINING it — a ReferenceError the prefill's catch swallowed, which would
+> have silently killed the closeout labor prefill; the ref + loader exist now
+> and the closeout-prefill spec pins the definition itself. And the mobile
+> mark-paid claim as first written was wrong: `MobileBillingView.vue` still
+> LITERALLY carries the `total − amount_paid` fallback — unreachable behind
+> `balance_due ??`, but present; "obsolete" means unreachable, not absent.
+> **Verified 2026-08-24** — the mobile fallback is unreachable (migration 073
+> dropped the column server-side); `ProposalsView` no longer exists
+> (Estimates views use InputNumber — no `InputText type=number` anywhere in
+> its successors); the estimate autosave already guards `quantity > 0`
+> (shipped with M31/M33 v1.88.0).
 
 - **Invoice prefill hardcodes labor as non-taxable** rather than reading the tenant's
   `tax_labor` setting the way `EstimateView` does. Under-collects on a tax-labor

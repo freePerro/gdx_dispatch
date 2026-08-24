@@ -31,7 +31,11 @@ describe('InvoiceCreateView — closeout prefill', () => {
     const span = nextFn === -1 ? rest : rest.slice(0, nextFn + 1);
     expect(span).toMatch(/closeout-billing-suggestion/);
     expect(span).toMatch(/starterOnly/);
-    expect(span).toMatch(/taxable:\s*false/);
+    // M21/M34: labor taxability mirrors the tenant flag now — and the ref
+    // must actually EXIST (audit round 2 caught an undefined reference the
+    // prefill's catch swallowed, killing the whole labor prefill).
+    expect(span).toMatch(/taxable:\s*!!tenantTaxLabor\.value/);
+    expect(SRC).toMatch(/const tenantTaxLabor = ref\(false\)/);
     // Provenance on the DOMINANT labor path: most invoices get their labor
     // line here, not from the picker. NULL here would mean the column answers
     // "how was this priced?" only for hand-added lines.

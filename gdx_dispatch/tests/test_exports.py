@@ -106,8 +106,9 @@ def _make_client(
                     total REAL,
                     scheduled_at TEXT,
                     completed_at TEXT,
-                    created_at TEXT
-                )
+                    created_at TEXT,
+                deleted_at TEXT
+            )
                 """
             )
         )

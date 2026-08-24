@@ -15,7 +15,7 @@ in one place updates everywhere consistently.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, TypedDict
 
 from sqlalchemy import select
@@ -146,7 +146,15 @@ def compute_estimate_totals(estimate: Estimate, db: Session | None) -> EstimateT
     # gives the customer the discount on the materials.
     taxable_pre_discount = max(subtotal - labor_subtotal, 0.0)
     taxable = max(taxable_pre_discount - discount, 0.0)
-    tax = round(taxable * rate, 2)
+    # M21: float round() here vs the invoice's Decimal ROUND_HALF_UP meant
+    # taxable $36.25 at 10% gave $3.62 on the estimate and $3.63 on the
+    # invoice — the customer accepts one number and is billed another.
+    # Same convention as invoices: Decimal, half-up, at cents.
+    tax = float(
+        (Decimal(str(taxable)) * Decimal(str(rate))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    )
     total = round(max(subtotal - discount, 0.0) + tax, 2)
     return {
         "subtotal": subtotal,
