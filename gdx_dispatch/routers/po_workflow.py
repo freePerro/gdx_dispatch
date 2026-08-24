@@ -218,6 +218,11 @@ def receive_po(
     ).scalar_one_or_none()
     if not po:
         raise HTTPException(status_code=404, detail="Purchase order not found")
+    if po.status == "received":
+        # M30 audit round 2: this third (also-mounted) PO system had no
+        # already-received guard — a repeat receive duplicated every
+        # VanInventoryItem row. Sibling of purchase_orders.py's guard.
+        raise HTTPException(status_code=409, detail="PO already received")
 
     now = _now()
     try:
