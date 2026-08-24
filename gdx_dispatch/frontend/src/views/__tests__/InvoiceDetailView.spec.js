@@ -966,3 +966,83 @@ describe('InvoiceDetailView — verify unbilled-parts gate', () => {
     );
   });
 });
+
+describe('InvoiceDetailView — M31+M33 edit-save guards', () => {
+  const QTY_STUB = {
+    props: ['lines'],
+    emits: ['update:lines', 'update:fromPartIds'],
+    template: `
+      <div>
+        <button data-testid="emit-cleared-qty" @click="$emit('update:lines', [{
+          id: 'ln-1', description: 'Widget', quantity: null, unit_price: 100, taxable: true
+        }])">cleared</button>
+        <button data-testid="emit-loaded-negative" @click="$emit('update:lines', [{
+          id: 'ln-1', description: 'QB discount', quantity: 1, unit_price: -100, taxable: true
+        }])">loadedneg</button>
+        <button data-testid="emit-new-negative" @click="$emit('update:lines', [{
+          description: 'typo line', quantity: 1, unit_price: -25, taxable: true
+        }])">newneg</button>
+      </div>`,
+  };
+  function mountQty() {
+    return mount(InvoiceDetailView, { global: { stubs: { ...baseStubs, LineItemEditor: QTY_STUB } } });
+  }
+
+  it('M31: edit save refuses a cleared quantity — never PATCHed as 1', async () => {
+    mockApi(buildInvoicePayload());
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountQty();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-cleared-qty"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+    const lineCall = apiPatch.mock.calls.find(([url]) => url.includes('/lines/'));
+    expect(lineCall).toBeFalsy();
+    // Audit: the first refusal wrote to an undefined ref (editSaving), threw,
+    // and the outer catch added a bogus "Save failed" toast on top. The
+    // refusal must be the ONLY reaction.
+    const errToast = toastAdd.mock.calls.find(([t]) => t.severity === 'error');
+    expect(errToast).toBeFalsy();
+    const warn = toastAdd.mock.calls.find(([t]) => t.severity === 'warn');
+    expect(warn).toBeTruthy();
+  });
+
+  it('M33: a LOADED negative line passes through unclamped', async () => {
+    // The old unconditional Math.max(0, price) zeroed a loaded -$100 promo
+    // line and the change-diff PATCHed the $0 in on any unrelated save,
+    // silently raising the balance.
+    mockApi(buildInvoicePayload());
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountQty();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-loaded-negative"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+    const lineCall = apiPatch.mock.calls.find(([url]) => url.includes('/lines/'));
+    expect(lineCall).toBeTruthy();
+    // Audit: the server's schema is ge=0, so SENDING -100 422s the save. The
+    // pass-through is an OMISSION — the server keeps its stored value.
+    expect('unit_price' in lineCall[1]).toBe(false);
+  });
+
+  it('M33: a NEW negative line still clamps to 0 (typo protection for fresh rows)', async () => {
+    mockApi(buildInvoicePayload());
+    apiPost.mockResolvedValue({});
+    apiPatch.mockResolvedValue({});
+    const wrapper = mountQty();
+    await flushPromises();
+    await wrapper.get('[data-testid="invoice-edit-btn"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-testid="emit-new-negative"]').trigger('click');
+    await wrapper.get('[data-testid="invoice-edit-save"]').trigger('click');
+    await flushPromises();
+    const newLine = apiPost.mock.calls.find(([url]) => url.includes('/lines'));
+    expect(newLine).toBeTruthy();
+    expect(newLine[1].unit_price).toBe(0);
+  });
+});
+

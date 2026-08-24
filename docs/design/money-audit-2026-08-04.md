@@ -1615,7 +1615,7 @@ it an upsert on `(user_id, job_id, period)`.
 > unique index, and both `set_rules` and `calculate_commission` then call
 > `scalar_one_or_none()` on that role.
 
-### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` ✅ **FIXED — substring half 2026-08-23 (its header was never stamped; §0.6 said so alone), column half PR #TBD 2026-08-24**
+### M26 — LLM-extracted bills that fail the arithmetic check report as passing `HIGH` ✅ **FIXED — RELEASED v1.87.0 (#431), prod+demo, walked 2026-08-24** (substring half 2026-08-23; its header was never stamped — §0.6 said so alone)
 
 The invariant check exists to guard untrusted LLM-extracted money. The review queue
 reports it like this
@@ -1661,6 +1661,14 @@ reproduces the historical inference exactly. Backfill is deliberately partial:
 marker-present rows → FALSE (the marker is written iff the check failed — that
 direction is proven); marker-absent rows stay NULL rather than asserting
 "passed" for eras this migration cannot vouch for.
+
+**Prod walk, v1.87.0, 2026-08-24:** alembic head `078`, the column live, and
+the office LIST serving `invariant_ok` on all **11 real vendor bills** — every
+one correctly NULL (none carries the failure marker, so none may claim a
+verdict), zero mis-backfills (`marker AND NOT false` = 0 rows). Edge 200;
+celery key + 9 webhook events intact. **Not prod-observed:** the FALSE path —
+no failing LLM bill exists on prod today; it is test-proven (behavioral write
+test + the counterfactual suite).
 
 ### M27 — Commission revenue counts voided, soft-deleted and draft invoices `HIGH` `CONFIRMED` 🔶 NOT FIXED — SUPERSEDED
 
@@ -1809,7 +1817,7 @@ What is left is a narrower and more interesting class: **mutations applied at su
 time that make the persisted invoice differ from the total the operator approved on
 screen.**
 
-### M31 — A cleared quantity becomes 1 at submit, billing a line the on-screen total excluded `HIGH` `CONFIRMED`
+### M31 — A cleared quantity becomes 1 at submit, billing a line the on-screen total excluded `HIGH` ✅ **FIXED PR #TBD 2026-08-24 (with M33 — same class)**
 
 [InvoiceCreateView.vue:481](../../gdx_dispatch/frontend/src/views/InvoiceCreateView.vue#L481):
 
@@ -1830,6 +1838,34 @@ approved.**
 **Fix.** Refuse the submit, or visibly drop the line, when a kept line has no positive
 quantity. Never substitute 1 silently.
 
+**FIXED — with M33, as one class** ("the on-screen total and the submitted
+payload disagree silently"), because the sweep found the shape in **five**
+surfaces, not one: this view's submit, `ChangeOrdersView`'s save
+(`Math.max(1, qty || 1)` behind a `> 0` filter), `EstimateView`'s create/save
+payload (`> 0` filter under a display that sums everything), both
+`EstimateView` tier-line saves (`quantity || 1`), and `InvoiceDetailView`'s
+edit save (`Math.max(1, …)` **and** the unconditional negative-price clamp).
+Every surface now **refuses with the lines named** — a toast that says which
+line has no quantity and that a cleared quantity is never billed as 1 — instead
+of substituting. Zero-priced described lines submit (the display always summed
+them; no-charge items are real); negative lines refuse rather than vanish.
+
+**An adversarial review then found a SIXTH surface and two live bugs in the
+fix itself, all closed before commit:** EstimateView's *autosave* — the
+dominant path for every existing estimate — flushed a cleared quantity as
+`null` into a NOT NULL column (a mid-flush 500 while the screen showed
+$0.00); the flush gate now holds the line until a quantity exists, the same
+treatment the gate already gave a cleared price. The detail-view refusal
+wrote to an undefined ref (`editSaving` vs `savingEdit`), so it "worked" only
+because the ReferenceError aborted before any PATCH — while adding a bogus
+"Save failed" toast the spec couldn't see. And "loaded negatives pass
+through" originally SENT the negative price, which the server's `ge=0` schema
+422s — the pass-through is now an *omission* (the server keeps its stored
+value). Also preserved: a typed flat CO amount alongside zero-priced-only
+descriptive lines (the old filter's accidental semantics, made deliberate),
+and the review's theater find — a source-pin anchored to a *comment* — now
+anchors the executable guard.
+
 ### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` `CONFIRMED`
 
 [BillingView.vue:758-771](../../gdx_dispatch/frontend/src/views/BillingView.vue#L758-L771)
@@ -1846,7 +1882,7 @@ smaller window.
 `expected_balance` and return 409 on mismatch. The first is better — it removes the
 client from the arithmetic entirely.
 
-### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` `CONFIRMED` (filter) / `PLAUSIBLE` (negative source)
+### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` ✅ **FIXED PR #TBD 2026-08-24 (with M31 — same class)**
 
 `.filter((l) => l.description && toNum(l.unit_price) > 0)` — used identically in
 `InvoiceCreateView`, `EstimateView` and `ChangeOrdersView` — drops zero and negative
@@ -1867,6 +1903,17 @@ discount line being the likely first).
 
 **Fix.** Make the filter and the display agree — either both include zero/negative
 lines or both exclude them — and restrict the clamp to genuinely new lines.
+
+**FIXED — see M31's entry for the five-surface class fix.** The specific M33
+halves: the filters keep zero-priced described lines (`>= 0`) so screen and
+payload agree, negative lines refuse loudly instead of vanishing from the
+payload, and `InvoiceDetailView`'s clamp now applies **only to lines added in
+the current edit session** — a loaded negative line (the QB-discount case this
+entry predicted) passes through unchanged instead of being zeroed and PATCHed
+in on the next unrelated save. Note: this finding's own text was part-stale
+when the cycle opened — `InvoiceCreateView`'s filter had already moved to
+`>= 0` on 2026-08-08; the quantity substitution and the other four surfaces
+had not.
 
 ### M34 — Smaller frontend items `LOW–MEDIUM`
 

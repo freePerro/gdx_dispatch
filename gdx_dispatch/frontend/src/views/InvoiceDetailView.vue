@@ -2119,8 +2119,25 @@ async function saveEdit() {
       }
       const desc = (ln.description || "").trim();
       if (!desc) continue;  // skip rows with no description
-      const qty = Math.max(1, Math.floor(toNum(ln.quantity) || 1));
-      const price = Math.max(0, toNum(ln.unit_price));
+      // M31: a cleared quantity refuses (below) instead of becoming 1.
+      const qty = Math.floor(toNum(ln.quantity));
+      // M33: clamp ONLY lines added in this edit session. A loaded line with
+      // a negative price (QB-imported discount, future promo) passes through
+      // untouched — the old unconditional Math.max(0, …) zeroed it and the
+      // change-diff then PATCHed the $0 in on any unrelated save, raising
+      // the balance. The deposit-netting exemption above showed the hazard
+      // was understood for one case and never generalized.
+      const price = ln.id ? toNum(ln.unit_price) : Math.max(0, toNum(ln.unit_price));
+      if (!(qty > 0)) {
+        toast.add({
+          severity: 'warn',
+          summary: 'Fix line items first',
+          detail: `No quantity on “${desc}”. Enter one or remove the line — a cleared quantity is never billed as 1.`,
+          life: 8000,
+        });
+        savingEdit.value = false;
+        return;
+      }
       // D-S122b-detail-view-columns — forward category/cost/margin too.
       const category = ln.category || null;
       // Labor provenance (071). Sent together or not at all: the contract
@@ -2182,7 +2199,8 @@ async function saveEdit() {
           const patch = {
             description: desc,
             quantity: qty,
-            unit_price: price,
+            // ge=0 server schema: omit a loaded negative price (server keeps stored).
+            ...(ln.id && price < 0 ? {} : { unit_price: price }),
             taxable: Boolean(ln.taxable),
           };
           // Auditor catch (round 2): include the field in the PATCH even when

@@ -109,6 +109,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
+import { useToast } from "primevue/usetoast";
 import { formatMoney } from "../composables/useFormatters";
 import EmptyState from "../components/EmptyState.vue";
 import FormField from "../components/FormField.vue";
@@ -128,6 +129,7 @@ import { useDestructiveConfirm } from '../composables/useDestructiveConfirm';
 const { confirmAsync } = useDestructiveConfirm();
 
 const api = useApiWithToast();
+const toast = useToast();
 
 const orders = ref([]);
 const jobs = ref([]);
@@ -270,19 +272,50 @@ async function saveCo() {
   try {
     // D-S122-change-orders-create-flow — filter blank rows + send line_items
     // when present so the backend writes ChangeOrderLine rows + sums amount.
-    const cleanLines = (form.value.line_items || [])
-      .filter((li) => li.description?.trim() && Number(li.unit_price || 0) > 0)
+    // M31+M33: screen and payload must agree. The old filter dropped zero-
+    // and negative-priced lines the on-screen subtotal summed, and a cleared
+    // quantity silently became 1. Zeros are legal (no-charge items); a
+    // cleared quantity or negative price refuses with the line named.
+    const described = (form.value.line_items || []).filter((li) => li.description?.trim());
+    const coBadQty = described.filter(
+      (li) => Number(li.unit_price || 0) >= 0 && !(Number(li.quantity) > 0),
+    );
+    const coNeg = described.filter((li) => Number(li.unit_price || 0) < 0);
+    if (coBadQty.length || coNeg.length) {
+      const names = [...coBadQty, ...coNeg].map((li) => `“${li.description.trim()}”`).join(', ');
+      toast.add({
+        severity: 'warn',
+        summary: 'Fix line items first',
+        detail: coBadQty.length
+          ? `No quantity on: ${names}. A cleared quantity is never billed as 1.`
+          : `Negative price on: ${names}.`,
+        life: 8000,
+      });
+      saving.value = false;
+      return;
+    }
+    const cleanLines = described
+      .filter((li) => Number(li.unit_price || 0) >= 0)
       .map((li) => ({
         description: li.description.trim(),
-        quantity: Math.max(1, Number(li.quantity) || 1),
+        quantity: Number(li.quantity),
         unit_price: Number(li.unit_price),
       }));
+    // Audit: zero-priced lines now SUBMIT, which changed this branch's
+    // meaning — an operator who typed a flat amount alongside only $0
+    // descriptive lines used to get the flat amount (the old filter dropped
+    // the $0 lines), and would now get a $0 CO. Preserve that intent: when
+    // every clean line sums to zero AND a flat amount was typed, the flat
+    // amount is the order.
+    const linesSum = cleanLines.reduce((t, li) => t + li.quantity * li.unit_price, 0);
+    const flatAmount = Number(form.value.amount || 0);
+    const flatWins = cleanLines.length > 0 && linesSum === 0 && flatAmount > 0;
     const payload = {
       ...form.value,
-      line_items: cleanLines,
-      // When there ARE line items, force amount=0 — backend recomputes from
-      // line subtotal. When there aren't, send the flat amount.
-      amount: cleanLines.length ? 0 : Number(form.value.amount || 0),
+      line_items: flatWins ? [] : cleanLines,
+      // When line items carry the money, force amount=0 — backend recomputes
+      // from the line subtotal. Otherwise send the flat amount.
+      amount: (cleanLines.length && !flatWins) ? 0 : flatAmount,
     };
     if (editingCo.value) {
       await api.patch(`/api/change-orders/${editingCo.value.id}`, payload);
