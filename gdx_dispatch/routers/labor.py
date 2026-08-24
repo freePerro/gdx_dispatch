@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
@@ -42,6 +43,13 @@ DEFAULT_COST_RATE = 65.0
 
 
 def _cost_rate_fallback(db: Session) -> float:
+    # KNOWN LIMIT (M28 review): the model documents loaded_labor_cost_per_hour
+    # = 0 as "labor is pure profit" — a deliberate value — but the column's
+    # server_default is ALSO 0, so a deliberate zero and "never configured"
+    # are indistinguishable in data. `> 0` therefore reads a deliberate 0 as
+    # unconfigured and returns $65 — the same species of bug M28 kills, one
+    # level up. Unrepresentable without a NULL-default migration; filed as a
+    # follow-up rather than bundled. Inert on prod today (value is 65.00).
     try:
         from gdx_dispatch.models.pricing_engine import PricingSettings
         row = db.execute(select(PricingSettings).limit(1)).scalar_one_or_none()
@@ -51,6 +59,11 @@ def _cost_rate_fallback(db: Session) -> float:
                 return v
     except SQLAlchemyError:
         log.exception("cost_rate_fallback_read_failed")
+        # M28 review: a failed SELECT poisons a PG transaction; without this
+        # the NEXT query in the caller 500s and the graceful degradation the
+        # callers promise survives only when they happen to catch-all.
+        with contextlib.suppress(SQLAlchemyError):
+            db.rollback()
     return DEFAULT_COST_RATE
 OVERHEAD_RATE = 0.08
 
@@ -284,7 +297,9 @@ def create_job_time_entry(
             _audit_db.commit()
         except Exception:
             log.exception('create_job_time_entry_audit_failed')
-    return _entry_to_dict(row)
+    # M28: the tenant-aware fallback, not the static constant — a no-rate
+    # row displayed a different cost here than on the list endpoint.
+    return _entry_to_dict(row, fallback_rate=_cost_rate_fallback(db))
 
 
 @router.patch("/time-entries/{entry_id}", response_model=None)
@@ -346,7 +361,9 @@ def update_time_entry(
             _audit_db.commit()
         except Exception:
             log.exception('update_time_entry_audit_failed')
-    return _entry_to_dict(row)
+    # M28: the tenant-aware fallback, not the static constant — a no-rate
+    # row displayed a different cost here than on the list endpoint.
+    return _entry_to_dict(row, fallback_rate=_cost_rate_fallback(db))
 
 
 @router.delete("/time-entries/{entry_id}", response_model=None)
@@ -399,7 +416,8 @@ def get_job_labor_costing(
         .filter(TimeEntry.job_id == job_id, TimeEntry.deleted_at.is_(None))
         .all()
     )
-    labor_cost = round(sum(_entry_cost(entry) for entry in entries), 2)
+    _fb = _cost_rate_fallback(db)
+    labor_cost = round(sum(_entry_cost(entry, _fb) for entry in entries), 2)
     try:
         from sqlalchemy import func as _func
         materials_row = db.execute(
@@ -455,10 +473,13 @@ def labor_summary(
     )
 
     totals: dict[str, dict[str, float]] = defaultdict(lambda: {"minutes": 0.0, "cost": 0.0})
+    # M28 review: resolved ONCE — the per-row call ran one
+    # pricing_settings SELECT per entry in the profitability path.
+    _summary_fb = _cost_rate_fallback(db)
     for row in rows:
         tech_id = row.tech_id
         minutes = float(row.duration_minutes or 0)
-        cost = _entry_cost(row)
+        cost = _entry_cost(row, _summary_fb)
         totals[tech_id]["minutes"] += minutes
         totals[tech_id]["cost"] += cost
 
