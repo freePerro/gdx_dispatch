@@ -1001,3 +1001,40 @@ def test_a_failing_overcharge_audit_does_not_lose_the_payment(db, invoice):
     assert float(live[0].amount) == 500.00
 
 
+
+
+def test_the_void_sweep_is_queued_only_after_the_void_is_durable(db, unpaid_invoice):
+    """Ordering, not just call args — which is why the suite could not see this.
+
+    `void_invoice` uses a SINGLE transaction on purpose: the void, its
+    part/change-order releases and its audit row land or roll back together.
+    Enqueueing before that commit let a `priority:high` worker cancel the
+    customer's live PaymentIntent at Stripe *before* the void was durable — and
+    if the audit write or the commit then failed, the invoice was still not void
+    while the intent was already irreversibly cancelled. The money side
+    committed and the record rolled back.
+
+    The existing call-site test mocks the enqueue and asserts its arguments, so
+    it passes either way. This one records the sequence.
+    """
+    from gdx_dispatch.routers.invoices import void_invoice
+
+    order = []
+    real_commit = type(db).commit
+
+    def commit_spy(self, *a, **k):
+        order.append("commit")
+        return real_commit(self, *a, **k)
+
+    def enqueue_spy(*a, **k):
+        order.append("enqueue")
+        return True
+
+    with patch.object(type(db), "commit", commit_spy), \
+            patch("gdx_dispatch.routers.invoices.enqueue_stale_intent_sweep", enqueue_spy):
+        void_invoice(unpaid_invoice.id, _=OFFICE, db=db)
+
+    assert "enqueue" in order, "the void never queued a sweep"
+    assert order.index("commit") < order.index("enqueue"), (
+        f"the sweep was queued before the void was durable: {order}"
+    )

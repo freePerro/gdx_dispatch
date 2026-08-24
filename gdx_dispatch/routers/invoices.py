@@ -3256,10 +3256,16 @@ def void_invoice(
     # would book that payment onto a void whose parts and change orders had
     # already gone back to the unbilled checklist.
     #
-    # `queued` is recorded, not assumed. A first version hardcoded `True` here
-    # and threw this value away — the exact comfortable lie its sibling call
-    # sites are commented against.
-    queued = enqueue_stale_intent_sweep(invoice, why="invoice_voided", settled=True)
+    # Enqueued AFTER the commit below, unlike its three siblings which each
+    # already have a commit behind them at this point. `void_invoice`
+    # deliberately uses a SINGLE transaction — an earlier review forced the
+    # void, its part/change-order releases and its audit row to land or roll
+    # back together — so enqueueing here would let a `priority:high` worker
+    # cancel the customer's live PaymentIntent at Stripe *before* the void is
+    # durable. If the audit write or the commit then failed, the invoice would
+    # still not be void and the intent would already be irreversibly cancelled:
+    # the money side committed and the record rolled back, which is the exact
+    # inversion of "the money commits first".
     log_audit_event_sync(
         db=db,
         tenant_id=None,
@@ -3274,11 +3280,15 @@ def void_invoice(
             "total": _to_float(invoice.total),
             "released_parts": int(released_parts or 0),
             "released_change_orders": int(released_cos or 0),
-            "stale_intent_sweep_queued": queued,
         },
     )
     db.commit()
     db.refresh(invoice)
+    # Now that the void is durable. No `queued` flag in the audit row above:
+    # it cannot be known before the commit, and inventing one there is what the
+    # first version of this call site did. The sweep writes its own
+    # `stale_payment_intents_canceled` row, so the trail exists either way.
+    enqueue_stale_intent_sweep(invoice, why="invoice_voided", settled=True)
     return _serialize_invoice(invoice)
 
 

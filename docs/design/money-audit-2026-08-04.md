@@ -560,6 +560,21 @@ return. `_create_usable_intent()` now **retrieves** the intent after creating it
 and re-mints under a fresh key when the live status is unusable — the only way
 to know is to ask.
 
+**A fourth review caught the ordering wrong at one call site, in the committed
+code.** `void_invoice` uses a SINGLE transaction on purpose — an earlier review
+forced the void, its part/change-order releases and its audit row to land or roll
+back together — and the M12 enqueue was pattern-matched into the same source
+position as its three siblings, each of which already has a commit behind it
+there. At the void it therefore fired *before* the commit: a `priority:high`
+worker could cancel the customer's live PaymentIntent at Stripe before the void
+was durable, and a failure in the audit write or the commit would leave the
+invoice not-void with the intent already irreversibly cancelled — the money side
+committed and the record rolled back, the exact inversion of "the money commits
+first". Moved after the commit; the `stale_intent_sweep_queued` flag is gone from
+that audit row because it cannot honestly be known before it. The call-site test
+mocked the enqueue and asserted its arguments, so it passed either way — the new
+test records the sequence instead.
+
 **One guard is deliberately recorded as unproven.** The `payment_exceeds_receivable`
 audit write happens inside a SAVEPOINT so that a failed flush cannot poison the
 session and take the payment's own commit with it. On SQLite — every unit test
@@ -571,8 +586,8 @@ built. The savepoint is correct by construction from SQLAlchemy's semantics; it
 is **not** verified, and this line exists so nobody later reads a green suite as
 proof that it is.
 
-Guarded by `gdx_dispatch/tests/test_stale_intent_cancellation.py` (56 tests),
-counterfactually verified — 28 in all: removing any of the five call sites,
+Guarded by `gdx_dispatch/tests/test_stale_intent_cancellation.py` (57 tests),
+counterfactually verified — 29 in all: removing any of the five call sites,
 weakening the cumulative overcharge rule to a per-intent one, reversing the
 newest-first order, dropping the `metadata.invoice_id` filter, the Connect
 account, the `processing` branch, the re-mint, the celery include entry,
