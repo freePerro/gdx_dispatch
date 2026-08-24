@@ -1218,6 +1218,15 @@ def portal_estimate_accept(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     estimate = _get_customer_estimate_or_404(estimate_id, principal, db)
+    # M25: same double-accept race as the staff path — lock before checking.
+    from sqlalchemy import select as _select
+
+    estimate = db.execute(
+        _select(type(estimate))
+        .where(type(estimate).id == estimate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
     if estimate.status == "accepted":
         raise HTTPException(status_code=409, detail="already accepted")
     # "rejected" (email bounced) stays acceptable: an accept is the

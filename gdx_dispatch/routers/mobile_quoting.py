@@ -39,8 +39,6 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.service_presets import (
-    DEFAULT_SERVICE_PRESETS,
-    find_default_preset,
     list_default_services,
 )
 from gdx_dispatch.core.tenant_mobile_settings import get_tenant_mobile_setting
@@ -622,6 +620,22 @@ def accept_quote(
         sig = ""
 
     now = datetime.now(UTC)
+    # M25: same double-accept race as the other two accept paths — lock and
+    # recheck before the write (a truck double-tap or truck-vs-office race).
+    from sqlalchemy import select as _select
+
+    estimate = db.execute(
+        _select(type(estimate))
+        .where(type(estimate).id == estimate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    if estimate.status == "accepted":
+        return _jr({"detail": "already accepted"}, 409)
+    if estimate.status == "declined":
+        # Audit round 2: the window between the tier/signature checks and
+        # this lock can carry a decline — never overwrite it.
+        return _jr({"detail": "cannot accept a declined estimate"}, 409)
     estimate.status = "accepted"
     estimate.accepted_at = now
     estimate.accepted_tier_id = chosen_uuid

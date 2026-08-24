@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
-from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Job, JobPartNeeded
+from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
 from gdx_dispatch.modules.deposits import (
     DepositError,
     adopt_orphan_deposit_invoices,
@@ -343,7 +343,18 @@ def _resolve_labor_matrix_row(db: Session, labor_price_item_id):
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
     row = db.get(LaborPriceItem, labor_price_item_id)
-    if row is None:
+    # M25: db.get ignored active=False and effective_to — an archived matrix
+    # row kept pricing NEW lines at its retired price. Archived == absent.
+    _expired = False
+    _eff_to = getattr(row, "effective_to", None) if row is not None else None
+    if _eff_to is not None:
+        from datetime import date as _date
+        from datetime import datetime as _dt
+        _cmp = _eff_to.date() if isinstance(_eff_to, _dt) else _eff_to
+        # Boundary matches billing_lanes/_is_retired ("SAME definition"):
+        # a row expiring TODAY still prices; retired means strictly past.
+        _expired = _cmp < _date.today()
+    if row is None or getattr(row, "active", True) is False or _expired:
         raise HTTPException(
             status_code=404,
             detail="labor_price_item not found (was it archived?)",
@@ -1219,7 +1230,13 @@ def patch_line(
         # Per decision A: admin tier edits never silently re-price old lines.
         from gdx_dispatch.services.pricing_engine import sell_from_cost
 
-        effective_margin = line.margin_pct_override or line.margin_pct_snapshot
+        # M25: `or` discarded an EXPLICIT 0% override (sell-at-cost) back to
+        # the tier margin. The very next guard uses the correct idiom.
+        effective_margin = (
+            line.margin_pct_override
+            if line.margin_pct_override is not None
+            else line.margin_pct_snapshot
+        )
         # A below-cost manual price leaves a negative snapshot behind —
         # sell_from_cost would raise PricingConfigError (500). An operator's
         # below-cost price is deliberate: keep the price, apply the cost edit.
@@ -2437,6 +2454,15 @@ def accept_estimate(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db)
+    # M25: accept was read-then-write — two concurrent accepts both passed
+    # the status check and each minted its side effects (deposit invoices
+    # included). Lock the row; the loser blocks, re-reads, and 409s.
+    estimate = db.execute(
+        select(Estimate)
+        .where(Estimate.id == estimate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
     if estimate.status == "accepted":
         raise HTTPException(status_code=409, detail="already accepted")
     if estimate.status == "declined":
@@ -2541,6 +2567,14 @@ def decline_estimate(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     estimate = _get_estimate_or_404(estimate_id, db)
+    # M25 audit round 2: same finalization-race shape as accept — lock and
+    # recheck so decline-vs-accept cannot interleave.
+    estimate = db.execute(
+        select(Estimate)
+        .where(Estimate.id == estimate.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
     if estimate.status == "declined":
         raise HTTPException(status_code=409, detail="already declined")
     if estimate.status == "accepted":
@@ -2581,7 +2615,7 @@ def _compute_price_drift(estimate: Estimate, db: Session) -> list[dict]:
 
     from gdx_dispatch.models.labor_pricing import LaborPriceItem
 
-    def _is_retired(item: "LaborPriceItem") -> bool:
+    def _is_retired(item: LaborPriceItem) -> bool:
         # SAME definition install_labor_line (billing_lanes) uses to refuse a
         # row: gone/inactive, OR retired by effective_to (stays active=True!),
         # OR a $0 row. Anything short of this would let a superseded row read
