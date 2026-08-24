@@ -422,6 +422,67 @@ def _open_intents_for_invoice(invoice, *, connect: dict) -> list:
     return found
 
 
+def _ach_in_flight(invoice, *, tenant: dict | None = None) -> dict | None:
+    """The ACH debit already moving for ``invoice``, or None.
+
+    M16. ACH is a delayed-notification method — "up to 4 business days to
+    receive acknowledgement of success or failure"
+    (<https://docs.stripe.com/payments/ach-direct-debit>, read 2026-08-24) —
+    and nothing was recorded while a debit sat in `processing`: the balance
+    stayed full and the pay page stayed live. Stripe's idempotency key expires
+    after 24h, so a customer paying Friday and again Monday minted a second
+    intent, and both settled.
+
+    Stateless, like the M12 sweep it reuses: Stripe is the register, and a
+    `processing` intent bound to this invoice by ``metadata.invoice_id`` IS
+    the pending marker — no local row to write, drift, or forget to clear
+    when the debit fails.
+
+    Best-effort by design at render time, load-bearing at mint time: callers
+    that only DISPLAY treat None as "nothing known", and the mint-site gates
+    fail open on a Stripe outage (refusing to take money because we could not
+    check would strand a legitimate payer; the M12 sweep and the
+    ``payment_exceeds_receivable`` backstop still cover the overlap).
+    """
+    if invoice is None:
+        return None
+    try:
+        _init_stripe()
+        for pi in _open_intents_for_invoice(invoice, connect=_stripe_extra(tenant or {})):
+            if str(getattr(pi, "status", "") or "") == "processing":
+                return {
+                    "intent_id": str(getattr(pi, "id", "") or ""),
+                    "amount_cents": int(getattr(pi, "amount", 0) or 0),
+                }
+    except Exception:
+        logger.exception("ach_in_flight_probe_failed invoice=%s", getattr(invoice, "id", "?"))
+    return None
+
+
+def _refuse_if_ach_processing(invoice, *, tenant: dict | None = None, op: str) -> None:
+    """409 when an ACH debit for ``invoice`` is already moving (M16).
+
+    The double-payment window in one sentence: the customer pays by bank on
+    Friday, nothing records until the debit settles, and on Monday the page
+    still shows the full balance — so they pay again, the 24h idempotency key
+    has expired, and both debits settle.
+    """
+    pending = _ach_in_flight(invoice, tenant=tenant)
+    if pending:
+        logger.warning(
+            "ach_processing_blocks_new_payment invoice=%s op=%s intent=%s amount_cents=%s",
+            invoice.id, op, pending["intent_id"], pending["amount_cents"],
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A bank transfer for this invoice is already processing. "
+                "Bank transfers take up to 4 business days to clear — "
+                "you don't need to pay again."
+            ),
+        )
+
+
 def cancel_open_intents_for_invoice(
     invoice,
     *,
@@ -787,8 +848,11 @@ def create_intent(
     invoice = _resolve_public_invoice(
         db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="create-intent"
     )
-    amount_cents = _amount_cents(invoice)
     tenant: dict = getattr(request.state, "tenant", {}) or {}
+    # M16: a card payment while an ACH debit is processing double-pays just as
+    # surely as a second ACH — the balance has not moved yet.
+    _refuse_if_ach_processing(invoice, tenant=tenant, op="create-intent")
+    amount_cents = _amount_cents(invoice)
 
     try:
         pi = _create_usable_intent(
@@ -942,6 +1006,12 @@ def ach_charge(
     invoice = _resolve_public_invoice(
         db, invoice_token=body.invoice_token, invoice_id=body.invoice_id, op="ach-charge"
     )
+    # M16: THE double-payment window. Friday's debit is still processing on
+    # Monday, the 24h idempotency key has expired, and a second charge here
+    # would mint a fresh intent — both settle.
+    _refuse_if_ach_processing(
+        invoice, tenant=getattr(request.state, "tenant", {}) or {}, op="ach-charge"
+    )
 
     if not body.setup_intent_id:
         # Fail closed. An ACH tab opened before this deploy has no
@@ -1059,11 +1129,21 @@ def pay_invoice(
         details={"invoice_number": getattr(invoice, "invoice_number", None)},
     )
 
+    # M16: while an ACH debit is processing, the page must say so instead of
+    # presenting a live payment form. Best-effort — a Stripe outage renders
+    # the normal form, and the mint-site gates remain the hard stop.
+    ach_processing = None
+    if str(invoice.status or "").lower() != "paid" and float(invoice.balance_due or 0) > 0:
+        ach_processing = _ach_in_flight(
+            invoice, tenant=getattr(request.state, "tenant", {}) or {}
+        )
+
     return templates.TemplateResponse(
         request,
         "payment_form.html",
         {
             "invoice": invoice,
+            "ach_processing": ach_processing,
             "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
             # The photos the office attached to THIS invoice (Doug 2026-08-12:
             # photos are customer-facing). They already ride the PDF; showing
@@ -1584,6 +1664,42 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
     # Connect: the envelope names the account the event belongs to. Any live
     # read we make has to look in the same place the object lives.
     connected_account: str = str(event.get("account") or "")
+
+    if event_type == "payment_intent.processing":
+        # M16. Nothing to record as money — the debit has not settled — but a
+        # customer initiating a bank transfer is an action the office should
+        # find on the invoice's trail, and it is what "why is the pay page
+        # refusing?" reconstructs from later.
+        invoice_id = (data.get("metadata") or {}).get("invoice_id", "")
+        if not invoice_id:
+            return {"status": "no_invoice_id"}
+        # Adversarial review: a CARD intent also transits `processing` (briefly,
+        # e.g. some 3DS flows). Writing "ach_payment_processing" for it would be
+        # a trail row that lies about the method — and the M16 gate keys off
+        # live status, not this event, so skipping costs nothing.
+        if "us_bank_account" not in (data.get("payment_method_types") or []):
+            return {"status": "not_ach", "invoice_id": str(invoice_id)}
+        try:
+            from gdx_dispatch.core.audit import log_audit_event_sync
+
+            log_audit_event_sync(
+                db=db,
+                tenant_id=None,
+                user_id="stripe-webhook",
+                action="ach_payment_processing",
+                entity_type="invoice",
+                entity_id=str(invoice_id),
+                details={
+                    "intent_id": str(data.get("id") or ""),
+                    "amount_cents": int(data.get("amount") or 0),
+                },
+            )
+            db.commit()
+        except Exception:
+            # The trail is wanted; a failure to write it must not make Stripe
+            # retry an event that moves no money.
+            logger.exception("ach_processing_audit_failed invoice=%s", invoice_id)
+        return {"status": "ach_processing_noted", "invoice_id": str(invoice_id)}
 
     if event_type == "payment_intent.succeeded":
         invoice_id: str = (data.get("metadata") or {}).get("invoice_id", "")
