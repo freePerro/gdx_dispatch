@@ -105,12 +105,30 @@ def _safe_query(
     """Run SQL, return rows. On missing table / schema issues, return []."""
     try:
         return list(db.execute(text(sql), params).all())
-    except (OperationalError, ProgrammingError):  # returns empty list on missing table or schema issues per contract
-        log.exception("exports_%s_table_missing", entity)
-        return []
-    except SQLAlchemyError:  # returns empty list on missing table or schema issues per contract
+    except (OperationalError, ProgrammingError) as exc:
+        # Audit round 2: "missing optional table" is OperationalError on
+        # SQLite but ProgrammingError (UndefinedTable) on Postgres — and
+        # OperationalError on psycopg2 ALSO covers dropped connections.
+        # Detect the actual missing-table shape on both dialects; everything
+        # else is a broken export and must look broken.
+        msg = str(exc).lower()
+        if "no such table" in msg or "does not exist" in msg or "undefinedtable" in msg:
+            log.exception("exports_%s_table_missing", entity)
+            return []
         log.exception("exports_%s_query_failed", entity)
-        return []
+        raise HTTPException(
+            status_code=500,
+            detail=f"{entity} export failed — the data could not be read (not an empty dataset)",
+        ) from exc
+    except SQLAlchemyError as exc:
+        # M21: these used to return [] too — a schema mismatch produced a
+        # short CSV indistinguishable from "no data", and the office trusted
+        # it. A broken export must LOOK broken.
+        log.exception("exports_%s_query_failed", entity)
+        raise HTTPException(
+            status_code=500,
+            detail=f"{entity} export failed — the data could not be read (not an empty dataset)",
+        ) from exc
 
 
 def _audit_export(
@@ -154,12 +172,16 @@ def _require_admin(user: Any) -> None:
 def _fetch_customers(
     db: Session, *, tenant_id: str
 ) -> tuple[list[str], list[list[Any]]]:
+    # M21 round 3: this SELECTed city/state/zip — columns that DO NOT EXIST
+    # on prod — so every customers CSV ever downloaded was header-only, and
+    # the blanket error swallow made that look like "no data". Real columns
+    # only; the export works for the first time.
     header = [
-        "id", "name", "email", "phone", "address", "city", "state", "zip",
+        "id", "name", "email", "phone", "address",
         "created_at", "deleted_at",
     ]
     sql = """
-        SELECT id, name, email, phone, address, city, state, zip,
+        SELECT id, name, email, phone, address,
                created_at, deleted_at
           FROM customers
          WHERE company_id = :tenant_id
@@ -177,20 +199,24 @@ def _fetch_jobs(
     start: date | None = None,
     end: date | None = None,
 ) -> tuple[list[str], list[list[Any]]]:
+    # M21 round 3: `j.total` does not exist on prod (jobs carry no cached
+    # total — derive-don't-cache) — the jobs CSV was header-only forever,
+    # masked by the swallow. Real columns only.
     header = [
         "id", "customer_id", "customer_name", "title", "status",
-        "lifecycle_stage", "total", "scheduled_at", "completed_at", "created_at",
+        "lifecycle_stage", "scheduled_at", "completed_at", "created_at",
     ]
     sql = """
         SELECT j.id, j.customer_id,
                COALESCE(c.name, '') AS customer_name,
-               j.title, j.status, j.lifecycle_stage, j.total,
+               j.title, j.status, j.lifecycle_stage,
                j.scheduled_at, j.completed_at, j.created_at
           FROM jobs j
           LEFT JOIN customers c
                  ON c.id = j.customer_id
                 AND c.company_id = :tenant_id
          WHERE j.company_id = :tenant_id
+           AND j.deleted_at IS NULL
     """
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if status:
@@ -228,6 +254,7 @@ def _fetch_invoices(
                  ON c.id = i.customer_id
                 AND c.company_id = :tenant_id
          WHERE i.company_id = :tenant_id
+           AND i.deleted_at IS NULL
     """
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if status:
@@ -260,6 +287,7 @@ def _fetch_estimates(
                  ON c.id = e.customer_id
                 AND c.company_id = :tenant_id
          WHERE e.company_id = :tenant_id
+           AND e.deleted_at IS NULL
     """
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if status:
@@ -303,6 +331,7 @@ def _fetch_technicians(
         SELECT id, name, email, phone, active, created_at
           FROM technicians
          WHERE company_id = :tenant_id
+           AND deleted_at IS NULL
          ORDER BY created_at DESC
     """
     rows = _safe_query(db, sql, {"tenant_id": tenant_id}, "technicians")
@@ -321,6 +350,7 @@ def _fetch_leads(
                assigned_to, created_at
           FROM leads
          WHERE company_id = :tenant_id
+           AND deleted_at IS NULL
     """
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if stage:

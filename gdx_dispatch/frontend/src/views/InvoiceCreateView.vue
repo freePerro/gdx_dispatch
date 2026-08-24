@@ -359,6 +359,20 @@
 
 <script setup>
 import { computed, ref, onMounted, watch } from 'vue';
+
+// M21/M34 audit round 2: the first cut referenced tenantTaxLabor without
+// defining it — a ReferenceError swallowed by the prefill's own try/catch,
+// which silently killed the closeout labor prefill (the DOMINANT path).
+// Mirrors EstimateView's loader; server compute_estimate_totals is the
+// source of truth, this is form parity.
+const tenantTaxLabor = ref(false);
+async function loadTenantTaxLabor() {
+  try {
+    const cfg = await api.get('/api/tax/config', { suppressErrorToast: true });
+    tenantTaxLabor.value = Boolean(cfg?.tax_labor);
+  } catch { /* default false — labor untaxed, the common case */ }
+}
+onMounted(loadTenantTaxLabor);
 import { useRoute, useRouter } from 'vue-router';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -732,8 +746,10 @@ async function prefillFromJobCloseout(jobId) {
         description: s.labor_line.description,
         quantity: Number(s.labor_line.quantity || 1) || 1,
         unit_price: Number(s.labor_line.unit_price || 0),
-        // Labor is non-taxable — same rule the estimate prefill applies.
-        taxable: false,
+        // M34: mirror the tenant's tax_labor setting instead of hardcoding —
+        // a tax-labor tenant under-collected on every prefill (irrelevant at
+        // GDX where labor is never customer-taxed, wrong for self-hosted).
+        taxable: !!tenantTaxLabor.value,
         category: 'Labor',
         cost: null,
         margin_pct_override: null,
