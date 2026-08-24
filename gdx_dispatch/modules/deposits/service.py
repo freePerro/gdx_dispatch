@@ -458,10 +458,13 @@ def apply_deposits_to_final(db: Session, invoice: Invoice, *, actor: str) -> dic
                 # is off the table — credit-memo the remainder. The paid
                 # portion nets on the final below; record_payment refuses
                 # further money on a superseded deposit (409 → final).
+                from gdx_dispatch.core.invoice_tax import credit_tax_component
+
                 adj = InvoiceAdjustment(
                     invoice_id=dep.id,
                     kind="credit_memo",
                     amount=_money(Decimal(str(remainder))),
+                    tax_component=credit_tax_component(dep, _money(Decimal(str(remainder)))),
                     reason=f"Deposit superseded by {invoice.invoice_number}"[:200],
                     created_by=actor,
                     company_id=dep.company_id,

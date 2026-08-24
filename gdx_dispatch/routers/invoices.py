@@ -3637,10 +3637,13 @@ def issue_credit_memo(
             detail=f"credit memo exceeds the remaining balance ({_to_float(invoice.balance_due):.2f})",
         )
 
+    from gdx_dispatch.core.invoice_tax import credit_tax_component
+
     adjustment = InvoiceAdjustment(
         invoice_id=invoice.id,
         kind="credit_memo",
         amount=credit_amount,
+        tax_component=credit_tax_component(invoice, credit_amount),
         reason=payload.reason.strip(),
         created_by=_actor_id(_),
         company_id=invoice.company_id,
@@ -3731,10 +3734,13 @@ def apply_customer_credit(
             detail=f"amount exceeds the remaining balance ({_to_float(invoice.balance_due):.2f})",
         )
 
+    from gdx_dispatch.core.invoice_tax import credit_tax_component
+
     adjustment = InvoiceAdjustment(
         invoice_id=invoice.id,
         kind="credit_applied",
         amount=amount,
+        tax_component=credit_tax_component(invoice, amount),
         reason="customer credit applied",
         created_by=_actor_id(_),
         company_id=invoice.company_id,
@@ -3814,10 +3820,13 @@ def process_refund(
             detail="refund_method is required while ledger posting is enabled",
         )
 
+    from gdx_dispatch.core.invoice_tax import credit_tax_component
+
     adjustment = InvoiceAdjustment(
         invoice_id=invoice.id,
         kind="refund",
         amount=refund_amount,
+        tax_component=credit_tax_component(invoice, refund_amount),
         reason=(payload.reason or "").strip() or None,
         refund_method=(payload.refund_method or "").strip().lower() or None,
         created_by=_actor_id(_),
