@@ -1724,7 +1724,7 @@ inflates the basis the same way.
 **Fix.** Add `i.deleted_at IS NULL AND i.status NOT IN ('void','draft')`, and decide
 the deposit/final netting basis explicitly.
 
-### M28 — `job_costing` re-rates a deliberate $0 labor rate to $95/h `MEDIUM-HIGH` `CONFIRMED`
+### M28 — `job_costing` re-rates a deliberate $0 labor rate to $95/h `MEDIUM-HIGH` ✅ **FIXED PR #TBD 2026-08-24 (audited)**
 
 `rate = Decimal(str(r[1] or DEFAULT_LABOR_RATE))` — and `0 or 95` is 95
 ([job_costing.py:201](../../gdx_dispatch/routers/job_costing.py#L201)). `labor.py`
@@ -1739,6 +1739,36 @@ entry can display three different costs.
 
 **Fix.** `rate = fallback if r[1] is None else Decimal(str(r[1]))`, and unify the
 fallback into one source.
+
+**FIXED — both halves.** The or-trap is the None-check idiom labor.py already
+used, and the $95 constant is deleted: `job_costing` now imports labor.py's
+`_cost_rate_fallback` (tenant `pricing_settings.loaded_labor_cost_per_hour` —
+the one correctly-configured wage-plus-burden number — else the shared $65),
+the same source `ui_compat` already used. The two labor.py endpoints that
+skipped the tenant fallback (the single-entry returns and the cost SUM) now
+resolve it too, so the same entry can no longer display three different
+costs. Out of scope, stated: `pricing.py`'s `labor_rates.default` ($75) is a
+customer-facing SELL rate — a different domain, not a cost fallback.
+Guarded by `test_m28_labor_rate_unify.py` (the $0-stays-$0 warranty case,
+tenant-number-not-95, shared-constant fallback, dead-constant pin).
+
+**The adversarial review's accounting, recorded:** prod carries **8 of 25
+time entries with a NULL rate and zero with a deliberate $0** — so the
+headline warranty scenario is prophylactic there, and the real prod delta is
+those 8 entries re-rating **$95→$65/h**, silently shifting profitability
+history down for their jobs (stated here and in the PR; no report reader
+sees it otherwise). Fixed on review: the resolver rolls back its own failed
+query (a poisoned PG transaction survived only by callers' catch-all
+breadth), and the summary path resolves the fallback ONCE instead of one
+pricing_settings SELECT per row. Found one level up and **filed, not
+bundled**: the model documents `loaded_labor_cost_per_hour = 0` as "labor is
+pure profit" — a deliberate value — but its `server_default=0` makes a
+deliberate zero indistinguishable from unconfigured, so the resolver's
+`> 0` reads it as absent: the same species M28 kills, unrepresentable
+without a NULL-default migration. Also noted: prod's configured 65.00 equals
+the code constant exactly, so no walk can distinguish the tenant-path from
+the constant-path — whether that 65.00 was deliberate is a question only
+Doug can answer, recorded here rather than assumed.
 
 ### M29 — Voiding a vendor invoice after confirming its lines reverses nothing `MEDIUM` `CONFIRMED`
 
@@ -1875,7 +1905,7 @@ as 1"), the page did not navigate, and the database confirms **zero invoices
 and zero lines written**. The deployed bundle was grep-verified to carry the
 guard strings before the click.
 
-### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` ✅ **FIXED PR #TBD 2026-08-24**
+### M32 — Bulk "Mark Paid" posts stale client-side balances `MEDIUM-HIGH` ✅ **FIXED #433 — RELEASED v1.89.0, prod+demo, WALKED (live probes) 2026-08-24**
 
 [BillingView.vue:758-771](../../gdx_dispatch/frontend/src/views/BillingView.vue#L758-L771)
 posts `amount: balance` where `balance` comes from the row loaded into the browser,
@@ -1905,6 +1935,12 @@ prefill is visible to and editable by a human, which is the lesser sibling,
 not the blind bulk shape. Guarded by `test_m32_pay_remaining.py` (8 tests,
 five counterfactuals biting, including the audit's own $400-then-stale-tab
 scenario asserting $600 — not $1,000 — is recorded).
+
+**Prod walk, v1.89.0, 2026-08-24 — both new paths probed live, zero writes:**
+the XOR contradiction 422s ("not both") and a settled invoice 409s with
+`code: nothing_remaining`, with the payments table provably untouched (344
+rows before and after both probes). The deployed bundle carries the bulk
+mode.
 
 ### M33 — The submit filter drops lines the on-screen total includes `MEDIUM` ✅ **FIXED #432 — RELEASED v1.88.0, prod+demo 2026-08-24 (with M31 — same class)**
 

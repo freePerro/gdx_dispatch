@@ -43,7 +43,10 @@ router = APIRouter(
 
 # Defaults when a tenant has no markup rule for a category.
 DEFAULT_MARKUP_PERCENT = Decimal("35.00")
-DEFAULT_LABOR_RATE = Decimal("95.00")  # $/hour fallback
+# M28: the $95 constant is dead. It disagreed with labor.py's $65 and the
+# tenant's real wage-plus-burden number in pricing_settings — the same time
+# entry could display three different costs. labor.py's _cost_rate_fallback
+# (imported in the block above, like ui_compat already does) is THE source.
 OVERHEAD_PERCENT = Decimal("8.00")  # applied to labor+parts
 
 
@@ -53,6 +56,7 @@ OVERHEAD_PERCENT = Decimal("8.00")  # applied to labor+parts
 
 
 from gdx_dispatch.models.tenant_models import MarkupRule  # noqa: E402
+from gdx_dispatch.routers.labor import _cost_rate_fallback  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas (bounded)
@@ -188,21 +192,27 @@ def _labor_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
     except OperationalError:
         log.exception("time_entries_query_failed job_id=%s", job_id)
         db.rollback()
-        return {"hours": 0.0, "rate": float(DEFAULT_LABOR_RATE), "total": 0.0}
+        return {"hours": 0.0, "rate": float(_cost_rate_fallback(db)), "total": 0.0}
     except Exception:
         log.exception("time_entries_unexpected_error job_id=%s", job_id)
         db.rollback()
-        return {"hours": 0.0, "rate": float(DEFAULT_LABOR_RATE), "total": 0.0}
+        return {"hours": 0.0, "rate": float(_cost_rate_fallback(db)), "total": 0.0}
 
+    fallback = Decimal(str(_cost_rate_fallback(db)))
     total_minutes = Decimal("0")
     weighted_total = Decimal("0")
     for r in rows:
         minutes = Decimal(str(r[0] or 0))
-        rate = Decimal(str(r[1] or DEFAULT_LABOR_RATE))
+        # M28: `r[1] or fallback` re-rated a DELIBERATE $0 (warranty/comp) to
+        # $95/h — a 3-hour warranty entry cost $0 on labor.py's endpoint and
+        # $285 here, and the profitability report ranked the job a loser.
+        # labor.py fixed this exact trap and said so; the fallback applies
+        # ONLY when no rate was stored.
+        rate = fallback if r[1] is None else Decimal(str(r[1]))
         total_minutes += minutes
         weighted_total += (minutes / Decimal("60")) * rate
     hours = total_minutes / Decimal("60") if total_minutes > 0 else Decimal("0")
-    avg_rate = (weighted_total / hours) if hours > 0 else DEFAULT_LABOR_RATE
+    avg_rate = (weighted_total / hours) if hours > 0 else fallback
     return {
         "hours": float(hours.quantize(Decimal("0.01"))),
         "rate": float(avg_rate.quantize(Decimal("0.01"))),
