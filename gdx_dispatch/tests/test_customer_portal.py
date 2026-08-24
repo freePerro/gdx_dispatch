@@ -995,3 +995,249 @@ def test_admin_toggle_disable_deactivates_duplicates(tenant_db_session):
     ).scalars().all()
     assert len(rows) == 2
     assert all(row.is_active is False and row.portal_token is None for row in rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staff-side portal status for the customer page (2026-08-24)
+#
+# The customer page's Portal tab used to read `/api/customers/{id}/portal-account`,
+# a ui_compat shim that returned a hardcoded {"exists": false, "account": null}.
+# It reported "no portal account" for EVERY customer — including, on prod, the
+# one customer who actually had one. These pin the replacement,
+# `GET /api/portal/{customer_id}`, against the behaviour that was wrong.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _portal_status(db, customer_id):
+    """Call the staff status endpoint with its DB dependency satisfied."""
+    return portal_router.portal_admin_status(
+        customer_id=customer_id,
+        _={"sub": "staff-1"},
+        db=db,
+    )
+
+
+def test_portal_status_reports_an_existing_account_as_enabled(tenant_db_session):
+    """The defect this replaces: a real account rendered as 'no account'."""
+    db = tenant_db_session
+    customer = Customer(name="Has Portal", email="has@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    db.add(CustomerUser(customer_id=customer.id, email="has@example.com", is_active=True))
+    db.commit()
+
+    out = _portal_status(db, customer.id)
+
+    assert out["portal_enabled"] is True, (
+        "a customer with an active CustomerUser must report enabled — the old shim "
+        "hardcoded exists=false here"
+    )
+    assert out["email"] == "has@example.com"
+    assert out["last_login"] is None  # never signed in — surfaced, not hidden
+
+
+def test_portal_status_reports_no_account_as_disabled(tenant_db_session):
+    """Counterfactual to the test above: absence must NOT read as enabled."""
+    db = tenant_db_session
+    customer = Customer(name="No Portal", email="none@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+
+    out = _portal_status(db, customer.id)
+
+    assert out["portal_enabled"] is False
+    # Falls back to the customer record's address so the invite dialog can
+    # prefill something useful.
+    assert out["email"] == "none@example.com"
+
+
+def test_portal_status_deactivated_account_is_not_enabled(tenant_db_session):
+    """Turning access off must actually read as off — this is what the tab's
+    'Turn Off Portal Access' button produces via PATCH."""
+    db = tenant_db_session
+    customer = Customer(name="Was Portal", email="was@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    db.add(CustomerUser(customer_id=customer.id, email="was@example.com", is_active=False))
+    db.commit()
+
+    assert _portal_status(db, customer.id)["portal_enabled"] is False
+
+
+def test_portal_status_picks_the_same_row_the_writer_picks(tenant_db_session):
+    """customer_users has no unique constraint on customer_id. The reader must
+    tie-break the way `_get_or_create_customer_user` does (active first, then
+    newest) or the tab reports on a different row than Enable/Disable touches."""
+    db = tenant_db_session
+    customer = Customer(name="Dupes", email="dupe@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    db.add(CustomerUser(customer_id=customer.id, email="stale@example.com", is_active=False))
+    db.commit()
+    db.add(CustomerUser(customer_id=customer.id, email="live@example.com", is_active=True))
+    db.commit()
+
+    out = _portal_status(db, customer.id)
+
+    assert out["portal_enabled"] is True
+    assert out["email"] == "live@example.com", "must prefer the ACTIVE duplicate"
+
+    writer_pick = portal_router._get_or_create_customer_user(db, customer, "live@example.com")
+    assert writer_pick.email == "live@example.com", "reader and writer must agree"
+
+
+def test_portal_status_surfaces_a_live_signin_link_expiry(tenant_db_session):
+    """Prod's one real invite expired unused after 7 days and nothing said so.
+    The tab now shows the expiry, so the operator can tell a dead link from a
+    live one.
+
+    Named for the SIGN-IN LINK, not the invite: `portal_token` serves both a
+    staff invite (7 days) and a customer's own self-service link (15 minutes),
+    and nothing distinguishes them in the column."""
+    db = tenant_db_session
+    customer = Customer(name="Invited", email="inv@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    expires = datetime.now(UTC) + timedelta(days=3)
+    db.add(CustomerUser(
+        customer_id=customer.id,
+        email="inv@example.com",
+        is_active=True,
+        portal_token="tok-abc",
+        portal_token_expires_at=expires,
+    ))
+    db.commit()
+
+    assert _portal_status(db, customer.id)["signin_link_expires_at"] is not None
+
+
+def test_portal_status_reports_no_expiry_when_the_token_is_gone(tenant_db_session):
+    """Counterfactual: an expiry timestamp with no token must not render as a
+    live invite — turning access off clears the token but may leave the stamp."""
+    db = tenant_db_session
+    customer = Customer(name="Revoked", email="rev@example.com", company_id="tenant-test")
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    db.add(CustomerUser(
+        customer_id=customer.id,
+        email="rev@example.com",
+        is_active=True,
+        portal_token=None,
+        portal_token_expires_at=datetime.now(UTC) + timedelta(days=3),
+    ))
+    db.commit()
+
+    assert _portal_status(db, customer.id)["signin_link_expires_at"] is None
+
+
+def test_portal_status_404s_for_an_unknown_customer(tenant_db_session):
+    import fastapi
+
+    with pytest.raises(fastapi.HTTPException) as exc:
+        _portal_status(tenant_db_session, uuid4())
+    assert exc.value.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Route-level gates on the staff portal endpoints.
+#
+# Added 2026-08-24 after an adversarial review deleted
+# `Depends(require_permission("customers.read_all"))` from portal_admin_status
+# and the seven tests above STILL PASSED — they call the handler function
+# directly, so the dependency stack (permission gate, module gate, route
+# registration, /info-vs-/{customer_id} arbitration) was entirely unproven.
+#
+# These assert on the REGISTERED ROUTE, so they fail if a gate is removed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _staff_portal_route(method: str, path: str):
+    """Find a registered staff-portal route, recursing FastAPI's lazy
+    _IncludedRouter wrappers (a flat app.routes read sees ~8 entries)."""
+    from fastapi.routing import _IncludedRouter
+
+    from gdx_dispatch.app import app
+
+    def walk(routes, prefix=""):
+        for rt in routes:
+            if isinstance(rt, _IncludedRouter):
+                yield from walk(rt.original_router.routes, prefix + getattr(rt.include_context, "prefix", ""))
+            elif hasattr(rt, "path"):
+                yield prefix + rt.path, rt
+
+    for full_path, route in walk(app.routes):
+        if full_path == path and method in (getattr(route, "methods", None) or set()):
+            return route
+    return None
+
+
+def _dependency_names(route) -> set[str]:
+    out = set()
+    for dep in getattr(route, "dependencies", []) or []:
+        call = getattr(dep, "dependency", None)
+        out.add(getattr(call, "__qualname__", "") or getattr(call, "__name__", ""))
+    for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []:
+        call = getattr(dep, "call", None)
+        out.add(getattr(call, "__qualname__", "") or getattr(call, "__name__", ""))
+    return out
+
+
+def test_portal_status_route_is_registered():
+    route = _staff_portal_route("GET", "/api/portal/{customer_id}")
+    assert route is not None, "GET /api/portal/{customer_id} is not registered"
+    assert route.endpoint.__name__ == "portal_admin_status"
+
+
+def test_portal_status_route_carries_a_permission_gate():
+    """Counterfactual target: delete the require_permission dependency from
+    portal_admin_status and THIS fails, where the direct-call tests do not."""
+    route = _staff_portal_route("GET", "/api/portal/{customer_id}")
+    names = _dependency_names(route)
+    assert any("require_permission" in n for n in names), (
+        f"GET /api/portal/{{customer_id}} has no require_permission dependency; saw {sorted(names)}"
+    )
+
+
+def test_portal_write_routes_carry_a_permission_gate():
+    for method, path in [("PATCH", "/api/portal/{customer_id}"), ("POST", "/api/portal/invite")]:
+        route = _staff_portal_route(method, path)
+        assert route is not None, f"{method} {path} is not registered"
+        names = _dependency_names(route)
+        assert any("require_permission" in n for n in names), f"{method} {path} is ungated"
+
+
+def test_literal_info_route_wins_over_the_customer_id_param():
+    """`/info` is a literal sharing a prefix with `/{customer_id}`. If the param
+    route were registered first it would swallow it (and 422 on the UUID parse).
+    The status endpoint's docstring asserts this ordering; pin it."""
+    from fastapi.routing import _IncludedRouter
+
+    from gdx_dispatch.app import app
+
+    def walk(routes, prefix=""):
+        for rt in routes:
+            if isinstance(rt, _IncludedRouter):
+                yield from walk(rt.original_router.routes, prefix + getattr(rt.include_context, "prefix", ""))
+            elif hasattr(rt, "path"):
+                yield prefix + rt.path, rt
+
+    order = [p for p, _ in walk(app.routes) if p.startswith("/api/portal")]
+    assert "/api/portal/info" in order and "/api/portal/{customer_id}" in order
+    assert order.index("/api/portal/info") < order.index("/api/portal/{customer_id}"), (
+        "GET /api/portal/info must be registered before /{customer_id} or the param route captures it"
+    )
+
+
+def test_retired_portal_account_shim_is_gone():
+    """The customer page and the mobile customer page both used to call
+    `/api/customers/{id}/portal-account`. Both were repointed; the shim was
+    deleted. If anything re-registers it, that is a regression to the lying
+    read (`{"exists": false}` for every customer)."""
+    for method in ("GET", "POST", "DELETE"):
+        assert _staff_portal_route(method, "/api/customers/{customer_id}/portal-account") is None
