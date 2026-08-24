@@ -29,7 +29,7 @@ import contextlib
 import logging
 import os
 import uuid as _uuid
-from datetime import datetime, timezone, time as dt_time
+from datetime import datetime, timezone, time as dt_time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -271,6 +271,347 @@ def _idempotency_key(invoice: Invoice, amount_cents: int, method: str) -> str:
     return f"gdx-pi-{invoice.id}-{method}-{amount_cents}"
 
 
+_UNUSABLE_INTENT_STATUSES = frozenset({"canceled", "succeeded"})
+
+
+def _create_usable_intent(**kwargs) -> Any:
+    """`PaymentIntent.create`, then prove the intent handed back is live.
+
+    Stripe's idempotency layer replays **"the resulting status code and body of
+    the first request"** — the body as it was at creation, not the object's
+    current state (<https://docs.stripe.com/api/idempotent_requests>, read
+    2026-08-24; keys are pruned once "at least 24 hours old"). Our keys are
+    derived from (invoice, amount, method), so after the sweep cancels an
+    intent, re-opening the pay page for the same amount replays the ORIGINAL
+    body: status `requires_payment_method`, the old `client_secret`, and an
+    intent that is actually **cancelled** at Stripe. The customer gets a pay
+    page that cannot charge, for up to 24 hours.
+
+    That sequence is not exotic. The office records a check (sweep cancels the
+    open intent), then deletes or voids that payment — the balance returns to
+    what it was, the customer reloads, same amount, same key.
+
+    An earlier version of this checked the CREATE response for
+    `status == "canceled"`. That is **provably unreachable**: a replay never
+    carries the current status, and a freshly created intent is never cancelled.
+    The check read as a guard and could not fire — and its test fabricated a
+    response the documented idempotency layer cannot return.
+
+    The only way to know is to ask. One `retrieve` per mint, which is a GET
+    against an object we just named.
+    """
+    pi = stripe.PaymentIntent.create(**kwargs)
+    pid = str(getattr(pi, "id", "") or "")
+    if not pid:
+        return pi
+
+    # `retrieve` must look at the same account the object lives on.
+    connect = {"stripe_account": kwargs["stripe_account"]} if kwargs.get("stripe_account") else {}
+    try:
+        live = stripe.PaymentIntent.retrieve(pid, **connect)
+    except Exception:
+        # A create that worked and a retrieve that did not: hand back what we
+        # have rather than failing a checkout over a verification step.
+        logger.warning("intent_liveness_unverified intent=%s — returning the create response", pid)
+        return pi
+
+    status = str(getattr(live, "status", "") or "")
+    if status not in _UNUSABLE_INTENT_STATUSES:
+        return live
+
+    key = kwargs.pop("idempotency_key", "") or ""
+    logger.warning(
+        "intent_idempotency_replayed_dead_intent intent=%s status=%s key=%s — minting a "
+        "fresh one so the customer does not get a pay page that cannot charge.",
+        pid, status, key,
+    )
+    return stripe.PaymentIntent.create(**kwargs, idempotency_key=f"{key}-r{_uuid.uuid4().hex[:8]}")
+
+
+_CANCELLABLE_INTENT_STATUSES = frozenset(
+    {
+        "requires_payment_method",
+        "requires_confirmation",
+        "requires_action",
+        "requires_capture",
+        # `processing` IS cancellable for the bank-debit family: "You can also
+        # cancel a PaymentIntent in the `processing` state when the payment
+        # method is ACH, ACSS, AU BECS, BACS, NZ BECS, or SEPA. However,
+        # cancellation might fail due to a limited and varying cancellation time
+        # window." (<https://docs.stripe.com/payments/paymentintents/lifecycle>,
+        # read 2026-08-24.)
+        #
+        # An earlier version skipped it and logged that the money "cannot be
+        # cancelled". That was wrong on the documentation: ACH is the one
+        # asynchronous case where it often CAN be, and refusing to try
+        # guaranteed the overcharge it was reporting. It is attempted now, and a
+        # refusal is reported as a refusal rather than dressed up as policy.
+        "processing",
+    }
+)
+"""States Stripe will actually cancel from.
+
+<https://docs.stripe.com/api/payment_intents/cancel>, read 2026-08-24. These
+are exactly the "customer is sitting on the pay page" states — no money has
+been captured in any of them, so cancelling costs the customer a confusing
+failure on an invoice that is already settled, which beats charging them twice.
+
+`processing` is deliberately absent. Stripe lists it as cancellable only "in
+rare cases", and for ACH it means the money is already moving. Attempting it
+would usually be refused, and recording that refusal as "handled" is precisely
+the kind of comfortable lie this fix exists to remove. It gets shouted about
+instead — see `stale_intent_in_flight` below.
+"""
+
+# Stripe's lifecycle documentation describes **no automatic expiry** for a
+# PaymentIntent — one left in `requires_payment_method` stays there
+# (<https://docs.stripe.com/payments/paymentintents/lifecycle>, read
+# 2026-08-24). So this window is a deliberate cap on how far back we look, not a
+# fact about when intents die: anything older is simply not scanned. 7 days was
+# the first guess; 30 costs the same handful of API calls for one garage-door
+# company's pay pages and covers a tab left open over a holiday. The page cap
+# below stops a runaway, and it is logged rather than swallowed.
+_INTENT_LOOKBACK_DAYS = 30
+_INTENT_PAGE_SIZE = 100
+_INTENT_MAX_PAGES = 5
+
+
+def _open_intents_for_invoice(invoice, *, connect: dict) -> list:
+    """Ask Stripe which intents are still open against ``invoice``.
+
+    **Stripe is the register; we are not.** Every mint site already stamps
+    ``metadata.invoice_id`` — the same binding ``/confirm`` checks before it
+    will record a payment — so listing is complete *by construction*. A mint
+    site added next year is covered without being wired to anything, which a
+    local table could never promise: its completeness would depend on somebody
+    remembering.
+
+    `list`, not `search`. The Search API supports `metadata[...]` and would be
+    a one-liner, but its data is only "searchable in under 1 minute"
+    (<https://docs.stripe.com/search>, read 2026-08-24) and this entire bug
+    lives inside that minute — the customer opened the page *just now*. The
+    same page directs read-after-write flows to the list APIs, which carry no
+    such delay.
+    """
+    since = int((datetime.now(timezone.utc) - timedelta(days=_INTENT_LOOKBACK_DAYS)).timestamp())
+    want = str(invoice.id)
+    found: list = []
+    starting_after = None
+
+    for _ in range(_INTENT_MAX_PAGES):
+        params: dict[str, Any] = {"limit": _INTENT_PAGE_SIZE, "created": {"gte": since}}
+        if starting_after:
+            params["starting_after"] = starting_after
+        page = stripe.PaymentIntent.list(**params, **connect)
+        rows = list(getattr(page, "data", None) or [])
+        for pi in rows:
+            meta = getattr(pi, "metadata", None) or {}
+            if str(meta.get("invoice_id") or "") == want:
+                found.append(pi)
+        if not getattr(page, "has_more", False) or not rows:
+            return found
+        starting_after = getattr(rows[-1], "id", None)
+        if not starting_after:
+            return found
+
+    logger.error(
+        "stale_intent_scan_truncated invoice=%s pages=%d — more than %d intents in %d days; "
+        "an older open intent may not have been checked.",
+        want, _INTENT_MAX_PAGES, _INTENT_MAX_PAGES * _INTENT_PAGE_SIZE, _INTENT_LOOKBACK_DAYS,
+    )
+    return found
+
+
+def cancel_open_intents_for_invoice(
+    invoice,
+    *,
+    why: str,
+    remaining_cents: int,
+    connected_account: str = "",
+) -> list[dict]:
+    """Close any pay page still open on ``invoice``. Never raises.
+
+    M12. A PaymentIntent freezes its amount when it is minted, and `/confirm`
+    only *records* what Stripe.js already charged in the browser — so once the
+    customer's tab holds a $500 intent, nothing on the server gets a veto at
+    charge time. The only place to stop a double collection is before they
+    click: money has arrived some other way, so the open intent must go.
+
+    Stateless on purpose. There is no local record of minted intents to drift,
+    to miss a mint site, to grow forever, or to mark an intent "handled"
+    because one DNS blip made a cancel fail. A failure here leaves nothing
+    behind to be wrong later — the next settle event simply asks Stripe again.
+
+    ``remaining_cents`` is what the invoice still owes AFTER the money that
+    triggered this. **Intents that cannot overcharge are left alone**, judged
+    on their CUMULATIVE total newest-first, not one at a time: killing a
+    customer's live checkout that was never going to overcharge them is a
+    worse bug than the one being fixed, but two intents that each fit under
+    the balance can still exceed it together. Pass 0 when the invoice can never
+    owe anything again (a void) — every open intent then exceeds it and goes.
+
+    ``connected_account`` must be the account the intent LIVES on. A scan of
+    the platform account for an intent minted on a connected account returns
+    nothing, which is indistinguishable from "all clear" — so callers that
+    know the account pass it, and Connect tenants are not silently unprotected.
+
+    Runs in a Celery task, never in a request or webhook transaction: this
+    makes two to six Stripe calls, stripe-python 11.6.0 retries twice by
+    default, and holding invoice/payment/ledger locks across that is the
+    silent-write window this repo ranks highest.
+    """
+    if invoice is None:
+        return []
+    try:
+        _init_stripe()
+        connect = {"stripe_account": connected_account} if connected_account else {}
+        intents = _open_intents_for_invoice(invoice, connect=connect)
+    except Exception:
+        # Nothing is now inconsistent — there is no state to corrupt. The
+        # `payment_exceeds_receivable` backstop still catches the overcharge
+        # if this was the run that mattered.
+        logger.exception("stale_intent_scan_failed invoice=%s why=%s", getattr(invoice, "id", "?"), why)
+        return []
+
+    results: list[dict] = []
+    candidates: list = []
+    for pi in intents:
+        pid = str(getattr(pi, "id", "") or "")
+        status = str(getattr(pi, "status", "") or "")
+        if not pid:
+            continue
+        if status not in _CANCELLABLE_INTENT_STATUSES:
+            # succeeded / canceled / already dealt with. Not our business.
+            continue
+        candidates.append(pi)
+
+    # The decision is CUMULATIVE, not per-intent. Judging each intent on its
+    # own leaves a hole a per-intent test cannot see: two open intents that
+    # each fit inside what is owed but together exceed it. Every mint here is
+    # sized to the full remaining balance (`_amount_cents`), so two open
+    # intents only differ when the balance MOVED between them — which happens
+    # whenever a payment is voided and the balance goes back up.
+    #
+    # Newest first: that is the tab the customer is actually looking at. Keep
+    # intents while their running total still fits inside what is owed, and
+    # cancel everything past that point. In the ordinary case the newest
+    # intent equals the balance exactly, so it survives and every stale one
+    # goes.
+    # `created` is whole seconds, and `list.sort` is stable — it does not
+    # reverse ties — so same-second intents would otherwise keep whatever order
+    # Stripe happened to return. Tie-break on id so the decision is at least
+    # deterministic and reproducible from a log.
+    candidates.sort(
+        key=lambda pi: (int(getattr(pi, "created", 0) or 0), str(getattr(pi, "id", "") or "")),
+        reverse=True,
+    )
+    running = 0
+    for pi in candidates:
+        pid = str(getattr(pi, "id", "") or "")
+        status = str(getattr(pi, "status", "") or "")
+        frozen = int(getattr(pi, "amount", 0) or 0)
+        if running + frozen <= remaining_cents:
+            # Still inside what is owed even counting everything kept so far,
+            # so this cannot overcharge. A customer part way through paying
+            # their bill keeps their checkout.
+            running += frozen
+            logger.info(
+                "open_intent_left_alone intent=%s invoice=%s amount_cents=%d kept_total=%d "
+                "remaining_cents=%d why=%s",
+                pid, invoice.id, frozen, running, remaining_cents, why,
+            )
+            continue
+        try:
+            # "duplicate", not "abandoned": the invoice was settled another
+            # way, so a second collection would be a duplicate. The customer
+            # did not walk away.
+            stripe.PaymentIntent.cancel(pid, cancellation_reason="duplicate", **connect)
+            logger.warning(
+                "stale_intent_canceled intent=%s invoice=%s was=%s amount_cents=%s why=%s",
+                pid, invoice.id, status, getattr(pi, "amount", "?"), why,
+            )
+            results.append({"intent_id": pid, "result": "canceled"})
+        except Exception as exc:
+            # Two very different failures wore one message before. Stripe
+            # refusing because the intent LEFT a cancellable state (the browser
+            # confirmed while we were reaching for it) is not "still open and
+            # can still collect" — it means the money moved and
+            # `payment_exceeds_receivable` is the net. Only a transport failure
+            # leaves it genuinely open.
+            text = str(exc)
+            raced = "unexpected_state" in text or "cannot be canceled" in text
+            if status == "processing" and not raced:
+                # A bank debit already on its way, outside Stripe's "limited and
+                # varying" cancellation window. It will settle, and since the
+                # invoice no longer owes it, that settlement WILL overcharge.
+                logger.error(
+                    "stale_intent_in_flight_uncancellable intent=%s invoice=%s amount_cents=%s "
+                    "why=%s — %s — the debit is already moving and will overcharge on "
+                    "settlement; payment_exceeds_receivable is the backstop.",
+                    pid, invoice.id, frozen, why, exc,
+                )
+                results.append({"intent_id": pid, "result": "in_flight"})
+            elif raced:
+                logger.warning(
+                    "stale_intent_cancel_raced intent=%s invoice=%s was=%s why=%s — %s — "
+                    "it left a cancellable state before we got there; if it succeeded the "
+                    "payment_exceeds_receivable backstop covers it.",
+                    pid, invoice.id, status, why, exc,
+                )
+                results.append({"intent_id": pid, "result": "raced"})
+            else:
+                logger.error(
+                    "stale_intent_cancel_failed intent=%s invoice=%s was=%s why=%s — %s — "
+                    "the intent is still open and can still collect.",
+                    pid, invoice.id, status, why, exc,
+                )
+                results.append({"intent_id": pid, "result": "failed"})
+    return results
+
+
+def _audit_overcharge(db: Session, *, invoice, payment, source: str, detail: dict) -> None:
+    """Record that a charge exceeded what the invoice owed. Never raises.
+
+    Filed against the INVOICE so it lands on the trail an operator actually
+    reads when reconstructing a bill, and attributed to the surface that
+    recorded it rather than a blanket system identity — `/confirm` and the
+    signed webhook are different actors and a money event may not pretend
+    otherwise.
+    """
+    # SAVEPOINT, not a bare try. `log_audit_event_sync` ends in a flush; on
+    # Postgres a failed flush poisons the whole session, so swallowing the
+    # exception would leave the very next `db.commit()` unable to save the
+    # PAYMENT. Losing the alert is survivable; losing the money record is not.
+    #
+    # ⚠ NOT PROVEN BY A TEST. `test_a_failing_overcharge_audit_does_not_lose_the
+    # _payment` passes with this savepoint REVERTED, because SQLite does not
+    # poison a session on a failed flush the way Postgres does — so on SQLite
+    # that test is a green light that means nothing. A structural test that
+    # spied on `begin_nested` was also vacuous (something else on this path
+    # calls it). A real Postgres proof needs a full FK-valid object graph and
+    # was not built. Treat this guard as correct-by-construction from
+    # SQLAlchemy's SAVEPOINT semantics, not as verified.
+    try:
+        from gdx_dispatch.core.audit import log_audit_event_sync
+
+        with db.begin_nested():
+            log_audit_event_sync(
+                db=db,
+                tenant_id=None,
+                user_id=source,
+                action="payment_exceeds_receivable",
+                entity_type="invoice",
+                entity_id=str(invoice.id),
+                details={**detail, "payment_id": str(getattr(payment, "id", "") or "")},
+            )
+    except Exception:
+        logger.exception(
+            "payment_exceeds_receivable_audit_failed invoice=%s — the overcharge is real and "
+            "is NOT in the audit trail; the ERROR log above is the only record.",
+            invoice.id,
+        )
+
+
 def _mark_invoice_paid(
     invoice: Invoice,
     db: Session,
@@ -278,6 +619,8 @@ def _mark_invoice_paid(
     external_ref: str | None = None,
     method: str = "card",
     amount: float | None = None,
+    source: str = "stripe-webhook",
+    connected_account: str = "",
 ) -> None:
     """Record processor money as a REAL Payment row, recalc, post P3.
 
@@ -333,6 +676,25 @@ def _mark_invoice_paid(
         db.commit()
         return
 
+    # M12. A PaymentIntent freezes its amount when it is minted, and `confirm`
+    # deliberately runs with `require_balance=False` — so an intent minted for
+    # $500 can still be confirmed after the office records a $300 check, and
+    # $800 lands on a $500 invoice.
+    #
+    # The money MOVED, so it is recorded: discarding it would be inventing a
+    # different lie. What was missing was anyone being told. `amount_overpaid`
+    # (M11) already renders a banner on the invoice screen, but nothing wrote
+    # a trace an operator could search, alert on, or reconcile against.
+    overpay = round(float(pay_amount) - max(remaining, 0.0), 2)
+    if overpay > 0.009:
+        logger.error(
+            "payment_exceeds_receivable invoice=%s reference=%s charged=%.2f "
+            "remaining=%.2f excess=%.2f — recorded in full (the money moved); "
+            "the excess is a customer credit and needs a refund or an "
+            "application decision.",
+            invoice.id, external_ref, float(pay_amount), max(remaining, 0.0), overpay,
+        )
+
     payment = Payment(
         company_id=invoice.company_id,
         invoice_id=invoice.id,
@@ -359,7 +721,50 @@ def _mark_invoice_paid(
         return
     _recalculate_invoice(invoice, db)
     post_payment_received(db, payment, invoice)
+    if overpay > 0.009:
+        # M12. A searchable, alertable record — not just a log line and a
+        # banner someone has to be looking at the right invoice to see.
+        #
+        # On the INVOICE, not the payment: this is a fact about the bill, and
+        # an operator reconstructing "what happened to this invoice" reads its
+        # trail, not each payment's. `source` names who actually did it — the
+        # webhook and /confirm are different actors, and money events may not
+        # be filed under one anonymous system identity.
+        _audit_overcharge(
+            db,
+            invoice=invoice,
+            payment=payment,
+            source=source,
+            detail={
+                "charged": float(pay_amount),
+                "remaining_before": round(max(remaining, 0.0), 2),
+                "excess": overpay,
+                "reference": external_ref or "",
+                "why": (
+                    "a PaymentIntent freezes its amount at mint time and confirm "
+                    "runs with require_balance=False, so a stale tab can collect "
+                    "more than the invoice still owes"
+                ),
+            },
+        )
     db.commit()
+
+    # M12. AFTER the commit, and on a task — never inside the transaction.
+    # Processor money just landed, so any OTHER intent still open on this
+    # invoice could collect again. The one that produced this payment has
+    # already succeeded, so it is not in a cancellable state and the sweep
+    # skips it. Queued rather than called: this makes several Stripe calls and
+    # stripe-python retries twice by default, and holding invoice, payment and
+    # ledger locks across a Stripe outage is the silent-write window this repo
+    # ranks highest — in the webhook it would also risk Stripe's own timeout
+    # and a retry storm on top of the outage.
+    from gdx_dispatch.tasks.stale_intent_sweep import enqueue_stale_intent_sweep
+
+    enqueue_stale_intent_sweep(
+        invoice,
+        why=f"payment_recorded:{external_ref or ''}"[:64],
+        connected_account=connected_account,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +791,7 @@ def create_intent(
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
     try:
-        pi = stripe.PaymentIntent.create(
+        pi = _create_usable_intent(
             amount=amount_cents,
             currency=CURRENCY,  # M4: never body.currency
             metadata={
@@ -418,6 +823,7 @@ def create_intent(
 @router.post("/confirm")
 def confirm_payment(
     body: ConfirmPaymentRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> dict:
     """Confirm payment after Stripe.js reports success.
@@ -437,8 +843,12 @@ def confirm_payment(
         require_balance=False,
     )
 
+    tenant: dict = getattr(request.state, "tenant", {}) or {}
+
     try:
-        pi = stripe.PaymentIntent.retrieve(body.payment_intent_id)
+        pi = stripe.PaymentIntent.retrieve(
+            body.payment_intent_id, **_stripe_extra(tenant)
+        )
     except stripe.StripeError as exc:
         logger.error("Stripe retrieve error: %s", exc)
         raise HTTPException(status_code=402, detail=str(exc)) from None
@@ -458,7 +868,10 @@ def confirm_payment(
 
     if pi.status == "succeeded":
         _mark_invoice_paid(
-            invoice, db, external_ref=pi.id, method="card", amount=(pi.amount or 0) / 100.0
+            invoice, db, external_ref=pi.id, method="card",
+            amount=(pi.amount or 0) / 100.0,
+            source="stripe-confirm",
+            connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
         )
 
     return {"status": pi.status, "invoice_id": str(invoice.id)}
@@ -567,7 +980,7 @@ def ach_charge(
     tenant: dict = getattr(request.state, "tenant", {}) or {}
 
     try:
-        pi = stripe.PaymentIntent.create(
+        pi = _create_usable_intent(
             amount=amount_cents,
             currency="usd",
             payment_method=body.payment_method_id,
@@ -586,7 +999,12 @@ def ach_charge(
 
     # ACH payments may be processing (not yet succeeded); mark partial if needed
     if pi.status == "succeeded":
-        _mark_invoice_paid(invoice, db, external_ref=pi.id, method="ach", amount=(pi.amount or 0) / 100.0)
+        _mark_invoice_paid(
+            invoice, db, external_ref=pi.id, method="ach",
+            amount=(pi.amount or 0) / 100.0,
+            source="stripe-ach-charge",
+            connected_account=str(_stripe_extra(tenant).get("stripe_account", "") or ""),
+        )
 
     return {"status": pi.status, "payment_intent_id": pi.id}
 
@@ -1202,6 +1620,10 @@ def handle_payment_webhook(event: dict, db: Session) -> dict:
             external_ref=data.get("id"),
             method=method,
             amount=(data.get("amount_received") or 0) / 100.0,
+            source="stripe-webhook",
+            # The same account the rest of this handler reads from: "any live
+            # read we make has to look in the same place the object lives."
+            connected_account=connected_account,
         )
         logger.info("Invoice %s marked paid via webhook", invoice_id)
         # Receipt email placeholder — wire up notification service here

@@ -1,6 +1,7 @@
 # Money Audit — 2026-08-04
 
-**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list.
+**Status:** **PARTIALLY FIXED** — see §0.6 for the authoritative list, and each
+finding's own entry for whether it shipped.
 Re-verified 2026-08-21; the §3 reporting cluster was then closed on 2026-08-22
 (PRs #399, #400, #402, #403) and **RELEASED v1.75.0**, deployed to prod and demo
 2026-08-23 and **walked on prod with real data**.
@@ -224,9 +225,16 @@ deleted, void/zero-balance 409), M6 (`payroll.write` gate on commission minting)
 M10 (mobile stores its tax rate), M14 (voided payments no longer block re-recording),
 M26 (`invariant_ok` substring check), and the QB importer's line filter.
 
-**Not yet fixed** — everything in §3 (reporting), the rest of §4, §5 and §6, and the
-frontend items in §7. The GL findings remain gated on the CPA review. §9's ordering
-still applies to what's left.
+**Fixed later, after this section was written** — §3 in full (PRs #399/#400/#402/#403,
+v1.75.0), M23, M13, M14 (stale failure events), M15 (dispute lifecycle, migration 076),
+and **M12** (stale PaymentIntents — stateless Stripe-side sweep, no migration). Each is
+marked at its own entry below; this paragraph is a pointer, not a second source of
+truth. Read the entry.
+
+**Not yet fixed** — M16 (ACH double-payment window), M17 items 2-4, M18's tax half
+(needs a money-rule decision), the recording half of M3, the rest of §4, §5 and §6,
+and the frontend items in §7. The GL findings remain gated on the CPA review. §9's
+ordering still applies to what's left.
 
 ---
 
@@ -390,7 +398,7 @@ the total. Nothing flags it, no refund workflow triggers.
 report for non-zero values. This is the detection net for M2, M3, M5 and M12 — worth
 building first because it tells you whether they have already fired.
 
-### M12 — Stale PaymentIntents outlive the balance they were minted for `MEDIUM` `CONFIRMED`
+### M12 — Stale PaymentIntents outlive the balance they were minted for `MEDIUM` `FIXED`
 
 The amount is frozen when the intent is created, and `confirm` deliberately runs with
 `require_balance=False`. Balance $500, customer opens `/pay`, office records a $300
@@ -400,6 +408,211 @@ on a $500 invoice, clamped invisible.
 **Fix.** Cancel outstanding intents when a payment or credit is recorded, and at
 webhook time compare the amount against the remaining receivable, routing any excess
 to a visible credit plus an alert.
+
+**FIXED — PR #TBD. No migration.** Two halves, as prescribed:
+
+*Close the open tab.* A Celery task, `payments.sweep_stale_intents`
+(`priority:high`), runs whenever an invoice is settled some other way —
+`record_payment`, `issue_credit_memo`, `apply_customer_credit`, `void_invoice`
+and `_mark_invoice_paid`. It cancels intents in `requires_payment_method`,
+`requires_confirmation`, `requires_action` and `requires_capture`
+([Stripe cancel API](https://docs.stripe.com/api/payment_intents/cancel), read
+2026-08-24) with `cancellation_reason="duplicate"`.
+
+*Only intents that would actually overcharge, judged cumulatively.* The sweep
+is told what the invoice still owes **after** the money that triggered it, sorts
+the open intents newest-first, and keeps them while their **running total** fits
+inside that figure. Killing a customer's live checkout that was never going to
+overcharge them is a worse bug than the one being fixed — but a per-intent test
+leaves a hole it cannot see.
+
+Every mint here is sized to the full remaining balance (`_amount_cents`, and the
+portal does the same — nothing mints a partial amount), so two open intents
+exist only when the balance MOVED between them, which is exactly what happens
+when a payment is **voided** and the balance goes back up. Judged one at a time,
+an old $100 intent and a new $300 intent both "fit" under a $300 balance and
+both survive; confirmed together they collect $400 on $300. Newest-first keeps
+the tab the customer is actually looking at and cancels the stale one. A void
+passes `remaining_cents=0`, so every open intent exceeds it and goes.
+
+*Stripe is the register, not us.* The scan is **stateless**: it asks
+`stripe.PaymentIntent.list` over a bounded recent window and filters on
+`metadata.invoice_id`, which every **invoice-scoped** mint site stamps because
+`/confirm` refuses to record a payment without it. "Complete by construction"
+means complete for intents bound to an invoice — an endpoint that mints an
+intent bound to no invoice at all (issue #421) is outside the scan by
+definition, not covered by it. A first implementation kept a
+`payment_intent_mints` table (migration 077); an adversarial review killed it.
+That table needed four mint sites wired by hand, had no retention policy, no
+Connect column, and — worst — a `canceled_at` that could not distinguish
+"Stripe refused, it already succeeded" from "the network blipped", so a single
+transient failure permanently marked a live intent as handled. The table, its
+model and its migration were deleted; **the alembic head stays at 076**, so this
+ships with no schema change and no rollback step.
+
+**Probed against LIVE Stripe, not just read in the docs** (prod key, read-only
+`list`, 2026-08-24). `PaymentIntent.list(limit=100, created={"gte": ...})`
+returned successfully; `has_more` was present (`False`); every field this code
+reads was present on the returned objects (`id`, `status`, `amount`, `created`,
+`metadata`); and the binding the whole design rests on held — the only metadata
+keys in use are `invoice_id` and `tenant_id`, and **`invoice_id` was stamped on
+2 of 2** intents in the window. All were `succeeded`, so the sweep would
+correctly find nothing to cancel on prod today.
+
+`list`, not `search`: the Search API supports `metadata[...]` and would be a
+one-liner, but its data is only "searchable in under 1 minute"
+([Stripe search](https://docs.stripe.com/search), read 2026-08-24) — and this
+bug lives inside that minute.
+
+*A task, not an inline call.* The sweep makes two to six Stripe calls and
+stripe-python 11.6.0 retries twice by default. A second adversarial review
+caught the first version doing that **inside** the money transaction, holding
+invoice, payment and ledger locks across a third-party outage — the two-commit
+silent-write window this repo ranks highest — and, in the webhook, risking
+Stripe's own timeout and a retry storm on top of the outage. The money commits
+first; the sweep runs after, on its own. When the worker is down the sweep does
+not happen and a stale intent can still overcharge: that is covered by the
+backstop below, not by silence.
+
+*Queueing it had to be made non-blocking too, which was not free.* Measured on
+the app image, `.delay()` against an unreachable Redis took **19.1s** — and
+`retry=False` alone did not fix it, because the stall was the **result
+backend** reconnecting, not the broker ("Retry limit exceeded while trying to
+reconnect to the Celery result store backend"). Nothing reads this task's return
+value, so it is declared `ignore_result=True`, with `retry=False` and a bounded
+write connection. Same measurement after: **0.06s**. Without that, moving the
+work onto a task would have moved the latency from the Stripe call to the
+enqueue and changed nothing.
+
+*The balance is read by the task, not carried from the caller.* An earlier
+version passed a `remaining_cents` computed at enqueue time and took
+`min(passed, fresh)`, defending it as "safe in the dangerous direction". It was
+not: a balance that moves UP between enqueue and execution — a payment deleted,
+a line added, a credit reversed, none of which enqueue a sweep — made the task
+trust the stale LOW figure and cancel a correctly-sized live checkout. The only
+thing a caller knows that the task cannot read is whether the invoice was
+**settled outright**, which is one bit, so it is passed as one bit.
+
+*One deploy-window caveat, on the release that first ships this — and it is a
+false record, not just a lost sweep.* `update.sh` starts the new app and
+health-gates it BEFORE recreating the celery containers, so during that gate a
+new web app can enqueue `payments.sweep_stale_intents` at a worker running the
+previous image, which has never heard of that task. Celery logs it unregistered
+and drops it.
+
+This is **worse than a worker being down**, and an earlier draft of this entry
+wrongly called them equivalent. A dead broker makes the enqueue raise, so the
+audit row honestly records `stale_intent_sweep_queued: false`. Here the broker is
+healthy, the enqueue succeeds, and the row records `true` for a sweep that will
+never run. The `payment_exceeds_receivable` backstop still catches the money;
+the trail is wrong for the length of that gate. Mitigation is operational:
+recreate the celery containers with the app on that release, or know why those
+rows may lie.
+
+*Look where the object lives — resolved once, not asked of four callers.* A
+platform-account scan for an intent minted on a connected account returns
+nothing, which is indistinguishable from "all clear". The Stripe-driven paths
+(webhook envelope, `/confirm`, ACH, portal charge) know the account and pass it;
+the four **office** paths had no reason to and did not, so on a Connect tenant
+the sweep silently no-opped on exactly the call site this fix exists for. The
+task now resolves the account itself from the invoice's company and treats an
+explicitly-passed one (the webhook envelope, the freshest source) as an
+override.
+
+*In-flight ACH is attempted, not excused.* Stripe permits cancelling a
+`processing` intent for the bank-debit family — ACH, ACSS, AU BECS, BACS, NZ
+BECS, SEPA — though "cancellation might fail due to a limited and varying
+cancellation time window"
+([lifecycle](https://docs.stripe.com/payments/paymentintents/lifecycle), read
+2026-08-24). A first version skipped `processing` and logged that the money
+"cannot be cancelled": wrong on the documentation, and refusing to try
+guaranteed the overcharge it was reporting. It is attempted now; when Stripe
+refuses, `stale_intent_in_flight_uncancellable` says the debit will overcharge on
+settlement and that the backstop is what covers it. `requires_capture` cannot
+arise here at all — no mint site sets `capture_method="manual"`.
+
+*Say so when the sweep loses the race.* An intent that succeeded microseconds
+earlier still overcharges. The money moved, so it is recorded in full —
+discarding it would be a different lie — and `_mark_invoice_paid` logs at ERROR
+and writes a `payment_exceeds_receivable` audit event carrying `charged`,
+`remaining_before` and `excess`. It is filed against the **invoice**, because
+that is the trail an operator reads when reconstructing a bill, and attributed
+to the surface that recorded it (`stripe-webhook`, `stripe-confirm`,
+`stripe-ach-charge`, `portal-charge-method`) rather than one blanket system
+identity. This is the "alert" half of the prescription; routing the excess to a
+**visible credit** is NOT built — the excess sits on the invoice as an
+overpayment.
+
+*A bug the fix itself creates, closed in the same change — and the first
+"closure" was theatre.* Idempotency keys here are `(invoice, amount, method)`
+and Stripe prunes them once "at least 24 hours old". Cancel a stale intent, then
+have the office void or delete that payment: the balance returns, the customer
+reloads, and the same key replays the *cancelled* intent — a pay page that
+cannot charge, for up to a day.
+
+The first attempt checked the **create response** for `status == "canceled"`.
+That is provably unreachable: Stripe's idempotency layer replays "the resulting
+status code and body of the **first** request"
+([idempotent requests](https://docs.stripe.com/api/idempotent_requests), read
+2026-08-24), and a freshly created intent is never cancelled. The guard read as
+a guard and could not fire, and its test fabricated a response the API cannot
+return. `_create_usable_intent()` now **retrieves** the intent after creating it
+and re-mints under a fresh key when the live status is unusable — the only way
+to know is to ask.
+
+**A fourth review caught the ordering wrong at one call site, in the committed
+code.** `void_invoice` uses a SINGLE transaction on purpose — an earlier review
+forced the void, its part/change-order releases and its audit row to land or roll
+back together — and the M12 enqueue was pattern-matched into the same source
+position as its three siblings, each of which already has a commit behind it
+there. At the void it therefore fired *before* the commit: a `priority:high`
+worker could cancel the customer's live PaymentIntent at Stripe before the void
+was durable, and a failure in the audit write or the commit would leave the
+invoice not-void with the intent already irreversibly cancelled — the money side
+committed and the record rolled back, the exact inversion of "the money commits
+first". Moved after the commit; the `stale_intent_sweep_queued` flag is gone from
+that audit row because it cannot honestly be known before it. The call-site test
+mocked the enqueue and asserted its arguments, so it passed either way — the new
+test records the sequence instead.
+
+**One guard is deliberately recorded as unproven.** The `payment_exceeds_receivable`
+audit write happens inside a SAVEPOINT so that a failed flush cannot poison the
+session and take the payment's own commit with it. On SQLite — every unit test
+here — reverting that savepoint changes nothing, because SQLite does not poison a
+session that way. So the test that looks like its guard passes either way, a
+structural spy on `begin_nested` was vacuous too (something else on the path
+calls it), and a real Postgres proof needs an FK-valid object graph that was not
+built. The savepoint is correct by construction from SQLAlchemy's semantics; it
+is **not** verified, and this line exists so nobody later reads a green suite as
+proof that it is.
+
+Guarded by `gdx_dispatch/tests/test_stale_intent_cancellation.py` (57 tests),
+counterfactually verified — 29 in all: removing any of the five call sites,
+weakening the cumulative overcharge rule to a per-intent one, reversing the
+newest-first order, dropping the `metadata.invoice_id` filter, the Connect
+account, the `processing` branch, the re-mint, the celery include entry,
+`ignore_result`, `retry=False`, the post-payment balance, the task's re-read of
+that balance, the audit actor, or the scan-truncation log each fails a test.
+
+Two of those guards were vacuous when first written and were rebuilt after a
+counterfactual proved they could not fail: the celery one asserted on
+`celery_app.tasks`, which this test file populates itself by importing the
+module, so it passed with the worker's `include` entry deleted. It now asserts
+on `conf.include`, which is what the worker actually reads.
+
+*Filed, not bundled.* Two defects found alongside this one, both a different
+class and neither smuggled into this change:
+
+- **#421** — `POST /api/stripe-connect/payment-intent` mints a destination
+  charge from a **client-supplied amount** with passthrough metadata and no
+  invoice binding. Found by the sibling sweep for this shape ("a money amount
+  frozen at creation into a customer-redeemable object").
+- **#422** — a payment landing after a void **resurrects the invoice to paid**
+  while its parts and change orders are already back on the unbilled checklist.
+  Nothing on the recording path guards on void, and `transition_invoice_status`
+  is a pass-through with no transition table, so `void → paid` is permitted.
+  The void sweep above removes the common case (a customer on the pay page) but
+  cannot help an intent that already succeeded.
 
 ---
 

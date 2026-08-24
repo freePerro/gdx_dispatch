@@ -49,6 +49,7 @@ from gdx_dispatch.modules.ledger.service import (
 )
 from gdx_dispatch.modules.proposals.models import Estimate, EstimateLine
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.tasks.stale_intent_sweep import enqueue_stale_intent_sweep
 
 log = logging.getLogger(__name__)
 
@@ -382,6 +383,7 @@ def _next_invoice_number(db: Session) -> str:
     from gdx_dispatch.core.closeout_billing import next_invoice_number
 
     return next_invoice_number(db)
+
 
 
 def _get_invoice_or_404(invoice_id: UUID, db: Session, include_relations: bool = False) -> Invoice:
@@ -2843,6 +2845,8 @@ def record_payment(
     payload: PaymentCreateIn,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
+    # Last, with a default: several tests call this positionally, and FastAPI
+    # injects a Request by annotation regardless of position.
 ) -> dict[str, object]:
     invoice = _get_invoice_or_404(invoice_id, db)
     # PR1-billing-capture (audit catch): a payment against a VOIDED invoice
@@ -3061,6 +3065,17 @@ def record_payment(
 
     db.commit()
     db.refresh(payment)
+
+    # M12. Money arrived by another route, so a PaymentIntent the customer
+    # still has open on the pay page could collect a second time — it froze its
+    # amount when it was minted, and `confirm` runs with `require_balance=False`.
+    # Queued, not called: the sweep makes several Stripe calls, and holding
+    # money locks across a third-party outage is the silent-write window this
+    # repo ranks highest. Only intents that would OVERCHARGE are cancelled.
+    queued = enqueue_stale_intent_sweep(
+        invoice, why="payment_recorded"
+    )
+
     log_audit_event_sync(
         db=db,
         tenant_id=None,
@@ -3068,7 +3083,14 @@ def record_payment(
         action="payment_recorded",
         entity_type="invoice",
         entity_id=str(invoice.id),
-        details={"payment_id": str(payment.id), "amount": _to_float(payment.amount)},
+        details={
+            "payment_id": str(payment.id),
+            "amount": _to_float(payment.amount),
+            # Whether the sweep was QUEUED — not whether it cancelled
+            # anything. Claiming a cancellation the task has not run yet
+            # would be the kind of comfortable lie this fix removes.
+            "stale_intent_sweep_queued": queued,
+        },
     )
     db.commit()
     return _serialize_payment(payment)
@@ -3227,6 +3249,23 @@ def void_invoice(
     # either the void, the releases and the record of them are all durable, or
     # none of them are. (Adversarial review 2026-08-23 caught the two-commit
     # window; `delete_invoice` swallows the same failure into a log line.)
+    # M12. A void is the ONE event after which the invoice can never owe
+    # anything again, so every open intent on it is stale by definition. This
+    # was the call site an adversarial review found missing: a voided invoice
+    # whose customer still had the pay page open could be paid, and the webhook
+    # would book that payment onto a void whose parts and change orders had
+    # already gone back to the unbilled checklist.
+    #
+    # Enqueued AFTER the commit below, unlike its three siblings which each
+    # already have a commit behind them at this point. `void_invoice`
+    # deliberately uses a SINGLE transaction — an earlier review forced the
+    # void, its part/change-order releases and its audit row to land or roll
+    # back together — so enqueueing here would let a `priority:high` worker
+    # cancel the customer's live PaymentIntent at Stripe *before* the void is
+    # durable. If the audit write or the commit then failed, the invoice would
+    # still not be void and the intent would already be irreversibly cancelled:
+    # the money side committed and the record rolled back, which is the exact
+    # inversion of "the money commits first".
     log_audit_event_sync(
         db=db,
         tenant_id=None,
@@ -3245,6 +3284,11 @@ def void_invoice(
     )
     db.commit()
     db.refresh(invoice)
+    # Now that the void is durable. No `queued` flag in the audit row above:
+    # it cannot be known before the commit, and inventing one there is what the
+    # first version of this call site did. The sweep writes its own
+    # `stale_payment_intents_canceled` row, so the trail exists either way.
+    enqueue_stale_intent_sweep(invoice, why="invoice_voided", settled=True)
     return _serialize_invoice(invoice)
 
 
@@ -3538,10 +3582,26 @@ def issue_credit_memo(
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
     _recalculate_invoice(invoice, db)  # fully-credited invoices settle to paid
     db.commit()
+    # M12: a credit can settle the invoice just as a payment can, and the
+    # audit's prescription says "a payment OR CREDIT". An intent left open on
+    # a fully-credited invoice would collect money against nothing owed.
+    # M12. Money arrived by another route, so a PaymentIntent the customer
+    # still has open on the pay page could collect a second time — it froze its
+    # amount when it was minted, and `confirm` runs with `require_balance=False`.
+    # Queued, not called: the sweep makes several Stripe calls, and holding
+    # money locks across a third-party outage is the silent-write window this
+    # repo ranks highest. Only intents that would OVERCHARGE are cancelled.
+    queued = enqueue_stale_intent_sweep(
+        invoice, why="credit_memo_issued"
+    )
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="credit_memo_issued", entity_type="invoice", entity_id=str(invoice.id),
-        details={"amount": float(credit_amount), "reason": payload.reason, "adjustment_id": str(adjustment.id)},
+        details={
+            "amount": float(credit_amount), "reason": payload.reason,
+            "adjustment_id": str(adjustment.id),
+            "stale_intent_sweep_queued": queued,
+        },
     )
     db.commit()
     return {
@@ -3614,10 +3674,22 @@ def apply_customer_credit(
     resettle_invoice_payments(db, invoice, actor=_actor_id(_))
     _recalculate_invoice(invoice, db)
     db.commit()
+    # M12. Money arrived by another route, so a PaymentIntent the customer
+    # still has open on the pay page could collect a second time — it froze its
+    # amount when it was minted, and `confirm` runs with `require_balance=False`.
+    # Queued, not called: the sweep makes several Stripe calls, and holding
+    # money locks across a third-party outage is the silent-write window this
+    # repo ranks highest. Only intents that would OVERCHARGE are cancelled.
+    queued = enqueue_stale_intent_sweep(
+        invoice, why="customer_credit_applied"
+    )
     log_audit_event_sync(
         db=db, tenant_id=None, user_id=_actor_id(_),
         action="customer_credit_applied", entity_type="invoice", entity_id=str(invoice.id),
-        details={"amount": float(amount), "adjustment_id": str(adjustment.id)},
+        details={
+            "amount": float(amount), "adjustment_id": str(adjustment.id),
+            "stale_intent_sweep_queued": queued,
+        },
     )
     db.commit()
     return {
