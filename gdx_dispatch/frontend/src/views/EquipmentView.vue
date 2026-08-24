@@ -296,7 +296,22 @@ async function submitForm() {
   saving.value = true;
   try {
     if (isEdit.value) {
-      await api.patch(`/api/equipment/${form.value.id}`, payload);
+      // PUT, not PATCH. `/api/equipment/{id}` is served by
+      // modules/equipment/router.py, which registers PUT only — this call has
+      // been 405ing since 2026-05-03, so saving an equipment edit has silently
+      // failed ever since, with the dialog reporting success.
+      //
+      // The PATCH route people keep finding lives in routers/equipment_tracking.py,
+      // which app.py deliberately UNWIRED on that date to retire the parallel
+      // equipment_assets table. Reading that file makes the endpoint look like
+      // it exists; the live route table says GET/PUT/DELETE. Repointing the UI
+      // is the fix — implementing PATCH there would resurrect the table the
+      // consolidation removed.
+      //
+      // Safe as a straight verb swap: the PUT body is a partial update (every
+      // field Optional, only non-None values applied) and accepts this exact
+      // key set, including the manufacturer/equipment_type spellings sent here.
+      await api.put(`/api/equipment/${form.value.id}`, payload);
       successMsg.value = "Equipment updated.";
     } else {
       await api.post("/api/equipment", { ...payload, customer_id: form.value.customer_id });
