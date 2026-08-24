@@ -120,6 +120,10 @@ def _pi(pid="pi_test_123", *, amount=16200, status="succeeded", invoice_id=None)
     m = MagicMock()
     m.id = pid
     m.amount = amount
+    # M17.3: production reads amount_received (what MOVED). A bare MagicMock
+    # auto-creates a truthy Mock for it and Mock/100 breaks recording — set it
+    # the way a real succeeded intent carries it.
+    m.amount_received = amount
     m.status = status
     m.client_secret = f"{pid}_secret"
     m.metadata = {"invoice_id": str(invoice_id)} if invoice_id else {}
