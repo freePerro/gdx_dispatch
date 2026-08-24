@@ -157,14 +157,6 @@
           <Button
             plain
             size="small"
-            label="Send SMS"
-            icon="pi pi-mobile"
-            @click="openBulkSmsDialog"
-            data-testid="segments-bulk-send-sms"
-          />
-          <Button
-            plain
-            size="small"
             label="Export CSV"
             icon="pi pi-file"
             @click="exportSelectedCustomers"
@@ -346,40 +338,6 @@
         </template>
       </Dialog>
 
-      <Dialog
-        v-model:visible="showBulkSmsDialog"
-        header="Send SMS to selected customers"
-        modal
-        :style="{ width: '520px' }"
-        data-testid="segments-bulk-sms-dialog"
-      >
-        <div class="form-field full-width">
-          <label>Message</label>
-          <Textarea
-            v-model="bulkSmsMessage"
-            rows="4"
-            class="w-full"
-            placeholder="Type your message..."
-            data-testid="segments-bulk-sms-input"
-          />
-        </div>
-        <template #footer>
-          <Button
-            label="Cancel"
-            severity="secondary"
-            @click="showBulkSmsDialog = false"
-            data-testid="segments-bulk-sms-cancel"
-          />
-          <Button
-            label="Send"
-            icon="pi pi-send"
-            class="primary"
-            :loading="bulkSmsSending"
-            @click="sendBulkSms"
-            data-testid="segments-bulk-sms-send"
-          />
-        </template>
-      </Dialog>
     </section>
 </template>
 
@@ -439,11 +397,8 @@ const activeCustomerSegment = ref(null);
 const activeCustomerChipKey = ref('all');
 const allCustomersCount = ref(0);
 const showBulkTagDialog = ref(false);
-const showBulkSmsDialog = ref(false);
 const bulkTagValue = ref('');
-const bulkSmsMessage = ref('');
 const bulkTagging = ref(false);
-const bulkSmsSending = ref(false);
 
 const tabDefinitions = [
   { key: 'all', label: 'All segments', note: 'Every saved segment in the library.' },
@@ -672,30 +627,6 @@ async function saveBulkTag() {
     clearCustomerSelection();
   } finally {
     bulkTagging.value = false;
-  }
-}
-
-function openBulkSmsDialog() {
-  bulkSmsMessage.value = '';
-  showBulkSmsDialog.value = true;
-}
-
-async function sendBulkSms() {
-  const ids = selectedCustomerIds.value;
-  const message = bulkSmsMessage.value.trim();
-  if (!ids.length || !message) return;
-  bulkSmsSending.value = true;
-  try {
-    await api.post(
-      '/api/communications/bulk-sms',
-      { customer_ids: ids, message },
-      { successMessage: 'SMS queued to selected customers' }
-    );
-    showBulkSmsDialog.value = false;
-    bulkSmsMessage.value = '';
-    clearCustomerSelection();
-  } finally {
-    bulkSmsSending.value = false;
   }
 }
 

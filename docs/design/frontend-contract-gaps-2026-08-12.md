@@ -130,7 +130,7 @@ silently does nothing while claiming success.
 |---|---|---|
 | `POST/PATCH /api/pricing[/{id}]` | `PricingView:301,303` | price create + edit both no-op |
 | `POST /api/payroll/run-current-period` | `PayrollView:202` | "run payroll" does nothing |
-| `POST /api/communications/bulk-sms` | `SegmentsView:689` | bulk SMS reports sent, sends nothing |
+| ~~`POST /api/communications/bulk-sms`~~ | ~~`SegmentsView:689`~~ | **REMOVED 2026-08-24** — owner declined bulk send; stub and the SegmentsView button/dialog are gone |
 | `POST /api/customers/{id}/recurring-jobs` | `CustomerDetailView:911` | recurring job never created |
 | `POST /api/customers/{id}/portal-account` | `CustomerDetailView:1002` | portal account never created |
 | `POST/PATCH /api/scheduling[/{id}]` | `SchedulingView:484,486` | scheduling edits discarded |
@@ -180,8 +180,8 @@ Highest-impact:
 | `GET /api/technicians/skills` | skills always empty |
 | `GET /api/users/staff` | staff list always empty |
 | `GET /api/onboarding/checklist` | onboarding checklist always empty |
-| `GET /api/billing/invoices`, `/billing/payment-methods`, `/billing/usage` | billing sub-pages always empty |
-| `GET /api/ai/quality/summary`, `/ai/quality/recent` | AI quality always empty |
+| ~~`GET /api/billing/invoices`, `/billing/payment-methods`, `/billing/usage`~~ | **REMOVED 2026-08-24** (decision-list item 16) — no UI caller; `/api/billing/subscription` went too, it answered a hardcoded `{"plan":"pro","seats":5}`. `/api/billing/terms` is a DIFFERENT, real endpoint and stays |
+| ~~`GET /api/ai/quality/summary`, `/ai/quality/recent`~~ | **REMOVED 2026-08-24** (decision-list item 17) — no UI caller |
 | `GET /api/customers/{id}/portal-account` | portal-account status always empty |
 | `GET /api/quickbooks`, `/api/admin/permissions`, `/api/campaigns/{id}/preview`, `POST /api/campaigns/preview-filter`, `GET /api/role-permissions/migration-banner`, `POST .../ack` | as above |
 

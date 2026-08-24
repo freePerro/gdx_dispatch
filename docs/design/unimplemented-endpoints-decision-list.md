@@ -69,10 +69,10 @@ today, so a user can reach the 501.
 
 | # | Endpoint | UI caller | What's missing | Suggested | **Decision (2026-08-24)** |
 |---|---|---|---|---|---|
-| 1 | `POST/PATCH /api/pricing[/{id}]` | `PricingView` | No `PricingEntry` model. The real pricing router is settings/markup/vendor-lists — a *different* concept. "Pricing entry" was never designed. | **Decide first**: is a pricing entry a catalog item? If the Pricing page duplicates the catalog, remove the page. | **REMOVE — done.** Page deleted (view + route + nav + 3 stubs). Its GET was a hardcoded `_empty_list()`, so PricingView could never show a row. The real pricing surface is `routers/pricing.py` (settings/calculate/markup/vendor-lists/seasonal/bundles); no real path was ever served by the stubs removed here. ⚠️ Correction: an earlier draft credited include order (`app.py:1606` ahead of ui_compat at `:1682`). Right conclusion, wrong mechanism — `reorder_literal_paths_first(app)` at `app.py:2041` runs after every include and is what actually keeps `/api/pricing/settings` ahead of a `/{entry_id}` catch-all. |
+| 1 | `POST/PATCH /api/pricing[/{id}]` | `PricingView` | No `PricingEntry` model. The real pricing router is settings/markup/vendor-lists — a *different* concept. "Pricing entry" was never designed. | **Decide first**: is a pricing entry a catalog item? If the Pricing page duplicates the catalog, remove the page. | **REMOVE — done.** Page deleted (view + route + nav + 3 stubs). Its GET was a hardcoded `_empty_list()`, so PricingView could never show a row. The real pricing surface is `routers/pricing.py` (settings/calculate/markup/vendor-lists/seasonal/bundles); no real path was ever served by the stubs removed here. ⚠️ Correction, twice over: the original text credited include order (`app.py:1606` ahead of ui_compat at `:1682`); I then "corrected" that to `reorder_literal_paths_first(app)` at `app.py:2041`. **The first version was right and my correction was wrong.** `reorder_literal_paths_first` sorts `app.router.routes` on `getattr(r, "path", "")`, and the lazy `_IncludedRouter` wrappers have no `.path` — so it cannot see router-included routes at all (it logs `moved=3` out of 217 top-level entries). Include order IS the mechanism. Restored, with the evidence, so the next reader is not sent to the wrong function. |
 | 2 | `POST /api/payroll/run-current-period` | `PayrollView` | `PayrollEntry` exists, but "run a period" is a calculation (gather hours → rates → entries), never written. | **Build** if payroll is run in GDX; otherwise remove the button. | **ALREADY RESOLVED — no action.** M27 (#411, v1.80.0) removed the button and the page now states "Payroll runs are not built." Not a pending decision; recorded here so a top-down reader stops looking. |
-| 3 | `POST /api/communications/bulk-sms` | `SegmentsView` | Real single-send exists (`POST /api/communications/send`). Bulk = loop + rate-limit + opt-out + audit. | **Build on top of the working single-send.** Check DNC list per recipient. | **REMOVE the affordance.** Owner call 2026-08-24: bulk SMS is not wanted. SegmentsView keeps its real router (`routers/segments.py`); only the bulk-send control and its stub go. |
-| 4 | `POST /api/customers/{id}/recurring-jobs` | `CustomerDetailView` | `RecurringJobSchedule` exists but needs `job_template_id` + a `frequency` enum; the Vue sends free-text `title` + `interval_days`. **Incompatible models.** | **Decide the model first**, then either repoint the Vue at `/api/recurring` or widen that model. | **REMOVE the affordance.** `recurring_job_schedules` is 0 rows on prod and the real `/api/recurring` router exists with an incompatible model. Not worth reconciling two models for a feature nobody has used; the customer-page control goes. |
+| 3 | `POST /api/communications/bulk-sms` | `SegmentsView` | Real single-send exists (`POST /api/communications/send`). Bulk = loop + rate-limit + opt-out + audit. | **Build on top of the working single-send.** Check DNC list per recipient. | **REMOVE the affordance — done.** Owner declined building it 2026-08-24. The stub and SegmentsView's "Send SMS" button, dialog and handlers are gone; SegmentsView keeps its real router (`routers/segments.py`) and everything else on the page. |
+| 4 | `POST /api/customers/{id}/recurring-jobs` | `CustomerDetailView` | `RecurringJobSchedule` exists but needs `job_template_id` + a `frequency` enum; the Vue sends free-text `title` + `interval_days`. **Incompatible models.** | **Decide the model first**, then either repoint the Vue at `/api/recurring` or widen that model. | ⚠️ **NOT DECIDED — my error, corrected 2026-08-24.** An earlier revision of this row recorded "remove the affordance" as a decision. **The owner was never asked.** Removing it takes the whole Recurring Jobs tab off the customer page, which is product shape. The facts for whoever decides: `recurring_job_schedules` is 0 rows on prod, and a real `/api/recurring` router exists (`routers/recurring_jobs.py`) with a model incompatible with what the Vue sends (`job_template_id` + frequency enum vs free-text `title` + `interval_days`). Options are repoint the tab at the real router, widen that model, or drop the tab. |
 | 5 | `POST /api/customers/{id}/portal-account` | `CustomerDetailView` | Portal has login/password endpoints but no provisioning. (`DELETE` on the same path is also broken — C2.) | **Build** — customers can't be onboarded to the portal without it. | **BUILD — and fix a lying read first.** ⚠️ The GET is worse than missing: it returns a hardcoded `{"exists": false, "account": null}` for every customer, and prod has **1 real `customer_users` row**. The office is told that customer has no portal account. Read fix + real provisioning POST + audit. |
 | 6 | `PATCH /api/sso`, `POST /api/sso/test-connection` | `SsoView` | Real SSO is OAuth redirect flows (`/auth/sso/google`), not config CRUD. No `SsoConfig` model. `GET /api/sso` is also a permanent blank (C5). | **Remove the page** unless per-tenant SSO config is genuinely wanted. | **REMOVE — done.** Page deleted. The GET returned a fake `{provider: null, active: false}` config. Real SSO is the OAuth redirect flow at `/auth/sso/google`; single-tenant, 9 users, no per-tenant SSO config wanted. |
 | 7 | `POST/PATCH /api/scheduling[/{id}]` | `SchedulingView` | No `ScheduleEntry` model. Real scheduling is calendar + appointments + tech-unavailability. | **Probably remove** — likely duplicates the calendar. | **REMOVE — done, with a recorded loss.** Page deleted because both writes 501'd, so Save/Reassign never worked, and Dispatch and Jobs already own reassignment. ⚠️ But this was the one of the five that was **not** inert, and the loss is real — see "What the Team Scheduling removal costs" below. Do not read this row as "it was fake too". |
@@ -81,11 +81,11 @@ today, so a user can reach the 501.
 | 10 | `POST /api/reviews/{id}/responses` | `ReviewsView` | `CustomerReview` has no response column. Needs a migration. | **Build** if replying to reviews matters; small migration. | **BUILD.** 13 real `customer_reviews` rows on prod. Confirmed not shadowed: `routers/reviews.py` has no `/responses` route, so this is a genuine build — small migration + endpoint + UI. |
 | 11 | `PATCH /api/jobs/{id}/parts/{part_id}` | `JobCostingView` | `JobPart` exists; only POST was built. Note `GET`/`DELETE` on the same resource are also broken (C2). | **Build the full CRUD** — the parts panel is non-functional without it. | **DEFERRED — needs a business decision, not a code decision.** See "What re-verification changed" below: `job_parts` (0 rows) is the *cost* side and `job_parts_needed` (73 rows, $1,911.00) is the *price* side. They are not duplicates. Building this PATCH delivers an editor for a table nothing populates. |
 | 12 | `POST /api/jobs/{id}/apply-template` | `JobDetailView` | `JobTemplate` exists with checklist/duration/parts. Applying = copy onto the job. | **Build** — cheap and the model is ready. | **DEFERRED with a trap recorded.** ⚠️ A real `POST /api/job-templates/{id}/apply` already exists — but it calls `create_job_from_template` and returns a **new job**, whereas this button means "apply onto the job I am looking at". A naive repoint would silently mint a duplicate job per click. The operation genuinely does not exist. |
-| 13 | `POST /api/marketing` | — | No model. | Remove. | **REMOVE.** No model, no UI caller (verified 2026-08-24), MarketingView is not even routed. |
-| 14 | `POST /api/uploads` | — | Real uploads go through the documents/photos routers. | Remove. | **REMOVE.** No UI caller. Real uploads go through the documents/photos routers. |
-| 15 | `POST /api/estimate/calculate`, `/api/estimate/save` | — | Portal estimate flow; the real estimate surface is `/api/estimates`. | Remove. | **REMOVE.** No UI caller. The real estimate surface is `/api/estimates`. |
-| 16 | `POST /api/billing/change-plan`, `/api/billing/cancel` | — | SaaS-plan billing — a multi-tenant concept that went with the platform collapse. | Remove (single-tenant, self-hosted). | **REMOVE.** No UI caller, and dead by the single-tenant decision. |
-| 17 | `POST /api/ai/quality/feedback` | — | No store. `GET /api/ai/quality/*` are also permanent blanks (C5). | Remove or build with the AI-quality page. | **REMOVE.** No UI caller; the sibling `GET /api/ai/quality/*` are permanent blanks (C5) and go with it. |
+| 13 | `POST /api/marketing` | — | No model. | Remove. | **REMOVE — done.** No model, no UI caller (literal grep, 2026-08-24), MarketingView is not even routed. Both handlers gone. |
+| 14 | `POST /api/uploads` | — | Real uploads go through the documents/photos routers. | Remove. | **REMOVE — done.** No UI caller. Real uploads go through the documents/photos routers. Both handlers gone. |
+| 15 | `POST /api/estimate/calculate`, `/api/estimate/save` | — | Portal estimate flow; the real estimate surface is `/api/estimates`. | Remove. | **REMOVE — done.** No UI caller. The real estimate surface is `/api/estimates`. Both handlers gone. |
+| 16 | `POST /api/billing/change-plan`, `/api/billing/cancel` | — | SaaS-plan billing — a multi-tenant concept that went with the platform collapse. | Remove (single-tenant, self-hosted). | **REMOVE — done.** No UI caller, dead by the single-tenant decision. The fix owned the class: all six SaaS-plan handlers went (subscription, invoices, payment-methods, usage, change-plan, cancel), not just the two this row names. ⚠️ `/api/billing/terms` is a DIFFERENT, real endpoint called by SettingsView — untouched. |
+| 17 | `POST /api/ai/quality/feedback` | — | No store. `GET /api/ai/quality/*` are also permanent blanks (C5). | Remove or build with the AI-quality page. | **REMOVE — done.** No UI caller; all four went — `summary`, `recent`, `feedback` GET and POST. |
 
 ## What the Team Scheduling removal costs
 
@@ -124,6 +124,121 @@ own reassignment" answers the *write* side only, and that phrasing hid the read
 side in the first draft. Filed as a follow-up rather than silently dropped:
 nothing in the app flags a Scheduled job with no scheduled date.
 
+## The duplicate-shim trap (found while executing the removals)
+
+`ui_compat.py` is not the only stub router. `routers/sub_resources.py` — whose
+docstring says it *"replaces shim endpoints from ui_compat.py with real DB-backed
+implementations"* — was never finished on the ui_compat side. The shims it
+superseded stayed, so several paths carried **two definitions**, and
+`sub_resources` registers at `app.py:1677`, ahead of ui_compat at `:1682`. Its
+copy always won; the ui_compat copy was unreachable dead code.
+
+Two consequences, both of which bit this pass:
+
+**1. Auditing ui_compat by reading it describes behaviour that never runs.**
+Row 4 of this doc was written up from the ui_compat handler, which returns
+`_empty_list()`. The handler actually serving `GET /api/customers/{id}/
+recurring-jobs` is `sub_resources.py:26` (confirmed by resolution order —
+sub_resources is registered first), which queries `recurring_job_schedules` for
+real. Only the create path 501s.
+
+**But do not upgrade that to "the read works".** An earlier revision of this doc
+did, in bold, and it is not established:
+- The handler wraps its query in `except Exception: return {"items": [], "total": 0}`.
+  A broken query and an empty table produce a **byte-identical 200**.
+- `recurring_job_schedules` appears in **zero Alembic migrations** — it exists
+  only where `create_all` reached it.
+- Prod has **0 rows**, so no walk can distinguish the two either.
+
+What is established: the ui_compat description was wrong, and a different, real
+query is the one being served. Whether it returns correct rows is untested and
+currently untestable on this data.
+
+**2. Deleting a stub from ui_compat can be a no-op.** The first execution of
+decisions 16 and 17 removed the billing and AI-quality handlers from ui_compat
+and changed nothing: `app.openapi()` still served
+`/api/billing/subscription|invoices|payment-methods|usage` and
+`/api/ai/quality/summary|recent` from `sub_resources`. They were only genuinely
+removed once both copies went. `/api/billing/subscription` was the worst of
+them — a hardcoded `{"plan": "pro", "status": "active", "seats": 5}`, SaaS-plan
+fiction in a single-tenant app, and a lying read of the same class as
+portal-account.
+
+**The check that catches this — and the WRONG check I first prescribed.**
+An earlier revision of this section said "assemble the app and read
+`app.openapi()`". **That is wrong, and wrong in the most misleading way.**
+FastAPI collapses duplicate `path+method` into a single spec entry, so
+`openapi()` cannot show you a duplicate at all — and for
+`GET /api/customers/{customer_id}/recurring-jobs` it reports
+`operationId: list_customer_recurring_jobs…`, which is the **ui_compat** copy:
+the loser. The check named the handler that does not run.
+
+The correct check walks the resolved route table. FastAPI ≥0.137 defers
+`include_router` into lazy `_IncludedRouter` wrappers, so a flat read of
+`app.routes` yields ~8 entries; you must recurse `.original_router.routes` and
+re-apply `include_context.prefix`. The repo already has this helper twice —
+`gdx_dispatch/tests/conftest.py::iter_app_routes` and
+`gdx_dispatch/tools/frontend_contract_scan.py::routes_from_app` (note the
+`gdx_dispatch/` prefix — a root `conftest.py` and a root `tools/` also exist and
+do NOT contain these). Better: just run
+`gdx_dispatch/tools/route_shadow_scan.py`, which now does it for you.
+
+Run that way, the app resolves **1442 routes with 43 duplicate `(method, path)`
+pairs**, and the FIRST registration wins at request time.
+
+**Row 5 was re-checked against this trap and survives it.**
+`/api/customers/{id}/portal-account` has exactly one definition
+(`ui_compat.py:228`), unshadowed, so the hardcoded `{"exists": false,
+"account": null}` really is what the customer page receives — with one real
+`customer_users` row on prod. The lying-read finding stands.
+
+**This pass fixed 6 of the class, not the class.** The resolved route table
+carries **43 duplicate `(method, path)` pairs**.
+
+⚠️ **And an earlier revision of this section had the direction backwards.** It
+said "roughly ten of them ui_compat shadowing a real router". Measured: **19
+pairs involve ui_compat, and ui_compat wins exactly ONE** —
+`GET /api/admin/permissions`, because admin_ops is included at `app.py:1729`,
+after ui_compat at `:1682`. For the other **18 the real router wins and the
+ui_compat handler is unreachable dead code** (technicians :1532, onboarding
+:1582, campaigns :1649, sub_resources :1677 all precede it).
+
+That makes this doc's own moral *stronger* than it was stated: auditing
+ui_compat by reading it does not merely risk describing dead code — for 18 of
+its 19 collisions it **is** dead code. `ui_compat.py`'s module docstring
+asserted the opposite ("For many paths it WINS route arbitration") and has been
+corrected.
+
+The remaining 24 pairs are real-router-vs-real-router, which is the worrying
+set because the losing copy may be the better one: `purchase_orders` vs
+`po_workflow` (including `/api/purchase-orders/{id}/receive` — the three-PO-systems
+collision, still live), `fleet` vs `modules/fleet`, `inventory` vs
+`modules/inventory`, `timeclock` vs its module, `uploads.upload_job_photo` vs
+`photos.create_job_photo`, `settings` vs `branding_public`,
+`jobs.get_job_costing` vs `labor.get_job_labor_costing`.
+
+An earlier revision also claimed "zero duplicate (method, path) pairs" — that
+came from `openapi()`, which collapses them, and was false. Enumerated in #462.
+
+**The gate for this class already existed and was blind — now fixed.**
+`gdx_dispatch/tools/route_shadow_scan.py` has shipped since June with a test
+(`tests/test_route_shadow_baseline.py::test_no_net_new_route_shadows`) that is
+supposed to stop net-new shadows. `collect_shadows()` iterated `app.routes`
+**flat**, so it saw 10 of 1442 routes and reported **zero shadows against 43
+live ones**; `route_shadow_baseline.txt` had never been generated, so
+`load_baseline()` returned an empty set and the test compared nothing to
+nothing and passed. Textbook green-ratchet-that-cannot-fail.
+
+Fixed in this pass: the scanner now recurses `_IncludedRouter` and finds all 43,
+and the baseline is committed. Counterfactual run to prove the guard bites —
+deleting one line from the baseline turns the test **red**. The class can now
+only shrink.
+
+**Rows still to be re-checked this way before anyone acts on them:** the four
+undecided stubs in #459, and every C5 "permanent blank" listed in
+`frontend-contract-gaps-2026-08-12.md`. An empty response and a false response
+are indistinguishable from the frontend, and now so is a dead handler.
+
 ## The pattern this list was missing
 
 Six of the seventeen are not unbuilt features. They are **parallel fakes of
@@ -137,6 +252,8 @@ working features**, reachable from a different UI surface:
 | 8 | `PATCH /api/booking/{slot_id}` | `routers/booking.py` → request / approve / decline (no UI, see the orphan note) |
 | 9 | `*/api/equipment-tracking` | `modules/equipment/router.py` → `/api/equipment` |
 | 12 | `POST /api/jobs/{id}/apply-template` | `job_templates.py:313` — but different semantics; see the trap above |
+
+⚠️ Before acting on any row here, re-check which handler actually serves it — run `gdx_dispatch/tools/route_shadow_scan.py`, or use the recursive walk described in "The duplicate-shim trap" above. **Do not use `app.openapi()`**; it collapses duplicates and names the loser.
 
 Item 5 is the sharpest case. The doc says "customers can't be onboarded to the
 portal without it." They can: `PATCH /api/portal/{customer_id}` creates the

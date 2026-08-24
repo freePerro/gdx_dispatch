@@ -13,9 +13,24 @@ This router exposes thin GET/POST/PATCH handlers that:
   - Raise 501 for write endpoints with no backing store (see below)
   - Are tenant-scoped via request.state.tenant
 
-This file is NOT the harmless shim its name suggests. For many paths it WINS
-route arbitration over the real router, so it is the live implementation the
-browser actually reaches.
+What this file actually is — MEASURED 2026-08-24, not assumed. The previous
+version of this paragraph said "For many paths it WINS route arbitration over
+the real router, so it is the live implementation the browser actually reaches."
+That is **false**, and backwards. Of the 19 `(method, path)` pairs where a
+ui_compat handler collides with a real router, ui_compat is registered FIRST —
+and therefore serves — for exactly **one**: `GET /api/admin/permissions`
+(admin_ops is included at app.py:1729, after ui_compat at :1682). For the other
+**18 the real router wins and the handler here is unreachable dead code**:
+technicians (:1532), onboarding (:1582), campaigns (:1649) and sub_resources
+(:1677) all precede ui_compat.
+
+So of this router's registrations, roughly 18 never execute. Reading a handler
+here tells you nothing about what the browser receives — check
+`gdx_dispatch/tools/route_shadow_scan.py` output first. That scanner was itself
+blind until 2026-08-24 (it walked `app.routes` flat and saw 10 of 1442 routes,
+reporting zero shadows against 43 real ones); it now recurses the lazy
+`_IncludedRouter` wrappers and gates against
+`gdx_dispatch/tools/route_shadow_baseline.txt`.
 
 2026-08-12 correction. The previous version of this docstring claimed these
 handlers "always log_audit_event_sync on mutations" and "accept writes into
@@ -48,6 +63,21 @@ zero GETs to any of the five `/api` paths (nginx, 21-24 Aug 2026). Note the
 answered 200 — the per-path GET count is the load-bearing measurement, and
 nginx rotation has since aged the window out, so it is not reproducible.
 Decisions recorded in docs/design/unimplemented-endpoints-decision-list.md.
+
+2026-08-24, second pass. Seventeen more handlers removed — every surface the
+owner declined that had NO UI caller at all, verified by literal grep across
+frontend/src: /api/marketing (2), /api/uploads (2), /api/estimate/calculate +
+/save, the whole /api/billing SaaS-plan block (subscription, invoices,
+payment-methods, usage, change-plan, cancel — dead by the single-tenant
+decision; note /api/billing/terms is a DIFFERENT, real endpoint and stays), the
+whole /api/ai/quality block (summary, recent, feedback GET+POST), and
+/api/communications/bulk-sms, whose SegmentsView button went with it because the
+owner declined building bulk send and a button that 501s is a defect either way.
+
+Deliberately NOT removed here: /api/customers/{id}/recurring-jobs. Its removal
+would take a whole tab off the customer page, which is product shape and the
+owner's call — it was never put to them. /api/campaigns/* and
+/api/onboarding/checklist likewise carry no recorded decision (#459).
 
 Those handlers now call `_not_implemented(...)`, which logs at WARNING and
 raises 501. A write endpoint here must either do the work or fail — never
@@ -180,6 +210,15 @@ def run_admin_op(
     return _ok_with_id()
 
 
+# ── Collections ────────────────────────────────────────────────────────────
+# The list/PATCH/bulk-send stubs that lived here were removed 2026-07-24:
+# routers/collections.py now implements the real queue (derived from overdue
+# invoices + the reminder ledger). The shim's {"items": []} made the whole
+# CollectionsView permanent theater.
+
+
+# ── Customer detail: recurring jobs, communications, portal ─────────────
+
 @router.get("/api/customers/{customer_id}/recurring-jobs", response_model=None)
 def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current_user)) -> dict:
     return _empty_list()
@@ -250,6 +289,8 @@ def geocode_missing_jobs(_: dict = Depends(get_current_user)) -> dict:
     raise HTTPException(status_code=501, detail="Geocoding worker not implemented")
 
 
+# ── Loyalty (list index) ──────────────────────────────────────────────────
+
 @router.get("/api/loyalty", response_model=None)
 def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
     return {"members": [], "redemptions": [], "tiers": []}
@@ -260,22 +301,6 @@ def loyalty_index(_: dict = Depends(get_current_user)) -> dict:
 @router.get("/api/maps", response_model=None)
 def maps_index(_: dict = Depends(get_current_user)) -> dict:
     return {"tech_locations": [], "route_optimizations": []}
-
-
-# ── Marketing (list + create) ─────────────────────────────────────────────
-
-@router.get("/api/marketing", response_model=None)
-def list_marketing(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/marketing", response_model=None, status_code=201)
-def create_marketing(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating a marketing campaign", request, user)
 
 
 # ── Onboarding state + checklist + seed actions ───────────────────────────
@@ -544,23 +569,11 @@ def run_payroll_current(
 # gdx_dispatch/routers/portal.py (staff_router).
 
 
+# ── Quickbooks integration status ─────────────────────────────────────────
+
 @router.get("/api/quickbooks", response_model=None)
 def quickbooks_status(_: dict = Depends(get_current_user)) -> dict:
     return {"connected": False, "last_sync": None, "recent_events": []}
-
-
-@router.get("/api/uploads", response_model=None)
-def list_uploads(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/uploads", response_model=None, status_code=201)
-def create_upload(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Uploading a file through this endpoint", request, user)
 
 
 # ── Voice (list) ──────────────────────────────────────────────────────────
@@ -592,15 +605,6 @@ def bulk_tag_customers(payload: _GenericPayload, _: dict = Depends(get_current_u
     # but isn't implemented yet (audit 2026-05-05).
     from fastapi import HTTPException
     raise HTTPException(status_code=501, detail="Customer bulk-tag not implemented")
-
-
-@router.post("/api/communications/bulk-sms", response_model=None)
-def bulk_send_sms(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Bulk SMS to a customer segment", request, user)
 
 
 # ── Job costing line items + parts ────────────────────────────────────────
@@ -694,26 +698,6 @@ def list_labor_time_entries(
     return {"items": items, "total": len(items)}
 
 
-# ── Estimate builder (customer-facing portal estimate) ───────────────────
-
-@router.post("/api/estimate/calculate", response_model=None)
-def calculate_portal_estimate(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Portal estimate calculation", request, user)
-
-
-@router.post("/api/estimate/save", response_model=None, status_code=201)
-def save_portal_estimate(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Saving a portal estimate", request, user)
-
-
 # ── Reviews responses ─────────────────────────────────────────────────────
 
 @router.post("/api/reviews/{review_id}/responses", response_model=None, status_code=201)
@@ -732,46 +716,6 @@ def create_review_response(
 # edit, while winning route arbitration over the real router. The genuine
 # implementation now lives in routers/service_agreements.update_template,
 # alongside the GET/POST for the same resource.
-
-
-# ── Billing / Subscription (Gemma 4 generated) ───────────────────────────
-
-@router.get("/api/billing/subscription", response_model=None)
-def get_billing_subscription(_: dict = Depends(get_current_user)) -> dict:
-    return {"plan": "pro", "status": "active", "period_end": None, "seats": 5}
-
-
-@router.get("/api/billing/invoices", response_model=None)
-def get_billing_invoices_list(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.get("/api/billing/payment-methods", response_model=None)
-def get_billing_payment_methods(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/billing/change-plan", response_model=None)
-def change_billing_plan(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Changing the billing plan", request, user)
-
-
-@router.post("/api/billing/cancel", response_model=None)
-def cancel_billing(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Cancelling billing", request, user)
-
-
-@router.get("/api/billing/usage", response_model=None)
-def get_billing_usage(_: dict = Depends(get_current_user)) -> dict:
-    return {"current_month": {"jobs": 0, "invoices": 0, "users": 0}}
 
 
 # ── Campaign management extras (Gemma 4 generated) ───────────────────────
@@ -823,36 +767,6 @@ def deactivate_campaign(
 @router.post("/api/customers/{customer_id}/optout", response_model=None)
 def customer_optout(customer_id: str, payload: _GenericPayload, _: dict = Depends(get_current_user)) -> dict:
     return {"ok": True, "opted_out": True}
-
-
-# ── AI Quality Dashboard (Gemma 4 generated) ─────────────────────────────
-
-@router.get("/api/ai/quality/summary", response_model=None)
-def ai_quality_summary(_: dict = Depends(get_current_user)) -> dict:
-    return {
-        "total_quotes": 0, "accepted": 0, "rejected": 0,
-        "accuracy_pct": 0, "avg_response_time_ms": 0,
-        "last_30_days": {"total": 0, "accepted": 0},
-    }
-
-
-@router.get("/api/ai/quality/recent", response_model=None)
-def ai_quality_recent(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.get("/api/ai/quality/feedback", response_model=None)
-def ai_quality_feedback_list(_: dict = Depends(get_current_user)) -> dict:
-    return _empty_list()
-
-
-@router.post("/api/ai/quality/feedback", response_model=None)
-def ai_quality_feedback_submit(
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Submitting AI quality feedback", request, user)
 
 
 # ── Admin Permissions ────────────────────────────────────────────────────
