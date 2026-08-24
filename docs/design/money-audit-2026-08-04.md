@@ -409,7 +409,7 @@ on a $500 invoice, clamped invisible.
 webhook time compare the amount against the remaining receivable, routing any excess
 to a visible credit plus an alert.
 
-**FIXED — PR #TBD. No migration.** Two halves, as prescribed:
+**FIXED — MERGED #424, RELEASED v1.84.0; shipped INERT and repaired in v1.84.1. No migration.** Two halves, as prescribed:
 
 *Close the open tab.* A Celery task, `payments.sweep_stale_intents`
 (`priority:high`), runs whenever an invoice is settled some other way —
@@ -575,6 +575,32 @@ that audit row because it cannot honestly be known before it. The call-site test
 mocked the enqueue and asserted its arguments, so it passed either way — the new
 test records the sequence instead.
 
+**v1.84.0 shipped this feature completely inert, and only the prod walk found
+it.** `STRIPE_SECRET_KEY` was declared **app-only** in `docker-compose.yml`, so
+the celery services merged `<<: *app-env` without it. The sweep runs on a
+worker, so every Stripe call raised:
+
+```
+stripe._error.AuthenticationError: You did not provide an API key.
+```
+
+The task caught it, logged `stale_intent_scan_failed`, degraded, and returned
+`{"results": []}` — **indistinguishable from "there were no stale intents"** —
+then reported `succeeded` to Celery. Nothing cancelled, nothing raised, nothing
+red. All 57 unit tests passed, the full matrix passed, all 16 CI checks passed,
+and the feature did nothing at all in production.
+
+None of those tests could have caught it: every one of them mocks Stripe. It was
+found by enqueueing the real task for a real prod invoice and reading the
+worker log — the walk, not the suite.
+
+Repaired in **v1.84.1**: the key moved into the shared `x-app-env` anchor (one
+declaration, so no service can be missed), a test reads the compose file the
+deploy actually uses and fails if it is ever moved back, and the task now
+refuses up front with a distinct `stripe_unconfigured` error instead of
+reporting success. Only this task calls Stripe from a worker, so nothing else
+was affected.
+
 **One guard is deliberately recorded as unproven.** The `payment_exceeds_receivable`
 audit write happens inside a SAVEPOINT so that a failed flush cannot poison the
 session and take the payment's own commit with it. On SQLite — every unit test
@@ -586,8 +612,8 @@ built. The savepoint is correct by construction from SQLAlchemy's semantics; it
 is **not** verified, and this line exists so nobody later reads a green suite as
 proof that it is.
 
-Guarded by `gdx_dispatch/tests/test_stale_intent_cancellation.py` (57 tests),
-counterfactually verified — 29 in all: removing any of the five call sites,
+Guarded by `gdx_dispatch/tests/test_stale_intent_cancellation.py` (63 tests, plus `test_celery_stripe_env.py`),
+counterfactually verified — 31 in all: removing any of the five call sites,
 weakening the cumulative overcharge rule to a per-intent one, reversing the
 newest-first order, dropping the `metadata.invoice_id` filter, the Connect
 account, the `processing` branch, the re-mint, the celery include entry,

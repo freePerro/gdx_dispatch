@@ -58,6 +58,19 @@ from gdx_dispatch.models.tenant_models import Invoice, InvoiceLine, Payment
 TENANT = "tenant-m12"
 
 
+@pytest.fixture(autouse=True)
+def _stripe_is_configured(monkeypatch):
+    """These tests are about sweep LOGIC, not deployment configuration.
+
+    The task refuses up front when `STRIPE_SECRET_KEY` is unset — added after
+    the prod walk of v1.84.0 found the celery workers had no key, so every
+    sweep failed with `AuthenticationError` while the task reported success.
+    The unconfigured path has its own test below; everything else assumes a
+    configured worker, which is what production is supposed to be.
+    """
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_not_a_real_key")
+
+
 def _pi(pid, status, invoice_id, amount=50000, created=1_700_000_000):
     """A PaymentIntent shaped the way Stripe's list endpoint returns one."""
     return SimpleNamespace(
@@ -1038,3 +1051,29 @@ def test_the_void_sweep_is_queued_only_after_the_void_is_durable(db, unpaid_invo
     assert order.index("commit") < order.index("enqueue"), (
         f"the sweep was queued before the void was durable: {order}"
     )
+
+
+def test_an_unconfigured_worker_says_so_instead_of_reporting_success(db, invoice, monkeypatch, caplog):
+    """The prod walk of v1.84.0. `STRIPE_SECRET_KEY` was declared app-only in
+    compose, so the celery workers merged the shared env without it and every
+    Stripe call raised `AuthenticationError: You did not provide an API key`.
+
+    The task logged, degraded, and returned `{"results": []}` — indistinguishable
+    from "there were no stale intents". The sweep was inert in production and its
+    own task result said nothing was wrong. A deployment fault has to look like
+    a deployment fault.
+    """
+    from gdx_dispatch.tasks.stale_intent_sweep import sweep_stale_intents
+
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    with patch("gdx_dispatch.tasks.stale_intent_sweep.SessionLocal") as SL, \
+            patch("gdx_dispatch.core.payments.cancel_open_intents_for_invoice") as sweep, \
+            caplog.at_level("ERROR"):
+        SL.return_value.__enter__.return_value = db
+        out = sweep_stale_intents(str(invoice.id), why="payment_recorded")
+
+    assert out["error"] == "stripe_unconfigured", (
+        "an unconfigured worker reported success, which is how M12 shipped inert"
+    )
+    sweep.assert_not_called()
+    assert "stale_intent_sweep_stripe_unconfigured" in caplog.text
