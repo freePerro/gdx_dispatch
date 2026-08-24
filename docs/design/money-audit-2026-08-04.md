@@ -409,7 +409,33 @@ on a $500 invoice, clamped invisible.
 webhook time compare the amount against the remaining receivable, routing any excess
 to a visible credit plus an alert.
 
-**FIXED — MERGED #424, RELEASED v1.84.0; shipped INERT and repaired in v1.84.1. No migration.** Two halves, as prescribed:
+**FIXED — MERGED #424, RELEASED v1.84.0; shipped INERT and repaired by #425 in v1.84.1.
+Deployed to prod and demo and WALKED ON PROD 2026-08-24. No migration.** Two halves, as prescribed:
+
+**Prod-walk evidence (2026-08-24, v1.84.1, real Stripe live key, read-only).**
+The walk is what caught v1.84.0 being inert, so here is what the repaired
+version actually did on production:
+
+- All four containers on `1.84.1`; `/health` → `{"status":"ok","db":"ok"}`;
+  edge 200 on both `gdx.teamgaragedoor.com` and `gdxdispatch.com`.
+- Alembic head still `076_payment_voided_reason` — no migration ran, as
+  promised — and `payment_intent_mints` does **not** exist, confirming the
+  deleted table never shipped.
+- `payments.sweep_stale_intents` is registered on `gdx-celery-high-1`, queue
+  `priority:high`, and present in the worker's `conf.include`.
+- `STRIPE_SECRET_KEY` now present on `gdx-app-1` **and** all three celery
+  containers (it was missing from all three in v1.84.0).
+- Enqueue latency against the live broker: **0.15s**.
+- **The scan matched a real production intent by `metadata.invoice_id`** —
+  running `_open_intents_for_invoice` on the worker for invoice
+  `757bd978-…` returned `pi_3U7jqe… status=succeeded amount=95000`, evaluated
+  `cancellable=False`, and the sweep task then returned `results: []`. Found it,
+  declined to cancel a succeeded intent. That is the binding this whole design
+  rests on, proven against real data rather than a mock.
+- Across 30 days of live intents, `invoice_id` was stamped on **4 of 4**.
+- Two sweeps run for two real invoices: both `succeeded` in under 0.5s, no
+  `stale_intent_scan_failed`, no `stripe_unconfigured`, nothing cancelled —
+  correct, because prod currently has no open intents.
 
 *Close the open tab.* A Celery task, `payments.sweep_stale_intents`
 (`priority:high`), runs whenever an invoice is settled some other way —
