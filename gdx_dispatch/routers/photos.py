@@ -5,8 +5,17 @@ recent photos feed for the dashboard.
 Gated behind the "jobs" module. Follows the notes router pattern for tenant
 scoping, audit logging, and Pydantic validation.
 
-Upload flow: callers first POST the binary to the existing /api/uploads router
-to obtain a URL, then POST the URL here to attach it to a job.
+Upload flow — CORRECTED 2026-08-24. This docstring described a two-step flow
+("POST the binary to /api/uploads to obtain a URL, then POST the URL here")
+that does not exist. `/api/uploads` was a ui_compat stub with no caller and was
+removed; the real path is a DIRECT multipart upload to
+`routers/uploads.py::upload_job_photo`.
+
+Note this module's own `create_job_photo` is SHADOWED: both it and
+`uploads.upload_job_photo` register `POST /api/jobs/{job_id}/photos`, and
+uploads.py is included first, so it is the one that serves. Do not assume the
+handler below runs — see docs/design/unimplemented-endpoints-decision-list.md,
+"The duplicate-shim trap".
 """
 from __future__ import annotations
 

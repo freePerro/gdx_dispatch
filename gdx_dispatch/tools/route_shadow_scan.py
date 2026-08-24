@@ -44,12 +44,45 @@ def collect_shadows() -> dict[tuple[str, str], list[str]]:
     )
     from gdx_dispatch.app import app
 
+    # 2026-08-24 FIX — this scanner was blind for its entire life.
+    #
+    # It iterated `app.routes` FLAT. FastAPI >=0.137 no longer flattens
+    # `include_router()` into `app.routes`: each include leaves a lazy
+    # `_IncludedRouter` wrapper with NO `.path` and NO `.endpoint`, so the loop
+    # `continue`d past every one of them. The scan saw ~10 of 1442 routes and
+    # reported ZERO shadows while 43 were live — and because
+    # `route_shadow_baseline.txt` was never generated, `load_baseline()`
+    # returned an empty set and `test_no_net_new_route_shadows` compared
+    # nothing to nothing and passed. A green gate that could not fail for the
+    # defect it exists to catch.
+    #
+    # Recurse the wrappers, re-applying each include prefix — same traversal as
+    # `gdx_dispatch/tests/conftest.py::iter_app_routes` and
+    # `gdx_dispatch/tools/frontend_contract_scan.py::routes_from_app`.
+    try:
+        from fastapi.routing import _IncludedRouter
+    except ImportError:  # older FastAPI — routes already flat
+        _IncludedRouter = ()
+
+    def _walk(routes, prefix: str = ""):
+        for route in routes or ():
+            if _IncludedRouter and isinstance(route, _IncludedRouter):
+                sub = prefix + getattr(route.include_context, "prefix", "")
+                yield from _walk(route.original_router.routes, sub)
+                continue
+            path = getattr(route, "path", None)
+            sub_routes = getattr(route, "routes", None)
+            if sub_routes and not getattr(route, "methods", None):  # Mount
+                yield from _walk(sub_routes, prefix + (path or ""))
+                continue
+            if path is not None:
+                yield prefix + path, route
+
     shadows: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for route in app.routes:
-        path = getattr(route, "path", None)
+    for full_path, route in _walk(app.routes):
         methods = getattr(route, "methods", None) or set()
         endpoint = getattr(route, "endpoint", None)
-        if not path or not methods or endpoint is None:
+        if not methods or endpoint is None:
             continue
         # Skip starlette mounts and websockets — only HTTP method routes.
         for method in methods:
@@ -57,7 +90,7 @@ def collect_shadows() -> dict[tuple[str, str], list[str]]:
                 continue
             module = getattr(endpoint, "__module__", "<unknown>")
             qualname = getattr(endpoint, "__qualname__", endpoint.__name__)
-            shadows[(method, path)].append(f"{module}:{qualname}")
+            shadows[(method, full_path)].append(f"{module}:{qualname}")
 
     return {key: handlers for key, handlers in shadows.items() if len(handlers) > 1}
 
