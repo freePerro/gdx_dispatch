@@ -31,6 +31,14 @@ TENANT = "tenant-m29"
 OFFICE = {"id": "office-user", "email": "office@example.com", "role": "admin"}
 
 
+@pytest.fixture(autouse=True)
+def _tmp_upload_dir(tmp_path, monkeypatch):
+    """_persist_parsed_invoice writes the PDF under UPLOAD_DIR (default
+    /app/uploads/) — writable in the local docker harness, read-only in CI.
+    Same redirect test_vendor_invoice_upload.py uses."""
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+
+
 @pytest.fixture
 def db():
     engine = create_engine(
