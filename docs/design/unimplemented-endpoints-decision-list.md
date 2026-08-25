@@ -73,7 +73,7 @@ today, so a user can reach the 501.
 | 2 | `POST /api/payroll/run-current-period` | `PayrollView` | `PayrollEntry` exists, but "run a period" is a calculation (gather hours → rates → entries), never written. | **Build** if payroll is run in GDX; otherwise remove the button. | **ALREADY RESOLVED — no action.** M27 (#411, v1.80.0) removed the button and the page now states "Payroll runs are not built." Not a pending decision; recorded here so a top-down reader stops looking. |
 | 3 | `POST /api/communications/bulk-sms` | `SegmentsView` | Real single-send exists (`POST /api/communications/send`). Bulk = loop + rate-limit + opt-out + audit. | **Build on top of the working single-send.** Check DNC list per recipient. | **REMOVE the affordance — done.** Owner declined building it 2026-08-24. The stub and SegmentsView's "Send SMS" button, dialog and handlers are gone; SegmentsView keeps its real router (`routers/segments.py`) and everything else on the page. |
 | 4 | `POST /api/customers/{id}/recurring-jobs` | `CustomerDetailView` | `RecurringJobSchedule` exists but needs `job_template_id` + a `frequency` enum; the Vue sends free-text `title` + `interval_days`. **Incompatible models.** | **Decide the model first**, then either repoint the Vue at `/api/recurring` or widen that model. | ⚠️ **NOT DECIDED — my error, corrected 2026-08-24.** An earlier revision of this row recorded "remove the affordance" as a decision. **The owner was never asked.** Removing it takes the whole Recurring Jobs tab off the customer page, which is product shape. The facts for whoever decides: `recurring_job_schedules` is 0 rows on prod, and a real `/api/recurring` router exists (`routers/recurring_jobs.py`) with a model incompatible with what the Vue sends (`job_template_id` + frequency enum vs free-text `title` + `interval_days`). Options are repoint the tab at the real router, widen that model, or drop the tab. |
-| 5 | `POST /api/customers/{id}/portal-account` | `CustomerDetailView` | Portal has login/password endpoints but no provisioning. (`DELETE` on the same path is also broken — C2.) | **Build** — customers can't be onboarded to the portal without it. | **DONE — and it needed no build.** Owner 2026-08-24: *"if the portal account works keep it, it is something I want to offer customers."* It works, proven on prod data: the 2026-07-24 audit chain shows `portal_access_toggled` then `portal_invite_sent` with `email_sent: true, skip_reason: null`. Provisioning, the magic-link token, the email transport and the audit trail were all real the whole time on `portal.py`'s `staff_router`, with a working office surface at PortalView (`/portal`). What was fake was the **customer page's Portal tab**: a hardcoded `{"exists": false}` read, a 501 write and a DELETE with no handler (405). Fixed by adding `GET /api/portal/{customer_id}` and repointing the tab — plus the **mobile** customer page, which called the same shim and which the first sweep missed. The password dialog was replaced with the invite flow, because provisioning never sets a password: the customer arrives by link and sets their own. ⚠️ Still unproven: **no customer has ever signed in** (1 account, 0 logins; its 7-day invite expired unused on 2026-07-31). The office half is proven; the customer half needs a real inbox walk. |
+| 5 | `POST /api/customers/{id}/portal-account` | `CustomerDetailView` | Portal has login/password endpoints but no provisioning. (`DELETE` on the same path is also broken — C2.) | **Build** — customers can't be onboarded to the portal without it. | **DONE — and it needed no build.** Owner 2026-08-24: *"if the portal account works keep it, it is something I want to offer customers."* It works, proven on prod data: the 2026-07-24 audit chain shows `portal_access_toggled` then `portal_invite_sent` with `email_sent: true, skip_reason: null`. Provisioning, the magic-link token, the email transport and the audit trail were all real the whole time on `portal.py`'s `staff_router`, with a working office surface at PortalView (`/portal`). What was fake was the **customer page's Portal tab**: a hardcoded `{"exists": false}` read, a 501 write and a DELETE with no handler (405). Fixed by adding `GET /api/portal/{customer_id}` and repointing the tab — plus the **mobile** customer page, which called the same shim and which the first sweep missed. The password dialog was replaced with the invite flow, because provisioning never sets a password: the customer arrives by link and sets their own. ✅ **WALKED END TO END ON PROD, 2026-08-25** (v1.99.0). The owner sent an invite from the repaired Portal tab to a real inbox and completed the customer side. Prod audit chain, 26 seconds: `portal_invite_sent` `email_sent: true` (02:04:21) → `portal_login_verified` (02:04:34) → `portal_password_set` (02:04:47); `last_login_at` set and the single-use token consumed and cleared. **The first customer portal sign-in this system has ever recorded.** ⚠️ One constraint surfaced by the walk — see "Portal invites need a personal Outlook connection" below. |
 | 6 | `PATCH /api/sso`, `POST /api/sso/test-connection` | `SsoView` | Real SSO is OAuth redirect flows (`/auth/sso/google`), not config CRUD. No `SsoConfig` model. `GET /api/sso` is also a permanent blank (C5). | **Remove the page** unless per-tenant SSO config is genuinely wanted. | **REMOVE — done.** Page deleted. The GET returned a fake `{provider: null, active: false}` config. Real SSO is the OAuth redirect flow at `/auth/sso/google`; single-tenant, 9 users, no per-tenant SSO config wanted. |
 | 7 | `POST/PATCH /api/scheduling[/{id}]` | `SchedulingView` | No `ScheduleEntry` model. Real scheduling is calendar + appointments + tech-unavailability. | **Probably remove** — likely duplicates the calendar. | **REMOVE — done, with a recorded loss.** Page deleted because both writes 501'd, so Save/Reassign never worked, and Dispatch and Jobs already own reassignment. ⚠️ But this was the one of the five that was **not** inert, and the loss is real — see "What the Team Scheduling removal costs" below. Do not read this row as "it was fake too". |
 | 8 | `PATCH /api/booking/{slot_id}` | `BookingView` | No `Booking` model. Real booking is request/approve/decline. Editing a slot isn't in that model. | **Remove the edit affordance.** | **REMOVE — done.** Page deleted. ⚠️ Note the orphan it leaves: the *real* booking flow (`/api/booking/request`, `/requests`, `/requests/{id}/approve|decline` in `routers/booking.py`) is wired and module-gated but has **no office UI at all**. `portal_booking_requests` is 0 rows so nothing is broken today. Filed separately. |
@@ -123,6 +123,38 @@ The page still went, because the badge led to Save/Reassign buttons that were
 own reassignment" answers the *write* side only, and that phrasing hid the read
 side in the first draft. Filed as a follow-up rather than silently dropped:
 nothing in the app flags a Scheduled job with no scheduled date.
+
+## Portal invites need a personal Outlook connection (found by the prod walk)
+
+`send_transactional_email` (`core/transactional_email.py`) picks a provider in
+this order:
+
+1. **Outlook Graph — as the CALLING USER**, if that user has an active
+   `outlook_accounts` row.
+2. Legacy SMTP, if `email_settings` has a row.
+3. Neither → `(False, None, "no_email_provider_connected")`.
+
+On prod today: **one** Outlook connection exists (`Doug@garagedoorxperts.com`,
+refresh token live since 2026-04-29) and **zero** rows in `email_settings`.
+
+So a portal invite only actually emails when the person clicking Send is that
+one user. Anyone else in the office — and any service or automation account —
+gets `invite_sent: false` and has to hand the sign-in link over themselves.
+Demonstrated 2026-08-25: the same invite failed as `auditor28` with
+`no_email_provider_connected` and succeeded seconds later as the connected
+owner, to the same address.
+
+This is not a defect in the invite path — it degrades honestly, surfaces the
+real reason, and offers the link. It is a **capacity limit on the feature**: for
+a portal offered to customers, delivery currently depends on one individual's
+personal mailbox connection. A tenant-level sender (an `email_settings` SMTP row
+or a shared mailbox) would remove that dependency. Filed as **#466** rather than fixed here.
+
+Second, smaller: `_portal_link_base(request)` derives the link's host from the
+request. Calling the endpoint over `127.0.0.1:8002` mints
+`http://127.0.0.1:8002/customer-portal?token=…`, which is useless to a customer.
+Harmless from the UI (the browser's Host is the public domain) but a trap for
+any server-side or scripted invite.
 
 ## The duplicate-shim trap (found while executing the removals)
 
