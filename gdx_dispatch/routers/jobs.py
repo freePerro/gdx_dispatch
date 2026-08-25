@@ -1733,6 +1733,95 @@ def _owned_closeout_labor_entry(db: Session, job_uuid: uuid.UUID) -> TimeEntry |
     ).scalar_one_or_none()
 
 
+#: How far back a manually-stopped timer stays eligible for restatement.
+#: See _stopped_job_timer_for. A tech who stops at 5pm and closes out the next
+#: morning is the case this covers; anything older is a different pay period's
+#: problem and must not be silently reopened.
+STOPPED_TIMER_RESTATE_WINDOW = timedelta(hours=24)
+
+
+def _stopped_job_timer_for(db: Session, job_uuid: uuid.UUID, user_id: str) -> TimeEntry | None:
+    """The caller's OWN per-job timer that they already stopped from mobile.
+
+    Added 2026-08-25 with the mobile Stop button. Without it, a tech who taps
+    Stop and then closes out is paid nothing: `_open_job_timers` finds no open
+    row, so closeout falls through to the synthetic branch below, and that row
+    deliberately carries `user_id = NULL` (an unattested row must not pay the
+    person who closed it). The tech's attested hours would then be invisible to
+    payroll.py, which groups by user_id — a silent underpayment, and the mirror
+    image of the overpayment #154 killed.
+
+    Restating the tech's own stopped row instead keeps ONE row for the job,
+    with the identity payroll needs, and cannot double-count: the row is
+    already closed at zero payable minutes, so restating it adds the attested
+    hours rather than stacking a second entry beside them.
+
+    **Matched by the Stop marker, not by "zero minutes"** — and the difference
+    is a real defect this function shipped with for about an hour. The first
+    version inferred "a tech stopped this" from `duration_minutes = 0`, which
+    is also exactly what `tools/stale_job_timer_repair.py` writes when it
+    closes an abandoned timer. Four such rows exist on prod with `clock_in` in
+    April-June 2026, two on jobs that still have no closeout. Closing one of
+    those out would have restated a four-month-old row — and `_close_labor_entry`
+    deliberately never moves `clock_in`, while payroll windows on
+    `DATE(clock_in)` — so today's attested hours would post into a pay period
+    already run and paid. Matching the marker the Stop path itself writes means
+    only rows that path created are eligible.
+
+    The 24h window is the second guard: even a genuine mobile stop stops being
+    safe to restate once it is old enough to belong to another pay period. Past
+    that, the closeout falls through to the synthetic row exactly as it did
+    before this function existed, and logs so the office can enter the hours
+    through labor.py rather than the tech losing them silently.
+
+    Deliberately narrow in the other directions too: it will not touch a
+    colleague's row (that is `_open_job_timers`' unpaid-close path), an
+    office-entered labor row from labor.py (those leave `user_id` NULL), or a
+    prior closeout's row (`_owned_closeout_labor_entry` wins ahead of it).
+    """
+    if not user_id:
+        return None
+    # Local import: mobile.py owns the marker its own writer stamps, and a
+    # module-level import here would couple two routers that are otherwise
+    # independent.
+    from gdx_dispatch.routers.mobile import MOBILE_STOP_LABOR_NOTE
+
+    cutoff = datetime.now(UTC) - STOPPED_TIMER_RESTATE_WINDOW
+    row = db.execute(
+        select(TimeEntry)
+        .where(
+            TimeEntry.job_id == job_uuid,
+            TimeEntry.user_id == user_id,
+            TimeEntry.entry_type == "job",
+            TimeEntry.clock_out.is_not(None),
+            TimeEntry.notes.like(f"{MOBILE_STOP_LABOR_NOTE}%"),
+            # A stopped row banks nothing. If it carries minutes, something
+            # already attested it and it is not ours to restate.
+            or_(TimeEntry.duration_minutes.is_(None), TimeEntry.duration_minutes == 0),
+            TimeEntry.deleted_at.is_(None),
+        )
+        .order_by(TimeEntry.clock_in.desc())
+        .limit(1)
+    ).scalars().first()
+    if row is None:
+        return None
+
+    clock_in_at = row.clock_in
+    if clock_in_at is not None and clock_in_at.tzinfo is None:
+        clock_in_at = clock_in_at.replace(tzinfo=UTC)
+    if clock_in_at is not None and clock_in_at < cutoff:
+        log.warning(
+            "closeout_stale_stopped_timer_not_restated job_id=%s user_id=%s "
+            "entry_id=%s clock_in=%s — outside the %sh restate window; attested "
+            "hours will not post to this row. Enter them via labor.py if they "
+            "are owed.",
+            job_uuid, user_id, row.id, clock_in_at.isoformat(),
+            int(STOPPED_TIMER_RESTATE_WINDOW.total_seconds() // 3600),
+        )
+        return None
+    return row
+
+
 def _close_labor_entry(
     entry: TimeEntry,
     now: datetime,
@@ -2233,6 +2322,12 @@ def closeout_job(
         target = _owned_closeout_labor_entry(db, job.id)
         if target is None:
             target = next((t for t in timers if t.user_id == user_id), None)
+        if target is None:
+            # The tech stopped their own job clock from mobile before closing
+            # out. Their row is closed but banked nothing; restate it so the
+            # attested hours land under their identity instead of on the
+            # unattributed synthetic below, which payroll cannot see.
+            target = _stopped_job_timer_for(db, job.id, user_id)
         if target is None and attested_minutes:
             # No timer — the closer attests the work happened (a dispatcher
             # closing for a forgetful tech, or a tech who never tapped
@@ -2257,6 +2352,12 @@ def closeout_job(
             _close_labor_entry(
                 target, now, attested_minutes, _labor_rate_for(db, technician_id)
             )
+            # Set, never appended. _owned_closeout_labor_entry finds the row
+            # by `notes == CLOSEOUT_LABOR_NOTE` exactly, so appending to an
+            # existing note (e.g. the mobile Stop's elapsed span) would hide
+            # this row from the next re-closeout and mint a SECOND labor row —
+            # double-billed hours. The elapsed span is not lost: the clock-out
+            # audit event carries elapsed_minutes permanently.
             target.notes = CLOSEOUT_LABOR_NOTE
 
         # Every other open timer on the job closes UNPAID. The caller attested

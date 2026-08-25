@@ -656,7 +656,16 @@ def _find_open_time_entry(
     entry_type: str,
 ) -> dict[str, Any] | None:
     cols = _table_columns(db, "time_entries")
+    # deleted_at is not cosmetic here: jobs.py::_open_job_timers (the closeout
+    # closer) filters it, so without the same guard a soft-deleted row would be
+    # "open" to this path and invisible to the one that ends it — the mobile
+    # toggle would offer Stop on a row closeout can never reach.
     where = ["company_id = :tenant_id", "user_id = :user_id", "clock_out IS NULL"]
+    if "deleted_at" in cols:
+        # Guarded like the other optional columns below rather than inlined:
+        # this function's whole shape is "the live schema may not have it", and
+        # a single unguarded column would be the one that breaks the query.
+        where.append("deleted_at IS NULL")
     params: dict[str, Any] = {"tenant_id": tenant_id, "user_id": user_id}
     if "entry_type" in cols:
         where.append("entry_type = :entry_type")
@@ -721,6 +730,81 @@ def _create_time_entry(
     return entry_id, now
 
 
+def _clock_states(
+    db: Session,
+    tenant_id: str,
+    user_id: str,
+    *,
+    job_id: str,
+) -> dict[str, Any]:
+    """Both clocks as the calling tech sees them, for one job screen.
+
+    Shipped on the job-detail payload rather than as its own endpoint because
+    a tech on a phone in a garage pays for every extra round trip, and the
+    toggle is useless without the state it reflects: arrival ALREADY starts the
+    per-job timer, so a naive "Clock in" button would either 409 or double
+    start. The client renders Stop when ``job.running`` is true.
+
+    The two clocks are different tables and mean different things:
+
+    - ``day``  -> ``timeclock_entries_router`` (TimeclockEntry). The shift.
+      **This is the tech's paid time.**
+    - ``job``  -> ``time_entries`` (entry_type='job'). Costing/attribution.
+      Does not pay: a manual stop banks zero minutes (see
+      _close_open_time_entry), and only closeout-attested hours are payable.
+
+    ``pays`` rides along on each so the UI never has to hardcode which clock
+    is which — the one way this feature does harm is leaving a tech guessing
+    which timer pays them.
+    """
+    now = datetime.now(UTC)
+
+    def _elapsed(since: Any) -> int:
+        when = _parse_datetime(str(since)) if since is not None else None
+        if when is None:
+            return 0
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return int(max((now - when).total_seconds(), 0) // 60)
+
+    job_row = _find_open_time_entry(
+        db, tenant_id, user_id, job_id=job_id, entry_type="job"
+    )
+    job_state: dict[str, Any] = {
+        "running": bool(job_row),
+        "entry_id": str(job_row["id"]) if job_row else None,
+        "since": str(job_row["clock_in"]) if job_row else None,
+        "elapsed_minutes": _elapsed(job_row.get("clock_in")) if job_row else 0,
+        "pays": False,
+    }
+
+    technician_id = _get_technician_id(db, tenant_id, user_id) or user_id
+    shift = db.execute(
+        select(TimeclockEntry)
+        .where(
+            TimeclockEntry.tenant_id == tenant_id,
+            TimeclockEntry.technician_id == technician_id,
+            TimeclockEntry.deleted_at.is_(None),
+            TimeclockEntry.clock_out_at.is_(None),
+        )
+        .order_by(TimeclockEntry.clock_in_at.desc())
+        .limit(1)
+    ).scalars().first()
+    day_state: dict[str, Any] = {
+        "running": shift is not None,
+        "since": str(shift.clock_in_at) if shift is not None else None,
+        "elapsed_minutes": _elapsed(shift.clock_in_at) if shift is not None else 0,
+        "pays": True,
+    }
+
+    return {"day": day_state, "job": job_state}
+
+
+#: Stamped on a row the tech stopped by hand, so the office can tell it apart
+#: from a closeout-attested row at a glance. Mirrors jobs.py::CLOSEOUT_LABOR_NOTE.
+MOBILE_STOP_LABOR_NOTE = "Timer stopped on mobile"
+
+
 def _close_open_time_entry(
     db: Session,
     tenant_id: str,
@@ -729,6 +813,29 @@ def _close_open_time_entry(
     job_id: str | None,
     entry_type: str,
 ) -> tuple[dict[str, Any] | None, datetime, int]:
+    """End an open per-job timer WITHOUT paying the elapsed span.
+
+    Returns ``(row, now, elapsed_minutes)`` — ``elapsed_minutes`` is what the
+    wall clock read, which is **not** what gets stored as time worked.
+
+    ``duration_minutes`` is stored as 0 on purpose. That column IS payroll
+    hours: payroll.py:248 sums ``COALESCE(duration_minutes, 0)`` with no rate
+    filter and no ``entry_type`` filter, so anything written here lands in
+    ``hours_worked``, overtime and gross pay. Elapsed is not evidence of work —
+    it measures how long the tech left the timer running — and #154 bans code
+    that invents hours. jobs.py::_close_labor_entry already made exactly this
+    call for a timer nobody attested; this is the same rule on the mobile path,
+    which until now closed with unclamped elapsed.
+
+    ``hourly_rate`` is left NULL and only ever means "not priced here": with
+    ``duration_minutes = 0`` job_costing.py's fallback rate multiplies zero
+    minutes, so a stopped timer costs nothing rather than being silently
+    costed at the tenant default.
+
+    The real span is not thrown away — it goes into ``notes`` for the office,
+    who enter attested hours through the closeout or labor.py. Recording it
+    where a human reads it and refusing to bank it is the whole point.
+    """
     row = _find_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type=entry_type)
     now = datetime.now(UTC)
     if not row:
@@ -739,25 +846,28 @@ def _close_open_time_entry(
         clock_in = _parse_datetime(clock_in) or now
     if clock_in is None:
         clock_in = now
+    if clock_in.tzinfo is None:
+        # SQLite hands back naive datetimes where Postgres is aware.
+        clock_in = clock_in.replace(tzinfo=UTC)
 
     delta_seconds = max((now - clock_in).total_seconds(), 0)
-    duration_minutes = int(round(delta_seconds / 60))
+    elapsed_minutes = int(round(delta_seconds / 60))
+
+    sets = ["clock_out = :clock_out", "duration_minutes = 0"]
+    params: dict[str, Any] = {"id": row["id"], "clock_out": now}
+    if "notes" in _table_columns(db, "time_entries"):
+        sets.append(
+            "notes = CASE"
+            " WHEN notes IS NULL OR notes = '' THEN :note"
+            " ELSE notes || ' -- ' || :note"
+            " END"
+        )
+        params["note"] = f"{MOBILE_STOP_LABOR_NOTE}; elapsed {elapsed_minutes} min, not attested"
     db.execute(
-        _text(
-            """
-            UPDATE time_entries
-            SET clock_out = :clock_out,
-                duration_minutes = :duration_minutes
-            WHERE id = :id
-            """
-        ),
-        {
-            "id": row["id"],
-            "clock_out": now,
-            "duration_minutes": duration_minutes,
-        },
+        _text(f"UPDATE time_entries SET {', '.join(sets)} WHERE id = :id"),
+        params,
     )
-    return row, now, duration_minutes
+    return row, now, elapsed_minutes
 
 
 
@@ -2493,6 +2603,11 @@ def get_mobile_job_detail(
             # read-only instead of just hiding the buttons.
             "read_only": grant in ("company", "creator"),
             "access_grant": grant,
+            # Both clocks, so the job screen can render a state-reflecting
+            # toggle instead of a Start button that 409s on an arrived job.
+            # Scoped to the caller: another tech's running timer on the same
+            # job is not this tech's to stop.
+            "clocks": _clock_states(db, tenant_id, _user_id(current_user or {}), job_id=job_id),
         }
     )
 
@@ -3315,7 +3430,7 @@ def mobile_clock_out(
     if not _get_job(db, tenant_id, job_id):
         return jsonable_response({"detail": "job not found"}, 404)
 
-    row, now, duration_minutes = _close_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type="job")
+    row, now, elapsed_minutes = _close_open_time_entry(db, tenant_id, user_id, job_id=job_id, entry_type="job")
     if not row:
         return jsonable_response({"detail": "No open time entry found for this job"}, 404)
 
@@ -3325,7 +3440,15 @@ def mobile_clock_out(
         actor_id=user_id,
         entity_type="job",
         entity_id=job_id,
-        payload={"entry_id": str(row["id"]), "entry_type": "job", "duration_minutes": duration_minutes},
+        payload={
+            "entry_id": str(row["id"]),
+            "entry_type": "job",
+            # What the clock read vs what was banked. The audit trail has to
+            # answer "who did it, what changed" — and what changed here is a
+            # row that records ZERO worked minutes despite an elapsed span.
+            "elapsed_minutes": elapsed_minutes,
+            "recorded_minutes": 0,
+        },
         request=request,
         actor_role=user.get("role"),
     )
@@ -3359,7 +3482,16 @@ def mobile_clock_out(
             "entry_id": str(row["id"]),
             "job_id": job_id,
             "clock_out": now.isoformat(),
-            "duration_minutes": duration_minutes,
+            # `elapsed_minutes` is what the clock read; `recorded_minutes` is
+            # what payroll will see. They differ on purpose (see
+            # _close_open_time_entry) and the UI must say so rather than show
+            # the tech a number that looks like hours they just earned.
+            "elapsed_minutes": elapsed_minutes,
+            "recorded_minutes": 0,
+            "payable": False,
+            # Kept for the old response shape; it has always meant "minutes
+            # stored on the row", which is now 0.
+            "duration_minutes": 0,
         }
     )
 

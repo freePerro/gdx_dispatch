@@ -1,6 +1,12 @@
 # Tech Mobile Job Workflow — Implementation Plan (v3)
 
-**Date:** 2026-07-17 · **Status:** PARTIALLY BUILT (verified on main 2026-08-21). PR A shipped — `mobile.py:979 _job_card` is the one job shape both paths use. Most of PR B shipped — the detail view carries the actions, parts and closeout, and photo capture is live (`MobileJobDetailView.vue:702/712 usePhotoQueue`). **Not built: the "BOTH clocks" section.** There is no per-job clock-in/out toggle on the job screen, no day-vs-job disambiguation UI, and `/api/mobile/jobs/{id}/clock-in|clock-out` still have zero frontend callers — the orphan-endpoint class CLAUDE.md forbids.
+**Date:** 2026-07-17 · **Status:** PARTIALLY BUILT (verified on main 2026-08-25). PR A shipped — `mobile.py:979 _job_card` is the one job shape both paths use. Most of PR B shipped — the detail view carries the actions, parts and closeout, and photo capture is live (`MobileJobDetailView.vue:702/712 usePhotoQueue`). **The "BOTH clocks" section is now BUILT** — see below. **Still not built:** reorder mode with the new card, drive-time legs between stops, and the map view.
+
+**"BOTH clocks" — BUILT 2026-08-25.** Both clocks render on the job screen with the §"Clock in/out" disambiguation (day clock labelled "your paid time" and leading; job clock muted and labelled "for costing, doesn't pay you"; `pays` comes from the server so the client never hardcodes which is which). The control is a state-reflecting toggle, not a Start button, fed by a new `clocks` block on `GET /api/mobile/job/{id}`. `/api/mobile/jobs/{id}/clock-in|clock-out` now have frontend callers — the orphan class is closed.
+
+**§167's "fix `_close_open_time_entry` first" was the load-bearing part, and the fix is NOT what this plan assumed.** The plan (line 167, following [AR1]) reasoned that a tap at both ends attests the span, so the elapsed time is payable-quality data needing only a correct rate. That is wrong on this schema: `time_entries.duration_minutes` **is** payroll hours — `payroll.py:248` sums `COALESCE(duration_minutes, 0)` with no rate filter and no `entry_type` filter — so there is no "records hours but does not pay" middle ground, and line 161's own table ("Job costing / attribution only. **Does not pay.**") contradicts line 167. Doug resolved it 2026-08-25 in favour of line 161: **a manual Stop banks ZERO payable minutes** and writes the elapsed span to `notes` for the office, exactly as `jobs.py::_close_labor_entry` already does for an unattested timer. Closeout-attested hours remain the only payable source.
+
+**A second defect surfaced while building it (fixed here).** With the Stop button, a tech who stops the timer and then closes out was paid *nothing*: `_open_job_timers` found no open row, so closeout fell through to its synthetic branch, and that row deliberately carries `user_id = NULL` — invisible to payroll, which groups by `user_id`. Closeout now restates the tech's own stopped row (`jobs.py::_stopped_job_timer_for`) instead, keeping one row with the identity payroll needs. Pinned by `test_closeout_labor_trail.py::test_manual_stop_then_closeout_pays_only_attested_hours`.
 **Audit round 1 [AR1]:** adversarial review of the v1 plan verified every claim against code. Five substantive corrections, all folded in below — v1's central recommendation was **inverted**:
 - **(a) Photos are NOT online-only.** `lib/offlineDb.js:35` already ships a `photos` Blob store ("captured photo blobs awaiting upload… blob stored as Blob (not base64)") with **zero writers and zero readers**. v1 read `postQueued` alone, inferred a capability ceiling, and planned to ship the headline feature broken in exactly the dead zones it's used in. Same error class as inferring intent from a function name.
 - **(b) "~40 duplicated lines" was a 6× lie.** Measured: 86 (`onMyWay`+`imHere`) + 73 (quote/invoice/CO/chat) + 78 (`.job-actions` template) + ~30 (dialog refs/mounts) ≈ **270**. That number was the load-bearing argument for Option 3. Struck → **the recommendation inverts to Option 2**.
@@ -164,7 +170,21 @@ The rule from #154 is that labor code may not **invent** hours. A tech tapping *
 
 **[v3] Resolve the collision the plan didn't address.** Arrival ALREADY auto-starts the per-job timer (`mobile_job_arrived`), and `mobile_clock_in` returns *"Already clocked in on this job"* when one is open. So a naive "Clock in" button on a job you've arrived at either errors or double-starts. The control must be a **state-reflecting toggle**, not a Start button: read the live timer state, render Stop when running. Three writers now touch this row — arrival (start), the manual toggle (start/stop), closeout (end, per #154) — and they must agree. Pin that with a test.
 
-**Fix `_close_open_time_entry` (mobile.py:497) first**: it closes with unclamped elapsed and sets no `hourly_rate` — the same shape #154 fixed in closeout, still live on this path. A tap-attested span IS payable-quality data; it still must not be clamped, invented, or silently mis-costed at the $95 `job_costing` default.
+**Fix `_close_open_time_entry` (mobile.py:497) first**: it closes with unclamped elapsed and sets no `hourly_rate` — the same shape #154 fixed in closeout, still live on this path. ~~A tap-attested span IS payable-quality data; it still must not be clamped, invented, or silently mis-costed at the $95 `job_costing` default.~~
+
+> **[2026-08-25 — struck, and the reasoning behind it was wrong.]** The premise
+> was that a tap-attested span could be recorded without paying it. It cannot:
+> `duration_minutes` is the column `payroll.py:248` sums into `hours_worked`,
+> with no rate filter and no `entry_type` filter. Writing elapsed there pays it,
+> whatever `hourly_rate` says; leaving `hourly_rate` NULL only changes how
+> `job_costing.py:209` *prices* the row, and there NULL falls back to the tenant
+> default rather than to zero. So "costing only, does not pay" and "record the
+> elapsed minutes" are mutually exclusive on this schema, and line 161's table
+> is the half that survives. **The shipped behaviour:** a manual Stop writes
+> `duration_minutes = 0`, leaves `hourly_rate` NULL, and puts the real span in
+> `notes` — the same call `jobs.py::_close_labor_entry` makes for a timer nobody
+> attested. Never clamped (there is nothing to clamp), never invented, and the
+> office still sees the span. Closeout-attested hours remain the only pay.
 
 **Never clamp. Never block the tech** (Doug 2026-05-10). An implausible span is real data a human attested — it goes to the **office exceptions surface** (PR #155's card), which is exactly Doug's rule: *"it should be the dispatcher or office personel that get told about the discrepency."*
 

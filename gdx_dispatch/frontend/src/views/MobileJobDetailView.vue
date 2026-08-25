@@ -632,16 +632,90 @@
         </div>
       </div>
 
-      <!-- Time is shown, never edited here. Arriving starts the job clock and
-           completing ends it; that path is the one PR #154 actually guards. A
-           Stop button would close the timer and switch that guard off — an
-           attested 2h job then bills 5h. Read-only until that is fixed and
-           proven on Postgres. -->
+      <!-- BOTH clocks (Doug, 2026-07-17), finally wired 2026-08-25.
+           This card carried a comment saying a Stop button was unsafe: "it
+           would close the timer and switch that guard off — an attested 2h job
+           then bills 5h". That was true of the endpoint as it stood, which
+           closed with unclamped wall-clock elapsed into time_entries
+           .duration_minutes — and that column IS payroll hours (payroll.py:248
+           sums it with no rate filter). The endpoint was fixed first: a manual
+           stop now banks ZERO payable minutes and writes the elapsed span to
+           notes for the office. Stopping the timer can no longer bill anyone.
+           Hours still come only from what the tech attests at close-out.
+
+           The disambiguation below is load-bearing, not cosmetic: two visible
+           clocks must never leave a tech guessing which one pays them. The day
+           clock leads and says "paid"; the job clock is muted and says outright
+           that it does not pay. `pays` comes from the server so this screen
+           never hardcodes which is which. -->
       <!-- Also shown when a closeout exists with no arrival stamp (a job
            entered after the fact, or a dispatcher closing for a tech) — the
            attested hours are the point of this card, not the arrival. -->
-      <div v-if="job.arrived_at || job.closeout" class="detail-card">
+      <!-- Also renders whenever the tech CAN act on the job clock, not only
+           once there is history to show. A tech whose job went to on_site
+           without an arrival stamp (a dispatcher advanced it) would otherwise
+           get no clock card at all and no way to start the timer — the card
+           would hide precisely when it is the only way in. -->
+      <div
+        v-if="job.arrived_at || job.closeout || clocks.job.running || canRunJobClock"
+        class="detail-card"
+      >
         <h2>Time</h2>
+
+        <!-- Day clock: the tech's paid time. Read-only here — it is started and
+             stopped on the timeclock screen, and duplicating that control on
+             every job screen is how a tech ends their shift by accident. -->
+        <div class="clock-row clock-row-day" data-testid="mjd-day-clock">
+          <div class="clock-line">
+            <i class="pi pi-briefcase" />
+            <span class="clock-name">Day — your paid time</span>
+          </div>
+          <span v-if="clocks.day.running" class="clock-state clock-state-on">
+            Running {{ formatElapsed(clocks.day.elapsed_minutes) }}
+          </span>
+          <span v-else class="clock-state">Not clocked in</span>
+        </div>
+
+        <!-- Job clock: costing/attribution only. Muted on purpose. -->
+        <div class="clock-row clock-row-job" data-testid="mjd-job-clock">
+          <div class="clock-line">
+            <i class="pi pi-clock" />
+            <span class="clock-name">This job — for costing, doesn't pay you</span>
+          </div>
+          <div class="clock-row-right">
+            <span v-if="clocks.job.running" class="clock-state clock-state-on">
+              Running {{ formatElapsed(clocks.job.elapsed_minutes) }}
+            </span>
+            <span v-else class="clock-state">Not running</span>
+            <!-- A state-reflecting toggle, never a Start button: arriving
+                 ALREADY starts this timer, so a Start would 409 or double-start.
+                 Hidden entirely for a read-only grant — the write endpoint would
+                 404 that caller anyway, and a button that always fails is the
+                 defect the 2026-08-17 field report was about. -->
+            <Button
+              v-if="!readOnly && clocks.job.running"
+              label="Stop"
+              icon="pi pi-stop-circle"
+              size="small"
+              severity="secondary"
+              outlined
+              :loading="clockBusy"
+              data-testid="mjd-job-clock-stop"
+              @click="stopJobClock"
+            />
+            <Button
+              v-else-if="!readOnly && canRunJobClock"
+              label="Start"
+              icon="pi pi-play"
+              size="small"
+              severity="secondary"
+              outlined
+              :loading="clockBusy"
+              data-testid="mjd-job-clock-start"
+              @click="startJobClock"
+            />
+          </div>
+        </div>
         <div v-if="job.arrived_at" class="detail-meta" data-testid="mobile-job-detail-timer">
           <i class="pi pi-clock" />
           <!-- Deliberately NOT "arrived → completed". A job arrived at in May
@@ -899,6 +973,22 @@ const readOnly = ref(false)
 const accessGrant = ref('')
 const advancing = ref(false)
 const closeoutOpen = ref(false)
+
+// Both clocks as the server sees them for THIS tech on THIS job. Defaults
+// match the server's "nothing running" shape so the card renders before the
+// first response instead of throwing on clocks.job.running — and so the unit
+// tests, which mock api.get, don't need to know about this key at all.
+// A factory, not a frozen constant: structuredClone is not guaranteed in every
+// jsdom the unit suite runs on, and a shared object literal would let one test
+// mutate the default for the next.
+function emptyClocks() {
+  return {
+    day: { running: false, since: null, elapsed_minutes: 0, pays: true },
+    job: { running: false, entry_id: null, since: null, elapsed_minutes: 0, pays: false },
+  }
+}
+const clocks = ref(emptyClocks())
+const clockBusy = ref(false)
 const invoiceOpen = ref(false)
 
 // ─── PR A: quote / change order / chat / equipment ──────────────────
@@ -1109,6 +1199,7 @@ async function load() {
     doorSpecs.value = r?.door_specs || []
     readOnly.value = Boolean(r?.read_only)
     accessGrant.value = r?.access_grant || ''
+    clocks.value = r?.clocks || emptyClocks()
     if (!job.value) error.value = 'Job not found'
     // Opening the job IS seeing the parts — this screen lists them. Closes the
     // loop for the route card's "N part updates from dispatch" badge, which
@@ -1144,6 +1235,7 @@ async function refresh() {
       photos.value = r.photos || []
       parts.value = await withStillQueued(r.parts || [], parts.value)
       doorSpecs.value = r.door_specs || []
+      clocks.value = r.clocks || emptyClocks()
     }
   } catch {
     // Offline or a blip. The queued write still lands on reconnect.
@@ -1375,6 +1467,82 @@ function currentPosition() {
       { timeout: 3000 },
     )
   })
+}
+
+/** "3h 12m" / "47m" — never a bare decimal that reads like billable hours. */
+function formatElapsed(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0))
+  const h = Math.floor(m / 60)
+  return h ? `${h}h ${m % 60}m` : `${m}m`
+}
+
+// Only offered once the tech is actually on the job. Before that, arriving is
+// the action that matters — and arriving starts this timer for them.
+const canRunJobClock = computed(
+  () => !!job.value && ['on_site', 'en_route'].includes(job.value.dispatch_status),
+)
+
+async function startJobClock() {
+  if (clockBusy.value || !job.value) return
+  clockBusy.value = true
+  try {
+    await api.post(`/api/mobile/jobs/${job.value.id}/clock-in`)
+    await refresh()
+    toast.add({
+      severity: 'success',
+      summary: 'Job timer started',
+      detail: "For job costing — your paid hours come from the day clock.",
+      life: 4000,
+    })
+  } catch (err) {
+    // 409 = arrival already started it. That is not an error the tech caused,
+    // and telling them "Could not save" would be a lie; just resync the state
+    // so the button becomes Stop, which is what they wanted anyway.
+    if (err?.status === 409) {
+      await refresh()
+    } else {
+      toast.add({
+        severity: 'error',
+        summary: 'Could not start the timer',
+        detail: err?.message || '',
+        life: 4000,
+      })
+    }
+  } finally {
+    clockBusy.value = false
+  }
+}
+
+async function stopJobClock() {
+  if (clockBusy.value || !job.value) return
+  clockBusy.value = true
+  try {
+    const r = await api.post(`/api/mobile/jobs/${job.value.id}/clock-out`)
+    await refresh()
+    // Say plainly that this recorded nothing payable. The tech has just watched
+    // a timer run for hours; letting them assume those hours are theirs is the
+    // one way this feature does harm.
+    toast.add({
+      severity: 'success',
+      summary: `Job timer stopped — ${formatElapsed(r?.elapsed_minutes)}`,
+      detail: 'Sent to the office for job costing. Your hours come from close-out.',
+      life: 6000,
+    })
+  } catch (err) {
+    if (err?.status === 404) {
+      // Someone else's closeout ended it, or it was already stopped.
+      await refresh()
+    } else {
+      toast.add({
+        severity: 'error',
+        summary: 'Could not stop the timer',
+        detail: err?.message || '',
+        life: 4000,
+      })
+    }
+  } finally {
+    clockBusy.value = false
+  }
 }
 
 function onCloseoutDone() {
@@ -1772,6 +1940,26 @@ onMounted(() => {
 .detail-title { font-size: 0.95rem; }
 .detail-meta { color: var(--p-text-muted-color, #6b7280); font-size: 0.9rem; display: flex; align-items: center; gap: 0.35rem; }
 .detail-meta-muted { font-style: italic; }
+
+/* Two clocks, deliberately unequal weight. The day clock is the one that pays,
+   so it reads as the heading; the job clock is muted and sits under it. Tokens
+   (not literals) so both themes come for free — this screen is used in a dark
+   garage and a bright driveway on the same afternoon. */
+.clock-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 0;
+}
+.clock-row + .clock-row { border-top: 1px dashed var(--p-content-border-color, #e5e7eb); }
+.clock-line { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.clock-row-right { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.clock-row-day .clock-name { font-weight: 600; color: var(--p-text-color, #374151); }
+.clock-row-job .clock-name { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); }
+.clock-state { font-size: 0.85rem; color: var(--p-text-muted-color, #6b7280); font-variant-numeric: tabular-nums; }
+.clock-state-on { color: var(--p-primary-color, #2563eb); font-weight: 600; }
+/* 44px is the tap target the rest of this screen holds to; a Stop button the
+   tech misses with a glove is a timer that keeps running. */
+.clock-row :deep(.p-button) { min-height: 44px; }
 .detail-description { margin: 0; white-space: pre-wrap; font-size: 0.95rem; }
 .contact-row {
   display: flex; align-items: center; gap: 0.5rem;

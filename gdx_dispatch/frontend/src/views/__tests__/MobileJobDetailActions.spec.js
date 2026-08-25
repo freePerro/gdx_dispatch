@@ -21,10 +21,18 @@
  *  4. State is re-read from the server after an action, never guessed — Today
  *     flips dispatch_status before checking the result and never rolls it back,
  *     so its card can read "en route" while an error toast fires.
- *  5. Time is READ-ONLY. Arrive starts the job clock, Complete ends it (PR
- *     #154). A Stop button would close the timer and switch off the very guard
- *     #154 shipped (`_open_job_timers` filters clock_out IS NULL), so closeout
- *     would then synthesize a SECOND row: an attested 2h job bills 5h.
+ *  5. [superseded 2026-08-25] This file used to pin "Time is READ-ONLY",
+ *     because a Stop button would have closed the timer and switched off the
+ *     guard #154 shipped (`_open_job_timers` filters clock_out IS NULL), so
+ *     closeout would synthesize a SECOND row and an attested 2h job would bill
+ *     5h. That was true of the endpoint as it stood: it banked wall-clock
+ *     elapsed into `duration_minutes`, which IS payroll hours. Both clocks are
+ *     now on the screen (Doug, 2026-07-17) and the endpoint was fixed first —
+ *     a manual stop banks ZERO payable minutes, and closeout restates the
+ *     tech's own stopped row rather than stacking a synthetic beside it. The
+ *     money side is pinned in tests/test_closeout_labor_trail.py; what this
+ *     file pins is the UI contract: the control reflects state, it is hidden
+ *     on a read-only grant, and it never tells the tech the span is pay.
  */
 // Must precede any import that pulls in Dexie (lib/offlineDb) — jsdom has no
 // IndexedDB, so without the polyfill every queued action's background write
@@ -43,8 +51,9 @@ vi.mock("vue-router", () => ({
   useRoute: () => ({ params: { id: "job-123" }, query: {}, path: "/mobile/jobs/job-123" }),
 }));
 vi.mock("primevue/usetoast", () => ({ useToast: () => ({ add: toastAdd }) }));
+const postMock = vi.fn();
 vi.mock("../../composables/useApi", () => ({
-  useApi: () => ({ get: getMock, post: vi.fn(), patch: vi.fn(), postQueued: postQueuedMock }),
+  useApi: () => ({ get: getMock, post: postMock, patch: vi.fn(), postQueued: postQueuedMock }),
 }));
 
 const capturePhotoMock = vi.fn();
@@ -80,12 +89,21 @@ function jobPayload(overrides = {}) {
     },
     notes: [],
     photos: [],
+    clocks: clocksPayload(),
   };
 }
 
-async function mountWith(overrides = {}) {
+/** Server shape of the two clocks. Defaults to "nothing running". */
+function clocksPayload(job = {}, day = {}) {
+  return {
+    day: { running: false, since: null, elapsed_minutes: 0, pays: true, ...day },
+    job: { running: false, entry_id: null, since: null, elapsed_minutes: 0, pays: false, ...job },
+  };
+}
+
+async function mountWith(overrides = {}, topLevel = {}) {
   const { default: View } = await import("../MobileJobDetailView.vue");
-  getMock.mockImplementation(async () => jobPayload(overrides));
+  getMock.mockImplementation(async () => ({ ...jobPayload(overrides), ...topLevel }));
   const w = mount(View, { global: { stubs } });
   await flushPromises();
   return w;
@@ -93,6 +111,7 @@ async function mountWith(overrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  postMock.mockResolvedValue({ ok: true });
   postQueuedMock.mockResolvedValue({ ok: true });
   capturePhotoMock.mockResolvedValue({ queued: false, id: "p1" });
   pendingPhotosRef.value = 0;
@@ -384,5 +403,103 @@ describe("view-only grants (2026-08-17 field report)", () => {
     const w = await mountWith({ dispatch_status: "assigned" });
     expect(w.find('[data-testid="mjd-readonly-banner"]').exists()).toBe(false);
     expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(true);
+  });
+});
+
+describe("both clocks — the tech must never guess which one pays", () => {
+  it("labels the day clock as paid time and the job clock as not", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" });
+    const day = w.find('[data-testid="mjd-day-clock"]');
+    const job = w.find('[data-testid="mjd-job-clock"]');
+    expect(day.exists()).toBe(true);
+    expect(job.exists()).toBe(true);
+    expect(day.text()).toContain("your paid time");
+    // The one sentence that stops this feature doing harm.
+    expect(job.text()).toContain("doesn't pay you");
+  });
+
+  it("renders Stop — not Start — when the timer is already running", async () => {
+    // Arriving starts this timer server-side, so a Start button here would
+    // 409 or double-start. The control reflects state.
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      { clocks: clocksPayload({ running: true, elapsed_minutes: 95, entry_id: "te-1" }) },
+    );
+    expect(w.find('[data-testid="mjd-job-clock-stop"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-job-clock-start"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-job-clock"]').text()).toContain("1h 35m");
+  });
+
+  it("renders Start when nothing is running on site", async () => {
+    const w = await mountWith({ dispatch_status: "on_site" });
+    expect(w.find('[data-testid="mjd-job-clock-start"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-job-clock-stop"]').exists()).toBe(false);
+  });
+
+  it("offers no job-clock control before the tech is under way", async () => {
+    const w = await mountWith({ dispatch_status: "assigned" });
+    expect(w.find('[data-testid="mjd-job-clock-start"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-job-clock-stop"]').exists()).toBe(false);
+  });
+
+  it("hides the control on a read-only grant instead of shipping a button that 404s", async () => {
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      {
+        read_only: true,
+        access_grant: "company",
+        clocks: clocksPayload({ running: true, elapsed_minutes: 30 }),
+      },
+    );
+    expect(w.find('[data-testid="mjd-job-clock"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-job-clock-stop"]').exists()).toBe(false);
+  });
+
+  it("stopping says what was recorded and that it is not pay", async () => {
+    postMock.mockResolvedValue({ ok: true, elapsed_minutes: 192, recorded_minutes: 0, payable: false });
+    const w = await mountWith(
+      { dispatch_status: "on_site" },
+      { clocks: clocksPayload({ running: true, elapsed_minutes: 192 }) },
+    );
+    await w.find('[data-testid="mjd-job-clock-stop"]').trigger("click");
+    await flushPromises();
+
+    expect(postMock).toHaveBeenCalledWith("/api/mobile/jobs/job-123/clock-out");
+    const toastArgs = toastAdd.mock.calls.at(-1)[0];
+    expect(toastArgs.summary).toContain("3h 12m");
+    // Never let the elapsed span read as hours earned.
+    expect(toastArgs.detail).toContain("close-out");
+  });
+
+  it("treats a 409 on start as state drift, not an error the tech caused", async () => {
+    // Arrival already opened the timer; the tech taps Start on a stale screen.
+    postMock.mockRejectedValue(Object.assign(new Error("conflict"), { status: 409 }));
+    const w = await mountWith({ dispatch_status: "on_site" });
+    await w.find('[data-testid="mjd-job-clock-start"]').trigger("click");
+    await flushPromises();
+
+    const errors = toastAdd.mock.calls.filter((c) => c[0].severity === "error");
+    expect(errors).toHaveLength(0);
+  });
+
+  it("survives a payload with no clocks key rather than throwing on mount", async () => {
+    // An older server, or a cached response from before this shipped.
+    const w = await mountWith({ dispatch_status: "on_site" }, { clocks: undefined });
+    expect(w.find('[data-testid="mjd-job-clock"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mjd-job-clock-stop"]').exists()).toBe(false);
+  });
+
+  it("renders the Time card for a closeout with no arrival stamp", async () => {
+    // A job entered after the fact, or a dispatcher closing for a tech. The
+    // attested hours are the point of the card, not the arrival — pinned here
+    // by mounting rather than by a regex over the template source.
+    const w = await mountWith({
+      dispatch_status: "done",
+      arrived_at: null,
+      closeout: { hours_worked: 1.5, no_parts_used: true, parts_count: 0, notes: "spring swapped" },
+    });
+    expect(w.find('[data-testid="mobile-closeout-summary"]').exists()).toBe(true);
+    expect(w.find('[data-testid="mobile-closeout-summary"]').text()).toContain("1.50");
+    expect(w.find('[data-testid="mobile-closeout-notes"]').text()).toContain("spring swapped");
   });
 });
