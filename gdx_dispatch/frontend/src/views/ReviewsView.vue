@@ -90,72 +90,11 @@
         </Column>
         <Column field="customer" header="Customer" />
         <Column field="content" header="Comment" />
-        <Column field="responded" header="Responded">
-          <template #body="{ data }">
-            <Tag :value="data.responded ? 'Responded' : 'Pending'" :severity="data.responded ? 'success' : 'warn'" />
-          </template>
-        </Column>
         <Column field="created_at" header="Received">
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
         </Column>
-        <Column header="Actions" style="width: 140px">
-          <template #body="{ data }">
-            <Button
-              icon="pi pi-reply"
-              label="Respond"
-              severity="primary"
-              size="small"
-              @click.stop="openResponseDialog(data)"
-              data-testid="reviews-respond-row"
-            />
-          </template>
-        </Column>
       </DataTable>
 
-      <Dialog
-        v-model:visible="showDialog"
-        :header="selectedReview ? `Respond to ${selectedReview.customer || 'review'}` : 'Respond to review'"
-        modal
-        :style="{ width: '520px' }"
-      >
-        <div class="form-grid">
-          <div class="form-field full-width">
-            <label>Response</label>
-            <Textarea
-              v-model="responseForm.message"
-              rows="4"
-              class="w-full"
-              data-testid="reviews-dialog-response"
-            />
-          </div>
-          <div class="form-field toggle-field">
-            <label class="toggle-label">Flag review</label>
-            <ToggleSwitch
-              v-model="responseForm.flagged"
-              on-label="Yes"
-              off-label="No"
-              class="toggle-control"
-              data-testid="reviews-dialog-flag"
-            />
-          </div>
-        </div>
-        <template #footer>
-          <Button
-            label="Cancel"
-            severity="secondary"
-            @click="closeResponseDialog"
-            data-testid="reviews-dialog-cancel"
-          />
-          <Button
-            label="Send"
-            icon="pi pi-check"
-            class="primary"
-            :loading="sendingResponse"
-            @click="postResponse"
-            data-testid="reviews-dialog-send"
-          />
-        </template>
-      </Dialog>
     </section>
 </template>
 
@@ -169,7 +108,6 @@ import Toolbar from 'primevue/toolbar';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
-import Dialog from 'primevue/dialog';
 import ProgressSpinner from 'primevue/progressspinner';
 import Rating from 'primevue/rating';
 import Select from 'primevue/select';
@@ -178,8 +116,6 @@ import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
 import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
-import Tag from 'primevue/tag';
-import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
@@ -191,14 +127,7 @@ const activeTab = ref('all');
 const sourceFilter = ref(null);
 const reviewRange = ref(null);
 const flaggedOnly = ref(false);
-const showDialog = ref(false);
-const selectedReview = ref(null);
-const sendingResponse = ref(false);
 
-const responseForm = ref({
-  message: '',
-  flagged: false,
-});
 
 const sourceOptions = [
   { label: 'All sources', value: null },
@@ -209,13 +138,11 @@ const sourceOptions = [
 
 const tabDefinitions = [
   { key: 'all', label: 'All reviews', note: 'Every review in the inbox.' },
-  { key: 'unresponded', label: 'Unresponded', note: 'Reviews waiting for a reply.' },
   { key: 'flagged', label: 'Flagged', note: 'Marked as needing attention.' },
 ];
 
 const tabMatchers = {
   all: () => true,
-  unresponded: (review) => !review.responded,
   flagged: (review) => Boolean(review.flagged),
 };
 
@@ -297,35 +224,8 @@ async function loadReviews() {
   }
 }
 
-function openResponseDialog(review) {
-  selectedReview.value = review;
-  responseForm.value = {
-    message: '',
-    flagged: Boolean(review.flagged),
-  };
-  showDialog.value = true;
-}
 
-function closeResponseDialog() {
-  showDialog.value = false;
-  selectedReview.value = null;
-}
 
-async function postResponse() {
-  if (!selectedReview.value) return;
-  sendingResponse.value = true;
-  try {
-    const payload = {
-      message: responseForm.value.message,
-      flagged: responseForm.value.flagged,
-    };
-    await api.post(`/api/reviews/${selectedReview.value.id}/responses`, payload, { successMessage: 'Response posted' });
-    await loadReviews();
-    closeResponseDialog();
-  } finally {
-    sendingResponse.value = false;
-  }
-}
 
 onMounted(() => {
   loadReviews();
@@ -364,22 +264,6 @@ onMounted(() => {
   margin: 0;
   font-size: 0.85rem;
   color: var(--p-text-muted-color);
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 0.75rem;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.full-width {
-  grid-column: 1 / -1;
 }
 
 .spinner-wrap {

@@ -174,6 +174,9 @@ class ConfirmLineIn(BaseModel):
     inventory_item_id: UUID | None = None
     skip_reason: str | None = None
     update_catalog_cost: bool = False
+    # Optional: the id of an existing job_parts_needed row this line paid for.
+    # Set by the office; never inferred. See confirm.py for why.
+    fulfils_part_id: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -679,6 +682,7 @@ async def confirm_invoice_line(
             inventory_item_id=payload.inventory_item_id,
             skip_reason=payload.skip_reason,
             update_catalog_cost=payload.update_catalog_cost,
+            fulfils_part_id=payload.fulfils_part_id,
         )
     except ConfirmError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

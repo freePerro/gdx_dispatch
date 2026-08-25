@@ -675,18 +675,6 @@ def list_labor_time_entries(
     return {"items": items, "total": len(items)}
 
 
-# ── Reviews responses ─────────────────────────────────────────────────────
-
-@router.post("/api/reviews/{review_id}/responses", response_model=None, status_code=201)
-def create_review_response(
-    review_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Responding to a customer review", request, user)
-
-
 # ── Service agreement templates patch ─────────────────────────────────────
 # REMOVED 2026-08-12. This shim answered PATCH
 # /api/service-agreements/templates/{id} with {"ok": true} and discarded the
@@ -694,6 +682,14 @@ def create_review_response(
 # implementation now lives in routers/service_agreements.update_template,
 # alongside the GET/POST for the same resource.
 
+
+# ── Reviews responses ─────────────────────────────────────────────────────
+# REMOVED 2026-08-25 (owner decision). POST /api/reviews/{id}/responses 501'd,
+# and the feature behind it could not work: every route on routers/reviews.py
+# requires staff auth, so a CUSTOMER cannot submit a review at all — all 13 prod
+# rows carry zero review text. Replying would have answered something customers
+# have no way to write. The review-request email points at Google, which is
+# where the reviews and the replies actually live. See #473.
 
 # ── Campaign management extras (Gemma 4 generated) ───────────────────────
 

@@ -24,6 +24,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gdx_dispatch.models.tenant_models import (
@@ -127,6 +128,7 @@ def confirm_line(
     inventory_item_id: UUID | None = None,
     skip_reason: str | None = None,
     update_catalog_cost: bool = False,
+    fulfils_part_id: str | None = None,
 ) -> dict:
     """Confirm one line, applying its disposition's effects. Idempotent AND
     concurrency-safe: the line row is locked FOR UPDATE before the status
@@ -187,23 +189,74 @@ def confirm_line(
         # Billing spine — item lines only. Freight/tax are costs, not billable
         # parts, so they never become a JobPartNeeded checklist row.
         if line.kind == KIND_ITEM:
-            jpn_id = str(uuid4())
-            db.add(
-                JobPartNeeded(
-                    id=jpn_id,
-                    company_id=company_id,
-                    job_id=str(eff_job),
-                    part_name=line.description[:200],
-                    quantity=_int_qty(line.quantity),
-                    supplier=vendor_name,
-                    status="received",
-                    source=EXPENSE_SOURCE,
-                    unit_price=None,  # office prices it on the invoice
-                    notes=f"From vendor invoice {invoice.invoice_number}",
-                    created_at=_now(),
-                    updated_at=_now(),
+            # `fulfils_part_id` is the office saying, explicitly, "this bill
+            # line paid for THAT part on the job". It is the only way the two
+            # planes can be joined: a bill line carries no SKU — only the
+            # vendor's free-text description — so which part it paid for cannot
+            # be inferred, and inferring it by name is what AUDIT-R1 forbids
+            # (core/part_pricing.py: "Matching is exact SKU only").
+            #
+            # Supplied  -> link to that existing row. Job costing then prices it
+            #              from the bill (actual) instead of the catalog
+            #              (estimate), with no double count and no guessing.
+            # Omitted   -> mint a per-event row exactly as before. Nothing about
+            #              the existing flow changes for anyone who does not use
+            #              the new control.
+            linked = None
+            if fulfils_part_id:
+                linked = db.execute(
+                    select(JobPartNeeded).where(
+                        JobPartNeeded.id == str(fulfils_part_id),
+                        JobPartNeeded.job_id == str(eff_job),
+                    )
+                ).scalars().first()
+                if linked is None:
+                    raise ConfirmError(
+                        "fulfils_part_id does not name a part on this job"
+                    )
+                if linked.source == EXPENSE_SOURCE:
+                    # That row was minted BY a confirm and belongs to whichever
+                    # line minted it. Linking a second line to it makes `source`
+                    # useless as an ownership record: reversing either line
+                    # would delete a row the other still points at, leaving a
+                    # dangling job_part_needed_id whose own reverse silently
+                    # no-ops. A bill line pays for a part someone recorded
+                    # using, not for another bill's bookkeeping row.
+                    raise ConfirmError(
+                        "that part was created by another vendor bill; link to "
+                        "the part the tech recorded instead"
+                    )
+
+            if linked is not None:
+                jpn_id = str(linked.id)
+                # The part is now evidenced by a real bill. Keep the row's own
+                # status (a tech's `used` is a consumption fact, not an open
+                # ask) and record the provenance.
+                linked.notes = (
+                    f"{linked.notes + ' | ' if linked.notes else ''}"
+                    f"Billed on vendor invoice {invoice.invoice_number}"
                 )
-            )
+                linked.updated_at = _now()
+                result["linked_existing_part"] = True
+            else:
+                jpn_id = str(uuid4())
+                db.add(
+                    JobPartNeeded(
+                        id=jpn_id,
+                        company_id=company_id,
+                        job_id=str(eff_job),
+                        part_name=line.description[:200],
+                        quantity=_int_qty(line.quantity),
+                        supplier=vendor_name,
+                        status="received",
+                        source=EXPENSE_SOURCE,
+                        unit_price=None,  # office prices it on the invoice
+                        notes=f"From vendor invoice {invoice.invoice_number}",
+                        created_at=_now(),
+                        updated_at=_now(),
+                    )
+                )
+                result["linked_existing_part"] = False
             db.flush()  # don't rely on the caller's autoflush setting
             line.job_part_needed_id = jpn_id
             result["job_part_needed_id"] = jpn_id
@@ -304,7 +357,11 @@ def reverse_confirmed_line(db: Session, invoice: VendorInvoice, line: VendorInvo
       identity map; FOR UPDATE holds the row against billing's concurrent
       ``UPDATE … WHERE billed_invoice_id IS NULL`` claim): billed since the
       router's fast-path check → LineBilledError, the caller 409s and the
-      transaction rolls back; unbilled → removed (this confirm minted it);
+      transaction rolls back; unbilled AND minted by this confirm
+      (source='vendor_invoice') → removed; unbilled but LINKED by the
+      office via fulfils_part_id → unlinked, never deleted, because that
+      row is the tech's attested consumption record and the bill does not
+      own it;
     - ``update_catalog_cost`` is deliberately NOT reversed — the old unit
       cost was never stored, and a cost observation is informational.
 
@@ -381,8 +438,28 @@ def reverse_confirmed_line(db: Session, invoice: VendorInvoice, line: VendorInvo
         if jpn is not None:
             if jpn.billed_invoice_id is not None:
                 raise LineBilledError(line)
-            db.delete(jpn)
-            out["checklist_removed"] = True
+            if jpn.source == EXPENSE_SOURCE:
+                # This confirm minted the row, so undoing the confirm removes
+                # it. Unchanged behaviour.
+                db.delete(jpn)
+                out["checklist_removed"] = True
+            else:
+                # The office LINKED an existing part (`fulfils_part_id`). That
+                # row is the TECH'S attested consumption record — its sku,
+                # quantity, price_source, photo and requester. Deleting it
+                # because a bill was mis-keyed would destroy evidence the bill
+                # never owned. Unlink and strip the provenance instead.
+                marker = f"Billed on vendor invoice {invoice.invoice_number}"
+                if jpn.notes:
+                    kept = [
+                        part.strip()
+                        for part in jpn.notes.split("|")
+                        if part.strip() and part.strip() != marker
+                    ]
+                    jpn.notes = " | ".join(kept) or None
+                jpn.updated_at = _now()
+                out["checklist_removed"] = False
+                out["unlinked_existing_part"] = True
 
     line.status = LINE_PENDING
     line.disposition = "pending"

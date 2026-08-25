@@ -816,16 +816,81 @@
             <Button label="Add from Catalog" icon="pi pi-book" severity="info" :loading="addingCatalogParts" @click="catalogPickerVisible = true" data-testid="job-detail-add-catalog" />
           </div>
           <div v-if="!costing?.parts?.items?.length" class="muted">No parts recorded.</div>
-          <DataTable v-else :value="costing.parts.items" striped-rows responsive-layout="scroll">
-            <Column field="name" header="Part / Item" />
-            <Column field="qty" header="Qty" />
-            <Column field="unit_cost" header="Unit cost (override, optional)">
-              <template #body="{ data }">{{ formatCurrency(data.unit_cost) }}</template>
-            </Column>
-            <Column field="subtotal" header="Total">
-              <template #body="{ data }">{{ formatCurrency(data.subtotal) }}</template>
-            </Column>
-          </DataTable>
+          <template v-else>
+            <!-- The catalog is the estimate; the vendor's bill is what counts;
+                 the gap between them is the number worth acting on, because a
+                 stale catalog quietly erodes margin on everything priced off
+                 it. -->
+            <div
+              v-if="costing?.catalog_variance"
+              class="cost-note"
+              :class="costing.catalog_variance > 0 ? 'note-bad' : 'note-good'"
+              data-testid="job-detail-catalog-variance"
+            >
+              <i class="pi pi-chart-line" />
+              <span v-if="costing.catalog_variance > 0">
+                Suppliers charged <strong>{{ formatCurrency(costing.catalog_variance) }} more</strong>
+                than the catalog on this job — anything priced off it is under-recovering.
+              </span>
+              <span v-else>
+                Suppliers charged <strong>{{ formatCurrency(Math.abs(costing.catalog_variance)) }} less</strong>
+                than the catalog on this job.
+              </span>
+            </div>
+            <div
+              v-if="costing?.estimates_ambiguous"
+              class="cost-note note-warn"
+              data-testid="job-detail-cost-ambiguous"
+            >
+              <i class="pi pi-exclamation-triangle" />
+              {{ costing.unlinked_bill_lines }} supplier
+              {{ costing.unlinked_bill_lines === 1 ? 'line is' : 'lines are' }}
+              not pointed at a part, so the catalog estimates below might be the
+              same spend. They are <strong>excluded from the total</strong> rather
+              than double-counted. Point each line at a part on the bill to settle it.
+            </div>
+            <div
+              v-else-if="costing?.estimated_parts_cost"
+              class="cost-note note-info"
+              data-testid="job-detail-cost-estimated"
+            >
+              <i class="pi pi-info-circle" />
+              {{ formatCurrency(costing.estimated_parts_cost) }} of this is a
+              <strong>catalog estimate</strong> — no supplier bill is pointed at it yet.
+            </div>
+            <div
+              v-if="costing?.unknown_cost_parts"
+              class="cost-note note-warn"
+              data-testid="job-detail-cost-incomplete"
+            >
+              <i class="pi pi-exclamation-triangle" />
+              {{ costing.unknown_cost_parts }}
+              {{ costing.unknown_cost_parts === 1 ? 'part has' : 'parts have' }}
+              no catalog price and no bill, so this cost is a <strong>floor</strong>.
+            </div>
+            <DataTable :value="costing.parts.items" striped-rows responsive-layout="scroll">
+              <Column field="name" header="Part / Item" />
+              <Column field="qty" header="Qty" />
+              <Column field="unit_cost" header="Unit cost">
+                <template #body="{ data }">
+                  <span v-if="data.cost_known">
+                    {{ formatCurrency(data.unit_cost) }}
+                    <!-- An estimate and a paid invoice must never look alike. -->
+                    <Tag v-if="data.is_estimate" :value="data.ambiguous ? 'est. (excluded)' : 'est.'"
+                         :severity="data.ambiguous ? 'warn' : 'info'"
+                         data-testid="part-cost-estimate" />
+                  </span>
+                  <span v-else class="muted" data-testid="part-cost-unknown">not costed</span>
+                </template>
+              </Column>
+              <Column field="subtotal" header="Total">
+                <template #body="{ data }">
+                  <span v-if="data.cost_known">{{ formatCurrency(data.subtotal) }}</span>
+                  <span v-else class="muted">—</span>
+                </template>
+              </Column>
+            </DataTable>
+          </template>
 
           <!-- Parts recorded as USED on the job — the billing checklist, which
                is a different plane from the cost table above: it carries
@@ -2734,6 +2799,16 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.cost-note {
+  display: flex; align-items: flex-start; gap: .5rem;
+  margin: .5rem 0 .75rem; padding: .6rem .75rem;
+  border-left: 3px solid var(--p-blue-500, #3b82f6);
+  color: var(--p-text-color, inherit);
+  font-size: .9rem; border-radius: 4px;
+}
+.note-warn { border-left-color: var(--p-orange-500, #f59e0b); }
+.note-bad  { border-left-color: var(--p-red-500, #ef4444); }
+.note-good { border-left-color: var(--p-green-500, #22c55e); }
 .specs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem; padding: 0.5rem; }
 .spec-item { border: 1px solid var(--p-content-border-color, #334155); padding: 0.5rem; border-radius: 6px; }
 .spec-label { font-size: 0.7rem; text-transform: uppercase; color: var(--p-text-muted-color, #94a3b8); display: block; }

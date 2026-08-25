@@ -221,21 +221,128 @@ def _labor_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
 
 
 def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
-    """Sum a job's consumed parts, joining `parts` for the display name.
+    """Cost the parts a job consumed. Bill if we have one, catalog if we don't.
 
-    Cost is `job_parts.unit_cost_at_time` (captured when the part was consumed),
-    never the part's current `unit_cost` — job costing must not retroactively
-    re-price. Matches the ORM (JobPart/Part), like `_labor_for_job` /
-    `_invoiced_for_job`.
+    Owner's rules (2026-08-25):
+      * only parts a tech confirmed USED carry cost — a request is a wish, and
+        68 of this tenant's 73 rows are requests;
+      * "the catalog is the estimated cost but the bill from the vendor is what
+        counts";
+      * "we should be able to see the diff in case we need to change pricing".
+
+    Resolution, in order, with NO inference anywhere:
+
+      actual   — a `vendor_invoice_lines` row whose `job_part_needed_id` points
+                 at this part. That link is set by the office when it confirms
+                 the line (`fulfils_part_id`), never guessed: a bill line
+                 carries no SKU, only the vendor's free text, so which part it
+                 paid for is not derivable. Matching it by name is what
+                 AUDIT-R1 forbids (`core/part_pricing.py`: "Matching is exact
+                 SKU only … that ruling stands").
+      estimate — the catalog the estimator prices from, matched on EXACT SKU.
+                 Covers 100% of the rows that count on this tenant: closeout
+                 capture has SKU autocomplete, so all 4 `used` rows carry a SKU
+                 and all 4 resolve. The poorly-SKU'd rows are requests, which
+                 this function ignores by rule.
+      unknown  — no link and no exact SKU match. Listed, contributes nothing.
+
+    `catalog_variance` is actual − estimated for parts that have both, measured
+    on the BILL LINE's own quantity so split bills accumulate rather than
+    overwrite. Positive means the supplier charged more than the catalog says.
+
+    Two earlier implementations were pulled before merge, both for pricing rows
+    without first deciding which rows count: the first double-counted because
+    `confirm.py` mints a new per-event row rather than linking the tech's, the
+    second reached for name matching to paper over that. The fix was never in
+    this query — it was giving the office a way to state the link.
     """
     from sqlalchemy import select as _sel
+    from sqlalchemy import text as _text
 
     from gdx_dispatch.modules.inventory.models import JobPart, Part
+    from gdx_dispatch.modules.vendor_invoices.models import (
+        KIND_ITEM,
+        LINE_CONFIRMED,
+        VendorInvoice,
+        VendorInvoiceLine,
+    )
 
     items: list[dict[str, Any]] = []
-    total = Decimal("0")
+    actual_total = Decimal("0")
+    estimated_total = Decimal("0")
+    variance_total = Decimal("0")
+    unknown = 0
+
+    # ── Actual: confirmed item lines, and the part each one paid for ─────────
+    # kind='item' because `line.job_id` is set outside confirm.py's KIND_ITEM
+    # guard, so freight and tax rows also carry a job_id; they are costs but not
+    # PARTS cost. Soft-deleted invoices are excluded — invariant #2 applies to
+    # reads too, or a voided bill keeps charging the job.
+    billed_part_ids: set[str] = set()
+    billed_qty: dict[str, Decimal] = {}
+    billed_subtotal: dict[str, Decimal] = {}
     try:
+        # ORM, not raw SQL with a stringified UUID. `vendor_invoice_lines.job_id`
+        # is a SQLAlchemy `Uuid`, which SQLite stores as 32 hex chars with NO
+        # dashes while `str(job_id)` produces the dashed form — a `text()` query
+        # binding the string matches ZERO rows there, silently, so "actual" cost
+        # would never appear in dev while looking fine on Postgres. Letting the
+        # type coerce the bind is the only version that is right on both.
         rows = db.execute(
+            _sel(
+                VendorInvoiceLine.description,
+                VendorInvoiceLine.quantity,
+                VendorInvoiceLine.unit_cost,
+                VendorInvoiceLine.line_total,
+                VendorInvoiceLine.job_part_needed_id,
+            )
+            .join(VendorInvoice, VendorInvoice.id == VendorInvoiceLine.vendor_invoice_id)
+            .where(
+                VendorInvoiceLine.job_id == job_id,
+                VendorInvoiceLine.kind == KIND_ITEM,
+                VendorInvoiceLine.status == LINE_CONFIRMED,
+                VendorInvoice.deleted_at.is_(None),
+            )
+        ).all()
+    except Exception:
+        log.exception("vendor_line_parts_query_failed job_id=%s", job_id)
+        db.rollback()
+        rows = []
+
+    unlinked_bill_lines = 0
+    for description, quantity, unit_cost, line_total, jpn_id in rows:
+        subtotal = Decimal(str(line_total or 0)).quantize(Decimal("0.01"))
+        actual_total += subtotal
+        if not jpn_id:
+            unlinked_bill_lines += 1
+        if jpn_id:
+            pid = str(jpn_id)
+            billed_part_ids.add(pid)
+            # ACCUMULATE, never overwrite: one part can be billed across several
+            # lines, and overwriting made the variance nonsense in an earlier
+            # attempt.
+            billed_qty[pid] = billed_qty.get(pid, Decimal("0")) + Decimal(str(quantity or 0))
+            billed_subtotal[pid] = billed_subtotal.get(pid, Decimal("0")) + subtotal
+        items.append(
+            {
+                "name": str(description or "Part"),
+                "qty": float(Decimal(str(quantity or 0))),
+                "unit_cost": float(unit_cost or 0),
+                "subtotal": float(subtotal),
+                "source": "vendor_bill",
+                "cost_known": True,
+                "is_estimate": False,
+            }
+        )
+
+    # ── Actual: inventory consumption (job_parts) ────────────────────────────
+    # The canonical cost table wherever a `parts` catalog exists. Empty on this
+    # tenant (it FKs to `parts`, which is also empty) but kept and guarded:
+    # dropping it is how a prod bug once made every job's parts cost read $0,
+    # and `test_parts_for_job_sums_via_parts_join` exists to catch exactly that.
+    # Uses `unit_cost_at_time` — costing must not retroactively re-price.
+    try:
+        inv_rows = db.execute(
             _sel(Part.name, JobPart.qty_used, JobPart.unit_cost_at_time)
             .join(Part, Part.id == JobPart.part_id)
             .where(JobPart.job_id == job_id)
@@ -243,27 +350,195 @@ def _parts_for_job(db: Session, job_id: UUID) -> dict[str, Any]:
     except OperationalError:
         log.exception("job_parts_query_failed job_id=%s", job_id)
         db.rollback()
-        return {"items": [], "total": 0.0}
+        inv_rows = []
     except Exception:
         log.exception("job_parts_unexpected_error job_id=%s", job_id)
         db.rollback()
-        return {"items": [], "total": 0.0}
+        inv_rows = []
 
-    for r in rows:
-        name = str(r[0] or "Part")
+    for r in inv_rows:
         qty = Decimal(str(r[1] or 0))
         unit_cost = Decimal(str(r[2] or 0))
         subtotal = (qty * unit_cost).quantize(Decimal("0.01"))
-        total += subtotal
+        actual_total += subtotal
         items.append(
             {
-                "name": name,
+                "name": str(r[0] or "Part"),
                 "qty": float(qty),
                 "unit_cost": float(unit_cost),
                 "subtotal": float(subtotal),
+                "source": "inventory",
+                "cost_known": True,
+                "is_estimate": False,
             }
         )
-    return {"items": items, "total": float(total.quantize(Decimal("0.01")))}
+
+    # ── Estimate: used parts with no bill line pointing at them ──────────────
+    # EXACT SKU ONLY (AUDIT-R1). `ORDER BY updated_at DESC` so a duplicate SKU
+    # resolves to the most recently maintained row rather than arbitrarily.
+    try:
+        rows = db.execute(
+            _text(
+                """
+                SELECT pn.id, pn.part_name, pn.quantity,
+                       COALESCE(
+                         (SELECT c.cost FROM custom_catalog_items c
+                           WHERE LOWER(TRIM(c.sku)) = LOWER(TRIM(pn.sku)) AND c.cost > 0
+                             AND c.deleted_at IS NULL AND c.active
+                           ORDER BY c.updated_at DESC LIMIT 1),
+                         (SELECT k.cost FROM chi_parts_catalog k
+                           WHERE LOWER(TRIM(k.sku)) = LOWER(TRIM(pn.sku)) AND k.cost > 0
+                             AND k.is_active
+                           ORDER BY k.imported_at DESC LIMIT 1)
+                       ) AS catalog_cost
+                FROM job_parts_needed pn
+                WHERE pn.job_id = :job_id
+                  AND pn.status = 'used'
+                  AND pn.sku IS NOT NULL AND TRIM(pn.sku) <> ''
+                """
+            ),
+            {"job_id": str(job_id)},
+        ).mappings().all()
+    except Exception:
+        log.exception("job_parts_needed_query_failed job_id=%s", job_id)
+        db.rollback()
+        rows = []
+
+    for r in rows:
+        pid = str(r["id"])
+        qty = Decimal(str(r["quantity"] or 1))
+        cat = r["catalog_cost"]
+        cat_unit = Decimal(str(cat)) if cat is not None else None
+
+        if pid in billed_part_ids:
+            # A bill paid for this part — it is already in actual_total.
+            if cat_unit is not None:
+                # Compare like with like: what the supplier charged against what
+                # the catalog says THAT SAME quantity costs.
+                est_at_billed_qty = (billed_qty[pid] * cat_unit).quantize(Decimal("0.01"))
+                variance_total += billed_subtotal[pid] - est_at_billed_qty
+
+            # A PARTIAL bill must not swallow the rest. Used 4, billed 1 leaves
+            # 3 units genuinely consumed and genuinely uncosted; treating the
+            # part as "done" because one line mentions it is an undercount, and
+            # an unflagged one — the same direction of error (margin overstated)
+            # as the silent $0 this whole function replaced.
+            shortfall = qty - billed_qty[pid]
+            if shortfall > 0:
+                if cat_unit is not None:
+                    sub = (shortfall * cat_unit).quantize(Decimal("0.01"))
+                    estimated_total += sub
+                    items.append(
+                        {
+                            "name": f"{r['part_name'] or 'Part'} (unbilled remainder)",
+                            "qty": float(shortfall),
+                            "unit_cost": float(cat_unit),
+                            "subtotal": float(sub),
+                            "source": "catalog_estimate",
+                            "cost_known": True,
+                            "is_estimate": True,
+                        }
+                    )
+                else:
+                    unknown += 1
+            continue
+
+        if cat_unit is None:
+            unknown += 1
+            items.append(
+                {
+                    "name": str(r["part_name"] or "Part"),
+                    "qty": float(qty),
+                    "unit_cost": None,
+                    "subtotal": None,
+                    "source": "parts_needed",
+                    "cost_known": False,
+                    "is_estimate": False,
+                }
+            )
+            continue
+
+        subtotal = (qty * cat_unit).quantize(Decimal("0.01"))
+        estimated_total += subtotal
+        items.append(
+            {
+                "name": str(r["part_name"] or "Part"),
+                "qty": float(qty),
+                "unit_cost": float(cat_unit),
+                "subtotal": float(subtotal),
+                "source": "catalog_estimate",
+                "cost_known": True,
+                "is_estimate": True,
+            }
+        )
+
+    # Used parts with NO sku cannot be priced at all — count them so the job
+    # reads as incomplete rather than silently cheap.
+    try:
+        no_sku = db.execute(
+            _text(
+                """
+                SELECT id, part_name, quantity FROM job_parts_needed
+                WHERE job_id = :job_id AND status = 'used'
+                  AND (sku IS NULL OR TRIM(sku) = '')
+                """
+            ),
+            {"job_id": str(job_id)},
+        ).mappings().all()
+    except Exception:
+        log.exception("job_parts_needed_nosku_query_failed job_id=%s", job_id)
+        db.rollback()
+        no_sku = []
+
+    for r in no_sku:
+        if str(r["id"]) in billed_part_ids:
+            continue
+        unknown += 1
+        items.append(
+            {
+                "name": str(r["part_name"] or "Part"),
+                "qty": float(Decimal(str(r["quantity"] or 1))),
+                "unit_cost": None,
+                "subtotal": None,
+                "source": "parts_needed",
+                "cost_known": False,
+                "is_estimate": False,
+            }
+        )
+
+    # A bill line attributed to the job but NOT linked to a part means we do not
+    # know WHICH part it paid for — and it may well be one of the parts we just
+    # estimated from the catalog. Adding both is a guaranteed overcount of one
+    # physical part, roughly doubling it.
+    #
+    # An earlier revision of this function did exactly that and shipped a test
+    # asserting it was correct. It is not: it replaced a known $0 with an
+    # unknown ~2x, which is the worse error because it looks like a number.
+    #
+    # So when anything is unattributed, `total` carries only what we can
+    # evidence — the bills — and the estimates are reported alongside, marked
+    # ambiguous, without being summed into the figure that feeds margin. The job
+    # reads INCOMPLETE, which is the truth: we know money was spent and parts
+    # were used, and we cannot say whether they are the same money.
+    ambiguous = unlinked_bill_lines > 0 and estimated_total > 0
+    if ambiguous:
+        for it in items:
+            if it.get("is_estimate"):
+                it["ambiguous"] = True
+        total = actual_total
+    else:
+        total = actual_total + estimated_total
+
+    return {
+        "items": items,
+        "total": float(total.quantize(Decimal("0.01"))),
+        "unlinked_bill_lines": unlinked_bill_lines,
+        "estimates_ambiguous": ambiguous,
+        "actual_cost_total": float(actual_total.quantize(Decimal("0.01"))),
+        "estimated_cost_total": float(estimated_total.quantize(Decimal("0.01"))),
+        "catalog_variance": float(variance_total.quantize(Decimal("0.01"))),
+        "unknown_cost_count": unknown,
+    }
 
 
 def _invoiced_for_job(db: Session, job_id: UUID, tenant_id: str) -> Decimal:
@@ -317,6 +592,26 @@ def get_job_costing(
         "job_id": str(job_id),
         "labor": labor,
         "parts": parts,
+        # Promoted so a caller reading only the top level cannot miss them.
+        # "Incomplete" means the cost is NOT SETTLED — parts nobody costed, OR
+        # bills we could not attribute, OR a figure resting on catalog guesses.
+        # A previous revision set this False whenever every part happened to
+        # resolve to an estimate, i.e. "complete" meant "we guessed everything
+        # successfully". That is the opposite of what a reader needs.
+        "cost_incomplete": bool(
+            parts.get("unknown_cost_count", 0)
+            or parts.get("unlinked_bill_lines", 0)
+            or parts.get("estimated_cost_total", 0.0)
+        ),
+        "unknown_cost_parts": int(parts.get("unknown_cost_count", 0)),
+        "unlinked_bill_lines": int(parts.get("unlinked_bill_lines", 0)),
+        "estimates_ambiguous": bool(parts.get("estimates_ambiguous", False)),
+        "estimated_parts_cost": float(parts.get("estimated_cost_total", 0.0)),
+        "actual_parts_cost": float(parts.get("actual_cost_total", 0.0)),
+        # actual − catalog on the billed quantity. Positive = the supplier
+        # charged more than the catalog says, so anything priced off that
+        # catalog is under-recovering. This is the number to act on.
+        "catalog_variance": float(parts.get("catalog_variance", 0.0)),
         "overhead": {
             "percent": float(OVERHEAD_PERCENT),
             "total": float(overhead_total),
@@ -636,6 +931,18 @@ def profitability_report(
                 "cost_estimate": float(cost_estimate),
                 "profit": float(profit),
                 "margin_percent": margin,
+                # The same caveats the per-job endpoint carries. This is the
+                # report an owner reads to judge margin, so stripping them here
+                # would be the worst place to hide them.
+                "cost_incomplete": bool(
+                    parts.get("unknown_cost_count", 0)
+                    or parts.get("unlinked_bill_lines", 0)
+                    or parts.get("estimated_cost_total", 0.0)
+                ),
+                "estimates_ambiguous": bool(parts.get("estimates_ambiguous", False)),
+                "estimated_parts_cost": float(parts.get("estimated_cost_total", 0.0)),
+                "actual_parts_cost": float(parts.get("actual_cost_total", 0.0)),
+                "catalog_variance": float(parts.get("catalog_variance", 0.0)),
             }
         )
     return out
