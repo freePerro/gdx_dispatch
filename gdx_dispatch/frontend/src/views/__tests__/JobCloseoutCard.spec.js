@@ -38,7 +38,17 @@ describe('closeout read side — wiring', () => {
     expect(MOBILE).toMatch(/data-testid="mobile-closeout-notes"/);
     expect(MOBILE).toMatch(/job\.closeout\.hours_worked/);
     // The Time card renders for a closeout even with no arrival stamp.
-    expect(MOBILE).toMatch(/v-if="job\.arrived_at \|\| job\.closeout"/);
+    //
+    // 2026-08-25: this used to pin the card's v-if EXACTLY
+    // (/v-if="job\.arrived_at \|\| job\.closeout"/) and broke the day a third
+    // condition was added for the job clock — while the behaviour it claimed to
+    // protect was never at risk. A source regex over an expression pins the
+    // author's punctuation, not the rendering. The real guard now lives in
+    // MobileJobDetailActions.spec.js ("renders the Time card for a closeout
+    // with no arrival stamp"), which mounts the view and looks for the card.
+    // What stays here is the part a static read can honestly answer: closeout
+    // is one of the things that makes the card appear.
+    expect(MOBILE).toMatch(/v-if="job\.arrived_at \|\| job\.closeout \|\|/);
   });
 
   it('neither surface reaches for the raw signature blob off the closeout', () => {
