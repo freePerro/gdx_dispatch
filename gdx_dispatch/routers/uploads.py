@@ -56,7 +56,17 @@ def _compress_image(data: bytes, content_type: str) -> tuple[bytes, str]:
     import io
 
     try:
-        img = _PILImage.open(io.BytesIO(data))
+        from gdx_dispatch.core.images import upright  # noqa: PLC0415
+
+        # BEFORE .size, and before any resize: a phone stores a portrait shot
+        # as landscape pixels plus an EXIF Orientation tag, so the dimensions
+        # this function reasons about are the rotated ones. Re-encoding without
+        # this was the worst instance of the orientation bug in the tree — the
+        # save below drops EXIF, so the tag was destroyed while the pixels
+        # stayed unrotated, leaving a photo NOTHING downstream could straighten
+        # again. The invoice-PDF instance was recoverable (the stored original
+        # still had its tag); this one never was.
+        img = upright(_PILImage.open(io.BytesIO(data)))
 
         # Resize if larger than MAX_IMAGE_DIMENSION on either axis
         w, h = img.size

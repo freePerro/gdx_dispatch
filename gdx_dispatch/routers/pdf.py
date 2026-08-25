@@ -219,24 +219,44 @@ def _estimate_payload(
     }
 
 
+# Bumped whenever the bytes this function PRODUCES change meaning, so a cache
+# entry written by the old code is never mistaken for a current one. The
+# invalidation below keys on the SOURCE mtime, which does not move when we fix
+# the encoder — without this salt, a container that has already rendered an
+# invoice would keep serving the pre-fix (sideways) JPEG until it restarted.
+# v2 = 2026-08-25, EXIF orientation applied to the pixels.
+_PDF_PHOTO_CACHE_VERSION = 2
+
+
 def _shrink_photo_for_pdf(src: Path, cache_key: str) -> Path:
-    """Downscaled JPEG copy for PDF embedding, cached in the system tmp dir.
+    """Downscaled, UPRIGHT JPEG copy for PDF embedding, cached in the tmp dir.
 
     The email send path SKIPS the whole PDF attachment above
     MAX_INLINE_ATTACHMENT_BYTES (2.5 MB) — embedding a handful of full-size
     photos would silently strip the invoice from its own email. 1200px q78
     keeps a photo ~100-200 KB on the page. Falls back to the original file
-    when Pillow can't process it (WeasyPrint may still manage)."""
+    when Pillow can't process it (WeasyPrint may still manage).
+
+    ``upright()`` first, and then a save with NO ``exif=``: a phone photo
+    carries its rotation as an EXIF tag, and this re-encode is what used to
+    destroy it — writing the unrotated pixels with the instruction deleted, so
+    the customer got a 90°-rotated photo on the invoice. WeasyPrint honors the
+    tag on its own (69.0 on prod), so the un-shrunk original always rendered
+    correctly; it was the optimization that broke the picture. See
+    core/images.upright for why re-attaching the EXIF here would double-rotate.
+    """
     cache_dir = Path(tempfile.gettempdir()) / "gdx_invoice_pdf_photos"
-    out = cache_dir / f"{cache_key}.jpg"
+    out = cache_dir / f"{cache_key}-v{_PDF_PHOTO_CACHE_VERSION}.jpg"
     try:
         if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
             return out
         from PIL import Image  # noqa: PLC0415
 
+        from gdx_dispatch.core.images import upright  # noqa: PLC0415
+
         cache_dir.mkdir(parents=True, exist_ok=True)
         with Image.open(src) as img:
-            img = img.convert("RGB")
+            img = upright(img).convert("RGB")
             img.thumbnail((1200, 1200))
             img.save(out, format="JPEG", quality=78, optimize=True)
         return out
