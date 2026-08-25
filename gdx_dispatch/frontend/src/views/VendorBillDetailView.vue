@@ -250,6 +250,25 @@
                   <span v-else-if="draft[data.id].disposition === 'job' && !invoice.matched_job_id" class="muted small">
                     Pick a job above first
                   </span>
+                  <!-- Which part on the job did this line pay for? A bill line
+                       carries no SKU — only the vendor's own wording — so this
+                       cannot be worked out automatically, and guessing it by
+                       name is explicitly forbidden (AUDIT-R1). Saying so here
+                       is what lets job costing use the real bill instead of a
+                       catalog estimate. Optional: leave it blank and nothing
+                       changes from before. -->
+                  <Select
+                    v-else-if="draft[data.id].disposition === 'job' && data.kind === 'item' && jobParts.length"
+                    v-model="draft[data.id].fulfils_part_id"
+                    :options="jobParts"
+                    optionLabel="label"
+                    optionValue="value"
+                    showClear
+                    placeholder="Pays for which part? (optional)"
+                    class="target-input"
+                    :disabled="busy"
+                    data-test="vbd-fulfils-part"
+                  />
                   <Button
                     label="Confirm"
                     size="small"
@@ -359,6 +378,25 @@ function canConfirm(line) {
   return d.disposition === 'overhead'
 }
 
+// The parts a tech confirmed USED on the matched job — the only rows job
+// costing prices, so the only sensible things a bill line can be said to pay
+// for. Reloaded whenever the matched job changes.
+const jobParts = ref([])
+async function loadJobParts() {
+  const jobId = invoice.value?.matched_job_id
+  if (!jobId) { jobParts.value = []; return }
+  try {
+    const rows = await api.get(`/api/jobs/${jobId}/parts-needed?status=used`)
+    const list = Array.isArray(rows) ? rows : rows?.items || []
+    jobParts.value = list.map((r) => ({
+      value: r.id,
+      label: r.sku ? `${r.part_name} (${r.sku}) ×${r.quantity ?? 1}` : `${r.part_name} ×${r.quantity ?? 1}`,
+    }))
+  } catch {
+    jobParts.value = []  // no picker rather than a broken page
+  }
+}
+
 function seedDrafts() {
   for (const line of invoice.value?.lines || []) {
     if (!draft[line.id]) {
@@ -366,6 +404,7 @@ function seedDrafts() {
         disposition: line.disposition && line.disposition !== 'pending' ? line.disposition : 'job',
         inventory_item_id: line.inventory_item_id || null,
         skip_reason: line.skip_reason || '',
+        fulfils_part_id: line.job_part_needed_id || null,
       }
     }
   }
@@ -377,6 +416,7 @@ const fetchDetail = async () => {
   try {
     invoice.value = await api.get(`/api/vendor-invoices/${route.params.id}`)
     jobPick.value = invoice.value?.matched_job_id || null
+    await loadJobParts()
     seedDrafts()
     if (invoice.value?.document_id) {
       pdfUrl.value = await createAuthedBlobUrl(`/api/documents/${invoice.value.document_id}/download`)
@@ -421,7 +461,12 @@ async function setMatch(jobId) {
   try {
     invoice.value = await api.patch(`/api/vendor-invoices/${invoice.value.id}`, { matched_job_id: jobId })
     jobPick.value = invoice.value?.matched_job_id || jobId
+    // Drop any part link chosen for the PREVIOUS job before reseeding: those
+    // ids belong to a different job and the server rightly refuses them, with
+    // a 400 the office has no way to interpret.
+    for (const d of Object.values(draft)) d.fulfils_part_id = null
     seedDrafts()
+    await loadJobParts()
   } catch (err) {
     error.value = err.message || 'Failed to set job'
   } finally {
@@ -497,6 +542,12 @@ async function confirmLine(line) {
     const payload = { disposition: d.disposition }
     if (d.disposition === 'stock') payload.inventory_item_id = d.inventory_item_id
     if (d.disposition === 'skip') payload.skip_reason = d.skip_reason
+    // Only sent when a part is chosen. Clearing the picker cannot "unlink":
+    // confirm_line is idempotent and returns early on an already-confirmed
+    // line, so a wrong link is corrected the way every other wrong confirm is
+    // — void the line and confirm it again. Sending a null here would look
+    // like an undo and quietly do nothing.
+    if (d.disposition === 'job' && d.fulfils_part_id) payload.fulfils_part_id = d.fulfils_part_id
     invoice.value = await api.post(
       `/api/vendor-invoices/${invoice.value.id}/lines/${line.id}/confirm`,
       payload,

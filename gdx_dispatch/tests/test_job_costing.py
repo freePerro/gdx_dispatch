@@ -297,3 +297,347 @@ def test_catalog_pricing_endpoint(client: TestClient):
     assert len(data) == 2
     cats = {row["category"] for row in data}
     assert cats == {"parts", "labor"}
+
+
+# ---------------------------------------------------------------------------
+# Parts cost — attempt 3. Owner's rules, 2026-08-25:
+#   only closeout/used carries cost · catalog estimates · the vendor's bill is
+#   what counts · show the diff.
+#
+# Attempts 1 and 2 were pulled before merge. Both priced rows without first
+# deciding which rows count, then tried to dedup by inference — attempt 1 on a
+# foreign key confirm.py never sets to the tech's row, attempt 2 on lowercased
+# part name, which core/part_pricing.py:30 forbids outright. This version does
+# not infer anything: a part is billed IFF a bill line explicitly points at it,
+# and estimates come from EXACT SKU only.
+# ---------------------------------------------------------------------------
+
+from gdx_dispatch.routers.job_costing import _parts_for_job  # noqa: E402
+
+
+def _s(client):
+    from sqlalchemy.orm import sessionmaker
+    return sessionmaker(bind=client._engine, autoflush=False, autocommit=False)()
+
+
+def _used_part(db, job_id, name, qty=1, sku=None, status="used"):
+    pid = str(uuid4())
+    db.execute(
+        text("INSERT INTO job_parts_needed (id, company_id, job_id, part_name, quantity, sku, status, source, created_at) "
+             "VALUES (:id,'tenant-test',:j,:n,:q,:sku,:st,'closeout',datetime('now'))"),
+        {"id": pid, "j": str(job_id), "n": name, "q": qty, "sku": sku, "st": status},
+    )
+    db.commit()
+    return pid
+
+
+def _bill(db, job_id, desc, qty=1, unit=10.0, links=None, kind="item",
+          status="confirmed", deleted=False):
+    """Write the bill through the ORM, exactly as confirm.py does.
+
+    This used to raw-INSERT with `str(job_id)`. `vendor_invoice_lines.job_id` is
+    a SQLAlchemy `Uuid`: SQLite stores it as 32 hex chars with NO dashes, so a
+    dashed raw INSERT produced rows the application could never write and the
+    reader could only find if IT also used the dashed form. Fixture and query
+    agreed with each other and neither agreed with production — the tests passed
+    while `actual` cost matched nothing. Going through the ORM is what makes
+    them mean something.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal as D
+
+    from gdx_dispatch.modules.vendor_invoices.models import VendorInvoice, VendorInvoiceLine
+
+    inv = VendorInvoice(
+        vendor_key="acme", vendor_name_raw="Acme", invoice_number=f"INV-{uuid4().hex[:8]}",
+        subtotal=D("0"), tax=D("0"), shipping=D("0"), total=D("0"),
+        status="confirmed", source="manual", extraction_method="manual",
+        deleted_at=datetime(2026, 1, 1, tzinfo=UTC) if deleted else None,
+    )
+    db.add(inv)
+    db.flush()
+    db.add(
+        VendorInvoiceLine(
+            vendor_invoice_id=inv.id, line_no=0, kind=kind, description=desc,
+            quantity=D(str(qty)), unit_cost=D(str(unit)), line_total=D(str(round(qty * unit, 2))),
+            disposition="job", status=status, job_id=job_id, job_part_needed_id=links,
+        )
+    )
+    db.commit()
+
+
+def _cat(db, name, cost, sku, active=True):
+    cid = str(uuid4())
+    db.execute(
+        text("INSERT INTO custom_catalogs (id,name,source_system,product_class,field_schema,"
+             "pricing_strategy,pricing_config,active,created_at,updated_at) "
+             "VALUES (:id,'Cat','manual','part','{}','fixed','{}',1,datetime('now'),datetime('now'))"),
+        {"id": cid},
+    )
+    db.execute(
+        text("INSERT INTO custom_catalog_items (id,catalog_id,sku,name,cost,price,product_class,"
+             "attributes,active,created_at,updated_at) "
+             "VALUES (:id,:c,:sku,:n,:cost,:p,'part','{}',:a,datetime('now'),datetime('now'))"),
+        {"id": str(uuid4()), "c": cid, "sku": sku, "n": name, "cost": cost,
+         "p": round(cost * 1.5, 2), "a": 1 if active else 0},
+    )
+    db.commit()
+
+
+def test_a_request_costs_nothing(client):
+    """68 of 73 prod rows are requests. A wish is not a spend."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207", status="needed")
+    out = _parts_for_job(db, job)
+    assert out["total"] == 0.0 and out["items"] == [] and out["unknown_cost_count"] == 0
+    db.close()
+
+
+def test_a_used_part_is_estimated_by_exact_sku(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    out = _parts_for_job(db, job)
+    assert out["total"] == 83.00
+    assert out["estimated_cost_total"] == 83.00 and out["actual_cost_total"] == 0.0
+    assert out["items"][0]["is_estimate"] is True
+    db.close()
+
+
+def test_name_alone_never_prices_a_part(client):
+    """AUDIT-R1: exact SKU only. A catalog row with the same NAME but a
+    different SKU must not price this part — that is the ruling attempt 2
+    broke."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "SOMETHING-ELSE")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    out = _parts_for_job(db, job)
+    assert out["unknown_cost_count"] == 1
+    assert out["total"] == 0.0
+    db.close()
+
+
+def test_a_used_part_with_no_sku_is_unknown_not_free(client):
+    db = _s(client)
+    job = uuid4()
+    _used_part(db, job, "Bespoke bracket", 1, sku=None)
+    out = _parts_for_job(db, job)
+    assert out["unknown_cost_count"] == 1 and out["total"] == 0.0
+    assert out["items"][0]["cost_known"] is False
+    db.close()
+
+
+def test_a_linked_bill_replaces_the_estimate_and_is_not_double_counted(client):
+    """THE BUG THAT PULLED BOTH EARLIER ATTEMPTS."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    pid = _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    _bill(db, job, "SPRING TORS .250X2.0X32", qty=2, unit=48.75, links=pid)
+
+    out = _parts_for_job(db, job)
+    assert out["total"] == 97.50, "the bill, NOT 97.50 + 83.00"
+    assert out["actual_cost_total"] == 97.50
+    assert out["estimated_cost_total"] == 0.0
+    assert len(out["items"]) == 1
+    db.close()
+
+
+def test_an_unlinked_bill_does_not_stack_an_estimate_on_top_of_itself(client):
+    """THE DEFAULT PATH, and the one that matters — the picker is optional and
+    every historical line has no link.
+
+    A bill line on the job that is not linked to a part may BE one of the parts
+    we just estimated. Summing both roughly doubles one physical part. An
+    earlier revision did exactly that and shipped a test asserting it correct,
+    replacing a known $0 with an unknown 2x — the worse error, because it looks
+    like a number.
+
+    So `total` carries only what is evidenced, the estimate is reported beside
+    it marked ambiguous, and the job reads incomplete."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    _bill(db, job, "SPRING TORS .250X2.0X32", qty=2, unit=48.75, links=None)
+
+    out = _parts_for_job(db, job)
+
+    assert out["total"] == 97.50, "the bill only — NOT 97.50 + 83.00"
+    assert out["actual_cost_total"] == 97.50
+    assert out["estimated_cost_total"] == 83.00, "still reported, just not summed"
+    assert out["estimates_ambiguous"] is True
+    assert out["unlinked_bill_lines"] == 1
+    assert all(i.get("ambiguous") for i in out["items"] if i.get("is_estimate"))
+    assert out["catalog_variance"] == 0.0, "no link means no comparable pair"
+    db.close()
+
+
+def test_estimates_are_summed_normally_when_nothing_is_unattributed(client):
+    """Counterfactual: with no unlinked bill there is nothing to collide with,
+    so the estimate is real cost and DOES count."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+
+    out = _parts_for_job(db, job)
+    assert out["total"] == 83.00
+    assert out["estimates_ambiguous"] is False
+    assert not any(i.get("ambiguous") for i in out["items"])
+    db.close()
+
+
+def test_variance_is_actual_minus_catalog_on_the_billed_quantity(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    pid = _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    _bill(db, job, "spring", qty=2, unit=48.75, links=pid)
+    assert _parts_for_job(db, job)["catalog_variance"] == 14.50
+    db.close()
+
+
+def test_variance_is_negative_when_the_catalog_overstates(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Roller set", 20.00, "RS-10")
+    pid = _used_part(db, job, "Roller set", 1, sku="RS-10")
+    _bill(db, job, "rollers", qty=1, unit=12.00, links=pid)
+    assert _parts_for_job(db, job)["catalog_variance"] == -8.00
+    db.close()
+
+
+def test_a_part_billed_across_two_lines_accumulates(client):
+    """Attempt 2 overwrote per-part state, so a split bill produced a nonsense
+    variance under a UI telling the owner to reprice."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    pid = _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    _bill(db, job, "spring 1 of 2", qty=1, unit=48.75, links=pid)
+    _bill(db, job, "spring 2 of 2", qty=1, unit=48.75, links=pid)
+
+    out = _parts_for_job(db, job)
+    assert out["actual_cost_total"] == 97.50
+    assert out["catalog_variance"] == 14.50, "2 billed @48.75 vs 2 catalog @41.50"
+    db.close()
+
+
+def test_freight_and_tax_are_not_parts_cost(client):
+    db = _s(client)
+    job = uuid4()
+    _bill(db, job, "Freight", qty=1, unit=95.00, kind="freight")
+    _bill(db, job, "Sales tax", qty=1, unit=31.20, kind="tax")
+    out = _parts_for_job(db, job)
+    assert out["total"] == 0.0 and out["items"] == []
+    db.close()
+
+
+def test_an_unconfirmed_line_does_not_charge_the_job(client):
+    db = _s(client)
+    job = uuid4()
+    _bill(db, job, "spring", qty=2, unit=48.75, status="pending")
+    assert _parts_for_job(db, job)["total"] == 0.0
+    db.close()
+
+
+def test_a_soft_deleted_bill_stops_charging(client):
+    """Invariant #2 applies to reads."""
+    db = _s(client)
+    job = uuid4()
+    _bill(db, job, "spring", qty=2, unit=48.75, deleted=True)
+    assert _parts_for_job(db, job)["total"] == 0.0
+    db.close()
+
+
+def test_an_inactive_catalog_row_does_not_price(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Retired spring", 41.50, "RS-OLD", active=False)
+    _used_part(db, job, "Retired spring", 1, sku="RS-OLD")
+    assert _parts_for_job(db, job)["unknown_cost_count"] == 1
+    db.close()
+
+
+def test_a_zero_cost_catalog_row_is_unpriced_not_free(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Unpriced widget", 0.00, "UW-1")
+    _used_part(db, job, "Unpriced widget", 2, sku="UW-1")
+    assert _parts_for_job(db, job)["unknown_cost_count"] == 1
+    db.close()
+
+
+def test_the_endpoint_reports_the_split(client):
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="TS-207")
+    db.close()
+    b = client.get(f"/api/costing/jobs/{job}").json()
+    assert b["estimated_parts_cost"] == 83.00
+    assert b["actual_parts_cost"] == 0.0
+    # A cost made ENTIRELY of catalog guesses is not settled. An earlier
+    # revision reported False here, so "complete" meant "we guessed everything
+    # successfully" — the opposite of what a reader needs.
+    assert b["cost_incomplete"] is True
+
+
+def test_profitability_carries_the_caveats(client):
+    db = _s(client)
+    job = uuid4()
+    _used_part(db, job, "Bespoke bracket", 1, sku=None)
+    db.close()
+    for row in client.get("/api/costing/profitability?days=3650").json():
+        assert "cost_incomplete" in row and "catalog_variance" in row
+        assert "estimated_parts_cost" in row and "actual_parts_cost" in row
+
+
+def test_a_partial_bill_leaves_the_remainder_costed_not_swallowed(client):
+    """Used 4, billed 1. The other 3 units were genuinely consumed; treating the
+    part as 'done' because one line mentions it undercounts the job — same
+    direction of error (margin overstated) as the silent $0 this replaced."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    pid = _used_part(db, job, "Torsion spring", 4, sku="TS-207")
+    _bill(db, job, "one spring", qty=1, unit=48.75, links=pid)
+
+    out = _parts_for_job(db, job)
+
+    assert out["actual_cost_total"] == 48.75, "the one unit that was billed"
+    assert out["estimated_cost_total"] == 124.50, "3 remaining x 41.50 catalog"
+    assert out["total"] == 173.25
+    assert any("unbilled remainder" in i["name"] for i in out["items"])
+    db.close()
+
+
+def test_a_partial_bill_with_no_catalog_price_is_flagged_unknown(client):
+    """Counterfactual: the remainder must not silently vanish when it cannot be
+    priced either."""
+    db = _s(client)
+    job = uuid4()
+    pid = _used_part(db, job, "Bespoke bracket", 4, sku="NO-SUCH-SKU")
+    _bill(db, job, "one bracket", qty=1, unit=48.75, links=pid)
+
+    out = _parts_for_job(db, job)
+    assert out["actual_cost_total"] == 48.75
+    assert out["unknown_cost_count"] == 1, "the 3 uncosted units are surfaced"
+    db.close()
+
+
+def test_a_sku_with_stray_whitespace_still_matches(client):
+    """core/part_pricing.py resolves on lower(TRIM(sku)); costing must agree or
+    a part prices at sell and reads $0 at cost — an inflated margin."""
+    db = _s(client)
+    job = uuid4()
+    _cat(db, "Torsion spring", 41.50, "TS-207")
+    _used_part(db, job, "Torsion spring", 2, sku="  ts-207 ")
+
+    assert _parts_for_job(db, job)["estimated_cost_total"] == 83.00
+    db.close()
