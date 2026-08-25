@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import UploadFile
+from fastapi import File, HTTPException, UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -691,3 +691,83 @@ async def test_delete_folder_empty_succeeds(tenant_db_session):
     )
     folders = await documents_router.list_document_folders(_={}, db=tenant_db_session)
     assert folders == []
+
+
+def test_starlette_still_reports_upload_size_at_handler_entry():
+    """The cap depends on ``UploadFile.size`` being populated. Pin that.
+
+    ``_assert_upload_within_limit`` checks ``file.size`` instead of reading,
+    because a chunked read that joins peaks at 2x the body. That is only safe
+    while Starlette actually fills ``size`` in for multipart — if an upgrade
+    stopped doing so, the guard would silently fall back and this is the only
+    thing that would notice. Uses a throwaway app on purpose: the repo's own
+    route needs auth, a db and module gating, none of which are the assumption
+    under test.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    probe = {}
+    app = FastAPI()
+
+    # Annotated with the MODULE-level UploadFile: FastAPI resolves endpoint
+    # annotations through the module globals, so a function-local alias fails
+    # to build the model.
+    @app.post("/probe")
+    async def _probe(file: UploadFile = File(...)):  # noqa: B008 — FastAPI DI idiom
+        probe["size"] = file.size
+        probe["spooled"] = type(file.file).__name__
+        return {}
+
+    body = b"\0" * (3 * 1024 * 1024)
+    TestClient(app).post("/probe", files={"file": ("f.bin", body, "application/octet-stream")})
+    assert probe["size"] == len(body), f"size was {probe.get('size')!r}, guard would fall back"
+
+
+def _sized_upload(data: bytes, name: str = "b.bin") -> UploadFile:
+    """An UploadFile shaped like the one Starlette hands a real handler."""
+    return UploadFile(
+        io.BytesIO(data),
+        size=len(data),
+        filename=name,
+        headers=Headers({"content-type": "application/octet-stream"}),
+    )
+
+
+@pytest.mark.anyio
+async def test_document_upload_refuses_a_body_over_the_cap(tenant_db_session, tmp_path, monkeypatch):
+    """POST /api/documents read the body with no ceiling at all.
+
+    This is the route every job photo in production came through, so an
+    unbounded read put the request thread's memory at the mercy of whatever
+    nginx let past (50 MB on the prod vhost).
+    """
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc:
+        await documents_router.upload_document(
+            request=_mock_request(),
+            file=_sized_upload(b"\0" * (documents_router.MAX_UPLOAD_BYTES + 1024), "huge.bin"),
+            user={"user_id": "user-1"},
+            db=tenant_db_session,
+        )
+    assert exc.value.status_code == 413
+    assert not list(tmp_path.iterdir()), "an over-cap upload must not leave bytes on disk"
+
+
+@pytest.mark.anyio
+async def test_document_upload_accepts_a_body_at_the_cap(tenant_db_session, tmp_path, monkeypatch):
+    """The ceiling must not reject what it is meant to allow.
+
+    A guard that refused everything would satisfy the test above while breaking
+    every upload in the app, so pin the boundary from both sides.
+    """
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+
+    out = await documents_router.upload_document(
+        request=_mock_request(),
+        file=_sized_upload(b"\0" * documents_router.MAX_UPLOAD_BYTES, "big.bin"),
+        user={"user_id": "user-1"},
+        db=tenant_db_session,
+    )
+    assert out.file_size == documents_router.MAX_UPLOAD_BYTES
