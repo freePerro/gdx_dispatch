@@ -1,11 +1,31 @@
 # Unimplemented endpoints — build, remove, or leave?
 
-**Status:** **DECISIONS TAKEN 2026-08-24 (owner)** — all seventeen resolved;
-implementation in flight. Sixteen of the seventeen now carry a recorded call
-(build / remove / repoint / defer); item 11 is deliberately deferred pending a
-business decision on whether parts *cost* is tracked at all. The 501 conversion
-that produced this list was already done (`ui_compat.py` calls
-`_not_implemented(...)` rather than answering `{"ok": true}`).
+**Status:** **ALL SEVENTEEN ADJUDICATED — 15 SHIPPED, 2 OPEN WITH REASONS**
+(owner decisions 2026-08-24/25; released v1.99.0 + the PRs that followed).
+
+Shipped: items 1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17 and 4 — five dead
+pages retired, the declined stubs removed, the customer-page Portal tab pointed
+at the API that already worked (and **walked end to end on prod** — the first
+customer portal sign-in this system has ever recorded), recurring jobs posting
+the shape the server accepts, and the Apply Template button dropped.
+
+Two remain open, each with a recorded reason rather than a gap:
+
+* **Item 11 — parts cost.** DECIDED (owner: yes, track it) and DESIGNED (catalog
+  = estimate, vendor bill = truth, show the variance). **Two implementations
+  built and pulled before merge** — the first double-counted, the second broke
+  the AUDIT-R1 exact-SKU-only ruling. Research since then makes attempt 3 small:
+  exact SKU covers **100%** of the rows that count. See **#471**. The live
+  symptom — job costing reports $0 parts on all 25 prod jobs with parts — is
+  **#457**.
+* **Item 10 — review replies.** APPROVED, then **not built on discovery**: every
+  route on the reviews router requires staff auth, so a customer cannot submit a
+  review at all. All 13 prod rows have zero text. A reply feature would answer
+  something customers have no way to write. Needs a product call — make review
+  submission reachable first, or drop the affordance.
+
+The 501 conversion that produced this list was already done (`ui_compat.py`
+calls `_not_implemented(...)` rather than answering `{"ok": true}`).
 
 **The evidence that decided it.** The section below asks for prod hit counts
 before deleting anything. Collected 2026-08-24 from the nginx access logs
@@ -78,7 +98,7 @@ today, so a user can reach the 501.
 | 7 | `POST/PATCH /api/scheduling[/{id}]` | `SchedulingView` | No `ScheduleEntry` model. Real scheduling is calendar + appointments + tech-unavailability. | **Probably remove** — likely duplicates the calendar. | **REMOVE — done, with a recorded loss.** Page deleted because both writes 501'd, so Save/Reassign never worked, and Dispatch and Jobs already own reassignment. ⚠️ But this was the one of the five that was **not** inert, and the loss is real — see "What the Team Scheduling removal costs" below. Do not read this row as "it was fake too". |
 | 8 | `PATCH /api/booking/{slot_id}` | `BookingView` | No `Booking` model. Real booking is request/approve/decline. Editing a slot isn't in that model. | **Remove the edit affordance.** | **REMOVE — done.** Page deleted. ⚠️ Note the orphan it leaves: the *real* booking flow (`/api/booking/request`, `/requests`, `/requests/{id}/approve|decline` in `routers/booking.py`) is wired and module-gated but has **no office UI at all**. `portal_booking_requests` is 0 rows so nothing is broken today. Filed separately. |
 | 9 | `POST/PATCH /api/equipment-tracking[/{id}]` | `EquipmentTrackingView` | ⚠️ `EquipmentAsset` exists but its router was **deliberately unwired 2026-05-03** to kill the parallel `equipment_assets` table. Implementing resurrects exactly what that consolidation removed. | **Repoint the Vue** at the canonical equipment API. Do NOT implement here. | **REMOVE — done** (supersedes the "repoint the Vue" suggestion). Page deleted. "Company Tools" (company-owned assets) and "Customer Equipment" (`/api/equipment`, live and working) are different concepts — repointing would have merged them and re-created exactly what the 2026-05-03 consolidation removed. Closes the screen half of #453. |
-| 10 | `POST /api/reviews/{id}/responses` | `ReviewsView` | `CustomerReview` has no response column. Needs a migration. | **Build** if replying to reviews matters; small migration. | **BUILD.** 13 real `customer_reviews` rows on prod. Confirmed not shadowed: `routers/reviews.py` has no `/responses` route, so this is a genuine build — small migration + endpoint + UI. |
+| 10 | `POST /api/reviews/{id}/responses` | `ReviewsView` | `CustomerReview` has no response column. Needs a migration. | **Build** if replying to reviews matters; small migration. | 🔴 **APPROVED, THEN NOT BUILT — the premise is broken.** The owner approved building this. Research before writing code found that **a customer cannot submit a review at all**: every route on `routers/reviews.py` requires `Depends(get_current_user)` — there is no token or public route, unlike the portal magic link. That is why all 13 prod rows have **zero review text**: 9 are emailed requests (carrying a `google_reviews_link`, i.e. pointing customers at Google) and the 4 "submitted" rows are bare star ratings entered by staff. A reply feature would answer something customers have no way to write, and would be visible only to the office — the orphan class this whole list exists to remove. Needs a product call: **(a)** add a token-authenticated public submit route so reviews can carry real text, then replies make sense; or **(b)** drop the Respond affordance and keep replying on Google, where the reviews actually live. Filed as **#473**. The row count that made this look shovel-ready was mine, and I quoted it before checking whether the rows had content. |
 | 11 | `PATCH /api/jobs/{id}/parts/{part_id}` | `JobCostingView` | `JobPart` exists; only POST was built. Note `GET`/`DELETE` on the same resource are also broken (C2). | **Build the full CRUD** — the parts panel is non-functional without it. | 🔴 **DECIDED, and TWO implementations pulled before merge.** Owner's rules stand and are right: only parts a tech confirmed **used** carry cost (68 of 73 prod rows are requests); *"the catalog is the estimated cost but the bill from the vendor is what counts"*; *"we should be able to see the diff in case we need to change pricing"*. Attempt 1 double-counted, because `confirm.py` mints a NEW `JobPartNeeded` for a bill line instead of linking the tech's original, so a dedup on `job_part_needed_id` left the request still taking an estimate on top of the bill. Attempt 2 deduped on **lowercased part name** instead — which `core/part_pricing.py:30` explicitly forbids: *"Matching is exact SKU only. The 2026-07-07 AUDIT-R1 review ruled fuzzy sku/name matching an undercount generator and that ruling stands."* Its supersede was also inert (it stamped `needed`/`ordered` rows while costing reads `used` — disjoint sets) and had no inverse on void. Both attempts reconciled ROWS; money reconciles in UNITS. A third attempt must populate the existing `vendor_invoice_lines.job_part_needed_id` link at the point of attribution, reconcile by quantity, honour AUDIT-R1, and reuse `closeout_billing._one_line_per_physical_part`. Findings: **#471** (supersedes #469, #468). The underlying symptom — job costing reports $0 parts on all 25 prod jobs with parts — is still live as **#457**. |
 | 12 | `POST /api/jobs/{id}/apply-template` | `JobDetailView` | `JobTemplate` exists with checklist/duration/parts. Applying = copy onto the job. | **Build** — cheap and the model is ready. | ✅ **REMOVED — owner 2026-08-25: "12 drop the button".** The Apply Template control and its handler are gone from JobDetailView and the ui_compat stub with them. The trap that made this worth deciding rather than repointing is preserved: a real `POST /api/job-templates/{id}/apply` exists but **creates a new job** from the template, so wiring the button to it would have minted a duplicate job per click. The operation the button implied — copy a template's checklist and parts ONTO the job you are looking at — never existed, and with 0 job templates on prod nothing was losing anything. |
 | 13 | `POST /api/marketing` | — | No model. | Remove. | **REMOVE — done.** No model, no UI caller (literal grep, 2026-08-24), MarketingView is not even routed. Both handlers gone. |
