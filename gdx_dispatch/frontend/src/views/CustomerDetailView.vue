@@ -649,32 +649,52 @@
         data-testid="recurring-dialog"
       >
         <form class="dialog-form" @submit.prevent="saveRecurringJob">
-          <div class="form-field">
-            <label for="recurring-title">Title *</label>
-            <InputText id="recurring-title" v-model="recurringForm.title" data-testid="recurring-title-input" class="w-full" />
+          <!-- A schedule is (job template + how often + when next). The daily
+               6am `generate_recurring_jobs` task builds each job FROM the
+               template, and skips any schedule whose template is missing — so
+               a template is required, not decorative. -->
+          <div v-if="!jobTemplates.length" class="inline-error" data-testid="recurring-no-templates">
+            No job templates exist yet, and a recurring schedule is built from one.
+            Create a template first under <strong>Job Templates</strong> — it defines
+            the checklist, duration and parts each generated job starts with.
           </div>
-          <div class="form-row">
+          <template v-else>
             <div class="form-field">
-              <label for="recurring-job-type">Job Type</label>
-              <Select id="recurring-job-type" v-model="recurringForm.job_type" :options="jobTypeOptions" data-testid="recurring-job-type-input" class="w-full" />
+              <label for="recurring-template">Job template *</label>
+              <Select
+                id="recurring-template"
+                v-model="recurringForm.job_template_id"
+                :options="jobTemplates"
+                option-label="name"
+                option-value="id"
+                placeholder="Choose the template each visit is built from"
+                class="w-full"
+                data-testid="recurring-template-input"
+              />
             </div>
-            <div class="form-field">
-              <label for="recurring-interval">Interval (days) *</label>
-              <InputNumber id="recurring-interval" v-model="recurringForm.interval_days" data-testid="recurring-interval-input" class="w-full" :min="1" />
+            <div class="form-row">
+              <div class="form-field">
+                <label for="recurring-frequency">How often *</label>
+                <Select
+                  id="recurring-frequency"
+                  v-model="recurringForm.frequency"
+                  :options="recurringFrequencies"
+                  option-label="label"
+                  option-value="value"
+                  class="w-full"
+                  data-testid="recurring-frequency-input"
+                />
+              </div>
+              <div class="form-field">
+                <label for="recurring-next-due">First visit *</label>
+                <DatePicker id="recurring-next-due" v-model="recurringForm.next_due_date" data-testid="recurring-date-input" class="w-full" />
+              </div>
             </div>
-          </div>
-          <div class="form-field">
-            <label for="recurring-next-due">Next Due Date *</label>
-            <DatePicker id="recurring-next-due" v-model="recurringForm.next_due_date" data-testid="recurring-date-input" class="w-full" />
-          </div>
-          <div class="form-field">
-            <label for="recurring-description">Description</label>
-            <Textarea id="recurring-description" v-model="recurringForm.description" rows="3" data-testid="recurring-description-input" class="w-full" />
-          </div>
+          </template>
           <div v-if="recurringError" class="inline-error">{{ recurringError }}</div>
           <div class="form-actions">
             <Button type="button" label="Cancel" text @click="showRecurringDialog = false" />
-            <Button type="submit" label="Save" :loading="isSavingRecurring" data-testid="save-recurring-btn" />
+            <Button type="submit" label="Save" :loading="isSavingRecurring" :disabled="!jobTemplates.length" data-testid="save-recurring-btn" />
           </div>
         </form>
       </Dialog>
@@ -913,7 +933,16 @@ const equipmentTypes = ["door", "opener", "motor", "remote", "other"];
 const isSavingEquipment = ref(false);
 const recurringJobs = ref([]);
 const showRecurringDialog = ref(false);
-const recurringForm = ref({ title: "", job_type: "", interval_days: 365, next_due_date: null, description: "" });
+const recurringForm = ref({ job_template_id: null, frequency: "monthly", next_due_date: null });
+const jobTemplates = ref([]);
+// Mirrors _next_run_from_frequency in routers/recurring_jobs.py — sending
+// anything else 400s. Keep in step if the server grows a new interval.
+const recurringFrequencies = [
+  { label: "Weekly", value: "weekly" },
+  { label: "Every 2 weeks", value: "biweekly" },
+  { label: "Monthly", value: "monthly" },
+  { label: "Quarterly", value: "quarterly" },
+];
 // Plan §9: shared vocabulary — this dropdown's divergent "Service" entry is
 // where the 12 mis-spelled prod rows came from.
 const jobTypeOptions = [...JOB_TYPE_OPTIONS];
@@ -943,15 +972,23 @@ const portalInviteResultVisible = ref(false);
 // got a "Permission denied" toast on every single page open — a regression this
 // change introduced and this defers away. Same lazy shape the mobile tab uses.
 let portalStatusRequested = false;
-watch(
-  () => activeTab.value,
-  (tab) => {
-    if (tab === 'Portal' && !portalStatusRequested) {
-      portalStatusRequested = true;
-      fetchPortalStatus();
-    }
-  },
-);
+let jobTemplatesRequested = false;
+
+// The watcher below only fires on a tab CHANGE. Landing directly on a tab —
+// a deep link, or a restored tab — would leave its lazy data unfetched, which
+// for Recurring Jobs means showing "no job templates exist" when the real
+// answer is "we never asked". Prime whichever tab we start on.
+function primeLazyTabData(tab) {
+  if (tab === 'Portal' && !portalStatusRequested) {
+    portalStatusRequested = true;
+    fetchPortalStatus();
+  }
+  if (tab === 'Recurring Jobs' && !jobTemplatesRequested) {
+    jobTemplatesRequested = true;
+    fetchJobTemplates();
+  }
+}
+watch(() => activeTab.value, primeLazyTabData, { immediate: true });
 
 const portalInviteExpired = computed(() => {
   const expiry = portalStatus.value?.signin_link_expires_at;
@@ -1037,13 +1074,7 @@ function openEquipmentDialog() {
 
 function openRecurringDialog() {
   recurringError.value = "";
-  recurringForm.value = {
-    title: "",
-    job_type: "",
-    interval_days: 365,
-    next_due_date: new Date(),
-    description: "",
-  };
+  recurringForm.value = { job_template_id: null, frequency: "monthly", next_due_date: null };
   showRecurringDialog.value = true;
 }
 
@@ -1083,6 +1114,9 @@ async function saveEquipment() {
   }
 }
 
+// The READ was always real — `sub_resources.py` shadows the ui_compat shim and
+// queries recurring_job_schedules properly. Only the create path was a 501.
+// Kept on the same URL for that reason; only the writer moves.
 async function fetchRecurringJobs() {
   try {
     const data = await api.get(`/api/customers/${route.params.id}/recurring-jobs`);
@@ -1092,29 +1126,45 @@ async function fetchRecurringJobs() {
   }
 }
 
+// A schedule is built FROM a job template by the daily task, so the dialog can
+// only offer templates that exist. Loaded lazily with the tab.
+async function fetchJobTemplates() {
+  try {
+    const data = await rawApi.get('/api/job-templates');
+    const rows = Array.isArray(data) ? data : data?.items || [];
+    jobTemplates.value = rows.map((t) => ({ id: t.id, name: t.name || t.title || 'Untitled template' }));
+  } catch {
+    jobTemplates.value = [];
+  }
+}
+
 async function saveRecurringJob() {
   recurringError.value = "";
-  if (!recurringForm.value.title.trim()) {
-    recurringError.value = "Title is required.";
+  // 2026-08-25: was POSTing {title, interval_days, …} at a ui_compat 501 whose
+  // shape no real endpoint has ever accepted. The real writer is
+  // `routers/recurring_jobs.py` (POST /api/recurring) and it takes a template
+  // id plus a frequency enum — the daily generator resolves the template to
+  // build each job, and skips schedules whose template is gone.
+  if (!recurringForm.value.job_template_id) {
+    recurringError.value = "Choose the job template each visit is built from.";
+    return;
+  }
+  if (!recurringForm.value.frequency) {
+    recurringError.value = "Choose how often this repeats.";
     return;
   }
   if (!recurringForm.value.next_due_date) {
-    recurringError.value = "Next due date is required.";
-    return;
-  }
-  if (!recurringForm.value.interval_days || Number(recurringForm.value.interval_days) < 1) {
-    recurringError.value = "Interval must be at least 1 day.";
+    recurringError.value = "Pick the first visit date.";
     return;
   }
 
   isSavingRecurring.value = true;
   try {
-    await api.post(`/api/customers/${route.params.id}/recurring-jobs`, {
-      title: recurringForm.value.title.trim(),
-      job_type: recurringForm.value.job_type || null,
-      interval_days: Number(recurringForm.value.interval_days),
-      next_due_date: toDatePayload(recurringForm.value.next_due_date),
-      description: recurringForm.value.description || null,
+    await api.post('/api/recurring', {
+      job_template_id: recurringForm.value.job_template_id,
+      frequency: recurringForm.value.frequency,
+      customer_id: route.params.id,
+      next_run: new Date(recurringForm.value.next_due_date).toISOString(),
     });
     toast.add({ severity: "success", summary: "Saved", detail: "Recurring job added.", life: 3000 });
     showRecurringDialog.value = false;

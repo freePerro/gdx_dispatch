@@ -232,14 +232,6 @@ def list_customer_recurring_jobs(customer_id: str, _: dict = Depends(get_current
     return _empty_list()
 
 
-@router.post("/api/customers/{customer_id}/recurring-jobs", response_model=None, status_code=201)
-def create_customer_recurring_job(
-    customer_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Creating a recurring job from the customer page", request, user)
 
 
 @router.get("/api/customers/{customer_id}/communications", response_model=None)
