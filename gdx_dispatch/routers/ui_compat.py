@@ -617,16 +617,6 @@ def update_job_part(
     _not_implemented("Editing a part on a job", request, user)
 
 
-@router.post("/api/jobs/{job_id}/apply-template", response_model=None)
-def apply_job_template(
-    job_id: str,
-    payload: _GenericPayload,
-    request: Request,
-    user: dict = Depends(get_current_user),
-) -> dict:
-    _not_implemented("Applying a job template", request, user)
-
-
 # ── Labor time entries (via /api/labor/jobs/...) ──────────────────────────
 
 @router.get("/api/labor/jobs/{job_id}/time-entries", response_model=None)

@@ -814,7 +814,6 @@
             <Button label="+ Add Part" icon="pi pi-plus" severity="secondary" @click="openAddPart" data-testid="job-detail-add-part" />
             <Button label="+ Order Part" icon="pi pi-shopping-cart" severity="info" @click="openOrderPart" data-testid="job-detail-order-part" />
             <Button label="Add from Catalog" icon="pi pi-book" severity="info" :loading="addingCatalogParts" @click="catalogPickerVisible = true" data-testid="job-detail-add-catalog" />
-            <Button label="Apply Template" icon="pi pi-file" severity="info" text @click="openApplyTemplate" data-testid="job-detail-apply-template" />
           </div>
           <div v-if="!costing?.parts?.items?.length" class="muted">No parts recorded.</div>
           <DataTable v-else :value="costing.parts.items" striped-rows responsive-layout="scroll">
@@ -2567,23 +2566,6 @@ async function addCatalogParts(items) {
   await fetchPartsNeeded();
 }
 
-async function openApplyTemplate() {
-  try {
-    const templates = await api.get('/api/job-templates');
-    if (!Array.isArray(templates) || !templates.length) {
-      toast.add({ severity: 'info', summary: 'No job templates available', life: 3000 });
-      return;
-    }
-    // For now apply the first template; UI will be extended with a picker later.
-    const tpl = templates[0];
-    await api.post(`/api/jobs/${props.jobId}/apply-template`, { template_id: tpl.id }, {
-      successMessage: `Template "${tpl.name}" applied`,
-    });
-    await loadJobDetail();
-  } catch (err) {
-    // toast handled by useApiWithToast
-  }
-}
 
 async function savePart() {
   const name = (addPartForm.value.name || "").trim();
