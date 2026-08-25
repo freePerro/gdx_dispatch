@@ -59,7 +59,14 @@ SQL.
 
 ### Notes / photos / signatures (per-tech attribution)
 - `POST /api/mobile/jobs/{id}/notes`
-- `POST /api/mobile/jobs/{id}/photos` (multipart; slot kind = before/during/after)
+- `POST /api/documents` — **photos go here**, multipart, with `job_id`,
+  `as_photo=true` and an optional `kind` (before/during/after). This is what
+  the app calls (`usePhotoQueue`), and it creates the `job_photos` record every
+  photo surface reads.
+  *There used to be `POST /api/mobile/jobs/{id}/photos` and an alias
+  `POST /api/mobile/job/{id}/photo`. Both were deleted 2026-08-25: no caller,
+  zero prod rows, and the EXIF GPS they captured is stripped by iOS before it
+  ever reaches us. Do not re-add them — point the caller here instead.*
 - `POST /api/mobile/jobs/{id}/signature`
 
 ### Parts (Phase 1.3)

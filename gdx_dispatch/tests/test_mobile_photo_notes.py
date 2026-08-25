@@ -20,7 +20,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from gdx_dispatch.core.audit import AuditLog
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.models.tenant_models import (
     Appointment,
@@ -143,82 +142,45 @@ def _set_setting(db, key: str, value):
     db.commit()
 
 
-# ── B3 photos ─────────────────────────────────────────────────────────
+# ── B3 photos: the writer is gone ────────────────────────────────────
 
 
-class TestPhotoSlotTagging:
-    def test_default_kind_during_when_setting_optional(self, app_and_db):
+class TestMobilePhotoWritersAreRetired:
+    """The two mobile photo-upload routes were deleted 2026-08-25.
+
+    They had no caller: the mobile app uploads through ``POST /api/documents``
+    (``usePhotoQueue``), and prod had produced zero rows through them. The one
+    thing they did that nothing else does — pull EXIF GPS and capture time —
+    is unreachable in practice: 0 of 183 stored prod images carried either,
+    because iOS strips location from photo-library uploads by design (WebKit
+    #207088; opt-in only in the iOS 17+ picker).
+
+    This asserts their ABSENCE. A presence test would only prove someone typed
+    the route name; absence is the property that can actually regress, and it
+    does so the moment somebody "restores" the endpoint instead of pointing a
+    caller at /api/documents.
+    """
+
+    def test_both_writer_routes_are_gone(self, app_and_db):
         client, db, _ = app_and_db
         job = _seed_job(db)
-        r = client.post(
+        for path in (
             f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-        )
-        assert r.status_code == 201, r.text
-        body = r.json()
-        assert body["kind"] == "during"
+            f"/api/mobile/job/{job.id.hex}/photo",
+        ):
+            r = client.post(path, files={"file": ("p.png", _png_bytes(), "image/png")})
+            assert r.status_code == 404, f"{path} still answers {r.status_code}"
 
-    def test_explicit_kind_before(self, app_and_db):
-        client, db, _ = app_and_db
-        job = _seed_job(db)
-        r = client.post(
-            f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-            data={"kind": "before"},
-        )
-        assert r.status_code == 201
-        assert r.json()["kind"] == "before"
+    def test_the_handler_and_its_exif_helper_are_gone(self):
+        """Deleting the routes but leaving the code is half a deletion."""
+        from gdx_dispatch.routers import mobile as mobile_router
 
-    def test_invalid_kind_400(self, app_and_db):
-        client, db, _ = app_and_db
-        job = _seed_job(db)
-        r = client.post(
-            f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-            data={"kind": "sideways"},
-        )
-        assert r.status_code == 400
-        assert "must be one of" in r.json()["detail"]
-
-    def test_kind_required_setting_rejects_missing(self, app_and_db):
-        client, db, _ = app_and_db
-        _set_setting(db, "tech_mobile.photo_slot_tagging", "required")
-        job = _seed_job(db)
-        r = client.post(
-            f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-        )
-        assert r.status_code == 400
-        assert "kind is required" in r.json()["detail"]
-
-    def test_uploaded_by_stamped_on_row(self, app_and_db):
-        client, db, _ = app_and_db
-        job = _seed_job(db)
-        r = client.post(
-            f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-            data={"kind": "after"},
-        )
-        body = r.json()
-        assert body["uploaded_by"] == USER
-
-    def test_audit_row_carries_kind_and_uploader(self, app_and_db):
-        client, db, _ = app_and_db
-        job = _seed_job(db)
-        client.post(
-            f"/api/mobile/jobs/{job.id.hex}/photos",
-            files={"file": ("p.png", _png_bytes(), "image/png")},
-            data={"kind": "after"},
-        )
-        rows = (
-            db.query(AuditLog)
-            .filter(AuditLog.action == "upload_mobile_job_photo")
-            .all()
-        )
-        assert len(rows) >= 1
-        details = rows[-1].details
-        assert details["kind"] == "after"
-        assert details["uploaded_by"] == USER
+        for symbol in (
+            "upload_mobile_job_photo",
+            "_photo_exif_metadata",
+            "_VALID_PHOTO_KINDS",
+        ):
+            assert not hasattr(mobile_router, symbol), f"{symbol} survived"
 
 
 # ── B4 notes ──────────────────────────────────────────────────────────

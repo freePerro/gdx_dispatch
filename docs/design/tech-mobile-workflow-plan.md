@@ -131,10 +131,23 @@ Sticky bottom action bar (≥44px targets — `e2e/mobile-touch-targets.spec.js`
 | Bill / collect | `done` or accepted quote | `MobileInvoiceDialog` (drop-in, `:job="{id}"`) | shows the bill; cash/check payment |
 | Navigate | `!== 'done'` | `window.open(job.navigation_link)` | needs PR A |
 | Add note | always | `POST /api/jobs/{id}/notes` | endpoint exists, no caller today |
-| Add photo | always | `POST /api/mobile/jobs/{id}/photos` multipart | see below |
+| Add photo | always | `POST /api/documents` multipart (`job_id`, `as_photo=true`, `kind`) | ⚠ route changed — see below |
 | Request part | always | `POST /api/jobs/{id}/parts-needed` | ⚠ not offline-queued today |
 
-### Photo capture (backend fully built, zero UI)
+### Photo capture — SUPERSEDED 2026-08-25
+
+> **This section's endpoint no longer exists.** `POST /api/mobile/jobs/{id}/photos`
+> and its alias `POST /api/mobile/job/{id}/photo` were **deleted** — see
+> `job-photos-office-visibility-and-invoice-attach-plan.md` §6.5 decision 5.
+> What shipped instead: `MobileJobDetailView` captures through `usePhotoQueue`,
+> which posts to **`POST /api/documents`** with `job_id`, `as_photo=true` and an
+> optional `kind`. That path creates the same `job_photos` record and is what
+> every photo in production came through. The slot-tagging rules below still
+> apply — they moved to the documents route — but the EXIF GPS capture did not
+> survive, because iOS strips location before the bytes reach us.
+>
+> Historical description of the deleted route follows, kept because the
+> rejected alternatives and the setting semantics are not recoverable from code.
 
 `routers/mobile.py:2895`, one handler two routes. `multipart/form-data`, `file` (must be `image/*`), `kind ∈ {before,during,after}`. Setting `tech_mobile.photo_slot_tagging` (`optional` default | `required`): omitted+required → 400; omitted+optional → `during`.
 

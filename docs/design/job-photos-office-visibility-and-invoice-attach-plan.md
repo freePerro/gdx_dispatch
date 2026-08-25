@@ -5,8 +5,11 @@ Built: S1 (`JobDetailView.vue:2392`), S2 (`uploads.py:225`), S3
 (`InvoiceCreateView.vue`, `InvoiceDetailView.vue`, `MobileInvoiceDialog.vue:187`),
 S5 (`photos.py` `_PHOTO_READ_KEYS`), S7 (migration 063), and the `AuthedImage`
 fallback. S6 was **dropped** by Doug — not a gap.
-**Not built:** S4 (**decided 2026-08-25: DELETE both routes** — see §6.5) and
-**S9, the EXIF-orientation defect this plan did not know it had** (§9 below).
+**S4 is BUILT** — both orphan routes deleted 2026-08-25 (§6.5 decision 5), with
+`docs/tech_mobile.md`, `api.d.ts` and the sibling `tech-mobile-workflow-plan.md`
+updated in the same change. **S9, the EXIF-orientation defect this plan did not
+know it had** (§9), is built too. Both sit on open PRs — S9 first, S4 stacked on
+it; merge bottom-up. This line becomes `MERGED #N` when they land.
 
 > **§0's table is stale in the project's favour.** It recorded
 > `invoices with attached_photo_ids = 0` — "never once been used". As of
@@ -502,3 +505,39 @@ walk cannot see them):
 
 First include wins, so `photos.create_job_photo` is unreachable. That is the
 same defect class as S4's orphan routes and belongs with them, not here.
+
+---
+
+## S4 — what shipped (2026-08-25)
+
+Deleted `upload_mobile_job_photo` and both of its routes
+(`POST /api/mobile/jobs/{id}/photos` and the alias `POST /api/mobile/job/{id}/photo`),
+plus the helpers that existed only to serve it: `_photo_exif_metadata`,
+`_VALID_PHOTO_KINDS`, and `_image_suffix` — 254 lines from `routers/mobile.py`.
+
+Also removed the two path entries from `frontend/src/types/api.d.ts`, rewrote
+`gdx_dispatch/docs/tech_mobile.md` to name `POST /api/documents` as the photo
+endpoint with a "do not re-add these" note, and marked the **§"Photo capture"
+section of `tech-mobile-workflow-plan.md` SUPERSEDED** — that doc is `RELEASED`
+and still specified the deleted route as *the* mobile photo endpoint, which is
+exactly how two plans in this repo previously reached opposite conclusions
+about the same path without citing each other.
+
+**The evidence that made this a deletion and not a risk:**
+
+| Question | Answer |
+| --- | --- |
+| Does any frontend call it? | No — `usePhotoQueue` posts to `/api/documents` |
+| Did prod ever use it? | No — all 55 `job_photos` resolve to documents with `entity_type` NULL, the `/api/documents` signature; the route's own audit action has zero rows |
+| Was its unique feature worth keeping? | No — 0 of 183 stored prod images carry EXIF GPS or capture time |
+| Why is that permanent? | iOS strips location from photo-library uploads by design (WebKit #207088, resolved May 2023; opt-in only in the iOS 17+ picker) |
+
+The replacement test asserts **absence**, not presence: that both routes 404 and
+that the handler and its EXIF helper are gone from the module. A presence test
+would only prove someone typed the route name; absence is the property that can
+actually regress — the moment somebody "restores" the endpoint instead of
+pointing a caller at `/api/documents`.
+
+**Still open from this shape:** `POST /api/jobs/{job_id}/photos` has two
+handlers (`uploads.upload_job_photo` wins; `photos.create_job_photo` is
+shadowed and unreachable). Same class, filed separately — not bundled here.
