@@ -120,7 +120,9 @@ def _photo_data_uri_cached(path: str, mtime_ns: int, size: int, max_px: int, qua
     import io
 
     try:
-        from PIL import Image, ImageOps
+        from PIL import Image
+
+        from gdx_dispatch.core.images import upright
     except Exception:  # noqa: BLE001 — Pillow missing is not a payment failure
         log.exception("photo_data_uri_pillow_unavailable")
         return None
@@ -140,7 +142,10 @@ def _photo_data_uri_cached(path: str, mtime_ns: int, size: int, max_px: int, qua
         with Image.open(path) as img:
             # Honor EXIF orientation FIRST — phone portraits carry the rotation
             # as metadata, and thumbnail() alone would serve them sideways.
-            img = (ImageOps.exif_transpose(img) or img).convert("RGB")
+            # This surface got it right before the others did; it now shares
+            # core/images.upright with them so the four re-encoders cannot
+            # drift apart again.
+            img = upright(img).convert("RGB")
             img.thumbnail((max_px, max_px))
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality, optimize=True)

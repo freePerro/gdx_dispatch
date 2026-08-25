@@ -1,16 +1,17 @@
 # Job photos: the office can't see them, and can't put them on an invoice
 
-Status: **PARTIALLY BUILT** (verified on main 2026-08-21). Built: S1
-(`JobDetailView.vue:1836` reads `/api/jobs/{id}/photos`), S2 (`uploads.py:211-257`
-writes `documents.job_id`), S3 (`InvoiceCreateView.vue:264` checkboxes,
-`InvoiceDetailView.vue:589`, `MobileInvoiceDialog.vue:187`), S5
-(`photos.py:159` `_PHOTO_READ_KEYS = ("jobs.read_all", "invoices.read_all")`),
-S7 (migration 063), and the `AuthedImage` fallback.
-**Not built:** S4 — both "dead mobile writer" routes still exist
-(`mobile.py:3452-3453`, `POST /jobs/{id}/photos` + the `/job/{id}/photo`
-alias) and `docs/tech_mobile.md` still advertises them. Note they are no
-longer dead: the handler is a live multipart upload with EXIF, so deleting
-them is now a decision, not a cleanup. S6 was **dropped** by Doug — not a gap.
+Status: **PARTIALLY BUILT** (re-verified against `main @ aa54665`, 2026-08-25).
+Built: S1 (`JobDetailView.vue:2392`), S2 (`uploads.py:225`), S3
+(`InvoiceCreateView.vue`, `InvoiceDetailView.vue`, `MobileInvoiceDialog.vue:187`),
+S5 (`photos.py` `_PHOTO_READ_KEYS`), S7 (migration 063), and the `AuthedImage`
+fallback. S6 was **dropped** by Doug — not a gap.
+**Not built:** S4 (**decided 2026-08-25: DELETE both routes** — see §6.5) and
+**S9, the EXIF-orientation defect this plan did not know it had** (§9 below).
+
+> **§0's table is stale in the project's favour.** It recorded
+> `invoices with attached_photo_ids = 0` — "never once been used". As of
+> 2026-08-25 prod has **7 invoices carrying 18 photos, all `sent_via='email'`**.
+> S3 works. Do not re-derive current state from that table; re-query it.
 
 Doug: *"a tech adds a photo to a job and can see it in mobile and the office
 cannot see it in photos for the job. We are also supposed to be able to add the
@@ -332,3 +333,172 @@ backfilling — but if that changes before this ships, photos already attached t
 a SENT invoice were effectively disclosed in that PDF already, and a one-line
 backfill (`customer_visible = true` where the photo is attached to a non-draft
 invoice) would keep the pay page consistent with what the customer received.
+
+---
+
+## 6.5 Decisions — answered by Doug 2026-08-25
+
+5. **S4: delete or keep the orphan mobile writers?** — **DELETE both.** The
+   2026-08-12 note said "repointed rather than deleted" because the handler
+   captured EXIF GPS the other paths didn't. That payoff is measurably zero:
+   **0 of 183 stored prod images carry GPS or `DateTimeOriginal`**. iOS strips
+   location on photo-library uploads by design (WebKit
+   [#207088](https://bugs.webkit.org/show_bug.cgi?id=207088), resolved
+   "configuration changed" May 2023; opt-in only in the iOS 17+ picker), so
+   the capture code can never fire for a PWA on a phone. Nothing is lost.
+6. **Re-send the 7 invoices that went out with rotated photos?** — **NO.**
+   They stay as delivered. There is no stored-PDF column — every invoice PDF
+   is generated on demand at four call sites — so any later re-fetch of those
+   invoices renders correctly once §9 lands. Nothing to clean up.
+
+---
+
+## 9. S9 — the photos print sideways (found 2026-08-25, not in the original plan)
+
+**Nine of the eighteen photos already emailed to customers printed rotated 90°.**
+
+A phone stores a portrait shot as LANDSCAPE pixels plus an EXIF `Orientation`
+tag. Everything we ship to honors that tag — browsers default to
+`image-orientation: from-image` ([Baseline since April 2020][mdn]), and
+WeasyPrint has applied it since 57.0 (prod runs **69.0**, measured). So the
+bytes on disk are sideways and every viewer straightens them.
+
+Then something re-encodes the file. Pillow's `save()` drops EXIF unless handed
+back explicitly, so a resize pass writes the **unrotated pixels with the
+instruction deleted**. Nothing downstream can recover the rotation, because
+nothing downstream is told there was any.
+
+Measured on the prod runtime, on a real photo from a real emailed invoice:
+
+```
+source pixels    : (4000, 2252)   EXIF Orientation: 6
+after _shrink_photo_for_pdf: (1200, 676)   orientation tag: None
+
+WeasyPrint on the ORIGINAL file  : (2252, 4000)  <- what the customer SHOULD see
+WeasyPrint on the shrunk output  : (1200, 676)   <- what the customer GOT
+```
+
+The irony is load-bearing: **WeasyPrint rendered it correctly on its own.**
+The optimization is the sole cause.
+
+### Blast radius (prod, 2026-08-25, all three gates applied)
+
+`customer_visible` (pdf.py:281), the 2.5 MB email-attachment drop, and
+mailed-vs-marked-sent were each checked — none reduced the count:
+
+```
+TOTAL attached=18  rendered_into_pdf=18  rendered_and_rotated=9
+ROTATED PHOTOS IN A PDF ACTUALLY EMAILED TO A CUSTOMER = 9
+```
+
+### Sibling sweep
+
+**Shape:** *re-encoding an uploaded photo with Pillow without first applying
+`ImageOps.exif_transpose`, destroying the orientation tag every downstream
+renderer would have honored.*
+**Surface searched:** every `Image.open` / `.thumbnail(` / `.resize(` in the
+tree outside tests and migrations, plus `proposals/router.py` traced to its
+helper. **3 of 4 broken.**
+
+| Site | Serves | Before |
+| --- | --- | --- |
+| `routers/pdf.py` `_shrink_photo_for_pdf` | invoice PDF → **customer** | 🔴 9 live |
+| `routers/uploads.py` `_compress_image` | office job page | 🔴 **irreversible** |
+| `modules/door_listings/service.py` `compress_for_web` | **public website** | 🔴 latent |
+| `core/job_photos.py` `_photo_data_uri_cached` | pay page, proposals | ✅ correct |
+
+`_compress_image` is the worst of the three even with zero prod rows: it
+re-encodes on the way **in**, so a photo stored by the old code could never be
+straightened afterwards. The invoice-PDF instance was recoverable — the stored
+originals still carry their tags — that one was not.
+
+### The fix, and the trap inside it
+
+One shared helper, `core/images.py::upright()`, adopted at all three broken
+sites; the correct site is refactored onto it so the four cannot drift again.
+
+**The contract has two halves, and half two is not tidiness.** `upright()`
+bakes the rotation into the pixels; if a later change also writes the original
+EXIF back, every viewer rotates a **second** time:
+
+```
+target (correct display)   : (100, 400)
+transpose + drop exif      : (100, 400)   <- correct
+transpose + PRESERVE exif  : (400, 100)   <- DOUBLE ROTATION
+```
+
+This is the industry contract, not a local invention — imgproxy documents that
+it auto-rotates on EXIF and "the orientation tag will be removed from the image
+in all cases". `tests/test_photo_exif_orientation.py` asserts **both** halves at
+every site; the tag assertion is what makes a future "let's preserve the
+metadata" commit fail loudly instead of silently reopening this.
+
+Two further traps recorded so they are not rediscovered:
+
+* **The PDF cache.** `_shrink_photo_for_pdf` invalidates on the **source**
+  mtime, which does not move when the encoder is fixed. A container that had
+  already rendered an invoice would keep serving the pre-fix JPEG. Hence
+  `_PDF_PHOTO_CACHE_VERSION`. (`/tmp` is container-local and wiped on
+  `--force-recreate`, so a deploy clears it anyway — the salt is for the
+  running container and for local dev.)
+* **`exif_transpose` raises.** Pillow
+  [#5580](https://github.com/python-pillow/Pillow/issues/5580) (KeyError while
+  removing the orientation tag), #4238, #3973. `upright()` is deliberately
+  written as `ImageOps.exif_transpose(img) or img` inside a `try` — the `or`
+  covers the `None` case, the `except` the raising ones. Do not "clean it up".
+
+### Do not rebuild: prior art checked 2026-08-25
+
+* **The fix is Pillow's documented one-liner.** `ImageOps.exif_transpose`,
+  stable since 6.0 (2019); prod runs Pillow 12.3.0.
+* **Not ImageMagick `-auto-orient`** — open bugs specifically on Orientation 6,
+  which is 9 of 9 of our affected files.
+* **Not imgproxy / thumbor / libvips** — all are services or daemons.
+  Standing up an image proxy for a single-tenant app to fix a missing one-line
+  call is disproportionate; Pillow is already a dependency and already does
+  this correctly in one file in this repo.
+* **No prebuilt lint rule exists** for "`Image.open` without `exif_transpose`"
+  (searched the semgrep community rules). Recurrence guard, if wanted, is a
+  repo-local scanner in the existing `.{name}_baseline` style — and per the
+  working agreement it only counts as evidence once it can be shown going red.
+
+[mdn]: https://developer.mozilla.org/en-US/docs/Web/CSS/image-orientation
+
+### What the adversarial review of the diff changed (2026-08-25)
+
+The reviewer's headline was that some of the 18 invoice photos might have come
+through the office uploader — whose old `_compress_image` capped at 2048px and
+stripped EXIF — making them **permanently** sideways and the "no re-send"
+answer above false. Checked, and it does not hold:
+
+* All 55 prod `job_photos` rows resolve to documents with `entity_type` **NULL**
+  — the signature of `POST /api/documents`, which never sets it. The office
+  route (`uploads.py`, which *does* write `entity_type='job_photo'`) has
+  produced **zero** rows.
+* All nine rotated files are 4000px with `Orientation=6` intact. The one file
+  matching the compressed shape (1536x2048, no EXIF) has **portrait pixels**,
+  so it displays correctly either way.
+
+"Recoverable" and "no re-send" stand — on row-level evidence rather than on the
+audit-count inference that was cited for them first.
+
+Three real holes it found in the tests are closed in the same commit: the cache
+salt had no guard (deleting it left every test green), no fixture was large
+enough to exercise a resize on a rotated image, and no test covered
+`compress_for_web`'s fail-closed path, where a raising transpose would turn
+every door-listing upload into a 422. It also noted `upright()` copied even when
+there was nothing to apply — a second decoded frame per upload for nothing —
+now short-circuited on `Orientation == 1`.
+
+**Filed, not bundled — `/api/jobs/{job_id}/photos` has two POST handlers.**
+Enumerated through `tests/conftest.py::iter_app_routes` (a flat `app.routes`
+walk cannot see them):
+
+```
+['POST'] /api/jobs/{job_id}/photos  routers.uploads.upload_job_photo    <- wins
+['POST'] /api/jobs/{job_id}/photos  routers.photos.create_job_photo     <- shadowed, dead
+['GET']  /api/jobs/{job_id}/photos  routers.photos.list_job_photos
+```
+
+First include wins, so `photos.create_job_photo` is unreachable. That is the
+same defect class as S4's orphan routes and belongs with them, not here.

@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.images import upright
 from gdx_dispatch.models.tenant_models import AppSettings, Customer
 from gdx_dispatch.modules.door_listings.models import DoorListing, DoorListingPhoto
 
@@ -144,7 +145,15 @@ def compress_for_web(data: bytes, content_type: str) -> tuple[bytes, str]:
     if not _HAS_PILLOW:
         return data, content_type
     try:
-        with _PILImage.open(io.BytesIO(data)) as img:
+        with _PILImage.open(io.BytesIO(data)) as _src:
+            # Orientation FIRST — before .mode, .size or the resize below. The
+            # saves in this function drop EXIF (that is half the point: the
+            # comment further down is right that a phone stamps GPS into it),
+            # so without this the rotation instruction is discarded while the
+            # pixels stay sideways, and these land on the PUBLIC website.
+            # Dropping the tag is correct; dropping it without applying it is
+            # the bug. See core/images.upright.
+            img = upright(_src)
             has_alpha = img.mode in ("RGBA", "LA", "P")
             w, h = img.size
             if w > MAX_WEB_DIMENSION or h > MAX_WEB_DIMENSION:
