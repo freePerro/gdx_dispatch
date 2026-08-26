@@ -91,6 +91,14 @@
           @click="exportRange('pdf')"
         />
         <Button
+          label="Send to payroll"
+          icon="pi pi-send"
+          :disabled="!timecards.length || sending"
+          v-tooltip="'Email these hours to whoever does the payroll'"
+          data-testid="timesheets-send"
+          @click="openSend()"
+        />
+        <Button
           label="Add Entry"
           icon="pi pi-plus"
           data-testid="timesheets-add-entry"
@@ -282,6 +290,77 @@
       </div>
     </template>
 
+    <!-- Send to payroll. Deliberately a dialog and not a bare button: an
+         email leaves the building and cannot be recalled, so the exact range
+         and the exact recipients are stated before anything goes. -->
+    <Dialog
+      v-model:visible="sendDialog"
+      modal
+      :header="sendResult?.sent ? 'Timesheet sent' : 'Send timesheet to payroll'"
+      :style="{ width: '560px' }"
+      data-testid="timesheets-send-dialog"
+    >
+      <!-- Sent -->
+      <div v-if="sendResult?.sent" data-testid="send-success">
+        <p style="margin-top:0">
+          <strong>{{ Number(sendResult.hours).toFixed(2) }} hours</strong> for
+          {{ sendResult.people }} {{ sendResult.people === 1 ? 'person' : 'people' }},
+          {{ sendResult.period?.label }}.
+        </p>
+        <p>Delivered to {{ (sendResult.delivered_to || []).join(', ') }}.</p>
+        <p v-if="(sendResult.failed_to || []).length" class="send-warn">
+          Not delivered to {{ sendResult.failed_to.join(', ') }} — {{ sendResult.detail }}
+        </p>
+      </div>
+
+      <!-- Held back: name who and which day, never just a count. -->
+      <div v-else-if="sendBlocked" data-testid="send-blocked">
+        <p class="send-warn" style="margin-top:0">{{ sendBlocked.detail }}</p>
+        <ul v-if="(sendBlocked.flagged || []).length" class="flag-list">
+          <li v-for="f in sendBlocked.flagged" :key="f.entry_id">
+            <button type="button" class="flag-link" @click="fixFlagged(f)">
+              {{ f.name }} — {{ f.date }} — {{ f.reason }}
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Confirm -->
+      <div v-else data-testid="send-confirm">
+        <p style="margin-top:0">
+          Email <strong>{{ crewHours.toFixed(2) }} hours</strong> for
+          {{ timecards.length }} {{ timecards.length === 1 ? 'person' : 'people' }}
+          covering
+          <strong>{{ rangeLabel }}</strong>
+          to the payroll recipient set in Settings.
+        </p>
+        <p class="muted-inline">
+          A printable PDF and a spreadsheet are attached. Hours only — no rates
+          or pay are calculated.
+        </p>
+      </div>
+
+      <template #footer>
+        <Button
+          v-if="sendResult?.sent || sendBlocked"
+          label="Close"
+          severity="secondary"
+          data-testid="send-close"
+          @click="sendDialog = false"
+        />
+        <template v-else>
+          <Button label="Cancel" severity="secondary" @click="sendDialog = false" />
+          <Button
+            label="Send"
+            icon="pi pi-send"
+            :loading="sending"
+            data-testid="send-confirm-button"
+            @click="doSend()"
+          />
+        </template>
+      </template>
+    </Dialog>
+
     <!-- Correction dialog — shared with the tech's own weekly timesheet
          (TimeEntryDialog is the app's ONLY writer to PATCH/POST
          /api/timeclock/entries). Office mode: roster picker, note advised. -->
@@ -306,6 +385,7 @@ import Card from 'primevue/card';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
+import Dialog from 'primevue/dialog';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
@@ -578,6 +658,73 @@ function startOfWeek(d) {
   return out;
 }
 
+// ── Send to payroll ─────────────────────────────────────────────────────────
+// The server refuses a period that still has an open or impossible shift and
+// returns 409 with the offending rows. There is deliberately no override
+// here: the only things that block a send are things a correction fixes, and
+// an "send anyway" button is what gets clicked at 4:55pm on payday. So this
+// screen turns the refusal into a list you can click through to fix.
+const sendDialog = ref(false);
+const sending = ref(false);
+const sendResult = ref(null);
+const sendBlocked = ref(null);
+
+const rangeLabel = computed(() => {
+  if (selectedPeriod.value) return selectedPeriod.value.label;
+  if (!startDate.value || !endDate.value) return '';
+  return `${localDateString(startDate.value)} – ${localDateString(endDate.value)}`;
+});
+
+function openSend() {
+  sendResult.value = null;
+  sendBlocked.value = null;
+  sendDialog.value = true;
+}
+
+async function doSend() {
+  if (!startDate.value || !endDate.value || sending.value) return;
+  sending.value = true;
+  sendBlocked.value = null;
+  try {
+    const body = {
+      start: localDateString(startDate.value),
+      end: localDateString(endDate.value),
+    };
+    if (techFilter.value !== 'all') body.technician_id = techFilter.value;
+    sendResult.value = await api.post('/api/timeclock/pay-period/send', body, {
+      suppressErrorToast: true,
+    });
+  } catch (e) {
+    // 409 carries the reason and the rows on err.body.detail (useApi keeps
+    // the whole parsed body there — err.message is only the flattened
+    // string). Anything else is a real failure and gets a toast, because the
+    // dialog has nothing useful to show.
+    const detail = e?.body?.detail;
+    if (e?.status === 409 && detail && typeof detail === 'object') {
+      sendBlocked.value = detail;
+    } else {
+      sendDialog.value = false;
+      toast.add({
+        severity: 'error',
+        summary: 'The timesheet was not sent',
+        detail: (detail && typeof detail === 'object' ? detail.detail : detail)
+          || e?.message
+          || 'Nothing was emailed.',
+        life: 8000,
+      });
+    }
+  } finally {
+    sending.value = false;
+  }
+}
+
+/** Jump from a held-back row straight to correcting it. */
+function fixFlagged(flag) {
+  const entry = entries.value.find((e) => String(e.id) === String(flag.entry_id));
+  sendDialog.value = false;
+  if (entry) openEdit(entry);
+}
+
 // ── Export ──────────────────────────────────────────────────────────────────
 // The buttons are disabled when the range holds nobody: a CSV with a header
 // row and nothing under it looks like "everyone worked zero hours" once it is
@@ -795,6 +942,26 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.send-warn {
+  color: var(--p-orange-600, #b45309);
+}
+.flag-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+}
+.flag-list li {
+  margin-bottom: 0.3rem;
+}
+.flag-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--p-primary-color);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  text-decoration: underline;
+}
 /* Theme tokens only — this banner sits on the page in dark mode too, where a
    hardcoded pale background would put near-white text on near-white. */
 .period-note {

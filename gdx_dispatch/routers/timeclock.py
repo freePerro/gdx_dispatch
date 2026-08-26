@@ -28,6 +28,7 @@ from gdx_dispatch.core.pay_periods import (
     shop_today,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timesheet_delivery import send_period_timesheet
 from gdx_dispatch.core.timesheet_export import (
     build_csv,
     build_pdf,
@@ -1079,6 +1080,81 @@ def export_pay_period_pdf(
             "Content-Disposition": f"attachment; filename={pdf_filename(sheet.period)}"
         },
     )
+
+
+class SendTimesheetIn(BaseModel):
+    """The range to send. Explicit, for the same reason the export is: the
+    button sits on a screen whose dates the operator can move."""
+
+    start: date
+    end: date
+    technician_id: str | None = None
+
+
+@router.post("/pay-period/send", response_model=None)
+def send_pay_period(
+    payload: SendTimesheetIn,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Mail this period's timesheet to whoever does the payroll.
+
+    Refuses — 409, with the offending shifts named — when anything in the
+    period still needs a look. There is no override, and that is the point:
+    the thresholds are already set so a genuine long day passes, so the only
+    things that block a send are things a correction fixes. An override
+    button is what gets clicked at 4:55pm on payday.
+
+    Always audited, blocked or not. "Was the timesheet sent, by whom, and
+    what stopped it" is a payroll question, and a refusal that leaves no
+    trace is indistinguishable from nobody trying.
+    """
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+
+    sheet, _branding, _paid, _tz = _export_context(
+        request, db, payload.start, payload.end, payload.technician_id
+    )
+    tenant_id = _tenant_id(request)
+    settings_row = db.query(AppSettings).first()
+
+    outcome = send_period_timesheet(
+        db,
+        tenant_id=tenant_id,
+        settings=settings_row,
+        sheet=sheet,
+        actor_user_id=_user_id(current_user),
+        initiator_kind="user",
+    )
+
+    try:
+        asyncio.run(
+            log_audit_event(
+                db=db,
+                tenant_id=tenant_id,
+                user_id=_user_id(current_user),
+                action="timesheet_sent" if outcome.sent else "timesheet_send_blocked",
+                entity_type="timesheet",
+                entity_id=(
+                    f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}"
+                ),
+                details=outcome.as_dict(),
+                request=request,
+            )
+        )
+        db.commit()
+    except Exception:
+        log.exception("timesheet_send_audit_failed")
+
+    if outcome.blocked:
+        # 409, not 422: the request is well formed and the operator did
+        # nothing wrong — the DATA is not ready. The body carries the list
+        # of what to fix, so the screen can say who and which day.
+        raise HTTPException(status_code=409, detail=outcome.as_dict())
+    if not outcome.sent:
+        raise HTTPException(status_code=502, detail=outcome.as_dict())
+    return outcome.as_dict()
 
 
 @router.get("/payroll", response_model=list[PayrollSummaryItem])
