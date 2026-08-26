@@ -1,15 +1,21 @@
 # Job photos: the office can't see them, and can't put them on an invoice
 
-Status: **PARTIALLY BUILT** (re-verified against `main @ aa54665`, 2026-08-25).
+Status: **MERGED #482 / #485 / #484** (on `main @ 813dc06`, 2026-08-26).
 Built: S1 (`JobDetailView.vue:2392`), S2 (`uploads.py:225`), S3
 (`InvoiceCreateView.vue`, `InvoiceDetailView.vue`, `MobileInvoiceDialog.vue:187`),
 S5 (`photos.py` `_PHOTO_READ_KEYS`), S7 (migration 063), and the `AuthedImage`
 fallback. S6 was **dropped** by Doug — not a gap.
-**S4 is BUILT** — both orphan routes deleted 2026-08-25 (§6.5 decision 5), with
-`docs/tech_mobile.md`, `api.d.ts` and the sibling `tech-mobile-workflow-plan.md`
-updated in the same change. **S9, the EXIF-orientation defect this plan did not
-know it had** (§9), is built too. Both sit on open PRs — S9 first, S4 stacked on
-it; merge bottom-up. This line becomes `MERGED #N` when they land.
+**S4** — both orphan routes deleted, with `docs/tech_mobile.md`, `api.d.ts` and
+the sibling `tech-mobile-workflow-plan.md` updated in the same change (#485).
+**S9** — the EXIF-orientation defect this plan did not know it had (§9): job
+photos now print upright on invoice PDFs (#482). **S10** — a size ceiling on
+`POST /api/documents` (#484).
+
+**Not yet released or deployed** as of this line; it becomes `RELEASED vX.Y.Z`
+only after prod runs the image and the feature has been walked. Still owed:
+the prod walk, and the six unguarded upload sites S10 names but does not fix.
+(#483 was the original S4 PR — GitHub auto-closed it when its stacked base
+branch was deleted on merge; #485 is the same commit rebased onto main.)
 
 > **§0's table is stale in the project's favour.** It recorded
 > `invoices with attached_photo_ids = 0` — "never once been used". As of
