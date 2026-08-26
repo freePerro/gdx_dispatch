@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Timesheet {{ period.label }}</title>
+<style>
+  /* Print-only: one fixed light palette on purpose. This never renders in a
+     browser theme — it is handed to WeasyPrint and then to a printer. */
+  @page { size: letter; margin: 0.6in 0.55in; }
+  body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #16181d; font-size: 10.5pt; }
+  h1 { font-size: 17pt; margin: 0 0 2pt; }
+  h2 { font-size: 12pt; margin: 0; }
+  .sub { color: #55606e; font-size: 9.5pt; margin: 0; }
+  .head { border-bottom: 2px solid #16181d; padding-bottom: 8pt; margin-bottom: 12pt; }
+  .head-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16pt; }
+  .totals { text-align: right; white-space: nowrap; }
+  .totals .big { font-size: 20pt; font-weight: 700; display: block; line-height: 1.1; }
+
+  .warn {
+    border: 1.5pt solid #8a5a00; background: #fff6e5; color: #6b4600;
+    padding: 8pt 10pt; border-radius: 3pt; margin-bottom: 12pt; font-size: 9.5pt;
+  }
+  .warn strong { display: block; margin-bottom: 3pt; }
+  .warn ul { margin: 4pt 0 0; padding-left: 14pt; }
+
+  .person { margin-bottom: 14pt; page-break-inside: avoid; }
+  .person-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1pt solid #c9cfd8; padding-bottom: 3pt; margin-bottom: 5pt;
+  }
+  .person-hours { font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.03em; color: #55606e; padding: 2pt 4pt; }
+  td { padding: 2.5pt 4pt; border-top: 0.5pt solid #e3e7ec; font-size: 9.5pt; }
+  td.num, th.num { text-align: right; }
+  tr.flagged td { background: #fff6e5; }
+  .flag-note { color: #6b4600; font-size: 8.5pt; }
+  .foot { margin-top: 16pt; border-top: 1pt solid #c9cfd8; padding-top: 6pt; color: #55606e; font-size: 8.5pt; }
+</style>
+</head>
+<body>
+
+<div class="head">
+  <div class="head-row">
+    <div>
+      <h1>{{ branding.company_name or "Timesheet" }}</h1>
+      <p class="sub">
+        Hours for {{ period.label }}{% if pay_date %} &middot; paid {{ pay_date }}{% endif %}
+      </p>
+      <p class="sub">All times {{ timezone }}. Prepared {{ prepared_at }}.</p>
+    </div>
+    <div class="totals">
+      <span class="big">{{ '%.2f'|format(total_hours) }}</span>
+      <span class="sub">hours &middot; {{ people }} {{ 'person' if people == 1 else 'people' }}</span>
+    </div>
+  </div>
+</div>
+
+{# Never silent. A file that omits its own unresolved rows reads as complete. #}
+{% if flagged %}
+<div class="warn">
+  <strong>{{ flagged|length }} {{ 'shift needs' if flagged|length == 1 else 'shifts need' }} a look — the hours below may be incomplete.</strong>
+  <ul>
+    {% for name, day, reason in flagged %}
+    <li>{{ name }} — {{ day }} — {{ reason }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% for card in cards %}
+<div class="person">
+  <div class="person-head">
+    <h2>{{ card.name }}</h2>
+    <span class="person-hours">{{ '%.2f'|format(card.hours) }} hours</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:22%">Date</th>
+        <th style="width:16%">In</th>
+        <th style="width:16%">Out</th>
+        <th class="num" style="width:13%">Break</th>
+        <th class="num" style="width:13%">Worked</th>
+        <th>Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in card.rows %}
+      <tr class="{{ 'flagged' if row.flag_label else '' }}">
+        <td>{{ row.date }}</td>
+        <td>{{ row.clock_in }}</td>
+        <td>{{ row.clock_out or '—' }}</td>
+        <td class="num">{{ row.break_minutes or '—' }}</td>
+        <td class="num">{{ '%.2f'|format(row.hours) }}</td>
+        <td>
+          {% if row.flag_label %}<span class="flag-note">{{ row.flag_label }}</span>
+          {% elif row.notes %}{{ row.notes }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="sub">Nobody clocked any time in this period.</p>
+{% endfor %}
+
+<div class="foot">
+  Worked hours are clocked time less recorded breaks. This sheet reports hours
+  only — no rates and no pay are calculated here.
+</div>
+
+</body>
+</html>

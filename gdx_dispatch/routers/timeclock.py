@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,20 +17,29 @@ from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.pay_periods import (
     CADENCE_LABELS,
+    PayPeriod,
     PayPeriodUnconfigured,
     next_period,
     pay_date,
     period_containing,
     previous_period,
+    resolve_zone,
     settings_config,
     shop_today,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timesheet_export import (
+    build_csv,
+    build_pdf,
+    csv_filename,
+    pdf_filename,
+)
 from gdx_dispatch.core.timesheet_hours import (
     IMPLAUSIBLE_SHIFT_MINUTES,
     MAX_SHIFT_HOURS,
     WARNING_AFTER_HOURS,
     break_minutes_by_entry,
+    build_timesheet,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
@@ -910,6 +919,166 @@ def pay_periods(
             next_period(current, cadence=cfg["cadence"], anchor_start=cfg["anchor_start"])
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Pay-period export — the files that leave the building
+# ---------------------------------------------------------------------------
+# Same gate as /payroll and the crew timesheet read: this is everybody's
+# hours, not the caller's own.
+#
+# The range is passed explicitly rather than named ("last period"), because
+# the button sits on a screen whose dates the operator can move. Naming the
+# period here and reading the dates there is how a file ends up covering a
+# range the screen never showed.
+
+
+def _export_context(
+    request: Request,
+    db: Session,
+    start: date,
+    end: date,
+    tech_id: str | None = None,
+):
+    """The timesheet for `start`..`end`, plus what the files need to label it."""
+    if end < start:
+        raise HTTPException(status_code=422, detail="end must be on or after start")
+    tenant_id = _tenant_id(request)
+    row = db.query(AppSettings).first()
+    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    cfg = settings_config(row)
+    period = PayPeriod(start, end)
+
+    try:
+        ids = {
+            str(r) for r in db.execute(
+                select(TimeclockEntry.technician_id).where(
+                    TimeclockEntry.tenant_id == tenant_id,
+                    TimeclockEntry.deleted_at.is_(None),
+                ).distinct()
+            ).scalars().all() if r
+        }
+        names = _tech_names(db, tenant_id, ids)
+    except SQLAlchemyError:
+        # Cosmetic only — ids still resolve to rows, they just carry no label.
+        log.exception("timesheet_export_names_failed", extra={"tenant_id": tenant_id})
+        names = {}
+
+    try:
+        sheet = build_timesheet(
+            db,
+            tenant_id=tenant_id,
+            period=period,
+            tz_name=tz_name,
+            names=names,
+            tech_id=tech_id,
+        )
+    except SQLAlchemyError:
+        # Deliberately NOT an empty timesheet. A payroll file reporting zero
+        # hours it never actually queried is worse than no file at all.
+        log.exception("timesheet_export_failed", extra={"tenant_id": tenant_id})
+        raise HTTPException(
+            status_code=503,
+            detail="The timesheet could not be read. Hours are unaffected; try again.",
+        ) from None
+
+    branding = {"company_name": (row.company_name if row else "") or ""}
+    return sheet, branding, pay_date(period, cfg["lag_days"]).isoformat(), tz_name
+
+
+def _audit_export(
+    db: Session, request: Request, user: dict[str, Any], sheet, fmt: str
+) -> None:
+    """Who pulled the crew's hours, when, and for what range.
+
+    A download is not a mutation, but it is everyone's hours leaving the
+    app, and "who exported that" is a question worth being able to answer.
+    Never allowed to fail the download.
+    """
+    try:
+        asyncio.run(
+            log_audit_event(
+                db=db,
+                tenant_id=_tenant_id(request),
+                user_id=_user_id(user),
+                action="timesheet_exported",
+                entity_type="timesheet",
+                entity_id=f"{sheet.period.start.isoformat()}..{sheet.period.end.isoformat()}",
+                details={
+                    "format": fmt,
+                    "period_start": sheet.period.start.isoformat(),
+                    "period_end": sheet.period.end.isoformat(),
+                    "people": sheet.people,
+                    "hours": sheet.worked_hours,
+                    "flagged": len(sheet.flagged),
+                },
+                request=request,
+            )
+        )
+        db.commit()
+    except Exception:
+        log.exception("timesheet_export_audit_failed")
+
+
+@router.get("/pay-period/export.csv", response_model=None)
+def export_pay_period_csv(
+    request: Request,
+    start: date,
+    end: date,
+    technician_id: str | None = None,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    sheet, _branding, _pay_date, _tz = _export_context(
+        request, db, start, end, technician_id
+    )
+    _audit_export(db, request, current_user, sheet, "csv")
+    return Response(
+        content=build_csv(sheet),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={csv_filename(sheet.period)}"
+        },
+    )
+
+
+@router.get("/pay-period/export.pdf", response_model=None)
+def export_pay_period_pdf(
+    request: Request,
+    start: date,
+    end: date,
+    technician_id: str | None = None,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not is_dispatch_manager(current_user):
+        raise HTTPException(status_code=403, detail="dispatcher or admin role required")
+    sheet, branding, paid_on, tz_name = _export_context(
+        request, db, start, end, technician_id
+    )
+    prepared = datetime.now(UTC).astimezone(resolve_zone(tz_name)).strftime(
+        "%b %-d, %Y %-I:%M %p"
+    )
+    try:
+        pdf = build_pdf(sheet, branding=branding, pay_date=paid_on, prepared_at=prepared)
+    except Exception:
+        # WeasyPrint pulls a native stack; a render failure must say so
+        # rather than hand back a zero-byte file that looks like a timesheet.
+        log.exception("timesheet_pdf_render_failed")
+        raise HTTPException(
+            status_code=503,
+            detail="The timesheet PDF could not be produced. The CSV is unaffected.",
+        ) from None
+    _audit_export(db, request, current_user, sheet, "pdf")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={pdf_filename(sheet.period)}"
+        },
+    )
 
 
 @router.get("/payroll", response_model=list[PayrollSummaryItem])
