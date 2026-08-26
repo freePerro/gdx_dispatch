@@ -117,6 +117,12 @@ function _destinationFor(category) {
     case 'invoice':
     case 'invoice_paid':
     case 'invoice_overdue':
+    // 'payment' is what core/office_notifications.notify_payment_received
+    // writes when Stripe money lands. It belongs with the invoice cases:
+    // the row names an invoice number and the office's next move is to open
+    // it. Without this case the click fell through to `default` and merely
+    // closed the drawer.
+    case 'payment':
       return mobile ? '/mobile/billing' : '/invoices';
     case 'estimate':
     case 'estimate_signed':

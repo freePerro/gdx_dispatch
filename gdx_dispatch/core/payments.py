@@ -827,6 +827,35 @@ def _mark_invoice_paid(
         connected_account=connected_account,
     )
 
+    # Tell the office. Every caller of this function is a surface where the
+    # CUSTOMER moved the money and no staff member was in the loop — the
+    # emailed pay page, the portal, the ACH charge, and the webhook that
+    # settles a bank debit days later. Before this, all four wrote a Payment
+    # row, a ledger entry and an audit trail, and rang nothing: prod carried
+    # five card payments and not one bell notification.
+    #
+    # Placed here on purpose. Every early return above is a path that recorded
+    # NO new money — the idempotent redelivery, the lost race, the zero-amount
+    # true-up — so a payment rings exactly once no matter whether /confirm or
+    # the webhook won. And it is after the commit: `notify_office` opens its
+    # own transaction and swallows its own failures, so the badge can never
+    # roll back the money.
+    #
+    # Only plain locals cross this call. `invoice` is expired by the commit
+    # above, so every attribute read on it is a lazy refresh SELECT — those
+    # belong inside `notify_payment_received`'s guard, not on this line, where
+    # a raise would escape into three callers that do not wrap this function
+    # and 500 a request whose money is already committed.
+    from gdx_dispatch.core.office_notifications import notify_payment_received
+
+    notify_payment_received(
+        db,
+        invoice,
+        amount=pay_amount,
+        method=method,
+        overpaid=max(overpay, 0.0),
+    )
+
 
 # ---------------------------------------------------------------------------
 # POST /api/payments/create-intent
