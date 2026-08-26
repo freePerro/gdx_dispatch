@@ -178,10 +178,18 @@ describe("Settings branding save", () => {
     await wrapper.find("[data-testid='secondary-color']").setValue("#abcdef");
     await wrapper.find("[data-testid='save-branding']").trigger("click");
 
+    // Contact fields ride along in the same PATCH. The branding GET is
+    // stubbed to {} here, so they submit as empty strings — the assertion
+    // stays exact so a future field that silently stops being sent still
+    // fails this test. Behaviour of the contact fields themselves is
+    // covered in views/__tests__/SettingsBrandingContact.spec.js.
     expect(patchMock).toHaveBeenCalledWith("/api/settings/branding", {
       company_name: "GDX Dispatch",
       primary_color: "#123456",
       secondary_color: "#abcdef",
+      phone: "",
+      email: "",
+      address: "",
     });
     expect(document.documentElement.style.getPropertyValue("--primary")).toBe("#123456");
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#abcdef");
