@@ -67,6 +67,29 @@
           data-testid="timesheets-refresh"
           @click="load"
         />
+        <!-- Export what is ON SCREEN. The endpoint takes the range explicitly
+             rather than a period name, so the file can never cover a
+             fortnight the page is not showing. -->
+        <Button
+          label="Export CSV"
+          icon="pi pi-file"
+          severity="secondary"
+          :loading="exporting === 'csv'"
+          :disabled="!timecards.length || exporting !== ''"
+          v-tooltip="'Hours for this range, as a spreadsheet'"
+          data-testid="timesheets-export-csv"
+          @click="exportRange('csv')"
+        />
+        <Button
+          label="Export PDF"
+          icon="pi pi-file-pdf"
+          severity="secondary"
+          :loading="exporting === 'pdf'"
+          :disabled="!timecards.length || exporting !== ''"
+          v-tooltip="'Hours for this range, as a printable sheet'"
+          data-testid="timesheets-export-pdf"
+          @click="exportRange('pdf')"
+        />
         <Button
           label="Add Entry"
           icon="pi pi-plus"
@@ -288,8 +311,10 @@ import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Tag from 'primevue/tag';
 import Toolbar from 'primevue/toolbar';
+import { useToast } from 'primevue/usetoast';
 import TimeEntryDialog from '../components/TimeEntryDialog.vue';
 import { useApi } from '../composables/useApi';
+import { downloadAuthedFile } from '../composables/useAuthedFile';
 import { formatDate, formatTime, localDateString } from '../composables/useFormatters';
 import { dateKeyInZone, useTenantTimezone } from '../composables/useTenantTimezone';
 import { timeclockEntrySeverity } from '../utils/statusSeverity';
@@ -299,6 +324,7 @@ import { timeclockEntrySeverity } from '../utils/statusSeverity';
 const IMPLAUSIBLE_SHIFT_MINUTES = 16 * 60;
 
 const api = useApi();
+const toast = useToast();
 const route = useRoute();
 const router = useRouter();
 
@@ -550,6 +576,36 @@ function startOfWeek(d) {
   const dow = (out.getDay() + 6) % 7;
   out.setDate(out.getDate() - dow);
   return out;
+}
+
+// ── Export ──────────────────────────────────────────────────────────────────
+// The buttons are disabled when the range holds nobody: a CSV with a header
+// row and nothing under it looks like "everyone worked zero hours" once it is
+// in an inbox, which is a worse answer than no file.
+const exporting = ref('');
+
+async function exportRange(format) {
+  if (!startDate.value || !endDate.value || exporting.value) return;
+  exporting.value = format;
+  try {
+    const from = localDateString(startDate.value);
+    const to = localDateString(endDate.value);
+    const params = new URLSearchParams({ start: from, end: to });
+    if (techFilter.value !== 'all') params.set('technician_id', techFilter.value);
+    await downloadAuthedFile(
+      `/api/timeclock/pay-period/export.${format}?${params.toString()}`,
+      `timesheet_${from}_${to}.${format}`,
+    );
+  } catch (e) {
+    toast.add({
+      severity: 'error',
+      summary: 'Export failed',
+      detail: e?.message || 'The timesheet could not be produced.',
+      life: 6000,
+    });
+  } finally {
+    exporting.value = '';
+  }
 }
 
 // ── Pay periods ─────────────────────────────────────────────────────────────

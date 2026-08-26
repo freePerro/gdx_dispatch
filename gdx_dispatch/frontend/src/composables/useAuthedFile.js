@@ -42,3 +42,22 @@ export async function openAuthedFile(url) {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
   if (!w) window.location.href = blobUrl;
 }
+
+/**
+ * Save an authenticated file to disk under a chosen name.
+ *
+ * `openAuthedFile` opens a blob: URL in a tab, which is right for a PDF you
+ * want to look at — but a blob URL carries no filename, so a browser saving
+ * from that tab offers a random uuid. A payroll file landing in someone's
+ * Downloads folder as "a1b2c3d4" is a file they will never find again.
+ */
+export async function downloadAuthedFile(url, filename) {
+  const blobUrl = await createAuthedBlobUrl(url);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename || '';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+}
