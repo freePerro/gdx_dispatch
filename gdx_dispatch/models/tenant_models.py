@@ -145,6 +145,41 @@ class AppSettings(Base):
     customer_listings_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Pay periods (2026-08-26) — the shop's payroll calendar. Cadence values
+    # and the arithmetic live in core/pay_periods.py; this row only stores
+    # the tenant's choice. Default weekly_mon, NOT this shop's biweekly:
+    # the column default ships to every install, and weekly_mon is what the
+    # timesheet screens already assumed, so nobody's existing view moves.
+    #
+    # anchor_start is required ONLY for biweekly (two shops paying every
+    # other Friday can be a week out of phase, so the calendar alone cannot
+    # decide which fortnight is which). pay_lag_days is period end → payday:
+    # this shop's period ends Sunday and pays the Friday 5 days later.
+    pay_period_cadence: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="weekly_mon", server_default="weekly_mon"
+    )
+    pay_period_anchor_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    pay_period_pay_lag_days: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    # Where the finished timesheet goes. Comma-separated because the
+    # recipient is a person (a bookkeeper), not an API — there is no
+    # provider account to model. Empty = the send has nowhere to go and
+    # refuses rather than silently succeeding.
+    payroll_recipient_emails: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    # Scheduled send, default OFF. An install that upgrades into this
+    # feature must not start emailing hours to an address nobody set.
+    payroll_autosend_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Shop-local hour on the day AFTER a period closes. Not payday morning:
+    # a hold discovered the morning of payday leaves no time to fix it,
+    # while one raised at close leaves the whole lag window.
+    payroll_autosend_hour: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=7, server_default=text("7")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
