@@ -20,6 +20,7 @@ from gdx_dispatch.core.audit import AuditLog, log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
 from gdx_dispatch.core.permissions import PLATFORM_LOCKED_ROLES, assert_can_assign_role
+from gdx_dispatch.core.upload_limits import assert_body_within_limit, assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Customer, Invoice, Job, RolePermission, User
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -353,6 +354,9 @@ async def import_customers(
 ) -> dict:
     rows: list[dict]
     if file is not None:
+        # Ceiling BEFORE the read (2026-08-26). This handler had none; the only
+        # bound was nginx client_max_body_size, 50M on the prod vhost.
+        assert_upload_within_limit(file)
         raw = await file.read()
         filename = (file.filename or "").lower()
         if filename.endswith(".csv"):
@@ -366,6 +370,10 @@ async def import_customers(
         content_type = request.headers.get("content-type", "").lower()
         if "application/json" not in content_type:
             raise HTTPException(status_code=400, detail="Expected JSON body or CSV/JSON file upload")
+        # The JSON branch of this same endpoint had NO ceiling at all — the
+        # multipart guard above sits inside `if file is not None`, so a
+        # Content-Type: application/json post bypassed it entirely.
+        assert_body_within_limit(request)
         payload = await request.json()
         rows = payload if isinstance(payload, list) else list(payload.get("customers", []))
 

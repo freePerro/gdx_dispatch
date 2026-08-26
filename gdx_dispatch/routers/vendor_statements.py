@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_permission
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.modules.vendor_orders.confirm import (
     OrderConfirmError,
     confirm_order_job,
@@ -250,6 +251,9 @@ async def upload_statement(
             detail=f"unsupported vendor '{vendor}'. supported: {sorted(_SUPPORTED_VENDORS)}",
         )
 
+    # Ceiling BEFORE the read (2026-08-26). This handler had none; the only
+    # bound was nginx client_max_body_size, 50M on the prod vhost.
+    assert_upload_within_limit(file)
     pdf_bytes = await file.read()
 
     try:

@@ -16,6 +16,7 @@ from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_role
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Resource
 
 log = logging.getLogger(__name__)
@@ -238,6 +239,11 @@ async def create_resource(
     # trailing os.sep stops a sibling like "<root>-evil" from passing.
     if not file_dest.startswith(base + os.sep):
         raise HTTPException(status_code=400, detail="Invalid upload path")
+    # Ceiling first — before makedirs, before the read. Ahead of makedirs so a
+    # refusal leaves nothing behind, and outside the try below because its except
+    # re-raises everything as a 500, which would turn an honest 413 into a fake
+    # server error and log it as a failure.
+    assert_upload_within_limit(file)
     os.makedirs(os.path.dirname(file_dest), exist_ok=True)
 
     # Save file

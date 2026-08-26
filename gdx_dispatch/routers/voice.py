@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.twilio_signature import verify_twilio_signature
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,13 @@ async def upload_voice_note(
     """Upload audio file, transcribe to text, save as job note."""
     tenant_id = _tenant_id(request)
     user_id = str(user.get("sub") or user.get("user_id") or "system")
+
+    # Ceiling BEFORE the read (2026-08-26). This handler had none; the only bound
+    # was nginx client_max_body_size, 50M on the prod vhost. Outside the try below:
+    # that block only lets an HTTPException through because of an `except
+    # HTTPException: raise` clause ahead of its catch-all, and a 413 should not
+    # depend on the ordering of except clauses staying the way it is today.
+    assert_upload_within_limit(file)
 
     try:
         # Save audio file

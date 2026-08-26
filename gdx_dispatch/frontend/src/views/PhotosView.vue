@@ -254,20 +254,14 @@ async function submitUpload() {
   if (!canUpload.value) return;
   uploading.value = true;
   try {
-    // One call. This used to be two — POST /api/documents for the bytes, then
-    // a JSON POST to /api/jobs/{id}/photos to create the photo record — and
-    // that second step has been 422ing since it shipped: a multipart handler
-    // in uploads.py claims the same path and is included first, so the JSON
-    // hit a route demanding a file. The file uploaded, the photo record never
-    // existed, and job_photos sat empty. The upload route now creates the
-    // record itself.
     // One call to the canonical upload. This used to be two — POST
     // /api/documents for the bytes, then a JSON POST to /api/jobs/{id}/photos
-    // to create the photo record — and that second step has 422'd since it
+    // to create the photo record — and that second step 422'd from the day it
     // shipped: a multipart handler in uploads.py claims the same path and is
     // included first, so the JSON hit a route demanding a file. The file
     // uploaded, the photo record never existed, and job_photos sat empty.
-    // /api/documents now creates the record itself.
+    // /api/documents now creates the record itself, and the shadowed JSON
+    // route was deleted 2026-08-26 — it never served a single request.
     const formData = new FormData();
     formData.append("job_id", uploadForm.job_id);
     formData.append("file", uploadForm.file);

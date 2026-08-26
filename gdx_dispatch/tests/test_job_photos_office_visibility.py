@@ -474,3 +474,27 @@ def test_link_job_photo_reports_failure_as_none(db) -> None:
         size_bytes=10,
         uploaded_by="user-1",
     ) is None
+
+
+def test_only_one_handler_claims_post_api_jobs_photos():
+    """A second POST handler on this path was dead from the day it shipped.
+
+    routers/uploads.py declares the same path as a multipart handler and is
+    included first, so the JSON one in routers/photos.py was permanently
+    shadowed — every call 422'd against a route demanding a file, the photo
+    record was never created, and job_photos sat empty.
+
+    Enumerated through iter_app_routes: app.openapi() COLLAPSES duplicate
+    (method, path) pairs and names the losing handler, so the spec cannot show
+    a collision and a flat app.routes walk cannot see these routers at all.
+    """
+    from gdx_dispatch.app import app
+    from gdx_dispatch.tests.conftest import iter_app_routes
+
+    posts = [
+        f"{r.endpoint.__module__}.{r.endpoint.__name__}"
+        for path, r in iter_app_routes(app)
+        if path == "/api/jobs/{job_id}/photos" and "POST" in (r.methods or set())
+    ]
+    assert len(posts) == 1, f"expected exactly one POST handler, got {posts}"
+    assert posts[0].endswith("uploads.upload_job_photo"), posts

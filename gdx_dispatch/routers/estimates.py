@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
 from gdx_dispatch.modules.deposits import (
     DepositError,
@@ -3090,6 +3091,9 @@ def upload_estimate_attachment(
     ct = (file.content_type or "").strip().lower()
     if ct not in ESTIMATE_ATTACHMENT_ALLOWED_MIME:
         raise HTTPException(status_code=415, detail=f"Unsupported file type: {ct}")
+    # Pre-read ceiling (2026-08-26). The len() check below still stands, but by
+    # then the whole body is already in memory; this refuses it first. Same cap.
+    assert_upload_within_limit(file, ESTIMATE_ATTACHMENT_MAX_BYTES)
     data = file.file.read()
     if len(data) > ESTIMATE_ATTACHMENT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds 25MB limit")
