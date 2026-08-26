@@ -1,7 +1,7 @@
 """Tests for the photos router (job photo gallery + recent feed)."""
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from gdx_dispatch.core.audit import TenantBase
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.routers.auth import get_current_user
+from gdx_dispatch.models.tenant_models import JobPhoto
 from gdx_dispatch.routers.photos import router
 
 
@@ -111,30 +112,63 @@ def client():
     tc._engine.dispose()  # type: ignore[attr-defined]
 
 
-def test_create_photo(client: TestClient):
-    job_id = str(uuid4())
-    r = client.post(
-        f"/api/jobs/{job_id}/photos",
-        json={
-            "url": "https://cdn.example.com/a.jpg",
-            "kind": "before",
-            "filename": "a.jpg",
-            "mime_type": "image/jpeg",
-            "size_bytes": 12345,
-            "caption": "Arrival shot",
-        },
-    )
-    assert r.status_code == 201, r.text
-    data = r.json()
-    assert data["id"]
-    assert data["job_id"] == job_id
-    assert data["kind"] == "before"
-    assert data["url"] == "https://cdn.example.com/a.jpg"
-    assert data["filename"] == "a.jpg"
-    assert data["mime_type"] == "image/jpeg"
-    assert data["size_bytes"] == 12345
-    assert data["caption"] == "Arrival shot"
-    assert data["company_id"] == "tenant-test"
+
+def _seed_photo(client: TestClient, job_id: str, *, tenant_id: str = "tenant-test", **kw) -> dict:
+    """Insert a JobPhoto row directly, the way a real upload would leave one.
+
+    These tests used to create photos by POSTing JSON to
+    /api/jobs/{job_id}/photos. That handler was deleted 2026-08-26 (#489)
+    because it never served a request in the real app: routers/uploads.py
+    declares the same path as MULTIPART and is included first, so the JSON one
+    was permanently shadowed and every call 422'd.
+
+    It passed HERE only because this suite builds a bare FastAPI() including
+    photos.router ALONE (see _make_client), where nothing shadowed it. That is
+    the trap worth naming: a green test against a route production could never
+    reach. Seeding the row directly tests the same GET / PATCH / DELETE surface
+    without depending on a writer that does not exist.
+    """
+    Session = sessionmaker(bind=client._engine, autoflush=False, autocommit=False)  # type: ignore[attr-defined]
+    db = Session()
+    try:
+        photo = JobPhoto(
+            company_id=tenant_id,
+            job_id=UUID(job_id),
+            kind=kw.get("kind", "during"),
+            url=kw.get("url", "https://cdn.example.com/a.jpg"),
+            filename=kw.get("filename"),
+            mime_type=kw.get("mime_type"),
+            size_bytes=kw.get("size_bytes"),
+            caption=kw.get("caption"),
+            uploaded_by=kw.get("uploaded_by", "user-1"),
+        )
+        db.add(photo)
+        db.commit()
+        db.refresh(photo)
+        return {"id": str(photo.id), "url": photo.url, "kind": photo.kind, "caption": photo.caption}
+    finally:
+        db.close()
+
+
+def test_no_json_writer_is_registered_on_the_photos_router(client: TestClient):
+    """This replaces test_create_photo, which POSTed JSON to
+    /api/jobs/{job_id}/photos and asserted 201.
+
+    That route was deleted (#489). It never served a request in the real app —
+    routers/uploads.py claims the same path as multipart and is included first,
+    so the JSON handler was shadowed and every call 422'd. It passed here only
+    because this suite mounts photos.router alone.
+
+    Absence is now the property worth guarding: the photos router must not grow
+    a second writer for this path. The real writer is
+    POST /api/documents (job_id + as_photo=true).
+    """
+    posts = [
+        r for r in client.app.routes
+        if getattr(r, "path", "") == "/api/jobs/{job_id}/photos"
+        and "POST" in (getattr(r, "methods", None) or set())
+    ]
+    assert posts == [], f"photos.router grew a POST writer again: {posts}"
 
 
 def test_list_photos_tenant_scoped():
@@ -142,16 +176,8 @@ def test_list_photos_tenant_scoped():
     c2 = _make_client(tenant_id="tenant-b", user_sub="ub")
     try:
         job_id = str(uuid4())
-        r1 = c1.post(
-            f"/api/jobs/{job_id}/photos",
-            json={"url": "https://cdn.example.com/a.jpg", "kind": "during"},
-        )
-        assert r1.status_code == 201
-        r2 = c2.post(
-            f"/api/jobs/{job_id}/photos",
-            json={"url": "https://cdn.example.com/b.jpg", "kind": "after"},
-        )
-        assert r2.status_code == 201
+        _seed_photo(c1, job_id, tenant_id="tenant-a", url="https://cdn.example.com/a.jpg", kind="during")
+        _seed_photo(c2, job_id, tenant_id="tenant-b", url="https://cdn.example.com/b.jpg", kind="after")
 
         list1 = c1.get(f"/api/jobs/{job_id}/photos").json()
         list2 = c2.get(f"/api/jobs/{job_id}/photos").json()
@@ -164,27 +190,31 @@ def test_list_photos_tenant_scoped():
         c2._engine.dispose()  # type: ignore[attr-defined]
 
 
-def test_kind_must_be_valid(client: TestClient):
-    job_id = str(uuid4())
-    r = client.post(
-        f"/api/jobs/{job_id}/photos",
-        json={"url": "https://cdn.example.com/a.jpg", "kind": "bogus"},
-    )
-    assert r.status_code == 422
+def test_kind_is_normalised_by_the_shared_helper():
+    """Was: POST an invalid kind to the deleted JSON route, expect 422.
+
+    That validation lived on a pydantic model behind a route production could
+    not reach. The check that actually runs on every real upload is
+    core/job_photos.normalize_kind, which coerces rather than rejects — because
+    the column is String(20) and an over-long value raises on flush, the
+    savepoint swallows it, and the photo vanishes silently.
+    """
+    from gdx_dispatch.core.job_photos import DEFAULT_PHOTO_KIND, PHOTO_KINDS, normalize_kind
+
+    assert normalize_kind("before") == "before"
+    assert normalize_kind("bogus") == DEFAULT_PHOTO_KIND
+    assert normalize_kind(None) == DEFAULT_PHOTO_KIND
+    assert normalize_kind(12345) == DEFAULT_PHOTO_KIND
+    assert normalize_kind("x" * 400) == DEFAULT_PHOTO_KIND
+    for kind in PHOTO_KINDS:
+        assert normalize_kind(kind) == kind
 
 
 def test_recent_photos_feed(client: TestClient):
     job_id = str(uuid4())
     for i in range(3):
-        r = client.post(
-            f"/api/jobs/{job_id}/photos",
-            json={
-                "url": f"https://cdn.example.com/{i}.jpg",
-                "kind": "during",
-                "caption": f"shot-{i}",
-            },
-        )
-        assert r.status_code == 201
+        _seed_photo(client, job_id, url=f"https://cdn.example.com/{i}.jpg",
+                    kind="during", caption=f"shot-{i}")
 
     feed = client.get("/api/photos/recent?limit=20")
     assert feed.status_code == 200, feed.text
@@ -200,10 +230,7 @@ def test_recent_photos_feed(client: TestClient):
 
 def test_patch_kind_and_caption(client: TestClient):
     job_id = str(uuid4())
-    created = client.post(
-        f"/api/jobs/{job_id}/photos",
-        json={"url": "https://cdn.example.com/a.jpg", "kind": "during"},
-    ).json()
+    created = _seed_photo(client, job_id, url="https://cdn.example.com/a.jpg", kind="during")
     r = client.patch(
         f"/api/jobs/{job_id}/photos/{created['id']}",
         json={"kind": "after", "caption": "Finished"},
@@ -223,10 +250,7 @@ def test_patch_kind_and_caption(client: TestClient):
 
 def test_soft_delete_photo(client: TestClient):
     job_id = str(uuid4())
-    created = client.post(
-        f"/api/jobs/{job_id}/photos",
-        json={"url": "https://cdn.example.com/a.jpg", "kind": "before"},
-    ).json()
+    created = _seed_photo(client, job_id, url="https://cdn.example.com/a.jpg", kind="before")
     r = client.delete(f"/api/jobs/{job_id}/photos/{created['id']}")
     assert r.status_code == 204
 
