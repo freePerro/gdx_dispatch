@@ -20,6 +20,33 @@
               <InputText id="company-name" v-model="branding.companyName" data-testid="company-name" />
             </div>
 
+            <!-- Contact details. These are not decoration: phone/address/email
+                 are printed in every outbound email footer (core/email_layout.py),
+                 on the public estimate page as a tel: link, and in the customer
+                 portal. PATCH /api/settings/branding has always accepted them —
+                 there was simply no input, so GDX prod shipped the seed
+                 placeholder "1112223333" to customers for months. -->
+            <div class="form-field">
+              <label for="company-phone">Phone</label>
+              <InputText id="company-phone" v-model="branding.phone" type="tel"
+                placeholder="(320) 555-0100" data-testid="company-phone" />
+              <small class="hint">Shown to customers on estimates, invoices and every email we send.</small>
+            </div>
+
+            <div class="form-field">
+              <label for="company-email">Email</label>
+              <InputText id="company-email" v-model="branding.email" type="email"
+                placeholder="office@example.com" data-testid="company-email" />
+              <small class="hint">Reply-to address customers see. Leave blank to omit it.</small>
+            </div>
+
+            <div class="form-field">
+              <label for="company-address">Address</label>
+              <InputText id="company-address" v-model="branding.address"
+                placeholder="123 Main St, Anytown, MN 56000" data-testid="company-address" />
+              <small class="hint">Appears in the footer of customer emails.</small>
+            </div>
+
             <div class="form-field">
               <label for="logo-upload">Logo</label>
               <input id="logo-upload" data-testid="logo-upload" type="file" accept="image/*" @change="onLogoSelect" />
@@ -1255,6 +1282,9 @@ const branding = reactive({
   logo: null,
   primaryColor: "#0057a8",
   accentColor: "#f7b500",
+  phone: "",
+  email: "",
+  address: "",
 });
 
 async function loadBrandingForm() {
@@ -1268,6 +1298,11 @@ async function loadBrandingForm() {
       // saved accent never reloaded. Keep the old key as fallback.
       const accent = data.accent_color || data.secondary_color;
       if (typeof accent === "string" && accent) branding.accentColor = accent;
+      // Contact fields: assign even when "" — an admin who clears the phone
+      // must see it stay cleared on reload, not silently repopulate.
+      if (typeof data.phone === "string") branding.phone = data.phone;
+      if (typeof data.email === "string") branding.email = data.email;
+      if (typeof data.address === "string") branding.address = data.address;
     }
   } catch (_err) {
     // Non-fatal: form just shows defaults until user edits.
@@ -1322,6 +1357,9 @@ async function saveBranding() {
       company_name: branding.companyName,
       primary_color: normalizeHex(branding.primaryColor),
       secondary_color: normalizeHex(branding.accentColor),
+      phone: branding.phone.trim(),
+      email: branding.email.trim(),
+      address: branding.address.trim(),
     });
     await uploadLogoIfPresent();
     applyBrandingTheme();
