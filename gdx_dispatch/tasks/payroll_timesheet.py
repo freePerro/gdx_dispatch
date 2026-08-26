@@ -49,6 +49,7 @@ from gdx_dispatch.core.pay_periods import (
 )
 from gdx_dispatch.core.timesheet_delivery import (
     BLOCKED_FLAGGED,
+    BLOCKED_NO_SENDER,
     send_period_timesheet,
 )
 from gdx_dispatch.core.timesheet_hours import build_timesheet
@@ -166,6 +167,13 @@ def send_closed_period() -> dict:
         # and the moment the office corrects the shift the next tick sends.
         already_held = _audit_says(db, tenant_id, "timesheet_send_blocked", period)
 
+        # WHOSE mailbox this leaves from. Outlook Graph authenticates as a
+        # specific person and an unattended run has no calling user, so the
+        # tenant nominates one (the same setting automated workflow email
+        # already uses). Passing SYSTEM_ACTOR here instead — which the first
+        # version did — makes every send undeliverable while looking fine.
+        sender = str(getattr(settings, "automation_sender_user_id", "") or "")
+
         outcome = send_period_timesheet(
             db,
             tenant_id=tenant_id,
@@ -173,11 +181,17 @@ def send_closed_period() -> dict:
             sheet=sheet,
             actor_user_id=SYSTEM_ACTOR,
             initiator_kind="system",
+            sender_user_id=sender,
         )
 
         _audit(db, tenant_id, outcome, period)
 
         if outcome.blocked:
+            # A missing sender is a configuration problem, not a data one —
+            # it never clears itself by correcting a shift, so it must be
+            # said out loud rather than retried quietly every hour.
+            if outcome.blocked == BLOCKED_NO_SENDER and already_held:
+                log.warning("payroll_timesheet_no_sender: %s", _entity_id(period))
             if not already_held:
                 _alert_office(db, tenant_id, outcome, period)
             log.info(

@@ -254,6 +254,24 @@ def _validate_pay_period(row: AppSettings, updates: dict[str, Any]) -> None:
             detail="Turn on automatic sending only after entering who receives it.",
         )
 
+    # ...and somewhere to send FROM. An unattended send has no calling user,
+    # and Outlook Graph authenticates as a specific person, so without a
+    # nominated sender the scheduled task cannot deliver at all — it would
+    # fail every hour while Settings read "on". Caught on prod 2026-08-26.
+    if autosend:
+        sender = merged(
+            "automation_sender_user_id",
+            getattr(row, "automation_sender_user_id", None),
+        )
+        if not str(sender or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Automatic sending needs a mailbox to send from. Choose "
+                    "the sending user under Automated email first."
+                ),
+            )
+
 
 def _actor_id(user: dict[str, Any]) -> str:
     return str(user.get("sub") or user.get("user_id") or user.get("id") or "system")

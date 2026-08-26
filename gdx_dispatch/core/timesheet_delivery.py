@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -53,6 +54,10 @@ log = logging.getLogger(__name__)
 BLOCKED_FLAGGED = "flagged_shifts"
 BLOCKED_NO_RECIPIENT = "no_recipient"
 BLOCKED_EMPTY = "no_hours"
+#: A background send with nobody's mailbox to send FROM. Outlook Graph
+#: authenticates as a specific person, so an unattended send needs a
+#: configured sender or it cannot deliver at all — see below.
+BLOCKED_NO_SENDER = "no_sender"
 
 
 @dataclass
@@ -83,6 +88,20 @@ class SendOutcome:
             "hours": self.hours,
             "people": self.people,
         }
+
+
+def _looks_like_user_id(value: str) -> bool:
+    """Is this a real user id Graph can authenticate as?
+
+    Deliberately a UUID check and not a truthiness check: the label
+    "system:payroll-timesheet" is perfectly truthy and is exactly the value
+    that made the send silently undeliverable.
+    """
+    try:
+        UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def describe_flags(sheet: PeriodTimesheet) -> list[dict[str, str]]:
@@ -172,11 +191,26 @@ def send_period_timesheet(
     sheet: PeriodTimesheet,
     actor_user_id: str,
     initiator_kind: str = "user",
+    sender_user_id: str | None = None,
 ) -> SendOutcome:
     """Mail the period's timesheet, or refuse and say why.
 
     `settings` is the AppSettings row; `sheet` is already built, so the
     caller decides which period and this decides whether it may go.
+
+    `actor_user_id` is WHO caused the send — it goes in the audit trail and
+    may be a non-UUID label like "system:payroll-timesheet".
+    `sender_user_id` is WHOSE MAILBOX it leaves from, and must be a real
+    user UUID: `send_transactional_email` authenticates to Outlook Graph as
+    a specific person and skips that provider entirely when it cannot parse
+    one. When omitted, the actor is used — correct for the office's Send
+    button, where the two are the same person.
+
+    They are separate parameters because conflating them is what made the
+    first scheduled send undeliverable: it passed its own label as the
+    sender, Graph was skipped, SMTP is not configured here, and every
+    attempt failed with "no_email_provider_connected" while the schedule
+    looked healthy. Caught on prod, 2026-08-26.
     """
     period: PayPeriod = sheet.period
     cfg = settings_config(settings)
@@ -215,6 +249,23 @@ def send_period_timesheet(
         )
         return outcome
 
+    # Graph needs a person to authenticate as. An UNATTENDED send with no
+    # configured sender cannot deliver, so say so once here rather than
+    # retrying hourly against a provider that will never be chosen.
+    #
+    # Only the unattended path is gated. A person pressing Send already gets
+    # an honest 502 carrying the provider's own reason, and gating them too
+    # would refuse the send on any deployment whose user ids are not UUIDs —
+    # breaking a working path to guard against a different one.
+    sender = str(sender_user_id or actor_user_id or "")
+    if initiator_kind != "user" and not _looks_like_user_id(sender):
+        outcome.blocked = BLOCKED_NO_SENDER
+        outcome.detail = (
+            "No mailbox is set to send from. Choose the sending user in "
+            "Settings \u2192 Automated email, then the timesheet can go out."
+        )
+        return outcome
+
     if sheet.people == 0:
         # Not an error — a genuinely empty fortnight exists (a shutdown
         # week). But mailing a blank sheet reads as "everyone worked zero
@@ -244,7 +295,7 @@ def send_period_timesheet(
             sent, _provider, skip = send_transactional_email(
                 tenant_db=db,
                 tenant_id=tenant_id,
-                user_id=actor_user_id,
+                user_id=sender,
                 to_email=address,
                 to_name=address,
                 subject=subject,
@@ -255,7 +306,10 @@ def send_period_timesheet(
                 kind="payroll_timesheet",
                 entity_type="timesheet",
                 entity_id=f"{period.start.isoformat()}..{period.end.isoformat()}",
-                recipient_source="settings.payroll_recipient_emails",
+                # <= 20 chars: outbound_emails.recipient_source is
+                # varchar(20) and a longer value aborts the INSERT, which
+                # poisons the session and loses the audit row with it.
+                recipient_source="payroll_settings",
             )
         except Exception:  # noqa: BLE001 — one bad address must not lose the rest
             log.exception("timesheet_send_failed", extra={"tenant_id": tenant_id})

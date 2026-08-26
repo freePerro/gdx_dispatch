@@ -63,6 +63,9 @@ def session_factory() -> Generator:
         payroll_recipient_emails="bookkeeper@example.com",
         payroll_autosend_enabled=True,
         payroll_autosend_hour=7,
+        # WHOSE mailbox the unattended send leaves from. Without this the
+        # task cannot deliver at all — the prod defect of 2026-08-26.
+        automation_sender_user_id="1f23a32a-198e-4a2d-90b7-4998c845790e",
     ))
     db.commit()
     db.close()
@@ -385,3 +388,44 @@ def test_every_early_return_says_why(session_factory):
     result, _ = _run(session_factory)
     assert isinstance(result, dict) and result
     assert any(k in result for k in ("skipped", "held", "sent", "failed"))
+
+
+# ---------------------------------------------------------------------------
+# Whose mailbox the schedule sends from
+# ---------------------------------------------------------------------------
+
+def test_the_send_leaves_from_the_configured_mailbox_not_the_system_label(session_factory):
+    """The prod defect, pinned. Outlook Graph authenticates as a specific
+    person and skips itself when it cannot parse a user id. Passing
+    SYSTEM_ACTOR as the sender made every send fail with
+    "no_email_provider_connected" while the schedule reported healthy."""
+    _good_shift(session_factory)
+    _, send = _run(session_factory)
+
+    sender = send.call_args.kwargs["user_id"]
+    assert sender == "1f23a32a-198e-4a2d-90b7-4998c845790e"
+    assert sender != task_mod.SYSTEM_ACTOR
+    # ...while the AUDIT still records that nobody pressed anything.
+    assert send.call_args.kwargs["initiator_ref"] == task_mod.SYSTEM_ACTOR
+    assert send.call_args.kwargs["initiator_kind"] == "system"
+
+
+def test_no_configured_mailbox_holds_and_says_so(session_factory):
+    """Must not retry hourly against a provider that will never be chosen."""
+    _good_shift(session_factory)
+    _settings(session_factory, automation_sender_user_id=None)
+
+    result, send = _run(session_factory)
+    assert result["held"] == "no_sender"
+    assert send.call_count == 0
+    notes = _notifications(session_factory)
+    assert len(notes) == 1
+    assert "mailbox" in notes[0][1].lower()
+
+
+def test_recipient_source_fits_its_column(session_factory):
+    """outbound_emails.recipient_source is varchar(20); a longer value aborts
+    the INSERT and poisons the session, losing the audit row with it."""
+    _good_shift(session_factory)
+    _, send = _run(session_factory)
+    assert len(send.call_args.kwargs["recipient_source"]) <= 20
