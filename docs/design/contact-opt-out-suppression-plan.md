@@ -1,8 +1,14 @@
 # Contact opt-out is recorded and then ignored
 
-Status: **PLAN** (written 2026-08-26, verified against `origin/main @ f1cbd97`).
-Nothing built. No rival plan — every other "suppress" in `docs/design/` is
-about reminder idempotency, pay-link hiding, or GL match candidacy.
+Status: **PLAN rev2** (written 2026-08-26, revised same day after Doug's
+decision). Nothing built. No rival plan — every other "suppress" in
+`docs/design/` is about reminder idempotency, pay-link hiding, or GL match
+candidacy.
+
+> **DECISION (Doug, 2026-08-26): the customer should be able to choose.**
+> That is a bigger change than this plan was first written for, and rev1 said
+> so wrongly — see §3. Two booleans cannot express a choice; this now needs a
+> migration and a surface the customer can actually reach.
 
 `customers.email_opt_out` and `customers.sms_opt_out` are **written by the CCPA
 endpoint and read by nothing before a send**. The first live customer who opts
@@ -23,8 +29,12 @@ Most of this is done. The gap is one missing read.
 | A message-kind label | its `kind` parameter (`:301`) | **Built** — this is the lever for marketing-vs-transactional |
 | One SMS chokepoint | `core/sms.py` `send_sms` | **Built** |
 
-**No migration is needed. No new column. No new endpoint.** The work is a read
-in two places plus a decision about which message classes it applies to.
+**rev1 said "no migration, no new column, no new endpoint". That was true only
+for the blanket reading, and Doug chose customer choice — so it is now wrong.**
+What survives from the table above: the chokepoints, the `skip_reason` channel
+and the `kind` label are all still the right places to enforce. What does not:
+`email_opt_out` / `sms_opt_out` are two booleans, and a boolean cannot record a
+choice between classes. See §3.
 
 ## 1. The defect
 
@@ -68,30 +78,56 @@ the first genuine request. Fix it before that day, not after.
 *(How the flags came to be set is unknown: the audit log begins 2026-06-22 and
 these predate it by two months. Not guessed at here.)*
 
-## 3. The decision this plan cannot make for itself
+## 3. DECIDED — the customer chooses (Doug, 2026-08-26)
 
-**Which message classes does an opt-out silence?** This is the whole design, and
-it is a legal question wearing a technical costume.
+Not a blanket flag the office sets on their behalf. The customer picks what
+they receive.
 
-* **Marketing — campaigns.** Suppress unconditionally. No exceptions, no
-  override. This is the class with statutory weight (CAN-SPAM for email, and
-  TCPA for SMS, which is stricter and does not carve out much).
-* **Transactional — invoice, receipt, estimate, portal link, payment reminder.**
-  **Genuinely open.** These are not marketing; they are the paperwork of a
-  contract the customer entered. Blanket-suppressing them means a customer can
-  opt out of *being invoiced*, and a garage-door install still has to be billed.
-  Suppressing them may be the wrong reading of both the law and the business.
-* **SMS generally.** Treat as stricter than email. A tech's "on my way" text to
-  a customer who has opted out of SMS should not go.
+**What that costs, stated up front, because rev1 understated it:**
 
-Recommended default, to be confirmed rather than assumed:
-**hard-suppress marketing on both channels; leave transactional email flowing;
-suppress all SMS.** Anything else needs Doug to say so, because getting it
-wrong in the permissive direction is a compliance problem and getting it wrong
-in the restrictive direction stops the business invoicing people.
+1. **A migration.** `email_opt_out` / `sms_opt_out` are booleans. A choice
+   between classes needs per-class preferences — a `customer_contact_prefs`
+   table keyed on (customer, channel, class) reads better than a widening row
+   of nullable booleans, and leaves room for classes nobody has invented yet.
+   The two existing columns become the coarse "all off" case and must keep
+   working during and after the migration; 12 rows carry them today, all on
+   soft-deleted customers (§2).
+2. **A surface the customer can reach without logging in.** A choice they
+   cannot exercise is not a choice. That means a tokenised preferences page
+   reachable from a link in the email itself — the same shape as the public
+   estimate-approval and pay pages, which already work this way. A portal page
+   alone is not enough: most recipients are not portal users.
+3. **The suppression read** — the original scope, unchanged, now keyed on the
+   preference rather than the boolean.
+
+**The classes to offer.** Derived from the `kind` values the send chokepoint
+already passes, so the taxonomy is not invented: marketing/campaign, invoice
+and receipt, estimate and proposal, payment reminder, appointment and job
+updates.
+
+### The one thing this decision does not settle — and it needs an answer
+
+**Is there a floor?** "The customer chooses" taken literally means a customer
+can switch off invoice delivery. They then do not receive a bill, do not pay,
+and get chased for it — a worse outcome for them than the emails they turned
+off, and a real cost to the business.
+
+Most systems draw the line at **contract paperwork**: marketing, reminders and
+job updates are freely choosable; the invoice or receipt for work performed is
+not, because it is the documentation of a contract the customer entered.
+
+**Recommended:** every class choosable except invoice/receipt, which stays on
+and is shown on the preferences page as "we still have to send you your bill"
+rather than hidden. **Doug to confirm** — if the answer is that invoices are
+choosable too, that is buildable, but it should be a decision taken with the
+consequence in view rather than inherited from a general principle.
 
 ## 4. What to build
 
+0. **Migration** — `customer_contact_prefs` (customer, channel, class,
+   allowed) plus a resolver that treats the legacy `email_opt_out` /
+   `sms_opt_out` booleans as "all classes off" so no existing record changes
+   meaning. Runs on SQLite and Postgres; escape any literal `%` as `%%`.
 1. **One helper**, `core/contact_prefs.py::is_suppressed(db, *, customer_id,
    channel, kind) -> str | None` — returns a reason or `None`. One place, so the
    two chokepoints cannot drift the way the four photo re-encoders did.
@@ -103,7 +139,12 @@ in the restrictive direction stops the business invoicing people.
    batch rather than per-send, and **count the suppressed** in the result so the
    number is visible rather than silent.
 4. **Read it in `core/sms.py::send_sms`**, same shape.
-5. **Audit every suppression.** A message not sent because of an opt-out is a
+5. **The customer-facing preferences page** — tokenised, reachable from a link
+   in every email we send, same shape as the public estimate-approval and pay
+   pages. A choice the customer cannot exercise is not a choice, and most
+   recipients are not portal users. The link must be in the email body, not
+   only in the portal.
+6. **Audit every suppression.** A message not sent because of an opt-out is a
    compliance event and must be reconstructable: who would have been contacted,
    on what channel, for what, and when it was withheld. Per invariant #1, a
    suppression with no trail is as bad as a send with no trail.
@@ -138,10 +179,12 @@ in the restrictive direction stops the business invoicing people.
 
 ## 7. Open decisions
 
-1. **§3 — which classes does an opt-out silence?** Recommended default above.
-   Doug's call; nothing gets built until it is answered, because the answer *is*
-   the feature.
-2. Should an opt-out block the **customer portal invite** (a login link the
+1. ~~Which classes does an opt-out silence?~~ **ANSWERED 2026-08-26: the
+   customer chooses.** See §3.
+2. **Is there a floor?** (§3) — recommended: every class choosable except
+   invoice/receipt. Needs Doug's confirmation before build, because the
+   alternative means a customer can switch off their own bill.
+3. Should an opt-out block the **customer portal invite** (a login link the
    customer asked for) — transactional, or contact?
-3. Should staff see an opt-out badge on the customer record so nobody hand-sends
-   around it? Currently there is no UI for these columns at all.
+4. Should staff see the preference state on the customer record so nobody
+   hand-sends around it? There is no UI for these columns at all today.
