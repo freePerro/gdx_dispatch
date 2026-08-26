@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_permission
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.modules.door_listings import service
 from gdx_dispatch.modules.door_listings.models import (
     LISTING_CONDITIONS,
@@ -454,6 +455,9 @@ async def upload_photo(
             detail=f"Unsupported image type. Allowed: {sorted(service.ALLOWED_PHOTO_MIME_TYPES)}",
         )
 
+    # Pre-read ceiling (2026-08-26). The len() check below still stands, but by
+    # then the whole body is already in memory; this refuses it first. Same cap.
+    assert_upload_within_limit(file, service.MAX_PHOTO_BYTES)
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")

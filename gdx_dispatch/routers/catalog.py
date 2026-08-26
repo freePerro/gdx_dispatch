@@ -18,6 +18,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core import pricing_strategies
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.pricing_engine import PricingTierSet
 from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, DoorSpec
 from gdx_dispatch.routers.auth import get_current_user
@@ -1670,6 +1671,9 @@ async def ai_import_catalog(
 
     catalog = _get_catalog_or_404(catalog_id, db)
 
+    # Ceiling BEFORE the read (2026-08-26). This handler had none; the only
+    # bound was nginx client_max_body_size, 50M on the prod vhost.
+    assert_upload_within_limit(file)
     content_bytes = await file.read()
     # Cap at 200KB of text — enough for multi-page sheets, bounded for safety.
     text_content = _extract_import_text(content_bytes, file.filename)[:200000]

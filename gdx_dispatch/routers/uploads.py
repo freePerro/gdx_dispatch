@@ -21,6 +21,7 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 
 log = logging.getLogger(__name__)
 
@@ -194,6 +195,14 @@ def _flat_document_path(stored_filename: str) -> Path:
 
 
 def _read_upload_with_limit(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload, refusing it BEFORE the body reaches process memory.
+
+    This used to read everything and check ``len()`` afterwards, which bounds
+    what gets STORED but not what gets ALLOCATED — the whole body was resident
+    before the check ran. The size is already known at handler entry, so ask.
+    The len() check stays as a belt-and-braces for an unmeasurable upload.
+    """
+    assert_upload_within_limit(file, max_bytes)
     data = file.file.read()
     if len(data) > max_bytes:
         raise HTTPException(status_code=413, detail=f"File exceeds {max_bytes // (1024 * 1024)}MB limit")

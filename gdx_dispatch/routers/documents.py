@@ -19,57 +19,17 @@ from gdx_dispatch.core.auth import get_current_user
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.job_photos import link_job_photo as _link_job_photo
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.upload_limits import MAX_UPLOAD_BYTES as _MAX_UPLOAD_BYTES
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Document, DocumentFolder, User
 
 log = logging.getLogger(__name__)
 
-#: Ceiling for a single upload on this route. Matches MAX_DOCUMENT_BYTES in
-#: routers/uploads.py — deliberately NOT the tighter 10 MB photo cap that route
-#: applies, because real tech photos in production already reach 10 MB exactly
-#: and an upload refused in a customer's driveway is worse than a large one
-#: stored. The frontend already refuses >25 MB client-side
-#: (DocumentsView.vue) and usePhotoQueue treats a 413 as permanent, so this is
-#: a server-side backstop, not new user-facing behavior.
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-
-
-def _assert_upload_within_limit(file: UploadFile, max_bytes: int) -> None:
-    """413 if the upload is over ``max_bytes``. O(1), allocates nothing.
-
-    Be precise about what this does and does not buy, because the obvious
-    reading is wrong. By the time ANY handler runs, FastAPI has already
-    awaited ``request.form()`` and Starlette has received the entire body and
-    spooled it into a ``SpooledTemporaryFile`` — rolled to disk past 1 MB.
-    Measured at handler entry on this stack for a 30 MB post::
-
-        type = SpooledTemporaryFile   _rolled = True
-        on_disk_bytes = 31457280      UploadFile.size = 31457280
-
-    So this cannot stop the bytes arriving or being written to a temp file.
-    Only ``client_max_body_size`` can do that, and prod nginx allows 50M.
-    What it prevents is the handler then pulling all of it into process memory
-    and persisting it under a Document row.
-
-    Checking ``file.size`` rather than reading in chunks is not a style
-    preference. A chunked read that accumulates and joins holds the chunk list
-    AND the joined result — measured at 50 MB peak for a 25 MB body, against
-    25 MB for a plain read. The "safer" loop doubles the cost of every
-    legitimate upload, and in an ``async def`` it turns one blocking disk read
-    into many with no await in between.
-    """
-    size = getattr(file, "size", None)
-    if size is None:  # pragma: no cover - Starlette populates this for multipart
-        try:
-            pos = file.file.tell()
-            size = file.file.seek(0, os.SEEK_END)
-            file.file.seek(pos)
-        except (OSError, AttributeError):
-            return  # unmeasurable: let it through rather than reject blind
-    if size > max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds the {max_bytes // (1024 * 1024)}MB limit",
-        )
+#: Re-exported so this module and its tests keep one name for the ceiling. The
+#: guard itself lives in core/upload_limits.py — seven handlers share it now,
+#: and a second copy here is exactly how they would drift apart.
+MAX_UPLOAD_BYTES = _MAX_UPLOAD_BYTES
+_assert_upload_within_limit = assert_upload_within_limit
 
 
 router = APIRouter(tags=["documents"], dependencies=[Depends(require_module("documents"))])

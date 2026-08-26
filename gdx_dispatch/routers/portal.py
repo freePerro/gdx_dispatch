@@ -22,6 +22,7 @@ from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.core.office_notifications import notify_estimate_decision
+from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import AppSettings, Customer, Document, Invoice, Job
 from gdx_dispatch.modules.customer_portal.models import CustomerUser
 from gdx_dispatch.modules.deposits import (
@@ -979,6 +980,9 @@ async def portal_upload_listing_photo(
     content_type = (file.content_type or "").lower().split(";")[0].strip()
     if content_type not in _listing_service.ALLOWED_PHOTO_MIME_TYPES:
         raise HTTPException(status_code=415, detail="Unsupported image type")
+    # Pre-read ceiling (2026-08-26). The len() check below still stands, but by
+    # then the whole body is already in memory; this refuses it first. Same cap.
+    assert_upload_within_limit(file, _listing_service.MAX_PHOTO_BYTES)
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
