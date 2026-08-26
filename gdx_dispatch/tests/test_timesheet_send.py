@@ -34,6 +34,7 @@ from gdx_dispatch.core.timesheet_delivery import (
     BLOCKED_EMPTY,
     BLOCKED_FLAGGED,
     BLOCKED_NO_RECIPIENT,
+    BLOCKED_NO_SENDER,
 )
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
@@ -433,3 +434,86 @@ def test_a_refusal_is_recorded_too(client):
     rows = _audit_actions(SessionLocal)
     assert [r[0] for r in rows] == ["timesheet_send_blocked"]
     assert BLOCKED_FLAGGED in rows[0][2]
+
+
+# ---------------------------------------------------------------------------
+# Whose mailbox it leaves from
+# ---------------------------------------------------------------------------
+# Found on prod 2026-08-26, not by any test above: the scheduled send passed
+# its own label ("system:payroll-timesheet") as the sender. Outlook Graph
+# authenticates as a specific person and skips itself when it cannot parse a
+# user id, SMTP is not configured on this deployment, so every attempt failed
+# with "no_email_provider_connected" while the schedule looked healthy.
+#
+# The tests above all patched send_transactional_email, so they proved the
+# right ARGUMENTS were assembled and could never have caught an argument that
+# was well-formed and wrong.
+
+def test_the_office_send_goes_out_as_the_person_who_pressed_it(client):
+    tc, SessionLocal = client
+    _good_shift(SessionLocal)
+
+    with patch(SEND_TARGET, return_value=(True, "outlook_graph", None)) as send:
+        tc.post(SEND_PATH, json=RANGE)
+
+    # office-1 is not a UUID in this fixture, so assert the wiring instead:
+    # the sender is the caller, not a system label.
+    assert send.call_args.kwargs["user_id"] == "office-1"
+    assert send.call_args.kwargs["initiator_kind"] == "user"
+
+
+def test_recipient_source_fits_the_column(client):
+    """outbound_emails.recipient_source is varchar(20). A longer value aborts
+    the INSERT, which poisons the session and takes the audit row with it —
+    exactly what happened on prod."""
+    tc, SessionLocal = client
+    _good_shift(SessionLocal)
+
+    with patch(SEND_TARGET, return_value=(True, "outlook_graph", None)) as send:
+        tc.post(SEND_PATH, json=RANGE)
+
+    assert len(send.call_args.kwargs["recipient_source"]) <= 20
+
+
+def test_a_background_send_with_no_sender_refuses_instead_of_failing_forever():
+    """An unattended send has no calling user. Without a nominated mailbox it
+    can never deliver, so it must say so once rather than retry hourly."""
+    from gdx_dispatch.core.pay_periods import PayPeriod
+    from gdx_dispatch.core.timesheet_delivery import send_period_timesheet
+    from gdx_dispatch.core.timesheet_hours import PeriodTimesheet, Shift, Timecard
+
+    class _S:
+        timezone = TZ
+        pay_period_cadence = "biweekly"
+        pay_period_anchor_start = date(2026, 8, 10)
+        pay_period_pay_lag_days = 5
+        payroll_recipient_emails = "bookkeeper@example.com"
+
+    period = PayPeriod(date(2026, 8, 10), date(2026, 8, 23))
+    card = Timecard(tech_id="u1", name="Someone", shifts=[
+        Shift(entry_id="e1", day=date(2026, 8, 17), clock_in="2026-08-17T13:00:00+00:00",
+              clock_out="2026-08-17T22:00:00+00:00", minutes=540, break_minutes=0,
+              entry_type="clock", notes=None, flag=None),
+    ])
+    sheet = PeriodTimesheet(period=period, timezone=TZ, timecards=[card])
+
+    with patch(SEND_TARGET) as send:
+        outcome = send_period_timesheet(
+            None, tenant_id=TENANT, settings=_S(), sheet=sheet,
+            actor_user_id="system:payroll-timesheet", initiator_kind="system",
+            sender_user_id="",
+        )
+    assert outcome.blocked == BLOCKED_NO_SENDER
+    assert outcome.sent is False
+    assert send.call_count == 0, "must not attempt a send it cannot deliver"
+    assert "mailbox" in outcome.detail.lower()
+
+
+def test_a_system_label_is_not_accepted_as_a_mailbox():
+    """The precise prod bug: truthy, well-formed, and unusable."""
+    from gdx_dispatch.core.timesheet_delivery import _looks_like_user_id
+
+    assert _looks_like_user_id("system:payroll-timesheet") is False
+    assert _looks_like_user_id("") is False
+    assert _looks_like_user_id(None) is False
+    assert _looks_like_user_id("1f23a32a-198e-4a2d-90b7-4998c845790e") is True

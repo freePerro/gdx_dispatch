@@ -1116,6 +1116,21 @@
                   </div>
                 </div>
 
+                <!-- Says the quiet part. An unattended send has no calling
+                     user and Outlook authenticates as a person, so without a
+                     nominated sender the schedule cannot deliver at all. The
+                     server refuses to turn it on; this explains why. -->
+                <div
+                  v-if="payPeriod.payroll_autosend_enabled && !automationSenderUserId"
+                  class="pay-period-preview pay-period-unset"
+                  data-testid="pay-period-no-sender"
+                  style="border-left-color: var(--p-orange-500, #f59e0b);"
+                >
+                  Automatic sending also needs a mailbox to send <em>from</em>.
+                  Choose the sending user under <strong>Automated email</strong>
+                  below, or the timesheet cannot go out.
+                </div>
+
                 <div
                   v-if="payPeriod.payroll_autosend_enabled"
                   style="display:flex; align-items:center; gap:1rem;"

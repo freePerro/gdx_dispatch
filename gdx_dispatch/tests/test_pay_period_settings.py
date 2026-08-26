@@ -169,10 +169,11 @@ def test_autosend_without_a_recipient_is_refused(db_session: Session):
     assert exc.value.status_code == 422
 
 
-def test_autosend_with_a_recipient_saves(db_session: Session):
+def test_autosend_with_a_recipient_and_a_sender_saves(db_session: Session):
     saved = _patch(
         db_session,
         payroll_recipient_emails="bookkeeper@example.com",
+        automation_sender_user_id="1f23a32a-198e-4a2d-90b7-4998c845790e",
         payroll_autosend_enabled=True,
         payroll_autosend_hour=7,
     )
@@ -184,6 +185,7 @@ def test_removing_the_recipient_while_autosend_is_on_is_refused(db_session: Sess
     _patch(
         db_session,
         payroll_recipient_emails="bookkeeper@example.com",
+        automation_sender_user_id="1f23a32a-198e-4a2d-90b7-4998c845790e",
         payroll_autosend_enabled=True,
     )
     with pytest.raises(HTTPException) as exc:
@@ -353,3 +355,30 @@ def test_calendar_endpoint_is_not_restricted_to_the_office(clock_client):
     body = response.json()
     assert "hours" not in body
     assert body["current"]["start"]
+
+
+def test_autosend_without_a_sending_mailbox_is_refused(db_session: Session):
+    """Found on prod 2026-08-26. An unattended send has no calling user and
+    Outlook Graph authenticates as a specific person, so with no nominated
+    sender the task cannot deliver at all — it would fail every hour while
+    this screen read "on". The recipient check alone did not catch it."""
+    with pytest.raises(HTTPException) as exc:
+        _patch(
+            db_session,
+            payroll_recipient_emails="bookkeeper@example.com",
+            payroll_autosend_enabled=True,
+        )
+    assert exc.value.status_code == 422
+    assert "mailbox" in str(exc.value.detail).lower()
+
+
+def test_clearing_the_sender_while_autosend_is_on_is_refused(db_session: Session):
+    _patch(
+        db_session,
+        payroll_recipient_emails="bookkeeper@example.com",
+        automation_sender_user_id="1f23a32a-198e-4a2d-90b7-4998c845790e",
+        payroll_autosend_enabled=True,
+    )
+    with pytest.raises(HTTPException) as exc:
+        _patch(db_session, automation_sender_user_id="")
+    assert exc.value.status_code == 422
