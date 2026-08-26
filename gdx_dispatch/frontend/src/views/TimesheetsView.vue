@@ -990,12 +990,29 @@ onMounted(async () => {
 .timesheets-toolbar {
   margin-bottom: 0.5rem;
 }
+/* Caught in a real browser, not by jsdom (which applies no media queries and
+   lays nothing out): at 1280px with the sidebar open, eight controls in the
+   end slot overflowed and clipped "Send to payroll" and Add Entry off the
+   right edge — the two newest and most important buttons on the screen.
+   PrimeVue's Toolbar end slot is a nowrap flex row, so it must be told to
+   wrap. Also narrows the date pickers, which were sized for a wider bar. */
+.timesheets-toolbar :deep(.p-toolbar-end) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+.timesheets-toolbar :deep(.p-toolbar) {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
 .view-heading {
   font-size: 1.35rem;
   margin: 0;
 }
 .range-picker {
-  width: 10rem;
+  width: 9rem;
 }
 .range-dash {
   color: var(--p-text-muted-color);
