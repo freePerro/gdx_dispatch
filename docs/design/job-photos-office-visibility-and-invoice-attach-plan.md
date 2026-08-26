@@ -541,3 +541,95 @@ pointing a caller at `/api/documents`.
 **Still open from this shape:** `POST /api/jobs/{job_id}/photos` has two
 handlers (`uploads.upload_job_photo` wins; `photos.create_job_photo` is
 shadowed and unreachable). Same class, filed separately — not bundled here.
+
+---
+
+## S10 — a ceiling on the route every photo actually uses (2026-08-25)
+
+`POST /api/documents` — the path `usePhotoQueue` posts to, and where all 55
+production job photos came from — read the body with **no application ceiling
+at all**. Its sibling `POST /api/jobs/{id}/photos` has capped photos at 10 MB
+since it shipped; this one never did. Now capped at **25 MB**.
+
+### What this cap does NOT do — corrected after adversarial review
+
+The first version of this section, and the first implementation, claimed the
+upload was "refused as it arrives" by reading in chunks and stopping at the
+ceiling. **That was false, and the chunked read made things worse.** Measured
+on this stack (starlette 1.6.0 / fastapi 0.141.1), at handler entry for a
+30 MB post:
+
+```
+type = SpooledTemporaryFile   _rolled = True
+on_disk_bytes = 31457280      UploadFile.size = 31457280
+```
+
+FastAPI awaits `request.form()` **before** the endpoint is called, so the whole
+body has already crossed the wire and been spooled to a temp file. No handler
+can refuse an upload "as it arrives" — only `client_max_body_size` can, and
+prod nginx allows **50M**. Lowering that is the change that would match the
+original claim; it is infra, not in this repo, and not done here.
+
+Worse, the chunked read peaked at **2x** the body it was protecting:
+
+```
+bare file.read()       peak = 25.0 MB
+chunk-and-join         peak = 50.0 MB
+```
+
+because it holds the chunk list *and* the joined result — and in an `async def`
+it turned one blocking disk read into twenty-five with no await between them.
+
+So the guard is now an **O(1) check on `UploadFile.size`**, which Starlette has
+already computed. It allocates nothing. What it actually prevents is the
+handler pulling an oversized body into process memory and persisting it under a
+Document row — which is worth doing, and is all it claims.
+
+`test_starlette_still_reports_upload_size_at_handler_entry` pins the assumption
+the guard rests on: if an upgrade stopped populating `size`, the check would
+silently fall back to seek/tell and nothing else would notice.
+
+### Why 25 MB and not the sibling's 10 MB
+
+Real tech photos in production already reach **10 MB exactly** (avg 5.3 MB). A
+10 MB cap would start refusing uploads that succeed today, and a photo rejected
+in a customer's driveway is worse than a large one stored. `DocumentsView.vue`
+already refuses >25 MB client-side and `usePhotoQueue` treats a 413 as
+permanent, so this is a **server-side backstop, not new user-facing behavior**.
+
+Both directions are pinned: over the cap must 413 *and leave no bytes on disk*;
+at the cap must still 201. A guard that refused everything would satisfy the
+first test while breaking every upload in the app.
+
+### Sibling sweep — six more instances, FILED not fixed
+
+**Shape:** *an upload handler reading the request body with no size ceiling.*
+**Surface:** every router with an upload endpoint. Beyond this route, six sites
+do `await file.read()` with no 413 anywhere in the file:
+
+```
+routers/admin_ops.py:356        routers/resources.py:245
+routers/vendor_invoices.py:245  routers/vendor_statements.py:253
+routers/catalog.py:1673         routers/voice.py:141
+```
+
+They are **not** fixed here, deliberately. Each has different content
+semantics and a different defensible ceiling, and bolting a uniform guard onto
+six unfamiliar routers inside a photo-path change is precisely the bundling the
+working agreement forbids. Recorded here so the class is not silently dropped.
+
+Also unfixed, same shape: `uploads.py::_read_upload_with_limit` reads the whole
+body *then* checks `len()`. Harmless given the above — nothing can be refused
+pre-arrival anyway — but it should use the same O(1) check.
+
+### Deliberately NOT done here — compression on ingest
+
+The original plan for this slice also proposed running `_compress_image` on the
+`as_photo` branch, downscaling to 2048px. Left out: it permanently reduces the
+fidelity of every future job photo — evidence a tech may need to zoom into —
+and it changes customer-facing output on the portal and the invoice PDF. That
+is Doug's call, not a default. Raised, not silently taken.
+
+Orientation needs no work here: this route stores raw bytes, so the EXIF tag
+survives and every viewer — including the invoice PDF, after S9 — renders these
+upright already.
