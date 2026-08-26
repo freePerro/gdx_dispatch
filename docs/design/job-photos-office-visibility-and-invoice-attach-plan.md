@@ -1,6 +1,6 @@
 # Job photos: the office can't see them, and can't put them on an invoice
 
-Status: **MERGED #482 / #485 / #484** (on `main @ 813dc06`, 2026-08-26).
+Status: **RELEASED v1.102.0** (#482 / #485 / #484, follow-up #486) — prod + demo, walked 2026-08-26.
 Built: S1 (`JobDetailView.vue:2392`), S2 (`uploads.py:225`), S3
 (`InvoiceCreateView.vue`, `InvoiceDetailView.vue`, `MobileInvoiceDialog.vue:187`),
 S5 (`photos.py` `_PHOTO_READ_KEYS`), S7 (migration 063), and the `AuthedImage`
@@ -11,9 +11,14 @@ the sibling `tech-mobile-workflow-plan.md` updated in the same change (#485).
 photos now print upright on invoice PDFs (#482). **S10** — a size ceiling on
 `POST /api/documents` (#484).
 
-**Not yet released or deployed** as of this line; it becomes `RELEASED vX.Y.Z`
-only after prod runs the image and the feature has been walked. Still owed:
-the prod walk, and the six unguarded upload sites S10 names but does not fix.
+**RELEASED v1.102.0 — prod + demo, walked 2026-08-26.** Walk evidence, on the
+real photos that had gone out sideways: `INV-000343` / `INV-000348` /
+`INV-000356` now embed portrait (`900x1200`, `676x1200`) with **no orientation
+tag**; they embedded landscape before. Follow-up #486 corrected an absence test
+that asserted a status production never returns (see §S4).
+**Still open:** the six unguarded upload sites S10 names but does not fix, the
+duplicate `POST /api/jobs/{job_id}/photos` handlers, and a human browser walk —
+every walk so far is artifact-level, not a person opening a PDF.
 (#483 was the original S4 PR — GitHub auto-closed it when its stacked base
 branch was deleted on merge; #485 is the same commit rebased onto main.)
 
@@ -359,6 +364,10 @@ invoice) would keep the pay page consistent with what the customer received.
    They stay as delivered. There is no stored-PDF column — every invoice PDF
    is generated on demand at four call sites — so any later re-fetch of those
    invoices renders correctly once §9 lands. Nothing to clean up.
+7. **Compress job photos on ingest?** — **NO.** Full fidelity is kept. A job
+   photo is evidence someone may need to zoom into, and the re-encode cannot be
+   undone. If page weight becomes a problem the answer is a derived thumbnail
+   beside the original, never a smaller original. Settled; see §S10.
 
 ---
 
@@ -628,13 +637,22 @@ Also unfixed, same shape: `uploads.py::_read_upload_with_limit` reads the whole
 body *then* checks `len()`. Harmless given the above — nothing can be refused
 pre-arrival anyway — but it should use the same O(1) check.
 
-### Deliberately NOT done here — compression on ingest
+### Compression on ingest — ⛔ DECIDED: NO (Doug, 2026-08-26)
 
-The original plan for this slice also proposed running `_compress_image` on the
-`as_photo` branch, downscaling to 2048px. Left out: it permanently reduces the
-fidelity of every future job photo — evidence a tech may need to zoom into —
-and it changes customer-facing output on the portal and the invoice PDF. That
-is Doug's call, not a default. Raised, not silently taken.
+The original plan for this slice proposed running `_compress_image` on the
+`as_photo` branch, downscaling to 2048px. **It was raised as a decision rather
+than taken as a default, and Doug answered no.** Job photos stay stored at
+full fidelity.
+
+This is settled — do not re-propose it as an optimisation. The reason it looks
+attractive is real (prod photos average 5.3 MB and the office job page loads
+them as thumbnails), and that will keep making it look like a free win. It is
+not free: a job photo is evidence a tech may need to zoom into, the re-encode
+is irreversible, and it changes customer-facing output on the portal and the
+invoice PDF. If page weight becomes the problem, the answer is a **derived
+thumbnail** served alongside the original, never a smaller original.
+
+See also §6.5 decision 7.
 
 Orientation needs no work here: this route stores raw bytes, so the EXIF tag
 survives and every viewer — including the invoice PDF, after S9 — renders these
