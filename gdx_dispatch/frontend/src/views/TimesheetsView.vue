@@ -40,7 +40,7 @@
           placeholder="Start"
           class="range-picker"
           data-testid="timesheets-start"
-          @update:modelValue="load"
+          @update:modelValue="onDateEdited"
         />
         <span class="range-dash">→</span>
         <DatePicker
@@ -50,7 +50,7 @@
           placeholder="End"
           class="range-picker"
           data-testid="timesheets-end"
-          @update:modelValue="load"
+          @update:modelValue="onDateEdited"
         />
         <Select
           v-model="techFilter"
@@ -77,6 +77,28 @@
     </Toolbar>
 
     <div class="range-shortcuts">
+      <!-- Pay periods come FIRST and are the only shortcuts that mean anything
+           to payroll. They appear only when the shop has actually configured a
+           payroll calendar; a button that silently falls back to "this week"
+           would be worse than no button, because the range it produced would
+           look authoritative and be wrong. -->
+      <template v-if="payPeriods?.configured">
+        <Button
+          label="This pay period"
+          size="small"
+          text
+          data-testid="timesheets-this-pay-period"
+          @click="setPayPeriod('current')"
+        />
+        <Button
+          label="Last pay period"
+          size="small"
+          text
+          data-testid="timesheets-last-pay-period"
+          @click="setPayPeriod('previous')"
+        />
+        <span class="range-sep" aria-hidden="true">|</span>
+      </template>
       <Button label="This week" size="small" text data-testid="timesheets-this-week" @click="setWeek(0)" />
       <Button label="Last week" size="small" text data-testid="timesheets-last-week" @click="setWeek(-1)" />
       <Button label="This month" size="small" text data-testid="timesheets-this-month" @click="setThisMonth" />
@@ -86,6 +108,19 @@
         Times shown in {{ tenantTimezone }}
       </span>
     </div>
+
+    <p
+      v-if="selectedPeriod"
+      class="period-note"
+      data-testid="timesheets-period-note"
+    >
+      <i class="pi pi-calendar" aria-hidden="true" />
+      <span>
+        <strong>{{ selectedPeriod.which === 'previous' ? 'Last pay period' : 'This pay period' }}:</strong>
+        {{ selectedPeriod.label }}
+        <span class="muted-inline"> — paid {{ selectedPeriod.pay_date }}</span>
+      </span>
+    </p>
 
     <Message
       v-if="deepLinkMiss"
@@ -355,7 +390,12 @@ function isImplausible(entry) {
   return entry.minutes != null && entry.minutes > IMPLAUSIBLE_SHIFT_MINUTES;
 }
 
-/** Worked minutes: gross elapsed LESS break time (see break_minutes on the API). */
+/** Worked minutes: gross elapsed LESS break time (see break_minutes on the API).
+ *
+ * SAME RULE as `Shift.worked_minutes` in gdx_dispatch/core/timesheet_hours.py,
+ * which is what the CSV, the PDF and the emailed timesheet are built from.
+ * Change one and you change what somebody is paid on one surface but not the
+ * other; change both or neither. */
 function workedMinutes(entry) {
   if (entry.minutes == null) return null;
   return Math.max(0, entry.minutes - (entry.break_minutes || 0));
@@ -371,6 +411,10 @@ function workedMinutes(entry) {
  * reads 0. That is the wallpaper failure the exceptions endpoint is explicitly
  * built to avoid, and it would train the office to ignore the count.
  */
+// Python twin: `flag_for()` in core/timesheet_hours.py. The scheduled send
+// refuses to mail a period that has any of these, so a rule that disagrees
+// with the screen means the office sees "0 to fix" while the send holds — or,
+// far worse, the reverse.
 function isFlagged(entry) {
   if (!entry.clock_out_at) {
     const openHours = (Date.now() - new Date(String(entry.clock_in_at).replace(' ', 'T')).getTime()) / 3_600_000;
@@ -508,7 +552,58 @@ function startOfWeek(d) {
   return out;
 }
 
+// ── Pay periods ─────────────────────────────────────────────────────────────
+// The ranges come from GET /api/timeclock/pay-periods, never from arithmetic
+// here. The same endpoint feeds the Settings preview and the scheduled send,
+// so this page cannot show one fortnight while the emailed file covers
+// another — the failure that makes a payroll export worth less than nothing.
+const payPeriods = ref(null);
+// Which named period is on screen, cleared the moment the operator picks any
+// other range. Leaving the banner up while the dates say something else is
+// how someone exports "last pay period" and gets three weeks.
+const selectedPeriod = ref(null);
+
+async function loadPayPeriods() {
+  try {
+    payPeriods.value = await api.get('/api/timeclock/pay-periods', { suppressErrorToast: true });
+  } catch {
+    // No payroll calendar configured, or the module is off. The week/month
+    // shortcuts still work; only the pay-period buttons are absent.
+    payPeriods.value = null;
+  }
+}
+
+/** Parse 'YYYY-MM-DD' into a browser-local Date carrying those calendar
+ *  fields — the same shape shopToday() returns and DatePicker binds to.
+ *  `new Date('2026-08-10')` would parse as UTC midnight and render as the
+ *  9th for anyone west of Greenwich. */
+function dateFromKey(key) {
+  const [y, m, d] = String(key).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function onDateEdited() {
+  selectedPeriod.value = null;
+  load();
+}
+
+/** Move the pickers onto a named period. Returns false when the shop has no
+ *  payroll calendar, so callers can fall back rather than land on nothing. */
+function applyPayPeriod(which) {
+  const period = payPeriods.value?.[which];
+  if (!period) return false;
+  startDate.value = dateFromKey(period.start);
+  endDate.value = dateFromKey(period.end);
+  selectedPeriod.value = { which, label: period.label, pay_date: period.pay_date };
+  return true;
+}
+
+function setPayPeriod(which) {
+  if (applyPayPeriod(which)) load();
+}
+
 function setWeek(offset) {
+  selectedPeriod.value = null;
   const anchor = shopToday();
   anchor.setDate(anchor.getDate() + offset * 7);
   const start = startOfWeek(anchor);
@@ -520,6 +615,7 @@ function setWeek(offset) {
 }
 
 function setThisMonth() {
+  selectedPeriod.value = null;
   const now = shopToday();
   startDate.value = new Date(now.getFullYear(), now.getMonth(), 1);
   endDate.value = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -603,6 +699,9 @@ onMounted(async () => {
   pendingEntryId.value = q.entry ? String(q.entry) : '';
   if (q.tech) techFilter.value = String(q.tech);
 
+  // Before the default range is chosen: the answer decides what it is.
+  await loadPayPeriods();
+
   if (q.on) {
     // Anchor on the flagged shift's week. Padded a day either side: `on` is the
     // UTC date of the clock-in, and the week is computed locally — without the
@@ -614,7 +713,12 @@ onMounted(async () => {
     end.setDate(end.getDate() + 7);
     startDate.value = start;
     endDate.value = end;
-  } else {
+  } else if (!applyPayPeriod('current')) {
+    // No payroll calendar configured — the week, exactly as before. When one
+    // IS configured the page opens on the pay period, because that is the
+    // range this screen exists to produce a file for; making the operator
+    // know to click for it is the "they'd have to know the URL" failure in
+    // button form. One click returns to a plain week.
     const start = startOfWeek(shopToday());
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
@@ -635,6 +739,31 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* Theme tokens only — this banner sits on the page in dark mode too, where a
+   hardcoded pale background would put near-white text on near-white. */
+.period-note {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--p-content-border-color);
+  border-left: 4px solid var(--p-primary-color);
+  border-radius: var(--p-content-border-radius, 6px);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  font-size: 0.92rem;
+}
+.period-note .pi {
+  color: var(--p-primary-color);
+}
+.muted-inline {
+  color: var(--p-text-muted-color);
+}
+.range-sep {
+  color: var(--p-content-border-color);
+  padding: 0 0.15rem;
+}
 .timesheets-toolbar {
   margin-bottom: 0.5rem;
 }
