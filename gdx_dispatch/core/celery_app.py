@@ -43,6 +43,9 @@ def create_celery(broker_url: str | None = None, result_backend: str | None = No
             # way. Kept OUT of the request/webhook transaction on purpose:
             # it makes several Stripe calls and must not hold money locks.
             "gdx_dispatch.tasks.stale_intent_sweep",
+            # Pay-period timesheet: mails the closed fortnight to payroll, or
+            # holds it and puts the reason in the office bell.
+            "gdx_dispatch.tasks.payroll_timesheet",
             "gdx_dispatch.tasks.billing_followup",
             # PR6-billing-capture — opt-in automated dunning.
             "gdx_dispatch.tasks.invoice_reminders_auto",

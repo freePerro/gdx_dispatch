@@ -137,3 +137,6 @@ backups/
 # Verification-gate artifact (local commit/push gate; not source)
 /VERIFICATION_MANIFEST.md
 uploads/
+
+# Browser-walk artifacts (screenshots, downloaded exports)
+gdx_dispatch/frontend/e2e-shots/
