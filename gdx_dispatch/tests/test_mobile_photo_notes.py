@@ -162,6 +162,19 @@ class TestMobilePhotoWritersAreRetired:
     """
 
     def test_both_writer_routes_are_gone(self, app_and_db):
+        """Refused, whatever shape the refusal takes.
+
+        Do NOT tighten this back to ``== 404``. It read that way when written
+        and passed here, but the deployed app answers **405** — walked on prod
+        2026-08-26. The SPA catch-all is registered for GET on
+        ``/{full_path:path}``, so ANY unmatched POST matches the path and fails
+        on the method: a path that has never existed returns 405 too. The test
+        app has no catch-all, so it returns 404 and the stricter assertion
+        looked correct while encoding a status production never produces.
+
+        What actually matters is that the route does not do the work — so
+        assert "not success", which is true in both environments.
+        """
         client, db, _ = app_and_db
         job = _seed_job(db)
         for path in (
@@ -169,7 +182,8 @@ class TestMobilePhotoWritersAreRetired:
             f"/api/mobile/job/{job.id.hex}/photo",
         ):
             r = client.post(path, files={"file": ("p.png", _png_bytes(), "image/png")})
-            assert r.status_code == 404, f"{path} still answers {r.status_code}"
+            assert r.status_code in (404, 405), f"{path} answers {r.status_code}"
+            assert not r.is_success, f"{path} still accepted an upload"
 
     def test_the_handler_and_its_exif_helper_are_gone(self):
         """Deleting the routes but leaving the code is half a deletion."""
@@ -181,6 +195,23 @@ class TestMobilePhotoWritersAreRetired:
             "_VALID_PHOTO_KINDS",
         ):
             assert not hasattr(mobile_router, symbol), f"{symbol} survived"
+
+    def test_no_mobile_photo_route_is_registered(self):
+        """The status-code check above is environment-sensitive; this is not.
+
+        Walks the real route table the way tests/conftest.py::iter_app_routes
+        does — a flat ``app.routes`` scan cannot see routes behind the lazily
+        included routers, and would pass vacuously.
+        """
+        from gdx_dispatch.app import app
+        from gdx_dispatch.tests.conftest import iter_app_routes
+
+        offenders = [
+            f"{sorted(r.methods or [])} {path}"
+            for path, r in iter_app_routes(app)
+            if "mobile" in path and "photo" in path
+        ]
+        assert offenders == [], f"mobile photo routes still registered: {offenders}"
 
 
 # ── B4 notes ──────────────────────────────────────────────────────────
