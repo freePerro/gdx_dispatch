@@ -26,6 +26,12 @@ from gdx_dispatch.core.pay_periods import (
     shop_today,
 )
 from gdx_dispatch.core.permissions import is_dispatch_manager
+from gdx_dispatch.core.timesheet_hours import (
+    IMPLAUSIBLE_SHIFT_MINUTES,
+    MAX_SHIFT_HOURS,
+    WARNING_AFTER_HOURS,
+    break_minutes_by_entry,
+)
 from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
 
@@ -34,9 +40,13 @@ log = logging.getLogger(__name__)
 # MH-7b — open-shift guard thresholds, shared between /status, clock-in
 # auto-close, and the celery sweep (`gdx_dispatch/tasks/timeclock_sweep.py`).
 # The /status response surfaces both to the mobile UI so the warning text
-# tracks whatever we set here. Keep these as floats (hours).
-WARNING_AFTER_HOURS = 8.0
-MAX_SHIFT_HOURS = 16.0
+# tracks whatever we set here. Kept as floats (hours).
+#
+# Defined in core/timesheet_hours.py and imported at the top of this module
+# (so `from ...routers.timeclock import MAX_SHIFT_HOURS` still resolves): the
+# export and the emailed timesheet apply the same ceiling, and two copies of
+# "how long is a possible shift" is how a row flagged on screen sails through
+# the file unflagged.
 
 # D2 (tech weekly timesheet, 2026-08-13): how far back a tech may correct or
 # add their OWN shifts. Dispatch/admin are exempt — the office corrects
@@ -325,100 +335,10 @@ def _auto_close_stale_shift(
     return None
 
 
-def _break_minutes_by_entry(
-    db: Session, tenant_id: str, entries: list[TimeclockEntry]
-) -> dict[str, int]:
-    """{entry_id: total ended-break minutes} for the given entries.
-
-    `TimeclockEntry.minutes` is gross elapsed — clock-out writes
-    `_minutes_between(clock_in, now)` and never subtracts breaks, which live in
-    their own table. Any surface reporting worked hours has to do this or it
-    pays out every lunch.
-
-    Matched by user + time window, NOT by `timeclock_breaks_router.time_entry_id`.
-    That column exists and `POST /break/start` will store it, but it is optional
-    and BOTH clients (TimeclockView, MobileTimeclockView) post `{}` — so it is
-    NULL on 10 of 10 real rows and a join on it returns nothing. It is still
-    honored first, so the link sharpens for free if a client ever starts
-    sending it.
-
-    Open breaks (ended_at NULL → duration_minutes NULL) contribute 0. An
-    unfinished break has no defensible length, and inventing one would fabricate
-    hours — the same rule that makes an auto-closed shift report "unknown"
-    rather than its elapsed time.
-    """
-    if not entries:
-        return {}
-    tech_ids = {str(e.technician_id) for e in entries if e.technician_id}
-    if not tech_ids:
-        return {}
-    # Bound to the window the entries actually span. Without this the query
-    # pulls every break the whole crew has ever taken on every page load, to
-    # then discard all but the overlapping ones.
-    span_lo = min((str(e.clock_in_at) for e in entries if e.clock_in_at), default=None)
-    span_hi = max(
-        (str(e.clock_out_at or e.clock_in_at) for e in entries if e.clock_in_at),
-        default=None,
-    )
-    try:
-        clauses = [
-            TimeclockBreak.tenant_id == tenant_id,
-            TimeclockBreak.user_id.in_(tech_ids),
-            TimeclockBreak.duration_minutes.isnot(None),
-        ]
-        if span_lo and span_hi:
-            # Date-level bound only — the exact overlap is decided per row below
-            # against each shift's real window, so this just stops the query
-            # scanning years of breaks to discard them.
-            clauses.append(func.date(TimeclockBreak.started_at) >= span_lo[:10])
-            clauses.append(func.date(TimeclockBreak.started_at) <= span_hi[:10])
-        rows = db.execute(
-            select(
-                TimeclockBreak.time_entry_id,
-                TimeclockBreak.user_id,
-                TimeclockBreak.started_at,
-                TimeclockBreak.duration_minutes,
-            ).where(*clauses)
-        ).all()
-    except SQLAlchemyError:
-        # Never fail the timesheet over this — gross hours are still correct and
-        # still correctable. Logged so a silent overstatement is traceable.
-        log.exception("timeclock_break_join_failed", extra={"tenant_id": tenant_id})
-        return {}
-    if not rows:
-        return {}
-
-    # Per-tech shift windows, so a break lands on the shift it happened during.
-    windows: dict[str, list[tuple[datetime, datetime, str]]] = {}
-    by_id: set[str] = set()
-    for e in entries:
-        by_id.add(str(e.id))
-        try:
-            start = _as_aware(str(e.clock_in_at))
-            end = _as_aware(str(e.clock_out_at)) if e.clock_out_at else datetime.now(UTC)
-        except ValueError:
-            continue
-        windows.setdefault(str(e.technician_id), []).append((start, end, str(e.id)))
-
-    totals: dict[str, int] = {}
-    for entry_id, user_id, started_at, minutes in rows:
-        target = str(entry_id) if entry_id and str(entry_id) in by_id else None
-        if target is None:
-            try:
-                started = _as_aware(str(started_at))
-            except (ValueError, TypeError):
-                continue
-            for start, end, eid in windows.get(str(user_id), ()):
-                if start <= started <= end:
-                    target = eid
-                    break
-        if target is None:
-            # A break outside every returned shift — usually just a shift that
-            # fell outside the requested range. Dropping it is right: it must
-            # not be netted off some unrelated day.
-            continue
-        totals[target] = totals.get(target, 0) + int(minutes or 0)
-    return totals
+# Moved to core/timesheet_hours.py so the office screen, the CSV/PDF export
+# and the scheduled send all net breaks identically. Alias kept: this name is
+# the one the rest of this router calls.
+_break_minutes_by_entry = break_minutes_by_entry
 
 
 def _entry_to_response(entry: TimeclockEntry) -> TimeEntryResponse:
@@ -1333,7 +1253,7 @@ def submit_day(
 # 1584h) clear this by an order of magnitude. Surfacing merely-unusual shifts
 # would make the card wallpaper — the recorded failure mode of the parts
 # checklist (parts_needed.py:105, "floods and becomes wallpaper").
-IMPLAUSIBLE_SHIFT_MINUTES = int(MAX_SHIFT_HOURS * 60)
+# IMPLAUSIBLE_SHIFT_MINUTES likewise comes from core/timesheet_hours.py.
 
 # Near-zero shifts (accidental double-taps: 21 of 39 rows on prod) are
 # deliberately NOT surfaced. They are 0 minutes, so they cost nothing and pay
