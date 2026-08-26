@@ -110,27 +110,43 @@
               Valid until {{ formatDate(est.valid_until) }}
             </p>
 
-            <!-- Open → the QuickBooks moment. -->
-            <div v-if="isOpen" class="action-row" data-testid="open-actions">
-              <Button
-                label="Accept estimate"
-                icon="pi pi-check"
-                severity="success"
-                class="flex-1"
-                :disabled="needsTierPick || totalsMissing"
-                :loading="busy"
-                data-testid="accept-btn"
-                @click="confirmOpen = true"
-              />
-              <Button
-                label="Decline"
-                icon="pi pi-times"
-                severity="secondary"
-                outlined
-                :loading="busy"
-                data-testid="decline-btn"
-                @click="declineOpen = true"
-              />
+            <!-- Open → the QuickBooks moment.
+                 Sticky on phones (2026-08-26). A customer reported "I see the
+                 number but I can't action anything": on a 390×664 iPhone
+                 viewport this page runs ~985px tall once the door photos and
+                 line prices render, so BOTH decision buttons — and the grand
+                 total — sat ~180px below the fold, under a table that looks
+                 like the end of the document. Nothing on the first screen said
+                 there was anything to do, and the server logs bear it out: two
+                 visits, zero accept/decline POSTs. The bar carries the total
+                 with it so the amount being agreed to is never off-screen from
+                 the button that agrees to it. -->
+            <div v-if="isOpen" class="action-bar" data-testid="open-actions">
+              <div v-if="confirmAmount !== null" class="action-bar-total" data-testid="action-bar-total">
+                <span class="meta">Total</span>
+                <span class="action-bar-amount">{{ currency(confirmAmount) }}</span>
+              </div>
+              <div class="action-row">
+                <Button
+                  label="Accept estimate"
+                  icon="pi pi-check"
+                  severity="success"
+                  class="flex-1"
+                  :disabled="needsTierPick || totalsMissing"
+                  :loading="busy"
+                  data-testid="accept-btn"
+                  @click="confirmOpen = true"
+                />
+                <Button
+                  label="Decline"
+                  icon="pi pi-times"
+                  severity="secondary"
+                  outlined
+                  :loading="busy"
+                  data-testid="decline-btn"
+                  @click="declineOpen = true"
+                />
+              </div>
             </div>
             <p v-if="needsTierPick" class="meta">Choose a package above to accept.</p>
             <p v-if="totalsMissing" class="meta" data-testid="totals-missing-msg">
@@ -473,7 +489,82 @@ onMounted(load);
 .action-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .flex-1 { flex: 1; }
 .deposit-row { margin-top: 0.75rem; }
+/* Desktop: the bar is an ordinary block — the buttons are already on the
+   first screen, so nothing sticks and the total row stays hidden (the
+   totals-block above it already states the amount). */
+.action-bar-total { display: none; }
 .pay-by-check { margin-top: 0.5rem; }
 .w-full { width: 100%; }
-@media (max-width: 640px) { .tier-grid { grid-template-columns: 1fr; } .totals-block { min-width: 100%; } .action-row { flex-direction: column; } }
+@media (max-width: 640px) {
+  .tier-grid { grid-template-columns: 1fr; }
+  .totals-block { min-width: 100%; }
+  .action-row { flex-direction: column; }
+}
+
+/* 767px, not the 640px above, on purpose. `assets/responsive.css` is loaded
+   globally from main.js and treats <=767px as "phone" (touch targets,
+   fullscreen dialogs); useViewMode() draws the same line at 768px in JS. The
+   640px block above predates that and is local to this file. Anything that
+   decides whether a customer can COMPLETE the estimate has to switch on the
+   same devices the rest of the app already calls a phone — otherwise a
+   641-767px viewport (landscape phone, small tablet) gets fullscreen dialogs
+   and 48px touch targets but no sticky decision bar, and a landscape phone is
+   exactly where the short viewport makes the bar matter most.
+   There is no shared breakpoint token; 39 component files hand-roll their own.
+   Filed as follow-up, not fixed here. */
+@media (max-width: 767px) {
+  /* Line prices on a phone. With Price and Total columns shown, the table's
+     natural width (~353px) exceeds the card (~318px). PrimeVue's container
+     does scroll horizontally, so the page never scrolls sideways — but the
+     Total column is what lands under the cut, and a customer reading a quote
+     sees a clipped "$500." and concludes the page is broken, not scrollable.
+     Trimming the cell padding reclaims more than the overflow, so all four
+     columns fit with nothing hidden. */
+  .lines-table :deep(.p-datatable-thead > tr > th),
+  .lines-table :deep(.p-datatable-tbody > tr > td) {
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
+    font-size: 0.9rem;
+  }
+  .lines-table :deep(.p-datatable-thead > tr > th:first-child),
+  .lines-table :deep(.p-datatable-tbody > tr > td:first-child) { padding-left: 0; }
+  .lines-table :deep(.p-datatable-thead > tr > th:last-child),
+  .lines-table :deep(.p-datatable-tbody > tr > td:last-child) { padding-right: 0; }
+
+  /* The decision bar rides the bottom of the viewport until the page is
+     scrolled far enough for it to sit in its natural place. `sticky` (not
+     `fixed`) on purpose: it stays in normal flow, so it cannot cover the
+     content below it, needs no spacer, and settles inline at the end of the
+     document. z-index stays below PrimeVue's dialog mask (1100+) so the
+     accept/decline dialogs still cover it. */
+  .action-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 1rem -1.25rem 0;
+    padding: 0.6rem 1.25rem;
+    /* iOS home-indicator gesture zone — without this the buttons sit under it. */
+    padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
+    background: var(--p-content-background, #fff);
+    border-top: 1px solid var(--p-content-border-color, #e5e7eb);
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.09);
+  }
+  /* The buttons stay STACKED here (the 640px block sets column direction and
+     this deliberately does not undo it). Side by side would return ~70px of a
+     664px viewport, but "Accept estimate" + "Decline" measure ~306px against
+     288px of card at 360px-wide phones (iPhone SE), so they would wrap or
+     clip on exactly the small screens this bar exists to serve. A full-width
+     primary action is also the larger tap target. Cost is a ~150px bar; the
+     quote still has ~510px to render into, and both controls are on the
+     first screen, which is the point. */
+  .action-bar .action-row { margin-top: 0; }
+
+  .action-bar-total {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.5rem;
+  }
+  .action-bar-amount { font-weight: 700; font-size: 1.05rem; color: var(--p-primary-color); }
+}
 </style>

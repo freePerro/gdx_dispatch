@@ -300,4 +300,41 @@ describe('ProposalPublicView', () => {
     await flushPromises();
     expect(lastBody).toEqual({ reason: 'Too expensive' });
   });
+  // ── Decision bar (2026-08-26) ────────────────────────────────────────────
+  // A customer on an iPhone reported "I see the number but I can't action
+  // anything". Measured: on a 390x664 viewport the page ran ~985px, so both
+  // buttons AND the grand total sat ~180px below the fold under a table that
+  // reads like the end of the document — two visits, zero accept/decline
+  // POSTs in the server log. The bar is `position: sticky` at <=767px so the
+  // controls ride the bottom of the viewport, and it carries the total so the
+  // amount is never off-screen from the button that agrees to it.
+  //
+  // jsdom applies NO media queries, so the STICKINESS cannot be asserted here
+  // and was verified in a real browser instead (iPhone 13 390x664: accept
+  // button at y=550-598, on the first screen without scrolling). What these
+  // pin is the part jsdom can see: the bar's contents and the amount shown.
+  it('quotes the total inside the decision bar, next to Accept', async () => {
+    mockFetch({ 'GET /api/proposals/tok-abc': LINE_PAYLOAD });
+    const w = await mountPage();
+    const bar = w.find('[data-testid="open-actions"]');
+    expect(bar.exists()).toBe(true);
+    // Both decision controls live inside the bar — if either escapes it, it
+    // stops travelling with the sticky container and drops below the fold.
+    expect(bar.find('[data-testid="accept-btn"]').exists()).toBe(true);
+    expect(bar.find('[data-testid="decline-btn"]').exists()).toBe(true);
+    // The tax-inclusive total, matching the accept dialog's stated amount.
+    expect(w.find('[data-testid="action-bar-total"]').text()).toContain('$2,782.00');
+  });
+
+  it('omits the bar total until a package is chosen, so no tier price is implied', async () => {
+    // Proposal mode with no tier selected has no single true amount — the
+    // backend deliberately sends no `totals`. Showing one would quote the
+    // customer a number for a package they have not picked.
+    mockFetch({ 'GET /api/proposals/tok-abc': TIER_PAYLOAD });
+    const w = await mountPage();
+    expect(w.find('[data-testid="action-bar-total"]').exists()).toBe(false);
+
+    await w.find('[data-testid="tier-good"]').trigger('click');
+    expect(w.find('[data-testid="action-bar-total"]').text()).toContain('$2,500.00');
+  });
 });
