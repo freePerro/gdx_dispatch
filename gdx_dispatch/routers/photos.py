@@ -59,15 +59,6 @@ from gdx_dispatch.models.tenant_models import JobPhoto  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-class PhotoIn(BaseModel):
-    url: str = Field(min_length=1, max_length=1000)
-    kind: str = Field(default="during", pattern=_KIND_PATTERN)
-    filename: str | None = Field(default=None, max_length=255)
-    mime_type: str | None = Field(default=None, max_length=100)
-    size_bytes: int | None = Field(default=None, ge=0, le=50_000_000)
-    caption: str | None = Field(default=None, max_length=500)
-
-
 class PhotoPatchIn(BaseModel):
     kind: str | None = Field(default=None, pattern=_KIND_PATTERN)
     caption: str | None = Field(default=None, max_length=500)
@@ -284,40 +275,15 @@ def list_job_photos(
 # so there is one way to add a photo: POST the file to /api/jobs/{id}/photos.
 # The GET/PATCH/DELETE below are NOT shadowed (uploads.py only claims POST) and
 # remain the live read/edit surface.
-@router.post("/api/jobs/{job_id}/photos", response_model=None, status_code=201, include_in_schema=False)
-def create_job_photo(
-    job_id: UUID,
-    payload: PhotoIn,
-    request: Request,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    tenant_id = _tenant_id(request)
-    assert_job_access(db, tenant_id, user, str(job_id))
-    photo = JobPhoto(
-        company_id=tenant_id,
-        job_id=job_id,
-        kind=payload.kind,
-        url=payload.url,
-        filename=payload.filename,
-        mime_type=payload.mime_type,
-        size_bytes=payload.size_bytes,
-        caption=payload.caption,
-        uploaded_by=_user_name(user) or _user_id(user),
-    )
-    db.add(photo)
-    db.commit()
-    db.refresh(photo)
-    _audit(
-        db,
-        tenant_id=tenant_id,
-        user=user,
-        action="photo_created",
-        entity_id=str(photo.id),
-        details={"job_id": str(job_id), "kind": photo.kind, "filename": photo.filename},
-        request=request,
-    )
-    return _serialize(photo)
+# NOTE: there is deliberately no POST /api/jobs/{job_id}/photos here.
+# One lived at this spot and never served a single request: routers/uploads.py
+# declares the same path as a MULTIPART handler and is included first, so this
+# JSON one was permanently shadowed — every call 422'd against a route
+# demanding a file. PhotosView.vue carries the post-mortem: "the file uploaded,
+# the photo record never existed, and job_photos sat empty."
+# The live path is POST /api/documents with job_id + as_photo=true, which
+# creates the JobPhoto record itself. Do not re-add one here; app.openapi()
+# collapses duplicate (method, path) pairs and will hide the collision.
 
 
 @router.patch("/api/jobs/{job_id}/photos/{photo_id}", response_model=None)
