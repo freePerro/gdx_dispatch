@@ -129,6 +129,12 @@ function _destinationFor(category) {
       return mobile ? '/mobile/estimates' : '/estimates';
     case 'customer':
       return mobile ? '/mobile/customers' : '/customers';
+    // The scheduled payroll send writes this, both when it sends and when it
+    // holds. The held one is the whole point: it names the shifts to correct
+    // and the correction is made on /timesheets. Desktop only — the office
+    // fixes timesheets at a desk, and there is no mobile route to send to.
+    case 'timesheet':
+      return '/timesheets';
     case 'part':
     case 'part_shipped':
     case 'parts_to_order':

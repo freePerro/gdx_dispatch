@@ -317,6 +317,19 @@ def build_beat_schedule() -> dict[str, dict[str, object]]:
             "schedule": crontab(hour=13, minute=0),
             "options": {"queue": "priority:low"},
         },
+        "payroll-timesheet-hourly": {
+            # Hourly, and the TASK decides — not a once-a-day cron at the
+            # configured hour. Three reasons: a container down at 7am on a
+            # Monday would otherwise skip a whole fortnight silently; the
+            # office correcting a flagged shift at 9:15 gets the send at
+            # 10:00 with no second button to press; and idempotence has to
+            # exist anyway for a beat that can double-fire after a restart.
+            # No-ops instantly (one settings read) when autosend is off,
+            # which is the default for every install.
+            "task": "payroll_timesheet.send_closed_period",
+            "schedule": crontab(minute=5),
+            "options": {"queue": "priority:low"},
+        },
         "webhook-retry-sweep-every-5m": {
             # n8n/plugin-event platform Sprint 1. Re-dispatches webhook
             # deliveries whose backoff window elapsed, AND rescues rows stranded
