@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -20,6 +20,12 @@ from gdx_dispatch.core.modules import (
     MODULES,
     normalize_module_key,
     require_role,
+)
+from gdx_dispatch.core.pay_periods import (
+    ANCHORED_CADENCES,
+    CADENCES,
+    invalid_recipient_emails,
+    normalize_cadence,
 )
 from gdx_dispatch.core.payments import stripe_configured
 from gdx_dispatch.models.tenant_models import AppSettings, CompanyModuleGrant
@@ -70,6 +76,18 @@ class SettingsPatchIn(BaseModel):
     # Money-audit M39 (Doug 2026-08-24): payment plans are an on/off OPTION,
     # default OFF here — the endpoint refuses honestly when off.
     payment_plans_enabled: bool | None = None
+    # Pay periods (2026-08-26). Cadence values come from core/pay_periods so
+    # the API, the arithmetic and the Vue dropdown cannot disagree about
+    # what is valid. Cross-field rules (biweekly needs an anchor; autosend
+    # needs a recipient) are checked in patch_settings against the MERGED
+    # row, not here — a PATCH that sets only one half of a pair is legal on
+    # its own and must be judged against what the row will actually hold.
+    pay_period_cadence: str | None = None
+    pay_period_anchor_start: date | None = None
+    pay_period_pay_lag_days: int | None = Field(default=None, ge=0, le=31)
+    payroll_recipient_emails: str | None = Field(default=None, max_length=1000)
+    payroll_autosend_enabled: bool | None = None
+    payroll_autosend_hour: int | None = Field(default=None, ge=0, le=23)
 
 
 class BrandingPatchIn(BaseModel):
@@ -157,6 +175,14 @@ def _settings_dict(row: AppSettings) -> dict[str, Any]:
         "automation_emails_enabled": bool(getattr(row, "automation_emails_enabled", False)),
         "payment_plans_enabled": bool(getattr(row, "payment_plans_enabled", False)),
         "automation_sender_user_id": getattr(row, "automation_sender_user_id", None) or "",
+        "pay_period_cadence": normalize_cadence(getattr(row, "pay_period_cadence", None)),
+        "pay_period_anchor_start": (
+            _anchor.isoformat() if (_anchor := getattr(row, "pay_period_anchor_start", None)) else ""
+        ),
+        "pay_period_pay_lag_days": int(getattr(row, "pay_period_pay_lag_days", 0) or 0),
+        "payroll_recipient_emails": getattr(row, "payroll_recipient_emails", None) or "",
+        "payroll_autosend_enabled": bool(getattr(row, "payroll_autosend_enabled", False)),
+        "payroll_autosend_hour": int(getattr(row, "payroll_autosend_hour", 7) or 0),
     }
 
 
@@ -170,6 +196,63 @@ def _branding_dict(row: AppSettings) -> dict[str, Any]:
         "phone": row.phone or "",
         "email": row.email or "",
     }
+
+
+def _validate_pay_period(row: AppSettings, updates: dict[str, Any]) -> None:
+    """Reject a pay-period configuration that cannot produce a real period.
+
+    Judged against the MERGED row — what settings will hold after this
+    PATCH — not against the payload alone. Switching cadence to biweekly in
+    one request and setting the anchor in the next is a legitimate two-step
+    edit only if the first step is refused; otherwise the row spends the
+    interval in a state where `period_containing` raises, and the surface
+    that raises is a Monday-morning Celery task rather than this screen.
+    """
+    def merged(key: str, current: Any) -> Any:
+        # .get, not `key in updates`: an explicit null in the payload must
+        # reach here AS null (that is how the anchor gets cleared), which
+        # both forms do — but only this one satisfies the linter.
+        return updates.get(key, current)
+
+    cadence = str(merged("pay_period_cadence", getattr(row, "pay_period_cadence", None)) or "")
+    if "pay_period_cadence" in updates and cadence not in CADENCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"pay_period_cadence must be one of: {', '.join(CADENCES)}",
+        )
+
+    anchor = merged("pay_period_anchor_start", getattr(row, "pay_period_anchor_start", None))
+    if normalize_cadence(cadence) in ANCHORED_CADENCES and not anchor:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A two-week pay period needs a start date to count from — "
+                "set pay_period_anchor_start to the first day of any period "
+                "you have already paid."
+            ),
+        )
+
+    recipients = merged(
+        "payroll_recipient_emails", getattr(row, "payroll_recipient_emails", None)
+    )
+    bad = invalid_recipient_emails(recipients)
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Not an email address: {', '.join(bad[:5])}",
+        )
+
+    # Autosend with nowhere to send is the silent-success shape: the task
+    # would run, find no recipient, and do nothing forever while the
+    # setting reads ON.
+    autosend = merged(
+        "payroll_autosend_enabled", getattr(row, "payroll_autosend_enabled", False)
+    )
+    if autosend and not (str(recipients or "").strip()):
+        raise HTTPException(
+            status_code=422,
+            detail="Turn on automatic sending only after entering who receives it.",
+        )
 
 
 def _actor_id(user: dict[str, Any]) -> str:
@@ -202,6 +285,7 @@ def patch_settings(
     # blowing up jsonable_encoder downstream.
     audit_updates = payload.model_dump(exclude_unset=True, mode="json")
     updates = payload.model_dump(exclude_unset=True)
+    _validate_pay_period(row, updates)
     for key in (
         "company_name", "address", "phone", "email", "logo", "timezone",
         "primary_color", "secondary_color",
@@ -210,6 +294,9 @@ def patch_settings(
         "customer_listings_enabled",
         "automation_emails_enabled", "automation_sender_user_id",
         "payment_plans_enabled",
+        "pay_period_cadence", "pay_period_anchor_start",
+        "pay_period_pay_lag_days", "payroll_recipient_emails",
+        "payroll_autosend_enabled", "payroll_autosend_hour",
     ):
         if key in updates:
             setattr(row, key, updates[key])

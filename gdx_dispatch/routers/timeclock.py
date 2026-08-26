@@ -15,8 +15,18 @@ from sqlalchemy.orm import Session
 from gdx_dispatch.core.audit import log_audit_event
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
+from gdx_dispatch.core.pay_periods import (
+    CADENCE_LABELS,
+    PayPeriodUnconfigured,
+    next_period,
+    pay_date,
+    period_containing,
+    previous_period,
+    settings_config,
+    shop_today,
+)
 from gdx_dispatch.core.permissions import is_dispatch_manager
-from gdx_dispatch.models.tenant_models import TimeclockBreak, TimeclockEntry
+from gdx_dispatch.models.tenant_models import AppSettings, TimeclockBreak, TimeclockEntry
 from gdx_dispatch.routers.auth import get_current_user
 
 log = logging.getLogger(__name__)
@@ -912,6 +922,74 @@ def update_time_entry(
         db.rollback()
         log.exception("timeclock_entry_update_failed", extra={"tenant_id": tenant_id, "entry_id": entry_id})
         raise HTTPException(status_code=500, detail="Entry update failed") from None
+
+
+@router.get("/pay-periods", response_model=None)
+def pay_periods(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The shop's payroll calendar: which period we're in, and the two either side.
+
+    Deliberately server-side. The Timesheets presets, the Settings preview
+    and the scheduled send all need the same answer to "which fortnight is
+    this", and a copy of the arithmetic in JavaScript is how a screen ends
+    up showing one range while the emailed file covers another.
+
+    Not gated to dispatch/admin: it returns date ranges and nothing else —
+    no hours, no names, no money — and a tech looking at their own week
+    benefits from seeing the same period boundaries the office does.
+    """
+    _ = _tenant_id(request)
+    row = db.query(AppSettings).first()
+    tz_name = (row.timezone if row and row.timezone else "America/New_York")
+    cfg = settings_config(row)
+    today = shop_today(tz_name)
+
+    base: dict[str, Any] = {
+        "cadence": cfg["cadence"],
+        "cadence_label": CADENCE_LABELS.get(cfg["cadence"], cfg["cadence"]),
+        "anchor_start": cfg["anchor_start"].isoformat() if cfg["anchor_start"] else "",
+        "pay_lag_days": cfg["lag_days"],
+        "timezone": tz_name,
+        "today": today.isoformat(),
+    }
+
+    def _shape(period: Any) -> dict[str, Any]:
+        out = period.as_dict()
+        out["pay_date"] = pay_date(period, cfg["lag_days"]).isoformat()
+        return out
+
+    try:
+        current = period_containing(
+            today, cadence=cfg["cadence"], anchor_start=cfg["anchor_start"]
+        )
+    except PayPeriodUnconfigured as exc:
+        # A 200 that says "not configured", not a 500. The caller is a
+        # settings screen that is about to configure it, and a page that
+        # errors while you are setting it up teaches nothing.
+        return {
+            **base,
+            "configured": False,
+            "message": str(exc),
+            "current": None,
+            "previous": None,
+            "next": None,
+        }
+
+    return {
+        **base,
+        "configured": True,
+        "message": "",
+        "current": _shape(current),
+        "previous": _shape(
+            previous_period(current, cadence=cfg["cadence"], anchor_start=cfg["anchor_start"])
+        ),
+        "next": _shape(
+            next_period(current, cadence=cfg["cadence"], anchor_start=cfg["anchor_start"])
+        ),
+    }
 
 
 @router.get("/payroll", response_model=list[PayrollSummaryItem])

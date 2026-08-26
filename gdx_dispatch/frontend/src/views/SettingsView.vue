@@ -1000,6 +1000,151 @@
             </template>
           </Card>
 
+          <Card style="margin-top:1rem" data-testid="pay-period-card">
+            <template #title>Pay periods</template>
+            <template #content>
+              <p class="muted" style="margin-top:0">
+                The payroll calendar the Timesheets page and the emailed
+                timesheet both count from. Hours are recorded the same way
+                whatever this says — it decides which range gets grouped,
+                exported and sent, not what anyone is paid.
+              </p>
+              <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:620px;">
+                <div style="display:flex; align-items:center; gap:1rem;">
+                  <label style="min-width:170px;">How often</label>
+                  <Select
+                    v-model="payPeriod.pay_period_cadence"
+                    :options="PAY_PERIOD_CADENCES"
+                    optionLabel="label"
+                    optionValue="value"
+                    style="max-width:300px; flex:1;"
+                    data-testid="pay-period-cadence"
+                  />
+                </div>
+
+                <!-- Only every-two-weeks needs this: two shops can both pay
+                     every other Friday and be a week out of phase, so the
+                     calendar alone cannot say which fortnight is which.
+                     Weekly and twice-a-month are fully derivable. -->
+                <div
+                  v-if="payPeriod.pay_period_cadence === 'biweekly'"
+                  style="display:flex; align-items:flex-start; gap:1rem;"
+                >
+                  <label style="min-width:170px; margin-top:0.4rem;">First day of a period</label>
+                  <div>
+                    <InputText
+                      v-model="payPeriod.pay_period_anchor_start"
+                      type="date"
+                      style="max-width:190px;"
+                      data-testid="pay-period-anchor"
+                    />
+                    <p class="muted" style="margin:0.3rem 0 0; font-size:0.85rem;">
+                      Any period you have already paid — the first day of it.
+                      Everything before and after is counted from here.
+                    </p>
+                  </div>
+                </div>
+
+                <div style="display:flex; align-items:flex-start; gap:1rem;">
+                  <label style="min-width:170px; margin-top:0.4rem;">Payday is</label>
+                  <div>
+                    <InputNumber
+                      v-model="payPeriod.pay_period_pay_lag_days"
+                      :min="0"
+                      :max="31"
+                      showButtons
+                      style="max-width:150px;"
+                      data-testid="pay-period-lag"
+                    />
+                    <p class="muted" style="margin:0.3rem 0 0; font-size:0.85rem;">
+                      Days after the period ends. 0 means the period ends on payday.
+                    </p>
+                  </div>
+                </div>
+
+                <!-- The preview is fetched, not computed here. The server owns
+                     the period arithmetic; a second copy in JavaScript is how a
+                     screen ends up disagreeing with the file that gets emailed. -->
+                <div
+                  v-if="payPeriodPreview"
+                  class="pay-period-preview"
+                  data-testid="pay-period-preview"
+                >
+                  <template v-if="payPeriodPreview.configured">
+                    <div><strong>Now in:</strong> {{ payPeriodPreview.current.label }}</div>
+                    <div>
+                      <strong>Last period:</strong> {{ payPeriodPreview.previous.label }}
+                      <span class="muted"> — paid {{ payPeriodPreview.previous.pay_date }}</span>
+                    </div>
+                  </template>
+                  <div v-else class="pay-period-unset">
+                    {{ payPeriodPreview.message }}
+                  </div>
+                </div>
+
+                <Divider />
+
+                <div style="display:flex; align-items:flex-start; gap:1rem;">
+                  <label style="min-width:170px; margin-top:0.4rem;">Send the timesheet to</label>
+                  <div style="flex:1;">
+                    <InputText
+                      v-model="payPeriod.payroll_recipient_emails"
+                      placeholder="bookkeeper@example.com"
+                      style="width:100%; max-width:380px;"
+                      data-testid="pay-period-recipients"
+                    />
+                    <p class="muted" style="margin:0.3rem 0 0; font-size:0.85rem;">
+                      Separate several with commas. Mail goes out through the
+                      connected Outlook account, same as invoices.
+                    </p>
+                  </div>
+                </div>
+
+                <div style="display:flex; align-items:flex-start; gap:1rem;">
+                  <label style="min-width:170px; margin-top:0.2rem;">Send it automatically</label>
+                  <div>
+                    <ToggleSwitch
+                      v-model="payPeriod.payroll_autosend_enabled"
+                      data-testid="pay-period-autosend"
+                    />
+                    <p class="muted" style="margin:0.3rem 0 0; font-size:0.85rem;">
+                      The morning after a period closes — not payday morning, so
+                      there is time to fix a problem before anyone is paid. If any
+                      shift is still open or shows impossible hours, nothing is
+                      sent and you get a notification instead.
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  v-if="payPeriod.payroll_autosend_enabled"
+                  style="display:flex; align-items:center; gap:1rem;"
+                >
+                  <label style="min-width:170px;">At</label>
+                  <InputNumber
+                    v-model="payPeriod.payroll_autosend_hour"
+                    :min="0"
+                    :max="23"
+                    showButtons
+                    style="max-width:150px;"
+                    data-testid="pay-period-autosend-hour"
+                  />
+                  <span class="muted">:00, {{ payPeriodPreview?.timezone || 'shop time' }}</span>
+                </div>
+
+                <div>
+                  <Button
+                    label="Save Pay Periods"
+                    icon="pi pi-save"
+                    :loading="payPeriodSaving"
+                    data-testid="pay-period-save"
+                    @click="savePayPeriod"
+                  />
+                </div>
+              </div>
+            </template>
+          </Card>
+
           <Card style="margin-top:1rem">
             <template #title>Dispatch</template>
             <template #content>
@@ -2138,6 +2283,97 @@ async function saveShopHours() {
   }
 }
 
+// ── Pay periods (2026-08-26) ──────────────────────────────────────────
+// Cadence list mirrors core/pay_periods.CADENCES. The ARITHMETIC is not
+// mirrored: the preview below is whatever GET /api/timeclock/pay-periods
+// says, so this screen can never claim a different fortnight than the file
+// that gets emailed.
+const PAY_PERIOD_CADENCES = [
+  { label: "Weekly (Monday–Sunday)", value: "weekly_mon" },
+  { label: "Weekly (Sunday–Saturday)", value: "weekly_sun" },
+  { label: "Every two weeks", value: "biweekly" },
+  { label: "Twice a month (1st–15th, 16th–end)", value: "semimonthly" },
+];
+const payPeriod = reactive({
+  pay_period_cadence: "weekly_mon",
+  pay_period_anchor_start: "",
+  pay_period_pay_lag_days: 0,
+  payroll_recipient_emails: "",
+  payroll_autosend_enabled: false,
+  payroll_autosend_hour: 7,
+});
+const payPeriodPreview = ref(null);
+const payPeriodSaving = ref(false);
+
+function applyPayPeriod(s) {
+  if (!s) return;
+  if (s.pay_period_cadence) payPeriod.pay_period_cadence = s.pay_period_cadence;
+  payPeriod.pay_period_anchor_start = s.pay_period_anchor_start || "";
+  payPeriod.pay_period_pay_lag_days = Number(s.pay_period_pay_lag_days ?? 0);
+  payPeriod.payroll_recipient_emails = s.payroll_recipient_emails || "";
+  payPeriod.payroll_autosend_enabled = Boolean(s.payroll_autosend_enabled);
+  payPeriod.payroll_autosend_hour = Number(s.payroll_autosend_hour ?? 7);
+}
+
+async function loadPayPeriodPreview() {
+  try {
+    payPeriodPreview.value = await api.get("/api/timeclock/pay-periods", {
+      suppressErrorToast: true,
+    });
+  } catch (_e) {
+    // The timeclock module can be switched off entirely, in which case pay
+    // periods are moot. Hide the preview rather than toast an error at
+    // someone who is only here to change the company address.
+    payPeriodPreview.value = null;
+  }
+}
+
+async function loadPayPeriod() {
+  try {
+    applyPayPeriod(await api.get("/api/settings"));
+  } catch (_e) {
+    // leave defaults
+  }
+  await loadPayPeriodPreview();
+}
+
+async function savePayPeriod() {
+  // Mirrors the server's rule so the operator is told at the field rather
+  // than by a 422. The server still enforces it — this is the courtesy
+  // copy, not the gate.
+  if (
+    payPeriod.pay_period_cadence === "biweekly" &&
+    !payPeriod.pay_period_anchor_start
+  ) {
+    toast.add({
+      severity: "error",
+      summary: "Pick the first day of a period you have already paid",
+      life: 5000,
+    });
+    return;
+  }
+  payPeriodSaving.value = true;
+  try {
+    const saved = await api.patch(
+      "/api/settings",
+      {
+        pay_period_cadence: payPeriod.pay_period_cadence,
+        // Empty string would fail date parsing; null clears the column.
+        pay_period_anchor_start: payPeriod.pay_period_anchor_start || null,
+        pay_period_pay_lag_days: Number(payPeriod.pay_period_pay_lag_days ?? 0),
+        payroll_recipient_emails: payPeriod.payroll_recipient_emails || "",
+        payroll_autosend_enabled: payPeriod.payroll_autosend_enabled,
+        payroll_autosend_hour: Number(payPeriod.payroll_autosend_hour ?? 7),
+      },
+      { successMessage: "Pay periods saved" },
+    );
+    applyPayPeriod(saved);
+    await loadPayPeriodPreview();
+  } finally {
+    payPeriodSaving.value = false;
+  }
+}
+
 // ── Time Clock (S92) — tenant-local timezone for clock display ──
 const TIMEZONE_OPTIONS = [
   { label: "Eastern (America/New_York)",  value: "America/New_York" },
@@ -2282,7 +2518,7 @@ function formatDate(value) {
 onMounted(async () => {
   window.addEventListener("message", onOAuthMessage);
   window.addEventListener("beforeunload", onBeforeUnload);
-  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail(), loadPaymentPlans()]);
+  await Promise.allSettled([loadBrandingForm(), loadModules(), loadUsers(), loadIntegrations(), loadEmailConfig(), loadTaxConfig(), loadNumbering(), loadWorkflowFlags(), loadBillingTerms(), loadCatalogPolicy(), loadEstimatesFeatures(), loadDispatchSettings(), loadTimeClockSettings(), loadShopHours(), loadPayPeriod(), loadIdleTimeout(), loadDebugLogging(), loadAutomationEmail(), loadPaymentPlans()]);
 });
 
 onBeforeUnmount(() => {
@@ -2292,6 +2528,21 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Theme tokens, never a fixed palette — this panel has to read in dark mode,
+   where a hardcoded pale background puts near-white text on near-white. */
+.pay-period-preview {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--p-content-border-color);
+  border-left: 4px solid var(--p-primary-color);
+  border-radius: var(--p-content-border-radius, 6px);
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.pay-period-unset {
+  color: var(--p-text-muted-color);
+}
 .branding-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
