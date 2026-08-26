@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 from datetime import UTC, date, datetime, timedelta
@@ -214,32 +213,6 @@ def test_complete_requires_signature(session_factory):
         assert r.status_code == 400
     finally:
         db.close()
-
-
-def test_photo_upload_attaches_to_job(session_factory):
-    class _DummyUpload:
-        filename = "site.jpg"
-        content_type = "image/jpeg"
-
-        async def read(self) -> bytes:
-            return b"\xff\xd8\xff\xdb\x00C"
-
-    async def _call() -> object:
-        db = session_factory()
-        try:
-            return await mobile_router.upload_mobile_job_photo(
-                job_id=_JOB_ID,
-                request=_request(),
-                file=_DummyUpload(),  # type: ignore[arg-type]
-                current_user=_TEST_USER,
-                db=db,
-            )
-        finally:
-            db.close()
-
-    r = asyncio.run(_call())
-    assert r.status_code == 201
-    assert _as_json(r)["job_id"] == _JOB_ID
 
 
 def test_parts_used_deducts_inventory(session_factory):

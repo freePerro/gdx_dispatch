@@ -3714,40 +3714,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/mobile/job/{job_id}/photo": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Upload Mobile Job Photo */
-        post: operations["upload_mobile_job_photo_api_mobile_job__job_id__photo_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/mobile/jobs/{job_id}/photos": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Upload Mobile Job Photo */
-        post: operations["upload_mobile_job_photo_api_mobile_jobs__job_id__photos_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/mobile/job/{job_id}/signature": {
         parameters: {
             query?: never;
