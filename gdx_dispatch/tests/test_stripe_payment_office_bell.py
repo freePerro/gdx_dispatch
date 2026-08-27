@@ -331,3 +331,69 @@ def test_an_invoice_with_no_tenant_writes_nothing_rather_than_an_invisible_row(d
     ).scalars().all()
     assert blank == [], "an invisible notification is worse than none"
     assert len(_bell_rows(db)) == 1
+
+
+def test_the_stale_intent_sweep_is_queued_from_a_plain_id_not_the_expired_invoice(
+    db, monkeypatch
+):
+    """The sweep must not depend on re-reading the invoice after the commit.
+
+    `db.commit()` expires `invoice`, so `invoice.id` after it is a lazy refresh
+    SELECT. If that SELECT fails, the sweep is either lost (swallowed inside
+    `enqueue_stale_intent_sweep`'s guard — other open PaymentIntents on the
+    invoice stay collectable and nothing says so) or the raise escapes into a
+    caller whose money is already committed. Either way the fix is the same
+    rule the office bell already follows: capture what the sweep needs BEFORE
+    the commit and pass a plain value across it.
+
+    The trap is armed by an `after_commit` listener and only fires on INSTANCE
+    reads, so class-level `Invoice.id` in queries keeps working and every read
+    before the money lands succeeds.
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+
+    inv = _invoice(db, total="500.00")
+    expected_id = str(inv.id)
+
+    state = {"armed": False}
+
+    def _arm(_session):
+        state["armed"] = True
+
+    event.listen(db, "after_commit", _arm)
+
+    real = Invoice.__dict__["id"]
+
+    class _TrapAfterCommit:
+        def __get__(self, obj, cls=None):
+            if obj is None:
+                return real
+            if state["armed"]:
+                raise OperationalError("SELECT invoices...", {}, Exception("server closed"))
+            return real.__get__(obj, cls)
+
+    from gdx_dispatch.tasks import stale_intent_sweep as sweep_mod
+
+    monkeypatch.setattr(Invoice, "id", _TrapAfterCommit(), raising=False)
+    try:
+        with patch.object(sweep_mod.sweep_stale_intents, "apply_async") as send:
+            _mark_invoice_paid(
+                inv, db, external_ref="pi_sweep_plain", method="card",
+                amount=500.0, source="stripe-confirm",
+            )
+        # The trap was live: an instance read after the commit really raises.
+        assert state["armed"]
+        with pytest.raises(OperationalError):
+            _ = inv.id
+    finally:
+        monkeypatch.setattr(Invoice, "id", real, raising=False)
+        event.remove(db, "after_commit", _arm)
+
+    assert send.call_count == 1, "the sweep must be queued exactly once"
+    assert send.call_args[1]["args"] == [expected_id], (
+        "the sweep must name the invoice by the id captured before the commit"
+    )
+    assert send.call_args[1]["kwargs"]["why"] == "payment_recorded:pi_sweep_plain"

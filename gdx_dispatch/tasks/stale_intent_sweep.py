@@ -211,10 +211,20 @@ def enqueue_stale_intent_sweep(
 ) -> bool:
     """Queue the sweep. Never raises — a dead broker must not cost a payment.
 
+    ``invoice`` is an Invoice or its id as a plain string. Callers that queue
+    after a ``db.commit()`` must pass the id captured BEFORE the commit: the
+    commit expires the instance, so ``invoice.id`` here would be a lazy refresh
+    SELECT on a session the caller has finished with, and a failed refresh
+    would either lose the sweep or — via the log line below — raise out of a
+    function whose money is already committed.
+
     Returns whether it was queued, so a caller can say so honestly rather than
     reporting a cancellation that never happened.
     """
+    invoice_id = invoice if isinstance(invoice, str) else "?"
     try:
+        if not isinstance(invoice, str):
+            invoice_id = str(invoice.id)
         # The timeouts are load-bearing, not style. Measured on this image:
         # `.delay()` against an unreachable broker takes ~19s, and `retry=False`
         # alone does not fix it — kombu retries the CONNECTION underneath. That
@@ -230,7 +240,7 @@ def enqueue_stale_intent_sweep(
             }
         ) as conn:
             sweep_stale_intents.apply_async(
-                args=[str(invoice.id)],
+                args=[invoice_id],
                 kwargs={
                     "why": why,
                     "settled": bool(settled),
@@ -244,6 +254,6 @@ def enqueue_stale_intent_sweep(
         log.exception(
             "stale_intent_sweep_not_queued invoice=%s why=%s — an open pay page may still "
             "overcharge; payment_exceeds_receivable remains the backstop.",
-            getattr(invoice, "id", "?"), why,
+            invoice_id, why,
         )
         return False

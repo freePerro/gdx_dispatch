@@ -808,6 +808,10 @@ def _mark_invoice_paid(
                 ),
             },
         )
+    # Captured BEFORE the commit: the sweep below is queued after it, and by
+    # then `invoice` is expired — see the "only plain locals" note further
+    # down. The sweep must never depend on re-reading the invoice.
+    invoice_id = str(invoice.id)
     db.commit()
 
     # M12. AFTER the commit, and on a task — never inside the transaction.
@@ -822,7 +826,7 @@ def _mark_invoice_paid(
     from gdx_dispatch.tasks.stale_intent_sweep import enqueue_stale_intent_sweep
 
     enqueue_stale_intent_sweep(
-        invoice,
+        invoice_id,
         why=f"payment_recorded:{external_ref or ''}"[:64],
         connected_account=connected_account,
     )
