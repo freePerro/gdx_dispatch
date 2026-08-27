@@ -2,7 +2,10 @@
     <section class="payroll-view view-card">
       <Toolbar data-testid="payroll-toolbar">
         <template #start>
-          <h2 class="page-title">Payroll</h2>
+          <!-- "Pay Runs", matching its tab. Inside the Payroll hub a heading
+               that just said "Payroll" named the whole section rather than
+               this screen, which is the one part of it that does not work. -->
+          <h2 class="page-title">Pay Runs</h2>
         </template>
         <!-- The "Run payroll for current period" button is GONE, not
              disabled. POST /api/payroll/run-current-period is a ui_compat 501
@@ -16,13 +19,24 @@
       <div class="payroll-notice" data-testid="payroll-not-built-notice">
         <i class="pi pi-info-circle" aria-hidden="true" />
         <div>
-          <p class="notice-lede"><strong>Payroll runs are not built.</strong></p>
+          <p class="notice-lede"><strong>Pay runs are not built.</strong></p>
           <p class="notice-body">
-            This screen cannot create pay periods or pay stubs — the endpoints
-            behind all three of its controls return “not implemented”. Nothing
-            is stored and nothing is calculated here.
-            <strong>Hours are unaffected:</strong> the timeclock records them
-            and the weekly timesheet reports them.
+            This screen cannot calculate a pay run or produce pay stubs — the
+            endpoints behind its tables return “not implemented”, and nothing
+            is stored here.
+          </p>
+          <!-- Half of what this notice used to claim stopped being true in
+               v1.105.0: pay periods DO exist now, and the office can export
+               and send a period's hours. Leaving the old wording would have
+               left this page contradicting the tab next to it. -->
+          <p class="notice-body">
+            <strong>Pay periods and hours are a different screen, and they do
+            work.</strong>
+            <router-link to="/timesheets" data-testid="payroll-timesheets-link">
+              Timesheets
+            </router-link>
+            groups the crew's hours into the pay period set in Settings,
+            exports them as a PDF or spreadsheet, and sends them to payroll.
           </p>
         </div>
       </div>
@@ -184,7 +198,10 @@ function formatDetail(value) {
 }
 
 // `/api/payroll/pay-periods`, `/pay-stubs` and `/run-current-period` are all
-// ui_compat 501 stubs — none of them is implemented. Calling them produced a
+// ui_compat 501 stubs — none of them is implemented. NOTE (2026-08-27): the
+// tenant's real pay-period calendar is NOT this dead endpoint — it lives on
+// AppSettings and is served by GET /api/timeclock/pay-periods. Do not wire
+// this screen to the stub on the strength of its name. Calling them produced a
 // failed request and an error toast on every visit, while the empty states
 // told the operator to press the button that caused it. The screen now says
 // so instead of asking the server three times to confirm it.

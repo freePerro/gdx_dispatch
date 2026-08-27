@@ -198,29 +198,71 @@ test.describe('Pay periods', () => {
   });
 
   test('an unresolved shift holds the send and names it on screen', async ({ page, baseURL }) => {
-    // The whole reason the gate exists. A period with an open shift is a
-    // draft, and mailing it puts a number in front of somebody who will act
-    // on it. Nothing is emailed on this path.
+    // The whole reason the gate exists. A period with an unresolved shift is
+    // a draft, and mailing it puts a number in front of somebody who acts on
+    // it. Nothing is emailed on this path.
+    //
+    // SEEDS ITS OWN DATA. The first version of this test relied on a row
+    // inserted by hand during a walk; once that row was cleaned up the test
+    // failed for the wrong reason. A test that only passes when someone has
+    // manually prepared the database is not a test.
+    //
+    // A >16h shift trips `implausible`. The office is deliberately exempt
+    // from the self-service duration guard (correcting weird rows is their
+    // job), so an admin can create one through the normal endpoint.
     const api = await authed(page, baseURL);
-    await page.goto('/timesheets');
-    await expect(page.locator('[data-testid="timesheets-last-pay-period"]')).toBeVisible({ timeout: 20000 });
-    await page.locator('[data-testid="timesheets-last-pay-period"]').click();
-    await page.waitForTimeout(1200);
+    const login = await api.post('/auth/login', {
+      headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-e2e-test': 'true' },
+      data: { email: EMAIL, password: PASSWORD },
+    });
+    const { access_token } = await login.json();
+    const auth = { authorization: `Bearer ${access_token}`, 'x-tenant-id': TENANT, 'content-type': 'application/json' };
 
-    await page.locator('[data-testid="timesheets-send"]').click();
-    await page.locator('[data-testid="send-confirm-button"]').click();
+    const roster = await (await api.get('/api/timeclock/roster', { headers: auth })).json();
+    const tech = (Array.isArray(roster) ? roster : roster.items || [])
+      .find((r) => r.has_entries) || (Array.isArray(roster) ? roster[0] : null);
+    expect(tech, 'need somebody on the roster to attach a shift to').toBeTruthy();
 
-    const blocked = page.locator('[data-testid="send-blocked"]');
-    await expect(blocked).toBeVisible({ timeout: 20000 });
-    await expect(blocked).toContainText('a look');
-    await expect(blocked).toContainText('2026-08-19');   // the offending day
-    // No way out except fixing it.
-    await expect(page.locator('[data-testid="send-confirm-button"]')).toHaveCount(0);
+    const created = await api.post('/api/timeclock/entries', {
+      headers: auth,
+      data: {
+        technician_id: tech.technician_id,
+        clock_in_at: '2026-08-19T14:00:00Z',
+        clock_out_at: '2026-08-20T16:00:00Z',   // 26h — impossible
+        notes: 'e2e: seeded to prove the send refuses',
+      },
+    });
+    expect(created.ok(), 'seeding the flagged shift must succeed').toBeTruthy();
+    const entryId = (await created.json()).id;
 
-    await page.screenshot({ path: `${SHOTS}/send-held-light.png` });
-    await setTheme(page, 'dark');
-    await page.screenshot({ path: `${SHOTS}/send-held-dark.png` });
-    await api.dispose();
+    try {
+      await page.goto('/timesheets');
+      await expect(page.locator('[data-testid="timesheets-last-pay-period"]')).toBeVisible({ timeout: 20000 });
+      await page.locator('[data-testid="timesheets-last-pay-period"]').click();
+      await page.waitForTimeout(1200);
+
+      await page.locator('[data-testid="timesheets-send"]').click();
+      await page.locator('[data-testid="send-confirm-button"]').click();
+
+      const blocked = page.locator('[data-testid="send-blocked"]');
+      await expect(blocked).toBeVisible({ timeout: 20000 });
+      await expect(blocked).toContainText('a look');
+      await expect(blocked).toContainText('2026-08-19');   // the offending day
+      // No way out of the dialog except fixing the shift.
+      await expect(page.locator('[data-testid="send-confirm-button"]')).toHaveCount(0);
+
+      await page.screenshot({ path: `${SHOTS}/send-held-light.png` });
+      await setTheme(page, 'dark');
+      await page.screenshot({ path: `${SHOTS}/send-held-dark.png` });
+    } finally {
+      // Correct it back to a possible day, so the next run starts clean and
+      // the shared dev database is not left holding a 26-hour shift.
+      await api.patch(`/api/timeclock/entries/${entryId}`, {
+        headers: auth,
+        data: { clock_out_at: '2026-08-19T22:00:00Z', notes: 'e2e: corrected' },
+      });
+      await api.dispose();
+    }
   });
 
   test('Settings shows the payroll calendar it will actually use', async ({ page, baseURL }) => {
