@@ -46,17 +46,11 @@ export const MODULE_CATEGORIES = [
       { key: 'maintenance', label: 'Maintenance Plans', icon: 'pi pi-wrench', to: '/maintenance', type: 'Jobs', permission: 'nav.admin' },
       { key: 'technicians', requires: 'dispatch', label: 'Technicians', icon: 'pi pi-users', to: '/technicians', type: 'Operations', permission: 'nav.office' },
       { key: 'performance', label: 'Performance', icon: 'pi pi-chart-line', to: '/performance', type: 'Operations', permission: 'nav.office' },
-      { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock', type: 'Operations' },
-      // Office companion to the (ungated, self-service) Timeclock above: review
-      // and correct anyone's shifts.
-      // scheduling.write, not dispatch.read — `viewer` holds every `.read` key
-      // but fails the backend's is_dispatch_manager gate, so a read key here
-      // shows a nav entry whose every API call 403s. scheduling.write's holders
-      // match that gate exactly. See the route in router/index.js.
-      // `requires: timeclock` — the API is behind require_module("timeclock"),
-      // so a tenant that opted out of the module must not see a page whose
-      // every call would 403 for a different reason.
-      { key: 'timesheets', requires: 'timeclock', label: 'Timesheets', icon: 'pi pi-calendar-clock', to: '/timesheets', type: 'Operations', permission: 'scheduling.write', description: "Review and correct the crew's clock entries" },
+      // Timeclock and Timesheets moved to the Payroll category (2026-08-27):
+      // hours are payroll's input, and since v1.105.0 the Timesheets page is
+      // where a pay period is grouped, exported and sent. They keep their
+      // /timeclock and /timesheets routes, so bookmarks, Dispatch's "Fix"
+      // deep link and the timesheet bell notification all still resolve.
       { key: 'fleet', requires: 'equipment_tracking', label: 'Fleet', icon: 'pi pi-truck', to: '/fleet', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Vehicles' },
       { key: 'gps', requires: 'jobs', label: 'GPS', icon: 'pi pi-compass', to: '/gps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Live GPS' },
       { key: 'maps', requires: 'google_maps', label: 'Maps', icon: 'pi pi-globe', to: '/maps', type: 'Operations', permission: 'nav.office', cluster: 'fleet_hub', tabLabel: 'Map' },
@@ -141,9 +135,27 @@ export const MODULE_CATEGORIES = [
     key: 'payroll_comp',
     label: 'Payroll',
     icon: 'pi pi-money-bill',
+    // One sidebar row, four tabs (payroll_hub) — the same shape Billing and
+    // Fleet already use. ORDER IS LOAD-BEARING: collapseClusters places the
+    // hub at the first child's position and targets the first VISIBLE child,
+    // so Timesheets leading means the row opens on the screen the office
+    // actually uses, and someone without scheduling.write still lands on a
+    // tab they can read rather than a 403.
     modules: [
-      { key: 'payroll', label: 'Payroll', icon: 'pi pi-money-bill', to: '/payroll', type: 'Invoices', permission: 'payroll.read' },
-      { key: 'commissions', label: 'Commissions', icon: 'pi pi-percentage', to: '/commissions', type: 'Invoices', permission: 'nav.admin' },
+      // scheduling.write, not dispatch.read — `viewer` holds every `.read` key
+      // but fails the backend's is_dispatch_manager gate, so a read key here
+      // shows a nav entry whose every API call 403s. scheduling.write's holders
+      // match that gate exactly. See the route in router/index.js.
+      // `requires: timeclock` — the API is behind require_module("timeclock"),
+      // so a tenant that opted out of the module must not see a page whose
+      // every call would 403 for a different reason.
+      { key: 'timesheets', requires: 'timeclock', label: 'Timesheets', icon: 'pi pi-calendar-clock', to: '/timesheets', type: 'Operations', permission: 'scheduling.write', description: "Review, correct, export and send the crew's hours", cluster: 'payroll_hub', tabLabel: 'Timesheets' },
+      // Ungated on purpose (every role): this is a person's own clock. A
+      // technician who reaches it is redirected to /mobile/timeclock by the
+      // router guard, so the desktop entry is in practice an office surface.
+      { key: 'timeclock', label: 'Timeclock', icon: 'pi pi-clock', to: '/timeclock', type: 'Operations', cluster: 'payroll_hub', tabLabel: 'Time Clock' },
+      { key: 'payroll', label: 'Payroll', icon: 'pi pi-money-bill', to: '/payroll', type: 'Invoices', permission: 'payroll.read', cluster: 'payroll_hub', tabLabel: 'Pay Runs' },
+      { key: 'commissions', label: 'Commissions', icon: 'pi pi-percentage', to: '/commissions', type: 'Invoices', permission: 'nav.admin', cluster: 'payroll_hub', tabLabel: 'Commissions' },
     ],
   },
   {
@@ -256,6 +268,7 @@ export const NAV_CLUSTERS = [
   { key: 'marketing_hub', label: 'Marketing', icon: 'pi pi-megaphone', description: 'Campaigns, segments, automations, winback & loyalty' },
   { key: 'fleet_hub', label: 'Fleet', icon: 'pi pi-truck', description: 'Vehicles, live GPS & coverage map' },
   { key: 'loadsheets_hub', label: 'Load Sheets', icon: 'pi pi-check-square', description: 'Daily & delivery load sheets' },
+  { key: 'payroll_hub', label: 'Payroll', icon: 'pi pi-money-bill', description: "Timesheets, the crew's clock, pay periods & commissions" },
 ];
 
 export function clusterByKey(key) {

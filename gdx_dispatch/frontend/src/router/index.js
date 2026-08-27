@@ -225,7 +225,6 @@ export const routes = [
   //  second declaration silently won. Single declaration now.)
   { path: '/inventory', name: 'inventory', component: InventoryView },
   { path: '/door-listings', name: 'door-listings', component: DoorListingsView },
-  { path: '/timeclock', name: 'timeclock', component: TimeclockView },
   // Office timesheets — read + correct ANY tech's shifts.
   //
   // scheduling.write, NOT dispatch.read. dispatch.read was wrong twice over:
@@ -235,7 +234,6 @@ export const routes = [
   // guard, then two 403s and an empty page. scheduling.write's holders
   // (owner / admin / dispatcher) match DISPATCH_MANAGER_ROLES exactly, and
   // "create / edit schedule entries" is the right verb for correcting a clock.
-  { path: '/timesheets', name: 'timesheets', component: TimesheetsView, meta: { requiresPermission: 'scheduling.write' } },
   { path: '/equipment', name: 'equipment', component: EquipmentView },
   { path: '/communications', name: 'communications', component: CommunicationsView },
   // /voice → Phone.com (deduped 2026-04-29). Bookmark redirect.
@@ -286,6 +284,27 @@ export const routes = [
       { path: '/maps', name: 'maps', component: MapsView },
     ],
   },
+  // Payroll cluster — Timesheets / Time Clock / Pay Runs / Commissions under
+  // one tab bar. Every tab keeps its ORIGINAL absolute path, so bookmarks,
+  // Dispatch's "Fix timeclock" deep link (?entry=&on=), the tech redirect
+  // guard below (which matches `to.path === '/timeclock'`) and the timesheet
+  // bell notification all resolve exactly as before — this bar is
+  // presentation only.
+  //
+  // Child meta merges over parent meta in Vue Router, so the per-tab
+  // permission gates below still apply; the parent deliberately carries none,
+  // because /timeclock is ungated (a person's own clock).
+  {
+    path: '/timesheets',
+    component: ModuleTabsPage,
+    props: { clusterKey: 'payroll_hub' },
+    children: [
+      { path: '', name: 'timesheets', component: TimesheetsView, meta: { requiresPermission: 'scheduling.write' } },
+      { path: '/timeclock', name: 'timeclock', component: TimeclockView },
+      { path: '/payroll', name: 'payroll', component: PayrollView, meta: { requiresPermission: 'payroll.read' } },
+      { path: '/commissions', name: 'commissions', component: CommissionsView },
+    ],
+  },
   // Load-sheets cluster — Daily / Delivery under one tab bar.
   {
     path: '/daily-loadsheet',
@@ -333,7 +352,6 @@ export const routes = [
   { path: '/settings/integrations/outlook', name: 'outlook-settings', component: OutlookSettingsView },
   { path: '/inbox', name: 'inbox', component: InboxView },
   { path: '/job-templates', name: 'job-templates', component: JobTemplatesView },
-  { path: '/payroll', name: 'payroll', component: PayrollView, meta: { requiresPermission: 'payroll.read' } },
   { path: '/checklists', name: 'checklists', component: ChecklistsView },
   { path: '/service-agreements', name: 'service-agreements', component: ServiceAgreementsView },
   { path: '/maintenance', name: 'maintenance', component: MaintenanceView },
@@ -364,7 +382,6 @@ export const routes = [
   { path: '/custom-fields', name: 'custom-fields', component: CustomFieldsView, meta: { requiresPermission: 'settings.write' } },
   { path: '/pdf-templates', name: 'pdf-templates', component: PdfTemplateEditorView },
   { path: '/parts-to-order', name: 'parts-to-order', component: PartsToOrderView },
-  { path: '/commissions', name: 'commissions', component: CommissionsView },
   { path: '/variance-report', name: 'variance-report', component: VarianceReportView },
   { path: '/performance', name: 'performance', component: PerformanceView },
   { path: '/mobile', name: 'mobile', component: MobileTodayView, meta: { noSidebar: true } },
