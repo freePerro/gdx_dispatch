@@ -16,16 +16,6 @@
       </Toolbar>
 
       <div class="filter-row">
-        <Select
-          v-model="tagFilter"
-          :options="tagOptions"
-          option-label="label"
-          option-value="value"
-          placeholder="Filter by tag"
-          class="w-full"
-          show-clear
-          data-testid="segments-tag-filter"
-        />
         <DatePicker
           v-model="updatedRange"
           selection-mode="range"
@@ -98,9 +88,6 @@
         <Column field="customer_count" header="Customers" />
         <Column field="updated_at" header="Updated">
           <template #body="{ data }">{{ formatDate(data.updated_at) }}</template>
-        </Column>
-        <Column header="Tags">
-          <template #body="{ data }">{{ data.tags?.join(', ') || '—' }}</template>
         </Column>
         <Column header="Actions" style="width: 120px">
           <template #body="{ data }">
@@ -355,7 +342,6 @@ import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
-import Select from 'primevue/select';
 import Tab from 'primevue/tab';
 import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
@@ -371,7 +357,6 @@ const segments = ref([]);
 const loading = ref(true);
 const loadError = ref(null);
 const activeTab = ref('all');
-const tagFilter = ref(null);
 const updatedRange = ref(null);
 const recentOnly = ref(false);
 const showDialog = ref(false);
@@ -425,10 +410,6 @@ const tabCounts = computed(() =>
 const filteredSegments = computed(() => {
   let list = segments.value.slice().sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
 
-  if (tagFilter.value) {
-    list = list.filter((segment) => segment.tags?.includes(tagFilter.value));
-  }
-
   if (recentOnly.value) {
     list = list.filter((segment) => isWithinDays(segment.updated_at, 14));
   }
@@ -459,14 +440,6 @@ const filteredSegments = computed(() => {
 
   const matcher = tabMatchers[currentTabKey.value] || tabMatchers.all;
   return list.filter(matcher);
-});
-
-const tagOptions = computed(() => {
-  const tags = new Set();
-  segments.value.forEach((segment) => {
-    (segment.tags || []).forEach((tag) => tags.add(tag));
-  });
-  return Array.from(tags).map((tag) => ({ label: tag, value: tag }));
 });
 
 const customerPageCount = computed(() => {
