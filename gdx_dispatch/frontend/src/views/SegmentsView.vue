@@ -149,14 +149,6 @@
           <Button
             plain
             size="small"
-            label="Add Tag"
-            icon="pi pi-tag"
-            @click="openBulkTagDialog"
-            data-testid="segments-bulk-add-tag"
-          />
-          <Button
-            plain
-            size="small"
             label="Export CSV"
             icon="pi pi-file"
             @click="exportSelectedCustomers"
@@ -304,40 +296,6 @@
         </template>
       </Dialog>
 
-      <Dialog
-        v-model:visible="showBulkTagDialog"
-        header="Add tag to selected customers"
-        modal
-        :style="{ width: '460px' }"
-        data-testid="segments-bulk-tag-dialog"
-      >
-        <div class="form-field">
-          <label>Tag</label>
-          <InputText
-            v-model="bulkTagValue"
-            placeholder="Tag name"
-            class="w-full"
-            data-testid="segments-bulk-tag-input"
-          />
-        </div>
-        <template #footer>
-          <Button
-            label="Cancel"
-            severity="secondary"
-            @click="showBulkTagDialog = false"
-            data-testid="segments-bulk-tag-cancel"
-          />
-          <Button
-            label="Save"
-            icon="pi pi-check"
-            class="primary"
-            :loading="bulkTagging"
-            @click="saveBulkTag"
-            data-testid="segments-bulk-tag-save"
-          />
-        </template>
-      </Dialog>
-
     </section>
 </template>
 
@@ -396,9 +354,6 @@ const selectedCustomers = ref([]);
 const activeCustomerSegment = ref(null);
 const activeCustomerChipKey = ref('all');
 const allCustomersCount = ref(0);
-const showBulkTagDialog = ref(false);
-const bulkTagValue = ref('');
-const bulkTagging = ref(false);
 
 const tabDefinitions = [
   { key: 'all', label: 'All segments', note: 'Every saved segment in the library.' },
@@ -603,30 +558,6 @@ async function loadCustomers(segmentId = null) {
     customerPage.value = 1;
   } finally {
     customerLoading.value = false;
-  }
-}
-
-function openBulkTagDialog() {
-  bulkTagValue.value = '';
-  showBulkTagDialog.value = true;
-}
-
-async function saveBulkTag() {
-  const ids = selectedCustomerIds.value;
-  const tag = bulkTagValue.value.trim();
-  if (!ids.length || !tag) return;
-  bulkTagging.value = true;
-  try {
-    await api.post(
-      '/api/customers/bulk-tag',
-      { customer_ids: ids, tag },
-      { successMessage: 'Tag applied to selected customers' }
-    );
-    showBulkTagDialog.value = false;
-    bulkTagValue.value = '';
-    clearCustomerSelection();
-  } finally {
-    bulkTagging.value = false;
   }
 }
 

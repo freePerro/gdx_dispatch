@@ -78,12 +78,6 @@ def customer_optout(customer_id: str, request: Request, user: dict = Depends(get
     return {"ok": True, "opted_out": True}
 
 
-@router.post("/api/customers/bulk-tag")
-def customers_bulk_tag(payload: dict, user: dict = Depends(get_current_user)):
-    customer_ids = payload.get("customer_ids", [])
-    return {"ok": True, "tagged": len(customer_ids)}
-
-
 @router.get("/api/jobs/{job_id}/line-items")
 def job_line_items(job_id: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
