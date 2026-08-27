@@ -92,7 +92,7 @@
         <Column field="name" header="Name" />
         <Column field="criteria_summary" header="Criteria">
           <template #body="{ data }">
-            {{ data.criteria_summary || truncateCriteria(data.criteria) }}
+            {{ summarizeRules(data.rules) }}
           </template>
         </Column>
         <Column field="customer_count" header="Customers" />
@@ -268,22 +268,79 @@
             />
           </div>
           <div class="form-field full-width">
-            <label>Criteria (JSON)</label>
-            <Textarea
-              v-model="segmentForm.criteria"
-              rows="4"
+            <label>Customers match</label>
+            <Select
+              v-model="segmentForm.match"
+              :options="matchOptions"
+              option-label="label"
+              option-value="value"
               class="w-full"
-              data-testid="segments-dialog-criteria"
+              :disabled="editingBuiltin"
+              data-testid="segments-dialog-match"
             />
           </div>
           <div class="form-field full-width">
-            <label>Tags</label>
-            <Chips
-              v-model="segmentForm.tags"
-              class="w-full"
-              placeholder="Add tags"
-              data-testid="segments-dialog-tags"
+            <label>Rules</label>
+            <div
+              v-for="(rule, index) in segmentForm.rules"
+              :key="index"
+              class="rule-row"
+              :data-testid="`segments-rule-${index}`"
+            >
+              <Select
+                :model-value="rule.field"
+                @update:model-value="(v) => setRuleField(rule, v)"
+                :options="fieldOptions"
+                option-label="label"
+                option-value="value"
+                :disabled="editingBuiltin"
+                :data-testid="`segments-rule-field-${index}`"
+              />
+              <Select
+                v-model="rule.operator"
+                :options="operatorOptions(rule.field)"
+                option-label="label"
+                option-value="value"
+                :disabled="editingBuiltin"
+                :data-testid="`segments-rule-operator-${index}`"
+              />
+              <InputText
+                v-if="fieldType(rule.field) === 'text'"
+                v-model="rule.value"
+                placeholder="Value"
+                :disabled="editingBuiltin"
+                :data-testid="`segments-rule-value-${index}`"
+              />
+              <InputNumber
+                v-else
+                v-model="rule.value"
+                :min="0"
+                :suffix="fieldType(rule.field) === 'date' ? ' days' : undefined"
+                :disabled="editingBuiltin"
+                :data-testid="`segments-rule-value-${index}`"
+              />
+              <Button
+                icon="pi pi-times"
+                aria-label="Remove rule"
+                text
+                severity="secondary"
+                :disabled="editingBuiltin || segmentForm.rules.length <= 1"
+                @click="removeRule(index)"
+                :data-testid="`segments-rule-remove-${index}`"
+              />
+            </div>
+            <Button
+              label="Add rule"
+              icon="pi pi-plus"
+              text
+              size="small"
+              class="add-rule"
+              :disabled="editingBuiltin"
+              @click="addRule"
+              data-testid="segments-rule-add"
             />
+            <small v-if="editingBuiltin" class="form-hint">Built-in segments can't be edited.</small>
+            <small v-else-if="rulesError" class="form-error" data-testid="segments-rules-error">{{ rulesError }}</small>
           </div>
         </div>
         <template #footer>
@@ -299,6 +356,7 @@
             class="primary"
             @click="saveSegment"
             :loading="savingSegment"
+            :disabled="editingBuiltin"
             data-testid="segments-dialog-save"
           />
         </template>
@@ -348,11 +406,11 @@ import { useRouter } from 'vue-router';
 import EmptyState from '../components/EmptyState.vue';
 import Button from 'primevue/button';
 import Toolbar from 'primevue/toolbar';
-import Chips from 'primevue/chips';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
 import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
+import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
@@ -361,7 +419,6 @@ import TabList from 'primevue/tablist';
 import TabPanel from 'primevue/tabpanel';
 import TabPanels from 'primevue/tabpanels';
 import Tabs from 'primevue/tabs';
-import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
 const api = useApiWithToast();
@@ -378,11 +435,88 @@ const showDialog = ref(false);
 const editingSegment = ref(null);
 const savingSegment = ref(false);
 
+// Mirrors the fields/operators the backend matcher understands
+// (routers/segments.py `_rule_match`). Do not add operators it lacks.
+const DATE_OPERATORS = [
+  { label: 'older than', value: 'older_than' },
+  { label: 'within the last', value: 'within_last' },
+];
+const NUMBER_OPERATORS = [
+  { label: 'greater than', value: 'greater_than' },
+  { label: 'less than', value: 'less_than' },
+  { label: 'equals', value: 'equals' },
+];
+const TEXT_OPERATORS = [{ label: 'equals', value: 'equals' }];
+const RULE_FIELDS = [
+  { label: 'Last job', value: 'last_job_date', type: 'date', operators: DATE_OPERATORS },
+  { label: 'Customer since', value: 'created_at', type: 'date', operators: DATE_OPERATORS },
+  { label: 'Lifetime value ($)', value: 'lifetime_value', type: 'number', operators: NUMBER_OPERATORS },
+  { label: 'Customer type', value: 'customer_type', type: 'text', operators: TEXT_OPERATORS },
+];
+const FIELD_BY_VALUE = Object.fromEntries(RULE_FIELDS.map((f) => [f.value, f]));
+const fieldOptions = RULE_FIELDS.map(({ label, value }) => ({ label, value }));
+const matchOptions = [
+  { label: 'all of the rules', value: 'all' },
+  { label: 'any of the rules', value: 'any' },
+];
+
+function fieldType(field) {
+  return FIELD_BY_VALUE[field]?.type || 'text';
+}
+
+function operatorOptions(field) {
+  return FIELD_BY_VALUE[field]?.operators || TEXT_OPERATORS;
+}
+
+function blankRule() {
+  return { field: 'last_job_date', operator: 'older_than', value: null };
+}
+
+function setRuleField(rule, field) {
+  rule.field = field;
+  const ops = operatorOptions(field);
+  if (!ops.some((op) => op.value === rule.operator)) rule.operator = ops[0].value;
+  rule.value = null;
+}
+
+// Backend accepts either a bare {field, operator, value} or
+// {match, rules: [...]}; normalise both into the form shape.
+function rulesToForm(rules) {
+  const list = Array.isArray(rules?.rules) ? rules.rules : rules?.field ? [rules] : [];
+  const match = String(rules?.match || 'all').toLowerCase() === 'any' ? 'any' : 'all';
+  const formRules = list.map((rule) => {
+    const type = fieldType(rule.field);
+    let value = rule.value ?? null;
+    if (type === 'date') {
+      const digits = String(value ?? '').match(/\d+/);
+      value = digits ? Number(digits[0]) : null;
+    } else if (type === 'number') {
+      value = value == null || value === '' || Number.isNaN(Number(value)) ? null : Number(value);
+    }
+    return { field: rule.field, operator: rule.operator, value };
+  });
+  return { match, rules: formRules.length ? formRules : [blankRule()] };
+}
+
+function summarizeRules(rules) {
+  const { match, rules: list } = rulesToForm(rules);
+  if (!rules || !list.length) return '—';
+  const parts = list.map((rule) => {
+    const field = FIELD_BY_VALUE[rule.field]?.label || rule.field;
+    const op = operatorOptions(rule.field).find((o) => o.value === rule.operator)?.label || rule.operator;
+    const unit = fieldType(rule.field) === 'date' ? ' days' : '';
+    return `${field} ${op} ${rule.value ?? '?'}${unit}`;
+  });
+  return parts.join(match === 'any' ? ' OR ' : ' AND ');
+}
+
 const segmentForm = ref({
   name: '',
-  criteria: '',
-  tags: [],
+  match: 'all',
+  rules: [blankRule()],
 });
+const rulesError = ref('');
+const editingBuiltin = computed(() => Boolean(editingSegment.value?.is_builtin));
 
 const CUSTOMER_PAGE_SIZE = 25;
 // 2026-04-29: was 250, capping the embedded customers list at ~250 rows
@@ -549,11 +683,6 @@ function buildTabHeader(tab) {
   return count ? `${tab.label} (${count})` : tab.label;
 }
 
-function truncateCriteria(value) {
-  if (!value) return '—';
-  return value.length > 60 ? `${value.slice(0, 57)}…` : value;
-}
-
 function formatDate(value) {
   return value ? value.split('T')[0] : '—';
 }
@@ -670,9 +799,9 @@ function openSegmentDialog(segment = null) {
   editingSegment.value = segment;
   segmentForm.value = {
     name: segment?.name || '',
-    criteria: segment?.criteria || '',
-    tags: segment?.tags ? [...segment.tags] : [],
+    ...rulesToForm(segment?.rules),
   };
+  rulesError.value = '';
   showDialog.value = true;
 }
 
@@ -681,14 +810,32 @@ function closeSegmentDialog() {
   editingSegment.value = null;
 }
 
+function addRule() {
+  segmentForm.value.rules.push(blankRule());
+}
+
+function removeRule(index) {
+  if (segmentForm.value.rules.length <= 1) return;
+  segmentForm.value.rules.splice(index, 1);
+}
+
 async function saveSegment() {
-  if (!segmentForm.value.name.trim()) return;
+  if (!segmentForm.value.name.trim() || editingBuiltin.value) return;
+  const rules = segmentForm.value.rules.map((rule) => ({
+    field: rule.field,
+    operator: rule.operator,
+    value: fieldType(rule.field) === 'text' ? String(rule.value ?? '').trim() : rule.value,
+  }));
+  if (rules.some((rule) => rule.value === null || rule.value === '')) {
+    rulesError.value = 'Every rule needs a value.';
+    return;
+  }
+  rulesError.value = '';
   savingSegment.value = true;
   try {
     const payload = {
       name: segmentForm.value.name.trim(),
-      criteria: segmentForm.value.criteria,
-      tags: segmentForm.value.tags || [],
+      rules: { match: segmentForm.value.match, rules },
     };
     if (editingSegment.value?.id) {
       await api.patch(`/api/segments/${editingSegment.value.id}`, payload, { successMessage: 'Segment updated' });
@@ -756,6 +903,38 @@ onMounted(() => {
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.rule-row :deep(.p-inputnumber),
+.rule-row :deep(.p-inputtext) {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .rule-row {
+    grid-template-columns: 1fr auto;
+  }
+}
+
+.add-rule {
+  align-self: flex-start;
+}
+
+.form-hint {
+  color: var(--p-text-muted-color);
+}
+
+.form-error {
+  color: var(--p-red-500, #ef4444);
 }
 
 .spinner-wrap {
