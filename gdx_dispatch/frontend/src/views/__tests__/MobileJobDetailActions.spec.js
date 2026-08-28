@@ -404,6 +404,51 @@ describe("view-only grants (2026-08-17 field report)", () => {
     expect(w.find('[data-testid="mjd-readonly-banner"]').exists()).toBe(false);
     expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(true);
   });
+
+  // 2026-08-28 field report: the tech who created the job on site, with
+  // "Assign to me" switched off, could not add photos — the Add-photo label
+  // sat behind the same v-if as the clocks. The server now says which
+  // writes a grant keeps; the screen follows it, not the read_only bit.
+  it("creator grant keeps Add photo when the server says can_add_photos", async () => {
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "creator", can_add_photos: true });
+    expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-photo-add"]').exists()).toBe(true);
+  });
+
+  it("company grant hides Add photo when the server withholds it", async () => {
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "company", can_add_photos: false });
+    expect(w.find('[data-testid="mjd-photo-add"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mjd-claim"]').exists()).toBe(false);
+  });
+
+  it("creator grant offers Assign to me; the tap claims and reloads the writable screen", async () => {
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "creator", can_add_photos: true });
+    const btn = w.find('[data-testid="mjd-claim"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.text()).toContain("Assign to me");
+
+    postMock.mockResolvedValueOnce({ ok: true, assigned_to: "tech-1", access_grant: "assigned" });
+    // After the claim the server answers with the assigned, writable shape.
+    getMock.mockImplementation(async () => ({ ...jobPayload({ dispatch_status: "assigned" }), read_only: false, access_grant: "assigned" }));
+    await btn.trigger("click");
+    await flushPromises();
+
+    expect(postMock).toHaveBeenCalledWith("/api/mobile/jobs/job-123/claim");
+    expect(w.find('[data-testid="mjd-readonly-banner"]').exists()).toBe(false);
+    expect(w.find('[data-testid="mobile-job-detail-actions"]').exists()).toBe(true);
+  });
+
+  it("a 409 on claim says dispatch already assigned it, and the screen stays read-only", async () => {
+    const w = await mountPayloadExtra({ read_only: true, access_grant: "creator", can_add_photos: true });
+    postMock.mockRejectedValueOnce(Object.assign(new Error("Conflict"), { status: 409 }));
+    await w.find('[data-testid="mjd-claim"]').trigger("click");
+    await flushPromises();
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
+      severity: "error",
+      detail: expect.stringContaining("already assigned"),
+    }));
+    expect(w.find('[data-testid="mjd-readonly-banner"]').exists()).toBe(true);
+  });
 });
 
 describe("both clocks — the tech must never guess which one pays", () => {

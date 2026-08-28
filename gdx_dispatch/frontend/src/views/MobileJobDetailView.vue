@@ -48,11 +48,28 @@
            own new job while every tap said "job not found". -->
       <div v-if="readOnly" class="readonly-banner" data-testid="mjd-readonly-banner">
         <i class="pi pi-lock" />
-        <span v-if="accessGrant === 'creator'">
-          You created this job but it isn't assigned to you — dispatch will
-          schedule and assign it. View only until then.
-        </span>
-        <span v-else>View only — this job isn't assigned to you.</span>
+        <div class="readonly-body">
+          <span v-if="accessGrant === 'creator'">
+            You created this job but it isn't assigned to you — dispatch will
+            schedule and assign it. You can add photos now; everything else
+            waits for the assignment.
+          </span>
+          <span v-else>View only — this job isn't assigned to you.</span>
+          <!-- The 2026-08-28 field report: "Assign to me" switched off at
+               create left the tech staring at his own job with no way back
+               in. Same semantics as the create-time toggle — the CALLER's own
+               technician record, never a chosen one — and only while the job
+               is still unassigned (the server re-checks). -->
+          <Button
+            v-if="accessGrant === 'creator'"
+            label="Assign to me — I'm doing this work"
+            icon="pi pi-user-plus"
+            size="small"
+            :loading="claiming"
+            data-testid="mjd-claim"
+            @click="claimJob"
+          />
+        </div>
       </div>
 
       <!-- PR A: job context the Today card always showed and this screen never
@@ -428,7 +445,11 @@
              AND locks the tech out of the gallery, so a photo taken before the
              app was open can never be attached. Bare accept="image/*" makes
              Android offer Camera or Files, which is both. -->
-        <label v-if="!readOnly" class="photo-add" data-testid="mjd-photo-add">
+        <!-- canAddPhotos comes from the server: a creator-grant view is
+             read-only for clocks/status (payroll evidence) but a photo of the
+             door is not evidence of hours — the tech standing at it is the
+             only person who can take it. -->
+        <label v-if="!readOnly || canAddPhotos" class="photo-add" data-testid="mjd-photo-add">
           <input
             ref="photoInput"
             type="file"
@@ -971,6 +992,8 @@ const doorSpecs = ref([])
 // leaving the tech staring at a job he just created with no buttons on it.
 const readOnly = ref(false)
 const accessGrant = ref('')
+const canAddPhotos = ref(false)
+const claiming = ref(false)
 const advancing = ref(false)
 const closeoutOpen = ref(false)
 
@@ -1199,6 +1222,7 @@ async function load() {
     doorSpecs.value = r?.door_specs || []
     readOnly.value = Boolean(r?.read_only)
     accessGrant.value = r?.access_grant || ''
+    canAddPhotos.value = Boolean(r?.can_add_photos)
     clocks.value = r?.clocks || emptyClocks()
     if (!job.value) error.value = 'Job not found'
     // Opening the job IS seeing the parts — this screen lists them. Closes the
@@ -1226,6 +1250,33 @@ async function load() {
 // dead-zone refetch through load() means the tech taps "On my way", is told
 // "Saved offline", and then watches the job vanish — the write succeeded and
 // the screen broke anyway. Keep what we have; the queue will drain later.
+/**
+ * Creator-grant escape hatch: put the caller's own technician record on the
+ * job. Not queued — the answer changes what the screen IS (read-only → the
+ * full action bar), so we need the server's verdict, then a full load() to
+ * pick up read_only/access_grant (refresh() deliberately doesn't re-read them).
+ */
+async function claimJob() {
+  if (!job.value?.id || claiming.value) return
+  claiming.value = true
+  try {
+    await api.post(`/api/mobile/jobs/${job.value.id}/claim`)
+    toast.add({ severity: 'success', summary: 'Assigned to you', detail: 'You can start it now.', life: 2500 })
+    await load()
+  } catch (err) {
+    toast.add({
+      severity: 'error',
+      summary: 'Could not assign',
+      detail: err?.status === 409
+        ? 'Dispatch already assigned this job to someone else.'
+        : (err?.message || 'Try again with signal.'),
+      life: 5000,
+    })
+  } finally {
+    claiming.value = false
+  }
+}
+
 async function refresh() {
   try {
     const r = await api.get(`/api/mobile/job/${route.params.id}`)
@@ -2170,6 +2221,8 @@ onMounted(() => {
   color: var(--p-text-muted-color, #6b7280);
 }
 .readonly-banner .pi { margin-top: 0.1rem; }
+.readonly-banner .readonly-body { display: flex; flex-direction: column; gap: 0.5rem; }
+.readonly-banner .readonly-body :deep(.p-button) { align-self: flex-start; }
 
 /* ── PR A: job context, customer warnings, installed equipment ────────
    Theme tokens throughout, never literal colors: this screen is used in a

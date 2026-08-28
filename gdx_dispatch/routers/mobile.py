@@ -2591,6 +2591,15 @@ def get_mobile_job_detail(
             # read-only instead of just hiding the buttons.
             "read_only": grant in ("company", "creator"),
             "access_grant": grant,
+            # Photos are the one write a creator-grant view keeps. The reason
+            # creator access carries no write path is payroll: clock and
+            # status data are hours evidence and must come from the assigned
+            # tech. A picture of the door is not evidence of hours, and the
+            # tech standing in front of it is the only person who can take it.
+            # The 2026-08-28 field report was a tech who created the job on
+            # site, saw no Add-photo control, and gave up. Company-wide
+            # browsing stays photo-less: that tech isn't at the door.
+            "can_add_photos": grant in ("manager", "assigned", "creator"),
             # Both clocks, so the job screen can render a state-reflecting
             # toggle instead of a Start button that 409s on an arrived job.
             # Scoped to the caller: another tech's running timer on the same
@@ -2598,6 +2607,89 @@ def get_mobile_job_detail(
             "clocks": _clock_states(db, tenant_id, _user_id(current_user or {}), job_id=job_id),
         }
     )
+
+
+@router.post("/jobs/{job_id}/claim", response_model=None)
+def mobile_job_claim(
+    job_id: str,
+    request: Request,
+    current_user: Any = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Put the CALLER's own technician record on a job they created.
+
+    The create dialog's "Assign to me" toggle, one screen later. When it was
+    switched off at create the tech landed on a creator-grant view with no
+    way back in (2026-08-28 field report) — every write 404'd behind the
+    assignment gate and the only fix was to phone dispatch.
+
+    Same rules as ``assign_to_me`` on POST /api/jobs: the technician id is
+    resolved from the caller, never taken from the request; explicit
+    dispatch assignment always wins. Allowed ONLY under the creator grant —
+    the job is the caller's own, still unassigned, no live assignment rows.
+    A job dispatch has since handed to someone else answers 409, not a
+    silent reassign; anything else is opaque 404 like every other gate.
+    """
+    tenant_id = _tenant_id(request)
+    user = current_user or {}
+    user_id = _user_id(user)
+    job = _get_job(db, tenant_id, job_id)
+    if not job:
+        return jsonable_response({"detail": "job not found"}, 404)
+    technician_id = _get_technician_id(db, tenant_id, user_id)
+    if not technician_id:
+        return jsonable_response({"detail": "no technician record for this account"}, 409)
+
+    # Already theirs (a double tap, or dispatch beat them to it with the same
+    # answer): idempotent success, no second assignment row.
+    if _job_belongs_to_user(db, tenant_id, job_id, user_id, technician_id):
+        return jsonable_response({"ok": True, "assigned_to": technician_id, "access_grant": "assigned"})
+
+    if not _creator_can_read(db, tenant_id, job_id, user_id):
+        # Their job, but dispatch assigned it elsewhere while they looked at
+        # it — say so. Not their job at all — say nothing (404, like reads).
+        is_creator = bool(db.execute(
+            _text(
+                "SELECT 1 FROM jobs WHERE id = :j AND company_id = :t "
+                "AND deleted_at IS NULL AND CAST(created_by AS TEXT) = :u LIMIT 1"
+            ),
+            {"j": str(job_id), "t": tenant_id, "u": str(user_id)},
+        ).scalar())
+        if is_creator:
+            return jsonable_response({"detail": "job already assigned by dispatch"}, 409)
+        return jsonable_response({"detail": "job not found"}, 404)
+
+    from gdx_dispatch.routers.jobs import _set_job_assignments  # noqa: PLC0415 — lazy: jobs imports mobile
+
+    _set_job_assignments(
+        db,
+        job_id=str(job_id),
+        tech_ids=[technician_id],
+        lead_tech_id=None,
+        user_id=user_id,
+    )
+    try:
+        _jid = _UUID(job_id)
+    except (ValueError, AttributeError):
+        _jid = None
+    if _jid is not None:
+        _job_obj = db.execute(
+            select(Job).where(Job.id == _jid, Job.deleted_at.is_(None))
+        ).scalar_one_or_none()
+        if _job_obj is not None and (_job_obj.dispatch_status or "unassigned") == "unassigned":
+            _job_obj.dispatch_status = "assigned"
+    _audit_state_change(
+        db,
+        event_type="job_self_assigned",
+        actor_id=user_id,
+        entity_type="job",
+        entity_id=str(job_id),
+        payload={"assigned_to": technician_id, "self_assigned": True, "via": "mobile_claim"},
+        request=request,
+        actor_role=str(user.get("role") or "") or None,
+    )
+    db.commit()
+    return jsonable_response({"ok": True, "assigned_to": technician_id, "access_grant": "assigned"})
 
 
 @router.post("/jobs/{job_id}/en-route", response_model=None)
