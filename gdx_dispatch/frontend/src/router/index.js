@@ -514,7 +514,11 @@ export function createAppRouter() {
       // Tech role gets redirected from desktop-shaped jobs/dispatch/planner
       // surfaces to their mobile-shaped equivalents. /jobs has a card-based
       // /mobile/jobs alternative; everything else falls back to /mobile.
-      const isTech = isTechnician(auth.user?.role);
+      // user.role comes from the persisted /api/users/me snapshot; the JWT
+      // role claim (auth.role) is there the instant a token is, so a cold
+      // load with a token but no cached user still redirects (a throwaway
+      // walk on 2026-08-28 landed a tech on the desktop job page this way).
+      const isTech = isTechnician(auth.user?.role || auth.role);
       if (isTech) {
         // Tech role: redirect from desktop-shaped surfaces to mobile.
         // /jobs has a card-based mobile equivalent; everything else

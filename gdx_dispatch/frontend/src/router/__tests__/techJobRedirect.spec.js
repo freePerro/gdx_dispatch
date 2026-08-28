@@ -45,6 +45,16 @@ describe('technician /jobs/:id redirect', () => {
     expect(current.path).toBe('/mobile/jobs/abc');
   });
 
+  it('redirects on the JWT role claim alone when no user snapshot is cached', async () => {
+    // Cold load: token in sessionStorage, gdx_user absent. The guard must
+    // not wait for /api/users/me.
+    const payload = btoa(JSON.stringify({ sub: 'u1', role: 'technician' })).replace(/=+$/, '');
+    auth.accessToken = `hdr.${payload}.sig`;
+    auth.user = null;
+    const current = await navigate('/jobs/abc');
+    expect(current.path).toBe('/mobile/jobs/abc');
+  });
+
   it('leaves an office user on the desktop job page', async () => {
     auth.user = { name: 'Office', role: 'dispatcher' };
     const current = await navigate('/jobs/abc');
