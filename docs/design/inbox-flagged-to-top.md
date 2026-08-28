@@ -71,9 +71,9 @@ match the belief, not a captured link. Replaced by the one-shot
   and five custom folders. Headed browser walk as the auditor account: the three visible flagged
   messages (Aug 21, Mar 11, Dec 23) sit above Aug 27 mail, flag icon + orange rail, ⋯ menu shows
   **Flag** on an unflagged row; light and dark both clean; footer reads v1.107.0.
-- Not proven on prod: the GDX→Outlook write (needs the mailbox owner's session — the auditor has
-  no Outlook account, so `/flag` 404s for it by design). Doug: flag one message from GDX and check
-  Outlook.
+- GDX→Outlook write: **owner-confirmed 2026-08-28** ("flags work good"). (The auditor has
+  no Outlook account, so `/flag` 404s for it by design — only the owner session can prove it, and it
+  did.)
 - Side finding: the re-walk re-collected vendor-bill candidates and one allow-listed message fails
   `upload_midwest_invoice` with a `varchar(60)` truncation every time — pre-existing, isolated per
   message, filed separately.
