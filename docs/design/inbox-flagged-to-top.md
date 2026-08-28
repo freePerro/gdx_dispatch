@@ -1,6 +1,6 @@
 # Inbox: Outlook flag mirrors + flagged mail sorts to the top
 
-Status: **BUILT — PR #510 OPEN** (2026-08-27). Not yet merged, released, or walked on prod.
+Status: **RELEASED v1.107.0** (MERGED #510, 2026-08-27; prod + demo 2026-08-28). Prod walk: see §Walk.
 
 ## What already exists (do not rebuild)
 
