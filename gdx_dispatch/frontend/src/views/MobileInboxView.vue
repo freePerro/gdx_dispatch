@@ -57,11 +57,12 @@
           v-for="m in messages"
           :key="m.id"
           class="msg-card"
-          :class="{ unread: !m.is_read }"
+          :class="{ unread: !m.is_read, flagged: m.is_flagged }"
           @click="openMessage(m)"
           data-test="mi-msg-row"
         >
           <div class="msg-row">
+            <i v-if="m.is_flagged" class="pi pi-flag-fill msg-flag" aria-label="Flagged" data-test="mi-row-flag" />
             <span class="msg-from">{{ m.from_address || m.from_name || '—' }}</span>
             <span class="msg-when">{{ fmtAgo(m.received_at || m.sent_at) }}</span>
           </div>
@@ -88,6 +89,7 @@
         v-model:visible="detailOpen"
         :header="detail?.subject || 'Message'"
         modal
+        class="mi-detail-dialog"
         :style="{ width: '100vw', height: '100dvh' }"
         :breakpoints="{ '768px': '100vw' }"
         position="bottom"
@@ -164,6 +166,7 @@
           <Button v-if="detail && detail.viewer_is_owner && composeMode !== 'forward'" label="Forward" icon="pi pi-share-alt" severity="secondary" text @click="startForward" data-test="mi-forward-open" />
           <Button v-if="detail" label="Task" icon="pi pi-check-square" severity="secondary" text :loading="taskSaving" @click="createTaskFromEmail" data-test="mi-create-task" />
           <Button v-if="detail && !detail.is_read" label="Mark unread later" icon="pi pi-eye-slash" severity="secondary" text @click="markUnread" data-test="mi-mark-unread" />
+          <Button v-if="detail" :label="detail.is_flagged ? 'Unflag' : 'Flag'" :icon="detail.is_flagged ? 'pi pi-flag' : 'pi pi-flag-fill'" severity="secondary" text :loading="flagSaving" @click="toggleFlag" data-test="mi-toggle-flag" />
           <!-- Owner-only privacy override; server 403s non-owners. -->
           <Button
             v-if="detail && detail.viewer_is_owner"
@@ -587,6 +590,24 @@ async function togglePersonal() {
   }
 }
 
+const flagSaving = ref(false)
+async function toggleFlag() {
+  if (!detail.value) return
+  const want = !detail.value.is_flagged
+  flagSaving.value = true
+  try {
+    await api.patch(`/api/outlook/messages/${detail.value.id}/flag`, { is_flagged: want })
+    detail.value.is_flagged = want
+    const row = messages.value.find((m) => m.id === detail.value.id)
+    if (row) row.is_flagged = want
+    toast.add({ severity: 'success', summary: want ? 'Flagged' : 'Unflagged', life: 2000 })
+  } catch (err) {
+    toast.add({ severity: 'error', summary: 'Failed', detail: err.message, life: 3000 })
+  } finally {
+    flagSaving.value = false
+  }
+}
+
 async function markUnread() {
   if (!detail.value) return
   try {
@@ -706,6 +727,8 @@ onMounted(() => {
   gap: 0.2rem;
 }
 
+.msg-card.flagged { border-left: 3px solid var(--p-orange-500, #f97316); }
+.msg-flag { color: var(--p-orange-500, #f97316); font-size: 0.8rem; margin-right: 0.3rem; }
 .msg-card.unread {
   border-left: 3px solid var(--p-primary-color, #2563eb);
   font-weight: 500;
@@ -945,4 +968,18 @@ onMounted(() => {
 }
 .thread-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-when { flex-shrink: 0; font-size: 0.75rem; color: var(--p-text-muted-color, #6b7280); }
+</style>
+
+<style>
+/* Unscoped on purpose: PrimeVue teleports the Dialog to <body>, so a scoped
+   selector never reaches its footer. Seven actions (Reply, Forward, Task,
+   Mark unread, Flag, Personal, Close) do not fit one row at 390px — without
+   wrap the labels broke mid-word ("Mar unrea late") in the 2026-08-27 walk. */
+.mi-detail-dialog .p-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.35rem;
+  justify-content: flex-start;
+}
+.mi-detail-dialog .p-dialog-footer .p-button { white-space: nowrap; }
 </style>

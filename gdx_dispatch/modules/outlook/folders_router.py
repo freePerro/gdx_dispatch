@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from gdx_dispatch.core.audit import log_audit_event_sync
 from gdx_dispatch.core.database import get_db, get_db
 from gdx_dispatch.core.modules import require_module
 from gdx_dispatch.modules.outlook.graph_client import OutlookGraphAPIError
@@ -88,6 +89,10 @@ class MessageMoveIn(BaseModel):
 
 class MessageReadIn(BaseModel):
     is_read: bool
+
+
+class MessageFlagIn(BaseModel):
+    is_flagged: bool
 
 
 class GenericOk(BaseModel):
@@ -511,6 +516,52 @@ def patch_message_read_route(
     except OutlookGraphAPIError as exc:
         raise HTTPException(status_code=502, detail=f"Graph error: {exc.status_code}") from exc
     msg.is_read = payload.is_read
+    tenant_db.commit()
+    return GenericOk(ok=True)
+
+
+@router.patch(
+    "/messages/{message_id}/flag",
+    response_model=GenericOk,
+    dependencies=[Depends(require_module("email"))],
+)
+def patch_message_flag_route(
+    message_id: UUID,
+    payload: MessageFlagIn,
+    user: dict[str, Any] = Depends(get_current_user),
+    tenant_db: Session = Depends(get_db),
+    control_db: Session = Depends(get_db),
+) -> GenericOk:
+    """Flag / unflag a message in Microsoft first, then the local mirror.
+
+    Microsoft is written FIRST and the mirror only on success, so the two can
+    never disagree in the direction that matters: a flag the office sees
+    pinned here is one Outlook shows too. The delta sync carries the same
+    field back, so a flag set in Outlook lands here on the next cycle.
+    """
+    uid = _user_id(user)
+    tid = _tenant_id(user)
+    account = _account_for_user(tenant_db, uid)
+    msg = tenant_db.get(OutlookMessage, message_id)
+    if msg is None or msg.account_id != account.id:
+        raise HTTPException(status_code=404, detail="message not found")
+    try:
+        with with_outlook_client(control_db, tenant_db, uid, tid) as gc:
+            gc.set_message_flag(msg.graph_message_id, flagged=payload.is_flagged)
+    except OutlookReconnectRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OutlookGraphAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"Graph error: {exc.status_code}") from exc
+    msg.is_flagged = payload.is_flagged
+    log_audit_event_sync(
+        tenant_db,
+        tenant_id=tid,
+        user_id=uid,
+        action="outlook.message.flag" if payload.is_flagged else "outlook.message.unflag",
+        entity_type="outlook_message",
+        entity_id=str(msg.id),
+        details={"graph_message_id": msg.graph_message_id, "is_flagged": payload.is_flagged},
+    )
     tenant_db.commit()
     return GenericOk(ok=True)
 

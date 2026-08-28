@@ -1171,3 +1171,71 @@ def test_sync_health_endpoint_exposes_detector_output(app):
     assert body["status"] == "unhealthy"
     assert "Archive" in body["problems"][0]
     assert body["newest_sync_at"].startswith("2026-08-04")
+
+
+# ── follow-up flag (2026-08-27) ─────────────────────────────────────────
+
+
+def test_list_messages_serializes_is_flagged(app):
+    client, tdb = app
+    m = _msg()
+    m.is_flagged = True
+    _set_raw_rows(tdb, [m])
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", return_value=[m]):
+        r = client.get("/api/outlook/messages")
+    assert r.status_code == 200
+    assert r.json()["items"][0]["is_flagged"] is True
+
+
+def test_list_messages_orders_flagged_first_against_a_real_db(monkeypatch):
+    """Server-side, not just in the SPA — so the order holds across pages.
+    Runs the real query against SQLite: an older flagged message must come
+    before a newer unflagged one, and the tiebreak inside each group stays
+    newest-first. A MagicMock cannot fail this; a database can."""
+    import gdx_dispatch.models  # noqa: F401 — registers jobs/customers for the FKs
+    from datetime import timedelta
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    monkeypatch.setenv("JWT_SECRET", "x" * 64)
+    # StaticPool: an in-memory SQLite is per-connection; TestClient's thread
+    # would otherwise open a fresh, empty database.
+    eng = create_engine(
+        "sqlite://", future=True, poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    OutlookMessage.metadata.create_all(eng)
+    Sess = sessionmaker(bind=eng, future=True)
+    db = Sess()
+    base = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    acct = uuid4()
+    rows = [
+        ("newest unflagged", base + timedelta(days=4), False),
+        ("old flagged", base + timedelta(days=1), True),
+        ("older flagged", base, True),
+        ("middle unflagged", base + timedelta(days=2), False),
+    ]
+    for subject, when, flagged in rows:
+        m = _msg(account_id=acct, subject=subject, received_at=when)
+        m.graph_message_id = subject
+        m.is_flagged = flagged
+        db.add(m)
+    db.commit()
+
+    app = FastAPI()
+    app.include_router(views_router)
+    app.dependency_overrides[get_user_for_views] = _user
+    app.dependency_overrides[get_db_for_views] = lambda: db
+    app.dependency_overrides[get_current_user] = _user
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[require_module("email")] = lambda: None
+    client = TestClient(app)
+    with patch("gdx_dispatch.modules.outlook.views_router.filter_visible", side_effect=lambda rows, *a, **k: rows), \
+         patch("gdx_dispatch.modules.outlook.views_router._load_tech_emails", return_value=set()):
+        r = client.get("/api/outlook/messages?limit=10")
+    assert r.status_code == 200, r.text
+    assert [i["subject"] for i in r.json()["items"]] == [
+        "old flagged", "older flagged", "newest unflagged", "middle unflagged",
+    ]

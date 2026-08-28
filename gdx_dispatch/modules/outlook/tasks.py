@@ -248,6 +248,10 @@ def _persist_messages(
             row.has_attachments = bool(m["hasAttachments"])
         if "isRead" in m:
             row.is_read = bool(m["isRead"])
+        if "flag" in m:
+            # followupFlag: flagged | notFlagged | complete. Only "flagged"
+            # counts — a completed flag is done, not pinned.
+            row.is_flagged = ((m["flag"] or {}).get("flagStatus") == "flagged")
         # in_reply_to: Graph doesn't expose this as a selectable property;
         # threading is via conversation_id. Leave NULL until/unless the
         # singleValueExtendedProperties expansion is wired.
@@ -418,9 +422,16 @@ def _sync_one_folder(
                 last_resp = gc._request("GET", next_link).json()
             elif stored and stored.startswith("http"):
                 # Stored value is the FULL deltaLink from the previous sync.
-                # Graph's contract is to replay it verbatim — the URL carries
-                # the encoded $select, so changed messages come back with
-                # their envelope fields instead of as bare partial items.
+                # Graph's contract is to replay it verbatim — the $select is
+                # baked INSIDE the opaque $deltatoken, so changed messages
+                # come back with their envelope fields instead of as bare
+                # partial items. Real shape (prod, 2026-08-27, 63 folders):
+                #   …/mailFolders('…')/messages/delta?$deltatoken=<~600 chars>
+                # — there is NO $select= in the query string. That is also
+                # why adding a field to _DEFAULT_SELECT needs a one-time
+                # full_resync_required (migration 082 did this for `flag`):
+                # a link minted under the old select keeps replaying the
+                # old shape until the folder is re-walked.
                 last_resp = gc._request("GET", stored).json()
             else:
                 # No state (bootstrap / full resync) or a legacy bare token

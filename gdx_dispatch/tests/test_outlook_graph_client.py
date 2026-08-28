@@ -140,3 +140,31 @@ def test_list_messages_delta_with_token_resumes(client):
     client.list_messages_delta(folder="AAA1", delta_token="prev-tok")
     qp = dict(route.calls[0].request.url.params)
     assert qp == {"$deltatoken": "prev-tok"}
+
+
+# ── follow-up flag (2026-08-27) ─────────────────────────────────────────
+
+
+@respx.mock
+def test_delta_bootstrap_request_selects_flag(client):
+    """The pin stand-in. If the bootstrap delta request does not ask Graph for
+    ``flag``, is_flagged can never be populated and the inbox sort is a no-op
+    that every other test still passes. Asserted on the wire, not in source."""
+    route = respx.get(url__regex=r".*/mailFolders/inbox/messages/delta.*").mock(
+        return_value=Response(200, json={"value": []})
+    )
+    client.list_messages_delta(folder="inbox")
+    sent = route.calls[0].request.url.params.get("$select")
+    assert sent and "flag" in sent.split(",")
+
+
+@respx.mock
+def test_set_message_flag_patches_followup_flag(client):
+    route = respx.patch(f"{GRAPH}/me/messages/m1").mock(return_value=Response(200, json={}))
+    client.set_message_flag("m1", flagged=True)
+    client.set_message_flag("m1", flagged=False)
+    assert route.call_count == 2
+    import json
+    bodies = [json.loads(c.request.content) for c in route.calls]
+    assert bodies[0] == {"flag": {"flagStatus": "flagged"}}
+    assert bodies[1] == {"flag": {"flagStatus": "notFlagged"}}
