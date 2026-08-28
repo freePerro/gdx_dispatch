@@ -27,6 +27,7 @@ from gdx_dispatch.core.part_pricing import (
     duplicate_capture_groups,
     resolve_sell_price_with_source,
 )
+from gdx_dispatch.core.roles import is_technician
 from gdx_dispatch.models.tenant_models import (
     Appointment,
     Customer,
@@ -231,6 +232,13 @@ def _validate_location_for_customer(
     if not row:
         return False, f"location_id {location_id!r} does not belong to customer"
     return True, None
+
+
+def _role_of(user: Any) -> str:
+    """The caller's role claim, whatever shape the auth dependency handed us."""
+    if isinstance(user, dict):
+        return str(user.get("role") or "")
+    return str(getattr(user, "role", "") or "")
 
 
 def _caller_technician_id(db: Session, user_id: str) -> str | None:
@@ -902,10 +910,17 @@ def create_job(payload: JobCreate, request: Request, current_user: Any = Depends
         payload.assigned_tech_ids,
         payload.assigned_tech_id or payload.assigned_to,
     )
-    # assign_to_me (mobile dialog): explicit tech fields always win; the
-    # caller's own technician record fills in only when nothing was named.
+    # A job created in the field belongs to the tech who created it (Doug,
+    # 2026-08-28). This used to hinge on the dialog's "Assign to me" toggle,
+    # and a tech who switched it off got a job he could see and not touch —
+    # no photos, no notes, every action "job not found" — twice in eleven
+    # days. So the rule is enforced HERE, on the role, not on a client flag:
+    # a technician-role caller with a technician record is assigned unless
+    # dispatch named someone explicitly (explicit tech fields always win).
+    # assign_to_me stays honoured for any other caller who asks for it; for
+    # accounts with no technician row both paths are a no-op, never an error.
     self_assigned = False
-    if payload.assign_to_me and not tech_ids:
+    if not tech_ids and (payload.assign_to_me or is_technician(_role_of(current_user))):
         own_tech = _caller_technician_id(db, _user_id(current_user))
         if own_tech:
             tech_ids = [own_tech]
