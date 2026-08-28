@@ -68,7 +68,7 @@ function routeGet({ photos = [PHOTO], photosError = null } = {}) {
   });
 }
 
-async function mountView() {
+async function mountView(extraStubs = {}) {
   const { default: View } = await import("../JobDetailView.vue");
   const w = mount(View, {
     global: {
@@ -84,6 +84,7 @@ async function mountView() {
         Tabs: true, TabList: true, Tab: true, Message: true, Checkbox: true,
         JobStateChip: true, JobStateOverrideDialog: true, CatalogPickerDialog: true,
         DoorSpecList: true, PhoneInput: true, EmailTimeline: true, InputNumber: true,
+        ...extraStubs,
       },
     },
   });
@@ -220,5 +221,40 @@ describe("office job page — sharing a photo with the customer", () => {
 
     // Back to internal — never leave the office believing a share happened.
     expect(w.vm.jobPhotos[0].customer_visible).toBe(false);
+  });
+});
+
+describe("the picker actually uploads (2026-08-28 field report)", () => {
+  // The stub plays PrimeVue's basic-mode FileUpload: when auto is set, a
+  // chosen file EMITS `uploader` with {files}. That is the whole contract —
+  // a handler passed as a prop (the old :uploadHandler) lands on the root
+  // element as a string attribute and never runs, which a stub that only
+  // inspects props could not tell apart from a working binding. So this
+  // stub emits, and the assertion is the POST the office actually needs.
+  const EmittingFileUpload = {
+    props: ["auto", "mode", "customUpload"],
+    emits: ["uploader"],
+    setup(_, { emit }) {
+      const fire = () => emit("uploader", { files: [new File(["x"], "door.jpg", { type: "image/jpeg" })] });
+      return { fire };
+    },
+    template: '<button :data-auto="String(auto)" @click="fire">choose</button>',
+  };
+
+  it("a chosen file is POSTed to the job's photos route and the grid refetches", async () => {
+    routeGet({ photos: [] });
+    requestMock.mockResolvedValueOnce({ id: "doc-9" });
+    const w = await openPhotosTab(await mountView({ FileUpload: EmittingFileUpload }));
+    expect(w.find('[data-testid="job-detail-photo-upload"]').attributes("data-auto")).toBe("true");
+    getMock.mockClear();
+    await w.find('[data-testid="job-detail-photo-upload"]').trigger("click");
+    await flushPromises();
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = requestMock.mock.calls[0];
+    expect(url).toBe("/api/jobs/job-1/photos");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBeInstanceOf(FormData);
+    expect(opts.body.get("file")?.name).toBe("door.jpg");
+    expect(getMock).toHaveBeenCalledWith("/api/jobs/job-1/photos", expect.anything());
   });
 });
