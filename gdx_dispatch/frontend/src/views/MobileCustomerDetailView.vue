@@ -600,7 +600,13 @@ function goBack() {
 }
 
 function goJob(j) {
-  router.push({ path: `/jobs/${j.id}` })
+  // The mobile job screen, not the desktop one. This pushed to /jobs/:id,
+  // which the tech redirect never covered (only the /jobs list), so a tech
+  // tapping a job here landed on the desktop page whose photo button was
+  // dead (2026-08-28 field report). Same destination onJobCreatedHere
+  // already uses; a manager on the mobile customers page gets the manager
+  // grant there and loses nothing.
+  router.push({ path: `/mobile/jobs/${j.id}` })
 }
 
 function goEstimate(e) {

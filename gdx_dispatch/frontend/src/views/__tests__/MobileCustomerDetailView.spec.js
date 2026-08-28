@@ -141,6 +141,21 @@ describe('MobileCustomerDetailView', () => {
     expect(apiGet).not.toHaveBeenCalled();
   });
 
+  it('tapping a job row opens the MOBILE job screen, not the desktop page', async () => {
+    // 2026-08-28: a tech tapped his own job here and landed on /jobs/:id —
+    // the desktop page, whose photo button never uploaded. Same destination
+    // the create-flow already uses.
+    apiGet.mockImplementation((url) => {
+      if (url === '/api/customers/cust-123') return Promise.resolve(customerFixture);
+      if (url.startsWith('/api/jobs')) return Promise.resolve([{ id: 'job-9', title: 'Spring', status: 'Service Call' }]);
+      return Promise.resolve([]);
+    });
+    const wrapper = mount(MobileCustomerDetailView, { global: { stubs } });
+    await flushPromises();
+    await wrapper.find('[data-test="mcd-job-row"]').trigger('click');
+    expect(routerPush).toHaveBeenCalledWith({ path: '/mobile/jobs/job-9' });
+  });
+
   it('disables quick-action buttons when contact info is missing', async () => {
     apiGet.mockImplementation((url) => {
       if (url === '/api/customers/cust-123') return Promise.resolve({ id: 'cust-123', name: 'Sparse' });
