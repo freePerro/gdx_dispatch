@@ -295,9 +295,13 @@
           </template>
         </Card>
 
+        <!-- Hide this row entirely when no tech has any skill data — renders
+             cleaner than a permanently-disabled control. NOTHING but the skill
+             filter belongs in here: a "Show Completed Jobs" button once shared
+             the row and inherited this guard, which made it unreachable on
+             every tenant whose techs have no skills (removed 2026-08-28 —
+             completed jobs now always show; see rangeFilteredJobs). -->
         <div class="skill-filter-row" style="order: 0;" v-if="skillOptions.length">
-          <!-- Hide the filter entirely when no tech has any skill data —
-               renders cleaner than a permanently-disabled control. -->
           <label for="skillFilter">Filter by skill</label>
           <Select
             id="skillFilter"
@@ -308,16 +312,6 @@
             placeholder="All skills"
             class="skill-filter-select"
             data-testid="dispatch-skill-filter"
-          />
-          <Button
-            :label="showCompleted ? 'Hide Completed Jobs' : 'Show Completed Jobs'"
-            :icon="showCompleted ? 'pi pi-eye-slash' : 'pi pi-check-circle'"
-            :severity="showCompleted ? 'secondary' : 'success'"
-            size="small"
-            outlined
-            class="completed-toggle"
-            data-testid="dispatch-toggle-completed"
-            @click="showCompleted = !showCompleted"
           />
         </div>
 
@@ -889,8 +883,10 @@ const jobs = ref([]);
 const technicians = ref([]);
 const skillFilter = ref(null);
 const dateRangeFilter = ref(null);
-const showCompleted = ref(false);
 
+// Still used by the intake queue (unassignedJobs) — finished work does not
+// belong in a list of jobs that need scheduling. It no longer gates what the
+// day/week/tech columns render.
 function isCompletedStatus(status) {
   const s = String(status || '').toLowerCase();
   return s === 'complete' || s === 'completed' || s === 'invoiced';
@@ -1092,8 +1088,21 @@ const rangeFilteredJobs = computed(() => {
   const [start, end] = dateRangeFilter.value || [];
   const startStamp = start ? new Date(start).setHours(0, 0, 0, 0) : null;
   const endStamp = end ? new Date(end).setHours(23, 59, 59, 999) : null;
+  // 2026-08-28 (Doug): finished work STAYS ON THE BOARD. A completed job used
+  // to vanish from its tech's column the moment the closeout submitted, and
+  // the only way back was a "Show Completed Jobs" button that lived inside
+  // `v-if="skillOptions.length"` — a guard meant for the skill Select next to
+  // it. Every technician on this tenant has skills = NULL, so that row never
+  // rendered and the button was unreachable from the day it shipped: the board
+  // filtered completed jobs out with no way to turn it off. The toggle is gone
+  // and the filter with it — a day's column shows the day's work, done or not.
+  //
+  // Deliberately NOT applied to unassignedJobs ("New Jobs to Schedule") below,
+  // which stays an action queue: 189 of this tenant's completed jobs have no
+  // date, and matchesDate() treats an undated job as matching WHATEVER day is
+  // selected, so unfiltering there would redraw all of them above the tech
+  // columns on every date. The Jobs page's "Completed" tab is that history.
   return jobs.value.filter((job) => {
-    if (!showCompleted.value && isCompletedStatus(job.status)) return false;
     if (!startStamp && !endStamp) return true;
     const timestamp = job.scheduled_at ? new Date(job.scheduled_at).getTime() : null;
     if (!timestamp) return true;
