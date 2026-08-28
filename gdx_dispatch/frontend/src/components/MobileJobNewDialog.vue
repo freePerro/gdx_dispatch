@@ -53,16 +53,12 @@ const toast = useToast()
 const auth = useAuthStore()
 const { hasPermission } = usePermission()
 
-// "Assign to me" (2026-08-17 field report): a tech creating a job
-// from the truck is usually the one doing the work RIGHT NOW — but the old
-// always-unassigned create left him unable to touch the job he'd just made
-// (every action 404'd "job not found" behind the assignment write gate).
-// Default ON for technicians; the toggle stays visible so "log it for
-// dispatch to hand out" is still one tap away. Hidden for non-tech roles:
-// the backend resolves the flag against the caller's technician record, and
-// office accounts have none, so showing it would be a lying switch.
+// A job created from the truck belongs to the tech who created it. The
+// 2026-08-17 version made that a toggle (default ON, "log it for dispatch"
+// one tap away); it was switched off twice and each time the tech was
+// locked out of his own job. Decided 2026-08-28: no toggle — the server
+// assigns technician-role creators on its own. isTech only picks the hint.
 const isTech = computed(() => isTechnician(auth.role))
-const assignToMe = ref(true)
 
 const open = computed({
   get: () => props.visible,
@@ -395,10 +391,10 @@ async function submit() {
             ? Number(job.scheduled_duration_hours)
             : null,
         location_id: siteLocationId,
-        // Backend resolves this against the CALLER's technician record —
-        // never a client-supplied tech id. False for non-tech roles (the
-        // toggle isn't rendered for them, so its default must not leak).
-        assign_to_me: isTech.value && assignToMe.value,
+        // The server assigns a technician-role creator on its own now; this
+        // flag is kept for the wire contract (and any non-tech caller that
+        // wants it) and is never the thing that decides.
+        assign_to_me: isTech.value,
       }
       createdJob = await api.post('/api/jobs', jobPayload)
     } catch (e) {
@@ -501,7 +497,6 @@ function _resetForm() {
   createdSiteMemo.value = null
   customerLocations.value = []
   parts.value = []
-  assignToMe.value = true
 }
 
 // Unsaved-changes guard — Esc / the header X are disabled while dirty, and
@@ -520,7 +515,6 @@ const { snapshot, isDirty, confirmDiscard } = useDirtyDialog(
     // retry memos are machine state and deliberately excluded.
     siteChoice: siteChoice.value,
     newSite: { ...newSite },
-    assignToMe: assignToMe.value,
     parts: parts.value.map((p) => ({
       part_name: p.part_name,
       sku: p.sku,
@@ -773,12 +767,12 @@ watch(open, async (v) => {
           />
           <small class="muted">Optional. Helps dispatch plan the day. Leave blank if unsure.</small>
         </div>
-        <label v-if="isTech" class="toggle-row">
-          <ToggleSwitch v-model="assignToMe" data-testid="mjn-assign-me" />
-          <span>Assign to me — I'm doing this work</span>
-        </label>
+        <!-- No toggle. A job created in the field is the creator's (Doug,
+             2026-08-28): the opt-out shipped on 08-17 was switched off twice
+             in eleven days and each time left the tech locked out of his own
+             job. The server enforces this on the role; the hint just says so. -->
         <p class="muted hint" data-testid="mjn-dispatch-hint">
-          <template v-if="isTech && assignToMe">
+          <template v-if="isTech">
             Saved as a Service Call assigned to you — you can start it right away. Dispatch will schedule it.
           </template>
           <template v-else>

@@ -403,6 +403,31 @@ def test_assign_to_me_makes_job_writable_by_creator(client: TestClient) -> None:
         db.close()
 
 
+# ─── Field-created jobs belong to their creator (Doug 2026-08-28) ──────
+#
+# The 08-17 toggle was switched off twice in eleven days and each time the
+# tech was locked out of his own job (no photos, no notes, "job not found"
+# on every action). The rule now lives on the ROLE, server-side: a
+# technician-role caller with a technician record is assigned at create
+# whatever the client sent. Explicit dispatch assignment still wins.
+
+
+def test_technician_creator_is_assigned_even_when_client_opts_out(client: TestClient) -> None:
+    _seed_tech_row(client)
+    r = client.post("/api/jobs", json={"title": "toggle off", "assign_to_me": False})
+    assert r.status_code == 201, r.text[:300]
+    assert r.json()["assigned_to"] == "tech-creator"
+    assert _job_assignment_row(client, r.json()["id"])["tech_id"] == "tech-creator"
+
+
+def test_technician_creator_is_assigned_when_flag_is_absent(client: TestClient) -> None:
+    # Any client — a script, an older bundle — not just the dialog.
+    _seed_tech_row(client)
+    r = client.post("/api/jobs", json={"title": "no flag at all"})
+    assert r.status_code == 201, r.text[:300]
+    assert r.json()["assigned_to"] == "tech-creator"
+
+
 def test_assign_to_me_without_technician_row_is_a_noop(client: TestClient) -> None:
     """Office accounts have no technician record: the flag must degrade to
     today's behavior (unassigned, dispatch assigns), never an error."""

@@ -478,18 +478,18 @@ describe('MobileJobNewDialog', () => {
     expect(sug.text()).toContain('SPR-200');
   });
 
-  // ─── Assign to me (2026-08-17 field report) ─────────────────
-  // A tech's freshly created job was untouchable: unassigned by design,
-  // every action 404'd behind the assignment write gate. The dialog now
-  // sends assign_to_me (default ON for technicians) so the backend assigns
-  // the caller's own technician record at create.
+  // ─── Field-created jobs belong to their creator (Doug 2026-08-28) ──
+  // The 08-17 toggle was switched off twice and each time left the tech
+  // locked out of his own job. There is no toggle now; the server assigns
+  // technician-role creators on its own, and the hint says so up front.
 
-  it('tech submit sends assign_to_me: true by default', async () => {
+  it('tech submit has no Assign-to-me toggle and the hint promises assignment', async () => {
     apiPost.mockResolvedValue({ id: 'job-a', assigned_to: 'tech-1' });
     const wrapper = mountDialog();
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="mjn-assign-me"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="mjn-assign-me"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="mjn-dispatch-hint"]').text()).toContain('assigned to you');
 
     await setInput(wrapper, 'mjn-job-title', 'Replace springs');
     await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
@@ -498,33 +498,9 @@ describe('MobileJobNewDialog', () => {
     expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
       assign_to_me: true,
     }));
-    // Server confirmed the assignment → toast says it's startable, not
-    // "wait for dispatch".
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
       severity: 'success',
       detail: expect.stringContaining('assigned to you'),
-    }));
-  });
-
-  it('toggling Assign to me off sends assign_to_me: false and keeps the dispatch wording', async () => {
-    apiPost.mockResolvedValue({ id: 'job-b', assigned_to: null });
-    const wrapper = mountDialog();
-    await flushPromises();
-
-    const toggle = wrapper.find('[data-testid="mjn-assign-me"]');
-    toggle.element.checked = false;
-    await toggle.trigger('change');
-
-    await setInput(wrapper, 'mjn-job-title', 'Order door for later');
-    await wrapper.find('[data-testid="mjn-submit"]').trigger('click');
-    await flushPromises();
-
-    expect(apiPost).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
-      assign_to_me: false,
-    }));
-    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
-      severity: 'success',
-      detail: expect.stringContaining('until dispatch assigns it'),
     }));
   });
 
