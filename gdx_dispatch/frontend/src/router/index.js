@@ -514,7 +514,11 @@ export function createAppRouter() {
       // Tech role gets redirected from desktop-shaped jobs/dispatch/planner
       // surfaces to their mobile-shaped equivalents. /jobs has a card-based
       // /mobile/jobs alternative; everything else falls back to /mobile.
-      const isTech = isTechnician(auth.user?.role);
+      // user.role comes from the persisted /api/users/me snapshot; the JWT
+      // role claim (auth.role) is there the instant a token is, so a cold
+      // load with a token but no cached user still redirects (a throwaway
+      // walk on 2026-08-28 landed a tech on the desktop job page this way).
+      const isTech = isTechnician(auth.user?.role || auth.role);
       if (isTech) {
         // Tech role: redirect from desktop-shaped surfaces to mobile.
         // /jobs has a card-based mobile equivalent; everything else
@@ -524,6 +528,16 @@ export function createAppRouter() {
         // on a phone-sized viewport — sending them to /mobile is
         // strictly an improvement.
         if (to.path === '/jobs') return { path: '/mobile/jobs' };
+        // A single job too. The list redirect shipped without this, so any
+        // link into /jobs/:id (customer page, a shared URL, a notification)
+        // dropped the tech on the desktop job page — 403s on the labor and
+        // costing tabs and a photo button that never uploaded
+        // (2026-08-28 field report). The mobile screen honours the same
+        // access grants, so nothing a tech could read is lost.
+        const jobMatch = /^\/jobs\/([^/]+)$/.exec(to.path);
+        if (jobMatch && jobMatch[1] !== 'new') {
+          return { path: `/mobile/jobs/${jobMatch[1]}`, query: to.query };
+        }
         if (to.path === '/timeclock') return { path: '/mobile/timeclock' };
         // Preserve the query: the PWA share_target lands on /mobile/planner
         // with ?share_* params — dropping them here would silently eat a
