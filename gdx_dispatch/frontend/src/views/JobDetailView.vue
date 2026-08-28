@@ -714,10 +714,22 @@
         <div class="card photo-card">
           <div class="card-header">
             <h3>Photos & Documents</h3>
+            <!-- Two things are load-bearing here, and this control had
+                 neither (0 job_photo_uploaded audit rows since it shipped —
+                 the 2026-08-28 field report):
+                 1. custom upload is the @uploader EVENT. The old
+                    :uploadHandler was not a PrimeVue prop, so Vue wrote the
+                    function onto the root <div> as a string attribute and
+                    nothing ever called it — the throwaway walk found it
+                    there, serialized, after :auto alone changed nothing.
+                 2. :auto — in basic mode the ONE button only ever opens the
+                    picker; only auto makes a chosen file fire uploader.
+                 Every sibling FileUpload in the tree does both. -->
             <FileUpload
               mode="basic"
               custom-upload
-              :uploadHandler="handlePhotoUpload"
+              :auto="true"
+              @uploader="handlePhotoUpload"
               choose-label="+ Add Photo"
               accept="image/*"
               :maxFileSize="10000000"
