@@ -74,7 +74,7 @@ MailboxSettings.Read` (`token_refresh.py:29`). Sources: Microsoft Learn, cited b
 
 - Subscriptions: max **10,080 min (<7 d)** for messages, 1,440 with resource data; latency avg <1 min; 1,000 subs/mailbox. We run 60 h + renew — fine. Lifecycle notifications (`missed`, `subscriptionRemoved`, `reauthorizationRequired`) are **not** wired; the 30-min poller covers it.
 - Throttling: **10,000 requests / 10 min / (app, mailbox)**, **4 concurrent**. A one-mailbox shop cannot get near this with delta + webhooks; the live-fetch of bodies and attachments is what to watch (4 concurrent).
-- Delta: per-folder only; `$select` is baked into the deltaLink — **adding a field does nothing until the folder re-walks**. Rung 1 adds a generic guard for this (`tasks._delta_link_is_current`).
+- Delta: per-folder only; `$select` is baked **inside the opaque `$deltatoken`** (prod's 63 links carry no `$select=` in the URL) — **adding a field does nothing until the folder re-walks**. Rule: every `_DEFAULT_SELECT` change ships a migration that sets `full_resync_required` (082 is the template). A URL-inspecting guard was tried and killed by audit — it would have re-walked on every sync.
 
 ## 4. Architectures — the honest tradeoffs
 
