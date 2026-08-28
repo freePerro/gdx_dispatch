@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import pytest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -586,7 +587,11 @@ def test_sync_one_folder_bootstraps_delta_token_on_first_sync():
 
 def test_sync_one_folder_replays_stored_deltalink_verbatim():
     """A stored full deltaLink is GET verbatim (Graph contract) — never
-    reduced to a bare $deltatoken, which would drop the encoded $select."""
+    reduced to a bare $deltatoken, which would drop the encoded $select.
+
+    Real shape (prod 2026-08-27): ``…/messages/delta?$deltatoken=<opaque>``
+    with NO ``$select=`` in the query string — the select lives inside the
+    token. Any code that inspects the URL for the select is wrong."""
     from gdx_dispatch.modules.outlook import tasks
 
     old_link = "https://graph.microsoft.com/v1.0/x/delta?$deltatoken=old"
@@ -1300,3 +1305,41 @@ def test_fanout_survives_a_database_without_outlook_tables():
         result = tasks.sweep_vendor_bills_all_accounts.run()
 
     assert result["triggered"] == 0
+
+
+# ── follow-up flag mirror (2026-08-27) ─────────────────────────────────
+
+
+def _flag_account():
+    account = MagicMock()
+    account.id = uuid4()
+    account.upn = "doug@gdx.com"
+    return account
+
+
+@pytest.mark.parametrize(
+    "flag, expected",
+    [
+        ({"flagStatus": "flagged"}, True),
+        ({"flagStatus": "notFlagged"}, False),
+        ({"flagStatus": "complete"}, False),  # done is not pinned
+        (None, False),
+    ],
+)
+def test_persist_maps_followup_flag_to_is_flagged(flag, expected):
+    tdb = MagicMock()
+    row = _populated_row()
+    row.is_flagged = not expected  # prove the write happened, not the default
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = row
+    _persist_messages(tdb, _flag_account(), [{"id": "g1", "flag": flag}])
+    assert row.is_flagged is expected
+
+
+def test_persist_partial_item_without_flag_key_keeps_flag():
+    """A delta item that did not mention ``flag`` must not clear it."""
+    tdb = MagicMock()
+    row = _populated_row()
+    row.is_flagged = True
+    tdb.query.return_value.filter.return_value.one_or_none.return_value = row
+    _persist_messages(tdb, _flag_account(), [{"id": "g1", "isRead": True}])
+    assert row.is_flagged is True

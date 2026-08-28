@@ -90,6 +90,11 @@ class OutlookMessage(TenantBase):
     tag_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
     is_personal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Outlook follow-up flag (Graph ``flag.flagStatus == "flagged"``). Mirrors
+    # the mailbox — set from either side, it shows on both. Outlook's *pin* is
+    # a client-only feature with no Graph surface, so this is the sync-able
+    # stand-in the inbox sorts to the top (migration 082).
+    is_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     in_reply_to: Mapped[str | None] = mapped_column(String(998), nullable=True)
     folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     folder_display_name: Mapped[str | None] = mapped_column(String(500), nullable=True)

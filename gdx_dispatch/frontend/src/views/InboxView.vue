@@ -810,6 +810,11 @@ const messageMenuModel = computed(() => {
       icon: m.is_read ? 'pi pi-circle' : 'pi pi-check',
       command: () => toggleMessageRead(m),
     },
+    {
+      label: m.is_flagged ? 'Unflag' : 'Flag',
+      icon: m.is_flagged ? 'pi pi-flag' : 'pi pi-flag-fill',
+      command: () => toggleMessageFlag(m),
+    },
     { label: 'Move to folder…', icon: 'pi pi-folder-open', command: () => promptMoveMessageFor(m) },
     { separator: true },
     { label: 'Delete', icon: 'pi pi-trash', command: () => deleteMessage(m) },
@@ -823,6 +828,19 @@ async function toggleMessageRead(msg) {
     msg.is_read = want
   } catch (err) {
     error.value = err.message || 'Failed to toggle read state'
+  }
+}
+
+// Flag = Outlook's follow-up flag, written to Microsoft first (the server
+// only mirrors on success). Outlook's *pin* has no API, so this is the
+// "keep it on top" control that works from both sides.
+async function toggleMessageFlag(msg) {
+  const want = !msg.is_flagged
+  try {
+    await api.patch(`/api/outlook/messages/${msg.id}/flag`, { is_flagged: want })
+    msg.is_flagged = want
+  } catch (err) {
+    error.value = err.message || 'Failed to toggle flag'
   }
 }
 
@@ -1014,8 +1032,14 @@ function colorHexFor(folder) {
   return c ? c.hex : 'transparent'
 }
 
+// Flagged first, then newest. The server orders the same way (so paging
+// holds), but a flag toggled here must jump the row without a refetch — and
+// flags set in Outlook arrive by sync, so the mirror is what gets sorted.
 const sortedMessages = computed(() =>
   [...messages.value].sort((a, b) => {
+    const fa = a.is_flagged ? 1 : 0
+    const fb = b.is_flagged ? 1 : 0
+    if (fa !== fb) return fb - fa
     const ta = Date.parse(a.received_at || a.sent_at || 0) || 0
     const tb = Date.parse(b.received_at || b.sent_at || 0) || 0
     return tb - ta
@@ -1187,11 +1211,12 @@ onMounted(async () => {
           v-for="m in sortedMessages"
           :key="m.id"
           class="msg-row"
-          :class="{ active: selectedMsgId === m.id, unread: !m.is_read }"
+          :class="{ active: selectedMsgId === m.id, unread: !m.is_read, flagged: m.is_flagged }"
           data-test="inbox-row"
           @click="openMessage(m)"
         >
           <div class="row-top">
+            <i v-if="m.is_flagged" v-tooltip="'Flagged in Outlook'" class="pi pi-flag-fill row-flag" data-test="inbox-row-flag" aria-label="Flagged" />
             <span class="row-from">{{ m.from_address || '(no sender)' }}</span>
             <span class="row-when muted">{{ fmtDate(m.received_at || m.sent_at) }}</span>
             <span v-tooltip="'Message actions'" class="msg-menu-trigger" data-test="msg-menu-trigger" aria-label="Message actions" @click="toggleMessageMenu($event, m)">⋯</span>
@@ -1720,6 +1745,8 @@ onMounted(async () => {
 .msg-row:hover { background: var(--surface-hover); }
 .msg-row.active { background: var(--surface-selected); }
 .msg-row.unread .row-subject { font-weight: 700; }
+.msg-row.flagged { border-left: 3px solid var(--p-orange-500, #f97316); }
+.row-flag { color: var(--p-orange-500, #f97316); font-size: 0.8rem; margin-right: 0.35rem; }
 .row-top {
   display: flex;
   justify-content: space-between;

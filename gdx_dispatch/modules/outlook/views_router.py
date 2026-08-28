@@ -55,6 +55,7 @@ class MessageOut(BaseModel):
     received_at: str | None = None
     body_preview: str | None = None
     is_read: bool
+    is_flagged: bool = False
     has_attachments: bool
     linked_customer_id: UUID | None = None
     linked_job_id: UUID | None = None
@@ -192,6 +193,7 @@ def _to_out(
         received_at=m.received_at.isoformat() if m.received_at else None,
         body_preview=m.body_preview,
         is_read=m.is_read,
+        is_flagged=bool(m.is_flagged),
         has_attachments=m.has_attachments,
         linked_customer_id=m.linked_customer_id,
         linked_job_id=m.linked_job_id,
@@ -374,6 +376,7 @@ def _search_page(
     query = query.filter(_search_predicate(search))
     rows = (
         query.order_by(
+            desc(OutlookMessage.is_flagged),
             desc(OutlookMessage.received_at).nulls_last(), desc(OutlookMessage.id)
         )
         .limit(_SEARCH_SCAN_LIMIT)
@@ -446,7 +449,11 @@ def list_messages(
     # pages (else offset pagination can skip/duplicate them). nulls_last:
     # Postgres sorts NULLs FIRST on DESC — a row missing received_at (e.g. a
     # partial-sync remnant) would otherwise pin itself above all real mail.
+    # Flagged mail sits above the rest — the Outlook follow-up flag is the
+    # sync-able stand-in for "pin" (Graph has no pin). Server-side so the
+    # order survives offset paging, not just within one loaded page.
     query = query.order_by(
+        desc(OutlookMessage.is_flagged),
         desc(OutlookMessage.received_at).nulls_last(), desc(OutlookMessage.id)
     )
     tech_emails = _load_tech_emails(tenant_db)

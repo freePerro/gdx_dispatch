@@ -305,3 +305,40 @@ describe('Inbox detail pane — thread strip survives and estimates start here (
     expect(body).toContain('openLinkDialog()')
   })
 })
+
+
+describe('InboxView — Outlook flag (2026-08-27)', () => {
+  it('sorts a flagged message above newer unflagged mail and shows the flag', async () => {
+    // FAKE_MESSAGES[0] is newer (04-28) and unflagged; [1] is older and flagged.
+    const messages = [FAKE_MESSAGES[0], { ...FAKE_MESSAGES[1], is_flagged: true }];
+    globalThis.fetch = defaultFetch({ messages });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    const rows = wrapper.findAll('[data-test="inbox-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain('Second subject');
+    expect(rows[0].classes()).toContain('flagged');
+    expect(rows[0].find('[data-test="inbox-row-flag"]').exists()).toBe(true);
+    expect(rows[1].find('[data-test="inbox-row-flag"]').exists()).toBe(false);
+  });
+
+  it('toggling the flag PATCHes /flag and moves the row to the top', async () => {
+    const calls = [];
+    const base = defaultFetch();
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (url.includes('/flag')) { calls.push({ url, body: JSON.parse(init.body) }); return mkResponse({ ok: true }); }
+      return base(url, init);
+    });
+    const wrapper = mount(InboxView, { global: globalConfig });
+    await flushPromises();
+    // Flag the OLDER message (second row) via the menu model's command.
+    const older = wrapper.vm.sortedMessages[1];
+    expect(older.subject).toBe('Second subject');
+    await wrapper.vm.toggleMessageFlag(older);
+    await flushPromises();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain(`/api/outlook/messages/${older.id}/flag`);
+    expect(calls[0].body).toEqual({ is_flagged: true });
+    expect(wrapper.findAll('[data-test="inbox-row"]')[0].text()).toContain('Second subject');
+  });
+});
