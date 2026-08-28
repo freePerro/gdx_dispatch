@@ -1,6 +1,6 @@
 # Microsoft 365 mail: what the GDX inbox could use, and whether the mirror is the right shape
 
-Status: **RESEARCH — decisions pending Doug** (2026-08-27). Rung 1 (flag → top) is built on
+Status: **RESEARCH — decisions pending Doug** (2026-08-27). Rung 1 (flag → top) is PR #510, from
 `feat/inbox-flagged-to-top`, see `inbox-flagged-to-top.md`. Nothing else here is built.
 
 Trigger: "if I pin something in Outlook, can it show pinned in GDX?" — and then "what we have

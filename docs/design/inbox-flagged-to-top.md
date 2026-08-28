@@ -1,6 +1,6 @@
 # Inbox: Outlook flag mirrors + flagged mail sorts to the top
 
-Status: **BUILT — PR pending** (2026-08-27). Not yet merged, released, or walked.
+Status: **BUILT — PR #510 OPEN** (2026-08-27). Not yet merged, released, or walked on prod.
 
 ## What already exists (do not rebuild)
 
