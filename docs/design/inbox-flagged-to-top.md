@@ -59,3 +59,21 @@ match the belief, not a captured link. Replaced by the one-shot
   once (bounded by Graph paging; upsert is idempotent).
 - The wider "what else can the inbox do" research is a separate doc:
   `docs/design/m365-mail-platform-options.md` (in progress).
+
+## Walk (prod, 2026-08-28, v1.107.0)
+
+- Deploy: `update.sh` ran migration `081 → 082` on boot; alembic head `082_outlook_message_flag`;
+  all of `gdx-app-1`, celery ×3, plugin-host on `1.107.0`; `/health` ok; edge 200. Demo on 1.107.0.
+- After 082, all 63 folder sync rows were `full_resync_required` with tokens cleared. One
+  `sync_outlook_mailbox` run re-walked them in **39 s** (65 folders, 1,132 upserts, 0 removed):
+  62/63 re-tokened — the 63rd is Junk Email, which is in `SKIP_SYNC_WELL_KNOWN` and never syncs.
+- **9 of 3,136 messages came back flagged** — real flags set in Outlook, across Inbox, Estimates
+  and five custom folders. Headed browser walk as the auditor account: the three visible flagged
+  messages (Aug 21, Mar 11, Dec 23) sit above Aug 27 mail, flag icon + orange rail, ⋯ menu shows
+  **Flag** on an unflagged row; light and dark both clean; footer reads v1.107.0.
+- GDX→Outlook write: **owner-confirmed 2026-08-28** ("flags work good"). (The auditor has
+  no Outlook account, so `/flag` 404s for it by design — only the owner session can prove it, and it
+  did.)
+- Side finding: the re-walk re-collected vendor-bill candidates and one allow-listed message fails
+  `upload_midwest_invoice` with a `varchar(60)` truncation every time — pre-existing, isolated per
+  message, filed separately.
