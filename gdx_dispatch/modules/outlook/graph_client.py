@@ -162,7 +162,7 @@ class OutlookGraphClient:
     _DEFAULT_SELECT = (
         "id,internetMessageId,conversationId,subject,from,toRecipients,"
         "ccRecipients,bccRecipients,sentDateTime,receivedDateTime,bodyPreview,"
-        "hasAttachments,isRead"
+        "hasAttachments,isRead,flag"
     )
 
     def list_messages(
@@ -397,6 +397,20 @@ class OutlookGraphClient:
 
     def mark_message_read(self, message_id: str, *, is_read: bool = True) -> None:
         self._request("PATCH", f"/me/messages/{message_id}", json={"isRead": is_read})
+
+    def set_message_flag(self, message_id: str, *, flagged: bool) -> None:
+        """Set or clear the Outlook follow-up flag.
+
+        Graph's ``flag`` is a followupFlag object; ``flagStatus`` is the only
+        member we drive (``flagged`` / ``notFlagged``). ``complete`` is left to
+        Outlook — a completed flag reads as unflagged here on purpose, because
+        the inbox pins what still needs attention, not what once did.
+        """
+        status = "flagged" if flagged else "notFlagged"
+        self._request(
+            "PATCH", f"/me/messages/{message_id}",
+            json={"flag": {"flagStatus": status}},
+        )
 
     # ── attachments ─────────────────────────────────────────────────────
 
