@@ -317,6 +317,19 @@ describe("photo capture", () => {
     expect(w.find('[data-testid="mjd-photo-pending"]').text()).toContain("3 waiting for signal");
   });
 
+  it("a photo taken inside the closeout sheet refreshes this screen's strip", async () => {
+    // The closeout dialog captures through the same queue (2026-08-28) and
+    // emits photo-added; without this wiring the Photos card under the modal
+    // would still say "No photos yet" after the tech cancelled the closeout.
+    const w = await mountWith({ dispatch_status: "on_site" });
+    getMock.mockClear();
+    const dlg = w.findComponent(stubs.MobileJobCloseoutDialog);
+    expect(dlg.exists()).toBe(true);
+    dlg.vm.$emit("photo-added");
+    await flushPromises();
+    expect(getMock).toHaveBeenCalledWith("/api/mobile/job/job-123");
+  });
+
 
 
 });
