@@ -4,9 +4,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from conftest import make_fresh_db
 from sqlalchemy.orm import sessionmaker
 
+from conftest import make_fresh_db
 from gdx_dispatch.routers.instant_estimate import InstantEstimateIn, instant_estimate
 
 
@@ -32,7 +32,13 @@ def ctx():
     # to reference instead of the old 'door-1' / 'part-1' strings.
     import uuid
 
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
     from gdx_dispatch.models.tenant_models import ChiDoorCatalog, ChiPartsCatalog
+
+    # Production HAS margin tiers configured (15 active sets). Without them the
+    # engine correctly refuses to price and every line is omitted, so a fixture
+    # with no tiers would test a state the app is never in.
+    seed_default_pricing(db)
     door1_id = uuid.uuid4()
     door2_id = uuid.uuid4()
     part1_id = uuid.uuid4()
@@ -75,21 +81,31 @@ def ctx():
 
 
 def test_finds_door_by_dimensions(ctx):
-    """Verify the endpoint queries chi_door_catalog by width/height and returns the real price."""
+    """Queries chi_door_catalog by width/height and prices it through the engine."""
     db, req, user = ctx
     result = instant_estimate(request=req, payload=InstantEstimateIn(description="16x7 steel door replacement"), user=user, db=db)
     assert result["suggested_door"] is not None
     assert result["suggested_door"]["model"] == "2283"
-    assert result["suggested_door"]["price"] == 989.78
+    # door-1 has sell_price NULL and cost 989.78 — the quoted number must be a
+    # MARGIN on that cost, never the cost itself.
+    assert result["suggested_door"]["price"] > 989.78
 
 
-def test_coalesce_uses_cost_when_sell_price_null(ctx):
-    """door-1 has sell_price=NULL, cost=989.78. COALESCE should use cost."""
+def test_never_quotes_a_door_at_our_cost(ctx):
+    """Regression: this endpoint used to quote our DEALER COST to the customer.
+
+    door-1 carries sell_price=NULL and cost=989.78, and the old
+    ``COALESCE(sell_price, cost, 0)`` therefore emitted 989.78 as the customer
+    price — a zero-margin sale. The previous version of this test asserted
+    exactly that, which is how the defect survived. It must now be a margin on
+    the cost, and must never equal it.
+    """
     db, req, user = ctx
     result = instant_estimate(request=req, payload=InstantEstimateIn(description="16x7 steel replacement"), user=user, db=db)
     door_items = [i for i in result["line_items"] if i["source"] == "chi_catalog"]
     assert len(door_items) >= 1
-    assert door_items[0]["unit_price"] == 989.78
+    assert door_items[0]["unit_price"] != 989.78, "quoted our cost to the customer"
+    assert door_items[0]["unit_price"] > 989.78
 
 
 def test_finds_parts_by_keyword_spring(ctx):
@@ -140,3 +156,70 @@ def test_nonsensical_input_returns_labor_only(ctx):
     result = instant_estimate(request=req, payload=InstantEstimateIn(description="the purple elephant dances"), user=user, db=db)
     non_labor = [i for i in result["line_items"] if i["source"] != "labor"]
     assert len(non_labor) == 0, "Nonsensical input should not match any catalog items"
+
+
+def test_never_quotes_a_part_at_our_cost(ctx):
+    """The live half of the same defect: every CHI parts row has sell_price NULL,
+    so ``sell_price or cost`` quoted our dealer cost on every part, every time."""
+    db, req, user = ctx
+    result = instant_estimate(
+        request=req, payload=InstantEstimateIn(description="replace spring"), user=user, db=db
+    )
+    parts = [i for i in result["line_items"] if i["source"] == "chi_parts"]
+    assert parts, "expected at least one part line"
+    for p in parts:
+        # Torsion Spring 207 costs 45.00 in the fixture.
+        assert p["unit_price"] != 45.00, "quoted our cost to the customer"
+        assert p["unit_price"] > 45.00
+
+
+def test_unpriceable_part_is_omitted_not_zero(ctx):
+    """A part the engine cannot price must be LEFT OUT.
+
+    The two wrong answers are $0 (a free part on a customer quote) and cost (a
+    zero-margin sale). An absent line is the honest one — it prompts the office
+    to price it.
+    """
+    import uuid as _uuid
+
+    from gdx_dispatch.models.tenant_models import ChiPartsCatalog
+
+    # No cost and no sell price — nothing the engine can work from.
+    db, req, user = ctx
+    db.add(ChiPartsCatalog(
+        id=_uuid.uuid4(), sku="SKU-UNPRICEABLE", name="Mystery Bracket",
+        part_type="Bracket", sell_price=None, cost=None,
+    ))
+    db.commit()
+
+    result = instant_estimate(
+        request=req, payload=InstantEstimateIn(description="need a bracket"), user=user, db=db
+    )
+    names = [i["name"] for i in result["line_items"]]
+    assert "Mystery Bracket" not in names
+    assert all(i["unit_price"] > 0 for i in result["line_items"]), "a $0 line reached the quote"
+
+
+def test_the_estimate_is_actually_audited(ctx):
+    """Counterfactual: drop the db.commit() and this fails.
+
+    log_audit_event_sync only add()s + flush()es and get_db never commits, so
+    the audit row used to die with the request — the endpoint had NO trail, and
+    its zero audit rows read as "never used" when they meant "never recorded".
+    """
+    from gdx_dispatch.core.audit import AuditLog
+
+    db, req, user = ctx
+    before = db.query(AuditLog).filter(AuditLog.entity_type == "instant_estimate").count()
+    instant_estimate(
+        request=req, payload=InstantEstimateIn(description="16x7 steel replacement"),
+        user=user, db=db,
+    )
+    # ROLLBACK is the whole test. log_audit_event_sync add()s + flush()es, and a
+    # flushed row is visible to its own session whether or not it was ever
+    # committed — so simply counting here passes even with the commit removed
+    # (verified: it did). Only a rollback tells the two apart: a committed row
+    # survives it, a merely-flushed one is discarded with the transaction.
+    db.rollback()
+    after = db.query(AuditLog).filter(AuditLog.entity_type == "instant_estimate").count()
+    assert after == before + 1, "the audit row did not survive a rollback — it was never committed"
