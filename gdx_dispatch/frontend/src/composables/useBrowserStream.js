@@ -81,6 +81,10 @@ export function wsTicketUrl(ticket) {
 export function useBrowserStream() {
   const frameSrc = ref(null);     // data: URL of the latest JPEG frame
   const connected = ref(false);
+  // Recorder heartbeat pushed by the core proxy every ~5s. Driven by bytes
+  // actually written on the server, never by a client-side boolean — a badge
+  // that says "recording" whether or not a byte hit disk is decoration.
+  const rec = ref(null);
   const error = ref(null);
   let sock = null;
   let onSession = null;           // resolver for a pending saveSession()
@@ -112,6 +116,7 @@ export function useBrowserStream() {
       if (msg.type === 'frame') frameSrc.value = `data:image/jpeg;base64,${msg.data}`;
       else if (msg.type === 'session' && onSession) { onSession(msg.state); onSession = null; }
       else if (msg.type === 'capture' && onCapture) { onCapture({ url: msg.url, text: msg.text, image: msg.image }); onCapture = null; }
+      else if (msg.type === 'rec') rec.value = msg;
     };
   }
 
@@ -227,7 +232,7 @@ export function useBrowserStream() {
   }
 
   return {
-    frameSrc, connected, error, connect, mouse, wheel, key, paste,
+    frameSrc, connected, error, rec, connect, mouse, wheel, key, paste,
     imeInput, seedKeyboard, compositionStart, compositionEnd,
     saveSession, capturePage, disconnect,
   };

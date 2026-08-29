@@ -248,6 +248,13 @@ def install_specs(
                            finish_type, high_lift, high_lift_in, sales_talking_point,
                            description, sku
                     FROM chi_door_catalog
+                    -- is_active is the soft-delete flag for this feed. Every
+                    -- other reader (catalog.py, door_catalog.py,
+                    -- instant_estimate.py, parts_needed.py) filters it; these
+                    -- two UNION arms did not, so retiring the feed left it
+                    -- still enriching install sheets — a soft-delete that was
+                    -- not actually soft-deleted anywhere you could see.
+                    WHERE is_active = true
                     UNION ALL
                     SELECT ds.model_number, ds.manufacturer AS brand,
                            ds.width, ds.height, ds.color, ds.insulation_type, ds.r_value,
@@ -373,6 +380,7 @@ def install_sheet(
                        finish_type, high_lift, high_lift_in, sales_talking_point,
                        description, sku
                 FROM chi_door_catalog
+                WHERE is_active = true   -- see the note on the sibling query above
                 UNION ALL
                 SELECT ds.model_number, ds.manufacturer AS brand,
                        ds.width, ds.height, ds.color, ds.insulation_type, ds.r_value,
