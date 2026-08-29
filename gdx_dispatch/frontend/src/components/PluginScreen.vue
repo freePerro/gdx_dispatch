@@ -11,6 +11,21 @@
       </TabList>
       <TabPanels>
         <TabPanel v-for="(screen, i) in screens" :key="i" :value="String(i)" class="plugin-screen__screen">
+          <!-- Search — shown when the list screen declares `search`. The term
+               goes to the SERVER, so it searches the whole table rather than
+               whichever page happened to load. -->
+          <div v-if="screen.type === 'list' && screen.search" class="plugin-screen__searchbar">
+            <InputText
+              :model-value="searchTerms[i] || ''"
+              :placeholder="screen.search.placeholder || 'Search…'"
+              size="small"
+              data-testid="plugin-search"
+              @update:model-value="(v) => onSearch(i, screen, v)"
+              @keyup.enter="searchList(screen, searchTerms[i] || '')"
+            />
+            <small v-if="!loading">{{ rowsFor(screen).length }} shown</small>
+          </div>
+
           <!-- Folder filter — shown when the list carries a folder column. -->
           <div v-if="screen.type === 'list' && _hasFolders(screen)" class="plugin-screen__folderbar">
             <label>Folder</label>
@@ -230,7 +245,17 @@ function onStreamCaptured(payload) {
 const { isMobileViewport } = useViewMode();
 
 const api = useApiWithToast();
-const { screens, rows, rowsFor, loading, error, load, create, fetchOptions } = usePluginScreen(props.pluginKey, api);
+const { screens, rows, rowsFor, loading, error, load, create, fetchOptions, searchList } = usePluginScreen(props.pluginKey, api);
+
+// Search term per screen index, debounced so typing does not fire a request per
+// keystroke against the plugin host.
+const searchTerms = reactive({});
+const _searchTimers = {};
+function onSearch(i, screen, value) {
+  searchTerms[i] = value;
+  clearTimeout(_searchTimers[i]);
+  _searchTimers[i] = setTimeout(() => searchList(screen, value), 250);
+}
 const formState = reactive({});
 // Select/autocomplete options per create field, keyed `${screenIndex}:${fieldName}`.
 const fieldOptions = reactive({});
@@ -499,4 +524,14 @@ onMounted(async () => {
   .plugin-screen__kv th, .plugin-screen__kv td { display: block; width: 100%; }
   .plugin-screen__kv th { white-space: normal; padding: 0.35rem 0 0; }
 }
+
+/* Search bar for list screens that declare it. */
+.plugin-screen__searchbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+.plugin-screen__searchbar :deep(input) { min-width: min(340px, 100%); }
+.plugin-screen__searchbar small { color: var(--p-text-muted-color, #6b7280); white-space: nowrap; }
 </style>

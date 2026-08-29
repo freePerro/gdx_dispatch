@@ -138,3 +138,44 @@ describe('cellValue', () => {
     expect(cellValue(row, undefined)).toBe('');
   });
 });
+
+describe('searchList — server-side search for list screens', () => {
+  const screen = {
+    type: 'list',
+    endpoint: '/api/plugins/demoplugin/catalog',
+    search: { param: 'q' },
+  };
+
+  it('sends the term to the server and replaces that screen rows', async () => {
+    const api = {
+      get: vi.fn(async (url) => {
+        if (url.endsWith('/ui')) return { screens: [screen] };
+        if (url.includes('q=9x8')) return [{ id: 1, description: '9x8 White' }];
+        return [];
+      }),
+    };
+    const s = usePluginScreen('demoplugin', api);
+    await s.load();
+    await s.searchList(screen, '9x8 white');
+
+    const called = api.get.mock.calls.map((c) => c[0]);
+    expect(called.some((u) => u.includes('q=9x8%20white'))).toBe(true);
+    expect(s.rowsFor(screen)).toHaveLength(1);
+  });
+
+  it('refuses an endpoint outside the plugin namespace', async () => {
+    const api = { get: vi.fn(async () => ({ screens: [] })) };
+    const s = usePluginScreen('demoplugin', api);
+    api.get.mockClear();
+    await s.searchList({ type: 'list', endpoint: '/api/invoices', search: {} }, 'x');
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a screen that does not declare search', async () => {
+    const api = { get: vi.fn(async () => []) };
+    const s = usePluginScreen('demoplugin', api);
+    api.get.mockClear();
+    await s.searchList({ type: 'list', endpoint: '/api/plugins/demoplugin/quotes' }, 'x');
+    expect(api.get).not.toHaveBeenCalled();
+  });
+});
