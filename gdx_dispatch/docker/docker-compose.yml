@@ -20,6 +20,11 @@ x-app-env: &app-env
   GDX_FERNET_KEY: ${GDX_FERNET_KEY:-}
   MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
   GDX_ENV: ${GDX_ENV:-dev}
+  # Browser-stream session recording (HubX quoting sessions). Set to 0 to disable.
+  # The directory is NOT under /app/uploads on purpose: that tree is what the DB
+  # backup routine takes off-box, and these recordings are unscrubbed.
+  GDX_SESSION_RECORDING: ${GDX_SESSION_RECORDING:-1}
+  GDX_SESSION_RECORDING_DIR: ${GDX_SESSION_RECORDING_DIR:-/app/recordings}
   # Shared, not app-only: the celery workers call Stripe too.
   # `payments.sweep_stale_intents` (money-audit M12) cancels a customer's
   # stale PaymentIntent when an invoice is settled another way, and it runs
@@ -120,6 +125,11 @@ services:
       - "127.0.0.1:8001:8000"
     volumes:
       - gdx_uploads:/app/uploads
+      # Browser-stream session recordings. Its OWN volume, not a subdirectory of
+      # uploads: admin_db.py writes DB backups into /app/uploads/_db_backups, and
+      # these recordings are unscrubbed quoting sessions that must not ride along
+      # in every backup artifact that leaves the machine.
+      - gdx_recordings:/app/recordings
     depends_on:
       db:
         condition: service_healthy
@@ -260,6 +270,14 @@ volumes:
   gdx_uploads:
     external: true
     name: docker_gdx_uploads
+  # Session recordings of browser-stream (HubX quoting) sessions.
+  # Deliberately a MANAGED volume, not external:true like db_data/gdx_uploads.
+  # external:true would abort `compose up` on any host where the volume had not
+  # been hand-created first — which is every host, including the next prod
+  # deploy. This spool is not the archive: tools/pull_hubx_sessions.sh copies
+  # sessions to the operator's machine, and that copy is the durable one.
+  # Still: do not `docker compose down -v` between pulls.
+  gdx_recordings:
   # Plugin install cache (pip --target). Rebuildable from plugin_registry on
   # reconcile, so a plain managed volume — not external like db/uploads.
   gdx_plugins:

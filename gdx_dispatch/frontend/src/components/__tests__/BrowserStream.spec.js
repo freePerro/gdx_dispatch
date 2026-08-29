@@ -13,11 +13,15 @@ const apiDel = vi.fn(async () => ({ saved: false }));
 vi.mock('../../composables/useApiWithToast', () => ({
   useApiWithToast: () => ({ get: apiGet, post: apiPost, del: apiDel }),
 }));
+// Mutable so a test can drive the recorder heartbeat.
+const recRef = { value: null };
+
 vi.mock('../../composables/useBrowserStream', () => ({
   useBrowserStream: () => ({
     frameSrc: { value: null },
     connected: { value: false },
     error: { value: null },
+    rec: recRef,
     connect: vi.fn(),
     mouse: vi.fn(), wheel: vi.fn(), key: vi.fn(), paste: vi.fn(),
     imeInput: vi.fn(), seedKeyboard: vi.fn(),
@@ -98,5 +102,35 @@ describe('BrowserStream.vue remembered login', () => {
     expect(apiDel).toHaveBeenCalledWith('/api/plugins/_browser/credentials?key=chipricing');
     expect(w.vm.credsSaved).toBe(false);
     expect(w.vm.credsUsername).toBe('');
+  });
+});
+
+describe('recording badge', () => {
+  afterEach(() => { recRef.value = null; });
+
+  it('shows nothing until the server sends a heartbeat', async () => {
+    const w = mount(BrowserStream, { props: { url: 'https://orderentry.chiohd.com/' } });
+    await w.vm.$nextTick();
+    expect(w.find('[data-testid="browser-rec"]').exists()).toBe(false);
+  });
+
+  it('reports recording, with counts, when the server says so', async () => {
+    recRef.value = { recording: true, degraded: false, events: 12, bytes: 4096, captures: 2, dropped: 0 };
+    const w = mount(BrowserStream, { props: { url: 'https://orderentry.chiohd.com/' } });
+    await w.vm.$nextTick();
+    const badge = w.find('[data-testid="browser-rec"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toContain('2 captured');
+    expect(badge.classes()).toContain('is-on');
+  });
+
+  it('goes red when the recorder degrades — the counterfactual that makes the badge evidence', async () => {
+    recRef.value = { recording: false, degraded: true, reason: 'permission denied', events: 3, bytes: 0 };
+    const w = mount(BrowserStream, { props: { url: 'https://orderentry.chiohd.com/' } });
+    await w.vm.$nextTick();
+    const badge = w.find('[data-testid="browser-rec"]');
+    expect(badge.text()).toBe('Recording failed');
+    expect(badge.classes()).toContain('is-bad');
+    expect(badge.attributes('title')).toContain('permission denied');
   });
 });
