@@ -3,21 +3,21 @@ from __future__ import annotations
 import csv
 import logging
 import re
-import httpx
 from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal
 from io import StringIO
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.core.audit import log_audit_event_sync, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module
-from gdx_dispatch.core import pricing_strategies
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.pricing_engine import PricingTierSet
 from gdx_dispatch.models.tenant_models import CustomCatalog, CustomCatalogItem, DoorSpec
@@ -223,6 +223,7 @@ def _virtual_catalog_items(virtual_id: str, search: str | None,
     pricing_category_for_class = "doors" if virtual_id == VIRTUAL_CHI_DOORS_ID else "parts"
     try:
         from decimal import Decimal as _D  # local import to avoid module-load cost on cold imports
+
         from gdx_dispatch.services.pricing_engine import (
             CustomerView,
             PricingConfigError,
@@ -396,8 +397,103 @@ def _display_description(item: CustomCatalogItem) -> str:
     return desc or item.name
 
 
-def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
+def _believable_stored_price(price, cost):
+    """Can the stored `price` be believed as a sell price?
+
+    The same two rules `core/part_pricing._believable_sell` applies to the same
+    rows, so the catalog display and the capture path cannot disagree about
+    whether a number is a price or an import artefact:
+
+      * price > cost              -> a real sell price.
+      * price with no cost        -> believed; nothing marks it as an import.
+      * price <= cost, or 0/NULL  -> not believed.
+    """
+    if price is None:
+        return False
+    p = Decimal(str(price))
+    if p <= 0:
+        return False
+    if cost is None:
+        return True
+    c = Decimal(str(cost))
+    return c <= 0 or p > c
+
+
+def _engine_pricer(db, catalog=None, catalogs_by_id=None):
+    """A per-request `(cost, category, catalog) -> retail` function.
+
+    Used ONLY where the stored price cannot be believed (see
+    `_believable_stored_price`). A stored price that IS believable is served
+    unchanged, so an operator's entered number still wins and this stays a
+    repair for unpriced rows rather than a change to how pricing works.
+
+    Measured on production before choosing that scope: of 302 active items,
+    deriving unconditionally left 299 identical, fixed 2, and REGRESSED 1 (a row
+    with cost 0.00 and a stored price of 7.50 served NULL, which the line-item
+    picker coerces to `$0.00` on a customer quote). Repairing only the
+    unbelievable rows leaves 300 unchanged, fixes the same 2, and regresses none.
+
+    Settings hydrate at most once per session via `part_pricing._cached_settings`
+    — hydration is roughly one query per tier set, and calling it per row turned
+    a 130-item picker page into ~1,600 queries.
+    """
+
+    def _price(cost, pricing_category=None, catalog_id=None) -> float | None:
+        if cost in (None, ""):
+            return None
+        cat = catalog
+        if cat is None and catalogs_by_id and catalog_id is not None:
+            cat = catalogs_by_id.get(str(catalog_id))
+        if cat is not None:
+            computed = pricing_strategies.compute_price(
+                getattr(cat, "pricing_strategy", None),
+                cost,
+                config=getattr(cat, "pricing_config", None),
+            )
+            if computed is not None:
+                return float(computed)
+        try:
+            from decimal import Decimal as _D
+
+            from gdx_dispatch.core.part_pricing import _cached_settings
+            from gdx_dispatch.services.pricing_engine import CustomerView, price_line
+
+            if _D(str(cost)) <= 0:
+                return None
+            res = price_line(
+                cost=_D(str(cost)),
+                pricing_category=(pricing_category or "parts"),
+                customer=CustomerView(pricing_class="retail", margin_override_pct=None),
+                settings=_cached_settings(db),
+            )
+            return round(float(res.sell), 2)
+        except Exception:  # noqa: BLE001 — unconfigured tier is not a 500
+            log.warning("catalog: retail lookup failed; leaving item unpriced",
+                        exc_info=True)
+            return None
+
+    return _price
+
+
+def _serialize_item(item: CustomCatalogItem, pricer) -> dict[str, object]:
+    """Serialize a catalog item.
+
+    A believable stored price is served unchanged. One that cannot be believed —
+    missing, zero, or at or below cost — is repaired from cost through the
+    catalog's strategy and then the margin tiers, so an import that filled the
+    price column with the cost (1,644 such rows existed) can never be offered to
+    a customer at cost.
+    """
     product_class = (getattr(item, "product_class", None) or "parts").strip().lower()
+    if _believable_stored_price(item.price, item.cost):
+        _served_price, _price_source = _to_float(item.price), "catalog"
+    else:
+        _served_price = pricer(
+            item.cost,
+            getattr(item, "pricing_category", None) or product_class,
+            getattr(item, "catalog_id", None),
+        )
+        _price_source = "engine" if _served_price is not None else None
     out: dict[str, object] = {
         "id": str(item.id),
         "catalog_id": str(item.catalog_id),
@@ -410,7 +506,8 @@ def _serialize_item(item: CustomCatalogItem) -> dict[str, object]:
         "description": item.description,
         "description_display": _display_description(item),
         "cost": _to_float(item.cost),
-        "price": _to_float(item.price),
+        "price": _served_price,
+        "price_source": _price_source,
         "category": item.category,
         "vendor": getattr(item, "vendor", None),
         "pricing_category": item.pricing_category,
@@ -513,13 +610,32 @@ def _validate_field_schema(schema: list[dict] | None) -> list[dict]:
     return cleaned
 
 
-def _retail_for(catalog: "CustomCatalog", cost, price) -> float:
-    """ADR-015 Slice 2 — resolve an item's retail price.
+def _retail_for(
+    catalog: CustomCatalog,
+    cost,
+    price,
+    *,
+    db=None,
+    pricing_category: str | None = None,
+) -> float | None:
+    """ADR-015 Slice 2 — resolve an item's retail price, or None if we cannot.
 
-    An explicit non-zero price always wins. Otherwise the catalog's pricing
-    strategy computes from cost ('manual'/no-cost → fall back to the entered
-    price, else cost). Shared by single-add and bulk-import so the same item
-    prices identically no matter how it's created.
+    Order: an explicit non-zero price wins; then the catalog's pricing strategy;
+    then the tenant's margin tiers. **Never the raw cost.**
+
+    The old final line was ``float(price if price is not None else (cost or 0))``
+    — i.e. when the strategy could not compute, it stored our COST as the
+    customer-facing retail price. `manual` is the default strategy and
+    `pricing_strategies.compute_price` returns None for it, so on this
+    deployment (every catalog `manual`) that branch was the operative one: a
+    cost-only import wrote a zero-margin sell price into the catalog the
+    estimate pickers read from.
+
+    None means "we could not price this". That is deliberate and matches what
+    this module already does for the manufacturer virtual catalogs, which leave
+    price NULL on a pricing-config error so the UI renders "—" rather than a
+    fabricated number. A NULL price also trips the tenant's zero-price policy
+    (``enforce_save_pricing``), which is the correct prompt for a human.
     """
     if price:
         return float(price)
@@ -531,7 +647,32 @@ def _retail_for(catalog: "CustomCatalog", cost, price) -> float:
         )
         if computed is not None:
             return float(computed)
-    return float(price if price is not None else (cost or 0))
+        if db is not None:
+            # Same resolver the capture and estimate paths use, so an item
+            # prices identically however it was created.
+            from gdx_dispatch.core.part_pricing import sell_price_for_row
+
+            try:
+                sell = sell_price_for_row(
+                    db, price=None, cost=cost,
+                    pricing_category=pricing_category or "parts",
+                )
+            except Exception:
+                # _engine_sell swallows PricingConfigError, but not a DB fault
+                # (a missing tier table leaves the session needing a rollback and
+                # the NEXT query fails with an unrelated error). A pricing lookup
+                # must never break a catalog write — unpriced is the safe answer.
+                log.warning("catalog: margin lookup failed; leaving item unpriced",
+                            exc_info=True)
+                sell = None
+            if sell is not None:
+                return float(sell)
+    return None
+
+
+def _money_or_none(value) -> float | None:
+    """`_money`, but propagates "unpriced" instead of inventing 0.00."""
+    return None if value is None else _money(value)
 
 
 def _coerce_attributes(schema: list[dict], raw: dict | None) -> dict:
@@ -599,7 +740,7 @@ class CatalogCreateIn(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_schema_for_class(self) -> "CatalogCreateIn":
+    def _validate_schema_for_class(self) -> CatalogCreateIn:
         # Custom catalogs must declare a valid field schema; built-in classes
         # carry none (they use the frontend registry / typed spec tables).
         if self.product_class == "custom":
@@ -775,7 +916,17 @@ def list_all_catalog_items(
         )
         .order_by(CustomCatalogItem.name.asc(), CustomCatalogItem.id.asc())
     ).scalars().all()
-    return {"items": [_serialize_item(item) for item in rows], "total": len(rows)}
+    # Spans every catalog, so each item prices under ITS OWN catalog strategy
+    # from one map. Hoisted: building the pricer per row would re-hydrate the
+    # tier settings per row.
+    _cats = {
+        str(c.id): c
+        for c in db.execute(select(CustomCatalog).where(CustomCatalog.deleted_at.is_(None)))
+        .scalars()
+        .all()
+    }
+    _pricer = _engine_pricer(db, catalogs_by_id=_cats)
+    return {"items": [_serialize_item(item, _pricer) for item in rows], "total": len(rows)}
 
 
 @router.get("/api/catalogs/pricing-categories", response_model=None)
@@ -991,7 +1142,10 @@ def get_catalog(
 
     row = _get_catalog_or_404(catalog_id, db, include_items=True)
     payload = _serialize_catalog(row)
-    payload["items"] = [_serialize_item(item) for item in row.items if item.deleted_at is None]
+    _pricer = _engine_pricer(db, catalog=row)
+    payload["items"] = [
+        _serialize_item(item, _pricer) for item in row.items if item.deleted_at is None
+    ]
     return payload
 
 
@@ -1008,7 +1162,7 @@ def list_catalog_items(
     if str(catalog_id) in VIRTUAL_CATALOG_IDS:
         return _virtual_catalog_items(str(catalog_id), search, page, per_page, db)
 
-    _get_catalog_or_404(catalog_id, db)
+    _catalog = _get_catalog_or_404(catalog_id, db)
 
     filters = [CustomCatalogItem.catalog_id == catalog_id, CustomCatalogItem.deleted_at.is_(None)]
     if search:
@@ -1032,8 +1186,12 @@ def list_catalog_items(
         .limit(per_page)
     ).scalars().all()
 
+    # Hoisted out of the comprehension on purpose: _engine_pricer hydrates the
+    # tier settings, and building it per row is the N+1 that part_pricing's own
+    # session cache exists to prevent.
+    _pricer = _engine_pricer(db, catalog=_catalog)
     return {
-        "items": [_serialize_item(row) for row in rows],
+        "items": [_serialize_item(row, _pricer) for row in rows],
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1061,7 +1219,12 @@ def add_catalog_item(
     # ADR-015 Slice 2 — apply the catalog's pricing strategy when no price was
     # entered. The zero-price policy gate (F-75) sees the FINAL price, so a
     # strategy-computed non-zero retail correctly stays active.
-    effective_price = _retail_for(catalog, payload.cost, payload.price)
+    effective_price = _retail_for(
+        catalog, payload.cost, payload.price, db=db,
+        pricing_category=_derive_pricing_category(
+            payload.pricing_category, payload.category, product_class,
+        ),
+    )
     active_after_policy = enforce_save_pricing(
         tenant_id_for_policy, price=effective_price
     )
@@ -1072,7 +1235,7 @@ def add_catalog_item(
         name=payload.name.strip(),
         description=payload.description.strip() if payload.description else None,
         cost=_money(payload.cost),
-        price=_money(effective_price),
+        price=_money_or_none(effective_price),
         category=payload.category.strip() if payload.category else None,
         vendor=payload.vendor.strip() if payload.vendor else None,
         pricing_category=_derive_pricing_category(
@@ -1110,7 +1273,7 @@ def add_catalog_item(
         request=request,
     )
     db.commit()
-    return _serialize_item(row)
+    return _serialize_item(row, _engine_pricer(db, catalog=catalog))
 
 
 # ---------------------------------------------------------------------------
@@ -1302,7 +1465,7 @@ def save_from_estimate_line(
     )
     db.commit()
 
-    result = _serialize_item(row)
+    result = _serialize_item(row, _engine_pricer(db, catalog=catalog))
     result["margin_pct"] = float(line_price.margin_pct)
     result["pricing_source"] = line_price.source
     return result
@@ -1383,7 +1546,9 @@ def patch_catalog_item(
         request=request,
     )
     db.commit()
-    return _serialize_item(row)
+    return _serialize_item(
+        row, _engine_pricer(db, catalog=_get_catalog_or_404(catalog_id, db))
+    )
 
 
 @router.delete("/api/catalogs/{catalog_id}/items/{item_id}", response_model=None)
@@ -1414,7 +1579,7 @@ def delete_catalog_item(
     return {"deleted": True}
 
 
-def _import_attributes(catalog: "CustomCatalog", raw: dict[str, object], product_class: str) -> dict | None:
+def _import_attributes(catalog: CustomCatalog, raw: dict[str, object], product_class: str) -> dict | None:
     """Custom-field values for a bulk/AI-imported row (#53).
 
     Only custom catalogs have a field_schema; for everything else return None.
@@ -1477,7 +1642,12 @@ def bulk_import_catalog_items(
             cost=_money(item.cost),
             # ADR-015 Slice 2 — same pricing strategy as single-add, so a CSV/JSON
             # import of cost-only rows prices identically to the Add form.
-            price=_money(_retail_for(catalog, item.cost, item.price)),
+            price=_money_or_none(_retail_for(
+                catalog, item.cost, item.price, db=db,
+                pricing_category=_derive_pricing_category(
+                    item.pricing_category, item.category, product_class, valid_categories
+                ),
+            )),
             category=item.category,
             vendor=item.vendor,
             pricing_category=_derive_pricing_category(
@@ -1510,7 +1680,7 @@ def bulk_import_catalog_items(
     return {"imported": imported, "failed": 0}
 
 
-def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Session) -> str:
+def _upsert_qb_item(catalog: CustomCatalog, raw: dict[str, object], db: Session) -> str:
     catalog_id = catalog.id
     qb_item_id = str(raw.get("qb_item_id") or "").strip() or None
     sku = str(raw.get("sku") or "").strip() or None
@@ -1540,7 +1710,9 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
             name=str(raw.get("name") or "").strip() or "QB Item",
             description=str(raw.get("description") or "").strip() or None,
             cost=_money(float(raw.get("cost") or 0)),
-            price=_money(_retail_for(catalog, raw.get("cost"), raw.get("price"))),
+            price=_money_or_none(_retail_for(
+                catalog, raw.get("cost"), raw.get("price"), db=db,
+            )),
             category=str(raw.get("category") or "").strip() or None,
             vendor=str(raw.get("vendor") or raw.get("supplier") or "").strip() or None,
             active=bool(raw.get("active", True)),
@@ -1553,7 +1725,11 @@ def _upsert_qb_item(catalog: "CustomCatalog", raw: dict[str, object], db: Sessio
     match.name = str(raw.get("name") or match.name)
     match.description = str(raw.get("description") or "").strip() or match.description
     match.cost = _money(float(raw.get("cost") or match.cost or 0))
-    match.price = _money(_retail_for(catalog, raw.get("cost") or match.cost, raw.get("price")) or match.price or 0)
+    # None = "could not price": keep whatever the row already had rather than
+    # overwriting a good sell price with a fabricated one.
+    match.price = _money_or_none(
+        _retail_for(catalog, raw.get("cost") or match.cost, raw.get("price"), db=db)
+    ) or match.price
     match.category = str(raw.get("category") or "").strip() or match.category
     match.active = bool(raw.get("active", match.active))
     if qb_item_id:
@@ -1725,7 +1901,12 @@ async def ai_import_catalog(
                 name=item.name,
                 description=item.description,
                 cost=_money(item.cost),
-                price=_money(_retail_for(catalog, item.cost, item.price)),
+                price=_money_or_none(_retail_for(
+                    catalog, item.cost, item.price, db=db,
+                    pricing_category=_derive_pricing_category(
+                        item.pricing_category, item.category, product_class,
+                    ),
+                )),
                 category=item.category,
                 vendor=item.vendor,
                 product_class=product_class,

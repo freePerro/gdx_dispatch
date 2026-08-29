@@ -34,6 +34,7 @@ from gdx_dispatch.routers.catalog import (
     VIRTUAL_CATALOG_IDS,
     _coerce_attributes,
     _money,
+    _money_or_none,
     _retail_for,
 )
 
@@ -109,7 +110,10 @@ def upsert_catalog_items(
                 name=str(raw.get("name") or sku or "Item").strip()[:200],
                 description=str(raw.get("description") or "").strip() or None,
                 cost=_money(float(cost or 0)),
-                price=_money(_retail_for(catalog, cost, price)),
+                price=_money_or_none(
+                    _retail_for(catalog, cost, price, db=db,
+                                pricing_category=product_class)
+                ),
                 category=str(raw.get("category") or "").strip() or None,
                 vendor=vendor,
                 product_class=product_class,
@@ -129,11 +133,12 @@ def upsert_catalog_items(
             if cost is not None:
                 match.cost = _money(float(cost))
             # Reprice from the (possibly updated) cost via the catalog strategy.
-            match.price = _money(
-                _retail_for(catalog, cost if cost is not None else match.cost, price)
-                or match.price
-                or 0
-            )
+            # None = "could not price": keep the row's existing price rather
+            # than overwriting a good sell price with a fabricated one.
+            match.price = _money_or_none(
+                _retail_for(catalog, cost if cost is not None else match.cost, price,
+                            db=db, pricing_category=product_class)
+            ) or match.price
             if raw.get("category"):
                 match.category = str(raw["category"]).strip()
             if vendor:
