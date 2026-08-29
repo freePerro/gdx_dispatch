@@ -895,6 +895,7 @@
         :job-type="job.job_type || ''"
         :customer-name="customer?.name || ''"
         @closed-out="onCloseoutDone"
+        @photo-added="refresh"
       />
       <MobileInvoiceDialog
         v-model:visible="invoiceOpen"
