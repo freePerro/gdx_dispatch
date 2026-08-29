@@ -140,6 +140,15 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // Private mode / quota-blocked storage: nothing to clear.
     }
+    // NOT cleared here: `gdx_draft_*` (useFormDraft's unsaved form text).
+    // Clearing them looks right by analogy with the route cache above, and is
+    // wrong: useIdleLogout calls logout() on the inactivity timer (line 60),
+    // and every refresh-401 lands here too. Wiping drafts on this path means
+    // stepping away from the desk destroys the half-typed note the feature
+    // exists to keep — the original bug, back through a side door. The drafts
+    // are tab-scoped sessionStorage holding only the user's own typed text,
+    // never a customer or job id (see useFormDraft), so leaving them is the
+    // smaller risk than losing work to a timeout.
   }
 
   // Server-side logout: revokes the refresh cookie so a re-auth can't

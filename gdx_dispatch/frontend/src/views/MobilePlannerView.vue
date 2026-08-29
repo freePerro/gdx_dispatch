@@ -172,8 +172,13 @@
         modal
         :style="{ width: '95vw', maxWidth: '500px' }"
         :breakpoints="{ '768px': '95vw' }"
+        @hide="onTaskFormHide"
       >
         <div class="form-stack">
+          <p v-if="taskDraft.restored.value" class="draft-note" data-test="mp-task-draft-note">
+            <span><i class="pi pi-history" aria-hidden="true" /> Draft restored</span>
+            <Button label="Discard" text size="small" @click="discardTaskDraft" />
+          </p>
           <InputText v-model="taskForm.title" placeholder="Task title" class="w-full" />
           <Textarea v-model="taskForm.description" placeholder="Description (optional)" rows="2" autoResize class="w-full" />
           <Select v-model="taskForm.priority" :options="['low','medium','high','urgent']" placeholder="Priority" class="w-full" />
@@ -242,8 +247,13 @@
         modal
         :style="{ width: '95vw', maxWidth: '500px' }"
         :breakpoints="{ '768px': '95vw' }"
+        @hide="onPlanFormHide"
       >
         <div class="form-stack">
+          <p v-if="planDraft.restored.value" class="draft-note" data-test="mp-plan-draft-note">
+            <span><i class="pi pi-history" aria-hidden="true" /> Draft restored</span>
+            <Button label="Discard" text size="small" @click="discardPlanDraft" />
+          </p>
           <InputText v-model="planForm.title" placeholder="Plan title" class="w-full" />
           <Textarea v-model="planForm.description" placeholder="Description" rows="2" autoResize class="w-full" />
           <label class="checkbox-row">
@@ -317,6 +327,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApiWithToast } from '../composables/useApiWithToast'
 import { formatDate, localDateString, parseLocalDateString } from '../composables/useFormatters'
+import { useFormDraft } from '../composables/useFormDraft'
 import CustomerFormDialog from '../components/CustomerFormDialog.vue'
 
 import Button from 'primevue/button'
@@ -362,6 +373,16 @@ const taskSort = ref('needs_action')
 const showTaskForm = ref(false)
 const taskSaving = ref(false)
 const taskForm = ref(emptyTaskForm())
+// Typed text survives an accidental back/X. Only what the user TYPED is kept —
+// assigned_to / job_id / customer_id are deliberate picks the user can't see
+// once the dialog reopens, and silently resurrecting one would file the task
+// against the wrong customer. Same key on desktop, so a viewport flip keeps it.
+const taskDraft = useFormDraft('planner_task_new', {
+  fields: ['title', 'description', 'priority', 'due_date'],
+  dates: ['due_date'],
+  defaults: { priority: 'low' },
+  getState: () => taskForm.value,
+})
 const showTaskDetail = ref(false)
 const selectedTask = ref(null)
 const taskEditSaving = ref(false)
@@ -371,7 +392,12 @@ const plans = ref([])
 const plansLoading = ref(false)
 const showPlanForm = ref(false)
 const planSaving = ref(false)
-const planForm = ref({ title: '', description: '', is_template: false })
+const planForm = ref(emptyPlanForm())
+const planDraft = useFormDraft('planner_plan_new', {
+  fields: ['title', 'description', 'is_template'],
+  defaults: { is_template: false },
+  getState: () => planForm.value,
+})
 
 // Messages
 const threads = ref([])
@@ -404,6 +430,10 @@ function emptyTaskForm() {
     job_id: null,
     customer_id: null,
   }
+}
+
+function emptyPlanForm() {
+  return { title: '', description: '', is_template: false }
 }
 
 function shortDate(d) {
@@ -499,6 +529,7 @@ async function loadJobsAndCustomers() {
 
 function openCreate() {
   if (activeTab.value === 'plans') {
+    planDraft.applyTo(planForm.value)
     showPlanForm.value = true
     return
   }
@@ -506,9 +537,40 @@ function openCreate() {
     showThreadForm.value = true
     return
   }
-  taskForm.value = emptyTaskForm()
+  // This used to be `taskForm.value = emptyTaskForm()`, which is precisely why
+  // an accidental X lost the note here while the desktop view kept it. Dropping
+  // the reset fixes the reopen case on its own; applyTo covers the harder one,
+  // a route change (back), where the view is remounted with an empty form.
+  // Nothing is reset here on purpose — the live ref still holds the linked job
+  // and customer, which the draft deliberately refuses to persist.
+  taskDraft.applyTo(taskForm.value)
   showTaskForm.value = true
 }
+
+// @hide fires for the X, Escape and Cancel alike. Flushing here (not just on
+// the debounced watcher) is what saves keystrokes typed in the last 400ms
+// before an accidental close — without it the reset-then-restore above would
+// hand back a draft that is one edit stale.
+function onTaskFormHide() {
+  taskDraft.flush(taskForm.value)
+}
+
+function onPlanFormHide() {
+  planDraft.flush(planForm.value)
+}
+
+function discardTaskDraft() {
+  taskDraft.clear()
+  taskForm.value = emptyTaskForm()
+}
+
+function discardPlanDraft() {
+  planDraft.clear()
+  planForm.value = emptyPlanForm()
+}
+
+watch(taskForm, (v) => taskDraft.save(v), { deep: true })
+watch(planForm, (v) => planDraft.save(v), { deep: true })
 
 async function createTask() {
   taskSaving.value = true
@@ -517,8 +579,12 @@ async function createTask() {
       ? localDateString(taskForm.value.due_date)
       : taskForm.value.due_date
     await api.post('/api/planner/tasks', { ...taskForm.value, due_date: due }, { successMessage: 'Task created' })
-    showTaskForm.value = false
+    // Clear and empty the form BEFORE closing: @hide flushes whatever the form
+    // holds, so closing first would write the just-created task straight back
+    // as a draft and hand it to the next "+ New".
+    taskDraft.clear()
     taskForm.value = emptyTaskForm()
+    showTaskForm.value = false
     await loadTasks()
   } finally {
     taskSaving.value = false
@@ -610,8 +676,9 @@ async function createPlan() {
   planSaving.value = true
   try {
     await api.post('/api/planner/plans', planForm.value, { successMessage: 'Plan created' })
+    planDraft.clear()
+    planForm.value = emptyPlanForm()
     showPlanForm.value = false
-    planForm.value = { title: '', description: '', is_template: false }
     await loadPlans()
   } finally {
     planSaving.value = false
@@ -686,6 +753,22 @@ onUnmounted(() => {
   max-width: 800px;
   margin: 0 auto;
   position: relative;
+}
+
+/* "Draft restored" strip at the top of a create dialog. Token-based so it
+   tracks light/dark like the capture CTA below it. */
+.draft-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 0.625rem;
+  background: var(--surface-elevated);
+  color: var(--text-muted);
+  font-size: 0.82rem;
 }
 
 /* Captured-call CTA in the task detail dialog. */

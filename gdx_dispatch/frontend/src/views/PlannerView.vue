@@ -3,8 +3,8 @@
       <Toolbar>
         <template #start><h2 class="page-title">Planner</h2></template>
         <template #end>
-          <Button v-if="activeTab === 'tasks'" label="+ Task" icon="pi pi-plus" size="small" @click="showTaskForm = true" data-testid="new-task" />
-          <Button v-if="activeTab === 'plans'" label="+ Plan" icon="pi pi-plus" size="small" @click="showPlanForm = true" data-testid="new-plan" />
+          <Button v-if="activeTab === 'tasks'" label="+ Task" icon="pi pi-plus" size="small" @click="openTaskForm" data-testid="new-task" />
+          <Button v-if="activeTab === 'plans'" label="+ Plan" icon="pi pi-plus" size="small" @click="openPlanForm" data-testid="new-plan" />
           <Button v-if="activeTab === 'messages'" label="+ Thread" icon="pi pi-plus" size="small" @click="showThreadForm = true" data-testid="new-thread" />
         </template>
       </Toolbar>
@@ -81,8 +81,12 @@
       </div>
 
       <!-- Task Create Dialog -->
-      <Dialog v-model:visible="showTaskForm" header="New Task" modal :style="{width:'500px'}">
+      <Dialog v-model:visible="showTaskForm" header="New Task" modal :style="{width:'500px'}" @hide="onTaskFormHide">
         <div class="form-stack">
+          <p v-if="taskDraft.restored.value" class="draft-note" data-testid="task-draft-note">
+            <span><i class="pi pi-history" aria-hidden="true"></i> Draft restored</span>
+            <Button label="Discard" text size="small" @click="discardTaskDraft" />
+          </p>
           <InputText v-model="taskForm.title" placeholder="Task title" class="w-full" />
           <Textarea v-model="taskForm.description" placeholder="Description (optional)" rows="2" class="w-full" />
           <div class="form-row">
@@ -127,8 +131,12 @@
       </Dialog>
 
       <!-- Plan Create Dialog -->
-      <Dialog v-model:visible="showPlanForm" header="New Plan" modal :style="{width:'500px'}">
+      <Dialog v-model:visible="showPlanForm" header="New Plan" modal :style="{width:'500px'}" @hide="onPlanFormHide">
         <div class="form-stack">
+          <p v-if="planDraft.restored.value" class="draft-note" data-testid="plan-draft-note">
+            <span><i class="pi pi-history" aria-hidden="true"></i> Draft restored</span>
+            <Button label="Discard" text size="small" @click="discardPlanDraft" />
+          </p>
           <InputText v-model="planForm.title" placeholder="Plan title" class="w-full" />
           <Textarea v-model="planForm.description" placeholder="Description" rows="2" class="w-full" />
           <div class="form-row"><Checkbox v-model="planForm.is_template" :binary="true" /><label>Save as template</label></div>
@@ -176,6 +184,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useApiWithToast } from "../composables/useApiWithToast";
 import { formatDate, formatTime, localDateString, parseLocalDateString } from "../composables/useFormatters";
+import { useFormDraft } from "../composables/useFormDraft";
 import Badge from "primevue/badge";
 import Button from "primevue/button";
 import Checkbox from "primevue/checkbox";
@@ -216,15 +225,34 @@ const taskView = ref("mine");
 const taskSort = ref("newest");
 const showTaskForm = ref(false);
 const taskSaving = ref(false);
-const taskForm = ref({
-  title: "",
-  description: "",
-  priority: "low",  // Doug's default 2026-04-13 — high/urgent require active choice
-  due_date: null,
-  assigned_to: null,
-  job_id: null,
-  customer_id: null,
+const taskForm = ref(emptyTaskForm());
+// Typed text survives an accidental back/X. Only what the user TYPED is kept —
+// assigned_to / job_id / customer_id are deliberate picks the user cannot see
+// once the dialog reopens, and silently resurrecting one would file the task
+// against the wrong customer. Same key as the mobile view on purpose, so a
+// viewport flip mid-note doesn't strand the draft on the other surface.
+const taskDraft = useFormDraft("planner_task_new", {
+  fields: ["title", "description", "priority", "due_date"],
+  dates: ["due_date"],
+  defaults: { priority: "low" },
+  getState: () => taskForm.value,
 });
+
+function emptyTaskForm() {
+  return {
+    title: "",
+    description: "",
+    priority: "low",  // Doug's default 2026-04-13 — high/urgent require active choice
+    due_date: null,
+    assigned_to: null,
+    job_id: null,
+    customer_id: null,
+  };
+}
+
+function emptyPlanForm() {
+  return { title: "", description: "", is_template: false };
+}
 // Task detail / edit dialog (opened from clicking a task card).
 const showTaskDetail = ref(false);
 const selectedTask = ref(null);
@@ -235,7 +263,12 @@ const plans = ref([]);
 const plansLoading = ref(true);
 const showPlanForm = ref(false);
 const planSaving = ref(false);
-const planForm = ref({ title: "", description: "", is_template: false });
+const planForm = ref(emptyPlanForm());
+const planDraft = useFormDraft("planner_plan_new", {
+  fields: ["title", "description", "is_template"],
+  defaults: { is_template: false },
+  getState: () => planForm.value,
+});
 
 // Messages
 const threads = ref([]);
@@ -325,21 +358,51 @@ async function loadJobsAndCustomers() {
   } catch { customerOptions.value = []; }
 }
 
+// Deliberately does NOT reset the form. While the view is still mounted the
+// ref already holds everything the user picked — including the linked job and
+// customer, which the draft refuses to persist. Resetting here would restore
+// the text and silently blank those links, which is worse than the bug being
+// fixed. After a route change the view is remounted and the form starts empty,
+// which is exactly when applyTo has something to do.
+function openTaskForm() {
+  taskDraft.applyTo(taskForm.value);
+  showTaskForm.value = true;
+}
+
+function openPlanForm() {
+  planDraft.applyTo(planForm.value);
+  showPlanForm.value = true;
+}
+
+// @hide covers the X, Escape and Cancel alike. Flushing here rather than
+// relying on the debounced watcher is what saves keystrokes typed in the last
+// 400ms before an accidental close.
+function onTaskFormHide() { taskDraft.flush(taskForm.value); }
+function onPlanFormHide() { planDraft.flush(planForm.value); }
+
+function discardTaskDraft() {
+  taskDraft.clear();
+  taskForm.value = emptyTaskForm();
+}
+
+function discardPlanDraft() {
+  planDraft.clear();
+  planForm.value = emptyPlanForm();
+}
+
+watch(taskForm, (v) => taskDraft.save(v), { deep: true });
+watch(planForm, (v) => planDraft.save(v), { deep: true });
+
 async function createTask() {
   taskSaving.value = true;
   try {
     const due = taskForm.value.due_date instanceof Date ? localDateString(taskForm.value.due_date) : taskForm.value.due_date;
     await api.post("/api/planner/tasks", { ...taskForm.value, due_date: due }, { successMessage: "Task created" });
+    // Clear and empty BEFORE closing: @hide flushes whatever the form holds,
+    // so closing first would write the just-created task back as a draft.
+    taskDraft.clear();
+    taskForm.value = emptyTaskForm();
     showTaskForm.value = false;
-    taskForm.value = {
-      title: "",
-      description: "",
-      priority: "low",
-      due_date: null,
-      assigned_to: null,
-      job_id: null,
-      customer_id: null,
-    };
     await loadTasks();
   } finally { taskSaving.value = false; }
 }
@@ -402,8 +465,9 @@ async function createPlan() {
   planSaving.value = true;
   try {
     await api.post("/api/planner/plans", planForm.value, { successMessage: "Plan created" });
+    planDraft.clear();
+    planForm.value = emptyPlanForm();
     showPlanForm.value = false;
-    planForm.value = { title: "", description: "", is_template: false };
     await loadPlans();
   } finally { planSaving.value = false; }
 }
@@ -454,6 +518,8 @@ onMounted(() => { loadTasks(); loadUsers(); loadJobsAndCustomers(); });
 .w-full { width: 100%; }
 .flex-1 { flex: 1; }
 .form-stack { display: flex; flex-direction: column; gap: 0.75rem; }
+/* "Draft restored" strip. PrimeVue tokens so it tracks light/dark. */
+.draft-note { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0; padding: 0.4rem 0.6rem; border: 1px dashed var(--p-content-border-color); border-radius: 8px; background: var(--p-content-hover-background); color: var(--p-text-muted-color); font-size: 0.82rem; }
 .form-row { display: flex; gap: 0.75rem; align-items: center; }
 
 /* Tasks */
