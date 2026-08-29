@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 from gdx_dispatch.core.audit import log_audit_event_sync, resolve_audit_actor, utcnow
 from gdx_dispatch.core.database import get_db
 from gdx_dispatch.core.modules import require_module, require_role
+from gdx_dispatch.core.pricing_provenance import derive_margin_pct
 from gdx_dispatch.core.upload_limits import assert_upload_within_limit
 from gdx_dispatch.models.tenant_models import Customer, Document, Job, JobPartNeeded
 from gdx_dispatch.modules.deposits import (
@@ -50,29 +51,10 @@ def _to_float(value: object) -> float:
     return float(value or 0)
 
 
-def _derive_margin_pct(cost: Decimal | float | None, unit_price: Decimal | float | None) -> Decimal | None:
-    """Back-derive a margin_pct_snapshot from cost + unit_price.
-
-    Returns None when either value is missing/<=0 (signals genuine free-form/manual line),
-    or when the result would not fit the Numeric(6,4) snapshot column (a price far below
-    cost — e.g. a fat-fingered $5 on a $1000 cost derives -199.0, which would raise
-    DataError on Postgres; SQLite CI ignores Numeric precision, so guard here).
-    Otherwise returns (unit_price - cost) / unit_price as a Decimal. Used at line creation
-    when the client sent a cost (e.g. a plugin-captured / typed-catalog door) without going through the
-    engine path, and at PATCH time to heal pre-existing lines that were born with cost
-    but NULL margin.
-    """
-    if cost is None or unit_price is None:
-        return None
-    c = Decimal(str(cost))
-    u = Decimal(str(unit_price))
-    if u <= 0 or c < 0:
-        return None
-    derived = ((u - c) / u).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    if derived <= Decimal("-99.9999"):
-        return None
-    return derived
-
+# Moved to core.pricing_provenance so the estimate and invoice sides cannot
+# drift into two different formulas for the same money question. Re-imported
+# under the old private name so the call sites below are unchanged.
+_derive_margin_pct = derive_margin_pct
 
 def _next_estimate_number(db: Session) -> str:
     # Single source of truth — see proposals.service.next_estimate_number.

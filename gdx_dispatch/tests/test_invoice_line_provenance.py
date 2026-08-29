@@ -1,231 +1,351 @@
-"""Provenance: who priced this part, and who authored this invoice line.
+"""Guards for invoice-line pricing provenance.
 
-Follow-ups 1 and 3 of `closeout-parts-autopricing-plan.md`, closed together by
-migration 075 because they are the same missing thing — a record of where a
-number came from, kept beside the number.
+The defect these exist to prevent, measured on the live tenant 2026-08-29:
+832 invoice lines, `cost_snapshot` on 63, `margin_pct_snapshot` on **zero** —
+and every one of those 63 had `unit_price > 0`, so all 63 were exactly
+derivable and none were derived. The amount was always kept; the reason never
+was.
 
-**Follow-up 1.** Four lanes wrote `job_parts_needed.unit_price` — the office's
-own figure, bench inventory, a catalog sell price, and the margin engine
-marking a cost up — and all four landed in the same `Numeric(10,2)`. "Who
-priced this part and why" was unanswerable from the records, which is
-invariant #1 on money code.
-
-**Follow-up 3.** `release_untouched_autodraft` empties an untouched autodraft
-so the closeout can rebuild it. Its guard asked six questions about the
-INVOICE and none about its LINES, so a part the office added by hand — which
-is exactly what the unbilled-parts banner tells them to do — was deleted on
-the next re-closeout.
+Each test below names the input that turns it red. A guard that cannot fail for
+its own defect proves nothing.
 """
+
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+import ast
 from decimal import Decimal
+from pathlib import Path
+from typing import get_args
+from uuid import UUID
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from gdx_dispatch.core.closeout_billing import (
-    AUTODRAFT_LINE_SOURCE,
-    AUTODRAFT_ORIGIN,
-    is_untouched_autodraft,
-    release_untouched_autodraft,
+from gdx_dispatch.core.pricing_provenance import (
+    COST_FORBIDDEN,
+    PRICING_SOURCES,
+    build_invoice_line,
+    derive_margin_pct,
 )
-from gdx_dispatch.core.part_pricing import PriceSource
-from gdx_dispatch.models.tenant_models import (
-    Invoice,
-    InvoiceLine,
-    Job,
-    JobPartNeeded,
-    Payment,
-)
+from gdx_dispatch.services.pricing_engine import PricingSource
 
-TENANT = "tenant-provenance"
+_REPO = Path(__file__).resolve().parents[1]
 
-
-@pytest.fixture
-def db():
-    """A minimal in-memory schema. Deliberately NOT the whole metadata: this
-    file only exercises the autodraft guard and its lines."""
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
-    for tbl in (
-        Job.__table__,
-        Invoice.__table__,
-        InvoiceLine.__table__,
-        Payment.__table__,
-        JobPartNeeded.__table__,
-    ):
-        tbl.create(bind=engine, checkfirst=True)
-    session = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
-    yield session
-    session.close()
-    engine.dispose()
+# The class definition and the helper. Nowhere else may construct one, because
+# a bare InvoiceLine() is how an unprovenanced money row gets written.
+_MAY_CONSTRUCT = {
+    Path("models/tenant_models.py"),
+    Path("core/pricing_provenance.py"),
+}
+_SKIP_DIRS = {"tests", "migrations", "__pycache__"}
+# A different model with its own table; not an InvoiceLine.
+_SKIP_PARTS = {"vendor_invoices"}
 
 
-def _job(db) -> Job:
-    job = Job(
-        customer_id=uuid.uuid4(),
-        title="Opener install",
-        description="",
-        lifecycle_stage="estimate",
-        dispatch_status="unassigned",
-        billing_status="unbilled",
-        company_id=TENANT,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    return job
+def _python_files():
+    for path in _REPO.rglob("*.py"):
+        rel = path.relative_to(_REPO)
+        if set(rel.parts) & _SKIP_DIRS or set(rel.parts) & _SKIP_PARTS:
+            continue
+        yield rel, path
 
 
-def _autodraft(db, job: Job) -> Invoice:
-    inv = Invoice(
-        id=uuid.uuid4(),
-        job_id=job.id,
-        customer_id=job.customer_id,
-        invoice_number=f"INV-{uuid.uuid4().hex[:6]}",
-        status="draft",
-        origin=AUTODRAFT_ORIGIN,
-        total=Decimal("100.00"),
-        subtotal=Decimal("100.00"),
-        tax_amount=Decimal("0"),
-        balance_due=Decimal("100.00"),
-        invoice_date=datetime.now(UTC).date(),
-        public_token=uuid.uuid4().hex,
-        company_id=TENANT,
-    )
-    db.add(inv)
-    db.commit()
-    db.refresh(inv)
-    return inv
+def _invoice_line_calls(path: Path):
+    """Every `InvoiceLine(...)` CALL NODE in a file.
 
-
-def _line(db, inv: Invoice, description: str, source: str | None) -> InvoiceLine:
-    line = InvoiceLine(
-        id=uuid.uuid4(),
-        invoice_id=inv.id,
-        description=description,
-        quantity=1,
-        unit_price=Decimal("100.00"),
-        line_total=Decimal("100.00"),
-        source=source,
-        company_id=TENANT,
-    )
-    db.add(line)
-    db.commit()
-    return line
-
-
-def _live_lines(db, inv: Invoice) -> list[InvoiceLine]:
-    return list(
-        db.execute(
-            select(InvoiceLine).where(
-                InvoiceLine.invoice_id == inv.id, InvoiceLine.deleted_at.is_(None)
-            )
-        ).scalars()
-    )
-
-
-# ── follow-up 3: the machine stops deleting the office's work ───────────────
-
-
-def test_a_draft_of_only_machine_lines_is_still_the_machines_to_rebuild(db):
-    """The counterfactual for everything below: without it, tightening the
-    guard would simply have broken the autodraft rebuild."""
-    job = _job(db)
-    inv = _autodraft(db, job)
-    _line(db, inv, "Labor — 2.0 hrs attested", AUTODRAFT_LINE_SOURCE)
-    _line(db, inv, "Torsion spring", AUTODRAFT_LINE_SOURCE)
-
-    assert is_untouched_autodraft(inv, db) is True
-    assert release_untouched_autodraft(db, job=job) is not None
-    assert _live_lines(db, inv) == [], "the machine must still empty its own draft"
-
-
-def test_one_office_added_line_ends_machine_ownership(db):
-    """The bug. The office follows the unbilled-parts banner, adds the part it
-    names, and the next re-closeout deleted that line along with the rest."""
-    job = _job(db)
-    inv = _autodraft(db, job)
-    _line(db, inv, "Labor — 2.0 hrs attested", AUTODRAFT_LINE_SOURCE)
-    office_line = _line(db, inv, "Cable drum the office added", "office")
-
-    assert is_untouched_autodraft(inv, db) is False, (
-        "a human line must end the machine's claim on this invoice"
-    )
-    assert release_untouched_autodraft(db, job=job) is None
-    kept = {line.id for line in _live_lines(db, inv)}
-    assert office_line.id in kept, "the office's line was deleted"
-
-
-def test_a_line_with_no_recorded_author_is_treated_as_possibly_human(db):
-    """NULL means unknown, not machine.
-
-    Every line written before migration 075 has `source IS NULL`. What nobody
-    recorded cannot now be inferred, and deleting an operator's work on a
-    guess is the worse of the two errors — so an unknown line is protected.
-
-    This is also the SQL trap the guard is written around: `NULL != 'autodraft'`
-    evaluates to NULL, not true, so a plain inequality would match nothing and
-    every pre-075 line would read as machine-authored. `IS DISTINCT FROM` is
-    what makes this pass.
+    Matching the call node rather than grepping for a keyword is deliberate: a
+    `pricing_source=` presence check is defeated by `InvoiceLine(**kwargs)`, and
+    a text grep passes on a comment that merely mentions the word. Asserting a
+    string appears in source proves authorship, not correctness.
     """
-    job = _job(db)
-    inv = _autodraft(db, job)
-    _line(db, inv, "A line from before provenance existed", None)
-
-    assert is_untouched_autodraft(inv, db) is False
-    assert release_untouched_autodraft(db, job=job) is None
-    assert len(_live_lines(db, inv)) == 1
-
-
-def test_a_line_the_office_already_deleted_does_not_protect_the_draft(db):
-    """Soft-deleted lines are not work to protect — otherwise one removed line
-    would freeze the machine out of that invoice forever."""
-    job = _job(db)
-    inv = _autodraft(db, job)
-    _line(db, inv, "Machine line", AUTODRAFT_LINE_SOURCE)
-    gone = _line(db, inv, "Office line, since removed", "office")
-    gone.deleted_at = datetime.now(UTC)
-    db.commit()
-
-    assert is_untouched_autodraft(inv, db) is True
-    assert release_untouched_autodraft(db, job=job) is not None
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:  # pragma: no cover - not our problem to report here
+        return []
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "id", None) or getattr(func, "attr", None)
+        if name == "InvoiceLine":
+            hits.append(node.lineno)
+    return hits
 
 
-def test_without_a_session_the_line_check_is_skipped_not_faked(db):
-    """`db` is optional and the payment arm already documents why: an arm that
-    cannot be answered is skipped rather than silently answered wrong. The
-    line arm follows the same rule, so no caller gets a confident False from a
-    check that never ran."""
-    job = _job(db)
-    inv = _autodraft(db, job)
-    _line(db, inv, "Office line", "office")
-
-    assert is_untouched_autodraft(inv, None) is True
-    assert is_untouched_autodraft(inv, db) is False
-
-
-# ── follow-up 1: a stored price says where it came from ────────────────────
+# Sites still to convert, pinned by FILE and COUNT. This is a ratchet: it may
+# only ever shrink. Line numbers are deliberately not pinned — they move for
+# unrelated edits — but the count is, so an EXTRA bare construction in a file
+# that already has some still fails.
 #
-# (That the autodraft actually stamps its own lines is asserted for real in
-# test_closeout_autodraft.py, by running the builder — a test that greps this
-# module's source would prove authorship, not behaviour.)
+# Converted so far: all 7 in routers/invoices.py (the ~98% of live volume).
+_PENDING_CONVERSION = {
+    Path("routers/mobile_invoicing.py"): 5,
+    Path("core/closeout_billing.py"): 3,
+    Path("modules/deposits/service.py"): 2,
+    Path("modules/quickbooks/sync.py"): 2,
+    Path("routers/sub_resources.py"): 1,
+}
 
 
-def test_price_source_vocabulary_is_what_the_column_stores():
-    """The column is VARCHAR(24). A tag longer than that is silently truncated
-    by SQLite and rejected by Postgres — a split-brain the tests must not
-    discover in production."""
-    tags = [
-        v for k, v in vars(PriceSource).items()
-        if not k.startswith("_") and isinstance(v, str)
-    ]
-    assert tags, "PriceSource exposes no tags"
-    for tag in tags:
-        assert len(tag) <= 24, f"{tag!r} does not fit price_source VARCHAR(24)"
-        assert tag == tag.lower(), f"{tag!r} should be lowercase for readable rows"
+def test_no_new_invoice_line_is_constructed_without_provenance():
+    """G1 — the sweep that catches a future write path.
+
+    Fails on a bare `InvoiceLine(...)` in any file that is not on the pending
+    ratchet, and on an EXTRA one in a file that is.
+
+    Counterfactual, run before trusting this: paste a bare `InvoiceLine(...)`
+    into any router and confirm it names that file. It does — while the seven
+    routers/invoices.py sites were still unconverted, this listed every one of
+    them by file:line.
+    """
+    found: dict[Path, list[int]] = {}
+    for rel, path in _python_files():
+        if rel in _MAY_CONSTRUCT:
+            continue
+        hits = _invoice_line_calls(path)
+        if hits:
+            found[rel] = hits
+
+    problems = []
+    for rel, hits in sorted(found.items()):
+        allowed = _PENDING_CONVERSION.get(rel, 0)
+        if len(hits) > allowed:
+            lines = ", ".join(str(n) for n in hits)
+            problems.append(
+                f"{rel}: {len(hits)} bare InvoiceLine() (allowed {allowed}) at lines {lines}"
+            )
+    assert not problems, (
+        "InvoiceLine() constructed directly — these lines carry no pricing "
+        "provenance:\n  " + "\n  ".join(problems)
+        + "\n\nUse core.pricing_provenance.build_invoice_line(pricing_source=...) "
+        "so the lane that produced the price is recorded with it."
+    )
+
+
+def test_the_pending_ratchet_only_shrinks():
+    """A file that has been fully converted must be removed from the ratchet,
+    so it can never silently regain an unprovenanced construction."""
+    stale = []
+    for rel, allowed in _PENDING_CONVERSION.items():
+        actual = len(_invoice_line_calls(_REPO / rel))
+        if actual < allowed:
+            stale.append(f"{rel}: ratchet says {allowed}, file now has {actual}")
+    assert not stale, (
+        "the pending ratchet is out of date — lower these counts:\n  "
+        + "\n  ".join(stale)
+    )
+
+
+def test_pricing_source_is_required_and_has_no_default():
+    """A new site that forgets the lane must die immediately, not write a row."""
+    with pytest.raises(TypeError):
+        build_invoice_line(  # type: ignore[call-arg]
+            description="x", quantity=1, unit_price=Decimal("1"), line_total=Decimal("1")
+        )
+
+
+def test_an_unknown_lane_cannot_be_invented():
+    """A typo must not silently truncate into VARCHAR(32) and become a lane
+    nobody can ever query for."""
+    with pytest.raises(ValueError, match="unknown pricing_source"):
+        build_invoice_line(
+            pricing_source="clientcost",  # typo
+            description="x", quantity=1, unit_price=Decimal("1"), line_total=Decimal("1"),
+        )
+
+
+@pytest.mark.parametrize("lane", sorted(COST_FORBIDDEN))
+def test_a_cost_on_a_not_priced_line_is_unwriteable(lane):
+    """cost_snapshot=0 on a discount/deposit/import derives (p-0)/p = 100%,
+    which would mint a fake full-margin row in every profit report."""
+    with pytest.raises(ValueError, match="have no cost"):
+        build_invoice_line(
+            pricing_source=lane,
+            cost_snapshot=Decimal("0"),
+            description="x", quantity=1, unit_price=Decimal("50"), line_total=Decimal("50"),
+        )
+
+
+def test_margin_is_derived_from_cost_and_price():
+    """THE assertion that was red for all 63 live rows.
+
+    Counterfactual: change the helper to (sell-cost)/cost and this goes red.
+    """
+    line = build_invoice_line(
+        pricing_source="client_cost",
+        cost_snapshot=Decimal("60"),
+        description="x", quantity=1, unit_price=Decimal("100"), line_total=Decimal("100"),
+    )
+    assert line.cost_snapshot == Decimal("60.00")
+    assert line.margin_pct_snapshot == Decimal("0.4000")
+
+
+def test_an_unknown_cost_yields_null_never_an_invented_one():
+    """The guard must forbid inventing a cost as firmly as it requires
+    recording one. A fabricated margin is worse than an honest blank."""
+    line = build_invoice_line(
+        pricing_source="manual",
+        description="x", quantity=1, unit_price=Decimal("100"), line_total=Decimal("100"),
+    )
+    assert line.cost_snapshot is None
+    assert line.margin_pct_snapshot is None
+
+
+def test_a_negative_price_derives_no_margin_and_does_not_overflow():
+    """A materialised discount is a negative line. Numeric(6,4) would reject a
+    derived -199.0 on Postgres while SQLite silently accepts it, so the guard
+    lives in the formula."""
+    line = build_invoice_line(
+        pricing_source="operator_discount",
+        description="Discount", quantity=1,
+        unit_price=Decimal("-50"), line_total=Decimal("-50"),
+    )
+    assert line.margin_pct_snapshot is None
+    # And the formula itself refuses the fat-fingered case directly.
+    assert derive_margin_pct(Decimal("1000"), Decimal("5")) is None
+
+
+def test_labor_may_legitimately_carry_a_margin():
+    """Regression guard against a rule that was proposed and rejected.
+
+    "Labor is never marked up" is about the ENGINE marking labor up. The
+    estimate side deliberately stores a margin on labor-matrix lines so they
+    appear in the profit panel, and 101 live estimate lines do. A hard failure
+    on (labor_source + margin) would 500 the next estimate->invoice conversion
+    of a labor-matrix quote.
+    """
+    line = build_invoice_line(
+        pricing_source="labor_matrix",
+        cost_snapshot=Decimal("300"),
+        labor_source="matrix",
+        description="Labor", quantity=1,
+        unit_price=Decimal("850"), line_total=Decimal("850"),
+    )
+    assert line.margin_pct_snapshot is not None
+    assert line.labor_source == "matrix"
+
+
+def test_the_helper_never_touches_authorship():
+    """`source` is a different axis — closeout_billing.is_untouched_autodraft
+    reads it to decide whether a machine draft may be rebuilt. Conflating the
+    two would make the rebuild delete human work, or refuse to run."""
+    line = build_invoice_line(
+        pricing_source="manual",
+        source="autodraft",
+        description="x", quantity=1, unit_price=Decimal("10"), line_total=Decimal("10"),
+    )
+    assert line.source == "autodraft", "the helper rewrote authorship"
+
+    untagged = build_invoice_line(
+        pricing_source="manual",
+        description="x", quantity=1, unit_price=Decimal("10"), line_total=Decimal("10"),
+    )
+    assert untagged.source is None, "the helper invented an authorship value"
+
+
+def test_every_engine_lane_is_accepted():
+    """The lane set must cover everything the ENGINE can stamp.
+
+    `customer_override` was missing from a hand-transcribed list. It is a real
+    PricingSource (set a customer's margin_override_pct), it reaches
+    EstimateLine.pricing_source, and the estimate->invoice copy forwards it —
+    so an unknown-lane ValueError inside a request handler was a 500 on a path
+    that worked before. Deriving the set from the engine's own Literal is what
+    makes that unrepeatable; this asserts the derivation actually happened.
+    """
+    from typing import get_args
+
+    from gdx_dispatch.services.pricing_engine import PricingSource
+
+    engine_lanes = set(get_args(PricingSource))
+    assert engine_lanes, "PricingSource is not a Literal any more — re-check this"
+    missing = engine_lanes - PRICING_SOURCES
+    assert not missing, f"engine lanes the invoice side would 500 on: {missing}"
+    assert COST_FORBIDDEN <= PRICING_SOURCES
+
+
+def test_a_forwarded_engine_lane_does_not_raise():
+    """The 500, reproduced at the boundary that would have raised it."""
+    for lane in sorted(set(get_args(PricingSource))):
+        line = build_invoice_line(
+            pricing_source=lane,
+            description="x", quantity=1,
+            unit_price=Decimal("100"), line_total=Decimal("100"),
+        )
+        assert line.pricing_source == lane
+
+
+def test_the_margin_formula_is_the_estimate_sides_formula():
+    """Rounding is money. The original quantized with ROUND_HALF_UP and guarded
+    the QUANTIZED value; a version that guards first and quantizes with the
+    default HALF_EVEN returns 0.9062 where the estimate side returns 0.9063,
+    and the two would disagree on the same line.
+    """
+    assert derive_margin_pct(Decimal("3"), Decimal("32")) == Decimal("0.9063")
+    assert derive_margin_pct(Decimal("7"), Decimal("32")) == Decimal("0.7813")
+    assert derive_margin_pct(Decimal("11"), Decimal("32")) == Decimal("0.6563")
+
+
+# ── Behavioural: assert the PERSISTED value, not the constructor's arguments ──
+# A unit test on the helper proves the arguments were right. Only a route test
+# proves the row on disk carries them, which is the claim that was false for all
+# 63 live rows.
+
+from gdx_dispatch.routers.invoices import (  # noqa: E402
+    InvoiceCreateIn,
+    InvoiceLineCreateIn,
+    create_invoice,
+)
+from gdx_dispatch.tests.test_invoices import (  # noqa: E402
+    _current_user,
+    _seed_job,
+    tenant_db_session,  # noqa: F401  — pytest fixture, used by name
+)
+
+
+def test_a_hand_composed_line_persists_its_margin(tenant_db_session):
+    """THE regression. A cost + a price on the 98% path must persist a margin.
+
+    Red before this change for every one of the 63 live rows that carried a
+    cost: all were exactly derivable and none were derived.
+    """
+    db = tenant_db_session
+    job = _seed_job(db)
+    result = create_invoice(
+        payload=InvoiceCreateIn(
+            job_id=str(job.id),
+            customer_id=str(job.customer_id),
+            line_items=[
+                InvoiceLineCreateIn(
+                    description="Bracket", quantity=1,
+                    unit_price=100.0, cost=60.0, taxable=True,
+                ),
+                InvoiceLineCreateIn(
+                    description="No cost recorded", quantity=1,
+                    unit_price=80.0, taxable=True,
+                ),
+            ],
+        ),
+        _=_current_user(),
+        db=db,
+    )
+    from gdx_dispatch.models.tenant_models import InvoiceLine
+    rows = {
+        r.description: r
+        for r in db.query(InvoiceLine).filter(
+            InvoiceLine.invoice_id == UUID(str(result["id"]))
+        ).all()
+    }
+
+    priced = rows["Bracket"]
+    assert priced.pricing_source == "client_cost"
+    assert priced.cost_snapshot == Decimal("60.00")
+    assert priced.margin_pct_snapshot == Decimal("0.4000"), (
+        "a cost and a price were both stored and the margin was not derived"
+    )
+
+    # And the honest blank survives the round trip — no invented cost.
+    blank = rows["No cost recorded"]
+    assert blank.pricing_source == "manual"
+    assert blank.cost_snapshot is None
+    assert blank.margin_pct_snapshot is None

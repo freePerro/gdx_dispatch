@@ -278,7 +278,7 @@ class Customer(Base):
         if key == "phone" and value:
             from gdx_dispatch.modules.phone_com.customer_resolver import normalize_e164
             normalized = normalize_e164(value) or value
-            setattr(self, "phone_hash", HashColumn.hash_for_search(normalized))
+            self.phone_hash = HashColumn.hash_for_search(normalized)
         else:
             setattr(self, f"{key}_hash", HashColumn.hash_for_search(value) if value else None)
         return value
@@ -642,6 +642,26 @@ class InvoiceLine(Base):
     # set on /billing/new. Both are decimal fractions (0.40 = 40%).
     margin_pct_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     margin_pct_override: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    # pricing_source: WHICH LANE produced unit_price -- "tier", "labor_matrix",
+    # "client_cost", "manual", "estimate_discount"... (migration 083; the
+    # authoritative set is core.pricing_provenance.PRICING_SOURCES).
+    #
+    # NOT the same axis as `source` below. `source` is AUTHORSHIP -- who wrote
+    # the line -- and closeout_billing.is_untouched_autodraft reads it to decide
+    # whether a machine-built draft may be rebuilt. Conflating the two would
+    # make "manual" mean both "a human typed this line" and "a human chose this
+    # price". 32 chars matches EstimateLine.pricing_source so a lane can be
+    # forwarded verbatim at estimate->invoice conversion.
+    #
+    # NULL means "not recorded" -- never "unknown lane", and never a licence to
+    # guess one later.
+    pricing_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # pricing_inputs: the operands behind a COMPUTED price, so the arithmetic
+    # can be re-checked. The closeout service lane bills
+    # first_hour_price + hourly_rate * (billed_man_hours - 1) while storing only
+    # estimated_man_hours, which is why a live row can read 1.50 hours against a
+    # $300 price with nothing to reconcile them.
+    pricing_inputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # D-S122-line-removal-unbill: surgical mapping back to the JobPartNeeded
     # row this line was created from. When this line is deleted, the part's
     # billed_invoice_id is released. Without this column, the bill linkage
@@ -1094,7 +1114,7 @@ class CustomCatalogItem(Base):
     deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     catalog: Mapped[CustomCatalog] = relationship(back_populates="items")
-    door_spec: Mapped["DoorSpec | None"] = relationship(
+    door_spec: Mapped[DoorSpec | None] = relationship(
         back_populates="item",
         cascade="all, delete-orphan",
         uselist=False,
