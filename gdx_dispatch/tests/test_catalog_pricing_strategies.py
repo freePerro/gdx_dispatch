@@ -408,3 +408,135 @@ def test_ai_import_uses_router_dict_response(db_session, monkeypatch):
         UUID(cat["id"]), search=None, page=1, per_page=25, _=_user(), db=db_session,
     )
     assert listing["items"][0]["price"] == pytest.approx(200.0)  # strategy applied
+
+
+# ── Drift guards ────────────────────────────────────────────────────────────
+# The defect this file keeps re-learning: a customer-facing price that is a copy
+# of our cost, or of nothing at all. These make it impossible to reintroduce
+# quietly — and one of them exists because a broader version of this change
+# regressed a real production row.
+
+
+def _seed_legacy(db, cat, sku, cost, price):
+    """Insert straight through the ORM, bypassing the write path.
+
+    Going through `add_catalog_item` would be repaired by `_retail_for` on the
+    way IN, so an API-seeded row can never be poisoned — which is the point of
+    that half of this change. The rows these tests care about are the ones
+    already in the database: 1,644 with price == cost, and two Springs rows at
+    0.00 against a cost of 78.00.
+    """
+    from gdx_dispatch.models.tenant_models import CustomCatalogItem
+
+    row = CustomCatalogItem(
+        catalog_id=UUID(cat["id"]), sku=sku, name=sku,
+        cost=Decimal(str(cost)), price=Decimal(str(price)),
+        product_class="parts", active=True,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _served(db, cat):
+    rows = catalog_router.list_catalog_items(
+        UUID(cat["id"]), search=None, page=1, per_page=50, _=_user(), db=db,
+    )["items"]
+    return {r["sku"]: r for r in rows}
+
+
+def test_an_unbelievable_stored_price_is_repaired_from_cost(db_session):
+    """price == cost and price == 0 are both import artefacts, not sell prices.
+
+    1,644 production rows carried price == cost, and two live Springs rows sat
+    at 0.00 against a cost of 78.00 — a $0 line on a customer quote.
+    """
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+    _seed_legacy(db_session, cat, "EQ-COST", 78.0, 78.0)
+    _seed_legacy(db_session, cat, "ZERO", 78.0, 0.0)
+
+    served = _served(db_session, cat)
+    for sku in ("EQ-COST", "ZERO"):
+        row = served[sku]
+        assert row["price"] is not None, f"{sku} served nothing"
+        assert row["price"] > 78.0, f"{sku} offers our cost or less"
+        assert row["price_source"] == "engine"
+
+
+def test_a_believable_stored_price_is_served_unchanged(db_session):
+    """No contract change: a price a human entered above cost still wins.
+
+    Counterfactual: derive unconditionally and this fails — which is exactly
+    what a broader version of this change did.
+    """
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+    _seed_legacy(db_session, cat, "ENTERED", 100.0, 175.0)
+
+    row = _served(db_session, cat)["ENTERED"]
+    assert row["price"] == pytest.approx(175.0)
+    assert row["price_source"] == "catalog"
+
+
+def test_a_costless_row_keeps_its_price_and_never_serves_null(db_session):
+    """REGRESSION GUARD, from a real production row.
+
+    'Snirt stopper bottom seal' carries cost 0.00 and a stored price of 7.50.
+    Deriving unconditionally served NULL for it — and the line-item picker
+    coerces null to 0 (`Number(raw.price || 0)`), so it would have reached a
+    customer estimate as a $0.00 line. A costless row has nothing to derive
+    FROM, so its stored price is the only truth available.
+    """
+    from gdx_dispatch.models.pricing_engine import seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+    _seed_legacy(db_session, cat, "NO-COST", 0.0, 7.50)
+
+    row = _served(db_session, cat)["NO-COST"]
+    assert row["price"] is not None, "served null — the picker renders that $0.00"
+    assert row["price"] == pytest.approx(7.50)
+
+
+def test_a_margin_change_moves_a_repaired_price(db_session):
+    """A repaired row follows the tiers; a believable one does not.
+
+    This is what makes the repair a rule rather than a one-off UPDATE.
+    """
+    from gdx_dispatch.models.pricing_engine import MarginTier, PricingTierSet, seed_default_pricing
+
+    seed_default_pricing(db_session)
+    db_session.commit()
+    cat = _make_catalog(db_session, "manual")
+    _seed_legacy(db_session, cat, "REPAIRED", 100.0, 0.0)     # unbelievable -> derived
+    _seed_legacy(db_session, cat, "ENTERED2", 100.0, 175.0)   # believable   -> untouched
+
+    before = _served(db_session, cat)
+    tier_set = (
+        db_session.query(PricingTierSet)
+        .filter(PricingTierSet.pricing_category == "parts",
+                PricingTierSet.pricing_class == "retail")
+        .first()
+    )
+    for tier in db_session.query(MarginTier).filter(MarginTier.tier_set_id == tier_set.id):
+        tier.margin_pct = Decimal("0.10")
+    db_session.commit()
+    # The tier settings are cached on Session.info for the life of a request
+    # (part_pricing._cached_settings), so a NEW request is what picks up a margin
+    # change. These tests share one session; drop the cache to model that.
+    db_session.info.pop("_part_pricing_settings", None)
+    after = _served(db_session, cat)
+
+    assert after["REPAIRED"]["price"] != pytest.approx(before["REPAIRED"]["price"]), (
+        "the margin moved and the repaired price did not"
+    )
+    assert after["REPAIRED"]["price"] == pytest.approx(100.0 / (1 - 0.10), rel=1e-3)
+    assert after["ENTERED2"]["price"] == pytest.approx(175.0), "an entered price moved"
