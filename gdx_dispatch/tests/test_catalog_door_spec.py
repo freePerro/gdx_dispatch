@@ -289,3 +289,41 @@ def test_virtual_chi_doors_search_filters(db_session):
     )
     skus = [i["sku"] for i in result["items"]]
     assert skus == ["CHI-A"]
+
+
+def test_retired_chi_doors_are_excluded_from_install_sheet_specs(db_session):
+    """A retired CHI feed row must not enrich install sheets.
+
+    `is_active` is the soft-delete flag for this feed, and every other reader
+    filters it — but install_sheet.py's two UNION arms did not, so retiring the
+    2,411-row March-2026 scrape would have left it still feeding install sheets:
+    a soft-delete that was not soft-deleted anywhere you could see. This guard
+    fails if that filter is removed again.
+    """
+    from sqlalchemy import text
+
+    from gdx_dispatch.models.tenant_models import ChiDoorCatalog
+
+    db_session.add(ChiDoorCatalog(
+        sku="CHI-RETIRED-1", brand="CHI", manufacturer="CHI",
+        model_number="CHI-RETIRED", door_type="sectional",
+        description="retired stale door", width=192, height=84,
+        color="white", cost=620, is_active=False,
+    ))
+    db_session.add(ChiDoorCatalog(
+        sku="CHI-LIVE-1", brand="CHI", manufacturer="CHI",
+        model_number="CHI-LIVE", door_type="sectional",
+        description="live door", width=192, height=84,
+        color="white", cost=640, is_active=True,
+    ))
+    db_session.commit()
+
+    # The exact shape install_sheet.py uses for its CHI arm.
+    rows = db_session.execute(text(
+        "SELECT model_number FROM chi_door_catalog WHERE is_active = true"
+    )).fetchall()
+    models = {r[0] for r in rows}
+    assert "CHI-LIVE" in models
+    assert "CHI-RETIRED" not in models, (
+        "a retired CHI door is still visible to the install-sheet query"
+    )
