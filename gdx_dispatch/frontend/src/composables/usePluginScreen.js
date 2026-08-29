@@ -50,6 +50,40 @@ export function usePluginScreen(pluginKey, api) {
     return (screen?.endpoint && rowsByEndpoint.value[screen.endpoint]) || [];
   }
 
+  /** Re-fetch ONE list screen with a server-side search term.
+   *
+   * Server-side on purpose: the existing catalog screens filter client-side
+   * over whatever page they happened to load, so /catalog shows "CHI Doors —
+   * 25 doors" and searches 25 of 2,411. A plugin list that declares `search`
+   * gets the real thing — the term goes to the endpoint and the plugin decides
+   * what matches.
+   *
+   * The endpoint is re-validated through safePluginEndpoint so a manifest can
+   * never point the host's authenticated fetch outside its own namespace.
+   */
+  async function searchList(screen, term) {
+    if (!screen?.endpoint || !screen.search) return;
+    // Guard returns a BOOLEAN, not the endpoint — keep the original string.
+    if (!safePluginEndpoint(screen.endpoint)) {
+      error.value = `plugin ${pluginKey}: refused search endpoint ${screen.endpoint}`;
+      return;
+    }
+    const ep = screen.endpoint;
+    const param = screen.search.param || 'q';
+    const url = `${ep}${ep.includes('?') ? '&' : '?'}${param}=${encodeURIComponent(term || '')}`;
+    loading.value = true;
+    try {
+      rowsByEndpoint.value = {
+        ...rowsByEndpoint.value,
+        [screen.endpoint]: (await api.get(url)) || [],
+      };
+    } catch (e) {
+      error.value = e?.message || 'search failed';
+    } finally {
+      loading.value = false;
+    }
+  }
+
   // ── option sources for select fields ─────────────────────────────────────
   // A field's options come from a plugin-declared `options_endpoint`. Guards
   // (all here, so PluginScreen.vue carries no security logic):
@@ -123,7 +157,7 @@ export function usePluginScreen(pluginKey, api) {
   }
 
   return {
-    screens, rows, rowsFor, loading, error, load, create,
+    screens, rows, rowsFor, loading, error, load, create, searchList,
     fetchOptions, safePluginEndpoint, interpolateEndpoint,
   };
 }
